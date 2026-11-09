@@ -320,10 +320,10 @@ func TestHandleRegister_NoBrokerMetadataAppliesUnordered(t *testing.T) {
 
 // TestRestartedWorkerHasItsTasksReclaimed pins end to end that a worker that
 // restarts and re-registers within WorkerTimeout does not leave its previous
-// process's task running forever. The reclaim is
-// reported through reclaimOfflineWorkerTasks, so a parked lease waiter is woken
-// for the task that came back to ready, and every registration's worker event
-// carries the status of the row the store returned (online here).
+// process's task running forever. The reclaim is reported through
+// reclaimOfflineWorkerTasks, so a parked lease waiter is woken for the task
+// that came back to ready, and every registration's worker event carries the
+// status of the row the store returned (online here).
 func TestRestartedWorkerHasItsTasksReclaimed(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -439,9 +439,8 @@ func mustRegisterInstance(t *testing.T, st store.Store, w store.Worker, instance
 	return reclaimed
 }
 
-// TestLeaseHeldBackUntilARestartedProcessRegisters pins the lease side of
-// the restart reclaim: a restarted worker process can ask for work
-// before the server has consumed its new registration, and a task leased to it
+// TestLeaseHeldBackUntilARestartedProcessRegisters pins the lease side of the
+// restart reclaim: a restarted worker process can ask for work before the server has consumed its new registration, and a task leased to it
 // then would be handed back to ready by that registration's reclaim (which
 // matches by worker ID) while the process runs it. A request whose instance ID
 // differs from the stored one is answered with no work, held for
@@ -846,8 +845,8 @@ func TestParkedLeaseOfAWorkerDisabledMeanwhileGetsNoWork(t *testing.T) {
 
 // TestDeregisterOfADisabledWorkerSaysDisabled pins that a graceful deregister
 // of a disabled worker still reclaims its task, the store keeps the worker
-// disabled, and the worker event says so rather
-// than announcing an offline the row does not hold.
+// disabled, and the worker event says so rather than announcing an offline the
+// row does not hold.
 func TestDeregisterOfADisabledWorkerSaysDisabled(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -905,9 +904,9 @@ func TestDeregisterOfAnOnlineWorkerSaysOffline(t *testing.T) {
 }
 
 // TestRegisterOfADisabledWorkerSaysDisabled pins the registration half end to
-// end, on the real stores rather than a stand-in: a disabled
-// worker that re-registers (any NATS reconnect) stays disabled, and the worker
-// event carries that, not the online the registration asked for.
+// end, on the real stores rather than a stand-in: a disabled worker that
+// re-registers (any NATS reconnect) stays disabled, and the worker event
+// carries that, not the online the registration asked for.
 func TestRegisterOfADisabledWorkerSaysDisabled(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -985,8 +984,8 @@ func (s *failSecondLeaseStore) LeaseTask(ctx context.Context, req store.LeaseReq
 	return s.Store.LeaseTask(ctx, req)
 }
 
-// TestPartialLeaseBatchIsDelivered: a store error after the first lease
-// of a batch does not drop the already-leased task for the reaper to find.
+// TestPartialLeaseBatchIsDelivered: a store error after the first lease of a
+// batch does not drop the already-leased task for the reaper to find.
 func TestPartialLeaseBatchIsDelivered(t *testing.T) {
 	base := newCheckedFake(t)
 	st := &failSecondLeaseStore{Store: base}
@@ -1046,8 +1045,6 @@ func TestUnschedulableNoOpEmitsNoEvent(t *testing.T) {
 // TestUnschedulableWriteEmitsOneEvent is the positive side of
 // [TestUnschedulableNoOpEmitsNoEvent]: when the guarded write lands on a
 // task that is still ready, exactly one task event carries the new reason.
-// The no-op test already catches an inverted check; the regression only this
-// test guards is the event never being emitted even though the write landed.
 func TestUnschedulableWriteEmitsOneEvent(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -1069,10 +1066,10 @@ func TestUnschedulableWriteEmitsOneEvent(t *testing.T) {
 }
 
 // TestRepeatedInstanceRefusalsWarn pins the refusal diagnostics: a process
-// refused because its registration has not landed is logged at Debug, so one
-// whose registration never lands (lost, or a second live process under the
-// same worker ID) would get no work with nothing at Warn. Refusals in a row
-// warn once they pass instanceRefusalWarnAfter, rate-limited per process, and a
+// refused because its registration has not landed is logged at Debug, and
+// refusals in a row warn once they pass instanceRefusalWarnAfter, so a
+// registration that never lands (lost, or a second live process under the same
+// worker ID) shows at Warn. The warning is rate-limited per process, and a
 // served request starts that process's count again.
 func TestRepeatedInstanceRefusalsWarn(t *testing.T) {
 	st := newCheckedFake(t)
@@ -1184,5 +1181,102 @@ func TestParkedLeaseOfAWorkerTakenOfflineMeanwhileGetsNoWork(t *testing.T) {
 	}
 	if task := mustTaskOf(t, st, ids[0]); task.Status != store.TaskStatusReady {
 		t.Fatalf("task = %q, want ready (not leased to the offline worker)", task.Status)
+	}
+}
+
+// TestParkedLeaseOfAWorkerTakenOfflineWhileLeasingGetsNoWork covers the window
+// the test above does not: a request woken while its worker is still online
+// reads it online, and the worker then goes offline (a deregister) or is
+// deleted (an ephemeral member removed) before the lease commits. That is the
+// order a preempted worker produces: its own shutdown reports return its tasks
+// to ready, waking its parked request, just before its deregister lands. The
+// lease must not commit, or the task waits in a dead inbox for the
+// stale-assignment reaper and a deleted worker's row is not even there.
+func TestParkedLeaseOfAWorkerTakenOfflineWhileLeasingGetsNoWork(t *testing.T) {
+	for _, gone := range []bool{false, true} {
+		for name, st := range raceBackends(t) {
+			label := "offline/" + name
+			if gone {
+				label = "deleted/" + name
+			}
+			t.Run(label, func(t *testing.T) {
+				wrapped := &racingLeaseStore{Store: st}
+				s := newMetricsScheduler(wrapped, &recordBus{}, "f1")
+				s.ctx = t.Context()
+				s.leaseHoldTimeout = 30 * time.Second
+				one := 1
+				w, ids := seedLeaseFixture(t, st, []*int{&one})
+
+				// The worker takes the one ready task, so its next request parks.
+				if got, _ := leaseAs(t, s, w.ID, ""); len(got) != 1 {
+					t.Fatalf("first lease = %v, want the one task", got)
+				}
+				// The deregister lands after the woken request has read the worker
+				// online and chosen a task, just before its lease commits.
+				wrapped.hook = &once{fn: func() {
+					if _, offlined, err := st.OfflineWorker(context.Background(), w.ID, "", time.Now().UTC()); err != nil || !offlined {
+						t.Errorf("OfflineWorker = (%v, %v), want (true, nil)", offlined, err)
+					}
+					if gone {
+						if err := st.DeleteWorkerIfRemovable(context.Background(), w.ID); err != nil {
+							t.Errorf("DeleteWorkerIfRemovable: %v", err)
+						}
+					}
+				}}
+				req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+				if err != nil {
+					t.Fatalf("marshal lease request: %v", err)
+				}
+				done := make(chan []byte, 1)
+				go func() { done <- s.handleLeaseRequest(w.ID, "q1", req) }()
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					s.waiters.mu.Lock()
+					parked := len(s.waiters.waiters["q1"])
+					s.waiters.mu.Unlock()
+					if parked > 0 {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("the second lease request never parked")
+					}
+					time.Sleep(time.Millisecond)
+				}
+
+				// A new task becomes ready and wakes the parked request.
+				held := mustTaskOf(t, st, ids[0])
+				heldJob, heldStep := mustJob(t, st, held.JobID), mustStep(t, st, held.StepID)
+				heldJob.ID, heldStep.ID = uuid.NewString(), uuid.NewString()
+				heldStep.JobID = heldJob.ID
+				fresh := store.Task{
+					ID: uuid.NewString(), JobID: heldJob.ID, StepID: heldStep.ID,
+					Name: "t", Status: store.TaskStatusReady, Parameters: map[string]string{},
+					RequiredCores: &one,
+				}
+				storetest.Submit(t, st, store.JobSubmission{Job: heldJob, Steps: []store.Step{heldStep}, Tasks: []store.Task{fresh}})
+				s.waiters.notifyAll()
+
+				select {
+				case raw := <-done:
+					var rep leaseReply
+					if err := json.Unmarshal(raw, &rep); err != nil {
+						t.Fatalf("unmarshal lease reply: %v", err)
+					}
+					if len(rep.Assignments) != 0 {
+						t.Fatalf("lease committed for a worker taken offline meanwhile: %s, want no assignments", raw)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("the parked lease request never returned")
+				}
+				for _, id := range []string{ids[0], fresh.ID} {
+					if task := mustTaskOf(t, st, id); task.Status != store.TaskStatusReady || task.AssignedWorkerID != "" {
+						t.Errorf("task %s = %q on %q, want ready and unassigned", id, task.Status, task.AssignedWorkerID)
+					}
+				}
+				if attempts, err := st.ListTaskAttempts(t.Context(), fresh.ID); err != nil || len(attempts) != 0 {
+					t.Errorf("attempts of the new task = (%+v, %v), want none", attempts, err)
+				}
+			})
+		}
 	}
 }

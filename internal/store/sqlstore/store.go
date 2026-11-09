@@ -105,6 +105,14 @@ type Store struct {
 	stmtUpdatePool    *dbStmt
 	stmtDeletePool    *dbStmt
 
+	// ── capacity_groups ──────────────────────────────────────────────────
+	stmtInsertCapacityGroup    *dbStmt
+	stmtGetCapacityGroup       *dbStmt
+	stmtGetCapacityGroupByName *dbStmt
+	stmtListCapacityGroups     *dbStmt
+	stmtUpdateCapacityGroup    *dbStmt
+	stmtDeleteCapacityGroup    *dbStmt
+
 	// ── usage_claims ─────────────────────────────────────────────────────
 	stmtActiveClaimCount *dbStmt
 
@@ -182,6 +190,8 @@ type Store struct {
 	stmtInsertWorkerJoinToken                *dbStmt
 	stmtGetWorkerJoinTokenByHash             *dbStmt
 	stmtMarkWorkerJoinTokenUsed              *dbStmt
+	stmtListCapacityGroupTokens              *dbStmt
+	stmtRevokeCapacityGroupToken             *dbStmt
 
 	// ── broker state ─────────────────────────────────────────────────────
 	stmtGetBrokerIdentity *dbStmt
@@ -295,9 +305,8 @@ func (s *Store) poolFor(query string) *sql.DB {
 // It fails safe: anything it cannot positively identify as a SELECT — a CTE
 // (WITH ... may wrap an INSERT or UPDATE just as easily as a SELECT), a
 // PRAGMA, an unterminated comment — is treated as a write. Sending a read to
-// the write pool only serializes it, which is what every statement did before
-// the read pool existed; sending a write to the read pool would put it on a
-// multi-connection pool and risk write-write conflicts.
+// the write pool only serializes it; sending a write to the read pool would put
+// it on a multi-connection pool and risk write-write conflicts.
 func isReadStatement(query string) bool {
 	const sel = "select"
 	s := trimSQLLeader(query)
@@ -473,6 +482,23 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	}
 	if s.stmtDeletePool, err = s.prepare(ctx, sqlDeletePool); err != nil {
 		return err
+	}
+
+	// ── capacity_groups ───────────────────────────────────────────────────
+	for _, p := range []struct {
+		dst **dbStmt
+		sql string
+	}{
+		{&s.stmtInsertCapacityGroup, sqlInsertCapacityGroup},
+		{&s.stmtGetCapacityGroup, sqlGetCapacityGroup},
+		{&s.stmtGetCapacityGroupByName, sqlGetCapacityGroupByName},
+		{&s.stmtListCapacityGroups, sqlListCapacityGroups},
+		{&s.stmtUpdateCapacityGroup, sqlUpdateCapacityGroup},
+		{&s.stmtDeleteCapacityGroup, sqlDeleteCapacityGroup},
+	} {
+		if *p.dst, err = s.prepare(ctx, p.sql); err != nil {
+			return err
+		}
 	}
 
 	// ── usage_claims ──────────────────────────────────────────────────────
@@ -658,6 +684,12 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtMarkWorkerJoinTokenUsed, err = s.prepare(ctx, sqlMarkWorkerJoinTokenUsed); err != nil {
+		return err
+	}
+	if s.stmtListCapacityGroupTokens, err = s.prepare(ctx, sqlListCapacityGroupTokens); err != nil {
+		return err
+	}
+	if s.stmtRevokeCapacityGroupToken, err = s.prepare(ctx, sqlRevokeCapacityGroupToken); err != nil {
 		return err
 	}
 	// ── broker state ─────────────────────────────────────────────────────────

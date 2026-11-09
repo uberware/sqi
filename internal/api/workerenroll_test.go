@@ -37,13 +37,11 @@ import (
 
 // ── router helper ────────────────────────────────────────────────────────────
 
-// storeRevoker adapts a store.Store directly to [WorkerRevoker] by writing
-// the credential row and nothing else — no broker disconnect. The real
-// disconnect belongs to *server.Server (internal/server cannot be imported
-// here: internal/server imports internal/api, not the other way around) and
-// is covered by test/integration's broker-auth suite. Every test
-// in this file that does not care about broker semantics gets this by
-// default via newWorkerEnrollRouter.
+// storeRevoker adapts a store.Store to [WorkerRevoker] by writing the
+// credential row and nothing else, with no broker disconnect. The disconnect
+// belongs to *server.Server, which this package cannot import because
+// internal/server imports internal/api, and test/integration's broker-auth
+// suite covers it. newWorkerEnrollRouter uses this revoker.
 type storeRevoker struct{ store store.WorkerCredentialStore }
 
 func (r storeRevoker) RevokeWorker(ctx context.Context, workerID string) error {
@@ -69,8 +67,8 @@ func newWorkerEnrollRouterWith(st store.Store, revoker WorkerRevoker, singleUse 
 
 // ── seed helpers ─────────────────────────────────────────────────────────────
 
-// seedJoinToken creates a join token directly in the store (bypassing the
-// mint handler) and returns the raw token alongside the stored record.
+// seedJoinToken creates a join token directly in the store, bypassing the
+// mint handler, and returns the raw token alongside the stored record.
 // mutate, when non-nil, runs after the default fields are set so a test can
 // override ExpiresAt or UsedAt to exercise the reject paths.
 func seedJoinToken(t *testing.T, st store.Store, mutate func(*store.WorkerJoinToken)) (raw string, tok store.WorkerJoinToken) {
@@ -154,12 +152,11 @@ func (r failingRevoker) RevokeWorker(context.Context, string) error {
 	return nil
 }
 
-// TestEnroll_DoesNotCallBroker proves enrollment completes with no broker
-// dependency: the handler is constructed with only the store and a revoker
-// that must stay unused, and the credential is created and durable. The
-// broker reads the credential from the store when the worker connects, so a
-// freshly enrolled worker needs no broker call; test/integration's
-// TestEnrollment_ConnectsToRunningBrokerWithoutRestart proves that against a
+// TestEnroll_DoesNotCallBroker checks that enrollment completes with no broker
+// call: the handler gets a revoker that must stay unused, and the credential
+// is created and durable. The broker reads the credential from the store when
+// the worker connects; test/integration's
+// TestEnrollment_ConnectsToRunningBrokerWithoutRestart checks that against a
 // live broker.
 func TestEnroll_DoesNotCallBroker(t *testing.T) {
 	st := fake.New()
@@ -234,7 +231,7 @@ func TestWorkerEnroll_UsedSingleUseToken_Unauthorized(t *testing.T) {
 
 func TestWorkerEnroll_UsedTokenAllowedWhenNotSingleUse(t *testing.T) {
 	st := fake.New()
-	r := newWorkerEnrollRouter(st, false, time.Hour) // single-use OFF
+	r := newWorkerEnrollRouter(st, false, time.Hour) // single-use off
 	usedAt := time.Now().UTC().Add(-time.Minute)
 	raw, _ := seedJoinToken(t, st, func(tok *store.WorkerJoinToken) {
 		tok.UsedAt = &usedAt
@@ -319,23 +316,20 @@ func TestWorkerEnroll_MissingFields_BadRequest(t *testing.T) {
 	}
 }
 
-// ── the non-negotiable: unknown/expired/used/store-failure are indistinguishable ──
+// ── unknown, expired, used and store-failure tokens are indistinguishable ──
 //
 // enroll is unauthenticated and may be internet-reachable, so every way a
 // join token can fail to authorize a call must answer with the identical
-// status AND body — never just the same status. TestWorkerEnroll_UnknownToken_
-// Unauthorized and friends above already prove each individual case returns
-// 401; this test is what actually pins the property those don't: that
-// nothing distinguishes them from each other. A later change that makes any
-// one path "more helpful" (e.g. naming which case it was) would pass every
-// existing per-case test and only fail here.
+// status and body. TestWorkerEnroll_UnknownToken_Unauthorized and the tests
+// beside it check that each case returns 401; the test below checks that
+// nothing distinguishes the cases from each other, which those per-case tests
+// cannot.
 
 // joinTokenLookupErrStore forces the join-token claim to fail with a
 // non-ErrNotFound error, simulating a store outage while the token is being
-// redeemed — the fourth way enroll can fail to authorize a request,
-// alongside unknown, expired, and already-used. Both the single-use claim
-// and the reusable-token lookup are overridden so the case holds whichever
-// path a test exercises.
+// redeemed: the fourth way enroll can fail to authorize a request, alongside
+// unknown, expired, and already-used. Both the single-use claim and the
+// reusable-token lookup are overridden so the case holds on either path.
 type joinTokenLookupErrStore struct {
 	store.Store
 }
@@ -352,9 +346,9 @@ func TestWorkerEnroll_TokenFailureModesAreIndistinguishable(t *testing.T) {
 	pub := genPublicKey(t)
 	usedAt := time.Now().UTC().Add(-time.Minute)
 
-	// dispatch builds a fresh router over st (singleUse always on, so the
-	// "already-used" case actually rejects) and returns the recorded
-	// response to one enroll attempt with joinToken.
+	// dispatch builds a fresh router over st (single-use always on, so the
+	// "already-used" case rejects) and returns the recorded response to one
+	// enroll attempt with joinToken.
 	dispatch := func(st store.Store, joinToken string) *httptest.ResponseRecorder {
 		r := newWorkerEnrollRouter(st, true, time.Hour)
 		req := newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
@@ -420,12 +414,12 @@ func TestWorkerEnroll_TokenFailureModesAreIndistinguishable(t *testing.T) {
 	want := got[0]
 	for _, g := range got[1:] {
 		if g.code != want.code {
-			t.Errorf("%s: status = %d, want %d (same as %q) — a caller could distinguish "+
+			t.Errorf("%s: status = %d, want %d (same as %q); a caller could distinguish "+
 				"join-token failure modes by status code, which the endpoint must never allow",
 				g.name, g.code, want.code, want.name)
 		}
 		if g.body != want.body {
-			t.Errorf("%s: body = %q, want %q (same as %q) — a caller could distinguish "+
+			t.Errorf("%s: body = %q, want %q (same as %q); a caller could distinguish "+
 				"join-token failure modes by response body, which the endpoint must never allow",
 				g.name, g.body, want.body, want.name)
 		}
@@ -437,18 +431,17 @@ func TestWorkerEnroll_TokenFailureModesAreIndistinguishable(t *testing.T) {
 // These use chi.Walk (via the liveRoutes/routeKey helpers from
 // authz_integration_test.go) rather than firing an HTTP request: POST
 // /workers/enroll and GET/DELETE /workers/{id} share the same two-segment
-// shape, so when enroll is NOT mounted, a request for it is routed as
-// /workers/{id} with id="enroll" — chi answers that with 405 (the path
-// matches a registered pattern, just not for POST), not 404. Walking the
-// route table sidesteps that collision and asserts what actually matters:
-// whether the route is registered at all.
+// shape, so when enroll is not mounted, a request for it is routed as
+// /workers/{id} with id="enroll" and chi answers 405 (the path matches a
+// registered pattern, just not for POST), not 404. Walking the route table
+// avoids that collision and asserts whether the route is registered.
 
 func TestWorkerEnroll_EndpointAbsentWhenEnrollmentEndpointDisabled(t *testing.T) {
 	deps := Deps{
 		Store:           fake.New(),
 		Auth:            auth.Anonymous(),
 		NATSAuthEnabled: true,
-		// NATSAuthEnrollmentEndpointEnabled left false.
+		// NATSAuthEnrollmentEndpointEnabled is left false.
 	}
 	r := NewRouter(Config{DisableRateLimit: true}, deps, newTestLogger(), metrics.New(), health.NewRegistry())
 	if liveRoutes(t, r)[routeKey{http.MethodPost, "/api/v1/workers/enroll"}] {
@@ -514,7 +507,7 @@ func TestWorkerJoinTokenCreate_Created(t *testing.T) {
 		t.Errorf("stored token id = %q, want %q", stored.ID, resp.ID)
 	}
 	if stored.TokenHash == resp.Token {
-		t.Error("stored TokenHash equals the raw token — the raw value must never be persisted")
+		t.Error("stored TokenHash equals the raw token; the raw value must never be persisted")
 	}
 }
 
@@ -568,8 +561,8 @@ func TestWorkerCredentialRevoke_UnknownWorker_NotFound(t *testing.T) {
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 — body: %s", rr.Code, rr.Body)
 	}
-	// The response must not claim the worker doesn't exist — that case is
-	// indistinguishable from "already revoked" at the store layer.
+	// The response must not claim the worker does not exist: the store cannot
+	// distinguish that case from "already revoked".
 	if strings.Contains(rr.Body.String(), "does not exist") {
 		t.Error("response claims the worker does not exist, which the store cannot actually distinguish from already-revoked")
 	}
@@ -578,11 +571,10 @@ func TestWorkerCredentialRevoke_UnknownWorker_NotFound(t *testing.T) {
 // ── revoke delegates to the injected WorkerRevoker ──────────────────────────
 
 // recordingRevoker is a [WorkerRevoker] stub that records the workerID it
-// was called with and returns a configurable error, so a test can prove the
-// handler actually calls through the injected interface — not the store
-// directly — and that it maps a non-[store.ErrNotFound] failure to 500
-// rather than leaking the underlying error text (which, in production, would
-// be a broker-internal detail like a reload failure).
+// was called with and returns a configurable error, so a test can check that
+// the handler calls through the injected interface rather than the store, and
+// that it maps a non-[store.ErrNotFound] failure to 500 without leaking the
+// underlying error text (in production, a broker-internal detail).
 type recordingRevoker struct {
 	calledWith string
 	err        error
@@ -606,7 +598,7 @@ func TestWorkerCredentialRevoke_DelegatesToInjectedRevoker(t *testing.T) {
 		t.Fatalf("status = %d, want 204 — body: %s", rr.Code, rr.Body)
 	}
 	if rev.calledWith != "w1" {
-		t.Errorf("revoker called with %q, want %q — the handler must delegate to the injected WorkerRevoker, not write the store directly",
+		t.Errorf("revoker called with %q, want %q; the handler must delegate to the injected WorkerRevoker, not write the store directly",
 			rev.calledWith, "w1")
 	}
 }
@@ -644,19 +636,17 @@ func TestWorkerCredentialRevoke_RevokerOtherError_InternalServerError(t *testing
 
 // ── single-use redemption is atomic ─────────────────────────────────────────
 
-// TestWorkerEnroll_ConcurrentRedemptionsOfOneSingleUseToken proves the
-// redemption is a claim, not a check followed by a claim. Reading the token,
-// inspecting UsedAt and marking it used as separate steps lets two
-// simultaneous enrollments with one single-use token BOTH observe UsedAt as
-// nil and both succeed — the token's whole purpose defeated by timing
-// alone. store.RedeemWorkerJoinToken makes check and claim one statement
-// (inside one transaction with the credential creation), so exactly one of
-// these can win.
+// TestWorkerEnroll_ConcurrentRedemptionsOfOneSingleUseToken checks that
+// redemption is a single claim, not a check followed by a claim. Reading the
+// token, inspecting UsedAt and marking it used as separate steps would let two
+// simultaneous enrollments with one single-use token both observe UsedAt as
+// nil and both succeed. store.RedeemWorkerJoinToken makes check and claim one
+// statement, inside one transaction with the credential creation, so exactly
+// one enrollment wins.
 func TestWorkerEnroll_ConcurrentRedemptionsOfOneSingleUseToken(t *testing.T) {
-	// Repeated rounds, not one: the handler is fast enough that a single
-	// burst can happen to serialize even under -race, so one round proves
-	// nothing about a check-then-act implementation. Every round must yield
-	// exactly one 201.
+	// Several rounds, because a single burst can serialize even under -race
+	// and then says nothing about a check-then-act implementation. Every
+	// round must yield exactly one 201.
 	const rounds = 50
 	const attempts = 8
 
@@ -712,10 +702,9 @@ func TestWorkerEnroll_ConcurrentRedemptionsOfOneSingleUseToken(t *testing.T) {
 	}
 }
 
-// TestWorkerEnroll_MalformedPublicKey_TokenNotSpent pins that a request
-// rejected before the token is ever claimed costs nothing: a malformed
-// public key is caught by validation, ahead of any store call, so the token
-// stays exactly as redeemable as it was.
+// TestWorkerEnroll_MalformedPublicKey_TokenNotSpent checks that a request
+// rejected before the token is claimed leaves the token redeemable: a
+// malformed public key is caught by validation, ahead of any store call.
 func TestWorkerEnroll_MalformedPublicKey_TokenNotSpent(t *testing.T) {
 	st := fake.New()
 	r := newWorkerEnrollRouter(st, true, time.Hour)
@@ -738,23 +727,18 @@ func TestWorkerEnroll_MalformedPublicKey_TokenNotSpent(t *testing.T) {
 	}
 }
 
-// TestWorkerEnroll_ConflictingEnrollment_TokenSurvives proves that a
-// single-use token presented against a request that conflicts (here, a
-// worker ID that already has an active credential) must NOT be burned.
-// The claim and the credential creation are one transaction
-// (store.RedeemWorkerJoinToken), so a conflict rolls the claim back along
-// with the credential write — the opposite of the token being spent
-// unconditionally ahead of the write, which this test would have caught as
-// a regression back to that shape. It proves survival the only way that
-// actually matters to an operator: the SAME token is still redeemable
-// afterwards, for a different worker ID.
+// TestWorkerEnroll_ConflictingEnrollment_TokenSurvives checks that a
+// single-use token presented in a request that conflicts (here, a worker ID
+// that already has an active credential) is not spent. The claim and the
+// credential creation are one transaction (store.RedeemWorkerJoinToken), so a
+// conflict rolls the claim back along with the credential write. The test
+// redeems the same token afterwards, for a different worker ID.
 func TestWorkerEnroll_ConflictingEnrollment_TokenSurvives(t *testing.T) {
 	st := fake.New()
 	r := newWorkerEnrollRouter(st, true, time.Hour)
 	raw, _ := seedJoinToken(t, st, nil)
 
-	// First enrollment for w1 succeeds and consumes nothing it shouldn't —
-	// it is the LEGITIMATE use of this token.
+	// The first enrollment for w1 is the legitimate use of this token.
 	req := newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
 		JoinToken: raw, WorkerID: "w1", PublicKey: genPublicKey(t),
 	}))
@@ -765,13 +749,12 @@ func TestWorkerEnroll_ConflictingEnrollment_TokenSurvives(t *testing.T) {
 	}
 
 	// A single-use token is spent by its first successful redemption, so a
-	// second attempt with the SAME token — even one that would also
-	// conflict on worker ID w1 — reports the generic invalid-token 401
-	// rather than a 409: the token itself is what "already used" refuses.
-	// The point under test is what happens when the credential write fails
-	// for a reason OTHER than the token already being spent — a worker ID
-	// bound to an active credential from a DIFFERENT token's redemption —
-	// so seed a second token for that attempt.
+	// second attempt with the same token, even one that would also conflict
+	// on worker ID w1, answers the generic invalid-token 401 rather than a
+	// 409. The case under test is a credential write that fails for a reason
+	// other than the token being spent (a worker ID bound to an active
+	// credential from a different token's redemption), so seed a second
+	// token for that attempt.
 	raw2, _ := seedJoinToken(t, st, nil)
 	req = newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
 		JoinToken: raw2, WorkerID: "w1", PublicKey: genPublicKey(t),
@@ -783,7 +766,7 @@ func TestWorkerEnroll_ConflictingEnrollment_TokenSurvives(t *testing.T) {
 	}
 
 	// raw2 must still be redeemable: the conflict rolled its claim back.
-	// Confirm by actually redeeming it, for a DIFFERENT worker ID.
+	// Redeem it for a different worker ID.
 	req = newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
 		JoinToken: raw2, WorkerID: "w3", PublicKey: genPublicKey(t),
 	}))
@@ -796,20 +779,18 @@ func TestWorkerEnroll_ConflictingEnrollment_TokenSurvives(t *testing.T) {
 
 // ── worker_id must be a single NATS subject token ───────────────────────────
 
-// TestWorkerEnroll_InvalidWorkerID_BadRequest is the enrollment boundary's
-// half of the branch's whole premise. The stored worker_id flows verbatim
-// into brokerauth.WorkerPermissions when the broker builds its key set, and
-// those grants are NATS subject PATTERNS. A worker_id of "*" therefore mints
-// a credential granted "task.status.*.*", "worker.deregister.*",
-// "work.lease.*.*" and the rest — one credential that may publish concrete
-// subjects belonging to ANY worker: forge status and logs, deregister the
-// farm, and lease work as another worker, receiving that worker's assignment
-// batch in its own inbox. The scheduler's provenance checks cannot catch it,
-// because the subject NATS vouches for genuinely names the victim.
+// TestWorkerEnroll_InvalidWorkerID_BadRequest checks the enrollment
+// boundary's worker_id validation. The stored worker_id goes verbatim into
+// brokerauth.WorkerPermissions, and those grants are NATS subject patterns. A
+// worker_id of "*" would mint a credential granted "task.status.*.*",
+// "worker.deregister.*", "work.lease.*.*" and the rest: one credential that
+// may publish concrete subjects belonging to any worker, forging status and
+// logs, deregistering the farm, and leasing work as another worker. The
+// scheduler's provenance checks cannot catch it, because the subject NATS
+// vouches for names the victim.
 //
-// ">" is worse-shaped still: it yields the malformed "task.status.>.*"
-// inside Options.Nkeys, which can make every later ReloadOptions fail —
-// revocation permanently 500ing — or wedge the broker at boot.
+// ">" yields the malformed "task.status.>.*" subject, which the broker can
+// reject, breaking credential changes such as revocation.
 func TestWorkerEnroll_InvalidWorkerID_BadRequest(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -846,7 +827,7 @@ func TestWorkerEnroll_InvalidWorkerID_BadRequest(t *testing.T) {
 				t.Error("an invalid worker_id spent the join token; it must be rejected before the token is claimed")
 			}
 
-			// And nothing was enrolled under it.
+			// Nothing was enrolled under it.
 			creds, err := st.ListActiveWorkerCredentials(t.Context())
 			if err != nil {
 				t.Fatalf("ListActiveWorkerCredentials: %v", err)
@@ -855,5 +836,155 @@ func TestWorkerEnroll_InvalidWorkerID_BadRequest(t *testing.T) {
 				t.Errorf("credential created for invalid worker_id %q: %+v", tc.workerID, creds)
 			}
 		})
+	}
+}
+
+// ── capacity-group join tokens ───────────────────────────────────────────────
+
+// seedGroupToken creates a capacity group and a join token bound to it.
+func seedGroupToken(t *testing.T, st store.Store, mutate func(*store.WorkerJoinToken)) (raw string, group store.CapacityGroup, tok store.WorkerJoinToken) {
+	t.Helper()
+	farm, err := st.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: "farm-" + uuid.NewString()})
+	if err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	group, err = st.CreateCapacityGroup(t.Context(), store.CapacityGroup{
+		ID: uuid.NewString(), FarmID: farm.ID, Name: "group-" + uuid.NewString(),
+		Kind: store.CapacityGroupNamed, Provider: store.CapacityProviderExternal,
+		Enabled: true, MaxMachines: 10, MaxStepUp: 1,
+		IdleTimeout: time.Hour, BootTimeout: time.Hour, RetireAction: store.CapacityRetireSleep,
+	})
+	if err != nil {
+		t.Fatalf("CreateCapacityGroup: %v", err)
+	}
+	raw, tok = seedJoinToken(t, st, func(tok *store.WorkerJoinToken) {
+		tok.CapacityGroupID = group.ID
+		if mutate != nil {
+			mutate(tok)
+		}
+	})
+	return raw, group, tok
+}
+
+func postEnroll(t *testing.T, r http.Handler, raw, workerID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
+		JoinToken: raw, WorkerID: workerID, PublicKey: genPublicKey(t),
+	}))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestEnroll_GroupTokenIsReusableAndTagsCredential(t *testing.T) {
+	for _, singleUse := range []bool{true, false} {
+		t.Run(fmt.Sprintf("singleUse=%v", singleUse), func(t *testing.T) {
+			st := fake.New()
+			r := newWorkerEnrollRouter(st, singleUse, time.Hour)
+			raw, group, _ := seedGroupToken(t, st, nil)
+
+			for _, id := range []string{"w1", "w2"} {
+				if rr := postEnroll(t, r, raw, id); rr.Code != http.StatusCreated {
+					t.Fatalf("enroll %s: status = %d, want 201 — body: %s", id, rr.Code, rr.Body)
+				}
+				cred, err := storetest.ActiveWorkerCredential(t.Context(), st, id)
+				if err != nil {
+					t.Fatalf("ActiveWorkerCredential %s: %v", id, err)
+				}
+				if cred.CapacityGroupID != group.ID {
+					t.Errorf("credential %s group = %q, want %q", id, cred.CapacityGroupID, group.ID)
+				}
+			}
+		})
+	}
+}
+
+func TestEnroll_UngroupedTokenCredentialHasNoGroup(t *testing.T) {
+	st := fake.New()
+	r := newWorkerEnrollRouter(st, true, time.Hour)
+	raw, _ := seedJoinToken(t, st, nil)
+	if rr := postEnroll(t, r, raw, "w1"); rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 — body: %s", rr.Code, rr.Body)
+	}
+	cred, err := storetest.ActiveWorkerCredential(t.Context(), st, "w1")
+	if err != nil || cred.CapacityGroupID != "" {
+		t.Fatalf("credential = (%+v, %v), want no group", cred, err)
+	}
+}
+
+func TestEnroll_RevokedGroupTokenRefused(t *testing.T) {
+	for _, singleUse := range []bool{true, false} {
+		t.Run(fmt.Sprintf("singleUse=%v", singleUse), func(t *testing.T) {
+			st := fake.New()
+			r := newWorkerEnrollRouter(st, singleUse, time.Hour)
+			raw, _, tok := seedGroupToken(t, st, nil)
+
+			if rr := postEnroll(t, r, raw, "w1"); rr.Code != http.StatusCreated {
+				t.Fatalf("enroll before revoke: status = %d, want 201 — body: %s", rr.Code, rr.Body)
+			}
+			if err := st.RevokeCapacityGroupToken(t.Context(), tok.CapacityGroupID, tok.ID, time.Now().UTC()); err != nil {
+				t.Fatalf("RevokeCapacityGroupToken: %v", err)
+			}
+			rr := postEnroll(t, r, raw, "w2")
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("enroll after revoke: status = %d, want 401 — body: %s", rr.Code, rr.Body)
+			}
+			if _, err := storetest.ActiveWorkerCredential(t.Context(), st, "w2"); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("a credential exists for the refused enrollment: err = %v", err)
+			}
+
+			// The refusal is the one an expired token gets.
+			expRaw, _, _ := seedGroupToken(t, st, func(tok *store.WorkerJoinToken) {
+				tok.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+			})
+			exp := postEnroll(t, r, expRaw, "w3")
+			if exp.Code != rr.Code || exp.Body.String() != rr.Body.String() {
+				t.Errorf("expired = %d %s, revoked = %d %s: want identical", exp.Code, exp.Body, rr.Code, rr.Body)
+			}
+		})
+	}
+}
+
+func TestEnroll_RevokedUngroupedTokenRefused(t *testing.T) {
+	for _, singleUse := range []bool{true, false} {
+		t.Run(fmt.Sprintf("singleUse=%v", singleUse), func(t *testing.T) {
+			st := fake.New()
+			r := newWorkerEnrollRouter(st, singleUse, time.Hour)
+			revokedAt := time.Now().UTC().Add(-time.Minute)
+			raw, _ := seedJoinToken(t, st, func(tok *store.WorkerJoinToken) { tok.RevokedAt = &revokedAt })
+			if rr := postEnroll(t, r, raw, "w1"); rr.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401 — body: %s", rr.Code, rr.Body)
+			}
+		})
+	}
+}
+
+func TestEnroll_GroupTokenConflictKeepsToken(t *testing.T) {
+	st := fake.New()
+	r := newWorkerEnrollRouter(st, true, time.Hour)
+	raw, _, _ := seedGroupToken(t, st, nil)
+	if rr := postEnroll(t, r, raw, "w1"); rr.Code != http.StatusCreated {
+		t.Fatalf("first enroll: status = %d — body: %s", rr.Code, rr.Body)
+	}
+	if rr := postEnroll(t, r, raw, "w1"); rr.Code != http.StatusConflict {
+		t.Fatalf("same worker again: status = %d, want 409 — body: %s", rr.Code, rr.Body)
+	}
+	if rr := postEnroll(t, r, raw, "w2"); rr.Code != http.StatusCreated {
+		t.Fatalf("another worker: status = %d, want 201 — body: %s", rr.Code, rr.Body)
+	}
+}
+
+// A group token's hash stays Go-side: nothing the enrollment or minting
+// handlers return carries it.
+func TestEnroll_ResponsesNeverCarryTokenHash(t *testing.T) {
+	st := fake.New()
+	r := newWorkerEnrollRouter(st, true, time.Hour)
+	raw, _, tok := seedGroupToken(t, st, nil)
+	rr := postEnroll(t, r, raw, "w1")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d — body: %s", rr.Code, rr.Body)
+	}
+	if strings.Contains(rr.Body.String(), tok.TokenHash) {
+		t.Error("enroll response carries the token hash")
 	}
 }

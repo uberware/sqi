@@ -52,6 +52,7 @@ describe('Admin hub', () => {
     ['Farms', '/farms'],
     ['Queues', '/queues'],
     ['Usage Pools', '/usage-pools'],
+    ['Capacity Groups', '/capacity-groups'],
     ['Storage', '/storage-locations'],
     ['Locations', '/compute-locations'],
     ['Products', '/products'],
@@ -95,12 +96,15 @@ describe('Admin hub', () => {
         </MemoryRouter>,
       )
       for (const [label] of cases) {
+        // Capacity Groups needs only infra.read, which read-only holds.
+        if (label === 'Capacity Groups') continue
         expect(
           screen.queryByRole('link', { name: new RegExp('^' + label, 'i') }),
         ).not.toBeInTheDocument()
       }
       // read-only does hold apikeys.self, so the API Keys card still shows.
       expect(screen.getByRole('link', { name: /^API Keys/i })).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: /^Capacity Groups/i })).toBeInTheDocument()
     })
 
     it('hides the Servers card without diagnostics.read', () => {

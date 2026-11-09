@@ -16,7 +16,7 @@ const workerCols = `
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
 	last_heartbeat_at, registered_at, updated_at, instance_id, disabled, registration_broker_at,
-	heartbeat_broker_at`
+	heartbeat_broker_at, capacity_group_id, ephemeral`
 
 // sqlWorkerHasWorkInFlight is true when the worker row's id holds an assigned
 // or running task. It is a fragment for a WHERE clause over workers.
@@ -27,12 +27,21 @@ const sqlWorkerHasWorkInFlight = `EXISTS (SELECT 1 FROM tasks t
 // status filter and sort: 'disabled' while the flag is set, else the liveness.
 const sqlWorkerEffectiveStatus = `CASE WHEN disabled THEN 'disabled' ELSE status END`
 
+// sqlDeleteEphemeralWorkerWhere deletes the ephemeral worker id while it is
+// offline and holds no task. It binds only the id, so a statement extending
+// it binds its own placeholders after.
+const sqlDeleteEphemeralWorkerWhere = `
+DELETE FROM workers
+WHERE id = ? AND ephemeral AND status = 'offline'
+  AND NOT ` + sqlWorkerHasWorkInFlight
+
 const (
-	// ON CONFLICT preserves registered_at so re-registration does not reset it,
+	// ON CONFLICT preserves registered_at, so re-registration does not reset it,
 	// and an empty instance_id (a worker that sends none) keeps the stored one,
-	// as a NULL registration_broker_at does.
-	// disabled and heartbeat_broker_at are not in the column list, so a new worker is enabled and a
-	// re-registration never changes the flag.
+	// as a NULL registration_broker_at does. disabled, heartbeat_broker_at,
+	// capacity_group_id and ephemeral are not in the column list, so a new
+	// worker is enabled and in no group, and a re-registration never changes
+	// them.
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
@@ -115,7 +124,7 @@ WHERE  w.status = 'online' AND NOT w.disabled
        )`
 
 	// sqlDeleteWorkerIfRemovable carries the removability rule in its WHERE so
-	// the check and the delete are one statement (I1). It mirrors
+	// the check and the delete are one statement. It mirrors
 	// [store.Worker.Removable], the one Go statement of the rule: SQL cannot
 	// call Go, so the two are kept in step by hand and pinned against each
 	// other by TestDeleteWorkerIfRemovable. The in-flight arm is the one
@@ -126,28 +135,55 @@ DELETE FROM workers
 WHERE id = ? AND status = 'offline'
   AND NOT ` + sqlWorkerHasWorkInFlight
 
-	// Deletes enabled offline workers last seen before the cutoff and returns
-	// the removed rows so the caller can emit notifications. A disabled worker
-	// is kept until an operator removes it. NULL last_heartbeat_at never
-	// matches (NULL < ? is NULL), so a never-seen worker is left alone.
+	// Deletes enabled offline workers in no capacity group last seen before
+	// the cutoff and returns the removed rows so the caller can emit
+	// notifications. A disabled worker is kept until an operator removes it,
+	// and a group member is left to the capacity sweep, which revokes an
+	// ephemeral member's credential as it deletes the row. NULL
+	// last_heartbeat_at never matches (NULL < ? is NULL), so a never-seen
+	// worker is left alone.
 	sqlDeleteOfflineWorkersBefore = `
 DELETE FROM workers
 WHERE status = 'offline' AND NOT disabled AND last_heartbeat_at < ?
+  AND capacity_group_id IS NULL
+RETURNING ` + workerCols
+
+	sqlGetCapacityGroupExists = `SELECT 1 FROM capacity_groups WHERE id = ?`
+
+	// sqlSetWorkerCapacityGroup writes the membership; a NULL group clears it
+	// and the ephemeral flag with it.
+	sqlSetWorkerCapacityGroup = `
+UPDATE workers SET capacity_group_id = ?, ephemeral = ?, updated_at = ? WHERE id = ?
+RETURNING ` + workerCols
+
+	sqlListCapacityGroupMembers = `SELECT ` + workerCols + `
+FROM workers WHERE capacity_group_id = ? ORDER BY hostname, id`
+
+	// sqlDeleteEphemeralWorker carries the whole rule in its WHERE, so the
+	// check and the delete are one statement.
+	sqlDeleteEphemeralWorker = sqlDeleteEphemeralWorkerWhere + `
+RETURNING ` + workerCols
+
+	// sqlDeleteVanishedEphemeralWorker adds the capacity sweep's conditions to
+	// sqlDeleteEphemeralWorker's: not disabled, and last seen before the
+	// cutoff. NULL last_heartbeat_at never matches (NULL < ? is NULL).
+	sqlDeleteVanishedEphemeralWorker = sqlDeleteEphemeralWorkerWhere + `
+  AND NOT disabled AND last_heartbeat_at < ?
 RETURNING ` + workerCols
 )
 
 func scanWorker(row scanner) (store.Worker, error) {
 	var w store.Worker
-	var farmID, queueID, lastHeartbeat, registrationBroker, heartbeatBroker sql.NullString
+	var farmID, queueID, lastHeartbeat, registrationBroker, heartbeatBroker, capacityGroupID sql.NullString
 	var gpuJSON, tagsJSON, exprJSON, extJSON, status string
 	var registeredAt, updatedAt string
-	var disabled dbBool
+	var disabled, ephemeral dbBool
 
 	if err := row.Scan(
 		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
 		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &extJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &disabled, &registrationBroker,
-		&heartbeatBroker,
+		&heartbeatBroker, &capacityGroupID, &ephemeral,
 	); err != nil {
 		return store.Worker{}, err
 	}
@@ -161,6 +197,8 @@ func scanWorker(row scanner) (store.Worker, error) {
 	w.RegisteredAt = mustTime(registeredAt)
 	w.UpdatedAt = mustTime(updatedAt)
 	w.Disabled = bool(disabled)
+	w.CapacityGroupID = capacityGroupID.String
+	w.Ephemeral = bool(ephemeral)
 
 	gpu, err := unmarshalJSON(gpuJSON, store.GPUInfo{})
 	if err != nil {
@@ -192,10 +230,9 @@ func scanWorker(row scanner) (store.Worker, error) {
 // workerJSONCols marshals the worker columns stored as JSON TEXT, in the order
 // they appear in [workerCols].
 //
-// One function, not one copy per write path: every caller that persists a
-// worker needs all of them, so a new JSON column added to only one copy would
-// still compile and would silently drop that column on the paths it was not
-// added to.
+// Every caller that persists a worker needs all of the columns, so they are
+// marshaled in this one function: a JSON column added to only one of several
+// copies would still compile and would be dropped on the other write paths.
 func workerJSONCols(w store.Worker) (gpuJSON, tagsJSON, exprJSON, extJSON string, err error) {
 	if gpuJSON, err = marshalJSON(w.GPUInfo); err != nil {
 		return "", "", "", "", err
@@ -207,7 +244,7 @@ func workerJSONCols(w store.Worker) (gpuJSON, tagsJSON, exprJSON, extJSON string
 		return "", "", "", "", err
 	}
 	// A nil slice marshals as "null"; the column holds a list, '[]' when empty,
-	// matching what its default gives a row that predates it.
+	// as its default does.
 	exts := w.Extensions
 	if exts == nil {
 		exts = []string{}
@@ -332,6 +369,10 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 		where += ` AND compute_location = ?`
 		args = append(args, opts.ComputeLocation)
 	}
+	if opts.CapacityGroupID != "" {
+		where += ` AND capacity_group_id = ?`
+		args = append(args, opts.CapacityGroupID)
+	}
 	if opts.Status != "" {
 		where += ` AND ` + sqlWorkerEffectiveStatus + ` = ?`
 		args = append(args, string(opts.Status))
@@ -404,9 +445,9 @@ func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Ti
 			return err
 		}
 		// Nothing matched: an unknown worker, or a heartbeat the broker stamped
-		// before the recorded one, which is ignored. Not-found is carried out rather than
-		// returned, so a leadership context's fence check still runs and a
-		// deposed leader gets ErrFenced for it.
+		// before the recorded one, which is ignored. Not-found is carried out
+		// rather than returned, so a leadership context's fence check still
+		// runs and a deposed leader gets ErrFenced for it.
 		var one int
 		switch err := w.QueryRowContext(ctx, sqlWorkerExists, id).Scan(&one); {
 		case errors.Is(err, sql.ErrNoRows):
@@ -458,7 +499,7 @@ func (s *Store) CountIdleWorkers(ctx context.Context, farmID string) (int, error
 
 // DeleteWorkerIfRemovable implements [store.WorkerStore].
 //
-// The zero-rows case is told apart by a read AFTER the delete: a worker that
+// The zero-rows case is told apart by a read after the delete: a worker that
 // exists but did not match is [store.ErrConflict], one that is gone is
 // [store.ErrNotFound]. A concurrent change between the two statements can only
 // move the answer between those two errors, never delete a row the rule refused.
@@ -500,4 +541,106 @@ func (s *Store) DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time
 		return nil, err
 	}
 	return workers, nil
+}
+
+// SetWorkerCapacityGroup implements [store.WorkerStore].
+//
+// Anchor: the worker row. The group is read, not locked: deleting it while
+// this transaction runs makes the foreign key refuse the write, which is
+// [store.ErrConflict].
+func (s *Store) SetWorkerCapacityGroup(ctx context.Context, workerID, groupID string, ephemeral bool) (store.Worker, error) {
+	now := TimeText(time.Now().UTC())
+	out, err := inTxValue(ctx, s, "set worker capacity group", func(tx *dbTx) (store.Worker, txOutcome, error) {
+		if err := tx.lockAnchors(ctx, workerAnchor(workerID)); err != nil {
+			return store.Worker{}, txRollback, err
+		}
+		current, err := scanWorker(tx.QueryRowContext(ctx, sqlGetWorker, workerID))
+		if err != nil {
+			return store.Worker{}, txRollback, mapErr(err)
+		}
+		if groupID != "" {
+			var one int
+			if err := tx.QueryRowContext(ctx, sqlGetCapacityGroupExists, groupID).Scan(&one); err != nil {
+				return store.Worker{}, txRollback, mapErr(err)
+			}
+			if current.CapacityGroupID != "" && current.CapacityGroupID != groupID {
+				return store.Worker{}, txRollback, fmt.Errorf("store: worker %s is already in capacity group %s: %w",
+					workerID, current.CapacityGroupID, store.ErrConflict)
+			}
+		}
+		updated, err := scanWorker(tx.QueryRowContext(ctx, sqlSetWorkerCapacityGroup,
+			nullString(groupID), ephemeral && groupID != "", now, workerID))
+		if err != nil {
+			return store.Worker{}, txRollback, mapErr(err)
+		}
+		return updated, txCommit, nil
+	})
+	return out, err
+}
+
+// ListCapacityGroupMembers implements [store.WorkerStore].
+func (s *Store) ListCapacityGroupMembers(ctx context.Context, groupID string) ([]store.Worker, error) {
+	rows, err := s.r.QueryContext(ctx, sqlListCapacityGroupMembers, groupID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	var workers []store.Worker
+	for rows.Next() {
+		w, err := scanWorker(rows)
+		if err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, mapErr(rows.Err())
+}
+
+// DeleteEphemeralWorker implements [store.WorkerStore].
+//
+// Anchor: the worker row, which orders the delete against a lease (LeaseTask
+// holds it FOR SHARE) so a task leased to the worker is seen by the in-flight
+// condition. The credential is revoked in the same transaction, only when the
+// worker was deleted.
+func (s *Store) DeleteEphemeralWorker(ctx context.Context, id string, now time.Time) (store.Worker, bool, error) {
+	return s.deleteEphemeralWorker(ctx, "delete ephemeral worker", id, now, sqlDeleteEphemeralWorker, id)
+}
+
+// DeleteVanishedEphemeralWorker implements [store.WorkerStore], as
+// [Store.DeleteEphemeralWorker] does.
+func (s *Store) DeleteVanishedEphemeralWorker(ctx context.Context, id string, cutoff, now time.Time) (store.Worker, bool, error) {
+	return s.deleteEphemeralWorker(ctx, "delete vanished ephemeral worker", id, now,
+		sqlDeleteVanishedEphemeralWorker, id, TimeText(cutoff.UTC()))
+}
+
+// deleteEphemeralWorker runs query, a DELETE of worker id returning its row,
+// under the worker's anchor and revokes the worker's credential at now when it
+// deleted the row.
+func (s *Store) deleteEphemeralWorker(
+	ctx context.Context, op, id string, now time.Time, query string, args ...any,
+) (store.Worker, bool, error) {
+	type result struct {
+		worker  store.Worker
+		deleted bool
+	}
+	r, err := inTxValue(ctx, s, op, func(tx *dbTx) (result, txOutcome, error) {
+		if err := tx.lockAnchors(ctx, workerAnchor(id)); err != nil {
+			return result{}, txRollback, err
+		}
+		w, err := scanWorker(tx.QueryRowContext(ctx, query, args...))
+		if errors.Is(err, sql.ErrNoRows) {
+			// Nothing matched. Committing runs the fence check, so a deposed
+			// leader still gets ErrFenced here.
+			return result{}, txCommit, nil
+		}
+		if err != nil {
+			return result{}, txRollback, mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx, sqlRevokeWorkerCredential, TimeText(now.UTC()), id); err != nil {
+			return result{}, txRollback, fmt.Errorf("store: revoke credential of worker %s: %w", id, mapErr(err))
+		}
+		return result{worker: w, deleted: true}, txCommit, nil
+	})
+	return r.worker, r.deleted, err
 }

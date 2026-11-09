@@ -313,9 +313,9 @@ func TestParity_Fence_PlainContextIsNeverFenced(t *testing.T) {
 
 // TestParity_Fence_IgnoredWorkerWritesStillFence: the worker writes that can
 // end without changing anything (a stale registration, a heartbeat the broker
-// stamped before the recorded one, a heartbeat for an unknown worker) are fenced like any
-// other, so a deposed leader sees ErrFenced from them on every backend and not
-// the result the current leader would get.
+// stamped before the recorded one, a heartbeat for an unknown worker) are
+// fenced like any other, so a deposed leader gets ErrFenced from them on every
+// backend, not the result the current leader would get.
 func TestParity_Fence_IgnoredWorkerWritesStillFence(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -494,9 +494,12 @@ var fenceReadOnly = []string{
 	"UpsertServerMember", "ListServerMembers", "DeleteServerMembersUnseenFor",
 	"Close",
 	"ActiveClaimCount", "CommittedCores", "FailureReasonSummary", "LatestTaskAttempt",
+	"ListReadyStepDemand", "ListWorkerCommitments",
 	"CountActiveTasksInFarm", "CountActiveTasksInQueue", "CountIdleWorkers", "CountReadyTasksByQueue",
 	"CountTasksByJob", "CountUnschedulableTasksByJob", "CountUsers",
 	"GetAPIKeyUserByTokenHash", "GetActiveWorkerCredentialByPublicKey", "GetBrokerIdentity",
+	"GetCapacityGroup", "GetCapacityGroupByName", "ListCapacityGroups", "ListCapacityGroupMembers",
+	"ListCapacityGroupTokens",
 	"GetComputeLocation", "GetComputeLocationByName", "GetFarm", "GetJob", "GetProductByName", "GetQueue",
 	"GetSessionByTokenHash", "GetSessionUserByTokenHash", "GetStep", "GetStorageLocation",
 	"GetStorageLocationByName", "GetTask", "GetTaskAttempt", "GetUsagePool", "GetUser",
@@ -575,6 +578,13 @@ var fenceMutators = map[string]fenceMutator{
 		k := mkAPIKey(u.ID, "hash-"+uuid.NewString())
 		return func(ctx context.Context) error {
 			_, err := st.CreateAPIKey(ctx, k)
+			return err
+		}
+	},
+	"CreateCapacityGroup": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		return func(ctx context.Context) error {
+			_, err := st.CreateCapacityGroup(ctx, mkCapacityGroup(farm.ID, uuid.NewString()))
 			return err
 		}
 	},
@@ -681,6 +691,11 @@ var fenceMutators = map[string]fenceMutator{
 			return err
 		}
 	},
+	"DeleteCapacityGroup": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, uuid.NewString()))
+		return func(ctx context.Context) error { return st.DeleteCapacityGroup(ctx, g.ID) }
+	},
 	"DeleteFarm": func(t *testing.T, st store.Store) func(context.Context) error {
 		farm := fenceFarm(t, st)
 		return func(ctx context.Context) error { return st.DeleteFarm(ctx, farm.ID) }
@@ -688,6 +703,37 @@ var fenceMutators = map[string]fenceMutator{
 	"DeleteJob": func(t *testing.T, st store.Store) func(context.Context) error {
 		g := fenceLiveJob(t, st, store.TaskStatusReady)
 		return func(ctx context.Context) error { return st.DeleteJob(ctx, g.Job.ID) }
+	},
+	"DeleteEphemeralWorker": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, uuid.NewString()))
+		w := fenceWorker(t, st, store.WorkerStatusOffline, time.Now().Add(-time.Hour))
+		if _, err := st.SetWorkerCapacityGroup(t.Context(), w.ID, g.ID, true); err != nil {
+			t.Fatalf("SetWorkerCapacityGroup: %v", err)
+		}
+		return func(ctx context.Context) error {
+			_, deleted, err := st.DeleteEphemeralWorker(ctx, w.ID, time.Now().UTC())
+			if err == nil && !deleted {
+				return errors.New("DeleteEphemeralWorker deleted nothing")
+			}
+			return err
+		}
+	},
+	"DeleteVanishedEphemeralWorker": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, uuid.NewString()))
+		w := fenceWorker(t, st, store.WorkerStatusOffline, time.Now().Add(-time.Hour))
+		if _, err := st.SetWorkerCapacityGroup(t.Context(), w.ID, g.ID, true); err != nil {
+			t.Fatalf("SetWorkerCapacityGroup: %v", err)
+		}
+		return func(ctx context.Context) error {
+			now := time.Now().UTC()
+			_, deleted, err := st.DeleteVanishedEphemeralWorker(ctx, w.ID, now.Add(-time.Minute), now)
+			if err == nil && !deleted {
+				return errors.New("DeleteVanishedEphemeralWorker deleted nothing")
+			}
+			return err
+		}
 	},
 	"DeleteOfflineWorkersBefore": func(t *testing.T, st store.Store) func(context.Context) error {
 		fenceWorker(t, st, store.WorkerStatusOffline, time.Now().Add(-time.Hour))
@@ -943,6 +989,16 @@ var fenceMutators = map[string]fenceMutator{
 		c := mustCreateCredential(t, st, mkCredential(uuid.NewString()))
 		return func(ctx context.Context) error { return st.RevokeWorkerCredential(ctx, c.WorkerID, time.Now().UTC()) }
 	},
+	"RevokeCapacityGroupToken": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(mustCreateFarm(t, st, "main").ID, "alpha"))
+		tok, err := st.CreateWorkerJoinToken(t.Context(), mkGroupToken(g.ID, time.Now().UTC()))
+		if err != nil {
+			t.Fatalf("CreateWorkerJoinToken: %v", err)
+		}
+		return func(ctx context.Context) error {
+			return st.RevokeCapacityGroupToken(ctx, g.ID, tok.ID, time.Now().UTC())
+		}
+	},
 	"SetBrokerIdentity": func(_ *testing.T, st store.Store) func(context.Context) error {
 		return func(ctx context.Context) error { return st.SetBrokerIdentity(ctx, "embedded:SQI", time.Now().UTC()) }
 	},
@@ -970,6 +1026,14 @@ var fenceMutators = map[string]fenceMutator{
 	"SetUserPasswordAndEvictSessions": func(t *testing.T, st store.Store) func(context.Context) error {
 		u := fenceUser(t, st, "viewer")
 		return func(ctx context.Context) error { return st.SetUserPasswordAndEvictSessions(ctx, u.ID, "$argon2id$new") }
+	},
+	"SetWorkerCapacityGroup": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(fenceFarm(t, st).ID, uuid.NewString()))
+		w := fenceWorker(t, st, store.WorkerStatusOnline, time.Now())
+		return func(ctx context.Context) error {
+			_, err := st.SetWorkerCapacityGroup(ctx, w.ID, g.ID, false)
+			return err
+		}
 	},
 	"SetWorkerDisabled": func(t *testing.T, st store.Store) func(context.Context) error {
 		w := fenceWorker(t, st, store.WorkerStatusOnline, time.Now())
@@ -1000,7 +1064,10 @@ var fenceMutators = map[string]fenceMutator{
 	},
 	"TouchWorkerCredential": func(t *testing.T, st store.Store) func(context.Context) error {
 		c := mustCreateCredential(t, st, mkCredential(uuid.NewString()))
-		return func(ctx context.Context) error { return st.TouchWorkerCredential(ctx, c.WorkerID, time.Now().UTC()) }
+		return func(ctx context.Context) error {
+			_, err := st.TouchWorkerCredential(ctx, c.WorkerID, time.Now().UTC())
+			return err
+		}
 	},
 	"UpdateComputeLocation": func(t *testing.T, st store.Store) func(context.Context) error {
 		loc := mustCreateComputeLocation(t, st, uuid.NewString())
@@ -1048,6 +1115,15 @@ var fenceMutators = map[string]fenceMutator{
 		loc.Description = "fenced"
 		return func(ctx context.Context) error {
 			_, err := st.UpdateStorageLocation(ctx, loc)
+			return err
+		}
+	},
+	"UpdateCapacityGroup": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, uuid.NewString()))
+		g.MaxMachines = 7
+		return func(ctx context.Context) error {
+			_, err := st.UpdateCapacityGroup(ctx, g)
 			return err
 		}
 	},

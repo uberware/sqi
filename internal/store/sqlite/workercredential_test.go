@@ -97,8 +97,8 @@ func TestWorkerCredential_DuplicatePublicKey(t *testing.T) {
 }
 
 // TestWorkerCredential_RevokedPublicKeyStillUnique verifies that public_key
-// uniqueness is untouched by the worker_id fix: a key that belonged to a
-// now-revoked credential can never be reused, by any worker.
+// uniqueness is not scoped to active rows as worker_id's is: a key that
+// belonged to a revoked credential can never be reused, by any worker.
 func TestWorkerCredential_RevokedPublicKeyStillUnique(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -154,8 +154,8 @@ func TestWorkerCredential_ListActiveOmitsRevoked(t *testing.T) {
 
 // TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow verifies that
 // after a worker is enrolled, revoked, and re-enrolled with a new key,
-// exactly one row is active — never zero (the rotation silently failing) and
-// never two (both keys accepted by the broker at once).
+// exactly one row is active: never zero (the rotation failed) and never two
+// (both keys accepted by the broker at once).
 func TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -240,8 +240,8 @@ func TestWorkerCredential_RotateAfterRevoke(t *testing.T) {
 }
 
 // TestWorkerCredential_GetActiveOnly_RevokedOnlyReturnsNotFound verifies that
-// a worker whose only credential has been revoked (no rotation yet) is
-// reported as having no active credential — the active set must never hold a
+// a worker whose only credential has been revoked (no rotation) is
+// reported as having no active credential: the active set never holds a
 // revoked row.
 func TestWorkerCredential_GetActiveOnly_RevokedOnlyReturnsNotFound(t *testing.T) {
 	s := openTestStore(t)
@@ -283,7 +283,7 @@ func TestWorkerCredential_Touch(t *testing.T) {
 	}
 
 	seenAt := enrolledAt.Add(time.Hour)
-	if err := s.TouchWorkerCredential(ctx, "w1", seenAt); err != nil {
+	if _, err := s.TouchWorkerCredential(ctx, "w1", seenAt); err != nil {
 		t.Fatalf("TouchWorkerCredential: %v", err)
 	}
 
@@ -298,7 +298,7 @@ func TestWorkerCredential_Touch(t *testing.T) {
 
 func TestWorkerCredential_TouchNotFound(t *testing.T) {
 	s := openTestStore(t)
-	err := s.TouchWorkerCredential(context.Background(), "nope", time.Now().UTC())
+	_, err := s.TouchWorkerCredential(context.Background(), "nope", time.Now().UTC())
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -318,10 +318,9 @@ func TestWorkerCredential_TouchOnlyMatchesActiveRow(t *testing.T) {
 		t.Fatalf("RevokeWorkerCredential: %v", err)
 	}
 
-	// Only a revoked row exists for w1: touching it must not resurrect it as
-	// a match, so it reports ErrNotFound exactly like the revoke and get
-	// paths do.
-	err := s.TouchWorkerCredential(ctx, "w1", now.Add(time.Hour))
+	// Only a revoked row exists for w1: touching it does not match it, so it
+	// reports ErrNotFound like the revoke and get paths.
+	_, err := s.TouchWorkerCredential(ctx, "w1", now.Add(time.Hour))
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for a worker with only a revoked credential, got %v", err)
 	}
@@ -486,8 +485,8 @@ func TestWorkerJoinToken_RedeemExpired(t *testing.T) {
 		t.Errorf("RedeemWorkerJoinToken after expiry: got %v, want store.ErrNotFound", err)
 	}
 
-	// An expired token must not be marked used by the failed attempts, and
-	// no credential must have been created.
+	// The failed attempts leave the expired token unused and create no
+	// credential.
 	stored, err := s.GetWorkerJoinTokenByHash(ctx, "hash1")
 	if err != nil {
 		t.Fatalf("GetWorkerJoinTokenByHash: %v", err)
@@ -508,11 +507,10 @@ func TestWorkerJoinToken_RedeemUnknown(t *testing.T) {
 	}
 }
 
-// TestWorkerJoinToken_RedeemConflictRollsBackClaim is the transactional
-// guarantee this method exists for: a credential that cannot be created —
-// here, a worker ID already bound to an active credential — must roll back
-// the token claim too, so the token remains redeemable rather than being
-// spent on a request that was always going to be rejected.
+// TestWorkerJoinToken_RedeemConflictRollsBackClaim pins the transactional
+// guarantee: a credential that cannot be created (here, a worker ID already
+// bound to an active credential) rolls back the token claim too, so the token
+// stays redeemable.
 func TestWorkerJoinToken_RedeemConflictRollsBackClaim(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -559,10 +557,9 @@ func TestWorkerJoinToken_RedeemConflictRollsBackClaim(t *testing.T) {
 
 // TestWorkerJoinToken_RedeemIsAtomic drives concurrent redemptions of one
 // token through the real database, each for a distinct (non-conflicting)
-// worker ID and public key — so the only thing that can make an attempt
-// lose is the token claim itself. Exactly one may win, whatever the
-// interleaving: the UPDATE's own WHERE clause is the check, so there is no
-// window between checking used_at and setting it.
+// worker ID and public key, so only the token claim can make an attempt
+// lose. Exactly one wins, whatever the interleaving: the UPDATE's WHERE clause
+// is the check, so there is no window between checking used_at and setting it.
 func TestWorkerJoinToken_RedeemIsAtomic(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

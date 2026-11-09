@@ -4,13 +4,13 @@ package scheduler
 
 // Tests for the assignment helpers shared by the lease path in lease.go:
 // the lease's building blocks (buildUsageContext, buildUsageClaims) and the
-// instrumentation gauges. Attempt numbering belongs to store.LeaseTask now and
-// is tested there.
+// instrumentation gauges. Attempt numbering belongs to store.LeaseTask and is
+// tested there.
 //
 // These are white-box tests in package scheduler. A fake store (fake.New)
-// drives all store-backed paths; a recording bus stub satisfies busClient
-// without a real NATS broker. A real metrics.New() is used because the gauge
-// helpers touch s.metrics directly.
+// drives all store-backed paths; a stub bus satisfies busClient without a real
+// NATS broker. A real metrics.New() is used because the gauge helpers touch
+// s.metrics directly.
 
 import (
 	"context"
@@ -21,6 +21,8 @@ import (
 	"github.com/google/uuid"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
@@ -31,8 +33,7 @@ import (
 
 // ── recording bus ─────────────────────────────────────────────────────────────
 
-// recordBus is a no-op busClient used by the metrics/gauge tests. It satisfies
-// the interface without a real NATS broker.
+// recordBus is a no-op busClient used by the metrics and gauge tests.
 type recordBus struct{}
 
 func (*recordBus) ConsumeWorker(_ context.Context, _ jetstream.MessageHandler) (jetstream.ConsumeContext, error) {
@@ -146,7 +147,7 @@ func TestBuildUsageContext_NoRequirements(t *testing.T) {
 }
 
 func TestBuildUsageContext_WithPool(t *testing.T) {
-	st := fake.New() // deliberately seeds an I3 violation; see counts["maya"] (a claim on attempt "a1", which has no row)
+	st := fake.New() // not the checked fake: counts["maya"] is a claim on attempt "a1", which has no row
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	poolID := uuid.NewString()
@@ -202,12 +203,12 @@ func TestBuildUsageClaims(t *testing.T) {
 // ── gauges run without error against a seeded store ────────────────────────────
 
 func TestRefreshGauges_Smoke(t *testing.T) {
-	st := fake.New() // deliberately seeds an I3 violation; see refreshUsageClaimGauge (a claim on attempt "a1", which has no row)
+	st := fake.New() // not the checked fake: the usage claim below is on attempt "a1", which has no row
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	seedAssignFixture(t, st, nil)
 
-	// Seed a usage pool with an active claim so refreshUsageClaimGauge
-	// iterates its pool/count loop body.
+	// A usage pool with an active claim makes refreshUsageClaimGauge run its
+	// pool/count loop body.
 	poolID := uuid.NewString()
 	if _, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: poolID, Name: "maya", MaxConcurrent: 2}); err != nil {
 		t.Fatalf("CreateUsagePool: %v", err)
@@ -219,4 +220,53 @@ func TestRefreshGauges_Smoke(t *testing.T) {
 	s.refreshIdleWorkerGauge(t.Context())
 	s.refreshUsageClaimGauge(t.Context())
 	s.refreshWorkerGauge(t.Context())
+}
+
+// gaugeValue reads the current value of a single gauge.
+func gaugeValue(t *testing.T, g prometheus.Gauge) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := g.Write(&m); err != nil {
+		t.Fatalf("read gauge: %v", err)
+	}
+	return m.GetGauge().GetValue()
+}
+
+// A queue whose last ready task is leased must read 0, not the last depth it
+// had: the capacity scaling signal reads this gauge, and a series that kept
+// its old value would never fall.
+func TestRefreshQueueDepthGauge_ResetsADrainedQueue(t *testing.T) {
+	ctx := t.Context()
+	st := newCheckedFake(t)
+	f := seedAssignFixture(t, st, nil)
+	now := time.Now()
+
+	second := store.Task{
+		ID: uuid.NewString(), JobID: f.job.ID, StepID: f.step.ID,
+		Name: "Render[2]", Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
+	}
+	// The fixture holds one ready task; a second job in the same queue makes two.
+	job2 := f.job
+	job2.ID = uuid.NewString()
+	step2 := f.step
+	step2.ID = uuid.NewString()
+	step2.JobID = job2.ID
+	second.JobID, second.StepID = job2.ID, step2.ID
+	storetest.Submit(t, st, store.JobSubmission{Job: job2, Steps: []store.Step{step2}, Tasks: []store.Task{second}})
+
+	s := newMetricsScheduler(st, &recordBus{}, f.farm.ID)
+	gauge := s.metrics.SchedulerQueueDepth.WithLabelValues(f.queue.ID)
+
+	s.refreshQueueDepthGauge(ctx)
+	if got := gaugeValue(t, gauge); got != 2 {
+		t.Fatalf("queue depth with two ready tasks = %v, want 2", got)
+	}
+
+	for _, id := range []string{f.task.ID, second.ID} {
+		storetest.Lease(t, st, store.LeaseRequest{TaskID: id, WorkerID: f.worker.ID})
+	}
+	s.refreshQueueDepthGauge(ctx)
+	if got := gaugeValue(t, gauge); got != 0 {
+		t.Errorf("queue depth after both tasks were leased = %v, want 0", got)
+	}
 }

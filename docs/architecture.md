@@ -123,7 +123,7 @@ main()
       10. Create and run Scheduler (internal/scheduler). Scheduler.Run is what
           registers every NATS consumer: worker registration/heartbeat/deregister,
           task status, task logs and the core-NATS worker.diag.> subscriber. It
-          then finalizes, once, any step an earlier release left stuck and
+          then finalizes, once, any step left stuck and
           releases any pending step a retry reset but never released
           (reconcileStuckSteps and reconcilePendingSteps, see "Store
           invariants"), and only after that subscribes the core-NATS
@@ -198,46 +198,35 @@ REST handler (internal/api/jobs.go)
 ```
 
 The submission is one write so that a job is never partially created. Writing
-those rows through separate store calls allows two defects: a failure partway
-through strands a `pending` job that nothing reaps, and a *store* failure on a
-later step leaves the earlier steps persisted while that step's row is lost —
-producing a job that `checkJobCompletion`, which derives job status from the
-steps that *exist*, would later mark `completed` having lost work.
+those rows through separate store calls would allow two defects: a failure
+partway through would strand a `pending` job that nothing reaps, and a *store*
+failure on a later step would leave the earlier steps persisted while that
+step's row is lost, producing a job that `checkJobCompletion`, which derives
+job status from the steps that *exist*, would later mark `completed` having
+lost work.
 
-**On SQLite it holds the write connection for its full duration, which is why
-reads run on a second connection pool.** The write pool is `SetMaxOpenConns(1)`
-(`internal/store/sqlite/store.go`), so one submission owns it from `BeginTx` to
-`Commit`. Anything queuing behind it queues in Go's `database/sql` pool, which
-is not `SQLITE_BUSY` and which `busy_timeout` does not affect: nothing surfaces
-it as a lock error, it stalls. If reads shared that pool, `GET /readyz` would
-stall with them: its `sqlite` checker is `Store.Ping`, and `internal/health`
-gives all checkers a 5 s budget per request, so a submission over that budget
-would return HTTP 503 `degraded` (endpoint removal under an orchestrator) at
-~65k tasks, which is 6.5% of one step's legal maximum. Measured on an M-series
-Mac (single step, one `CreateJobSubmission` call, `/readyz` issued 50 ms in):
-
-| tasks | transaction | `/readyz`, shared pool | `/readyz`, split pools |
-|---|---|---|---|
-| 1,000 | 57 ms | ok | ok |
-| 10,000 | 683 ms | ok | ok |
-| 25,000 | 1.73 s | ok | ok |
-| 50,000 | 3.53 s | ok | ok |
-| 75,000 | 5.40 s | **503** (`context deadline exceeded`) | ok |
+**On SQLite a submission holds the write connection for its full duration,
+which is why reads run on a second connection pool.** The write pool is
+`SetMaxOpenConns(1)` (`internal/store/sqlite/store.go`), so one submission owns
+it from `BeginTx` to `Commit`. Anything queuing behind it queues in Go's
+`database/sql` pool, which is not `SQLITE_BUSY` and which `busy_timeout` does
+not affect: nothing surfaces it as a lock error, it stalls. If reads shared
+that pool, `GET /readyz` would stall with them: its `sqlite` checker is
+`Store.Ping`, and `internal/health` gives all checkers a 5 s budget per
+request, so a submission that ran longer than that budget (tens of thousands of
+tasks) would return HTTP 503 `degraded`, which an orchestrator treats as
+endpoint removal.
 
 WAL mode lets readers proceed alongside a writer, so `Store` opens a second
 pool over the same file for `SELECT`s only, and `Store.Ping`, the readiness
-checker, uses it. Measured the same way, `Ping` returns in tens of
-microseconds while a 75,000- or 100,000-task submission is mid-flight. See
-the Concurrency section of `internal/store/sqlite`'s package doc for how a
-statement is routed and why the classification is by SQL verb rather than by Go
-method.
+checker, uses it. See the Concurrency section of `internal/store/sqlite`'s
+package doc for how a statement is routed and why the classification is by SQL
+verb rather than by Go method.
 
 **Other writes queue**: lease transitions, task-status writes and the sweeps
 all go through the one write connection, and a long submission delays them.
-Batching the inserts is faster than writing them row by row (measured 7.4 s
-versus 8.8 s for 100,000 tasks), but other writers wait for one contiguous
-transaction instead of through N gaps. `GET /healthz` (liveness) registers no
-checkers and is not affected.
+They wait for one contiguous transaction. `GET /healthz` (liveness) registers
+no checkers and is not affected.
 
 **On PostgreSQL a submission holds one connection of the write pool**
 (`store.postgres.max_conns`), and other writers run on the rest. A submission
@@ -267,10 +256,10 @@ answers during a large submission (`TestPostgres_PingWhileLargeSubmission`
 submits 50,000 tasks). A PostgreSQL submission inserts its tasks 500 rows per
 statement; SQLite inserts one row per statement.
 
-**Every multi-row rule is one store operation.** Every rule
-that spans more than one row (a usage claim exists only while its attempt is
-open, a step finalizes only when every task is terminal, a pool never exceeds
-its cap) is enforced by a single store operation. On SQLite the write
+**Every multi-row rule is one store operation.** A rule that spans more than
+one row (a usage claim exists only while its attempt is open, a step finalizes
+only when every task is terminal, a pool never exceeds its cap) is enforced by
+a single store operation. On SQLite the write
 connection provides the serialization those operations rely on, and the
 anchor-lock hook most of them call (`Dialect.LockAnchors`) is a no-op in the
 SQLite dialect. On PostgreSQL the same operations take row locks on their
@@ -291,11 +280,11 @@ was deleted in between makes it refuse the whole submission
 (`store.ErrDependencyUnsatisfiable`, HTTP 422, worded exactly as the
 submitter's own pre-check words the same cause), while one that completed in
 between is left to the sweep, which releases the job on its next tick. A job
-with a non-empty `depends_on` is created in a new `blocked` status instead of
-`pending`, and — unlike a normal submission — **every** step and task is
+with a non-empty `depends_on` is created in `blocked` status instead of
+`pending`, and, unlike a normal submission, every step and task is
 written `pending` up front, even steps with no step-level dependencies that
 would otherwise be immediately `ready`; the job is held entirely until it is
-released. Dependencies work **across queues** within a farm — readiness is
+released. Dependencies work across queues within a farm: readiness is
 farm-wide and queue affinity is only applied when a worker leases work, so a
 released job's tasks are immediately leasable regardless of which queue they
 or their upstreams belong to.
@@ -306,7 +295,7 @@ is released to `pending` and `openjd.ResolveDependencies` re-runs to promote
 its no-dependency steps' tasks to `ready`, same as a fresh submission; if any
 upstream is `failed`, `canceled`, or deleted, the blocked job is itself
 canceled with an upstream-failed reason, and the cancellation cascades to any
-of *its* own dependents in turn. This reconcile is primarily **event-driven** —
+of *its* own dependents in turn. This reconcile is primarily event-driven,
 triggered from the same choke point that detects job completion
 (`checkJobCompletion` in `internal/scheduler/taskstatus.go`) and from the job
 cancel and delete paths — with the periodic heartbeat sweep acting as a backstop pass over
@@ -326,7 +315,7 @@ reached `succeeded`. A `blocked` job's steps and tasks skip this evaluation at
 submit time and are all held `pending` regardless of step dependencies, until
 the job is released and this same evaluation runs (see above).
 
-For the initial set this evaluation happens **before** the write, not inside it:
+For the initial set this evaluation happens before the write, not inside it:
 `buildStepWithTasks` decides each step's and task's starting status while
 expanding the template in memory, and the `CreateJobSubmission` transaction only
 persists the statuses it already chose. It runs again via the scheduler's
@@ -394,11 +383,11 @@ an empty batch; the worker immediately re-requests.
 
 **Compute-location registry.** sqi maintains a curated, auto-populated catalog
 of named compute locations (`compute_locations` table; served at
-`GET /api/v1/compute-locations`). The catalog is informational only — it does
+`GET /api/v1/compute-locations`). The catalog is informational only; it does
 not gate scheduling. The matcher (`internal/scheduler/matcher.go`) keys
 directly on the raw `step.ComputeLocation` string (promoted from the step's
 `attr.worker.computelocation` host requirement) and on the worker's
-`ComputeLocation` field; it is unchanged by the registry feature. A worker
+`ComputeLocation` field, not on the registry. A worker
 whose location name does not appear in the registry is fully eligible for
 matching tasks, and a registry entry with no matching workers reports
 `worker_count: 0`. See [`docs/compute-locations.md`](compute-locations.md).
@@ -422,10 +411,9 @@ for the config knob.
 reaper, `reconcileAttempts` (`internal/scheduler/attemptreconcile.go`) reclaims
 attempts a live worker has stopped reporting. Every heartbeat from a current
 worker carries `attempts_reported: true` and `active_attempt_ids`, the attempts
-its process holds from lease decode until the task's goroutine exits. The
-fields are additive, with no `ProtocolVersion` bump: an older worker sends
-neither and is never reconciled, and a worker holding nothing sends
-`attempts_reported: true` with no IDs, which is a report like any other.
+its process holds from lease decode until the task's goroutine exits. A worker
+that sends neither field is never reconciled, and a worker holding nothing
+sends `attempts_reported: true` with no IDs, which is a report like any other.
 The heartbeat handler records each report in an in-memory, per-process
 `reconciler`, unless the worker's timestamp is more than
 `scheduler.heartbeat_timeout` from its receipt. The sweep takes the attempts
@@ -526,9 +514,8 @@ has no `ended_at`, or ended before it started (clock skew). The remaining-time
 read sums it per step from the `tasks(step_id, status, run_ms)` index instead
 of finding each succeeded task's latest attempt on every read. Nothing moves a
 task out of `succeeded` or gives it a newer attempt, so the stored value never
-goes stale; migration `00045` backfilled it with the same rule, and the fake
-store derives it from attempts on each read, so the parity tests catch any
-write path that fails to store it.
+goes stale. The fake store derives it from attempts on each read, so the
+parity tests catch any write path that fails to store it.
 
 **Durable failure reason.** Every `task_attempts` row carries a `message`
 column next to `exit_code` — the worker's human-readable reason for that
@@ -545,7 +532,7 @@ scheduler for the paths that have none:
 |---|---|---|
 | Worker-reported failure/cancel | the worker's `Message` verbatim | `handleTaskTerminal`, stamped by `store.CompleteTaskAttempt` in the same transaction that moves the task, and only if the task ends up in the reported status |
 | Failed with no worker message | `"failed (exit N)"` or `"failed"` | `handleTaskTerminal` fallback |
-| Worker reclaimed (heartbeat timeout or graceful deregister) | `"worker went offline"` | `store.OfflineStaleWorker` / `store.OfflineWorker` — set on the **attempt** `message` only; reclaim is not a task failure, so `tasks.failure_reason` is left untouched |
+| Worker reclaimed (heartbeat timeout or graceful deregister) | `"worker went offline"` | `store.OfflineStaleWorker` / `store.OfflineWorker` — set on the attempt `message` only; reclaim is not a task failure, so `tasks.failure_reason` is left untouched |
 | Worker restarted (a new process registers under the same worker ID) | `"worker restarted"` | `store.RegisterWorker`, in the registration's own transaction — attempt `message` only, as above |
 | Worker shut down (a `failed` report whose message is `worker_shutdown`) | `"worker shut down"` | `store.ReclaimTaskAttempt` — attempt `message` only, as above |
 | Restore fence or attempt reconciliation (an attempt a restored database records as open, its task assigned or running, or one its live worker stopped reporting) | `"worker shut down"` | `store.ReclaimTaskAttempt`, called by `restore.Fence` and `Scheduler.reconcileAttempts` — attempt `message` only, as above |
@@ -717,7 +704,7 @@ still `running` and is the task's latest and the task is `assigned` or
 `running`; otherwise it reports `started = false`, nothing is written, and the
 consumer acks the message and emits no event. `CompleteTaskAttempt` always
 closes the attempt and releases its claims, but moves the task only when the
-attempt is the task's latest **and** the task is `assigned` or `running` (a
+attempt is the task's latest and the task is `assigned` or `running` (a
 task already holding the reported status is a no-op). A task that went back to
 `ready` or `pending`, or reached another terminal status, refuses the move, so
 a canceled task's late `canceled` echo cannot re-cancel a task that was
@@ -751,18 +738,17 @@ arrows there. Steps have no `running` status: nothing writes it, so a step goes
 `pending` to `canceled` when an upstream step fails or is canceled
 (`CancelPendingStep`), its blocked job is canceled (`CancelBlockedJob`) or its
 job is canceled (`CancelJobExecution`), and back to `pending` only on a retry.
-There is deliberately no `pending` → `failed` arrow: the only way a pending
+There is no `pending` → `failed` arrow: the only way a pending
 step could be judged failed is a retry interrupted before dependency
 resolution. When the server stops in that window, the start-up reconcile
 releases the step first (see *Upgrade repair* under
-[What changed for operators](#what-changed-for-operators)); when only the store
+[Operator-visible behavior](#operator-visible-behavior)); when only the store
 call fails and the server stays up, the window stays open until the next start
-(see [Known gaps](#known-gaps)). The value survives in the enum
-and wire types, and a real running step would be a separate, user-visible
-feature. The
-task machine lives in `store` and not in `openjd` for a hard reason: `openjd`
-imports `store`, so `store` can never import `openjd` back. Do not merge the
-two sentinels — `errors.Is` against the wrong one silently stops matching.
+(see [Known gaps](#known-gaps)). The `running` value remains in the enum
+and wire types. The
+task machine lives in `store` and not in `openjd` because `openjd`
+imports `store`, so `store` cannot import `openjd` back. Do not merge the
+two sentinels: `errors.Is` against the wrong one silently stops matching.
 
 Two rules keep enforcement safe given that task status arrives over JetStream
 (at-least-once delivery):
@@ -832,12 +818,12 @@ a stale attempt of it still runs holds both: a cancel naming one
 stops only it, one naming none stops both, and the stale attempt's exit leaves
 the newer one running.
 
-Two arrows deserve note. `assigned` → `succeeded`/`failed` is permitted even
+Two arrows need explaining. `assigned` → `succeeded`/`failed` is permitted even
 though it appears to skip `running`: the worker publishes `running` first, but
 that publish is best-effort and gives up after `MaxRetries`, so it can be lost
 while the task still runs to completion. Rejecting the terminal message would
 strand finished work. Separately, the auto-retry re-queue described below
-(`running` → `ready` on a transient failure) is a **policy-driven store call**
+(`running` → `ready` on a transient failure) is a policy-driven store call
 (`RequeueTaskForRetry`) with its own guarded SQL, as are the other paths that
 move tasks for the server's own reasons: `LeaseTask`, `RetryTasks`,
 `ReleaseStep` / `CancelPendingStep`, `CancelBlockedJob`, `CancelJobExecution` /
@@ -862,7 +848,7 @@ server default) and records the genuine failure via
   `ready` (`store.RequeueTaskForRetry`) stamped with a `retry_after` backoff
   timestamp (`now + retry_delay`). The requeue acts only while the failed
   attempt is still the task's latest, so a reclaim and a new lease landing
-  between the two writes are left alone. It does **not** go through the
+  between the two writes are left alone. It does not go through the
   terminal / step-completion path, since the step isn't actually done.
 - **Exhausted.** The task's genuine-failure count reaches `max_attempts` with
   no failure limit tripped — the task goes terminal-`failed`, cascading to its
@@ -972,8 +958,7 @@ PostgreSQL's is `internal/store/migrations/postgres/*.sql`, which starts at
 so version N is the same schema on both. Every later schema change ships as a
 pair of files with the same version, and `TestSchemaParity` fails when the two
 backends' newest versions, tables, columns (names, order, types and
-nullability), indexes or foreign keys differ. The newest pair is
-`00039_worker_extensions`. Migrations are forward-only: there is no
+nullability), indexes or foreign keys differ. Migrations are forward-only: there is no
 `migrate down`, and a binary refuses a database whose version is above the
 newest migration it embeds (`migrations.CheckVersion` against
 `migrations.MaxVersion`, run in `sqlite.Open` and `postgres.Open` whether or
@@ -1093,8 +1078,8 @@ HA sets neither.
 
 ## Store invariants
 
-Five rules hold across the store's rows. Each is enforced by **one store
-operation**: the scheduler and the REST handlers never assemble one out of
+Five rules hold across the store's rows. Each is enforced by one store
+operation: the scheduler and the REST handlers never assemble one out of
 several store calls, because a decision made on one call's answer can be stale
 by the time the next call writes. They are written down here because the
 PostgreSQL store, which has genuinely concurrent writers, upholds them with row
@@ -1104,9 +1089,9 @@ locks, where SQLite gets most of them from its single write connection (see
 - **I1. No blind status writes.** Every status change states its precondition
   in its own `WHERE`. Zero rows affected means the world moved on: the
   operation reports a typed no-op (or `store.ErrConflict` where the API needs
-  one, such as a pause of a job that has finished) and never overwrites. It is
-  the rule task status already followed — writing a task's current status is a
-  no-op, not an error — and a task status write driven by a worker report is a
+  one, such as a pause of a job that has finished) and never overwrites. Task
+  status follows the same rule: writing a task's current status is a
+  no-op, not an error, and a task status write driven by a worker report is a
   compare-and-set on the status read in the same transaction.
 - **I2. A set-returning operation returns exactly the rows it changed.** It
   uses `UPDATE … RETURNING`. Where the caller needs the *pre*-update value,
@@ -1140,8 +1125,8 @@ locks, where SQLite gets most of them from its single write connection (see
 
 Single-row rules are guarded the same way: `SetTaskUnschedulableReason` writes
 only while the task is `ready` (otherwise a no-op), `PauseJob` only while the job is `pending` or `running`, and
-`DeleteWorkerIfRemovable` only while the worker is still removable **and holds
-no task**: the in-flight check (no task `assigned` or `running` on the worker)
+`DeleteWorkerIfRemovable` only while the worker is still removable and holds
+no task: the in-flight check (no task `assigned` or `running` on the worker)
 is part of the `DELETE` statement itself.
 
 ### Anchor rows
@@ -1172,11 +1157,11 @@ The anchors each operation takes:
 
 | Operation | Anchor rows, in lock order | Notes |
 |---|---|---|
-| `LeaseTask` | the requesting worker's row (shared), the task's job row (shared), the queue row (only if it has a cap), the farm row (only if it has a cap), then each requested usage-pool row, sorted by id; the queue, farm and pool rows `FOR NO KEY UPDATE` | A scope read before the locks names the anchors and says which caps exist. Under the locks the lease refuses a worker that is now **disabled**, and re-reads the job's queue and farm and their caps: if the job moved to another queue or farm meanwhile the lease is `Lost` (its anchors and counts would be for the old rows), and otherwise the caps it enforces are the re-read ones. See [Lock order](#lock-order) for why the worker and job rows are shared. |
+| `LeaseTask` | the requesting worker's row (shared), the task's job row (shared), the queue row (only if it has a cap), the farm row (only if it has a cap), then each requested usage-pool row, sorted by id; the queue, farm and pool rows `FOR NO KEY UPDATE` | A scope read before the locks names the anchors and says which caps exist. Under the locks the lease refuses a worker that is now disabled, and re-reads the job's queue and farm and their caps: if the job moved to another queue or farm meanwhile the lease is `Lost` (its anchors and counts would be for the old rows), and otherwise the caps it enforces are the re-read ones. See [Lock order](#lock-order) for why the worker and job rows are shared. |
 | `CompleteTaskAttempt`, `RecordTaskFailure` | the task's job row | |
 | `StartTaskAttempt`, `ReclaimTaskAttempt` | the task's job row | No task-row lock is needed for the latest-attempt check: a lease holds the job row shared, so no lease commits between the check and the write. `ReclaimTaskAttempt` takes no worker row: it neither reads nor writes one. |
 | `RequeueTaskForRetry` | the task's job row | As above: the guarded `UPDATE`'s latest-attempt check runs under it. |
-| `CancelJobExecution`, `CancelTaskExecution` | the job row (the task's job, for a single task) | A lease holds the job row shared, so none commits between the `SELECT` of the tasks to report and the cancel's `UPDATE`: the reported set is exact. `CancelJobExecution` writes the job's steps after the tasks, attempts and claims, and the job row itself **last**; the step write touches only `steps`, which no lease or report writes, and the job row is the anchor this transaction already holds, so neither adds a lock-order inversion. |
+| `CancelJobExecution`, `CancelTaskExecution` | the job row (the task's job, for a single task) | A lease holds the job row shared, so none commits between the `SELECT` of the tasks to report and the cancel's `UPDATE`: the reported set is exact. `CancelJobExecution` writes the job's steps after the tasks, attempts and claims, and the job row itself last; the step write touches only `steps`, which no lease or report writes, and the job row is the anchor this transaction already holds, so neither adds a lock-order inversion. |
 | `RetryTasks` | the job row | |
 | `FinalizeStep`, `FinalizeJob` | the job row (the step's job, for a step) | The current status, reported when the step or job was already terminal, is read under the lock. |
 | `ReleaseStep`, `CancelPendingStep` | the step's job row | |
@@ -1184,7 +1169,7 @@ The anchors each operation takes:
 | `CreateJobSubmission` (dependency re-check) | each upstream job row, sorted by id, shared | |
 | `DeleteJob` | the job row, then (not an anchor) each of the job's tasks that has an attempt, `FOR UPDATE` | The task locks hold off a log append, whose foreign-key check takes `FOR KEY SHARE` on its task row; see [What the anchors leave open](#what-the-anchors-leave-open). As a backstop the cascade is retried on a foreign-key violation (`23503`) or a deadlock (`40P01`). |
 | `DeleteTerminalJobsBefore` (retention) | each candidate's job row, one job per transaction, candidates sorted by id, then that job's tasks as for `DeleteJob` | The candidates are read unlocked; each job is deleted only if its eligibility, re-checked under its lock, still holds. A job that no longer qualifies (a retry revived it) is skipped. The cascade is retried as for `DeleteJob`. On an error the result lists the jobs already deleted. |
-| `ReclaimStaleAssignedTasks` | per batch of up to 500 candidates, the batch's job rows sorted by id, taken **before** the `UPDATE` | The candidates are read unlocked, then each batch runs `UPDATE … RETURNING` re-guarded on the candidate ids, `status = 'assigned'` and the cutoff, so no task row is locked before its job row. Each batch commits on its own; on an error the result lists the tasks earlier batches reclaimed. |
+| `ReclaimStaleAssignedTasks` | per batch of up to 500 candidates, the batch's job rows sorted by id, taken before the `UPDATE` | The candidates are read unlocked, then each batch runs `UPDATE … RETURNING` re-guarded on the candidate ids, `status = 'assigned'` and the cutoff, so no task row is locked before its job row. Each batch commits on its own; on an error the result lists the tasks earlier batches reclaimed. |
 | `DemoteStalledJobs` | each candidate's job row, one job per transaction, in id order | The candidates are read unlocked; each job is demoted only if the stalled predicate, re-run under its lock, still holds. A lease in flight holds the job row shared, so it is waited for and the task it assigned is seen. On an error the result lists the jobs already demoted. |
 | `OfflineStaleWorker`, `OfflineWorker` | the worker row, then the job row of each of the worker's assigned or running tasks, sorted by id | A lease holds the worker row shared, so the offline transition waits for a lease in flight and reclaims what it committed. |
 | `RegisterWorker` | the worker row, then, only when the registration is from a new process, the job row of each of the worker's assigned or running tasks, sorted by id | `offlineWorker`'s order. |
@@ -1229,9 +1214,9 @@ than one transaction costs PostgreSQL multixact bookkeeping.
 
 ### Statement order
 
-Inside these transactions **the order of the statements is part of the
-contract** on PostgreSQL. Every operation that cancels or reclaims tasks writes
-the task rows **first**, and only then closes their attempts and releases
+Inside these transactions the order of the statements matters on PostgreSQL.
+Every operation that cancels or reclaims tasks writes
+the task rows first, and only then closes their attempts and releases
 their claims: `CancelJobExecution`, `CancelTaskExecution`,
 `ReclaimStaleAssignedTasks`, `ReclaimTaskAttempt`, `OfflineStaleWorker`,
 `OfflineWorker` and the restart reclaim inside `RegisterWorker`. A
@@ -1247,7 +1232,7 @@ it. A cancel matches any non-terminal task, so it waits for a lease moving the
 task from `ready` to `assigned` and then cancels what the lease committed. The
 reaper (`status = 'assigned'`, assigned before the cutoff) and the offline
 reclaim (the worker's `assigned` or `running` tasks) do not match a `ready`
-row, so they **skip** a task a lease is moving out of `ready` rather than wait
+row, so they skip a task a lease is moving out of `ready` rather than wait
 for it; what they wait for is a worker's report on a task they do match.
 
 `CompleteTaskAttempt` and `RecordTaskFailure` run the other way round (close
@@ -1295,9 +1280,9 @@ serializes every writer. On PostgreSQL they remain open:
   running, and a second server could then start on the same database (see
   [Two backends](#two-backends)).
 
-### What changed for operators
+### Operator-visible behavior
 
-Upgrading from v0.3.0 changes the following behaviour.
+The server treats reports, registrations and cancels as follows.
 
 - A worker's late, echoed or redelivered report never rewrites an attempt that
   is already closed, whether the server closed it (a cancel, a reap, an
@@ -1306,35 +1291,32 @@ Upgrading from v0.3.0 changes the following behaviour.
   `exit_code` and `session_id` are not overwritten either. A report the state
   machine refuses still releases the attempt's usage claims, and the consumer
   acks it.
-- A worker's late terminal report for an attempt that is no longer the task's
+- A worker's late terminal report for an attempt that is not the task's
   latest (the attempt was reaped or its worker taken offline, and the task was
   leased again) is refused and acked the same way. It still closes that
-  attempt and releases its claims, but it no longer ends the task under the new
-  lease (v0.3.0 completed or canceled it while the new attempt was running).
+  attempt and releases its claims, but it does not end the task under the new
+  lease.
 - A submission with `depends_on` whose upstream job fails, is canceled or is
-  deleted between the server's dependency check and the write is now rejected
-  with 422, as one whose upstream had already ended that way is; v0.3.0 created
-  it `blocked` and canceled it later through the dependency sweep.
-- `SetTaskUnschedulableReason` on a task that is no longer `ready` is a no-op,
-  not an error, so a task leased while the unschedulable sweep was deciding is
+  deleted between the server's dependency check and the write is rejected
+  with 422, as one whose upstream had already ended that way is. The message
+  is the same in both cases (`openjd: submit: depends_on job "<id>" already
+  terminated unsuccessfully (<status>)` or `openjd: submit: depends_on job
+  "<id>" not found`).
+- `SetTaskUnschedulableReason` on a task that is not `ready` is a no-op, not
+  an error, so a task leased while the unschedulable sweep was deciding is
   never stamped. It reports `written=false`, and the sweep sends no task event
   for it.
 - Canceling a job's last open task, canceling a job, and retrying a failed
   task while a sibling is still in flight (its step is `ready`) all finish the
-  step and job now, and
-  `RetryJob` after a cancel runs the tasks again (see Cancellation above).
-  Jobs already canceled get their open steps finalized on the first start
-  after upgrade (migration `00033`).
+  step and job, and `RetryJob` after a cancel runs the tasks again (see
+  Cancellation above).
 - **Disabled is a flag, not a status.** `workers.status` is liveness only
   (`online`/`offline`), written by registration, deregistration and the
   heartbeat sweep; `workers.disabled` is the operator's decision, written only
-  by the enable/disable endpoints (migration `00036` moved existing
-  `disabled` rows to `online` with the flag set). In v0.3.0 one column held
-  both, and registration, deregistration and the sweep each overwrote
-  `disabled` with `online` or `offline`. The API, the `status` filter and the
+  by the enable/disable endpoints. The API, the `status` filter and the
   worker gauge report the effective status (`disabled` while the flag is set);
   offline-worker retention never deletes a disabled worker.
-- A **disabled** worker finishes the tasks it holds and is leased nothing new:
+- A disabled worker finishes the tasks it holds and is leased nothing new:
   its lease requests are parked for `leaseHoldTimeout` (30 s), as an idle
   worker's are, and answered with an empty batch, so a worker left disabled for
   days neither spins its request loop nor polls about once a second per queue.
@@ -1346,19 +1328,15 @@ Upgrading from v0.3.0 changes the following behaviour.
   A worker is removable when it is offline, disabled or not;
   `DELETE /workers/{id}` also refuses a worker that still holds an assigned or
   running task with the same 409 as any worker that is not removable.
-- A worker process that restarts within the heartbeat timeout no longer leaves
+- A worker process that restarts within the heartbeat timeout does not leave
   its previous process's tasks `running`. Each worker process sends a random
-  `instance_id` in every registration (additive and optional: no
-  `ProtocolVersion` bump; an older worker sends none and is treated as before).
-  When the stored one is non-empty and differs from a non-empty incoming one,
-  the registration transaction reclaims the worker's assigned and running
-  tasks. Migration `00034` adds the column, empty on existing rows, so the
-  first registration after upgrade reclaims nothing. The consequence: a worker
-  upgraded by `kill -9` or a crash (so no deregister) while it holds running
-  tasks, and back within the heartbeat timeout, leaves those tasks `running`
-  this one time. An orderly SIGTERM upgrade is fine,
-  because the old build deregisters and the deregister reclaims its tasks, so
-  drain or stop workers gracefully before upgrading them. The lease request
+  `instance_id` in every registration (optional: a worker that sends none is
+  treated as having no instance). When the stored one is non-empty and differs
+  from a non-empty incoming one, the registration transaction reclaims the
+  worker's assigned and running tasks. A worker upgraded by `kill -9` or a
+  crash (so no deregister) is reclaimed this way when it registers again;
+  an orderly SIGTERM stop deregisters, and the deregister reclaims its tasks,
+  so drain or stop workers gracefully before upgrading them. The lease request
   carries the same optional `instance_id`, and the scheduler refuses to serve a
   request whose instance differs from the stored non-empty one until the
   registration has landed (the registration travels through JetStream, the
@@ -1373,12 +1351,11 @@ Upgrading from v0.3.0 changes the following behaviour.
   `instance_id`, and the live process's next registration would read that as a
   restart and reclaim its tasks. Registrations are therefore ordered by the
   broker's own stream timestamp for the message, recorded on the worker row as
-  `registration_broker_at`; nothing is added to the worker protocol and no
-  worker clock is consulted, so a worker with a wrong clock is ordered like any
-  other. `RegisterWorker` writes nothing and reclaims nothing when both the
-  incoming and the stored timestamps are set and the incoming one is strictly
-  earlier (`store.ErrStaleRegistration`); the scheduler acks the message
-  (redelivery cannot make it current) and logs
+  `registration_broker_at`; no worker clock is consulted, so a worker with a
+  wrong clock is ordered like any other. `RegisterWorker` writes nothing and
+  reclaims nothing when both the incoming and the stored timestamps are set and
+  the incoming one is strictly earlier (`store.ErrStaleRegistration`); the
+  scheduler acks the message (redelivery cannot make it current) and logs
   `scheduler: stale registration — discarding` at Info, naming both
   timestamps. A late redelivery keeps its original timestamp, so it is still
   detected, while a restarted worker's fresh registration carries a current
@@ -1399,131 +1376,111 @@ Upgrading from v0.3.0 changes the following behaviour.
   timestamp is still used by attempt reconciliation, which ignores a delayed or
   skewed heartbeat (see the Reconciliation notes in
   [Operations](operations.md)).
-- A late or redelivered deregister can no longer take a restarted worker
+- A late or redelivered deregister cannot take a restarted worker
   offline. The deregister carries the same optional `instance_id`, and
   `OfflineWorker` writes nothing when it and the stored one are both non-empty
   and differ: the message comes from a process a later registration replaced,
   and applying it would mark the live process offline and reclaim the tasks it
   is running (the worker would then stay `offline`, since heartbeats never
   restore `online`, while it went on leasing). The server acks it and emits no
-  event. An older worker sends no `instance_id`, and its deregister applies as
-  before.
+  event. A deregister with no `instance_id` applies unconditionally.
 - A task interrupted by its worker shutting down (`failed` with the message
-  `worker_shutdown`) no longer consumes a retry or counts toward the job's
+  `worker_shutdown`) does not consume a retry or count toward the job's
   failure limit, whichever of the report and the deregister the server sees
   first.
-- A late or duplicate worker report can no longer move a task that was
+- A late or duplicate worker report cannot move a task that was
   reclaimed, re-leased, canceled or retried: a `running` report from a
   superseded or closed attempt is acked and discarded (no event, no job
   promotion), a terminal report moves the task only while it is assigned or
   running, and the failure fork's requeue acts only for the task's latest
   attempt.
-- Orphaned attempts and their usage claims are closed on the first start after
-  upgrade (migration `00035`).
-- A submission that loses its `depends_on` upstream mid-submit gets the same
-  422 message as one that fails the pre-check (`openjd: submit: depends_on job
-  "<id>" already terminated unsuccessfully (<status>)` or `openjd: submit:
-  depends_on job "<id>" not found`).
-- `sqi-server migrate up` and `status` print to stdout, in a new format.
-  `up` prints one line per migration applied
-  (`OK    up 00037_fixed_width_timestamps.sql (1.2s)`), or `no pending
-  migrations`. `status` prints one line per migration file: the time it was
-  applied (UTC, RFC 3339) or `pending`, then the file name. v0.3.0 printed goose's own log
-  lines to stderr, so a script that read them must change. The server's
-  start-up migration prints nothing.
+- `sqi-server migrate up` and `status` print to stdout. `up` prints one line
+  per migration applied (`OK    up 00037_fixed_width_timestamps.sql (1.2s)`),
+  or `no pending migrations`. `status` prints one line per migration file: the
+  time it was applied (UTC, RFC 3339) or `pending`, then the file name. The
+  server's start-up migration prints nothing.
 - Deleting a farm that a queue, job or worker still references, or a usage
-  pool that any claim (released or not) still references, is refused with 409
-  instead of failing with 500.
+  pool that any claim (released or not) still references, is refused with 409.
 - A lease is refused, writing nothing, when the worker was disabled after the
   scheduler chose it: the store re-checks the flag inside the lease's
-  transaction. In v0.3.0 a task leased in that window went to the disabled
-  worker.
-- The stale-assignment reaper commits at most 500 tasks per transaction (one
-  transaction for the whole sweep in v0.3.0). A sweep that fails part-way keeps
-  the batches it already committed: those tasks are `ready` again, and the
-  scheduler announces them (a ready event each, and the warning log line)
-  before it logs the error.
-- Schema changes are forward-only. `migrate down` is gone; a binary
+  transaction.
+- The stale-assignment reaper commits at most 500 tasks per transaction. A
+  sweep that fails part-way keeps the batches it already committed: those
+  tasks are `ready` again, and the scheduler announces them (a ready event
+  each, and the warning log line) before it logs the error.
+- Schema changes are forward-only. There is no `migrate down`; a binary
   older than the database refuses to start on it, and the way back is
-  restoring the pre-upgrade backup (see [Rollback](operations.md#rollback),
-  which also covers going back to v0.3.0, a release with no version check and
-  no `restore`). A SQLite server creates and locks `<sqlite_path>.lock`
-  beside its database, and `migrate up`, `restore` and `store copy` refuse to
-  run while a server holds it.
+  restoring the pre-upgrade backup (see [Rollback](operations.md#rollback)). A
+  SQLite server creates and locks `<sqlite_path>.lock` beside its database,
+  and `migrate up`, `restore` and `store copy` refuse to run while a server
+  holds it.
 - Attempt reconciliation is on by default (`scheduler.reconcile_grace`:
   2 minutes, or `heartbeat_timeout` if that is longer, unless set): a task a
   live worker has stopped reporting for that long is handed back and runs
-  again. Workers of v0.3.0 and earlier report no attempts and are never
-  reconciled. Set `0` to turn it off.
-- A redelivered log chunk is stored once (migration `00038` removes existing
-  duplicates on the first start after upgrade).
+  again. A worker that reports no attempts is never reconciled. Set `0` to
+  turn it off.
+- A redelivered log chunk is stored once (migration `00038` removes
+  duplicates that already exist).
 - Stalled-job demotion (a `running` job with tasks waiting but none assigned
   or running returns to `pending`) demotes each job in its own transaction,
-  re-checking under the job row's lock that it is still stalled (one statement
-  in v0.3.0). A sweep that fails part-way keeps, and announces, the jobs it
-  already demoted.
+  re-checking under the job row's lock that it is still stalled. A sweep that
+  fails part-way keeps, and announces, the jobs it already demoted.
 
-Timestamp values are unchanged from v0.3.0, though the writes that stamp them
-moved. A released claim's `released_at` is always server time. A terminal report
+A released claim's `released_at` is always server time. A terminal report
 applied through `CompleteTaskAttempt` stamps the task row's `updated_at` with
 server time and the attempt's `ended_at` with the worker's reported time. The
-failure path still uses the worker's reported time: `RecordTaskFailure` stamps
+failure path uses the worker's reported time: `RecordTaskFailure` stamps
 the attempt's `ended_at` and the task's and job's `updated_at` with it, an
 auto-retry requeue stamps the task's `updated_at` with it and computes
 `retry_after` from it, and an auto-park stamps the job's `updated_at` with it.
 
 **Stored timestamp form.** SQLite stores every timestamp as 30-character text
 with nine fractional digits (`2026-10-10T12:00:05.500000000Z`), so text order
-is time order (see "Timestamps" under the SQLite schema overview). Earlier
-releases trimmed trailing zeros, which sorted values within one second wrongly
-(`"…:05Z"` after `"…:05.5Z"`). Migration `00037` rewrites those values on the
-first start after upgrade. It holds the write connection until it finishes, at
-about 5–7 s per million rows, and `task_logs` is usually the largest table, so
-a large farm's first start can take minutes before the server listens. The
-server's own start-up migration prints no progress line. To watch it, stop the
-server and run `sqi-server migrate up` first, which prints one line per applied
-migration to stdout, `OK    up 00037_fixed_width_timestamps.sql (<duration>)`
-for this one.
+is time order (see "Timestamps" under the SQLite schema overview); trimming
+trailing zeros would sort values within one second wrongly (`"…:05Z"` after
+`"…:05.5Z"`). Migration `00037` rewrites values stored in a shorter form. It
+holds the write connection until it finishes, at about 5–7 s per million rows,
+and `task_logs` is usually the largest table, so a large farm's first start
+after it can take minutes before the server listens. The server's own start-up
+migration prints no progress line. To watch it, stop the server and run
+`sqi-server migrate up` first, which prints one line per applied migration to
+stdout, `OK    up 00037_fixed_width_timestamps.sql (<duration>)` for this
+one.
 
-There is no downgrade in place: `migrate down` is gone, and a binary older
-than the database refuses to start on it. Rolling back means restoring the
-backup taken before the upgrade with the older binary (see
-[Rollback](operations.md#rollback)). A backup taken before upgrading from
-v0.3.0 predates `00037`, so upgrading again runs `00037` again.
+There is no downgrade in place: a binary older than the database refuses to
+start on it. Rolling back means restoring the backup taken before the upgrade
+with the older binary (see [Rollback](operations.md#rollback)).
 
-**Upgrade repair.** A v0.3.0 database can hold damage these invariants
-prevent, which the code changes alone do not undo, so it is repaired in four
-parts:
+**Upgrade repair.** A database written by an older release can hold damage
+these invariants prevent, which the code alone does not undo, so it is
+repaired in four parts:
 
 - Migration `00031_release_leaked_claims` releases every active claim whose
   attempt is missing or no longer running, or whose task is terminal (the I3
   checker's predicate), stamping `released_at` from SQLite's own clock. A
-  healthy database comes out byte-for-byte unchanged, and its `Down` is a
-  documented no-op, because a repair is not reversible.
+  healthy database comes out unchanged.
 - Migration `00033_finalize_canceled_job_steps` finalizes the open steps of
-  every **terminal** job whose tasks are all terminal, by the rule
-  `CancelJobExecution` now applies (a pending step, or one with no tasks,
-  becomes `canceled`; any other gets `FinalizeStep`'s outcome). In v0.3.0 a
-  job cancel wrote its tasks and its job row but never its steps. A step with a
-  task still in flight is never touched, steps of live jobs are left to the
-  start-up reconcile below, and `Down` is a no-op.
+  every terminal job whose tasks are all terminal, by the rule
+  `CancelJobExecution` applies (a pending step, or one with no tasks,
+  becomes `canceled`; any other gets `FinalizeStep`'s outcome). A step with a
+  task still in flight is never touched, and steps of live jobs are left to
+  the start-up reconcile below.
 - Migration `00035_close_orphan_attempts` closes, as `failed` with server time,
   every `running` attempt whose task is not in flight (finished, or back in
   `ready` or `pending`) or that is not its task's latest attempt, then
   releases every active claim whose attempt is no longer running (`00031`
   repaired claims only and could not reach these). A healthy database is
-  unchanged and `Down` is a no-op.
+  unchanged.
 - Every scheduler start runs two reconcile passes before the lease subscriber
   starts, both synchronous and with no bound on how much they repair, so a
   first start on a database with a large backlog does that work before it
   leases anything. On a healthy farm neither writes anything (the first is one
   query; the second also reads each job it lists).
   - `reconcileStuckSteps`: `store.ListStuckSteps` lists each non-terminal step
-    that has at least one task, no non-terminal task, **and a job that is not
-    itself terminal**, and each one goes through the normal completion path:
+    that has at least one task, no non-terminal task, and a job that is not
+    itself terminal, and each one goes through the normal completion path:
     `FinalizeStep`, dependency propagation, `FinalizeJob`, cross-job dependents
-    and WebSocket events. That finalizes steps left stuck by an older release's
-    1,000-task page limit on step completion, and steps stranded by older releases when a
+    and WebSocket events. That finalizes steps stranded when a
     single-task cancel took a job's last open task and no worker report
     followed. The job condition is what keeps a healthy farm free of writes:
     terminal jobs are the migration's, not this pass's.
@@ -1564,9 +1521,9 @@ the attempt.
 
 ### Known gaps
 
-The store does not close these yet.
+The store does not close the following.
 
-- **An `offline` worker that keeps asking for work is still leased to.** The
+- **An `offline` worker that keeps asking for work is leased to.** The
   lease handler refuses a `disabled` worker and a restarted process whose
   registration has not landed, but it looks at no other status, so a worker
   the server has declared offline (a missed heartbeat window) that is in fact
@@ -1575,7 +1532,13 @@ The store does not close these yet.
   parked while its worker was online, and is woken after the worker went
   offline (a graceful deregister or the heartbeat sweep), is answered empty
   rather than leased a task, so a departed process's last request does not take
-  a task into a dead inbox for the stale-assignment reaper to recover. A live worker that hits this is refused once, and its
+  a task into a dead inbox for the stale-assignment reaper to recover. The same
+  holds when the worker goes offline, or its row is deleted, after the request
+  read it online but before the lease commits: the scheduler sets
+  `RequireOnline` on a lease for a worker it read online, and `LeaseTask`
+  refuses it under the worker anchor. A preempted worker produces exactly that
+  order, since its own shutdown reports wake its parked request just before its
+  deregister lands. A live worker that hits this is refused once, and its
   next request is served.
 - **A `LeaseTask` that commits is not always delivered.** If building the
   assignment payload fails after `LeaseTask` committed (a deterministic error:
@@ -1600,7 +1563,7 @@ The store does not close these yet.
   same transaction that cancels its tasks and finalizes its steps.
 - **A refused process re-requests about once a second per queue.** The refusal
   of an unregistered process's lease request is held for `leaseRefusalDelay`
-  (1 s) precisely so the worker's lease loop does not spin, but the loop does
+  (1 s) so the worker's lease loop does not spin, but the loop does
   ask again as soon as the empty reply arrives, so a worker whose registration
   never lands (the message was discarded, or two live processes share a worker
   ID) asks about once a second per queue for as long as that lasts, and gets no
@@ -1609,7 +1572,7 @@ The store does not close these yet.
   most once every 5 minutes per process. The request for an unknown worker ID
   is answered at once, with no such backoff. A disabled worker does not do
   this: its requests are parked for the full lease hold.
-- **A retry whose dependency resolution fails with the server up can still
+- **A retry whose dependency resolution fails with the server up can
   finalize a pending step `failed`.** The start-up reconcile closes the window
   for a server stop between `RetryTasks` and `ResolveDependencies`, but
   `RetryJob`/`RetryTask` return an error if `ResolveDependencies` fails after
@@ -1617,7 +1580,7 @@ The store does not close these yet.
   nothing to release it until the next start. Until then, canceling that task
   drives step completion, and `FinalizeStep`'s guard admits `pending`, so a
   step whose other task is still `failed` is finalized `failed` directly from
-  `pending`, an arrow the step table deliberately lacks. Closing it fully means
+  `pending`, an arrow the step table lacks. Closing it fully means
   `FinalizeStep` refusing a `pending` step.
 - **Removing a busy worker revokes its credential first.** `DELETE
   /workers/{id}` revokes the worker's broker credential before the guarded
@@ -1901,6 +1864,7 @@ reads it to see whether a standby reaches the broker, and
 | Worker diagnostic subscription | yes | every server, so a new leader has worker log history |
 | Lease subscription (`work.lease.<queue>`) | yes | leader only |
 | Heartbeat sweep (liveness, reclaim, reap, reconcile) | yes | leader only; its reconnect grace counts from the promotion |
+| Capacity sweep step (evaluation, gauges, vanished-ephemeral cleanup) | yes | leader only; its idle and step-up state starts empty on a new leader |
 | Retry-wake timers | in memory | in the leader's memory; lost on failover, the sweep is the backstop |
 | REST API, WebSocket hub, cancel, retry, revoke | yes | leader only; a standby answers 503 |
 | HTTP listener | yes | every server: probes and metrics on a standby |
@@ -1916,6 +1880,75 @@ last, so a client never reaches a leader that has not finished promoting.
 
 ---
 
+## Capacity groups
+
+A capacity group is a named set of machines the server publishes a scaling
+signal for. The server computes and exports the signal and acts on no
+machine; the operator's guide is [Capacity groups](capacity.md). With no group
+defined the scheduler reads the group list on each tick and does nothing more:
+no member or demand query, no log line and no `sqi_capacity_*` series.
+
+**Schema (migration pair `00046`).** `capacity_groups` holds the group (kind,
+provider, min and max machines, priority, `max_step_up`, the cooldown, idle and
+boot timeouts in milliseconds, `retire_action`, the queue allow-list and the
+machine profile as JSON). `workers` gains `capacity_group_id` (a foreign key
+with no `ON DELETE` action, so a group cannot be deleted while a worker belongs
+to it) and `ephemeral`. `worker_join_tokens` gains `capacity_group_id` (a token
+goes with its group) and `revoked_at`, and `worker_credentials` gains
+`capacity_group_id`, the group the credential enrolled into, which is
+not a foreign key, like its `worker_id`. A worker belongs to at
+most one group, and the membership write is a compare-and-set under the worker's
+anchor.
+
+**The capacity sweep step.** `sweepCapacity` is one step of the heartbeat sweep
+tick (`sweepOnce`), after the unschedulable sweep and before the blocked-job
+sweep, so it runs on the leader only and stops when the scheduler is deposed.
+Each tick it:
+
+1. lists the groups of the scheduler's farm; with none, it clears any state and
+   returns;
+2. reads each group's members and deletes the vanished ephemeral members
+   (ephemeral, not disabled, offline, last heartbeat older than the group's
+   `boot_timeout`), revoking their credentials, which is the step's only write.
+   It skips this while the liveness sweeps are deferred after a broker outage;
+3. for the enabled groups, reads the per-worker commitments, the other online
+   workers, and the ready work per step (`ListReadyStepDemand`, one row per
+   step with leasable ready tasks, then one job and one step read each), so the
+   cost follows the number of steps with ready work, never their tasks;
+4. runs the pure policy in `internal/capacity` (`Evaluate`), whose
+   `couldRun` check is the lease path's static eligibility and nothing that
+   varies with load;
+5. fills each sized group's profile mismatches, and publishes the statuses (read
+   by `GET /api/v1/capacity-groups`) and the `sqi_capacity_*` gauges, deleting
+   the series of groups that are gone, renamed or disabled.
+
+If any read fails the step logs a warning and keeps the previous evaluation and its
+gauges, rather than publishing zeros that would read as "no demand" and scale a
+farm in.
+
+**In-memory state, and why it resets on failover.** The step keeps, per
+process: when each online member was first seen idle, when each group last
+stepped up, each group's last desired size, and which mismatches it has already
+logged. None of it is persisted. A restart or a failover therefore starts it
+empty. Idle times restart, so no machine is offered for retirement sooner than
+its idle timeout after the new leader first sees it idle. The step-up record is
+lost too, so for up to one `boot_timeout` the desired size can fall below the
+machines that were still booting.
+
+**Membership.** At registration the scheduler touches the worker's broker
+credential and, when the worker may be an ephemeral member, reads its row first
+so a cloned worker ID can be reported. With broker authentication on, only the
+credential's group counts and the worker's own `worker.capacity_group` is
+ignored with a warning; with it off, the worker's setting names a sized group of
+its farm. A deregistration of kind `retired` or `preempted` deletes an
+ephemeral member (offline, no assigned or running task) and revokes its
+credential in one transaction; any other kind keeps the row. The
+offline-worker retention sweep skips every capacity-group member: an ephemeral
+one is deleted, and its credential revoked, only by the capacity sweep or a
+deregistration.
+
+---
+
 ## NATS subjects and streams
 
 | Subject pattern | Transport | Direction | Purpose |
@@ -1924,9 +1957,9 @@ last, so a client never reaches a leader that has not finished promoting.
 | `task.status.<worker_id>.<job_id>` | JetStream (`SQI_TASK`, MaxAge 24 h) | worker → server | Terminal and intermediate status updates |
 | `task.logs.<worker_id>.<task_id>` | JetStream (`SQI_LOGS`, MaxAge 96 h) | worker → server | Log chunk delivery |
 | `task.cancel.<worker_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal for a run the worker holds; the worker interrupts the process. Each worker receives its own on one core subscription made before its first lease request, and nothing reads the stream's copy. An `attempt_id` limits it to that attempt (sent for an attempt the server has closed: in answer to a `running` report, or while heartbeats still list it) |
-| `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks) (the broker's timestamp for it orders registrations: one stamped earlier than the recorded one is discarded) |
+| `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks); the broker's timestamp for it orders registrations (one stamped earlier than the recorded one is discarded) |
 | `worker.heartbeat.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
-| `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks. Ignored when its `instance_id` names a process a later registration replaced |
+| `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks. Ignored when its `instance_id` names a process a later registration replaced. Its optional `kind` (`retired` or `preempted`) makes the server delete an ephemeral capacity-group member and revoke its credential; with no kind the worker is kept |
 | `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |
 
 Every worker → server subject carries the publishing worker's ID directly after
@@ -1995,6 +2028,7 @@ The primary tables are:
 | `task_attempts` | One row per execution attempt; holds exit code, timing, session_id |
 | `task_logs` | Persisted task process output |
 | `workers` | Registered workers with capabilities and status |
+| `capacity_groups` | Named or sized sets of machines the server publishes a scaling signal for ([Capacity groups](#capacity-groups)) |
 | `products` | Product/preset catalog above OpenJD (built-in, installed, custom) |
 | `compute_locations` | Named compute-location registry (curated catalog; auto-populated from worker registrations) |
 | `storage_locations` | Named storage locations with per-compute-location root mappings |
@@ -2042,8 +2076,7 @@ for live events. It lives in the repository at `clients/python/` (import name
 **Design notes:**
 
 - **Sync-first.** The client is synchronous only (backed by
-  `httpx.Client`). The transport is isolated so an `AsyncSqiClient` can be added
-  later without breaking the public API.
+  `httpx.Client`).
 - **Minimal dependencies.** The only required runtime dependency is `httpx`, so
   the library can be embedded in DCC Python environments (Maya, Houdini, Nuke).
   `PyYAML` and `websockets` are optional extras (`sqi-sdk[yaml]`,
@@ -2052,7 +2085,7 @@ for live events. It lives in the repository at `clients/python/` (import name
   `$SQI_TOKEN` then `$SQI_API_KEY`, and sends it as `Authorization: Bearer` on
   every request and on the WebSocket upgrade. A `headers` mapping is still
   accepted and is merged in afterwards, so an explicit header wins over the
-  resolved token — useful for a gateway that expects its own scheme. A 401 or
+  resolved token, for a gateway that expects its own scheme. A 401 or
   403 raises `SqiAuthError`. The credential to use is an API key issued from the
   web UI or `POST /api/v1/api-keys`; see [`docs/auth.md`](auth.md).
 

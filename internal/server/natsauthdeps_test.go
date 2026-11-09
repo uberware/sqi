@@ -14,6 +14,7 @@ import (
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
+	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store/fake"
 )
 
@@ -23,8 +24,8 @@ func brokerAuthConfig(enabled bool) Config {
 	return Config{NATS: config.NATSConfig{Auth: config.NATSAuthConfig{Enabled: enabled}}}
 }
 
-// TestNATSAuthDeps_CopiesAllFourSettings covers the SECOND of the three hops
-// that carry the nats.auth.* settings from the config file to the REST
+// TestNATSAuthDeps_CopiesAllFourSettings covers the second of three hops that
+// carry the nats.auth.* settings from the config file to the REST
 // worker-enrollment surface: server.Config -> api.Deps. See
 // TestServerConfig_CarriesTheBrokerAuthSettings in cmd/sqi-server for the
 // first hop.
@@ -52,11 +53,10 @@ func TestNATSAuthDeps_CopiesAllFourSettings(t *testing.T) {
 	}
 }
 
-// TestNATSAuthDeps_DoesNotDisturbFieldsItDoesNotOwn confirms natsAuthDeps
-// only ever writes its own four fields, mirroring wireAuthDeps's contract:
-// deps is built incrementally across several steps in start, so a mapping
-// function that clobbers a sibling's field fails silently — the field it
-// overwrote simply reverts to its zero value and the server boots anyway.
+// TestNATSAuthDeps_DoesNotDisturbFieldsItDoesNotOwn checks that natsAuthDeps
+// writes only its own four fields, like wireAuthDeps. deps is built in several
+// steps in start, and a mapping function that clobbers a sibling's field
+// resets it to its zero value without any error.
 func TestNATSAuthDeps_DoesNotDisturbFieldsItDoesNotOwn(t *testing.T) {
 	deps := api.Deps{CookieName: "sqi_session", SessionTTL: time.Hour}
 	natsAuthDeps(Config{}, &deps)
@@ -85,14 +85,13 @@ func routeMounted(t *testing.T, r chi.Router, method, pattern string) bool {
 	return found
 }
 
-// TestNATSAuthDeps_EndToEnd_EnrollRouteMountedWhenConfigured is the THIRD
-// hop: build the exact api.Deps a real boot would produce from a Config with
-// broker auth and the enrollment endpoint both on, hand it to the real
-// api.NewRouter, and confirm POST /api/v1/workers/enroll is actually live.
+// TestNATSAuthDeps_EndToEnd_EnrollRouteMountedWhenConfigured is the third
+// hop: build the api.Deps a real boot produces from a Config with broker auth
+// and the enrollment endpoint both on, hand it to the real api.NewRouter, and
+// check that POST /api/v1/workers/enroll is mounted.
 //
 // Nothing else fails when this hop breaks: the server still boots, `config
-// print` still echoes the operator's values, and the route simply never
-// mounts.
+// print` still echoes the operator's values, and the route is not mounted.
 func TestNATSAuthDeps_EndToEnd_EnrollRouteMountedWhenConfigured(t *testing.T) {
 	cfg := brokerAuthConfig(true)
 	cfg.NATS.Auth.EnrollmentEndpointEnabled = true
@@ -107,8 +106,8 @@ func TestNATSAuthDeps_EndToEnd_EnrollRouteMountedWhenConfigured(t *testing.T) {
 }
 
 // TestNATSAuthDeps_EndToEnd_EnrollRouteAbsentAtDefaults is the companion
-// negative case: a server built from DefaultConfig() (broker auth off, the
-// v0.3.0 behavior) must never expose the enrollment endpoint.
+// negative case: a server built from DefaultConfig() (broker auth off) must
+// not expose the enrollment endpoint.
 func TestNATSAuthDeps_EndToEnd_EnrollRouteAbsentAtDefaults(t *testing.T) {
 	deps := api.Deps{Store: fake.New(), Auth: auth.Anonymous()}
 	natsAuthDeps(DefaultConfig(), &deps)
@@ -119,10 +118,9 @@ func TestNATSAuthDeps_EndToEnd_EnrollRouteAbsentAtDefaults(t *testing.T) {
 			"(broker auth off); it must not exist until nats.auth.enabled is turned on")
 	}
 
-	// Confirm it collides with /workers/{id} the way router.go's own comment
-	// documents (workerenroll_test.go, internal/api, worked around this by
-	// walking the route table instead of asserting a status code): a GET or
-	// DELETE for that pattern IS registered, just never POST.
+	// The enroll path collides with /workers/{id} as router.go's comment
+	// describes, so the test walks the route table instead of asserting a status
+	// code: GET and DELETE for that pattern are registered, POST is not.
 	if !routeMounted(t, r, http.MethodGet, "/api/v1/workers/{id}") {
 		t.Fatal("test assumption broken: GET /api/v1/workers/{id} is not registered")
 	}
@@ -148,5 +146,24 @@ func TestAPIDeps_CarriesSessionAndBrokerSettings(t *testing.T) {
 	if !deps.NATSAuthEnabled || !deps.NATSAuthEnrollmentEndpointEnabled || deps.JoinTokenTTL != 9*time.Minute || !deps.JoinTokenSingleUse {
 		t.Errorf("broker-auth settings = (%v, %v, %s, %v), want all set", deps.NATSAuthEnabled,
 			deps.NATSAuthEnrollmentEndpointEnabled, deps.JoinTokenTTL, deps.JoinTokenSingleUse)
+	}
+}
+
+// TestAPIDeps_CapacityStatusIsTheScheduler: the capacity-group endpoints read
+// their status from the scheduler, and a server without one leaves the source
+// a true nil interface rather than a typed-nil that would panic.
+func TestAPIDeps_CapacityStatusIsTheScheduler(t *testing.T) {
+	s := &Server{store: fake.New()}
+	if deps := s.apiDeps(); deps.CapacityStatus != nil {
+		t.Errorf("CapacityStatus = %v with no scheduler, want a nil interface", deps.CapacityStatus)
+	}
+
+	s.sched = &scheduler.Scheduler{}
+	deps := s.apiDeps()
+	if deps.CapacityStatus == nil {
+		t.Fatal("CapacityStatus is nil with a scheduler")
+	}
+	if _, ok := deps.CapacityStatus.CapacityStatus("g1"); ok {
+		t.Error("a scheduler that has not evaluated reported a status")
 	}
 }

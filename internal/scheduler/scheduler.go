@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package scheduler implements the sqi-server assignment loop and worker
-// registry — the authoritative component for deciding which task runs on which
-// worker.
+// registry. It decides which task runs on which worker.
 //
 // The [Scheduler] runs three concurrent loops:
 //
@@ -43,8 +42,8 @@
 // Assignment payload. [buildAssignPayload] re-parses the job's raw OpenJD
 // template to extract the matching step's OnRun action, embedded files, and
 // ordered environments (job environments first, then step, per the OpenJD
-// spec). The path-map field is reserved but empty until named storage location
-// CRUD and resolved-mode path translation are implemented.
+// spec). It also attaches path-mapping rules built from the registered storage
+// locations for the worker's compute location.
 //
 // Status and log ingestion. A push-consumer on the SQI_TASK stream
 // ([handleTaskStatusMessage]) decodes [protocol.TaskStatusMsg] from
@@ -95,7 +94,7 @@ import (
 	"github.com/uberware/sqi/internal/ws"
 )
 
-// DefaultConfig returns a [Config] with conservative production-safe defaults.
+// DefaultConfig returns a [Config] with the default values.
 func DefaultConfig() Config {
 	return Config{
 		FarmID:                    "",
@@ -192,9 +191,9 @@ type Config struct {
 
 	// UnschedulableGrace is how long a ready task may wait with no eligible
 	// online worker before it is flagged unschedulable (surfaced in the
-	// API/UI). A value <= 0 disables the sweep entirely — unlike the other
-	// duration knobs above, this is NOT coerced up to the default in [New],
-	// since 0 is a legitimate "off" setting. Default: 30 s.
+	// API/UI). A value <= 0 disables the sweep entirely. Unlike the other
+	// duration knobs above, it is not coerced up to the default in [New], since
+	// 0 is a legitimate "off" setting. Default: 30 s.
 	UnschedulableGrace time.Duration
 
 	// ReconcileGrace is how long a live worker may go without reporting an
@@ -223,27 +222,37 @@ type Config struct {
 
 	// DefaultFailureLimit is the server-level fallback default job-level
 	// failure ceiling. 0 = off (no auto-park) and is a legitimate setting —
-	// like UnschedulableGrace, it is NOT coerced up in [New]. Default: 0.
+	// like UnschedulableGrace, it is not coerced up in [New]. Default: 0.
 	DefaultFailureLimit int
 
 	// ExprLimits are the OpenJD EXPR limits this server enforces when it
-	// ACCEPTS a template (internal/config's openjd.expr_* keys). The scheduler
-	// does not evaluate expressions; it needs them only to compare against each
-	// worker's advertised caps before dispatching an EXPR job — see
-	// exprcaps.go. It must be the same value the submitter is built with, which
-	// is why internal/server sets both from one field rather than letting a
-	// caller populate them independently.
+	// accepts a template (internal/config's openjd.expr_* keys). The scheduler
+	// does not evaluate expressions; it uses them to compare against each
+	// worker's advertised caps before dispatching an EXPR job (see
+	// exprcaps.go). It must be the same value the submitter is built with, so
+	// internal/server sets both from one field.
 	//
 	// Zero fields normalize to the defaults in [New].
 	ExprLimits openjd.ExprLimits
 
 	// NATSAuthEnabled mirrors config.NATSAuthConfig.Enabled (server.Config's
-	// NATSAuthEnabled). It gates one thing here: whether worker registration
-	// touches the worker's broker-credential LastSeenAt. With broker
-	// authentication off there are no credential rows at all, and the
-	// default no-config path must do no extra store work — see
-	// handleWorkerRegister.
+	// NATSAuthEnabled). It gates two things here: whether worker registration
+	// touches the worker's broker-credential LastSeenAt, and where a worker's
+	// capacity-group membership comes from (its credential when on, its
+	// worker.capacity_group setting when off; see capacitymembership.go).
+	// With broker authentication off there are no credential rows, and
+	// registration does no extra store work (see handleWorkerRegister).
 	NATSAuthEnabled bool
+
+	// RevokeWorker drops a removed ephemeral capacity-group member's broker
+	// connection. The scheduler calls it after the store has deleted the
+	// worker, which revoked its credential in the same transaction, so an
+	// implementation must not revoke again by worker ID: that could revoke a
+	// credential enrolled under the same ID since. It runs on a goroutine of
+	// its own, because dropping a broker connection takes seconds. Nil means
+	// the store's revocation alone applies. Not a tuning knob; the server
+	// wires it.
+	RevokeWorker func(ctx context.Context, workerID string) error
 
 	// OnFenced is called once, with the error, the first time a store write
 	// made under the context [Scheduler.Run] was given fails with
@@ -277,6 +286,13 @@ type Scheduler struct {
 	logger   *slog.Logger
 	notifier ws.Notifier // pushes live events to WebSocket clients
 
+	// queueDepthSeen holds every queue ID [Scheduler.refreshQueueDepthGauge]
+	// has set the SchedulerQueueDepth gauge for. The store reports only queues
+	// that still have ready tasks, so this is how a queue that has drained is
+	// found and reset. Touched only by refreshQueueDepthGauge, which runs on
+	// the heartbeat-sweep goroutine alone, so it needs no lock.
+	queueDepthSeen map[string]struct{}
+
 	// diagBuf is the in-memory diagnostic-log ring buffer fed by the
 	// worker.diag.> core-NATS subscriber. Nil when diagnostics are disabled.
 	diagBuf *diag.Buffer
@@ -302,7 +318,7 @@ type Scheduler struct {
 	attemptCache *attemptOwnerCache
 
 	// leaseLocks serializes lease selection per worker. Concurrent lease
-	// requests for the SAME worker (one outstanding request per queue it
+	// requests for the same worker (one outstanding request per queue it
 	// serves, plus retry overlap) must not both read the same committed-core
 	// count and each lease up to free, over-committing the worker. The lock is
 	// held only around selectLeaseBatch, never across the long-poll park.
@@ -311,10 +327,16 @@ type Scheduler struct {
 	// exprCapWarned de-duplicates the registration-time EXPR-limit warning:
 	// workerID -> the last shortfall text logged for it. See
 	// [Scheduler.warnOnExprCapShortfall]. Entries are cleared when a worker
-	// stops being short but NOT when it is deleted, so the map retains one
-	// short string per distinct worker ID that has ever registered short with
-	// this process -- bounded, not pruned, and gone on restart.
+	// stops being short but not when it is deleted, so the map retains one
+	// short string per distinct worker ID that has registered short with this
+	// process. It is not pruned and starts empty on restart.
 	exprCapWarned sync.Map // workerID -> string
+
+	// capWarned de-duplicates capacity-group membership warnings, which a
+	// worker would otherwise repeat on every reconnect: capWarnKey -> the
+	// detail last logged. See [Scheduler.warnCapacityOnce]. Bounded like
+	// exprCapWarned: a few entries per worker that ever drew one.
+	capWarned sync.Map // capWarnKey -> string
 
 	// instanceRefusals counts, per worker process, the lease requests refused
 	// in a row because that process's registration has not landed, so one
@@ -346,6 +368,11 @@ type Scheduler struct {
 
 	// wg tracks all internal goroutines so [Run] can wait for clean exit.
 	wg sync.WaitGroup
+
+	// revokes runs the [Config.RevokeWorker] calls in the background (see
+	// [Scheduler.revokeRemovedWorker]). Run closes it at shutdown and waits,
+	// for at most [revokeDrainTimeout], for the calls still running.
+	revokes backgroundCalls
 
 	// ctx is the lifecycle context for the scheduler; set during [Run] and used
 	// by NATS message-handler callbacks that cannot receive a context parameter.
@@ -380,6 +407,10 @@ type Scheduler struct {
 	// fence records a fenced store write; see fence.go.
 	fence fenceState
 
+	// capState is what the capacity sweep keeps between ticks; see
+	// capacity.go.
+	capState capacityState
+
 	// diagMu guards diagStarted, which is set once the worker.diag
 	// subscription is running, by [Scheduler.StartDiag] or by Run.
 	diagMu      sync.Mutex
@@ -402,8 +433,9 @@ type deferralLog struct {
 //
 // notifier receives live-event notifications after each state change so the
 // WebSocket hub can fan them out to subscribed clients. Pass
-// [ws.NoopNotifier] (or nil — treated as NoopNotifier) when no WebSocket hub
-// is wired.
+// [ws.NoopNotifier] (or nil, which is treated as NoopNotifier) when no
+// WebSocket hub is wired.
+//
 // diagBuf, when non-nil, enables worker diagnostic-log ingestion: the scheduler
 // subscribes to worker.diag.> and appends records under "worker:<id>". Pass nil
 // to disable diagnostics.
@@ -432,9 +464,9 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	if cfg.RetryDelay < 0 {
 		cfg.RetryDelay = DefaultConfig().RetryDelay
 	}
-	// Normalized ONCE here so exprCapShortfall compares against the values a
-	// submission would actually be metered under. An unset field left at 0
-	// would report "no shortfall" in that dimension for every worker.
+	// Normalized here so exprCapShortfall compares against the values a
+	// submission is metered under. An unset field left at 0 would report "no
+	// shortfall" in that dimension for every worker.
 	cfg.ExprLimits = cfg.ExprLimits.Normalized()
 	if cfg.BusReconnectGrace <= 0 {
 		cfg.BusReconnectGrace = cfg.WorkerTimeout
@@ -471,9 +503,9 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		instanceRefusalWarnEvery: 5 * time.Minute,
 		retryWakeTimers:          make(map[*time.Timer]struct{}),
 		reconciler:               rec,
-		// ctx is overwritten with the derived cancellable context in Run.
-		// The background fallback ensures NATS callbacks can't nil-panic if
-		// somehow invoked before Run (e.g. in a partial test setup).
+		// ctx is replaced with the derived cancellable context in Run. The
+		// background fallback keeps NATS callbacks from dereferencing a nil
+		// context if invoked before Run (e.g. in a partial test setup).
 		ctx: context.Background(),
 	}
 }
@@ -599,6 +631,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	// Stop any backoff-wake timers still pending so they don't outlive Run.
 	s.stopRetryWakeTimers()
 
+	// Let broker revocations of removed workers finish, briefly, so none
+	// outlives the broker the server closes next.
+	if !s.revokes.Close(revokeDrainTimeout) {
+		s.logger.WarnContext(ctx, "scheduler: a removed worker's broker revocation was still running at shutdown",
+			slog.Duration("waited", revokeDrainTimeout))
+	}
+
 	s.logger.InfoContext(ctx, "scheduler: stopped")
 	return nil
 }
@@ -613,32 +652,28 @@ func (s *Scheduler) Stop() {
 
 // reconcileStuckSteps finalizes, once at start, every step of a live
 // (non-terminal) job whose tasks are all terminal but which was never
-// finalized, and which no future task report will ever finalize. Two things
-// leave such steps behind. v0.3.0 left them when a step had more than
-// [store.MaxLimit] tasks: completion decided from one page of tasks and never
-// decided at all. Older releases also stranded a step when a single-task
-// cancel hit a job's last open task; [Scheduler.CancelTask] now drives
-// completion, and this pass repairs steps stranded that way too.
-// Nothing reports on those tasks again, so without this pass the step, its
-// job, the steps behind it and the jobs blocked on it would stay stuck.
+// finalized, and which no future task report will finalize. Such a step is
+// left when completion was decided from one page of a step's tasks (a step
+// with more than [store.MaxLimit] tasks), or when a single-task cancel hit a
+// job's last open task. Nothing reports on those tasks again, so without this
+// pass the step, its job, the steps behind it and the jobs blocked on it stay
+// stuck.
 //
-// The repair is deliberately not a data migration. Finalizing a step has
-// downstream effects (dependency propagation keyed on step names, the
-// transitive cancel cascade, job finalization, cross-job dependents and
-// WebSocket events), and doing that in SQL would be a second copy of the
-// completion logic that could drift from the first and could not emit events.
-// Each step instead goes through [Scheduler.checkStepCompletion], the path a
-// task report takes, so the repair cannot differ from normal completion.
+// The repair is not a data migration. Finalizing a step has downstream effects
+// (dependency propagation keyed on step names, the transitive cancel cascade,
+// job finalization, cross-job dependents and WebSocket events), and doing that
+// in SQL would be a second copy of the completion logic that could drift from
+// the first and could not emit events. Each step goes through
+// [Scheduler.checkStepCompletion], the path a task report takes.
 //
 // It is idempotent: every write on that path is guarded, and on a farm with no
 // such steps the one [store.StepStore.ListStuckSteps] query returns nothing and
-// nothing is written. Steps of jobs that are already terminal are ignored: a
-// job cancel finalizes its own steps, and migration 00033 finalized those of
-// jobs canceled by older releases. A step that fails is logged and skipped so
-// one bad row cannot block the rest, and it stays stuck, so the next start
-// retries it. Cross-job dependents of a job this pass finalizes are reconciled
-// by the same completion path, with [Scheduler.sweepBlockedJobs] as its
-// backstop.
+// nothing is written. Steps of jobs that are already terminal are ignored,
+// because a job cancel finalizes its own steps. A step that fails is logged and
+// skipped so one bad row cannot block the rest, and it stays stuck, so the next
+// start retries it. Cross-job dependents of a job this pass finalizes are
+// reconciled by the same completion path, with [Scheduler.sweepBlockedJobs] as
+// its backstop.
 func (s *Scheduler) reconcileStuckSteps(ctx context.Context) {
 	steps, err := s.store.ListStuckSteps(ctx)
 	if err != nil {
@@ -695,8 +730,8 @@ func (s *Scheduler) reconcilePendingSteps(ctx context.Context) {
 // never run in one job, then finalizes the job if that left every step
 // terminal. Releasing runs [Scheduler.propagateStepDependencies] as a completed
 // upstream would (ResolveDependencies); the cascade runs it as a failed one
-// would (CancelDependents). Calling both is exactly "release what is
-// releasable, cancel what never can be".
+// would (CancelDependents). Calling both releases what is releasable and
+// cancels what never can be satisfied.
 func (s *Scheduler) reconcilePendingJob(ctx context.Context, jobID string) {
 	if err := s.propagateStepDependencies(ctx, jobID, store.StepStatusCompleted); err != nil {
 		if !s.stopIfFenced(ctx, err) {
@@ -841,13 +876,12 @@ func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 	case strings.HasPrefix(subject, bus.SubjectWorkerDeregisterPrefix+"."):
 		s.handleWorkerDeregister(ctx, msg, workerID)
 	default:
-		// Defense in depth, not dead code: ParseWorkerSubject also accepts
-		// the four-token task.status/task.logs/work.lease shapes, so
-		// widening SQI_WORKER's subject filter to one of those would reach
-		// here rather than being mis-dispatched. A three-token worker.*
-		// subject with an unrecognized prefix cannot: ParseWorkerSubject
-		// whitelists the three it knows and rejects the rest, so that case
-		// is already handled by the !ok branch above.
+		// ParseWorkerSubject also accepts the four-token
+		// task.status/task.logs/work.lease shapes, so a subject filter on
+		// SQI_WORKER widened to one of those reaches here. A three-token
+		// worker.* subject with an unrecognized prefix does not:
+		// ParseWorkerSubject accepts only the three it knows, so the !ok
+		// branch above handles it.
 		s.discardUnexpectedSubject(ctx, msg, "worker")
 	}
 }
@@ -855,39 +889,36 @@ func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 // discardOnVersionMismatch reports whether msg carries a wire-protocol version
 // this server does not speak and, if so, logs it and acks the message away.
 //
-// WHY THE SERVER CHECKS AT ALL. encoding/json silently drops every field the
-// receiving struct does not declare, so a message that merely decodes is not
-// evidence that the sender and this server agree on its shape: a worker built
-// against a different revision hands over a half-understood payload and the
-// server acts on it as though nothing were missing. The worker has applied the
-// mirror-image check to the assignments it receives since ProtocolVersion "2"
-// ([protocol.ProtocolVersion], internal/worker/lease.decodeAssignment); this
-// closes the other three directions.
+// encoding/json drops every field the receiving struct does not declare, so a
+// message that merely decodes is not evidence that the sender and this server
+// agree on its shape: a worker built against a different revision hands over a
+// half-understood payload and the server would act on it as though nothing
+// were missing. The worker applies the mirror-image check to the assignments
+// it receives ([protocol.ProtocolVersion],
+// internal/worker/lease.decodeAssignment).
 //
-// Rejection is by exact equality, including the empty string — a payload with
-// no envelope is a sender this server cannot identify, not a sender it may
-// assume is current.
+// Rejection is by exact equality, including the empty string: a payload with
+// no envelope comes from a sender this server cannot identify.
 //
-// ACK, NEVER NAK. A version does not change on redelivery, so nacking would
-// wedge the consumer replaying one unreadable message forever. Discarding is
-// self-healing at the farm level instead: a worker whose registration is
-// discarded is absent from the store, and [Scheduler.handleLeaseRequest]
-// replies empty for a worker it cannot look up, so it is offered no work at
-// all rather than one assignment at a time that it rejects locally. A worker
-// that registered before this server started, and whose heartbeats are now
-// discarded, goes stale and is retired by the heartbeat sweep, which reclaims
-// its in-flight tasks — so no explicit mark-offline path is needed here.
+// The message is acked, never nacked. A version does not change on redelivery,
+// so nacking would wedge the consumer replaying one unreadable message. A
+// worker whose registration is discarded is absent from the store, and
+// [Scheduler.handleLeaseRequest] replies empty for a worker it cannot look up,
+// so it is offered no work at all. A worker that registered before this server
+// started, and whose heartbeats are now discarded, goes stale and is retired by
+// the heartbeat sweep, which reclaims its in-flight tasks, so no explicit
+// mark-offline path is needed here.
 //
-// level is the caller's, because the three channels differ in rate rather than
-// in importance: registration happens once per connect and reconnect, and a
-// task status once per in-flight task, but a heartbeat repeats every
-// worker.heartbeat_interval (15s by default) for as long as the mismatched
-// worker runs. Logging that one at warn level would evict every other server
-// record from the bounded diagnostics ring buffer (internal/diag), so the
-// heartbeat call site passes debug and relies on the registration warning,
-// which a worker cannot avoid emitting: a protocol version changes only with a
-// new server build, and restarting the server drops every worker's NATS
-// connection, whose reconnect hook re-registers.
+// level is the caller's, because the three channels differ in rate: a
+// registration happens once per connect and reconnect, and a task status once
+// per in-flight task, but a heartbeat repeats every worker.heartbeat_interval
+// (15s by default) for as long as the mismatched worker runs. Logging that one
+// at warn level would evict every other server record from the bounded
+// diagnostics ring buffer (internal/diag), so the heartbeat call site passes
+// debug and relies on the registration warning. A worker always emits that
+// warning: a protocol version changes only with a new server build, and
+// restarting the server drops every worker's NATS connection, whose reconnect
+// hook re-registers.
 func (s *Scheduler) discardOnVersionMismatch(
 	ctx context.Context, msg jetstream.Msg, level slog.Level, version, workerID, impact string,
 ) bool {
@@ -910,10 +941,8 @@ func (s *Scheduler) discardOnVersionMismatch(
 // discardUnexpectedSubject logs a "<noun> on unexpected subject —
 // discarding" warning naming msg's subject and acks it away. noun identifies
 // the calling consumer (e.g. "worker", "task.status", "task.logs") in the log
-// line. Shared by every consumer that gives up on a message because its
-// subject would not parse, or — for [Scheduler.handleWorkerMessage]'s
-// unreachable-in-practice default case — parsed into a shape that consumer's
-// dispatch does not recognize. A malformed or unrecognized subject cannot
+// line. Every consumer uses it for a message whose subject does not parse or
+// parses into a shape its dispatch does not recognize. Such a subject cannot
 // become valid on redelivery, so this always acks, never naks.
 func (s *Scheduler) discardUnexpectedSubject(ctx context.Context, msg jetstream.Msg, noun string) {
 	s.logger.WarnContext(
@@ -926,13 +955,12 @@ func (s *Scheduler) discardUnexpectedSubject(ctx context.Context, msg jetstream.
 // discardOnIdentityMismatch acks and discards msg if payloadWorkerID (from
 // the decoded message body) disagrees with subjectWorkerID (from the NATS
 // subject). The subject is the only identity NATS itself can enforce, so a
-// payload claiming a different worker is treated as permanent — redelivery
-// cannot make a forged or stale identity legal — the same reasoning as
-// [Scheduler.discardOnVersionMismatch].
+// payload claiming a different worker is a permanent failure: redelivery
+// cannot make a forged or stale identity legal (see
+// [Scheduler.discardOnVersionMismatch]).
 //
-// No separate "missing worker_id" check is needed: subjectWorkerID is always
-// non-empty ([bus.ParseWorkerSubject] guarantees it), so an empty
-// payloadWorkerID already fails this comparison.
+// An empty payloadWorkerID fails the comparison too, because subjectWorkerID is
+// always non-empty ([bus.ParseWorkerSubject] guarantees it).
 func (s *Scheduler) discardOnIdentityMismatch(ctx context.Context, msg jetstream.Msg, subjectWorkerID, payloadWorkerID string) bool {
 	if payloadWorkerID == subjectWorkerID {
 		return false
@@ -974,11 +1002,10 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 
 	// The two struct conversions below (GPUInfo, ExprLimits) are
 	// compile-checked on field name, type and declaration order, so drift
-	// between the wire type and the store type is a build failure rather than
-	// a field that decodes to the zero value on every registration. The
-	// top-level copy is by hand, which is what
+	// between the wire type and the store type is a build failure. The
+	// top-level copy is by hand;
 	// TestHandleWorkerRegister_EveryWireFieldReachesTheStore and its field
-	// counts guard.
+	// counts guard it.
 	now := time.Now().UTC()
 	w := store.Worker{
 		ID:              m.WorkerID,
@@ -1003,6 +1030,10 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		LastHeartbeatAt: &now,
 	}
 	w.RegistrationBrokerAt = s.brokerAt(ctx, msg, "worker.register", m.WorkerID)
+
+	// Touches the broker credential when authentication is on, and reads
+	// what capacity-group membership needs (capacitymembership.go).
+	rc := s.beforeRegistration(ctx, m, now)
 
 	stored, reclaimed, err := s.store.RegisterWorker(ctx, w)
 	if errors.Is(err, store.ErrStaleRegistration) {
@@ -1040,16 +1071,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	}
 
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
-
-	// Registration is "last seen" — connect and reconnect both go through
-	// here, and it is low-frequency, unlike heartbeat. Only touched when
-	// broker authentication is enabled: with it off there are no credential
-	// rows at all, and the default no-config path must do no extra store
-	// work.
-	if s.cfg.NATSAuthEnabled {
-		s.touchWorkerCredential(ctx, m.WorkerID, now)
-	}
-
+	s.afterRegistration(ctx, m, stored, rc, now)
 	s.warnOnExprCapShortfall(ctx, w)
 
 	s.logger.InfoContext(
@@ -1098,21 +1120,20 @@ func (s *Scheduler) brokerAt(ctx context.Context, msg jetstream.Msg, kind, worke
 // warnOnExprCapShortfall logs, at most once per distinct shortfall per worker,
 // that a registering worker's EXPR limits are below this server's.
 //
-// It is a DIAGNOSTIC, not the bound: the bound is exprCapsBlock refusing to
-// lease EXPR work to this worker (exprcaps.go). It exists because that refusal
-// is otherwise only visible on a task, and there may not be one yet.
+// It is a diagnostic; the bound itself is the lease gate refusing to lease EXPR
+// work to this worker (exprcaps.go). The warning exists because that refusal is
+// otherwise visible only on a task, and there may not be one yet.
 //
-// De-duplicated because the worker re-registers on every NATS reconnect
+// It is de-duplicated because the worker re-registers on every NATS reconnect
 // (internal/worker/registration's Registrar.SetupReconnectHook), and a farm
-// that never submits an EXPR template would
-// otherwise accumulate a warning per reconnect about work it never runs. The
-// key is the shortfall text itself, so a CHANGE (either side reconfigured) is
-// reported again; the map is per-process, so a server restart also re-reports.
+// that never submits an EXPR template would otherwise log a warning per
+// reconnect about work it never runs. The key is the shortfall text itself, so
+// a change on either side is reported again; the map is per-process, so a
+// server restart also re-reports.
 //
-// It takes the [store.Worker] the caller has already built rather than the
-// registration message, so the comparison goes through the same
-// [Scheduler.workerExprShortfall] accessor the two gate call sites use — one
-// conversion of the advertised caps, made once, at the top of the handler.
+// It takes the [store.Worker] the caller has already built, so the comparison
+// goes through the same [Scheduler.workerExprShortfall] accessor the two gate
+// call sites use.
 func (s *Scheduler) warnOnExprCapShortfall(ctx context.Context, w store.Worker) {
 	short := s.workerExprShortfall(w)
 	if short == "" {
@@ -1134,8 +1155,8 @@ func (s *Scheduler) warnOnExprCapShortfall(ctx context.Context, w store.Worker) 
 }
 
 // ensureComputeLocation idempotently registers a compute location reported by a
-// worker. It is best-effort: errors are logged but never propagated, because the
-// registry is a convenience catalog and must not fail worker registration. An
+// worker. Errors are logged and not propagated, because the registry is a
+// convenience catalog and must not fail worker registration. An
 // empty name is ignored; a name that already exists is left untouched (including
 // its admin-curated description); a create that races another registration and
 // returns ErrConflict is treated as success.
@@ -1168,22 +1189,25 @@ func (s *Scheduler) ensureComputeLocation(ctx context.Context, name string) {
 }
 
 // touchWorkerCredential sets LastSeenAt on workerID's active broker
-// credential to at. Best-effort, exactly like ensureComputeLocation: a
-// credential bookkeeping write must never stop a worker coming online.
-// [store.ErrNotFound] — no active credential for this worker — is not
-// unusual enough to warrant more than a debug log: it is the normal shape
-// for a worker that enrolled with broker auth off and was seen once auth
-// was later turned on, or any other legitimate mismatch between "workers
-// that exist" and "workers with a credential". Any other error is logged at
-// warn, matching ensureComputeLocation's posture toward its own store
-// writes.
-func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, at time.Time) {
-	err := s.store.TouchWorkerCredential(ctx, workerID, at)
+// credential to at and returns the credential, with false when there is none
+// or the write failed. Registration is "last seen": connect and reconnect both
+// go through it, and it is low-frequency, unlike heartbeat. It is called only
+// with broker authentication enabled: with it off there are no credential rows
+// and registration does no extra store work.
+//
+// Like ensureComputeLocation it is best-effort: a credential bookkeeping write
+// must not stop a worker coming online. [store.ErrNotFound] (no active
+// credential for this worker) is logged at debug, because it is the normal
+// shape for a worker that enrolled with broker auth off and was seen after
+// auth was turned on, or any other mismatch between workers that exist and
+// workers with a credential. Any other error is logged at warn.
+func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, at time.Time) (store.WorkerCredential, bool) {
+	cred, err := s.store.TouchWorkerCredential(ctx, workerID, at)
 	switch {
 	case err == nil:
-		return
+		return cred, true
 	case s.stopIfFenced(ctx, err):
-		return // recorded: the registration is not acknowledged
+		// recorded: the registration is not acknowledged
 	case errors.Is(err, store.ErrNotFound):
 		s.logger.DebugContext(ctx, "scheduler: no active broker credential to touch on registration",
 			slog.String("worker_id", workerID))
@@ -1191,6 +1215,7 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 		s.logger.WarnContext(ctx, "scheduler: touch worker credential last-seen failed",
 			slog.String("worker_id", workerID), slog.Any("error", err))
 	}
+	return store.WorkerCredential{}, false
 }
 
 // handleWorkerDeregister processes a worker.deregister message published by a
@@ -1202,16 +1227,19 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 // store left the row in. A deregister from a process the worker's latest
 // registration has replaced (its instance ID differs from the stored one) is
 // acked and ignored: applying it would take the new process offline and
-// reclaim the tasks it is running.
+// reclaim the tasks it is running. A deregister whose kind is retired or
+// preempted then deletes an ephemeral capacity-group member and revokes its
+// credential ([Scheduler.removeDepartedEphemeral]).
 //
 // subjectWorkerID is the worker the message's subject attributes it to.
 func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
-	// DeregisterMsg mirrors protocol.DeregisterMsg; we decode only the
-	// fields the server needs without importing the worker protocol package.
+	// The fields of protocol.DeregisterMsg the server needs; the version is
+	// not gated (see the protocol package).
 	var m struct {
-		WorkerID   string `json:"worker_id"`
-		InstanceID string `json:"instance_id,omitempty"`
-		Reason     string `json:"reason,omitempty"`
+		WorkerID   string                  `json:"worker_id"`
+		InstanceID string                  `json:"instance_id,omitempty"`
+		Reason     string                  `json:"reason,omitempty"`
+		Kind       protocol.DeregisterKind `json:"kind,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
 		// The subject is the only identity left once the body will not decode.
@@ -1228,7 +1256,7 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 	}
 
 	// Unlike the heartbeat sweep's guarded write, the heartbeat is not
-	// re-checked: the worker told us it is leaving. The one guard is the
+	// re-checked: the worker announced it is leaving. The one guard is the
 	// instance ID. The same store call closes its attempts, releases their
 	// claims and reclaims its tasks.
 	reclaimed, offlined, err := s.store.OfflineWorker(ctx, m.WorkerID, m.InstanceID, time.Now().UTC())
@@ -1251,9 +1279,9 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 				slog.Any("error", err),
 			)
 		}
-		// ack in all error cases — nacking would redeliver but neither a
-		// not-found nor a store error is likely to resolve on retry, and
-		// wedging the consumer would block all subsequent worker messages.
+		// Ack in all error cases: neither a not-found nor a store error is
+		// likely to resolve on redelivery, and a nack loop would block all
+		// subsequent worker messages.
 		s.ackMsg(ctx, msg)
 		return
 	}
@@ -1269,18 +1297,30 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		return
 	}
 
-	s.logger.InfoContext(
-		ctx, "scheduler: worker deregistered",
-		slog.String("worker_id", m.WorkerID),
-		slog.String("reason", m.Reason),
-	)
+	attrs := []any{slog.String("worker_id", m.WorkerID), slog.String("reason", m.Reason)}
+	if m.Kind != "" {
+		attrs = append(attrs, slog.String("kind", string(m.Kind)))
+	}
+	s.logger.InfoContext(ctx, "scheduler: worker deregistered", attrs...)
 
-	// A gracefully-deregistered worker is now offline with nothing in flight,
-	// so the heartbeat sweep (which only inspects online workers) will not look
-	// at it again. Its in-flight tasks were returned to the ready queue by the
-	// store call above instead of being stranded in 'assigned'/'running'; report
-	// them.
+	// A gracefully-deregistered worker is offline with nothing in flight, so
+	// the heartbeat sweep (which inspects only online workers) will not look at
+	// it again. The store call above returned its in-flight tasks to the ready
+	// queue; report them.
 	s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, "", reclaimOffline, reclaimed)
+
+	// An ephemeral capacity-group member that left for good is deleted now,
+	// with its credential (capacitymembership.go). A fenced delete leaves the
+	// message unacknowledged, for the new leader.
+	removed, fenced := s.removeDepartedEphemeral(ctx, m.WorkerID, m.Kind)
+	if fenced {
+		return
+	}
+	if removed {
+		s.refreshWorkerGauge(ctx)
+		s.ackMsg(ctx, msg)
+		return
+	}
 
 	status := store.WorkerStatusOffline
 	if w, err := s.store.GetWorker(ctx, m.WorkerID); err == nil {
@@ -1299,10 +1339,10 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 // handleWorkerHeartbeat processes a worker.heartbeat message by recording, as
 // the worker's LastHeartbeatAt, the broker's stream timestamp for it
 // ([Scheduler.brokerAt]), or the server's receipt time when the message has
-// none. Never the worker's own At: [Scheduler.sweepStaleWorkers] compares
+// none. It is never the worker's own At: [Scheduler.sweepStaleWorkers] compares
 // LastHeartbeatAt with the server's clock, so a worker whose clock runs
-// behind, or is stepped back, would otherwise look offline and have its
-// running tasks reclaimed and run again. The broker stamp is the time the
+// behind, or is stepped back, would look offline and have its running tasks
+// reclaimed and run again. The broker stamp is the time the
 // heartbeat was published, so a backlog delivered late (after a store outage
 // or a failover) does not make a worker that has since died look alive. The
 // same stamp orders heartbeats, so an out-of-order redelivery is ignored. At
@@ -1310,11 +1350,10 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 //
 // The handler reads WorkerID and At and passes AttemptsReported and
 // ActiveAttemptIDs to the reconciler (see attemptreconcile.go), but decodes the
-// whole [protocol.HeartbeatMsg]: the fields this handler ignores (active task IDs and counts, uptime,
-// last-assignment time) are a liveness payload the server may grow into, and
-// decoding into a narrower local struct is how the version gate below stops
-// meaning anything — every field outside the local set drops regardless of what
-// version says.
+// whole [protocol.HeartbeatMsg], including the fields it ignores (active task
+// IDs and counts, uptime, last-assignment time). Decoding into a narrower local
+// struct would drop every field outside it whatever the version says, which
+// defeats the version gate below.
 //
 // subjectWorkerID is the worker the message's subject attributes it to.
 func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
@@ -1329,8 +1368,8 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		s.ackMsg(ctx, msg)
 		return
 	}
-	// Debug, not warn: see discardOnVersionMismatch on why this one channel is
-	// quiet. The registration warning is the operator-facing signal.
+	// Debug level: see discardOnVersionMismatch for why this channel is quiet.
+	// The registration warning is the operator-facing signal.
 	if s.discardOnVersionMismatch(ctx, msg, slog.LevelDebug, m.Version, m.WorkerID,
 		"this worker's liveness signal is not recorded; the heartbeat sweep will retire it") {
 		return
@@ -1354,8 +1393,9 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		if s.stopIfFenced(ctx, err) {
 			return
 		}
-		// ErrNotFound means the worker has not registered yet (e.g. heartbeat
-		// arrived before registration replay completes). Nak so it is retried.
+		// ErrNotFound means the worker has not registered yet (e.g. the
+		// heartbeat arrived before registration replay completes). Nak so it
+		// is retried.
 		if errors.Is(err, store.ErrNotFound) {
 			s.logger.DebugContext(
 				ctx, "scheduler: heartbeat for unknown worker — will retry",
@@ -1374,11 +1414,12 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 	}
 	// Keyed on AttemptsReported, not on the list: a worker holding nothing
 	// sends an empty list, and that empty report is how the reconciler learns
-	// an attempt is no longer held. Older workers send neither field and are
-	// never reconciled.
-	// A list longer than any worker can hold is ignored, leaving the
-	// worker's last report to go stale, so its tasks are not reconciled
-	// until it sends a list of a sane length again.
+	// an attempt is no longer held. A worker that sends neither field is never
+	// reconciled.
+	//
+	// A list longer than any worker can hold is ignored, leaving the worker's
+	// last report to go stale, so its tasks are not reconciled until it sends
+	// a list of a sane length.
 	switch {
 	case s.reconciler == nil || !m.AttemptsReported:
 	case len(m.ActiveAttemptIDs) > maxReportedAttempts:
@@ -1400,9 +1441,11 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 // On the same tick it reaps tasks stranded in 'assigned' on still-live workers,
 // reclaims attempts a live worker has stopped reporting ([reconcileAttempts]),
 // demotes stalled jobs, flags/clears ready tasks no online worker can satisfy
-// ([sweepUnschedulable]), re-evaluates cross-job dependencies for any job
-// stuck blocked ([sweepBlockedJobs] — the backstop for [Scheduler.ReconcileDependents]),
-// and refreshes the queue-depth, idle-worker, and usage-claim Prometheus gauges.
+// ([sweepUnschedulable]), evaluates the enabled capacity groups
+// ([Scheduler.sweepCapacity]), re-evaluates cross-job dependencies for any job
+// stuck blocked ([sweepBlockedJobs], the backstop for
+// [Scheduler.ReconcileDependents]), and refreshes the queue-depth, idle-worker
+// and usage-claim Prometheus gauges.
 func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.HeartbeatSweepInterval)
 	defer ticker.Stop()
@@ -1418,8 +1461,8 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 }
 
 // sweepOnce is one tick of [runHeartbeatSweep]. A sweep whose write is
-// fenced records it and returns, and the tick stops there: once fenced, this
-// scheduler sweeps nothing more.
+// fenced records it and returns, and the tick stops there; a fenced scheduler
+// sweeps nothing more.
 func (s *Scheduler) sweepOnce(ctx context.Context) {
 	for _, sweep := range []func(context.Context){
 		s.sweepStaleWorkers,
@@ -1431,9 +1474,10 @@ func (s *Scheduler) sweepOnce(ctx context.Context) {
 		func(ctx context.Context) { s.reconcileAttempts(ctx, time.Now().UTC()) },
 		s.demoteStalledJobs,
 		s.sweepUnschedulable,
+		s.sweepCapacity,
 		s.sweepBlockedJobsOnce,
-		// Refresh instrumentation gauges on the same tick so Prometheus
-		// reflects current farm state without a dedicated metrics loop.
+		// The gauges refresh on the same tick, so there is no separate
+		// metrics loop.
 		s.refreshQueueDepthGauge,
 		s.refreshIdleWorkerGauge,
 		s.refreshUsageClaimGauge,
@@ -1455,13 +1499,12 @@ func (s *Scheduler) sweepBlockedJobsOnce(ctx context.Context) {
 // demoteStalledJobs reconciles the JobStatusRunning invariant after a sweep or
 // reap. A job whose last assigned/running task was just returned to the ready
 // queue (worker died, or assignment reaped) is left marked 'running' even
-// though nothing is in flight; this returns such jobs to 'pending' so their
-// status reflects reality until a worker picks the work back up. Self-healing
-// and idempotent: a job with work still in flight, or already terminal, is
-// untouched. A sweep that fails part-way still returns the jobs it had already
-// demoted (each demotion is its own committed transaction), so those are
-// announced before the error is handled: they are pending now and no later
-// sweep will list them again.
+// though nothing is in flight; this returns such jobs to 'pending' until a
+// worker picks the work back up. It is idempotent: a job with work still in
+// flight, or already terminal, is untouched. A sweep that fails part-way still
+// returns the jobs it had already demoted (each demotion is its own committed
+// transaction), so those are announced before the error is handled: they are
+// pending now and no later sweep will list them again.
 func (s *Scheduler) demoteStalledJobs(ctx context.Context) {
 	demoted, err := s.store.DemoteStalledJobs(ctx, time.Now().UTC())
 	s.announceDemoted(ctx, demoted)
@@ -1487,9 +1530,8 @@ func (s *Scheduler) announceDemoted(ctx context.Context, demoted []string) {
 // reapStaleAssignedTasks returns tasks that have been stuck in 'assigned' longer
 // than AssignedTaskTimeout to the ready queue. Unlike sweepStaleWorkers it does
 // not key on worker liveness: a task can be lost in 'assigned' on a worker that
-// is still happily heartbeating (e.g. the assignment message expired from the
-// work stream before the worker had a free slot to pull it), and nothing else
-// in the system would ever recover it. The store closes each reclaimed task's
+// is still heartbeating (e.g. the worker crashed between lease and process
+// start), and nothing else recovers it. The store closes each reclaimed task's
 // attempt and releases its usage-pool claims inside the same transaction that
 // returns the task to ready (invariant I3), and reports exactly the tasks it
 // reclaimed, so a task that is leased again right afterwards keeps its new
@@ -1551,7 +1593,7 @@ func (s *Scheduler) notifyTaskReclaimed(ctx context.Context, task store.Task, no
 // not offline: the event still tells clients it changed (it is now
 // removable).
 //
-// The list of stale workers is only a hint. By the time each candidate is
+// The list of stale workers is a candidate list only. By the time each candidate is
 // handled its heartbeat may have arrived, or it may have re-registered, so the
 // offline transition is [store.WorkerStore.OfflineStaleWorker], which re-checks
 // the heartbeat inside its own write and leaves such a worker online with its
@@ -1591,8 +1633,7 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 		// Mark the worker offline and hand its in-flight work back in one store
 		// call. The guard re-checks the heartbeat against the same cutoff the list
 		// used, so a heartbeat or a re-registration that landed after the list
-		// keeps the worker online (invariant I1) instead of being declared dead
-		// while its tasks are still running.
+		// keeps the worker online (invariant I1).
 		reclaimed, marked, err := s.store.OfflineStaleWorker(ctx, w.ID, cutoff, time.Now().UTC())
 		if s.stopIfFenced(ctx, err) {
 			return
@@ -1634,9 +1675,9 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 // its heartbeat must hold off: the bus is down, or came back less than
 // BusReconnectGrace ago, so a live worker has not yet had time to notice the
 // outage ended, redial and heartbeat. A dead worker is declared offline only
-// once the grace has passed. Exactly BusReconnectGrace after the reconnect
-// the sweep acts. With no BusUpSince source it is never deferred. The grace
-// counts from the bus coming up or from Run starting, whichever is later.
+// once the grace has passed: exactly BusReconnectGrace after the reconnect the
+// sweep acts. With no BusUpSince source it is never deferred. The grace counts
+// from the bus coming up or from Run starting, whichever is later.
 //
 // It also returns the time it judged by, zero while the bus is down, and
 // remembers the first non-zero one, the connection made at startup.
@@ -1649,8 +1690,8 @@ func (s *Scheduler) livenessDeferred(now time.Time) (deferred bool, up time.Time
 		return true, up
 	}
 	// A server that became the leader long after its bus connection came up
-	// (a promoted standby) has not consumed a single heartbeat yet: they are
-	// all still waiting in the stream. Its grace counts from when Run started.
+	// (a promoted standby) has not consumed any heartbeat yet: they are all
+	// still waiting in the stream. Its grace counts from when Run started.
 	// Without HA, Run starts just after the bus comes up, so this moves the
 	// grace by milliseconds at most.
 	up = latest(up, s.startedAt)
@@ -1704,8 +1745,8 @@ func (s *Scheduler) logLivenessDeferred(ctx context.Context, up time.Time) {
 
 // sweepRetiredWorkers hard-deletes workers that have been offline longer than
 // OfflineWorkerRetention, bounding the worker table's growth on farms with
-// ephemeral nodes. Offline workers already had their in-flight tasks reclaimed
-// when they went offline, so no reclaim is needed here. Disabled and online
+// ephemeral nodes. An offline worker's in-flight tasks were reclaimed when it
+// went offline, so no reclaim is needed here. Disabled and online
 // workers are never auto-removed. A non-positive retention disables the sweep.
 func (s *Scheduler) sweepRetiredWorkers(ctx context.Context) {
 	if s.cfg.OfflineWorkerRetention <= 0 {
@@ -1728,13 +1769,7 @@ func (s *Scheduler) sweepRetiredWorkers(ctx context.Context) {
 	)
 
 	for _, w := range removed {
-		s.notifier.NotifyWorker(ws.WorkerEvent{
-			WorkerID: w.ID,
-			Name:     w.Name,
-			Hostname: w.Hostname,
-			FarmID:   w.FarmID,
-			Status:   ws.WorkerStatusRemoved,
-		})
+		s.announceRemovedWorker(w)
 	}
 
 	s.refreshWorkerGauge(ctx)
@@ -1794,14 +1829,14 @@ const (
 // queue when it took workerID offline (the heartbeat sweep and the
 // graceful-deregister handler, cause reclaimOffline) or when the worker
 // re-registered from a new process (the register handler, cause
-// reclaimRestart). By the time it runs the store has already closed the
-// worker's running attempts, released their usage claims and returned its
+// reclaimRestart). By the time it runs the store has closed the worker's
+// running attempts, released their usage claims and returned its
 // assigned/running tasks to ready, all in the transaction that marked the
 // worker offline or recorded its new instance (invariant I3). The tasks
-// therefore cannot be orphaned in 'assigned'/'running' (the heartbeat sweep
-// only considers workers still marked online, so it could never recover them
-// afterwards, and a restarted worker's new process never reports on them), and
-// no license slot stays held on behalf of a worker process that is gone.
+// therefore are not left in 'assigned'/'running' (the heartbeat sweep considers
+// only workers still marked online, and a restarted worker's new process never
+// reports on them), and no usage-pool claim stays held on behalf of a worker
+// process that is gone.
 func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hostname string, cause reclaimCause, reclaimed []store.Task) {
 	if len(reclaimed) == 0 {
 		if cause == reclaimOffline {
@@ -1823,8 +1858,8 @@ func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hos
 		slog.String("hostname", hostname),
 		slog.Int("tasks_reclaimed", len(reclaimed)),
 	)
-	// Reclaimed tasks are back to ready but we have no jobIDs to scope a
-	// per-queue wake; broadcast so parked workers re-lease promptly.
+	// Reclaimed tasks are back to ready but there are no job IDs to scope a
+	// per-queue wake, so wake every waiter and parked workers re-lease promptly.
 	s.waiters.notifyAll()
 }
 
@@ -1841,8 +1876,8 @@ func (s *Scheduler) WakeQueue(queueID string) {
 }
 
 // WakeWorker wakes the lease requests a disabled worker has parked, so a worker
-// that was just enabled is leased work at once rather than after the rest of
-// its leaseHoldTimeout. Called by the API's enable handler after the write. A
+// that has just been enabled is leased work at once rather than after the rest
+// of its leaseHoldTimeout. Called by the API's enable handler after the write. A
 // woken request re-reads the worker, so a wake for a worker that is still
 // disabled leases nothing.
 func (s *Scheduler) WakeWorker(workerID string) {
@@ -1850,8 +1885,8 @@ func (s *Scheduler) WakeWorker(workerID string) {
 }
 
 // notifyQueueForJob wakes any parked lease waiters on the job's queue (and any
-// queue-unaffiliated workers). Best-effort: a missed wake is self-correcting
-// because the worker's outstanding lease request re-issues after leaseHoldTimeout.
+// queue-unaffiliated workers). A missed wake is corrected when the worker's
+// outstanding lease request is re-issued after leaseHoldTimeout.
 func (s *Scheduler) notifyQueueForJob(ctx context.Context, jobID string) {
 	job, err := s.store.GetJob(ctx, jobID)
 	if err != nil {
@@ -1875,7 +1910,7 @@ func (s *Scheduler) refreshWorkerGauge(ctx context.Context) {
 		}
 		opts.Pagination.Validate() //nolint:errcheck // Validate only clamps values; it never returns a non-nil error
 
-		// Use Total from the page to avoid fetching all rows.
+		// Total from a one-row page gives the count without fetching all rows.
 		page, err := s.store.ListWorkers(ctx, opts)
 		if err != nil {
 			s.logger.WarnContext(
@@ -1894,11 +1929,14 @@ func (s *Scheduler) refreshWorkerGauge(ctx context.Context) {
 // refreshQueueDepthGauge queries the store for the current number of leasable
 // ready tasks per queue in the scheduler's farm (backoff elapsed, queue
 // unpaused, job schedulable), updates the SchedulerQueueDepth Prometheus
-// gauge, and wakes lease waiters on every queue with leasable work — the
-// restart-safe backstop for scheduleRetryWake's in-process backoff timers.
+// gauge, and wakes lease waiters on every queue with leasable work. The wake
+// backs up scheduleRetryWake's in-process backoff timers across a restart.
 //
-// Called on every heartbeat-sweep tick so the gauge stays current.  Errors are
-// logged at WARN level and do not abort the sweep.
+// A queue the store no longer reports (its last ready task was leased) is set
+// to 0 rather than dropped, so a scraper sees the depth fall.
+//
+// Called on every heartbeat-sweep tick. Errors are logged at WARN level and do
+// not abort the sweep.
 func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 	counts, err := s.store.CountReadyTasksByQueue(ctx, s.cfg.FarmID, time.Now().UTC())
 	if err != nil {
@@ -1907,10 +1945,19 @@ func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 		}
 		return
 	}
+	if s.queueDepthSeen == nil {
+		s.queueDepthSeen = make(map[string]struct{})
+	}
 	for queueID, n := range counts {
+		s.queueDepthSeen[queueID] = struct{}{}
 		s.metrics.SchedulerQueueDepth.WithLabelValues(queueID).Set(float64(n))
 		if n > 0 {
 			s.WakeQueue(queueID)
+		}
+	}
+	for queueID := range s.queueDepthSeen {
+		if _, ok := counts[queueID]; !ok {
+			s.metrics.SchedulerQueueDepth.WithLabelValues(queueID).Set(0)
 		}
 	}
 }
@@ -1919,8 +1966,8 @@ func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 // the active claim count for each, then updates the UsageActiveClaims Prometheus
 // gauge.
 //
-// Called on every heartbeat-sweep tick. Errors are non-fatal — a stale gauge is
-// preferable to aborting the sweep.
+// Called on every heartbeat-sweep tick. Errors are logged and do not abort the
+// sweep; the gauge keeps its last value.
 func (s *Scheduler) refreshUsageClaimGauge(ctx context.Context) {
 	pools, err := s.store.ListUsagePools(ctx)
 	if err != nil {
@@ -1966,9 +2013,8 @@ func (s *Scheduler) refreshIdleWorkerGauge(ctx context.Context) {
 
 // ── NATS ack/nak helpers ──────────────────────────────────────────────────────
 
-// ackMsg acknowledges msg and logs a warning if the ack itself fails.
-// Ack failures are rare in the embedded-NATS setup but should not be silently
-// discarded, as they can indicate a connection problem.
+// ackMsg acknowledges msg and logs a warning if the ack itself fails, since a
+// failed ack can indicate a connection problem.
 //
 // A scheduler whose store writes have been fenced acknowledges nothing: the
 // message stays unacknowledged, and JetStream redelivers it to the new leader
@@ -2018,12 +2064,12 @@ const (
 
 // nakDelay is how long a message that has been delivered n times (its
 // NumDelivered) waits before its next delivery: nakBaseDelay, doubling with
-// each delivery, capped at nakMaxDelay. A failure is almost always the store
-// being unreachable, and a nak without a delay is redelivered at once, which
-// spends a consumer's whole MaxDeliver budget in milliseconds and drops the
-// message (a task's terminal status, say) over an outage of a second. With
-// the backoff the server's consumers ride out minutes, which covers a
-// PostgreSQL restart and an HA failover while the database is down.
+// each delivery, capped at nakMaxDelay. A failure is usually the store being
+// unreachable, and a nak without a delay is redelivered at once, which spends a
+// consumer's whole MaxDeliver budget in milliseconds and drops the message (a
+// task's terminal status, say). With the backoff the server's consumers ride
+// out minutes of outage, which covers a PostgreSQL restart and an HA failover
+// while the database is down.
 func nakDelay(n uint64) time.Duration {
 	d := nakBaseDelay
 	for i := uint64(1); i < n && d < nakMaxDelay; i++ {

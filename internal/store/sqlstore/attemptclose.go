@@ -119,8 +119,8 @@ func casTaskStatusTx(ctx context.Context, tx *dbTx, id string, to store.TaskStat
 // release is unconditional so a redelivery (attempt already closed) and an
 // attempt that never held a claim are both harmless no-ops. The attempt's
 // ended_at is the worker's c.EndedAt; the claims' released_at is server time
-// (releasedText), as every claim release has always been, so a skewed worker
-// clock can never put it before the claim's claimed_at.
+// (releasedText), as for every claim release, so a skewed worker clock cannot
+// put it before the claim's claimed_at.
 func closeAttemptAndReleaseTx(ctx context.Context, tx *dbTx, c store.AttemptCompletion, endedText, releasedText string) error {
 	if _, err := tx.ExecContext(ctx, sqlCloseRunningAttempt,
 		string(c.AttemptStatus), nullInt(c.ExitCode), endedText, c.SessionID, c.Message, c.AttemptID); err != nil {
@@ -269,14 +269,14 @@ WHERE  released_at IS NULL
 // it closes the task's running attempts with status and message, then releases
 // the claims of every attempt of the task that is no longer running. It is
 // [closeTasksAttemptsTx] for one task. The release is by attempt status, so a
-// claim is never released while its attempt is open, and it also repairs a
-// claim an earlier close left on a finished attempt. A non-empty message is recorded over the attempt's own; an empty one
-// leaves it.
+// claim is never released while its attempt is open, and it also releases a
+// claim left on a finished attempt. A non-empty message is recorded over the
+// attempt's own; an empty one leaves it.
 //
-// Callers run it AFTER writing the task row in the same transaction (a cancel to
-// canceled, a reap or an offline reclaim to ready), and that write is the
-// guarantee: it holds the task row until commit, so no lease can add an attempt
-// to the task behind this close. A lease that has already committed needs no
+// Callers run it after writing the task row in the same transaction (a cancel to
+// canceled, a reap or an offline reclaim to ready). That write holds the task
+// row until commit, so no lease can add an attempt to the task behind this
+// close. A lease that has already committed needs no
 // waiting: its attempt and claims are visible to the statements here. A lease
 // still in flight is waited for only when the write's predicate matches the
 // row's pre-lease version: a cancel's does (it matches ready), while the reaper's
@@ -507,15 +507,16 @@ func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now ti
 // Against LeaseTask, the worker anchor orders the two: LeaseTask holds the
 // worker row FOR SHARE until it commits. A lease in flight is waited for, and
 // its task is in the in-flight set read after the lock and is reclaimed. A
-// later lease waits for this commit and then proceeds, because LeaseTask
-// refuses only a disabled worker, not an offline one: the sweep can take a
-// live worker offline and nothing brings it back online (see "Known gaps" in
+// later lease waits for this commit. One that requires the worker online
+// (the scheduler read it online before this transition) is then Lost. One
+// that does not proceeds, because without that requirement LeaseTask refuses
+// only a disabled worker, not an offline one: the sweep can take a live worker
+// offline and nothing brings it back online (see "Known gaps" in
 // docs/architecture.md). Such a task is served if the worker is alive and
-// recovered by the stale-assignment reaper if not. The anchor guarantees only
-// that this transition reclaims every task assigned to the worker when it
-// commits.
+// recovered by the stale-assignment reaper if not. The anchor guarantees that
+// this transition reclaims every task assigned to the worker when it commits.
 //
-// The in-flight job IDs are read UNLOCKED, after the worker row is held and
+// The in-flight job IDs are read without a lock, after the worker row is held and
 // before any task row is touched, and the job rows are locked sorted before the
 // reclaim UPDATE; a task row locked before its job row is the inversion every
 // job-level operation would deadlock on. No lease can add a task for this

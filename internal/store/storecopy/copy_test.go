@@ -47,8 +47,8 @@ func TestStoreCopy_CopiesEveryRowVerbatim(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("copied %d tables in %s", len(res.Tables), res.Elapsed)
-	if len(res.Tables) != 24 {
-		t.Errorf("copied %d tables, want 24", len(res.Tables))
+	if len(res.Tables) != 25 {
+		t.Errorf("copied %d tables, want 25", len(res.Tables))
 	}
 	counts := sqliteCounts(t, src)
 	for _, tr := range res.Tables {
@@ -533,6 +533,12 @@ func seedEveryTable(t *testing.T, path string) {
 	must("product", err)
 	pool, err := st.CreateUsagePool(ctx, store.UsagePool{ID: "pool-1", Name: "nuke", ServerHint: "10.0.0.50:5053", MaxConcurrent: 4})
 	must("usage pool", err)
+	_, err = st.CreateCapacityGroup(ctx, store.CapacityGroup{
+		ID: "cg-1", FarmID: "farm-1", Name: "burst", Kind: store.CapacityGroupSized, Provider: store.CapacityProviderExternal,
+		Enabled: true, QueueIDs: []string{"queue-1"}, MaxMachines: 8, MaxStepUp: 2, IdleTimeout: 10 * time.Minute, BootTimeout: 5 * time.Minute,
+		RetireAction: store.CapacityRetireSleep, Profile: store.MachineProfile{CPUCount: 16, OS: "linux", Tags: map[string]string{"gpu": "yes"}},
+	})
+	must("capacity group", err)
 	_, _, err = st.RegisterWorker(ctx, store.Worker{
 		ID: "worker-1", FarmID: "farm-1", QueueID: "queue-1", Name: "node 1", Hostname: "node1", IPAddress: "10.0.0.7",
 		ComputeLocation: "onprem", OS: "linux", OSVersion: "6.1", Arch: "amd64", Version: "0.3.0", InstanceID: "i-1",

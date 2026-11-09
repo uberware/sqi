@@ -23,6 +23,7 @@ type Store struct {
 	computeLocations  map[string]store.ComputeLocation
 	products          map[string]store.Product
 	usagePools        map[string]store.UsagePool
+	capacityGroups    map[string]store.CapacityGroup
 	usageClaims       map[string]store.UsageClaim
 	workers           map[string]store.Worker
 	jobs              map[string]store.Job
@@ -52,6 +53,7 @@ func New() *Store {
 		computeLocations:  make(map[string]store.ComputeLocation),
 		products:          make(map[string]store.Product),
 		usagePools:        make(map[string]store.UsagePool),
+		capacityGroups:    make(map[string]store.CapacityGroup),
 		usageClaims:       make(map[string]store.UsageClaim),
 		workers:           make(map[string]store.Worker),
 		jobs:              make(map[string]store.Job),

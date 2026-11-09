@@ -1,0 +1,47 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* Shared list-page scaffold; only the cell tweaks below are group-specific. */
+
+.page {
+  composes: page from './entityList.module.css';
+}
+
+.tableWrap {
+  composes: tableWrap from './entityList.module.css';
+}
+
+.table {
+  composes: table from './entityList.module.css';
+}
+
+.emptyRow {
+  composes: emptyRow from './entityList.module.css';
+}
+
+.linkBtn {
+  composes: linkBtn from './entityList.module.css';
+}
+
+.deleteBtn {
+  composes: deleteBtn from './entityList.module.css';
+}
+
+.newBtn {
+  composes: newBtn from './entityList.module.css';
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--color-text-muted);
+}
+
+.note {
+  margin: 0;
+  padding: var(--space-3) var(--space-8);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}

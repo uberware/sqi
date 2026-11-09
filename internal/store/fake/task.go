@@ -315,9 +315,8 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 
 // revivedStatusLocked is the status a retried task of stepID is revived into:
 // ready when its step is still ready, as SQLite's CASE does, and pending
-// otherwise. The legacy running step status counts as ready, for rows written
-// outside the store operations (no store operation writes it). Caller must
-// hold s.mu.
+// otherwise. A step in the running status counts as ready, for rows written
+// outside the store operations (none writes it). Caller must hold s.mu.
 func (s *Store) revivedStatusLocked(stepID string) store.TaskStatus {
 	if st, ok := s.steps[stepID]; ok && (st.Status == store.StepStatusReady || st.Status == store.StepStatusRunning) {
 		return store.TaskStatusReady
@@ -487,9 +486,74 @@ func (s *Store) CommittedCores(_ context.Context, workerID string, fullMachineCo
 	return total, nil
 }
 
+// ListReadyStepDemand implements [store.TaskStore], with the eligibility
+// predicate of CountReadyTasksByQueue (see isReadyInFarm).
+func (s *Store) ListReadyStepDemand(_ context.Context, farmID string, now time.Time) ([]store.StepDemand, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	queuePaused := make(map[string]bool)
+	for _, q := range s.queues {
+		if farmID == "" || q.FarmID == farmID {
+			queuePaused[q.ID] = q.Paused
+		}
+	}
+
+	type key struct {
+		stepID string
+		cores  int
+	}
+	groups := make(map[key]*store.StepDemand)
+	for _, t := range s.tasks {
+		if !isReadyInFarm(t, farmID, now, s.jobs, queuePaused) {
+			continue
+		}
+		k := key{stepID: t.StepID}
+		if t.RequiredCores != nil {
+			k.cores = *t.RequiredCores
+		}
+		d := groups[k]
+		if d == nil {
+			job := s.jobs[t.JobID]
+			d = &store.StepDemand{JobID: job.ID, StepID: t.StepID, QueueID: job.QueueID, RequiredCores: k.cores}
+			groups[k] = d
+		}
+		d.Ready++
+	}
+	out := make([]store.StepDemand, 0, len(groups))
+	for _, d := range groups {
+		out = append(out, *d)
+	}
+	return out, nil
+}
+
+// ListWorkerCommitments implements [store.TaskStore].
+func (s *Store) ListWorkerCommitments(_ context.Context, farmID string) (map[string]store.WorkerCommitment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make(map[string]store.WorkerCommitment)
+	for _, t := range s.tasks {
+		if t.AssignedWorkerID == "" || (t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning) {
+			continue
+		}
+		if farmID != "" && s.jobs[t.JobID].FarmID != farmID {
+			continue
+		}
+		c := out[t.AssignedWorkerID]
+		if t.RequiredCores != nil {
+			c.DeclaredCores += *t.RequiredCores
+		} else {
+			c.UndeclaredTasks++
+		}
+		out[t.AssignedWorkerID] = c
+	}
+	return out, nil
+}
+
 // RecordTaskFailure implements [store.TaskStore]. Under the store lock it
 // closes the attempt as failed and increments the task's and job's
-// FailedAttempts counters ONLY when the attempt is still running (the first
+// FailedAttempts counters only when the attempt is still running (the first
 // delivery of the failure). A redelivery — whose attempt is already terminal,
 // or whose attempt is unknown — does not re-count; it returns the current
 // counters so the caller's retry/park decision is stable across redeliveries.

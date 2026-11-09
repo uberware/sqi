@@ -16,7 +16,7 @@ package api
 // the store and then disconnects the worker from the broker, inside the same
 // request. Enrollment needs no broker call: the broker reads the credential
 // from the store when the worker connects. This package depends only on that
-// interface, never on internal/bus or internal/server, so it stays testable
+// interface, never on internal/bus or internal/server, so it is testable
 // without a live broker.
 
 import (
@@ -41,11 +41,11 @@ import (
 
 // WorkerRevoker revokes a worker's broker credential and, when the
 // implementation holds a live broker handle, disconnects it and lets the
-// existing heartbeat-sweep/reclaim path return its in-flight work to ready.
+// heartbeat-sweep/reclaim path return its in-flight work to ready.
 // internal/api depends only on this interface so that DELETE
 // /api/v1/workers/{id}/credential can be synchronous where a broker handle
 // is available (internal/server, which runs in the same process) without
-// this package importing internal/bus or internal/server itself.
+// this package importing internal/bus or internal/server.
 type WorkerRevoker interface {
 	// RevokeWorker revokes workerID's active credential. It returns
 	// [store.ErrNotFound] if the worker has no active credential — never
@@ -55,10 +55,10 @@ type WorkerRevoker interface {
 }
 
 // errInvalidJoinToken is returned for every way a join token can fail to
-// authorize an enrollment — unknown, expired, or already used when single-use
+// authorize an enrollment: unknown, expired, or already used when single-use
 // is on. The endpoint is unauthenticated and may be internet-reachable, so
 // distinguishing those cases in the response would let a caller enumerate
-// which join tokens exist, or whether one has already been claimed.
+// which join tokens exist, or whether one has been claimed.
 const errInvalidJoinToken = "invalid or expired join token" //nolint:gosec // G101: a static response string, not a credential
 
 // workerEnrollHandler implements the worker broker-credential REST surface.
@@ -72,8 +72,8 @@ type workerEnrollHandler struct {
 	singleUse bool
 
 	// joinTokenTTL mirrors config.NATSAuthConfig.JoinTokenTTL: how long a
-	// token minted by createJoinToken remains valid. Already bounds-checked
-	// at config load, so it is not re-validated here.
+	// token minted by createJoinToken remains valid. Config load bounds-checks
+	// it, so it is not re-validated here.
 	joinTokenTTL time.Duration
 }
 
@@ -100,8 +100,8 @@ type workerEnrollRequest struct {
 }
 
 // workerCredentialResponse is the JSON representation of a
-// [store.WorkerCredential]. It never carries the seed or any other secret —
-// only the public key the credential was enrolled with.
+// [store.WorkerCredential]. It carries no seed or other secret, only the
+// public key the credential was enrolled with.
 type workerCredentialResponse struct {
 	ID         string     `json:"id"`
 	WorkerID   string     `json:"worker_id"`
@@ -120,15 +120,15 @@ func toWorkerCredentialResponse(c store.WorkerCredential) workerCredentialRespon
 }
 
 // workerJoinTokenCreateRequest is the body of POST /api/v1/workers/join-tokens.
-// The body itself is optional — an empty POST mints an unnamed token with the
-// operator-configured default TTL.
+// The body is optional: an empty POST mints an unnamed token with the
+// configured default TTL.
 type workerJoinTokenCreateRequest struct {
 	Name string `json:"name,omitempty"`
 }
 
 // workerJoinTokenCreatedResponse is the create-only shape carrying the raw
-// token. This is the only place the raw value is ever returned; only its hash
-// is stored, so it cannot be recovered or displayed again.
+// token. It is the only place the raw value is returned; only its hash is
+// stored, so the value cannot be recovered.
 type workerJoinTokenCreatedResponse struct {
 	ID        string    `json:"id"`
 	Token     string    `json:"token"`
@@ -140,16 +140,15 @@ type workerJoinTokenCreatedResponse struct {
 
 // ── POST /api/v1/workers/enroll ─────────────────────────────────────────────
 
-// enroll exchanges a valid join token for a broker credential. Unauthenticated
-// by design: the join token supplied in the body is itself the credential
-// that authorizes this call.
+// enroll exchanges a valid join token for a broker credential. The call is
+// unauthenticated: the join token in the body is the credential that
+// authorizes it.
 func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	// enroll is the only route in this API reachable by an unauthenticated,
-	// potentially internet-facing caller: the per-IP rate limiter bounds
-	// request RATE, not per-request body SIZE, so an oversized join_token or
-	// public_key would otherwise be read fully into memory before any
-	// validation runs. Matches the jobs.go/queues.go precedent.
+	// enroll is reachable by an unauthenticated, potentially internet-facing
+	// caller. The per-IP rate limiter bounds the request rate, not the body
+	// size, so the body is capped to keep an oversized join_token or public_key
+	// from being read fully into memory before validation.
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20)) // 4 MiB cap
 	if err != nil {
 		writeProblem(w, r, http.StatusBadRequest, "failed to read request body")
@@ -169,7 +168,7 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the key and the worker ID BEFORE the token is claimed, so a
+	// Validate the key and the worker ID before the token is claimed, so a
 	// malformed request costs a 400 and not the operator's single-use token.
 	if err := brokerauth.ValidatePublicKey(req.PublicKey); err != nil {
 		writeProblem(w, r, http.StatusBadRequest, err.Error())
@@ -177,15 +176,14 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 	}
 	// The recorded worker ID is what this credential's broker grants are
 	// built from (brokerauth.WorkerPermissions), and those grants are NATS
-	// subject PATTERNS. A worker_id of "*" would mint a credential allowed
-	// to publish "task.status.*.*", "worker.deregister.*", "work.lease.*.*"
-	// and the rest — concrete subjects belonging to ANY worker, so it could
-	// forge status and logs, deregister the farm, and lease work as another
-	// worker and receive that worker's assignment batch. The scheduler's
-	// provenance checks cannot catch that: the subject NATS vouches for
-	// genuinely names the victim. A worker_id of ">" is worse-shaped still,
-	// putting the malformed "task.status.>.*" into the broker's key set,
-	// which nats-server rejects outright.
+	// subject patterns. A worker_id of "*" would give the credential
+	// "task.status.*.*", "worker.deregister.*", "work.lease.*.*" and the rest,
+	// which match the subjects of any worker: it could forge status and logs,
+	// deregister other workers, and lease work as another worker and receive
+	// that worker's assignment batch. The scheduler's provenance checks cannot
+	// catch that, because the subject the broker vouches for names the victim.
+	// A worker_id of ">" would put the malformed "task.status.>.*" into the
+	// broker's key set, which nats-server rejects.
 	if !brokerauth.ValidWorkerIDToken(req.WorkerID) {
 		writeProblem(w, r, http.StatusBadRequest,
 			"worker_id must be a single NATS subject token: non-empty, and containing no '.', whitespace, '*' or '>'")
@@ -201,12 +199,7 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 		EnrolledAt: now,
 	}
 
-	var created store.WorkerCredential
-	if h.singleUse {
-		created, err = h.redeemSingleUse(ctx, jointoken.Hash(req.JoinToken), now, cred)
-	} else {
-		created, err = h.redeemReusable(ctx, jointoken.Hash(req.JoinToken), now, cred)
-	}
+	created, err := h.redeem(ctx, jointoken.Hash(req.JoinToken), now, cred)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeProblem(w, r, http.StatusConflict,
@@ -214,7 +207,7 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Unknown, expired, already claimed, and a store failure all deny
-		// identically — see errInvalidJoinToken.
+		// identically; see errInvalidJoinToken.
 		writeProblem(w, r, http.StatusUnauthorized, errInvalidJoinToken)
 		return
 	}
@@ -222,22 +215,41 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toWorkerCredentialResponse(created))
 }
 
-// redeemSingleUse claims the join token hashed to hash and creates cred, in
-// ONE transaction ([store.WorkerCredentialStore.RedeemWorkerJoinToken]).
+// redeem authorizes the enrollment against the join token hashed to hash and
+// creates cred. A token bound to a capacity group is always reusable, whatever
+// the single-use setting says: it is how a pool of machines joins one group
+// with one token. Every other token follows the setting.
 //
-// The token claim and the credential creation must be atomic together, not
-// merely atomic individually: claiming the token first and creating the
-// credential second — as two separate store calls — would burn a single-use
-// token on a request that fails afterwards with a conflicting worker ID or
-// public key, leaving the caller with nothing and the operator issuing a
-// new token for no reason. A single transaction makes that failure roll
-// back the claim too, so the token survives a rejected enrollment attempt
-// and remains redeemable by a later, non-conflicting one.
+// The token is looked up first only to learn which kind it is; the single-use
+// path claims it atomically in the store, so two requests presenting one
+// single-use token cannot both succeed.
+func (h *workerEnrollHandler) redeem(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
+	token, err := h.store.GetWorkerJoinTokenByHash(ctx, hash)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			h.logger.ErrorContext(ctx, "workerenroll: join token lookup failed", slog.Any("error", err))
+		}
+		return store.WorkerCredential{}, err
+	}
+	if token.CapacityGroupID == "" && h.singleUse {
+		return h.redeemSingleUse(ctx, hash, now, cred)
+	}
+	cred.CapacityGroupID = token.CapacityGroupID
+	return h.redeemReusable(ctx, token, now, cred)
+}
+
+// redeemSingleUse claims the join token hashed to hash and creates cred in one
+// transaction ([store.WorkerCredentialStore.RedeemWorkerJoinToken]).
 //
-// [store.ErrConflict] is returned to the caller as-is, distinct from every
-// other failure, so enroll can answer 409 rather than folding it into
-// errInvalidJoinToken's 401 — the same distinction CreateWorkerCredential's
-// own conflict draws on the reusable-token path.
+// The claim and the credential creation must commit together: as two separate
+// store calls, a request failing on a conflicting worker ID or public key
+// would already have used up the single-use token. In one transaction that
+// failure rolls back the claim, so the token stays redeemable by a later,
+// non-conflicting enrollment.
+//
+// [store.ErrConflict] is returned as-is, distinct from every other failure, so
+// enroll answers 409 rather than errInvalidJoinToken's 401, as it does for
+// CreateWorkerCredential's conflict on the reusable-token path.
 func (h *workerEnrollHandler) redeemSingleUse(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
 	created, err := h.store.RedeemWorkerJoinToken(ctx, hash, now, cred)
 	if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrConflict) {
@@ -246,23 +258,18 @@ func (h *workerEnrollHandler) redeemSingleUse(ctx context.Context, hash string, 
 	return created, err
 }
 
-// redeemReusable authorizes this enrollment against a non-single-use join
-// token and then creates cred as a separate call. With single-use disabled
-// the token stays redeemable by design — UsedAt is only a "last redeemed"
-// marker, not a claim — so there is nothing that needs the two writes to be
-// one transaction: a failure creating the credential leaves the token
-// exactly as redeemable as it already was, which is the correct outcome for
-// a token whose whole point is to be used more than once.
-func (h *workerEnrollHandler) redeemReusable(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
-	token, err := h.store.GetWorkerJoinTokenByHash(ctx, hash)
-	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			h.logger.ErrorContext(ctx, "workerenroll: join token lookup failed", slog.Any("error", err))
-		}
-		return store.WorkerCredential{}, err
-	}
+// redeemReusable authorizes this enrollment against a reusable join token
+// (single-use disabled, or a capacity-group token) and then creates cred as a
+// separate call. UsedAt is a "last redeemed" marker, not a claim, so the two
+// writes need not share a transaction. A failure creating the credential
+// leaves the token as redeemable as it was.
+//
+// An expired or revoked token is [store.ErrNotFound], the same as an unknown
+// one. A revoke that lands between the caller's lookup and the credential
+// write does not stop that one enrollment.
+func (h *workerEnrollHandler) redeemReusable(ctx context.Context, token store.WorkerJoinToken, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
 	// Strictly after, matching RedeemWorkerJoinToken's "expires_at > ?".
-	if !token.ExpiresAt.After(now) {
+	if !token.ExpiresAt.After(now) || token.RevokedAt != nil {
 		return store.WorkerCredential{}, store.ErrNotFound
 	}
 	if err := h.store.MarkWorkerJoinTokenUsed(ctx, token.ID, now); err != nil {
@@ -282,49 +289,17 @@ func (h *workerEnrollHandler) redeemReusable(ctx context.Context, hash string, n
 
 // ── POST /api/v1/workers/join-tokens ────────────────────────────────────────
 
-// createJoinToken mints a new join token an operator hands to a worker for
+// createJoinToken mints a join token an operator hands to a worker for
 // self-service enrollment over POST /api/v1/workers/enroll. The raw token is
-// returned exactly once, in this response; only its hash is ever stored.
+// returned once, in this response; only its hash is stored.
 func (h *workerEnrollHandler) createJoinToken(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	// Same body-size cap as enroll, for consistency across the two handlers
-	// on this route group — see enroll's comment for why it matters there.
-	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20)) // 4 MiB cap
-	if err != nil {
-		writeProblem(w, r, http.StatusBadRequest, "failed to read request body")
-		return
-	}
 	var req workerJoinTokenCreateRequest
-	// The body is optional (an empty POST mints an unnamed token), so an
-	// empty body is not itself an error — only malformed JSON is.
-	if len(body) > 0 {
-		if err := json.Unmarshal(body, &req); err != nil {
-			writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
-			return
-		}
-	}
-	req.Name = strings.TrimSpace(req.Name)
-
-	rawToken, hash, prefix, err := jointoken.Generate()
-	if err != nil {
-		h.logger.ErrorContext(ctx, "workerenroll: generate join token failed", slog.Any("error", err))
-		writeProblem(w, r, http.StatusInternalServerError, "failed to create join token")
+	// Same body-size cap as enroll.
+	if !readOptionalJSON(w, r, 4<<20, &req) {
 		return
 	}
-	now := time.Now().UTC()
-	createdBy := ""
-	if p, ok := auth.FromContext(ctx); ok {
-		createdBy = p.Subject
-	}
-	created, err := h.store.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
-		ID:        uuid.NewString(),
-		TokenHash: hash,
-		Prefix:    prefix,
-		Name:      req.Name,
-		ExpiresAt: now.Add(h.joinTokenTTL),
-		CreatedBy: createdBy,
-		CreatedAt: now,
-	})
+	raw, created, err := mintJoinToken(ctx, h.store, store.WorkerJoinToken{Name: strings.TrimSpace(req.Name)}, h.joinTokenTTL)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "workerenroll: create join token failed", slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create join token")
@@ -333,7 +308,7 @@ func (h *workerEnrollHandler) createJoinToken(w http.ResponseWriter, r *http.Req
 
 	writeJSON(w, http.StatusCreated, workerJoinTokenCreatedResponse{
 		ID:        created.ID,
-		Token:     rawToken,
+		Token:     raw,
 		Prefix:    created.Prefix,
 		Name:      created.Name,
 		ExpiresAt: created.ExpiresAt,
@@ -341,14 +316,54 @@ func (h *workerEnrollHandler) createJoinToken(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// readOptionalJSON decodes an optional JSON body of at most limit bytes into
+// dst. An empty body is not an error; malformed JSON is. On failure it writes
+// the 400 and returns false.
+func readOptionalJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool {
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit))
+	if err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "failed to read request body")
+		return false
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, dst); err != nil {
+			writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
+			return false
+		}
+	}
+	return true
+}
+
+// mintJoinToken generates a join token, stores its hash and returns the raw
+// token with the stored row. The raw value is not stored, so the caller's
+// response is the only place it appears. tok supplies Name and
+// CapacityGroupID; the identity, hash, timestamps and creator are filled here.
+func mintJoinToken(ctx context.Context, st store.Store, tok store.WorkerJoinToken, ttl time.Duration) (string, store.WorkerJoinToken, error) {
+	raw, hash, prefix, err := jointoken.Generate()
+	if err != nil {
+		return "", store.WorkerJoinToken{}, fmt.Errorf("generate join token: %w", err)
+	}
+	now := time.Now().UTC()
+	tok.ID, tok.TokenHash, tok.Prefix = uuid.NewString(), hash, prefix
+	tok.CreatedAt, tok.ExpiresAt = now, now.Add(ttl)
+	if p, ok := auth.FromContext(ctx); ok {
+		tok.CreatedBy = p.Subject
+	}
+	created, err := st.CreateWorkerJoinToken(ctx, tok)
+	if err != nil {
+		return "", store.WorkerJoinToken{}, err
+	}
+	return raw, created, nil
+}
+
 // ── DELETE /api/v1/workers/{id}/credential ──────────────────────────────────
 
 // revokeCredential soft-revokes the active credential for the worker named by
 // {id} and, via the injected [WorkerRevoker], disconnects it from the broker
-// where a live handle is available. The underlying store write only matches
-// a row with a nil RevokedAt, so a worker that was never enrolled and a
-// worker whose credential is already revoked are indistinguishable here —
-// the response says so rather than claiming the worker does not exist.
+// where a live handle is available. The store write matches only a row with a
+// nil RevokedAt, so a worker that was never enrolled and one whose credential
+// is already revoked are indistinguishable; the response names both
+// possibilities.
 func (h *workerEnrollHandler) revokeCredential(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	workerID := chi.URLParam(r, "id")

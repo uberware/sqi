@@ -7,16 +7,11 @@
 // global default registry prevents cross-contamination between test instances
 // and avoids collision with Go runtime metrics.
 //
-// Many of the metric families defined here are stubs whose values are set to
-// zero until the corresponding component lands:
-//
-//   - [Metrics.SchedulerQueueDepth], [Metrics.SchedulerTasksTotal],
-//     [Metrics.SchedulerAssignmentDuration], [Metrics.SchedulerIdleWorkers] —
-//     populated by the scheduler.
-//   - [Metrics.WorkersTotal] — populated by the worker registry.
-//   - [Metrics.NATSPublishedTotal], [Metrics.NATSConsumedTotal] — populated by
-//     the typed NATS client wrapper.
-//   - [Metrics.DBQueryDuration] — populated by the SQLite store.
+// [Metrics.SchedulerTasksTotal], [Metrics.SchedulerAssignmentDuration],
+// [Metrics.NATSPublishedTotal], [Metrics.NATSConsumedTotal] and
+// [Metrics.DBQueryDuration] are registered, but no server code records into
+// them, so they serve no samples. The other families are written by the
+// scheduler and the other components named on their fields.
 package metrics
 
 import (
@@ -56,8 +51,7 @@ type Metrics struct {
 	SchedulerQueueDepth *prometheus.GaugeVec
 
 	// SchedulerTasksTotal counts task completions, labeled by queue name and
-	// terminal status (succeeded, failed, canceled). Incremented by the
-	// scheduler.
+	// terminal status (succeeded, failed, canceled). Nothing records it.
 	SchedulerTasksTotal *prometheus.CounterVec
 
 	// SchedulerTasksReconciled counts attempts reclaimed because their worker
@@ -75,7 +69,7 @@ type Metrics struct {
 	//   - "deferred"  — no eligible worker or policy blocked; task stays ready.
 	//   - "error"     — an unexpected error aborted the attempt.
 	//
-	// Populated by the scheduler assignment loop.
+	// Nothing records it.
 	SchedulerAssignmentDuration *prometheus.HistogramVec
 
 	// SchedulerIdleWorkers is the current count of online workers that have no
@@ -86,24 +80,23 @@ type Metrics struct {
 	// ── Workers ───────────────────────────────────────────────────────────────
 
 	// WorkersTotal is the current number of registered workers, partitioned by
-	// status: online, offline, or disabled. Set by the worker registry.
+	// status: online, offline, or disabled. Set by the scheduler.
 	WorkersTotal *prometheus.GaugeVec
 
 	// ── NATS JetStream ────────────────────────────────────────────────────────
 
 	// NATSPublishedTotal counts messages published to the NATS broker,
-	// labeled by subject. Incremented by the typed bus client.
+	// labeled by subject. Nothing records it.
 	NATSPublishedTotal *prometheus.CounterVec
 
 	// NATSConsumedTotal counts messages consumed from the NATS broker,
-	// labeled by subject. Incremented by the typed bus client.
+	// labeled by subject. Nothing records it.
 	NATSConsumedTotal *prometheus.CounterVec
 
 	// ── SQLite store ──────────────────────────────────────────────────────────
 
 	// DBQueryDuration records SQLite query execution time in seconds, labeled
-	// by operation name (e.g. "job.insert", "task.list"). Observed by the store
-	// implementation.
+	// by operation name (e.g. "job.insert", "task.list"). Nothing records it.
 	DBQueryDuration *prometheus.HistogramVec
 
 	// ── Usage pools ───────────────────────────────────────────────────────────
@@ -122,6 +115,23 @@ type Metrics struct {
 	// JobsAutoParkedTotal counts jobs auto-parked at their failure limit,
 	// partitioned by queue name. Incremented by the scheduler's failure fork.
 	JobsAutoParkedTotal *prometheus.CounterVec
+
+	// ── Capacity groups ───────────────────────────────────────────────────────
+	// Set by the scheduler's capacity sweep, one series per enabled group,
+	// labeled by group name. With no enabled group none of them has a series.
+
+	// CapacityDemandCores is the cores of ready work assigned to each group:
+	// work one of its machines could run that no idle worker and no
+	// higher-priority group took.
+	CapacityDemandCores *prometheus.GaugeVec
+
+	// CapacityDesiredMachines is the total number of machines each group
+	// should have, counting the machines it already has.
+	CapacityDesiredMachines *prometheus.GaugeVec
+
+	// CapacityMembers counts each group's members by liveness (state online
+	// or offline).
+	CapacityMembers *prometheus.GaugeVec
 
 	// ── High availability ─────────────────────────────────────────────────────
 	// Created by New but exposed only once [Metrics.RegisterHA] is called, so a
@@ -187,7 +197,7 @@ func New() *Metrics {
 				Namespace: "sqi",
 				Subsystem: "scheduler",
 				Name:      "queue_depth",
-				Help:      "Current number of ready tasks waiting for assignment, partitioned by queue name. Excludes tasks in retry backoff, tasks on a paused queue, and tasks under a paused, parked or terminal job.",
+				Help:      "Current number of ready tasks waiting for assignment, partitioned by queue ID. Excludes tasks in retry backoff, tasks on a paused queue, and tasks under a paused, parked or terminal job.",
 			},
 			[]string{"queue"},
 		),
@@ -313,6 +323,36 @@ func New() *Metrics {
 			[]string{"queue"},
 		),
 
+		CapacityDemandCores: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "capacity",
+				Name:      "demand_cores",
+				Help:      "Cores of ready work assigned to the capacity group: work one of its machines could run that no idle worker and no higher-priority group took.",
+			},
+			[]string{"group"},
+		),
+
+		CapacityDesiredMachines: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "capacity",
+				Name:      "desired_machines",
+				Help:      "Total machines the capacity group should have, counting the machines it already has (not the number to add).",
+			},
+			[]string{"group"},
+		),
+
+		CapacityMembers: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "capacity",
+				Name:      "members",
+				Help:      "Members of the capacity group, partitioned by state (online, offline).",
+			},
+			[]string{"group", "state"},
+		),
+
 		HALeader: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Namespace: "sqi",
@@ -367,6 +407,9 @@ func New() *Metrics {
 		m.UsageActiveClaims,
 		m.TaskRetriesTotal,
 		m.JobsAutoParkedTotal,
+		m.CapacityDemandCores,
+		m.CapacityDesiredMachines,
+		m.CapacityMembers,
 	)
 
 	// Both causes are exported from the start, at 0, so a rate over them is

@@ -61,6 +61,35 @@ func TestNew_ServesHAMetrics(t *testing.T) {
 	}
 }
 
+// The capacity families serve nothing until a group's series is set, so a
+// farm with no capacity group exposes no sqi_capacity_* lines at all, and
+// their names are pinned once set.
+func TestNew_CapacityMetrics(t *testing.T) {
+	m := metrics.New()
+	serve := func() string {
+		rec := httptest.NewRecorder()
+		m.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+		return rec.Body.String()
+	}
+	if body := serve(); strings.Contains(body, "sqi_capacity_") {
+		t.Errorf("exposition carries capacity series before any is set:\n%s", body)
+	}
+
+	m.CapacityDemandCores.WithLabelValues("burst").Set(8)
+	m.CapacityDesiredMachines.WithLabelValues("burst").Set(2)
+	m.CapacityMembers.WithLabelValues("burst", "online").Set(1)
+	body := serve()
+	for _, want := range []string{
+		`sqi_capacity_demand_cores{group="burst"} 8`,
+		`sqi_capacity_desired_machines{group="burst"} 2`,
+		`sqi_capacity_members{group="burst",state="online"} 1`,
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("exposition missing %q", want)
+		}
+	}
+}
+
 // TestNew_NoHAMetricsWithoutRegisterHA: a server outside an HA group exposes
 // no sqi_server_ha_* series, so a sqi_server_ha_leader == 1 selector never
 // matches a single server.

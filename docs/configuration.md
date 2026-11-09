@@ -337,6 +337,11 @@ operator cannot realistically get the token onto a machine and boot it; the
 ceiling keeps a token, which mints a worker credential, from becoming a
 long-lived secret. Ignored while `nats.auth.enabled` is `false`.
 
+A [capacity group's token](capacity.md#sized-groups-with-broker-authentication-on)
+has a lifetime of its own, chosen when it is minted (30 days by default, 90 at
+most), and is unaffected by this key. Capacity groups themselves are managed
+through the REST API and the Admin hub and have no server configuration keys.
+
 ```yaml
 nats:
   auth:
@@ -1196,8 +1201,12 @@ How long a worker may remain offline before the retention sweep hard-deletes its
 record, bounding the growth of the worker list on farms with ephemeral nodes
 (e.g. cloud workers that spin up for a burst of work and are then destroyed). The
 sweep runs on the heartbeat-sweep tick and only removes workers in the `offline`
-state; `online` and administratively `disabled` workers are never auto-removed.
-A worker that reconnects after removal re-registers. Set to `0` to disable
+state; `online` and administratively `disabled` workers are never auto-removed,
+and neither is a member of a [capacity group](capacity.md). An ephemeral
+member (a cloud machine that joined by group token) is removed by the capacity
+sweep instead, after the group's `boot_timeout_seconds`, with its credential
+revoked, so it cannot reconnect. Any other worker that reconnects after removal
+re-registers. Set to `0` to disable
 automatic removal (workers can still be removed manually from the web UI).
 
 ```yaml
@@ -1301,7 +1310,7 @@ If the server falls more than `reconcile_grace` behind in processing status
 reports, a task that has already finished can be reclaimed and run again
 (never lost or recorded twice); raise this value if
 `sqi_scheduler_tasks_reconciled_total` climbs while no worker was lost.
-Workers from v0.3.0 and earlier do not report their attempts and are never
+A worker that does not report its attempts (v0.3.0 and earlier) is never
 reconciled. See [Reconciliation](operations.md#reconciliation).
 
 ```yaml
@@ -1404,10 +1413,10 @@ retry, exhaustion, and auto-park interact, and
 [Retry and auto-park metrics](observability.md#retry-and-auto-park-metrics)
 for the Prometheus counters.
 
-> **Upgrading from v0.1.0.** v0.1.0 had no auto-retry. With the default
-> `scheduler.default_max_attempts` of `3`, a failed task now gets up to 2 more
-> attempts. To keep v0.1.0's behavior, set `scheduler.default_max_attempts: 1`
-> (or `SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS=1`).
+With the default `scheduler.default_max_attempts` of `3`, a failed task gets
+up to 2 more attempts. To turn auto-retry off, set
+`scheduler.default_max_attempts: 1` (or
+`SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS=1`).
 
 ---
 
@@ -1603,10 +1612,9 @@ reachable without authentication, size request timeouts and front-end
 concurrency with that in mind.
 
 Raising these four keys without also raising the deadline turns legitimate
-acceptances into 503s. For a generated multi-layer VFX shot-render job (12
-`let:` bindings per step, comprehensions over real frame ranges,
-`RANGE_EXPR`/`LIST[STRING]`/`PATH` parameters) submitted through the real
-submission path:
+acceptances into 503s. For a multi-layer VFX shot-render job (12 `let:`
+bindings per step, comprehensions over frame ranges,
+`RANGE_EXPR`/`LIST[STRING]`/`PATH` parameters), submission takes:
 
 | Limits | Shape | Wall clock | Verdict |
 |---|---|---|---|
@@ -1680,8 +1688,8 @@ the worker binds concrete values this server only had placeholders for, so an
 accepted job can still exhaust a worker that satisfies every row above.
 
 > The gate recognizes an EXPR job from the extension list recorded on the job
-> row at submission, so for jobs submitted by v0.3.0 or later the test is
-> exact: a job flagged with this reason declares `EXPR`.
+> row at submission, so the test is exact: a job flagged with this reason
+> declares `EXPR`.
 >
 > Job rows written by v0.2.0 or earlier record no list. For those the gate
 > falls back to scanning the raw template for the bytes `EXPR` and the bytes
@@ -1690,8 +1698,8 @@ accepted job can still exhaust a worker that satisfies every row above.
 > as `HOUDINI_EXPR_CACHE`) matches, and the job is withheld from every short
 > worker with a reason naming EXPR limits it does not use. The fix is the same
 > either way: raise the workers or lower the server. The scan errs toward
-> withholding work, except for a deliberately obfuscated declaration (an
-> escaped `EXPR` in YAML or JSON), which it misses.
+> withholding work, but misses an obfuscated declaration (an escaped `EXPR`
+> in YAML or JSON).
 
 ---
 
@@ -1801,7 +1809,7 @@ Bytes a template's `let:` bindings may cumulatively retain across one walk.
 position renders a result and discards it), so it is the only thing that
 charges this counter. It counts cumulative allocation; see caveat 3.
 
-> **Raise every worker before raising this key.** It is compared against two
+> Raise every worker before raising this key. It is compared against two
 > worker keys (caveat 4): `expr.assignment_retained_bytes`, whose default of
 > `20000000` leaves 2× headroom, and `expr.let_retained_bytes`, whose default
 > of `10000000` equals this default. Any increase puts every
@@ -1865,11 +1873,11 @@ The floor is `1s` because below it a legitimate large template (a body near
 the 4 MiB request cap, on a busy host) could be refused. The ceiling is `60s`
 because a ceiling anywhere near the 17-minute worst case would bound nothing.
 
-> **The headroom against real work is about 6x.** The largest template in
+> The headroom against real work is about 6x. The largest template in
 > caveat 2's VFX example that the defaults accept (100 steps over 1,000
 > frames, 5,013 positions, 1.66M operations) takes 0.83 s against the 5s
-> default; on a host 2–3x slower it would take 1.7–2.5 s. Keep that in mind
-> before lowering this key.
+> default; on a host 2–3x slower it takes 1.7–2.5 s. Lowering this key
+> narrows that margin.
 >
 > At the defaults, realistic `let:`-using templates hit the retained-bytes
 > budget at about 1.1 s, before this deadline. A template that does cheap,
@@ -1887,14 +1895,11 @@ openjd:
   expr_submission_deadline: 5s
 ```
 
-> **A malformed duration fails at startup, in the file and the environment
-> alike.** `5 sec`, `5000` or `5 s` is not a Go duration, so
+> A malformed duration fails at startup, in the file and the environment
+> alike. `5 sec`, `5000` or `5 s` is not a Go duration, so
 > `expr_submission_deadline: 5 sec` fails the load naming its line, and
 > `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE=5 sec` naming the variable. This holds
-> for every duration key in the server's configuration. v0.3.0 and earlier
-> skipped an unparseable value in the file and kept the default, so a
-> configuration file those versions accepted can fail to load after an
-> upgrade.
+> for every duration key in the server's configuration.
 
 ---
 
@@ -2293,12 +2298,12 @@ auth:
     default_role: "read-only"
 ```
 
-**`unique_id_attr` is required and has no default**, because no single value
+`unique_id_attr` is required and has no default, because no single value
 is correct on both Active Directory (`objectGUID`) and RFC 4530 servers
-(`entryUUID`), and guessing on a server exposing both could pick the wrong
-one. A config with `auth.ldap.enabled: true` and no `unique_id_attr` fails
-validation and the server does not boot. LDAP accounts provisioned before
-this key existed carry an empty identifier and must be recreated; see
+(`entryUUID`), and a default could pick the wrong one on a server exposing
+both. A config with `auth.ldap.enabled: true` and no `unique_id_attr` fails
+validation and the server does not boot. An LDAP account with an empty
+identifier must be recreated; see
 [Upgrading from an earlier sqi](auth.md#upgrading-from-an-earlier-sqi).
 
 See [`docs/auth.md`](auth.md#ldap--active-directory) for the model behind
@@ -2471,17 +2476,16 @@ and the per-platform requirements.
 ### Important: Worker upgrade required
 
 `run_as_user` is enforced only by workers that support task isolation. A
-worker built without it (v0.2.0 and earlier) would ignore the `isolation`
-field in its task assignments and run job code as the worker daemon's own OS
-user, reporting success.
+worker built without it (v0.2.0 and earlier) ignores the `isolation` field in
+its task assignments and runs job code as the worker daemon's own OS user,
+reporting success.
 
 The server prevents that: it discards registrations, heartbeats and status
 reports from any worker whose wire-protocol version differs from its own, and
 such a worker is offered no work at all. Every worker without isolation
 support speaks an older protocol version, so it never receives an
 assignment. The scheduler does not otherwise check for isolation support, so
-upgrade every worker to the server's release and do not rely on mixed
-versions.
+run every worker at the server's release; mixed versions are not supported.
 
 A worker that supports isolation but is misconfigured fails closed: it
 refuses to start, or fails the individual task with an actionable error
@@ -2541,7 +2545,7 @@ server's `diagnostics.buffer_size`: workers publish and the server buffers.
 |---|---|---|---|---|
 | `diagnostics.enabled` | bool | `true` | `SQI_DIAGNOSTICS_ENABLED` | When `true`, the worker's diagnostic-log records are published to `sqi-server` in addition to the local log (stderr, or `log.file` when set). Set `false` to keep them local only. |
 
-Note the env var is `SQI_DIAGNOSTICS_ENABLED` (not `SQI_WORKER_…`), matching the
+The env var is `SQI_DIAGNOSTICS_ENABLED` (not `SQI_WORKER_…`), matching the
 server-side diagnostics naming.
 
 ```yaml

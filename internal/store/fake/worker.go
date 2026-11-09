@@ -13,16 +13,16 @@ import (
 
 // RegisterWorker implements [store.WorkerStore]: it inserts or replaces the
 // worker record for the given ID, except that an empty InstanceID keeps the
-// stored one and Disabled is never taken from the registration: a new worker is
-// enabled and an existing one keeps its flag, as SQLite's upsert leaves the
-// column alone, and a nil RegistrationBrokerAt keeps the stored one. A
-// registration stamped earlier than the stored one ([store.StaleRegistration]) is
-// refused with [store.ErrStaleRegistration], returning the stored worker.
-// A non-empty stored InstanceID that differs from a non-empty
-// incoming one is a restarted worker process, whose assigned and running tasks
-// are reclaimed as the offline transitions reclaim them, with
-// [store.FailureReasonWorkerRestarted]; the store lock stands in for SQLite's
-// worker-row and job-row anchors.
+// stored one and Disabled, CapacityGroupID and Ephemeral are never taken from
+// the registration: a new worker is enabled and in no group, and an existing
+// one keeps them, as the SQL upsert leaves those columns alone. A nil
+// RegistrationBrokerAt keeps the stored one. A registration stamped earlier
+// than the stored one ([store.StaleRegistration]) is refused with
+// [store.ErrStaleRegistration], returning the stored worker. A non-empty stored
+// InstanceID that differs from a non-empty incoming one is a restarted worker
+// process, whose assigned and running tasks are reclaimed as the offline
+// transitions reclaim them, with [store.FailureReasonWorkerRestarted]; the
+// store lock stands in for the SQL stores' worker-row and job-row anchors.
 func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -36,6 +36,8 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	}
 	worker = cloneWorker(worker)
 	worker.Disabled = existing.Disabled                   // false for a new worker
+	worker.CapacityGroupID = existing.CapacityGroupID     // empty for a new worker
+	worker.Ephemeral = existing.Ephemeral                 // false for a new worker
 	worker.HeartbeatBrokerAt = existing.HeartbeatBrokerAt // nil for a new worker
 	var reclaimed []store.Task
 	if isUpdate {
@@ -112,6 +114,98 @@ func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool)
 	return worker, nil
 }
 
+// SetWorkerCapacityGroup implements [store.WorkerStore].
+func (s *Store) SetWorkerCapacityGroup(ctx context.Context, workerID, groupID string, ephemeral bool) (store.Worker, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Worker{}, err
+	}
+
+	worker, ok := s.workers[workerID]
+	if !ok {
+		return store.Worker{}, store.ErrNotFound
+	}
+	if groupID != "" {
+		if _, ok := s.capacityGroups[groupID]; !ok {
+			return store.Worker{}, store.ErrNotFound
+		}
+		if worker.CapacityGroupID != "" && worker.CapacityGroupID != groupID {
+			return store.Worker{}, store.ErrConflict
+		}
+	}
+
+	worker.CapacityGroupID = groupID
+	worker.Ephemeral = ephemeral && groupID != ""
+	worker.UpdatedAt = time.Now().UTC()
+	s.workers[workerID] = worker
+	return cloneWorker(worker), nil
+}
+
+// ListCapacityGroupMembers implements [store.WorkerStore]: the group's workers
+// by hostname, then ID.
+func (s *Store) ListCapacityGroupMembers(_ context.Context, groupID string) ([]store.Worker, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var members []store.Worker
+	for _, w := range s.workers {
+		if w.CapacityGroupID == groupID {
+			members = append(members, cloneWorker(w))
+		}
+	}
+	slices.SortFunc(members, func(a, b store.Worker) int {
+		if c := cmp.Compare(a.Hostname, b.Hostname); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+	return members, nil
+}
+
+// DeleteEphemeralWorker implements [store.WorkerStore]: the worker goes only
+// while it is ephemeral, offline and holds no assigned or running task, and its
+// active credential is revoked at now with it.
+func (s *Store) DeleteEphemeralWorker(ctx context.Context, id string, now time.Time) (store.Worker, bool, error) {
+	return s.deleteEphemeralWorker(ctx, id, now, func(store.Worker) bool { return true })
+}
+
+// DeleteVanishedEphemeralWorker implements [store.WorkerStore]: as
+// DeleteEphemeralWorker, for a worker that is also not disabled and was last
+// seen before cutoff.
+func (s *Store) DeleteVanishedEphemeralWorker(ctx context.Context, id string, cutoff, now time.Time) (store.Worker, bool, error) {
+	return s.deleteEphemeralWorker(ctx, id, now, func(w store.Worker) bool {
+		return !w.Disabled && w.LastHeartbeatAt != nil && w.LastHeartbeatAt.Before(cutoff)
+	})
+}
+
+// deleteEphemeralWorker deletes worker id when it is ephemeral, offline, holds
+// no work in flight and satisfies also, and revokes its active credential at
+// now with it.
+func (s *Store) deleteEphemeralWorker(
+	ctx context.Context, id string, now time.Time, also func(store.Worker) bool,
+) (store.Worker, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Worker{}, false, err
+	}
+
+	w, ok := s.workers[id]
+	if !ok || !w.Ephemeral || w.Status != store.WorkerStatusOffline || !also(w) || s.hasWorkInFlightLocked(id) {
+		return store.Worker{}, false, nil
+	}
+	delete(s.workers, id)
+	for credID, c := range s.workerCredentials {
+		if c.WorkerID == id && c.RevokedAt == nil {
+			at := now
+			c.RevokedAt = &at
+			s.workerCredentials[credID] = c
+		}
+	}
+	return cloneWorker(w), true, nil
+}
+
 // UpdateWorkerHeartbeat records the most recent heartbeat time for the given
 // worker. A heartbeat the broker stamped before the recorded one is ignored; an
 // unstamped one is recorded unconditionally and keeps the recorded stamp.
@@ -142,7 +236,7 @@ func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Ti
 
 // heartbeatBefore reports whether w's last heartbeat is strictly older than
 // cutoff. A worker that has never sent a heartbeat is never older, matching
-// SQLite, where `last_heartbeat_at < ?` is not true for NULL. The fake's
+// the SQL stores, where `last_heartbeat_at < ?` is not true for NULL. The fake's
 // staleness and retention checks all use it.
 func heartbeatBefore(w store.Worker, cutoff time.Time) bool {
 	return w.LastHeartbeatAt != nil && w.LastHeartbeatAt.Before(cutoff)
@@ -200,8 +294,8 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 }
 
 // DeleteWorkerIfRemovable implements [store.WorkerStore]. The rule is
-// [store.Worker.Removable], which SQLite restates in its DELETE, plus the
-// in-flight condition a Worker value cannot see.
+// [store.Worker.Removable], which the SQL stores restate in their DELETE, plus
+// the in-flight condition a Worker value cannot see.
 func (s *Store) DeleteWorkerIfRemovable(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -234,7 +328,8 @@ func (s *Store) hasWorkInFlightLocked(workerID string) bool {
 
 // DeleteOfflineWorkersBefore hard-deletes every enabled offline worker last
 // seen before cutoff and returns the removed records. Online workers, disabled
-// ones and workers that have never sent a heartbeat are left untouched.
+// ones, workers that have never sent a heartbeat and every member of a capacity
+// group are left untouched.
 func (s *Store) DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -245,6 +340,9 @@ func (s *Store) DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time
 	var removed []store.Worker
 	for id, w := range s.workers {
 		if w.Status != store.WorkerStatusOffline || w.Disabled {
+			continue
+		}
+		if w.CapacityGroupID != "" {
 			continue
 		}
 		if !heartbeatBefore(w, cutoff) {
@@ -270,6 +368,9 @@ func filterWorker(w store.Worker, opts store.ListWorkersOptions) bool {
 	if opts.ComputeLocation != "" && w.ComputeLocation != opts.ComputeLocation {
 		return false
 	}
+	if opts.CapacityGroupID != "" && w.CapacityGroupID != opts.CapacityGroupID {
+		return false
+	}
 	if opts.Status != "" && w.EffectiveStatus() != opts.Status {
 		return false
 	}
@@ -281,8 +382,8 @@ func filterWorker(w store.Worker, opts store.ListWorkersOptions) bool {
 
 // workerMatchesSearch reports whether every whitespace-separated term in query
 // matches (case-insensitive substring) one of w's name, hostname, id, or
-// compute_location fields. Uses the shared matcher so it stays in lockstep with
-// the SQLite LIKE search.
+// compute_location fields. Uses the shared matcher so it stays in step with
+// the SQL LIKE search.
 func workerMatchesSearch(w store.Worker, query string) bool {
 	return store.MatchesSearch(query, w.Name, w.Hostname, w.ID, w.ComputeLocation)
 }

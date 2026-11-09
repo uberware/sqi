@@ -89,9 +89,6 @@ var defaultMaxStoreMB = config.DefaultConfig().NATS.Embedded.MaxStoreMB
 // Findings applies the rules to a record. steadyFrom is the end of warmup:
 // the growth and worker-count rules look only at samples at or after it.
 // Findings come back in a fixed rule order.
-//
-// No rule reads sched.queue_depth{queue}: the server keeps a drained queue's
-// last non-zero depth, so a queue that looks stuck may be empty.
 func Findings(r *Record, steadyFrom time.Time) []Finding {
 	if r == nil {
 		return nil

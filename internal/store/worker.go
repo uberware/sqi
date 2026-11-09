@@ -55,46 +55,40 @@ type GPUInfo struct {
 // Expressions in an EXPR template are metered twice: against the server's
 // openjd.expr_* limits when the template is submitted, and again against the
 // worker's expr.* limits when a task runs. If a worker's cap is tighter than
-// the server's, a job is accepted, created and persisted and then every task of
-// it fails on that host, after submission, naming a budget the submitter never
-// saw (measured with the server at 10,000 positions and the worker at 5,000).
-// Both sides are operator configuration, so the relation "worker cap >= server
-// cap" can be broken by a YAML file; these fields are what let the server see
-// it.
+// the server's, the job is accepted and persisted and then every task of it
+// fails on that host, naming a budget the submitter never saw. Both sides are
+// operator configuration, so "worker cap >= server cap" can be broken by a YAML
+// file; these fields let the server see it.
 //
-// Every value is self-reported, like CPUCount, RAMMb and Tags. It is a
-// statement of what that worker will enforce, not a promise the server can
-// verify.
+// Every value is self-reported, like CPUCount, RAMMb and Tags. It states what
+// that worker will enforce, not a promise the server can verify.
 //
-// A zero field means "not advertised": a current worker always reports a real
-// value (its config layer rejects 0), so silence means an older binary. The
-// scheduler reads that as the compiled-in defaults, which is exact for a binary
-// with no expr.* configuration and a documented guess for one that had the
-// configuration but did not advertise it — see internal/scheduler's
-// legacyWorkerExprCaps.
+// A zero field means "not advertised". A worker that reports limits always
+// reports a real value (its config layer rejects 0), so a zero comes from a
+// worker binary that does not advertise them. The scheduler reads it as the
+// compiled-in defaults; see internal/scheduler's legacyWorkerExprCaps.
 //
 // All five of the worker's expr.* keys are carried. The server has no
-// per-table counterpart to compare LetRetainedBytes against, but leaving it
-// out is reachable through legal configuration: a worker at that key's floor
-// rejects, once per task, a let: block the server accepted under a raised
-// openjd.expr_template_retained_bytes. The server does bound the same values
-// at a wider scope, and a wider scope is a valid upper bound; see
+// per-table counterpart to compare LetRetainedBytes against, but a worker at
+// that key's floor rejects, once per task, a let: block the server accepted
+// under a raised openjd.expr_template_retained_bytes. The server bounds the
+// same values at a wider scope, which is a valid upper bound; see
 // internal/scheduler's exprCapShortfall for the comparison and for what it
-// still cannot promise.
+// cannot promise.
 type WorkerExprLimits struct {
-	// OperationLimit is the worker's §1.3.10 operation budget for ONE
+	// OperationLimit is the worker's §1.3.10 operation budget for one
 	// expression evaluation (expr.operation_limit).
 	OperationLimit int64 `json:"operation_limit,omitempty"`
-	// MemoryLimit is the worker's §1.3.9 live-byte budget for ONE expression
+	// MemoryLimit is the worker's §1.3.9 live-byte budget for one expression
 	// evaluation (expr.memory_limit).
 	MemoryLimit int64 `json:"memory_limit,omitempty"`
 	// AssignmentPositions is how many expression positions the worker will
-	// resolve for ONE assignment (expr.assignment_positions).
+	// resolve for one assignment (expr.assignment_positions).
 	AssignmentPositions int64 `json:"assignment_positions,omitempty"`
 	// AssignmentRetainedBytes is how many bytes let: bindings may retain
 	// across one assignment (expr.assignment_retained_bytes).
 	AssignmentRetainedBytes int64 `json:"assignment_retained_bytes,omitempty"`
-	// LetRetainedBytes is how many bytes ONE phase-3 symbol table may hold
+	// LetRetainedBytes is how many bytes one phase-3 symbol table may hold
 	// live (expr.let_retained_bytes), measured across the whole table rather
 	// than only its let-bound names.
 	LetRetainedBytes int64 `json:"let_retained_bytes,omitempty"`
@@ -109,8 +103,8 @@ type Worker struct {
 	QueueID string // empty = no queue affinity
 	// Name is the worker's human-readable display label (the worker.name
 	// config field, default the hostname). Distinguishes multiple workers
-	// running on one host in the UI; may be empty for workers registered
-	// before this field existed, in which case callers fall back to Hostname.
+	// running on one host in the UI; may be empty, in which case callers fall
+	// back to Hostname.
 	Name            string
 	Hostname        string
 	IPAddress       string
@@ -120,18 +114,16 @@ type Worker struct {
 	// Arch is the worker's CPU architecture as the worker reports it, which is
 	// runtime.GOARCH ("amd64", "arm64", ...). It backs the reserved OpenJD
 	// attr.worker.cpu.arch host requirement, whose accepted values are the
-	// SPECIFICATION's tokens ("x86_64", "arm64") rather than Go's — see
-	// scheduler.cpuArch for the translation, which is the same shape as the
+	// specification's tokens ("x86_64", "arm64") rather than Go's; see
+	// scheduler.cpuArch for the translation, which has the same shape as the
 	// os.family darwin/macos one.
 	//
-	// Empty for workers registered before this field existed, and for any
-	// worker running an older binary that does not send it. An empty value can
-	// never satisfy an attr.worker.cpu.arch requirement; such a worker starts
-	// reporting its architecture as soon as it restarts and re-registers.
+	// Empty when the worker did not send it. An empty value never satisfies an
+	// attr.worker.cpu.arch requirement.
 	Arch string
 	// Version is the sqi-worker build version the worker self-reports at
-	// registration (the worker binary's internal/version.Version). May be empty
-	// for workers registered before this field existed.
+	// registration (the worker binary's internal/version.Version). May be
+	// empty.
 	Version string
 	// InstanceID identifies the worker process that last registered. It
 	// changes when the worker restarts and is empty for a worker that does not
@@ -154,14 +146,13 @@ type Worker struct {
 	GPUInfo           GPUInfo
 	Tags              map[string]string // arbitrary capability tags
 	// ExprLimits holds the worker's self-reported OpenJD EXPR evaluation caps.
-	// Zero-valued for workers registered before this field existed; see
-	// [WorkerExprLimits] for what the server does with them.
+	// Zero-valued when the worker advertised none; see [WorkerExprLimits] for
+	// what the server does with them.
 	ExprLimits WorkerExprLimits
 	// Extensions lists the worker-enforced OpenJD extensions (see
 	// openjd.WorkerEnforcedExtensions) the worker advertised at registration.
-	// Empty for a worker row that predates the column or a worker binary that
-	// enforces none; the scheduler withholds a job declaring one from such a
-	// worker (internal/scheduler's workerExtensionBlock).
+	// Empty for a worker that enforces none; the scheduler withholds a job
+	// declaring one from such a worker (internal/scheduler's workerExtensionBlock).
 	Extensions []string
 	// Status is the worker's liveness: [WorkerStatusOnline] or
 	// [WorkerStatusOffline]. See [WorkerStatus].
@@ -169,7 +160,15 @@ type Worker struct {
 	// Disabled is true while an operator has the worker disabled. It is
 	// independent of Status: a disabled worker still goes online and offline,
 	// and stays disabled through both.
-	Disabled        bool
+	Disabled bool
+	// CapacityGroupID is the capacity group the worker belongs to, or empty
+	// for none. Only [WorkerStore.SetWorkerCapacityGroup] and
+	// [WorkerStore.DeleteEphemeralWorker] write it; a registration never does.
+	CapacityGroupID string
+	// Ephemeral marks a member the server created for a group and removes
+	// when it retires; it is meaningful only with a CapacityGroupID. A member
+	// that is not ephemeral is a named machine and outlives its time offline.
+	Ephemeral       bool
 	LastHeartbeatAt *time.Time
 	RegisteredAt    time.Time
 	UpdatedAt       time.Time
@@ -196,15 +195,15 @@ func (w Worker) EffectiveStatus() WorkerStatus {
 
 // Removable reports whether the worker may be hard-deleted. This is the one
 // statement of the removability rule: a worker is removable when it is offline,
-// disabled or not. A disabled worker that is still online is a paused machine,
-// not a gone one, and is not removable.
+// disabled or not. A disabled worker that is still online is a paused machine
+// and is not removable.
 //
 // [WorkerStore.DeleteWorkerIfRemovable] applies this rule inside its write; the
-// SQLite statement restates it in SQL, which cannot call Go, so a change here
-// must be made there too. The API's pre-check and the fake call this method.
-// The store adds one condition a Worker value alone cannot see: no task may be
-// assigned to or running on the worker, so a true here does not
-// guarantee the delete succeeds.
+// SQL statement restates it, since SQL cannot call Go, so a change here must be
+// made there too. The API's pre-check and the fake call this method. The store
+// adds one condition a Worker value alone cannot see: no task may be assigned
+// to or running on the worker, so a true here does not guarantee the delete
+// succeeds.
 func (w Worker) Removable() bool {
 	return w.Status == WorkerStatusOffline
 }
@@ -229,8 +228,9 @@ type WorkerStore interface {
 	// RegisterWorker inserts or replaces the worker record for the given ID.
 	// Called by the server when a worker sends its registration message. If the
 	// worker ID already exists its record is updated in full, except that an
-	// empty InstanceID keeps the stored one and Disabled is never written: a
-	// disabled worker stays disabled, and a new one is enabled. When the stored
+	// empty InstanceID keeps the stored one and Disabled, CapacityGroupID and
+	// Ephemeral are never written: a disabled worker stays disabled, a new one
+	// is enabled, and a worker keeps its group membership. When the stored
 	// InstanceID is non-empty and differs from a non-empty incoming one, the
 	// previous worker process is gone: in the same transaction its assigned and
 	// running tasks are reclaimed exactly as [WorkerStore.OfflineWorker]
@@ -261,6 +261,37 @@ type WorkerStore interface {
 	// the worker's liveness. Setting the value the flag already holds is not an
 	// error. Returns [ErrNotFound] if the worker does not exist.
 	SetWorkerDisabled(ctx context.Context, id string, disabled bool) (Worker, error)
+
+	// SetWorkerCapacityGroup makes the worker a member of the capacity group
+	// groupID, marked ephemeral or not, updates UpdatedAt and returns the
+	// stored worker. An empty groupID clears the membership and Ephemeral
+	// (ephemeral is then ignored). Setting the group the worker is already in
+	// is not an error and rewrites Ephemeral. Returns [ErrNotFound] for an
+	// unknown worker or group, and [ErrConflict] when the worker is already in
+	// a different group (the caller clears the old membership first) or when
+	// the group was deleted while the write ran: the group is not locked, so a
+	// concurrent delete surfaces as the membership's reference failing rather
+	// than as ErrNotFound.
+	SetWorkerCapacityGroup(ctx context.Context, workerID, groupID string, ephemeral bool) (Worker, error)
+
+	// ListCapacityGroupMembers returns the workers that belong to the group,
+	// ordered by hostname then ID. An unknown group has no members.
+	ListCapacityGroupMembers(ctx context.Context, groupID string) ([]Worker, error)
+
+	// DeleteEphemeralWorker deletes the worker only while it is ephemeral,
+	// offline and holds no assigned or running task, and revokes its active
+	// credential at now in the same transaction. It returns the deleted row and
+	// true. Otherwise (including an unknown worker) it writes nothing and
+	// returns (Worker{}, false, nil).
+	DeleteEphemeralWorker(ctx context.Context, id string, now time.Time) (Worker, bool, error)
+
+	// DeleteVanishedEphemeralWorker is [WorkerStore.DeleteEphemeralWorker] for
+	// a member that went away without saying so: it also requires the worker
+	// not disabled and its LastHeartbeatAt recorded and before cutoff, all
+	// judged in the delete itself, so a member that heartbeated, came back or
+	// was put on hold since the caller read it is kept. A worker with no
+	// recorded heartbeat is never deleted.
+	DeleteVanishedEphemeralWorker(ctx context.Context, id string, cutoff, now time.Time) (Worker, bool, error)
 
 	// UpdateWorkerHeartbeat records at as the given worker's LastHeartbeatAt,
 	// the time the liveness sweep judges against the server's clock. The
@@ -352,8 +383,11 @@ type WorkerStore interface {
 	// [WorkerStatusOffline] whose LastHeartbeatAt is strictly before cutoff,
 	// and returns the deleted records. Online workers and disabled ones are
 	// never touched: a disabled worker stays until an operator removes it.
-	// Used by the scheduler's offline-retention sweep to bound the growth of
-	// the worker table.
+	// Members of a capacity group are kept too: a named machine stays until
+	// an operator removes it, and an ephemeral member is the capacity sweep's
+	// to delete, since that deletion also revokes its credential and this one
+	// does not. Used by the scheduler's offline-retention sweep to bound the
+	// growth of the worker table.
 	DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]Worker, error)
 }
 
@@ -364,6 +398,8 @@ type ListWorkersOptions struct {
 	FarmID          string
 	QueueID         string
 	ComputeLocation string
+	// CapacityGroupID keeps only the members of that capacity group.
+	CapacityGroupID string
 	// Status filters by [Worker.EffectiveStatus]: disabled matches every
 	// disabled worker, online and offline match only enabled ones. Empty = all.
 	Status WorkerStatus

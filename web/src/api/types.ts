@@ -116,7 +116,7 @@ export interface TaskCounts {
   succeeded: number
   failed: number
   canceled: number
-  /** Count of tasks currently blocked from scheduling (subset of `ready`); optional for backward compatibility. */
+  /** Count of tasks currently blocked from scheduling (subset of `ready`). */
   unschedulable?: number
 }
 
@@ -276,8 +276,8 @@ export interface Worker {
   queue_id?: string
   /**
    * Human-readable display label (the worker's worker.name config, default the
-   * hostname). Distinguishes multiple workers on one host. May be empty for
-   * workers registered before this field existed; fall back to {@link hostname}.
+   * hostname). Distinguishes multiple workers on one host. May be empty; fall
+   * back to {@link hostname}.
    */
   name?: string
   hostname: string
@@ -288,8 +288,8 @@ export interface Worker {
   /**
    * CPU architecture as the worker reports it (Go's GOARCH: 'amd64', 'arm64').
    * An OpenJD `attr.worker.cpu.arch` requirement uses the spec's tokens
-   * ('x86_64', 'arm64') instead; the scheduler translates. Absent for workers
-   * that predate the field.
+   * ('x86_64', 'arm64') instead; the scheduler translates. Absent when the
+   * worker does not report it.
    */
   arch?: string
   /** sqi-worker build version the worker self-reports; empty/absent if unknown. */
@@ -422,6 +422,84 @@ export interface UsagePool {
   updated_at: string
 }
 
+// ── Capacity group ────────────────────────────────────────────────────────────
+
+/** `named` groups hold specific machines added by name; `sized` groups hold interchangeable ones. */
+export type CapacityGroupKind = 'named' | 'sized'
+
+/** What one machine of a capacity group offers; a field left out is not declared. */
+export interface MachineProfile {
+  cpu_count?: number
+  ram_mb?: number
+  gpu_count?: number
+  gpu_memory_mb?: number
+  os?: string
+  arch?: string
+  compute_location?: string
+  tags?: Record<string, string>
+  extensions?: string[]
+  /** The EXPR caps the machine's worker enforces. Not edited in the UI; kept on a save. */
+  expr_limits?: Record<string, number>
+}
+
+/** The scheduler's last evaluation of a capacity group. */
+export interface CapacityGroupStatus {
+  demand_cores: number
+  /** The total machine count the group should have, retire candidates included. */
+  desired_machines: number
+  online_members: number
+  offline_members: number
+  /** Worker IDs idle past the group's idle timeout, longest idle first. */
+  retire_candidates: string[]
+  mismatches: Array<{ worker_id: string; reason: string }>
+  evaluated_at: string
+}
+
+/** Wire shape returned by capacity group endpoints. */
+export interface CapacityGroup {
+  id: string
+  farm_id: string
+  name: string
+  kind: CapacityGroupKind
+  provider: string
+  enabled: boolean
+  queue_ids: string[]
+  min_machines: number
+  max_machines: number
+  priority: number
+  max_step_up: number
+  scale_up_cooldown_seconds: number
+  idle_timeout_seconds: number
+  boot_timeout_seconds: number
+  retire_action: 'sleep' | 'shutdown'
+  machine_profile: MachineProfile
+  created_at: string
+  updated_at: string
+  /** Null until the scheduler has evaluated the group, while it is disabled, and on a standby server. */
+  status: CapacityGroupStatus | null
+}
+
+/** A group join token as listed; it carries no secret. */
+export interface CapacityGroupToken {
+  id: string
+  name: string
+  prefix: string
+  expires_at: string
+  revoked_at: string | null
+  created_by: string
+  created_at: string
+}
+
+/** The create-only shape carrying the raw token, returned exactly once. */
+export interface CapacityGroupTokenCreated {
+  id: string
+  token: string
+  prefix: string
+  name: string
+  expires_at: string
+  created_at: string
+}
+
 // ── Path translation ──────────────────────────────────────────────────────────
 
 /** Delivery mechanism kind for the SQI_PATH_TRANSLATION extension. */
@@ -487,7 +565,7 @@ export type ControlType =
   | 'CHOOSE_INPUT_FILE'
   | 'CHOOSE_OUTPUT_FILE'
   | 'CHOOSE_DIRECTORY'
-  // Added by the EXPR extension (RFC 0007) for the list parameter types.
+  // Defined by the EXPR extension (RFC 0007) for the list parameter types.
   | 'LINE_EDIT_LIST'
   | 'SPIN_BOX_LIST'
   | 'CHECK_BOX_LIST'
@@ -520,8 +598,8 @@ export interface ItemConstraint {
   item: ItemConstraint | null
 }
 
-/** Declared type of a job parameter. The eight beyond the base spec's four are
- * added by the EXPR extension (RFC 0007). */
+/** Declared type of a job parameter. The eight beyond the base spec's four come
+ * from the EXPR extension (RFC 0007). */
 export type ParameterType =
   | 'INT'
   | 'FLOAT'
@@ -611,10 +689,10 @@ export interface UpdateMeInput {
 /**
  * One single-sign-on option advertised by `GET /auth/providers`.
  *
- * `login_url` is a NAVIGATION target, not a fetch target: the whole point of
- * the flow is to leave this page for the identity provider. Fetching it would
- * follow the redirect in the background and land the provider's login HTML in
- * a response body, where nobody can see or interact with it.
+ * `login_url` is a navigation target, not a fetch target: the flow leaves this
+ * page for the identity provider. Fetching it would follow the redirect in the
+ * background and land the provider's login HTML in a response body, where
+ * nobody can see or interact with it.
  */
 export interface SSOProvider {
   id: string

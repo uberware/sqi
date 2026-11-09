@@ -5,11 +5,12 @@
 //
 // # Message flow
 //
-// Each message type flows in a specific direction over NATS. Five of the six
-// ride JetStream streams for at-least-once delivery; AssignMsg is the
-// exception, carried as the reply half of a core-NATS request/reply exchange
-// with no stream behind it (see internal/bus for the full subject/stream
-// split):
+// Each message type flows in a specific direction over NATS. Five of the seven
+// ride JetStream streams for at-least-once delivery. AssignMsg is the reply
+// half of a core-NATS request/reply exchange with no stream behind it.
+// TaskCancelMsg is published through JetStream but received on a core
+// subscription, so a cancel sent while the worker is disconnected is missed
+// (see internal/bus for the full subject/stream split):
 //
 //	RegisterMsg    worker → server   JetStream    (worker.register.<worker>)
 //	DeregisterMsg  worker → server   JetStream    (worker.deregister.<worker>)
@@ -17,13 +18,14 @@
 //	AssignMsg      server → worker   core NATS    (reply to work.lease.<worker>.<queue>)
 //	TaskStatusMsg  worker → server   JetStream    (task.status.<worker>.<job>)
 //	LogChunkMsg    worker → server   JetStream    (task.logs.<worker>.<task>)
+//	TaskCancelMsg  server → worker   core NATS    (received on task.cancel.<worker>)
 //
 // # Versioning
 //
-// Every message carries a [Version] field set to [ProtocolVersion], and the
-// receiver rejects a message whose Version is not exactly its own instead of
-// decoding it anyway and silently ignoring the fields it does not recognize.
-// Four of the six channels are gated:
+// Messages other than TaskCancelMsg carry a [Version] field set to
+// [ProtocolVersion], and the receiver rejects a message whose Version is not
+// exactly its own instead of decoding it anyway and silently ignoring the
+// fields it does not recognize. Four channels are gated:
 //
 //	AssignMsg      server → worker   internal/worker/lease.decodeAssignment
 //	RegisterMsg    worker → server   scheduler.handleWorkerRegister
@@ -52,37 +54,30 @@ import (
 	"time"
 )
 
-// ProtocolVersion is the wire-protocol version. It changes with any breaking
-// change to a message type; a worker and server must agree on it exactly.
+// ProtocolVersion is the wire-protocol version. A worker and a server must
+// agree on it exactly: the receiver rejects a message carrying a different one
+// (internal/worker/lease.decodeAssignment on the worker, the scheduler's
+// version gate on the server). A worker whose version differs from the
+// server's rejects every assignment, and its tasks churn through reclaim, so
+// upgrade the server before the workers. A change to a message type that an
+// older peer would misread bumps the version; adding an omitempty field that an
+// older peer ignores harmlessly does not.
 //
-// Version "2" introduced [AssignMsg.EXPR], [AssignMsg.StepTemplateLet],
-// [AssignMsg.StepScriptLet], [AssignMsg.ParameterTypes],
-// [AssignMsg.JobParameterTypes], [AssignEnvironment.Let], [AssignMsg.JobName],
-// [AssignMsg.StepName] and [AssignEnvironment.StepEnvironment] for EXPR
-// phase-3 (worker-side) expression evaluation. All nine are omitempty and
-// populated only for a template that declares the EXPR extension, so a
-// base-spec assignment's wire bytes carry none of them. The version string
-// itself is on every message, and the worker's receiver-side check
-// (internal/worker/lease.decodeAssignment) rejects a different one. A worker
-// whose version differs from the server's rejects every assignment, and the
-// tasks churn through reclaim, so upgrade the server before the workers.
-//
-// Version "3" puts the publishing worker's identity in every worker → server
-// NATS subject: task.status.<worker>.<job>, task.logs.<worker>.<task>,
-// work.lease.<worker>.<queue>, and worker.{register,heartbeat,deregister}.<worker>
-// (see the subject table in internal/bus). No message body changes, but a
-// worker publishing on the shorter subjects reaches no consumer.
-//
-// Version "4" introduced [TaskCancelMsg.AttemptID]. The field is omitempty and
-// narrows a cancel to one attempt; a worker that does not know it reads the
-// cancel as task-wide and could stop the task's newer attempt on a cancel
-// meant for a stale one. The version check fences such workers out at
-// registration.
-//
-// Version "5" sends cancels to the holding worker's task.cancel.<workerID>,
-// which the worker subscribes to once before asking for work. No message body
-// changes, but a worker that subscribes only to per-task
-// task.cancel.<taskID> subjects would never be told to stop a run.
+// The current wire shape:
+//   - Every worker → server NATS subject carries the publishing worker's
+//     identity: task.status.<worker>.<job>, task.logs.<worker>.<task>,
+//     work.lease.<worker>.<queue> and worker.{register,heartbeat,deregister}.<worker>
+//     (see the subject table in internal/bus). A worker publishing on shorter
+//     subjects reaches no consumer.
+//   - A cancel goes to the holding worker's task.cancel.<workerID>, which the
+//     worker subscribes to once before it asks for work. A worker subscribed
+//     only to per-task subjects would never be told to stop a run.
+//   - [TaskCancelMsg.AttemptID] narrows a cancel to one attempt. A worker that
+//     does not know the field would read the cancel as task-wide and could stop
+//     a task's newer attempt on a cancel meant for a stale one.
+//   - The EXPR fields of [AssignMsg] and [AssignEnvironment] are omitempty and
+//     populated only for a template that declares the EXPR extension, so a
+//     base-spec assignment's wire bytes carry none of them.
 const ProtocolVersion = "5"
 
 // ── Message type constants ────────────────────────────────────────────────────
@@ -121,8 +116,7 @@ func TimeoutReason(timeout time.Duration) string {
 // Workers publish this on first connect and on every reconnect so the server
 // has a current view of their capabilities.
 //
-// Fields map 1:1 with [store.Worker]; the server upserts a Worker row from
-// each received registration.
+// The server upserts a [store.Worker] row from each received registration.
 type RegisterMsg struct {
 	// Version must equal [ProtocolVersion].
 	Version string `json:"version"`
@@ -141,7 +135,7 @@ type RegisterMsg struct {
 	// ignores it, and an empty value means "unknown".
 	InstanceID string `json:"instance_id,omitempty"`
 
-	// FarmID is the farm this worker belongs to.  Required.
+	// FarmID is the farm this worker belongs to. Required.
 	FarmID string `json:"farm_id"`
 
 	// QueueID restricts the worker to a single queue if non-empty.
@@ -158,8 +152,9 @@ type RegisterMsg struct {
 	IPAddress string `json:"ip_address,omitempty"`
 
 	// ComputeLocation is the named compute location this worker belongs to
-	// (e.g. "onprem_linux", "cloud_aws_us_east"). Used for path translation
-	// and task affinity.
+	// (e.g. "onprem_linux", "cloud_aws_us_east"). The server uses it to pick the
+	// path-mapping rules for the worker's assignments and to match steps that
+	// require a compute location.
 	ComputeLocation string `json:"compute_location,omitempty"`
 
 	// OS and OSVersion are the worker's operating-system identity.
@@ -172,8 +167,8 @@ type RegisterMsg struct {
 	//
 	// A registration-payload field, not a ProtocolVersion change, for the
 	// reason ExprLimits below gives. A server that does not know the field
-	// ignores it; a worker that omits it is stored with "", which matches no
-	// arch requirement.
+	// ignores it, and a worker that omits it is stored with "", which matches
+	// no arch requirement.
 	Arch string `json:"arch,omitempty"`
 
 	// WorkerVersion is the sqi-worker build version (internal/version.Version),
@@ -197,18 +192,17 @@ type RegisterMsg struct {
 	// Tags holds arbitrary key/value capability tags the worker self-reports.
 	Tags map[string]string `json:"tags,omitempty"`
 
-	// ExprLimits advertises the OpenJD EXPR evaluation caps this worker will
-	// enforce when it resolves an assignment's expressions (its expr.*
-	// configuration section).  The server compares them against its own
-	// openjd.expr_* limits and refuses to dispatch an EXPR job to a worker
-	// that is tighter — see [ExprLimits], which also names the two tests that
-	// keep this key and its five inner keys matching the server's duplicate.
+	// ExprLimits advertises the OpenJD EXPR evaluation caps this worker
+	// enforces when it resolves an assignment's expressions (its expr.*
+	// configuration section). The server compares them against its own
+	// openjd.expr_* limits and does not dispatch an EXPR job to a worker whose
+	// caps are tighter; see [ExprLimits].
 	//
 	// It is a registration-payload field, not a [ProtocolVersion] change:
 	// nothing about an assignment depends on it. A server that does not know
-	// this field ignores it; a worker that does not send it reports zeroes,
+	// this field ignores it, and a worker that does not send it reports zeroes,
 	// which the server reads as "not advertised". Adding a field is
-	// compatible; renaming one must bump the version, because old and new
+	// compatible. Renaming one must bump the version, because old and new
 	// workers would otherwise disagree about the key undetected.
 	ExprLimits ExprLimits `json:"expr_limits,omitzero"`
 
@@ -216,12 +210,22 @@ type RegisterMsg struct {
 	// implements (see [ExtensionLogChecks]). The server withholds a job that
 	// declares one of them from a worker that does not list it, because a job
 	// whose checks nobody enforces would pass or fail on the process exit status
-	// alone and silently drop the guarantee its author asked for.
+	// alone and drop the guarantee its author asked for.
 	//
 	// A registration-payload field, not a [ProtocolVersion] change, for the
 	// reason ExprLimits above gives: a server that does not know it ignores it,
 	// and a worker that omits it is read as enforcing nothing.
 	Extensions []string `json:"extensions,omitempty"`
+
+	// CapacityGroup names the capacity group this worker asks to join (its
+	// worker.capacity_group configuration). The server honors it only with
+	// broker authentication off, and only for a sized group in the worker's
+	// farm. With authentication on, membership comes from the group token the
+	// worker enrolled with and the field is ignored.
+	//
+	// A registration-payload field, not a [ProtocolVersion] change: an older
+	// server ignores it, and an older worker omits it and joins nothing.
+	CapacityGroup string `json:"capacity_group,omitempty"`
 }
 
 // ExtensionLogChecks is the name of the sqi-defined step-level log-check
@@ -230,13 +234,13 @@ type RegisterMsg struct {
 // It duplicates internal/openjd's ExtensionLogChecks because no production file
 // under internal/worker may import internal/openjd (which imports the store).
 // TestProtocolAndRegistryAgreeOnWorkerEnforcedExtensions in internal/scheduler,
-// which imports both, pins the two to the same set.
+// which imports both, checks that the two sets match.
 const ExtensionLogChecks = "SQI_LOG_CHECKS"
 
 // WorkerEnforcedExtensions returns the worker-enforced extensions this worker
 // binary implements: what it advertises in [RegisterMsg.Extensions]. Keep it in
 // step with internal/worker/executor, and sorted: the test that pins it to
-// openjd's registry compares the two in order. It returns a fresh slice on each
+// openjd's registry compares the two in order. It returns a new slice on each
 // call.
 func WorkerEnforcedExtensions() []string {
 	return []string{ExtensionLogChecks}
@@ -244,17 +248,16 @@ func WorkerEnforcedExtensions() []string {
 
 // ExprLimits is a worker's self-reported OpenJD EXPR evaluation caps.
 //
-// It mirrors store.WorkerExprLimits field for field and json tag for tag; the
+// It mirrors store.WorkerExprLimits field for field and json tag for tag. The
 // two are separate types because no production file under internal/worker or
 // cmd/sqi-worker imports internal/store: the worker carries the wire contract,
 // the server carries the persistence model. A renamed tag on either side
 // decodes to zero, which the server reads as "not advertised" rather than as
-// an error, so two tests in internal/scheduler keep them in step and neither
-// subsumes the other:
-// TestWorkerExprLimits_WireKeysMatchTheProtocol covers the five keys INSIDE
-// this struct, and TestRegisterMsg_WireFieldsSurviveTheDuplication covers the
-// outer expr_limits key on [RegisterMsg] (and every other field of it) by
-// round-tripping a populated message into the server's duplicate struct.
+// an error.
+// TestHandleWorkerRegister_EveryWireFieldReachesTheStore in internal/scheduler
+// sends a fully populated [RegisterMsg] as JSON through the real registration
+// handler and checks that every field, the five inside this struct included,
+// arrives on the stored worker.
 //
 // Zero means "not advertised". A worker always populates every field (its
 // config layer rejects 0), so only a worker that does not know this struct
@@ -292,6 +295,19 @@ type GPUInfo struct {
 
 // ── DeregisterMsg ─────────────────────────────────────────────────────────────
 
+// DeregisterKind says whether a departing worker may come back. The empty
+// kind means it may: a service restart or upgrade, after which the worker
+// returns with the same identity.
+type DeregisterKind string
+
+const (
+	// DeregisterRetired is a machine leaving for good because it was retired.
+	DeregisterRetired DeregisterKind = "retired"
+	// DeregisterPreempted is a machine leaving for good because its provider
+	// reclaimed it (a spot or preemptible instance).
+	DeregisterPreempted DeregisterKind = "preempted"
+)
+
 // DeregisterMsg is the JSON payload workers publish to worker.deregister.<worker> on
 // graceful shutdown. The server marks the worker offline immediately upon
 // receipt, rather than waiting for the heartbeat timeout sweep.
@@ -318,6 +334,14 @@ type DeregisterMsg struct {
 	// Reason is an optional human-readable explanation for the departure
 	// (e.g. "graceful shutdown", "maintenance").
 	Reason string `json:"reason,omitempty"`
+
+	// Kind says whether the worker may come back. With [DeregisterRetired] or
+	// [DeregisterPreempted] the server deletes an ephemeral capacity-group
+	// member's worker row and revokes its credential; any other value, the
+	// empty one included, keeps both. Optional and omitted when empty, so it
+	// is not a [ProtocolVersion] change: a server that does not know it
+	// ignores it.
+	Kind DeregisterKind `json:"kind,omitempty"`
 }
 
 // ── HeartbeatMsg ─────────────────────────────────────────────────────────────
@@ -327,10 +351,11 @@ type DeregisterMsg struct {
 // that stop sending heartbeats are marked offline by the heartbeat sweep after
 // [scheduler.Config.WorkerTimeout] elapses.
 //
-// Beyond the liveness signal, each heartbeat carries enough runtime state for
-// the server to detect stale assignments without additional store queries:
-// active task IDs, counts, and the last time this worker received an
-// assignment.
+// Beyond the liveness signal, each heartbeat reports the worker's runtime
+// state: active task and attempt IDs, counts, uptime and the time of its last
+// assignment. The server acts only on AttemptsReported and
+// [HeartbeatMsg.ActiveAttemptIDs] (and reads At to spot a delayed heartbeat);
+// the other fields are informational.
 type HeartbeatMsg struct {
 	// Version must equal [ProtocolVersion].
 	Version string `json:"version"`
@@ -350,16 +375,13 @@ type HeartbeatMsg struct {
 	// this worker at the moment the heartbeat was composed.
 	ActiveTaskCount int `json:"active_task_count"`
 
-	// MaxConcurrentTasks is the worker's configured concurrency ceiling.
-	// It lets the server compute available capacity without a registration
-	// lookup.
+	// MaxConcurrentTasks is the worker's configured concurrency ceiling. It is
+	// informational: the server does not read it.
 	MaxConcurrentTasks int `json:"max_concurrent_tasks"`
 
 	// ActiveTaskIDs is the list of task IDs currently executing on this
-	// worker. The server uses this to detect assignments that are no longer
-	// present on the worker (e.g. due to a worker crash and restart) so it
-	// can mark them failed rather than waiting for a timeout.
-	// Empty when no tasks are running.
+	// worker, empty when none are running. It is informational: the server
+	// reconciles on ActiveAttemptIDs instead.
 	ActiveTaskIDs []string `json:"active_task_ids,omitempty"`
 
 	// AttemptsReported is true when ActiveAttemptIDs is authoritative. The
@@ -378,10 +400,9 @@ type HeartbeatMsg struct {
 	UptimeSeconds float64 `json:"uptime_seconds"`
 
 	// LastAssignmentAt is the worker's local timestamp of the most recent
-	// task assignment it received. Nil when the worker has not yet executed
-	// any task in this process lifetime. The server uses this to distinguish
-	// idle-but-healthy workers from workers that have stopped pulling
-	// assignments.
+	// task assignment it received. Nil when the worker has not executed any
+	// task in this process lifetime. It is informational: the server does not
+	// read it.
 	LastAssignmentAt *time.Time `json:"last_assignment_at,omitempty"`
 }
 
@@ -411,13 +432,12 @@ type AssignMsg struct {
 	// JobName and StepName are the job's and step's own declared names: the
 	// template's job "name" field and the matching StepTemplate's "name",
 	// verbatim. Neither is derivable from another field on this message:
-	// JobID/StepID are opaque IDs, and TaskName is the (possibly
-	// parameter-decorated, see buildTaskName) per-task display name, which
-	// equals the bare step name only when the step declares no task
-	// parameters. Phase-3 EXPR evaluation needs the real Job.Name/Step.Name
-	// symbols (section 1.2.2). Present only when EXPR is true, like the other
-	// phase-3 fields: a base-spec assignment has no format-string position
-	// that can reference either symbol.
+	// JobID/StepID are opaque IDs, and TaskName is the per-task display name,
+	// which equals the bare step name only when the step declares no task
+	// parameters. Worker-side EXPR evaluation needs the Job.Name and Step.Name
+	// symbols (section 1.2.2). Present only when EXPR is true: a base-spec
+	// assignment has no format-string position that can reference either
+	// symbol.
 	JobName  string `json:"job_name,omitempty"`
 	StepName string `json:"step_name,omitempty"`
 
@@ -427,22 +447,18 @@ type AssignMsg struct {
 	// AssignedAt is the server-side time the assignment was created.
 	AssignedAt time.Time `json:"assigned_at"`
 
-	// ComputeLocation is the compute-location name the server targeted when
-	// building this assignment's path map. Workers compare this against their
-	// own configured compute location and nack the message if they differ,
-	// so a reassigned worker (after a config change without restart) does not
-	// execute a task with path mappings intended for a different location.
-	// Empty means the server sent no location constraint (e.g., when no path
-	// map was generated).
+	// ComputeLocation is reserved: the server never sets it and the worker
+	// never reads it. The server builds PathMap from the compute location the
+	// worker registered with ([RegisterMsg.ComputeLocation]).
 	ComputeLocation string `json:"compute_location,omitempty"`
 
 	// Isolation is the OS identity this task must execute as, resolved from the
 	// task's queue. Nil means no isolation: the worker runs the task as its own
 	// user.
 	//
-	// This carries a username only, never a credential. Worker↔server
-	// transport authentication is opt-in (nats.auth.enabled) and off by
-	// default, so nothing secret may travel on this channel.
+	// This carries a username only, never a credential. Worker to server
+	// transport authentication is opt-in and off by default, so nothing secret
+	// may travel on this channel.
 	Isolation *IsolationSpec `json:"isolation,omitempty"`
 
 	// ── Parameter space ───────────────────────────────────────────────────
@@ -458,7 +474,7 @@ type AssignMsg struct {
 
 	// ParameterTypes declares the OpenJD type each entry in Parameters was
 	// declared with in the step's taskParameterDefinitions ("STRING", "PATH",
-	// "INT", "FLOAT", or sqi's "CHUNK[INT]"), keyed by parameter name. Phase-3
+	// "INT", "FLOAT", or sqi's "CHUNK[INT]"), keyed by parameter name. Worker-side
 	// expression evaluation needs a parameter's declared type to render
 	// Task.Param.<name> correctly (Param.Count + 1 must add, not concatenate).
 	// The type cannot be inferred from the value text, since "1" is a valid
@@ -485,18 +501,11 @@ type AssignMsg struct {
 	// StepTemplateLet holds the step template's own let: block (Template
 	// Schemas §3.6), as the raw, unparsed "name = expression" strings in
 	// declaration order. It governs OnRun and the step's embedded files.
-	// Bindings are shipped as raw source and re-evaluated on the worker.
-	// A step template's block is the one scope that could be resolved
-	// server-side: internal/openjd/scope.go's ScopeStepTemplate exposes only
-	// Param., RawParam., Job.Name and Step.Name (no Task.* and no Session.*),
-	// and checkLetBindings enforces that at submission, so every name this
-	// block can reference is concrete by phase 2.
-	//
-	// It ships raw for two reasons. Its bindings are the table StepScriptLet
-	// is evaluated against, so sending values here and source there would
-	// split one ordered evaluation across two machines; and evaluating every
-	// block the same way on the host keeps phase 3 one mechanism. Present only
-	// when EXPR is true.
+	// The bindings ship as raw source and are evaluated on the worker. The
+	// block references only Param., RawParam., Job.Name and Step.Name, so the
+	// server could resolve it, but its bindings are the table StepScriptLet is
+	// evaluated against: sending values here and source there would split one
+	// ordered evaluation across two machines. Present only when EXPR is true.
 	StepTemplateLet []string `json:"step_template_let,omitempty"`
 
 	// StepScriptLet holds the step script's let: block. Template Schemas §3.6
@@ -576,7 +585,7 @@ type LogChecks struct {
 
 // IsolationSpec names the OS identity a task must run as. It is resolved
 // server-side from the queue and contains no secret: on Windows the credential
-// is obtained worker-side from the local credential store or via S4U.
+// is read worker-side from the local credential store.
 type IsolationSpec struct {
 	// User is the OS username to run as. Required when IsolationSpec is present.
 	User string `json:"user"`
@@ -641,20 +650,18 @@ type AssignEnvironment struct {
 	// Let holds this environment's script let: block (Template Schemas
 	// §3.6), as raw "name = expression" strings in declaration order. It
 	// governs this environment's onEnter/onExit actions, variables, and
-	// embedded files, and is re-evaluated on the worker for the same reason
-	// as [AssignMsg.StepTemplateLet]. Present only when the owning
-	// AssignMsg's EXPR flag is true.
+	// embedded files, and is evaluated on the worker for the same reason as
+	// [AssignMsg.StepTemplateLet]. Present only when the owning AssignMsg's
+	// EXPR flag is true.
 	Let []string `json:"let,omitempty"`
 
 	// StepEnvironment reports whether this entry came from a StepTemplate's
 	// stepEnvironments (true) rather than the JobTemplate's jobEnvironments
-	// (false/absent). assign.go's convertEnvironment puts both lists into the
-	// same []AssignEnvironment slice, so a worker-side symbol-table builder
-	// needs this flag to tell them apart: per Template Schemas §3.6.2, a step
-	// environment's script sees Step.Name while a job environment's does not
-	// (internal/openjd's ScopeStepEnvironment = ScopeJobEnvironment +
-	// Step.Name, in scope.go). True only when the owning AssignMsg's EXPR flag
-	// is true and this is a step environment.
+	// (false/absent). Both lists share one []AssignEnvironment slice, so a
+	// worker-side symbol-table builder needs this flag to tell them apart: per
+	// Template Schemas §3.6.2, a step environment's script sees Step.Name while
+	// a job environment's does not. True only when the owning AssignMsg's EXPR
+	// flag is true and this is a step environment.
 	StepEnvironment bool `json:"step_environment,omitempty"`
 }
 

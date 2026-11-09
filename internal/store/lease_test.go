@@ -454,7 +454,8 @@ func TestLeaseTask_SamePoolTwice(t *testing.T) {
 // sweep can take a live worker offline and nothing brings it back online, so
 // refusing it would starve it; see "Known gaps" in docs/architecture.md), and
 // neither is a worker with no row (the store does not require registration;
-// the scheduler does).
+// the scheduler does). Both are refused when the request sets RequireOnline:
+// see TestLeaseTask_RequireOnline.
 func TestLeaseTask_RefusedForADisabledWorker(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -484,6 +485,50 @@ func TestLeaseTask_RefusedForADisabledWorker(t *testing.T) {
 				if got := mustTask(t, st, task.ID); got.Status != store.TaskStatusAssigned || got.AssignedWorkerID != worker {
 					t.Fatalf("task = %s on %q, want assigned on %s", got.Status, got.AssignedWorkerID, worker)
 				}
+			}
+		})
+	}
+}
+
+// TestLeaseTask_RequireOnline: a lease that requires its worker online is Lost,
+// writing nothing and holding no claim, when the worker has gone offline, was
+// deleted or never registered; it is leased to a worker that is online.
+func TestLeaseTask_RequireOnline(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady, store.TaskStatusReady,
+				store.TaskStatusReady, store.TaskStatusReady)
+			pool := seedPool(t, st, 0)
+			now := time.Now().UTC()
+			for _, id := range []string{"w-on", "w-off", "w-gone"} {
+				w := store.Worker{ID: id, FarmID: g.Farm.ID, Hostname: id, Status: store.WorkerStatusOnline, LastHeartbeatAt: &now}
+				if _, _, err := st.RegisterWorker(t.Context(), w); err != nil {
+					t.Fatalf("RegisterWorker %s: %v", id, err)
+				}
+			}
+			for _, id := range []string{"w-off", "w-gone"} {
+				if _, offlined, err := st.OfflineWorker(t.Context(), id, "", now); err != nil || !offlined {
+					t.Fatalf("OfflineWorker %s = (%v, %v), want (true, nil)", id, offlined, err)
+				}
+			}
+			if err := st.DeleteWorkerIfRemovable(t.Context(), "w-gone"); err != nil {
+				t.Fatalf("DeleteWorkerIfRemovable: %v", err)
+			}
+
+			for i, worker := range []string{"w-off", "w-gone", "never-registered"} {
+				task := g.Tasks["a"][i]
+				req := leaseReq(task, poolClaim(pool))
+				req.WorkerID, req.RequireOnline = worker, true
+				mustLease(t, st, req, store.LeaseLost)
+				assertNothingWritten(t, st, task, pool)
+			}
+
+			task := g.Tasks["a"][3]
+			req := leaseReq(task, poolClaim(pool))
+			req.WorkerID, req.RequireOnline = "w-on", true
+			mustLease(t, st, req, store.LeaseLeased)
+			if got := mustTask(t, st, task.ID); got.Status != store.TaskStatusAssigned || got.AssignedWorkerID != "w-on" {
+				t.Fatalf("task = %s on %q, want assigned on w-on", got.Status, got.AssignedWorkerID)
 			}
 		})
 	}

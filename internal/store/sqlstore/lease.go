@@ -51,7 +51,8 @@ WHERE  t.id = ?`
 	//     window and heartbeats never restore online, so refusing it would
 	//     starve it for good (see "Known gaps" in docs/architecture.md). A
 	//     worker with no row is not refused either: the store does not require
-	//     registration (the scheduler does, before it leases).
+	//     registration (the scheduler does, before it leases). A request with
+	//     RequireOnline uses sqlLeaseTaskGuardedOnline instead.
 	//
 	// Binds: worker, assigned_at, updated_at, task, queue, farm, now, worker.
 	sqlLeaseTaskGuarded = sqlLeaseTaskWrite + `
@@ -62,6 +63,16 @@ WHERE  t.id = ?`
                  AND  j.queue_id = ? AND j.farm_id = ?
                  AND  ` + sqlLeasableTask + `)
   AND  NOT EXISTS (SELECT 1 FROM workers w WHERE w.id = ? AND w.disabled)`
+
+	// sqlLeaseTaskGuardedOnline is sqlLeaseTaskGuarded for a request with
+	// RequireOnline: the worker's row must also exist and be online. The
+	// worker row is held FOR SHARE, so an offline transition (which holds it
+	// FOR UPDATE) or a deletion that committed before the lock is seen, and the
+	// lease is Lost rather than assigning a task to a worker that has left.
+	//
+	// Binds: those of sqlLeaseTaskGuarded, then worker.
+	sqlLeaseTaskGuardedOnline = sqlLeaseTaskGuarded + `
+  AND  EXISTS (SELECT 1 FROM workers w WHERE w.id = ? AND w.status = 'online')`
 
 	// sqlLeaseQueueCapCount and sqlLeaseFarmCapCount read an anchored queue's
 	// or farm's cap together with its active-task count (the policy gate's own
@@ -112,7 +123,8 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // that the worker is not disabled and that the job is still in the queue and
 // farm the scope read named, and fullTx re-reads each anchored cap with its
 // count, so the lease decides on committed values, not the ones read before
-// the locks. An offline worker is not refused (see sqlLeaseTaskGuarded).
+// the locks. An offline worker, or one with no row, is refused only when the
+// request sets RequireOnline (see sqlLeaseTaskGuarded).
 //
 // Because the lease holds the worker and job rows FOR SHARE, every operation
 // that holds either row FOR UPDATE and the lease wait for each other. On
@@ -125,9 +137,10 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 //   - an offline transition complete. Taking a worker offline (the heartbeat
 //     sweep, a deregister, a restart's reclaim) holds the worker row from its
 //     marking UPDATE to commit, so a lease in flight is waited for and its task
-//     is reclaimed. A lease that waited for the transition then proceeds:
-//     served if the worker is alive, recovered by the stale-assignment reaper
-//     if not;
+//     is reclaimed. A lease that waited for the transition is Lost when it
+//     requires the worker online (the scheduler read it online); otherwise it
+//     proceeds, served if the worker is alive, recovered by the
+//     stale-assignment reaper if not;
 //   - the latest-attempt checks sound. CompleteTaskAttempt and the other
 //     job-anchored attempt writers hold the job row from the check to the task
 //     write, so no lease adds a newer attempt between the two;
@@ -223,8 +236,13 @@ func (sc *leaseScope) anchors(workerID string, claims []store.UsagePoolClaim) []
 // leaseTaskRowTx makes the guarded ready → assigned write
 // (sqlLeaseTaskGuarded) and reports whether it landed.
 func (sc *leaseScope) leaseTaskRowTx(ctx context.Context, tx *dbTx, req store.LeaseRequest, nowText string) (bool, error) {
-	res, err := tx.ExecContext(ctx, sqlLeaseTaskGuarded,
-		req.WorkerID, nowText, nowText, req.TaskID, sc.queueID, sc.farmID, nowText, req.WorkerID)
+	query := sqlLeaseTaskGuarded
+	args := []any{req.WorkerID, nowText, nowText, req.TaskID, sc.queueID, sc.farmID, nowText, req.WorkerID}
+	if req.RequireOnline {
+		query = sqlLeaseTaskGuardedOnline
+		args = append(args, req.WorkerID)
+	}
+	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, fmt.Errorf("store: lease task %s: %w", req.TaskID, mapErr(err))
 	}

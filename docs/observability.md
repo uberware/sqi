@@ -67,10 +67,10 @@ Status text is cleaned before it is stored: control characters are removed
 (tabs and line breaks become spaces) and the text is cut to 1024 bytes, both on
 the worker and again on the server.
 
-**Rolling upgrades:** upgrade servers before workers. An old server treats each
-snapshot from a new worker as a repeat `running` report, which is correct but
-costs an anchored write about every 2 s per running task. A new server with an
-old worker records one unthrottled snapshot per `openjd_status` line.
+Upgrade servers before workers. A server that predates progress treats each
+snapshot from a newer worker as a repeat `running` report, which is correct but
+costs an anchored write about every 2 s per running task. A newer server with an
+older worker records one unthrottled snapshot per `openjd_status` line.
 
 ### Remaining time and ETA
 
@@ -129,7 +129,7 @@ template.
 
 Both binaries write their own operational output (scheduler decisions, worker
 registration, errors, etc.) using Go's structured `slog`. This output is
-written to **stderr** in JSON format by default (see
+written to stderr in JSON format by default (see
 [Log format](#log-format-and-level)); set `log.file` to write it to a rotating
 file instead. A Windows service has no stderr, so it always writes a file — by
 default `C:\ProgramData\sqi\logs\<service-name>.log` (see
@@ -138,7 +138,7 @@ default), the logs are also forwarded to the server's in-memory ring buffer and
 surfaced in the web UI — so operators can see why a worker is misbehaving
 without shelling into the host.
 
-**Transport detail:** each worker runs a fan-out sink that publishes every log
+Each worker runs a fan-out sink that publishes every log
 record as a JSON `DiagLogMsg` to the core-NATS subject
 `worker.diag.<workerID>`. The server subscribes to `worker.diag.>` and stores
 arriving records in its buffer. The server's own slog records bypass NATS and
@@ -160,7 +160,7 @@ leased it but never reported `running`.
 
 The scheduler's **stale-assigned reaper** runs on every heartbeat-sweep tick
 and returns tasks that have been `assigned` for longer than a fixed internal
-timeout (**30 s** — `AssignedTaskTimeout`, not a tunable config key) to the
+timeout (30 s, `AssignedTaskTimeout`; not a config key) to the
 `ready` queue.
 If the task's job is now idle (no other tasks in flight), the job is demoted
 from `running` back to `pending` so it does not appear stuck.
@@ -201,7 +201,7 @@ The scheduler's **unschedulable sweep** runs on every heartbeat-sweep tick
 worker-eligibility check the assignment path uses to hand out leases — it is
 read-only and never changes scheduling, only the annotation described below.
 A `ready` task is flagged once it has waited longer than
-`scheduler.unschedulable_grace` (default **30 s**) with no eligible online
+`scheduler.unschedulable_grace` (default 30 s) with no eligible online
 worker; setting the grace period to `0` disables the sweep entirely. See
 [`scheduler.unschedulable_grace`](configuration.md#schedulerunschedulable_grace)
 for the config knob.
@@ -235,22 +235,20 @@ not a capacity one. The scheduler withholds EXPR work from any worker whose
 advertised `expr.*` caps undercut the limits this server accepts templates
 under, and it names both numbers and both config keys. Before chasing it:
 
-- **For a job with a recorded extension list, the answer is exact.** The gate
-  reads the extension list recorded on the job row at submission, so a job
-  flagged with this reason declares `EXPR`. The fix is to raise the workers'
+- A job with a recorded extension list gets an exact answer. The gate reads
+  the extension list recorded on the job row at submission, so a job flagged
+  with this reason declares `EXPR`. The fix is to raise the workers'
   `expr.*` keys, or lower the server's `openjd.expr_*` keys. See
   [Server → EXPR expression limits](configuration.md#4-every-worker-must-be-at-least-as-generous-as-this-server).
-- **For a job with no recorded list, you may see it on a job that uses no
-  expressions.** Rows written before the `jobs.declared_extensions` column
-  existed carry no list, and for those alone the gate falls back to scanning
-  the raw template for the bytes `EXPR` *and* `extensions`. A base-spec
-  template that declares some other extension and mentions the string
-  incidentally — a comment, or an environment variable such as
-  `HOUDINI_EXPR_CACHE` — is withheld from every short worker and flagged with
-  this reason. It resolves as those jobs age out; the fix is the same either
-  way.
-- **With the sweep disabled (`scheduler.unschedulable_grace` ≤ `0`) this
-  reason is never written.** A withheld task sits `ready` with nothing on it,
+- A job with no recorded list can show this reason even though it uses no
+  expressions. A job row without `jobs.declared_extensions` carries no list,
+  and for those alone the gate falls back to scanning the raw template for the
+  bytes `EXPR` *and* `extensions`. A base-spec template that declares some other
+  extension and mentions the string incidentally (a comment, or an environment
+  variable such as `HOUDINI_EXPR_CACHE`) is withheld from every short worker and
+  flagged with this reason. The fix is the same either way.
+- With the sweep disabled (`scheduler.unschedulable_grace` ≤ `0`) this
+  reason is never written. A withheld task sits `ready` with nothing on it,
   and the one-off `WARN` the server logs when the short worker registers, which
   may predate the job, is the only signal. Look for it under
   [Admin → Server log](#admin--server-log) (component `server`), not in that
@@ -269,7 +267,7 @@ serve different questions:
 | **Where** | `GET /api/v1/tasks/{id}` `failure_reason` field, the job detail's `failure_summary`, and the web UI (per-task reason string + job-level failure banner on `JobDetail`) | Worker diagnostics panel, Admin → Server log, `GET /api/v1/diagnostics/logs` |
 | **Look here first** | Yes — for "which reason, how many tasks" | Only when the reason string isn't enough context |
 
-**Start with `failure_reason`.** Every task that reaches terminal `failed` or
+Start with `failure_reason`. Every task that reaches terminal `failed` or
 `canceled` carries one: the worker's own reported message when it sent one
 (e.g. an OpenJD validation failure, a timeout, a non-zero exit), a scheduler
 fallback like `"failed (exit 1)"` when the worker didn't, or a
@@ -283,14 +281,14 @@ reclaim reason lands only on the closed attempt, never on the task's durable
 [the task state machine's durable-failure-reason table](architecture.md#5-status-ingestion)
 for the full list of reasons and which code path sets each one.
 
-**Job detail rolls this up.** `GET /api/v1/jobs/{id}` includes a
+Job detail rolls this up. `GET /api/v1/jobs/{id}` includes a
 `failure_summary` (`failed_count`, `dominant_reason`, `distinct_reasons`)
 aggregated across the job's failed tasks, and the web UI's job detail page
 shows it as a failure banner (e.g. "3 tasks failed — execution timeout after
 120s (2 reasons)") above the task list, next to the per-task reason string
 shown alongside each failed row.
 
-**Reach for the diagnostics ring buffer when the reason string isn't enough.**
+Reach for the diagnostics ring buffer when the reason string isn't enough.
 `failure_reason` answers *what* happened to the task; the diagnostic logs
 answer *why the worker process behaved that way* — e.g. the executor line
 that shows exactly which path it tried and failed to find, or a scheduler WARN
@@ -318,9 +316,9 @@ retry, exhaustion, and auto-park interact.
 Both counters increment inside `internal/scheduler/failure.go`'s
 `handleTaskFailed` path, alongside a structured log line:
 
-- A **retry** logs at `INFO`: `"scheduler: task auto-retry scheduled"` with
+- A retry logs at `INFO`: `"scheduler: task auto-retry scheduled"` with
   `task_id`, `failed_attempts`, `max_attempts`, and `retry_delay` attributes.
-- An **auto-park** logs at `WARN`: `"scheduler: job auto-parked at failure
+- An auto-park logs at `WARN`: `"scheduler: job auto-parked at failure
   limit"` with `job_id` and `failure_limit` attributes.
 
 The retry line carries `task_id`; the auto-park line carries `job_id` — both
@@ -329,6 +327,32 @@ are visible (component `server`) in Admin → Server log and
 `GET /api/v1/diagnostics/logs`, in addition to the server's own log (stderr;
 `log.file` when set; or, for a Windows service with no `log.file`,
 `%ProgramData%\sqi\logs\<service-name>.log`).
+
+---
+
+## Capacity group metrics
+
+With at least one enabled [capacity group](capacity.md), `sqi-server` exports
+three gauges from the capacity step of its sweep tick (about every 15 seconds,
+on the leader only). The `group` label is the group name. With no enabled
+group none of them has a series, and a group's series are removed when it is
+disabled, renamed or deleted.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `sqi_capacity_demand_cores` | gauge | `group` | Cores of ready work assigned to the group: work one of its machines could run that no idle worker and no higher-priority group took. |
+| `sqi_capacity_desired_machines` | gauge | `group` | Total machines the group should have, counting the machines it already has (not the number to add). |
+| `sqi_capacity_members` | gauge | `group`, `state` | Members of the group by liveness, `state` being `online` or `offline`. A disabled member counts in whichever it is. |
+
+If the server cannot read the store during a tick it keeps the previous values
+rather than zeroing them; the `evaluated_at` of the group's `status` in
+`GET /api/v1/capacity-groups/{id}` shows how old they are. The same figures,
+with the group's retire candidates and profile mismatches, are in that status.
+
+`sqi_scheduler_queue_depth` (the label is the queue ID, not its name) is
+set back to `0` when a queue that had ready work drains, so a scaling signal
+built on it falls again. A queue the server has not seen with ready work since
+it started has no series.
 
 ---
 
@@ -399,7 +423,7 @@ SQI_DIAGNOSTICS_BUFFER_SIZE=0 sqi-server serve --config /etc/sqi/sqi-server.yaml
 When server diagnostics are disabled (`buffer_size: 0`):
 
 - No in-memory buffer is allocated.
-- The REST endpoint returns **503 Service Unavailable**.
+- The REST endpoint returns 503 Service Unavailable.
 - The worker diagnostics panel and Admin → Server log show nothing.
 
 Workers have a separate boolean toggle: set `SQI_DIAGNOSTICS_ENABLED=false` on a
@@ -460,7 +484,7 @@ Returns records from the in-memory diagnostic log buffer.
 }
 ```
 
-When diagnostics are disabled the endpoint returns **503** with a problem-detail
+When diagnostics are disabled the endpoint returns 503 with a problem-detail
 body instead.
 
 **Example — tail recent WARN and above from a specific worker:**
@@ -517,7 +541,7 @@ Each push frame carries a `DiagnosticsPush` payload:
 }
 ```
 
-> Note: the WebSocket payload uses the key `at` for the timestamp; the REST
+> The WebSocket payload uses the key `at` for the timestamp; the REST
 > response uses `ts`. Both carry the same RFC3339Nano value.
 
 Clients filter by component or level client-side — the server broadcasts all
@@ -591,7 +615,7 @@ Use `text` only in development; log aggregators expect structured JSON.
 
 ### Log destination
 
-By default both binaries write their log to **stderr**. Three more keys (the
+By default both binaries write their log to stderr. Three more keys (the
 environment variables are `SQI_LOG_FILE`, `SQI_LOG_MAX_SIZE_MB` and
 `SQI_LOG_MAX_BACKUPS` for the server, and `SQI_WORKER_LOG_FILE`,
 `SQI_WORKER_LOG_MAX_SIZE_MB` and `SQI_WORKER_LOG_MAX_BACKUPS` for a worker)
@@ -609,7 +633,7 @@ The file is rotated by size, by the process itself: `<file>` becomes
 reference is [`log.file`](configuration.md#logfile) (server) and
 [`log.file`](worker-configuration.md#logfile) (worker).
 
-A **Windows service** has no stderr to write to, so with `log.file` empty it logs
+A Windows service has no stderr to write to, so with `log.file` empty it logs
 to `C:\ProgramData\sqi\logs\<service-name>.log`, where `<service-name>` is the
 name the service was installed under, and creates that directory. Rotation
 applies to that file too. See
@@ -620,7 +644,7 @@ applies to that file too. See
 
 ## Out-of-band wiring
 
-By default both binaries write structured JSON to **stderr**; with `log.file` set,
+By default both binaries write structured JSON to stderr; with `log.file` set,
 or under a Windows service, they write it to a file instead (see
 [Log destination](#log-destination)). The in-UI buffer complements out-of-band
 log forwarding — it does not replace it. Ship the log to your log platform for

@@ -210,7 +210,7 @@ nats:
   max_reconnect_attempts: -1
 ```
 
-> **Keep this above `0`.** When broker authentication is on and the server
+> Keep this above `0`. When broker authentication is on and the server
 > rejects this worker's credential mid-run (usually after
 > `sqi-server worker revoke` or `DELETE /api/v1/workers/{id}/credential`), the
 > worker keeps retrying for 2 minutes, in case `sqi-server` or its database is
@@ -491,7 +491,7 @@ worker:
   session_dir: "/var/lib/sqi-worker-sessions"
 ```
 
-> **Never widened.** sqi does not `chmod` an existing directory to make it
+> sqi never widens a directory: it does not `chmod` an existing directory to make it
 > traversable. A directory is either created at the correct mode, or the
 > worker refuses with an error naming the ancestor that needs `chmod o+x`.
 > At boot this check runs only when `isolation.required: true`, so a root
@@ -500,7 +500,7 @@ worker:
 > runs when an assignment with run-as-user isolation arrives, and fails only
 > that task.
 
-> **A root worker's default session root is on `/var`.** The root/non-root
+> A root worker's default session root is on `/var`. The root/non-root
 > choice above depends only on the worker's effective uid at startup, not on
 > whether any queue sets `run_as_user`. If `data_dir` is on a dedicated
 > scratch volume, set `session_dir` to a directory on that volume too, but
@@ -583,13 +583,13 @@ reference including auto-detected tags.
 
 Says where a command a job runs really lives. A job template names the program
 it runs (`nuke`, `blender`); this table maps that name to the executable to
-start instead, with optional arguments placed **before** the ones the job
+start instead, with optional arguments placed before the ones the job
 supplies.
 
 The worker starts a job's command directly, with no shell, so a shell alias
 never resolves, and some software installs under a versioned name (Nuke on
 Windows is `Nuke17.1.exe`, never `nuke`). Without an entry the worker looks the
-name up on its own `PATH`, exactly as before.
+name up on its own `PATH`.
 
 An entry is the first thing consulted. After it, a command of the same name
 already on `PATH` is used as is, and only if there is neither does a detector's
@@ -666,8 +666,14 @@ worker:
 Maximum time the worker waits for in-flight tasks to finish after SIGINT,
 SIGTERM or a Windows service stop. Tasks still running at the end of this
 window receive SIGTERM, then SIGKILL a third of this period later, and are
-reported as `failed`. On workers you restart while they are busy, set it to
-your longest expected task duration. Must be `> 0`.
+reported as `worker_shutdown`, which the server treats as a reclaim: the task
+returns to `ready` and runs again from the start, with no retry consumed and no
+failure counted. On workers you restart while they are busy, set it to
+your longest expected task duration. The worker keeps heartbeating throughout
+the drain, so a long grace period does not cost it its tasks. On machines an
+autoscaler terminates, set the autoscaler's termination hook to at least the
+grace period plus a third of it ([Capacity groups](capacity.md#draining-and-shutdown_grace_period)).
+Must be `> 0`.
 
 ```yaml
 worker:
@@ -715,6 +721,93 @@ workers.
 worker:
   keep_failed_sessions: false
 ```
+
+---
+
+### `worker.capacity_group`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (joins no group) |
+| **Env var** | `SQI_WORKER_CAPACITY_GROUP` |
+
+The capacity group this worker asks to join when it registers. The server
+honors it only with broker authentication off, and only for a sized group in
+the worker's farm; with authentication on, membership comes from the group
+token the worker enrolled with and this value is ignored. While the value is
+set, removing the worker from its group through the API lasts only until its
+next registration, when it joins again.
+See [Capacity groups](capacity.md#joining-a-group), which also explains why an
+image must be built without a worker ID in `worker.data_dir`.
+
+```yaml
+worker:
+  capacity_group: "cloud-spot"
+```
+
+---
+
+### `worker.preemption.watch`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"none"` |
+| **Env var** | `SQI_WORKER_PREEMPTION_WATCH` |
+
+Watch the cloud provider's instance metadata service for a notice that this
+spot or preemptible machine is about to be reclaimed. One of `none`, `aws`,
+`gcp` or `azure`; any other value fails startup naming the key. With `none`
+nothing is polled and no network request is made.
+
+| Value | Request | A notice is |
+|---|---|---|
+| `aws` | IMDSv2 token `PUT /latest/api/token`, then `GET /latest/meta-data/spot/instance-action` on `169.254.169.254` | status 200, unless its `action` is `stop` or `hibernate`, which keep the instance (404 means none) |
+| `gcp` | `GET /computeMetadata/v1/instance/preempted` with `Metadata-Flavor: Google` on `metadata.google.internal` | body `TRUE` |
+| `azure` | `GET /metadata/scheduledevents?api-version=2020-07-01` with `Metadata: true` on `169.254.169.254` | an event with `EventType` `Preempt` |
+
+On a notice the worker cancels its running tasks at once, without waiting out
+[`worker.shutdown_grace_period`](#workershutdown_grace_period). The tasks are
+reported as `worker_shutdown`, which the server reclaims and re-queues rather
+than counting as a failure, and the worker deregisters as `preempted`, so an
+ephemeral capacity-group member is removed. Each request has a 2 s timeout and
+goes to the metadata service directly, never through a proxy named by
+`HTTP_PROXY` or `HTTPS_PROXY`. A failed poll never stops the watcher; it is
+logged at debug, with a warning after 10 consecutive failures.
+
+```yaml
+worker:
+  preemption:
+    watch: aws
+```
+
+---
+
+### `worker.preemption.poll_interval`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `"5s"` |
+| **Env var** | `SQI_WORKER_PREEMPTION_POLL_INTERVAL` |
+
+How often the metadata service is polled. Must be between `1s` and `60s`;
+providers give from 30 s (Azure) to 2 minutes (AWS) of warning.
+
+---
+
+### `worker.preemption.endpoint`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (the provider's well-known address) |
+| **Env var** | `SQI_WORKER_PREEMPTION_ENDPOINT` |
+
+Replaces the metadata base URL, for a proxy or a test. This is the only way to
+send the polls through a proxy: the environment's `HTTP_PROXY` is not used.
+Ignored with `watch: none`.
 
 ---
 
@@ -787,11 +880,11 @@ own account. Supported on POSIX (Linux/macOS) and on Windows through the
 `logon_user` provider; see [Windows](#windows) below for its setup. When no
 queue is configured for isolation, this section has no effect.
 
-> **Enabling this raises the worker daemon's own privilege.** On POSIX, sqi
+> Enabling this raises the worker daemon's own privilege. On POSIX, sqi
 > switches to another user with `setuid`/`setgid`/`setgroups`, which requires
 > the daemon to run as root: `isolation.Provider.Capable()` fails unless the
-> effective uid is 0. For a worker that runs unprivileged today, isolation
-> gives the daemon root so that tasks can run without it.
+> effective uid is 0. A worker that otherwise runs unprivileged needs root so
+> that its tasks can run without it.
 
 ### `isolation.required`
 
@@ -866,20 +959,17 @@ isolation:
     - "solidangle_LICENSE"  # Arnold, older variable name
 ```
 
-> **Avoid broad globs.** `"*"`, or a pattern like `"*KEY*"`, passes the
+> Avoid broad globs. `"*"`, or a pattern like `"*KEY*"`, passes the
 > daemon's own credentials, tokens and internal service addresses to every
 > isolated task. List the exact variable names. When a task fails on a
 > missing license variable, add that one name.
 
 ### Windows
 
-On Windows, task isolation uses the `logon_user` provider.
-`make test-isolation-windows` tests it against real local accounts, NTFS ACLs,
-DPAPI credential storage and processes launched under the target account's
-token. See [Known gaps](auth.md#known-gaps) in `docs/auth.md` for its
-remaining limitations.
+On Windows, task isolation uses the `logon_user` provider. See
+[Known gaps](auth.md#known-gaps) in `docs/auth.md` for its limitations.
 
-**The worker must run as a service under LocalSystem**, or as an account
+The worker must run as a service under LocalSystem, or as an account
 granted `SeAssignPrimaryTokenPrivilege`. Windows requires that privilege to
 start a process under another account's token, and an elevated Administrator
 does not hold it by default. A missing privilege is the most common cause
@@ -899,7 +989,7 @@ LocalSystem as the supported account for run-as-user isolation. See
 [Choosing the account](worker-deployment.md#choosing-the-account) for
 installing the worker under another account.
 
-**Each run-as-user account needs the "Log on as a batch job" right**
+Each run-as-user account needs the "Log on as a batch job" right
 (`SeBatchLogonRight`). The provider logs the account on with
 `LOGON32_LOGON_BATCH`, which does not require "Allow log on locally" and,
 unlike an S4U logon, carries network credentials. Default workstation policy
@@ -916,7 +1006,7 @@ on as a batch job**. To script it, or on an edition without `secpol.msc`
 `scripts/test-isolation-windows.ps1` does this for its test accounts and can
 serve as a reference.
 
-**Provisioning credentials.** Each run-as-user account needs its password
+Provisioning credentials: each run-as-user account needs its password
 stored on every worker that serves a queue configured for it. From an elevated
 shell:
 
@@ -926,37 +1016,37 @@ The secret is read from stdin; an argument would be visible to every process
 on the host. It is encrypted with the machine DPAPI key and written under
 `<data_dir>\isolation\` with an ACL granting only SYSTEM and Administrators.
 
-> **Machine-scope encryption means the file ACL is the real boundary.**
+> With machine-scope encryption the file ACL is the security boundary.
 > Anything running on the host that can *read* the file can decrypt it. Do not
 > relax the ACL, and treat a backup that copies it elsewhere on the same
 > machine as a credential disclosure.
 
-**Session directories** are secured with a protected NTFS DACL granting only
+Session directories are secured with a protected NTFS DACL granting only
 the target account, SYSTEM and Administrators. Inheritance is stripped, so a
 session directory does not inherit a `BUILTIN\Users` grant from its parent.
 Ownership is not transferred to the target account, because a Windows owner
 implicitly holds `WRITE_DAC` and could open its session to other accounts.
 
-**Session root** defaults to `%ProgramData%\sqi\worker\sessions` (see
+The session root defaults to `%ProgramData%\sqi\worker\sessions` (see
 [`worker.session_dir`](#workersession_dir)).
 
-**Bypass traverse checking.** Windows grants `SeChangeNotifyPrivilege` to
+Bypass traverse checking: Windows grants `SeChangeNotifyPrivilege` to
 `Everyone` by default, so sqi does not check ancestor directory permissions as
 it does on POSIX. If your environment removes that privilege from the target
 account, credential resolution fails with a message naming the policy; sqi
 does not widen the directories above a session root.
 
-**The `s4u` provider is not implemented** and is refused. An S4U logon needs
+The `s4u` provider is not implemented and is refused. An S4U logon needs
 no password, but its token carries no network credentials: any UNC path,
 mapped drive, or authenticated license server fails as `ANONYMOUS` inside the
 task.
 
-**Process containment.** Windows task processes run inside a job object, so a
+Process containment: Windows task processes run inside a job object, so a
 grandchild orphaned before a cancel or timeout is still reaped. This applies
 to every Windows worker, isolated or not: a running task is terminated when
 the worker process exits, including on a graceful service restart.
 
-> **An isolated task controls its session directory.** The ACL grants the
+> An isolated task controls its session directory. The ACL grants the
 > target account full access, so the task can replace anything under its
 > scratch subdirectory, including swapping a file it wrote for a symlink or a
 > directory junction. Stage-out opens every source through an `os.Root`
@@ -984,9 +1074,9 @@ the worker process exits, including on a graceful service restart.
 Isolation always strips gid 0 (`root`) from a target account's supplementary
 groups. It keeps every other group the account belongs to, such as `docker`,
 `disk`, `shadow` or an in-house group, because those memberships are often
-how a render account reaches project storage. **Do not point a queue's
-`run_as_user` at an account in `docker`** (a one-step escalation to root)
-**or `disk`/`shadow`.** Check with `id <user>` before assigning an account to
+how a render account reaches project storage. Do not point a queue's
+`run_as_user` at an account in `docker` (a one-step escalation to root)
+or `disk`/`shadow`. Check with `id <user>` before assigning an account to
 an isolated queue.
 
 ### The NSS (directory-backed account) fallback, and its caveats
@@ -1000,11 +1090,10 @@ output.
 
 Two caveats:
 
-- **The `id`/`getent` parsers are tested only against hand-written output,**
-  never against a real directory server. Confirm that a directory-backed
-  `run_as_user` account resolves correctly in your environment before relying
-  on it.
-- **A sandbox that blocks `exec` breaks this fallback.** If a systemd unit (or
+- The `id`/`getent` parsers are not verified against a real directory
+  server. Confirm that a directory-backed `run_as_user` account resolves
+  correctly in your environment before relying on it.
+- A sandbox that blocks `exec` breaks this fallback. If a systemd unit (or
   similar) restricts syscalls or forbids running external binaries,
   `id`/`getent` cannot run and directory-backed accounts fail to resolve.
 
@@ -1199,7 +1288,7 @@ The server has no per-table limit, so this key is compared with
 can withhold EXPR work from a worker whose per-table limit would never have
 been reached.
 
-> **Read this before lowering it.** The floor of `1000000` is a tenth of the
+> Before lowering it: the floor of `1000000` is a tenth of the
 > server's default `openjd.expr_template_retained_bytes`. A worker set below
 > the server's value for that key is offered no EXPR work at all until one
 > of the two changes, and the server reports this with a registration `WARN`
@@ -1268,7 +1357,8 @@ capabilities:
 Built-in detectors to turn off, by exact tag: `maya`, `nuke`, `houdini`,
 `blender`, `cinema4d`, `threedsmax`, `aftereffects`, `mistika`, `mistikavr`,
 `mistikaworkflows`, `ffmpeg`, `arnold`, `vray`, `husk`, `redshift`,
-`renderman`, `threedelight`, `mantra` or `oiiotool`. Use this when a built-in
+`renderman`, `threedelight`, `mantra`, `oiiotool`, `katana`, `fusion`,
+`silhouette`, `vred`, `keyshot`, `modo` or `unreal`. Use this when a built-in
 misfires on a nonstandard host layout, typically with a `capabilities.detect`
 entry for the same tag that has more specific checks.
 
@@ -1332,13 +1422,13 @@ attributes.
 directory fallback above applies). Because it is an explicit choice, it does
 not log the one-time warning described under `staging.defaults`.
 
-> **The built-in copy only moves bytes the worker can already reach** (local
+> The built-in copy only moves bytes the worker can already reach (local
 > disk or a filesystem mounted on that worker). It does not transfer data
 > between hosts. A farm whose workers span multiple compute locations (see
 > [`docs/compute-locations.md`](compute-locations.md)) needs a `sync_command`
 > such as `rsync` or `aws s3 cp` to move data between them.
 
-> **sqi refuses to stage a file that has more than one hardlink.** On
+> sqi refuses to stage a file that has more than one hardlink. On
 > stage-in the built-in copy refuses such an input; on stage-out the check
 > runs before any copy, built-in or `sync_command`. The task fails with one
 > of two messages, both containing `has more than one hardlink`:
@@ -1359,17 +1449,13 @@ not log the one-time warning described under `staging.defaults`.
 > This concerns input files that already have extra links. The next note
 > concerns a `sync_command` that creates them.
 >
-> Releases up to v0.3.0 did not enforce this on Windows, so after upgrading a
-> mixed farm, a job with multiply linked inputs can start failing on its
-> Windows workers only.
-
-> **`sync_command` MUST NOT create hardlinks into scratch** when run-as-user
+> A `sync_command` must not create hardlinks into scratch when run-as-user
 > isolation is in use (e.g. `cp -al` or `rsync --link-dest`). Chowning the
 > scratch copy to the run-as-user account would chown the original file too.
 > `rsync -a` without `--link-dest` and the built-in copy are both safe: they
 > always write a new inode.
 
-> **`sync_command` MUST NOT dereference symlinks at either end**, on stage-in
+> A `sync_command` must not dereference symlinks at either end, on stage-in
 > or stage-out. Before running the command on stage-out, sqi opens the source
 > through an `os.Root` rooted at the scratch directory, so the kernel enforces
 > containment during the open (`OBJ_DONT_REPARSE` on Windows, `openat` with
@@ -1383,7 +1469,7 @@ not log the one-time warning described under `staging.defaults`.
 > on stage-out, and writes through a symlink planted at the destination on
 > stage-in.
 >
-> **A configured `sync_command` also leaves a race open.** sqi passes it a
+> A configured `sync_command` also leaves a race open. sqi passes it a
 > path string, not an open descriptor, so a task process still running after
 > its task exits successfully (only timeout and cancel kill it) can swap a
 > hardlink into its scratch subdirectory between sqi's check and the
@@ -1580,8 +1666,8 @@ By default it listens on loopback only.
 TCP address the HTTP server listens on. Use `0.0.0.0:9091` to expose the
 endpoints to Prometheus scrapers on the network, and firewall the port.
 
-The listener is **plaintext unless [`metrics.tls.enabled`](#metricstlsenabled)
-is set**; the `nats.tls_*` settings cover only the broker connection. It
+The listener is plaintext unless [`metrics.tls.enabled`](#metricstlsenabled)
+is set; the `nats.tls_*` settings cover only the broker connection. It
 serves metrics, health and (optionally) pprof, never credentials or job
 payloads. Turn TLS on with any address reachable from other hosts.
 
@@ -1779,6 +1865,10 @@ log_streamer:
 | `worker.shutdown_grace_period` | duration | `30s` | `SQI_WORKER_SHUTDOWN_GRACE_PERIOD` | — |
 | `worker.allow_root` | bool | `false` | `SQI_WORKER_ALLOW_ROOT` | — |
 | `worker.keep_failed_sessions` | bool | `false` | `SQI_WORKER_KEEP_FAILED_SESSIONS` | — |
+| `worker.capacity_group` | string | `""` | `SQI_WORKER_CAPACITY_GROUP` | — |
+| `worker.preemption.watch` | string | `none` | `SQI_WORKER_PREEMPTION_WATCH` | — |
+| `worker.preemption.poll_interval` | duration | `5s` | `SQI_WORKER_PREEMPTION_POLL_INTERVAL` | — |
+| `worker.preemption.endpoint` | string | `""` | `SQI_WORKER_PREEMPTION_ENDPOINT` | — |
 | `worker.queue_ids` | []string | `[]` | `SQI_WORKER_QUEUE_IDS` | — |
 | `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — (deprecated, no effect) |
 | `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — (deprecated, no effect) |

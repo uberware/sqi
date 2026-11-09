@@ -8,10 +8,13 @@ package registration_test
 // its helpers (startTestNATS, freePort, connectNATS, minimalCfg, discardLogger).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +23,9 @@ import (
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/worker/capabilities"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/worker/registration"
 )
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -90,7 +95,7 @@ func TestDeregister_PublishesMessage(t *testing.T) {
 	}
 
 	reg := newRegistrar(t, nc, "worker-bye", minimalCfg(), capabilities.Capabilities{})
-	reg.Deregister("graceful shutdown")
+	reg.Deregister("graceful shutdown", "")
 
 	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
@@ -133,7 +138,7 @@ func TestDeregister_AfterClose_NoPanic(t *testing.T) {
 	nc.Close()
 
 	// Must not panic even though the publish will fail.
-	reg.Deregister("shutdown after close")
+	reg.Deregister("shutdown after close", "")
 }
 
 // ── Register: single-queue branch + capability propagation ──────────────────
@@ -391,5 +396,97 @@ func TestRegister_AdvertisesWorkerEnforcedExtensions(t *testing.T) {
 	}
 	if want := protocol.WorkerEnforcedExtensions(); !slices.Equal(rm.Extensions, want) {
 		t.Errorf("Extensions = %v, want %v", rm.Extensions, want)
+	}
+}
+
+// TestDeregister_SendsKind asserts the departure kind rides in the message:
+// "" (a plain restart) is omitted from the wire. The log line names the kind
+// only when there is one.
+func TestDeregister_SendsKind(t *testing.T) {
+	tests := []struct {
+		name     string
+		kind     protocol.DeregisterKind
+		wantWire string // the "kind" JSON value; empty means the key is absent
+	}{
+		{"restart", "", ""},
+		{"preempted", protocol.DeregisterPreempted, "preempted"},
+		{"retired", protocol.DeregisterRetired, "retired"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := startTestNATS(t)
+			nc := connectNATS(t, url)
+			sub, err := nc.SubscribeSync(bus.WorkerDeregisterSubject("worker-kind"))
+			if err != nil {
+				t.Fatalf("SubscribeSync: %v", err)
+			}
+			if err := nc.Flush(); err != nil {
+				t.Fatalf("Flush: %v", err)
+			}
+			var logs bytes.Buffer
+			reg, err := registration.New(nc, "worker-kind", minimalCfg(), fmtres.ExprLimits{},
+				capabilities.Capabilities{}, slog.New(slog.NewTextHandler(&logs, nil)))
+			if err != nil {
+				t.Fatalf("registration.New: %v", err)
+			}
+			reg.Deregister("spot reclaimed", tt.kind)
+			if hasKind := strings.Contains(logs.String(), "kind="); hasKind != (tt.wantWire != "") {
+				t.Errorf("log names a kind = %v, want %v:\n%s", hasKind, tt.wantWire != "", logs.String())
+			}
+			if !strings.Contains(logs.String(), "worker deregistered") {
+				t.Errorf("no deregistered log line:\n%s", logs.String())
+			}
+
+			msg, err := sub.NextMsg(2 * time.Second)
+			if err != nil {
+				t.Fatalf("expected a deregister message: %v", err)
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(msg.Data, &raw); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got, present := raw["kind"]
+			if tt.wantWire == "" {
+				if present {
+					t.Errorf("kind = %v on the wire, want the key omitted", got)
+				}
+			} else if got != tt.wantWire {
+				t.Errorf("kind = %v, want %q", got, tt.wantWire)
+			}
+			if raw["reason"] != "spot reclaimed" {
+				t.Errorf("reason = %v", raw["reason"])
+			}
+		})
+	}
+}
+
+// TestRegister_SendsCapacityGroup asserts worker.capacity_group reaches the
+// RegisterMsg.
+func TestRegister_SendsCapacityGroup(t *testing.T) {
+	url := startTestNATS(t)
+	nc := connectNATS(t, url)
+	cfg := minimalCfg()
+	cfg.CapacityGroup = "cloud-spot"
+	sub, err := nc.SubscribeSync(bus.WorkerRegisterSubject("worker-grp"))
+	if err != nil {
+		t.Fatalf("SubscribeSync: %v", err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	reg := newRegistrar(t, nc, "worker-grp", cfg, capabilities.Capabilities{OS: "linux"})
+	if err := reg.Register(context.Background()); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	msg, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("expected a register message: %v", err)
+	}
+	var rm protocol.RegisterMsg
+	if err := json.Unmarshal(msg.Data, &rm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if rm.CapacityGroup != "cloud-spot" {
+		t.Errorf("RegisterMsg.CapacityGroup = %q, want cloud-spot", rm.CapacityGroup)
 	}
 }

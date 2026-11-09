@@ -31,7 +31,7 @@ interface AdminLink {
   permission: Permission
 }
 
-// Extensible registry — add future admin destinations (settings, licensing, …) here.
+// The Admin hub destinations; add a new one here.
 const ADMIN_LINKS: AdminLink[] = [
   {
     id: 'farms',
@@ -53,6 +53,13 @@ const ADMIN_LINKS: AdminLink[] = [
     description: 'License / concurrency usage pools',
     to: '/usage-pools',
     permission: 'infra.manage',
+  },
+  {
+    id: 'capacity-groups',
+    label: 'Capacity Groups',
+    description: 'Machines sqi follows demand with',
+    to: '/capacity-groups',
+    permission: 'infra.read',
   },
   {
     id: 'storage',

@@ -34,8 +34,8 @@ const (
 
 // Server-originated failure/termination reasons. [TaskStore.FailureReasonSummary]
 // groups by exact string, so every producer of these annotations (scheduler,
-// SQLite store, fake store) must share these values — a wording tweak in one
-// producer would otherwise split the per-job dominant-reason counts.
+// SQL stores, fake store) must share these values; differing wording would
+// split the per-job dominant-reason counts.
 const (
 	// FailureReasonCanceledByUser annotates tasks canceled by an explicit
 	// user/API cancel of the task or its job.
@@ -84,8 +84,8 @@ type Task struct {
 	// on retry. A denormalized copy of the latest terminal attempt's reason.
 	FailureReason string
 
-	// FailedAttempts counts attempts that GENUINELY ran and failed
-	// (worker-reported "failed"). Lost/reclaimed attempts never increment it.
+	// FailedAttempts counts attempts that ran and failed (worker-reported
+	// "failed"). Lost or reclaimed attempts do not increment it.
 	FailedAttempts int
 
 	// RetryAfter, when non-nil and in the future, holds the task in the ready
@@ -105,6 +105,26 @@ type FailureSummary struct {
 	DominantReason string
 	// DistinctReasons is the number of distinct FailureReason values.
 	DistinctReasons int
+}
+
+// StepDemand is the leasable ready work of one step at one core reservation,
+// as [TaskStore.ListReadyStepDemand] reports it.
+type StepDemand struct {
+	JobID, StepID, QueueID string
+	// RequiredCores is the tasks' declared reservation; 0 means undeclared,
+	// which costs a whole machine (as the scheduler's fullMachineCost).
+	RequiredCores int
+	// Ready is the number of leasable ready tasks with this RequiredCores.
+	Ready int
+}
+
+// WorkerCommitment is the CPU a worker holds across its assigned and running
+// tasks, as [TaskStore.ListWorkerCommitments] reports it: the declared
+// reservations summed, and the tasks that declared none, each of which costs
+// the whole machine.
+type WorkerCommitment struct {
+	DeclaredCores   int
+	UndeclaredTasks int
 }
 
 // TaskSortField is a column by which [TaskStore.ListTasks] results can be ordered.
@@ -203,6 +223,13 @@ type LeaseRequest struct {
 	// and PoolName are used; MaxConcurrent is ignored, because the pool's cap
 	// is read in the lease's own transaction.
 	Claims []UsagePoolClaim
+	// RequireOnline refuses the lease, as [LeaseLost], unless the worker's row
+	// exists and is online when the lease commits. A caller sets it when it
+	// chose to lease because it read the worker online, so a worker taken
+	// offline (a deregister, the heartbeat sweep) or deleted between that read
+	// and this write is not handed a task it will never receive. Left false,
+	// an offline worker and one with no row are not refused.
+	RequireOnline bool
 }
 
 // LeaseResult is what [TaskStore.LeaseTask] did.
@@ -300,9 +327,8 @@ type TaskStore interface {
 	// ReclaimStaleAssignedTasks returns tasks stuck in [TaskStatusAssigned] whose
 	// assigned_at is older than cutoff to [TaskStatusReady], clearing
 	// assigned_worker_id and assigned_at so the scheduler can reassign them.
-	// Tasks in [TaskStatusRunning] are left untouched — only assignments that
-	// never started are reclaimed (e.g. the assignment message expired from the
-	// work stream before the worker pulled it).
+	// Tasks in [TaskStatusRunning] are left untouched: only assignments the
+	// worker never reported running are reclaimed.
 	//
 	// Inside the same transaction it closes each reclaimed task's running
 	// attempts as [AttemptStatusFailed] and releases the claims of the task's
@@ -315,7 +341,7 @@ type TaskStore interface {
 	//
 	// Statement order: the tasks are reset first, then their attempts are
 	// closed, then their claims released. The anchors (each candidate task's
-	// job row, sorted by id) are taken BEFORE the UPDATE and without locking a
+	// job row, sorted by id) are taken before the UPDATE and without locking a
 	// task row first: the candidates are read unlocked, their job rows locked,
 	// then the UPDATE runs re-guarded on the candidate IDs, status assigned and
 	// the cutoff. Locking the task rows first, or anchoring after the UPDATE
@@ -333,7 +359,7 @@ type TaskStore interface {
 	// [TaskStatusRunning] state. Used by the scheduler's per-farm policy gate.
 	CountActiveTasksInFarm(ctx context.Context, farmID string) (int, error)
 
-	// CountReadyTasksByQueue returns the number of LEASABLE ready tasks for
+	// CountReadyTasksByQueue returns the number of leasable ready tasks for
 	// each queue within the given farm, keyed by queue ID: tasks in
 	// [TaskStatusReady] whose backoff has elapsed (RetryAfter unset or <= now)
 	// on an unpaused queue under a schedulable (not paused/terminal) job —
@@ -343,6 +369,14 @@ type TaskStore interface {
 	// filters keep it from waking workers for work nothing can lease (tasks
 	// still backing off, or under an auto-parked job).
 	CountReadyTasksByQueue(ctx context.Context, farmID string, now time.Time) (map[string]int, error)
+
+	// ListReadyStepDemand groups the farm's leasable ready tasks by step and
+	// declared core reservation, under exactly [CountReadyTasksByQueue]'s
+	// eligibility (backoff elapsed, queue unpaused, job neither paused nor
+	// terminal), so summing Ready per QueueID reproduces that count. An empty
+	// farmID matches every farm. The rows are in no particular order. The
+	// grouping runs in the database; no task row is loaded.
+	ListReadyStepDemand(ctx context.Context, farmID string, now time.Time) ([]StepDemand, error)
 
 	// CancelJobExecution cancels a job's work in one transaction (invariant I3),
 	// in this statement order:
@@ -362,8 +396,8 @@ type TaskStore interface {
 	//     and UpdatedAt as now, under the same guard as
 	//     [JobStore.CancelJobStatus]: a completed, failed or already canceled
 	//     job is left exactly as it is. A job cancel is therefore one write, and
-	//     no stop or failed second write can leave the job live with all of its
-	//     work canceled.
+	//     no second write can fail and leave the job live with all of its work
+	//     canceled.
 	// It returns the tasks that were in [TaskStatusAssigned] or
 	// [TaskStatusRunning] when step 1 ran, each as it was before the cancel (its
 	// AssignedWorkerID intact), so the caller can signal the workers. Tasks
@@ -409,7 +443,7 @@ type TaskStore interface {
 	// given IDs that are failed/canceled — clearing each revived task's
 	// genuine-failure state (FailedAttempts reset to zero, RetryAfter
 	// cleared). Each revived task becomes [TaskStatusReady] when its step is
-	// ready (a sibling still in flight; a step recorded as the legacy running
+	// ready (a sibling still in flight; a step holding the reserved running
 	// status counts as ready too) and [TaskStatusPending] otherwise; the
 	// returned tasks carry that status. Any of their enclosing steps that are
 	// currently in a terminal status are reset to [StepStatusPending], and the
@@ -438,6 +472,14 @@ type TaskStore interface {
 	// fullMachineCost). Callers pass the worker's CPUCount as fullMachineCost so
 	// an undeclared task (required_cores NULL) counts as the whole machine.
 	CommittedCores(ctx context.Context, workerID string, fullMachineCost int) (int, error)
+
+	// ListWorkerCommitments is [CommittedCores] for every worker at once: per
+	// worker holding any assigned or running task of the farm ("" = every
+	// farm), the sum of those tasks' RequiredCores and the count of tasks with
+	// none. For each worker, DeclaredCores + UndeclaredTasks*fullMachineCost
+	// equals CommittedCores(ctx, id, fullMachineCost). A worker holding
+	// nothing has no entry.
+	ListWorkerCommitments(ctx context.Context, farmID string) (map[string]WorkerCommitment, error)
 
 	// LeaseTask leases one ready task to a worker in a single transaction
 	// (invariants I3 and I5):
@@ -480,23 +522,23 @@ type TaskStore interface {
 	// banner.
 	FailureReasonSummary(ctx context.Context, jobID string) (FailureSummary, error)
 
-	// RecordTaskFailure records a genuine (worker-reported) failure of a single
-	// task ATTEMPT exactly once, tying the counter increment to the attempt's
+	// RecordTaskFailure records a worker-reported failure of a single task
+	// attempt exactly once, tying the counter increment to the attempt's
 	// running→failed transition so an at-least-once redelivery of the same
 	// status message cannot double-count.
 	//
 	// In one transaction it closes the attempt as failed (setting ended_at,
-	// exit_code, session_id, and message) ONLY when the attempt is still
+	// exit_code, session_id, and message) only when the attempt is still
 	// running; on that first close it increments both the task's and its
 	// enclosing job's FailedAttempts counters. When the attempt is already
-	// terminal (a redelivery), it does NOT increment — it simply returns the
-	// CURRENT counters so the caller's retry/park decision is stable across
+	// terminal (a redelivery), it does not increment and returns the
+	// current counters so the caller's retry/park decision is stable across
 	// redeliveries. exitCode nil leaves the attempt's exit_code unchanged;
 	// sessionID "" leaves the session_id unchanged; message "" leaves the
 	// attempt's message unchanged. Returns the authoritative post-call task and
-	// job FailedAttempts values, plus firstClose — true iff this call performed
-	// the running→failed close (i.e. this is the first delivery, so retry/park
-	// ACTIONS are authorized; a redelivery must first check that the attempt is
+	// job FailedAttempts values, plus firstClose, true iff this call performed
+	// the running→failed close (the first delivery, so retry/park
+	// actions are authorized; a redelivery must first check that the attempt is
 	// still relevant before re-driving them). The same transaction releases
 	// every active usage claim the attempt holds (invariant I3), on a
 	// redelivery too. now stamps the attempt's ended_at and the task's and

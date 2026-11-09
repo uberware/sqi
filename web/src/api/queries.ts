@@ -4,6 +4,8 @@ import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import type {
   ApiKey,
+  CapacityGroup,
+  CapacityGroupToken,
   AuthProviders,
   ComputeLocation,
   Farm,
@@ -29,29 +31,36 @@ import type {
 
 /**
  * How often (ms) the usage-pool list refetches so utilization (in_use /
- * available) stays current while a page is open. Polling keeps the data path
- * simple; a generic WebSocket limit-usage channel can replace this later.
+ * available) stays current while a page is open.
  */
 const USAGE_POOL_REFETCH_MS = 5000
+
+/**
+ * How often (ms) capacity-group queries refetch while a page is open. The
+ * scheduler re-evaluates groups each sweep and publishes no event for it, so
+ * polling is how a page sees a new `status` or a member coming online. The
+ * interval matches the scheduler's default 15 s heartbeat sweep and the worker
+ * heartbeat, so polling faster shows nothing new.
+ */
+const CAPACITY_GROUP_REFETCH_MS = 15_000
 
 /**
  * How often (ms) the worker-detail query refetches while the page is open. The
  * worker's `current_tasks` are derived server-side from its assigned/running
  * tasks, but no WebSocket event fires when those assignments change (the
  * `workers` subject only carries online/offline transitions). Polling keeps the
- * Active Tasks list current — picking up new tasks and clearing
- * finished ones so their live "Elapsed" stops ticking.
+ * Active Tasks list current: it picks up new tasks and clears finished ones so
+ * their live "Elapsed" stops ticking.
  */
 const WORKER_DETAIL_REFETCH_MS = 5000
 
 /**
  * How often (ms) the worker-list query refetches while the page is open. The
- * `workers` WebSocket subject only carries online/offline status transitions —
- * no event fires for routine heartbeats — so an idle online worker would never
- * refresh its "Last Heartbeat" cell (and the page's "Updated …" timestamp would
- * climb forever) without polling. Aligned with the worker's default 15 s
- * heartbeat interval: polling faster gains no freshness since no new heartbeat
- * has arrived.
+ * `workers` WebSocket subject only carries online/offline status transitions
+ * and no event fires for routine heartbeats, so without polling an idle online
+ * worker's "Last Heartbeat" cell would never refresh and the page's "Updated …"
+ * timestamp would keep climbing. The interval matches the worker's default 15 s
+ * heartbeat: polling faster shows nothing new.
  */
 export const WORKER_LIST_REFETCH_MS = 15_000
 
@@ -134,11 +143,19 @@ export const queryKeys = {
   queues: {
     all: ['queues'] as const,
     list: (farmId: string) => ['queues', 'list', farmId] as const,
+    /** Every queue of a farm in one request; cached apart from the default page. */
+    listAll: (farmId: string) => ['queues', 'list', farmId, 'all'] as const,
     detail: (id: string) => ['queues', 'detail', id] as const,
   },
   usagePools: {
     all: ['usage-pools'] as const,
     detail: (id: string) => ['usage-pools', 'detail', id] as const,
+  },
+  capacityGroups: {
+    all: ['capacity-groups'] as const,
+    detail: (id: string) => ['capacity-groups', 'detail', id] as const,
+    members: (id: string) => ['capacity-groups', 'members', id] as const,
+    tokens: (id: string) => ['capacity-groups', 'tokens', id] as const,
   },
   storageLocations: {
     all: ['storage-locations'] as const,
@@ -312,6 +329,26 @@ export function fetchGetUsagePool(id: string): Promise<UsagePool> {
   return apiFetch(`/usage-pools/${encodeURIComponent(id)}`)
 }
 
+/** Fetch all capacity groups from `GET /capacity-groups` (bare array, priority then name). */
+export function fetchListCapacityGroups(): Promise<CapacityGroup[]> {
+  return apiFetch('/capacity-groups')
+}
+
+/** Fetch one capacity group from `GET /capacity-groups/{id}`. */
+export function fetchGetCapacityGroup(id: string): Promise<CapacityGroup> {
+  return apiFetch(`/capacity-groups/${encodeURIComponent(id)}`)
+}
+
+/** Fetch a group's member workers from `GET /capacity-groups/{id}/members`. */
+export function fetchCapacityGroupMembers(id: string): Promise<Worker[]> {
+  return apiFetch(`/capacity-groups/${encodeURIComponent(id)}/members`)
+}
+
+/** Fetch a group's join tokens (no secrets) from `GET /capacity-groups/{id}/tokens`. */
+export function fetchCapacityGroupTokens(id: string): Promise<CapacityGroupToken[]> {
+  return apiFetch(`/capacity-groups/${encodeURIComponent(id)}/tokens`)
+}
+
 /** Fetch all storage locations from `GET /storage-locations` (bare array, no pagination). */
 export function fetchListStorageLocations(): Promise<StorageLocation[]> {
   return apiFetch('/storage-locations')
@@ -401,14 +438,13 @@ export type FarmWithQueues = {
 
 /**
  * Fetch every farm together with its queues, for the submission-form target
- * selector. Queues are requested with a high limit so the selector is never
- * silently truncated.
+ * selector. Queues are requested with a high limit so the selector is not
+ * truncated to the default page size.
  */
 export async function fetchFarmsWithQueues(options?: QueueReadOptions): Promise<FarmWithQueues[]> {
   const farms = await fetchListFarms()
-  // Request a high limit so the selector is never silently truncated — a
-  // partial queue list would prevent submitting to queues beyond the server's
-  // default page size.
+  // A partial queue list would prevent submitting to queues beyond the
+  // server's default page size, hence the high limit.
   return Promise.all(
     farms.map((farm) =>
       fetchListQueues(farm.id, 1000, options).then((res) => ({ farm, queues: res.items })),
@@ -463,12 +499,17 @@ export function useTaskAttempts(id: string) {
   })
 }
 
-/** List workers with optional filters, pagination, and sort. */
-export function useListWorkers(params?: ListWorkersParams) {
+/**
+ * List workers with optional filters, pagination, and sort. Polls by default so
+ * heartbeats stay current; a picker that only needs the list once passes
+ * `poll: false`.
+ */
+export function useListWorkers(params?: ListWorkersParams, options?: { poll?: boolean }) {
+  const poll = options?.poll ?? true
   return useQuery({
     queryKey: queryKeys.workers.list(params),
     queryFn: () => fetchListWorkers(params),
-    refetchInterval: WORKER_LIST_REFETCH_MS,
+    refetchInterval: poll ? WORKER_LIST_REFETCH_MS : false,
   })
 }
 
@@ -506,6 +547,18 @@ export function useListQueues(farmId: string) {
   })
 }
 
+/**
+ * List every queue of a farm (up to 1000, the API's page ceiling), for a
+ * picker that must not silently drop queues beyond the default page size.
+ */
+export function useListAllFarmQueues(farmId: string) {
+  return useQuery({
+    queryKey: queryKeys.queues.listAll(farmId),
+    queryFn: () => fetchListQueues(farmId, 1000),
+    enabled: farmId !== '',
+  })
+}
+
 /** Load a single queue by id. */
 export function useGetQueue(id: string) {
   return useQuery({
@@ -533,6 +586,49 @@ export function useGetUsagePool(id: string) {
     queryKey: queryKeys.usagePools.detail(id),
     queryFn: () => fetchGetUsagePool(id),
     enabled: id !== '',
+  })
+}
+
+/** List all capacity groups with their last status. Polls so the status stays current. */
+export function useListCapacityGroups() {
+  return useQuery({
+    queryKey: queryKeys.capacityGroups.all,
+    queryFn: fetchListCapacityGroups,
+    refetchInterval: CAPACITY_GROUP_REFETCH_MS,
+  })
+}
+
+/**
+ * Load a single capacity group by id. Polls by default so the status panel
+ * follows the scheduler; the edit form passes `poll: false` because it seeds
+ * its fields once.
+ */
+export function useGetCapacityGroup(id: string, options?: { poll?: boolean }) {
+  const poll = options?.poll ?? true
+  return useQuery({
+    queryKey: queryKeys.capacityGroups.detail(id),
+    queryFn: () => fetchGetCapacityGroup(id),
+    enabled: id !== '',
+    refetchInterval: poll ? CAPACITY_GROUP_REFETCH_MS : false,
+  })
+}
+
+/** List a capacity group's member workers; polls so online/offline stays current. */
+export function useCapacityGroupMembers(id: string) {
+  return useQuery({
+    queryKey: queryKeys.capacityGroups.members(id),
+    queryFn: () => fetchCapacityGroupMembers(id),
+    enabled: id !== '',
+    refetchInterval: CAPACITY_GROUP_REFETCH_MS,
+  })
+}
+
+/** List a capacity group's join tokens. Only for users holding `infra.manage`. */
+export function useCapacityGroupTokens(id: string, options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: queryKeys.capacityGroups.tokens(id),
+    queryFn: () => fetchCapacityGroupTokens(id),
+    enabled: id !== '' && (options?.enabled ?? true),
   })
 }
 
@@ -620,23 +716,21 @@ export function useVersion() {
 
 /**
  * Load the current authenticated principal. A 401 here is an expected,
- * non-transient outcome (no session / expired session) rather than a
- * failure worth retrying, so retries are disabled regardless of the global
- * default.
+ * non-transient outcome (no session or an expired one), so retries are
+ * disabled regardless of the global default.
  */
 export function useAuthMe() {
   return useQuery({ queryKey: queryKeys.auth.me, queryFn: fetchAuthMe, retry: false })
 }
 
 /**
- * Login methods this deployment offers. Queried by the login page before the
- * user has any credential, so it must never be gated on authentication — the
- * server mounts `/auth/providers` outside the authenticated route group for
- * exactly this reason.
+ * Login methods this deployment offers. The login page queries it before the
+ * user has any credential, so it must not require authentication; the server
+ * mounts `/auth/providers` outside the authenticated route group.
  *
- * `retry: false` because a failure here is not worth retrying: the page still
- * renders the password form, which is the only universally-available method.
- * `staleTime: Infinity` because the answer changes only when the server is
+ * `retry: false`: a failure is not worth retrying, because the page still
+ * renders the password form, the only universally available method.
+ * `staleTime: Infinity`: the answer changes only when the server is
  * reconfigured and restarted.
  */
 export function useAuthProviders() {

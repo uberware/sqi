@@ -360,6 +360,61 @@ func TestWorkerRegister_FencedFollowUpWriteNotAcked(t *testing.T) {
 	rec.assertFencedOnce(t)
 }
 
+// deposeAfterOfflineStore hands the lease to another server once OfflineWorker
+// has committed.
+type deposeAfterOfflineStore struct {
+	store.Store
+
+	depose func()
+}
+
+func (s *deposeAfterOfflineStore) OfflineWorker(ctx context.Context, id, instanceID string, now time.Time) ([]store.Task, bool, error) {
+	reclaimed, offlined, err := s.Store.OfflineWorker(ctx, id, instanceID, now)
+	s.depose()
+	return reclaimed, offlined, err
+}
+
+// A preempted ephemeral member's deregister is taken offline, then the
+// leadership moves before its row is deleted: the fenced delete must leave the
+// message for the new leader, which deletes it on redelivery, and must neither
+// revoke nor announce anything here.
+func TestWorkerDeregister_FencedEphemeralDeleteNotAcked(t *testing.T) {
+	st := newCheckedFake(t)
+	if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "farm-1", Name: "farm"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	g := createGroup(t, st, sizedGroup("cloud", func(g *store.CapacityGroup) { g.FarmID = "farm-1" }))
+	addMember(t, st, g.ID, store.Worker{ID: "w-1", FarmID: "farm-1", InstanceID: "inst-1"})
+	ctx, depose := leaderCtx(t, st)
+	s, rec := newFenceScheduler(t, &deposeAfterOfflineStore{Store: st, depose: depose}, "farm-1")
+	s.ctx = ctx
+	revoked := &revokeRecorder{}
+	s.cfg.RevokeWorker = revoked.revoke
+	notes := &workerRecordingNotifier{}
+	s.notifier = notes
+
+	msg := &fakeJSMsg{subject: bus.WorkerDeregisterSubject("w-1"), data: workerMsgJSON(t, protocol.DeregisterMsg{
+		Version: protocol.ProtocolVersion, Type: protocol.TypeDeregister,
+		WorkerID: "w-1", InstanceID: "inst-1", Kind: protocol.DeregisterPreempted,
+	})}
+	s.handleWorkerMessage(msg)
+	s.revokes.Wait()
+
+	if msg.acked || msg.nacked {
+		t.Errorf("acked=%v nacked=%v, want neither: the ephemeral delete was fenced", msg.acked, msg.nacked)
+	}
+	if _, err := st.GetWorker(t.Context(), "w-1"); err != nil {
+		t.Errorf("GetWorker = %v, want the member kept for the new leader to delete", err)
+	}
+	if got := revoked.calls(); len(got) != 0 {
+		t.Errorf("RevokeWorker calls = %v, want none", got)
+	}
+	if len(notes.workers) != 0 {
+		t.Errorf("worker events = %+v, want none: the handler must stop at the fence", notes.workers)
+	}
+	rec.assertFencedOnce(t)
+}
+
 // deposeAfterStartStore hands the lease to another server once
 // StartTaskAttempt has committed.
 type deposeAfterStartStore struct {
@@ -1084,7 +1139,7 @@ func TestFenced_NilOnFencedOnlyLogs(t *testing.T) {
 }
 
 // TestFenced_OtherErrorsAreNotAFence pins that only store.ErrFenced counts:
-// any other store error is handled as before and acknowledges as before.
+// any other store error is handled as an ordinary failure.
 func TestFenced_OtherErrorsAreNotAFence(t *testing.T) {
 	st := &registerErrSt{Store: newCheckedFake(t)}
 	s, rec := newFenceScheduler(t, st, "")
@@ -1096,7 +1151,7 @@ func TestFenced_OtherErrorsAreNotAFence(t *testing.T) {
 	s.handleWorkerMessage(msg)
 
 	if !msg.nacked {
-		t.Error("an ordinary store error must still nak for redelivery")
+		t.Error("an ordinary store error must nak for redelivery")
 	}
 	if s.stopIfFenced(t.Context(), store.ErrNotFound) || s.stopIfFenced(t.Context(), nil) {
 		t.Error("stopIfFenced is true for an error that is not store.ErrFenced")

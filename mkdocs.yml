@@ -10,9 +10,8 @@ edit_uri: edit/main/docs/
 docs_dir: docs
 site_dir: site
 
-# Files present under docs/ that are not part of the published site:
-# README.md would collide with index.md as the homepage, and superpowers/ holds
-# local-only planning notes that are never published.
+# Files under docs/ that are not part of the published site: README.md would
+# collide with index.md as the homepage, and superpowers/ is not published.
 exclude_docs: |
   README.md
   superpowers/
@@ -66,6 +65,7 @@ nav:
       - Authentication: auth.md
       - TLS: tls.md
       - Observability: observability.md
+      - Capacity Groups: capacity.md
       - Load Testing: load-testing.md
       - Release Runbook: release-runbook.md
   - Reference:
@@ -95,9 +95,9 @@ markdown_extensions:
   - toc:
       permalink: true
       # GitHub-compatible heading slugs. The docs are read both on the MkDocs
-      # site and directly on GitHub, and every intra-doc anchor in the tree was
-      # written GitHub-style — a heading like "Roles & permissions" anchors as
+      # site and directly on GitHub, and intra-doc anchors are written
+      # GitHub-style: a heading like "Roles & permissions" anchors as
       # "roles--permissions" (the removed "&" leaves a double dash), where
       # Python-Markdown's default slugify would produce "roles-permissions".
-      # Without this, those links resolve on GitHub and 404 on the built site.
+      # The default slugs would make those links 404 on the built site.
       slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}

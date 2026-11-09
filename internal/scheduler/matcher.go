@@ -7,7 +7,7 @@ package scheduler
 // # Capability name conventions
 //
 // The OpenJD hostRequirements block declares requirements using dot-separated
-// capability names.  sqi defines the following well-known names; all others are
+// capability names. sqi defines the following well-known names; all others are
 // treated as custom worker tag lookups via the "attr.worker.tag.<key>" prefix.
 //
 // Amount requirements (quantifiable, compared as float64):
@@ -18,10 +18,10 @@ package scheduler
 //	amount.worker.gpu.memory.mb   → worker.GPUInfo.VRAMMb (per-device; all GPUs assumed identical)
 //	amount.worker.usagepool.<n>   → usage pool named n must have capacity
 //
-// Note: gpu.memory.mb matches against the per-device VRAM of a worker's
-// homogeneous GPU pool (see [store.GPUInfo]).  A worker with mixed GPU models
-// should advertise the lowest per-device VRAM to avoid over-scheduling.
-// Per-device heterogeneous matching is deferred to a future phase.
+// gpu.memory.mb matches against the per-device VRAM of a worker's homogeneous
+// GPU pool (see [store.GPUInfo]). A worker with mixed GPU models should
+// advertise the lowest per-device VRAM to avoid over-scheduling. Per-device
+// heterogeneous matching is not supported.
 //
 // Attribute requirements (categorical, compared as strings):
 //
@@ -33,8 +33,8 @@ package scheduler
 //
 // # Matching rules
 //
-// A worker is eligible for a task when ALL of the following hold:
-//  1. Farm membership: worker.FarmID == job.FarmID
+// A worker is eligible for a task when all of the following hold:
+//  1. Farm membership: worker.FarmID == "" (any farm) or worker.FarmID == job.FarmID
 //  2. Queue affinity: worker.QueueID == "" (any queue) or worker.QueueID == job.QueueID
 //  3. Compute-location affinity: step.ComputeLocation == "" (any) or matches worker.ComputeLocation
 //  4. Amount requirements: all are satisfied by the worker's hardware values
@@ -48,8 +48,8 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// matchRejection describes why a worker failed eligibility.
-// Used for debug logging; not exposed to callers.
+// matchRejection describes why a worker failed eligibility. Its String form is
+// the reason text returned by [WorkerEligibleWithReason].
 type matchRejection int
 
 const (
@@ -96,7 +96,7 @@ func WorkerEligible(
 	activeCounts map[string]int,
 ) bool {
 	reason, ok := workerEligible(worker, job, step, pools, activeCounts)
-	_ = reason // available for debug logging in the caller
+	_ = reason // the rejection reason is only returned by WorkerEligibleWithReason
 	return ok
 }
 
@@ -113,7 +113,7 @@ func WorkerEligibleWithReason(
 	return r.String(), ok
 }
 
-// workerEligible is the internal implementation shared by both exported wrappers.
+// workerEligible is the implementation shared by both exported wrappers.
 func workerEligible(
 	worker store.Worker,
 	job store.Job,
@@ -229,7 +229,7 @@ func satisfiesAmount(req store.StepAmountRequirement, workerVal int) bool {
 // Handles well-known names and falls back to the worker's Tags map for custom
 // attributes declared via the "attr.worker.tag.<key>" convention.
 // Capability names are case-insensitive in full (OpenJD jobtemplate-2023-09), so
-// the well-known names, the tag namespace prefix, AND the tag key are all matched
+// the well-known names, the tag namespace prefix and the tag key are all matched
 // case-insensitively.
 func workerAttributeValue(worker store.Worker, name string) string {
 	switch strings.ToLower(name) {
@@ -243,7 +243,8 @@ func workerAttributeValue(worker store.Worker, name string) string {
 		return worker.ComputeLocation
 	default:
 		if key, ok := cutPrefixFold(name, "attr.worker.tag."); ok {
-			return tagValueFold(worker.Tags, key)
+			v, _ := tagValueFold(worker.Tags, key)
+			return v
 		}
 		return ""
 	}
@@ -252,28 +253,21 @@ func workerAttributeValue(worker store.Worker, name string) string {
 // osFamily translates a worker's self-reported OS into the token OpenJD's
 // reserved attr.worker.os.family attribute is spelled with.
 //
-// The worker reports runtime.GOOS (internal/worker/capabilities, probe.OS), and
-// GOOS agrees with the specification on "linux" and "windows" but not on macOS,
-// where GOOS says "darwin" and the specification says "macos". The template
-// validator enforces the specification's set — internal/openjd's
-// reservedAttributeAllowed accepts only {linux, windows, macos} — so "macos" is
-// the ONLY spelling a template can legally carry for a Mac, and comparing it
-// against a raw "darwin" made every such requirement unsatisfiable: the job
-// validated, was accepted, and its tasks then waited for a worker that could
-// not exist. Found 2026-08-15; nothing had caught it because the matcher's
-// tests exercised only linux and windows.
+// The worker reports runtime.GOOS (internal/worker/capabilities, probe.OS).
+// GOOS agrees with the specification on "linux" and "windows", but says
+// "darwin" where the specification says "macos". The template validator
+// accepts only {linux, windows, macos} (internal/openjd's
+// reservedAttributeAllowed), so "macos" is the only spelling a template can
+// carry for a Mac and "darwin" is mapped to it.
 //
-// The mapping is deliberately ONE-WAY. This attribute carries the
-// specification's family, not the Go runtime's, so "darwin" must not match
-// either — accepting both would leave the same two spellings disagreeing, just
-// in the other direction. A template that genuinely wants the GOOS spelling has
-// attr.worker.tag.os, which capabilities.Detect populates verbatim.
+// The mapping is one-way: this attribute carries the specification's family,
+// so "darwin" in a requirement does not match. A template that wants the GOOS
+// spelling uses attr.worker.tag.os, which capabilities.Detect populates
+// verbatim.
 //
-// Normalizing HERE, and not at registration, is also deliberate: store.Worker.OS
-// is surfaced raw in the REST API, the web UI and `sqi-worker capabilities`, and
-// is copied into the "os" capability tag. Rewriting it at the source would
-// change all four, and would leave rows written by earlier workers still saying
-// "darwin". Matching is the only place the specification's vocabulary applies.
+// The normalization happens here and not at registration because
+// store.Worker.OS is surfaced raw in the REST API, the web UI and
+// `sqi-worker capabilities`, and is copied into the "os" capability tag.
 func osFamily(workerOS string) string {
 	family := strings.ToLower(workerOS)
 	if family == "darwin" {
@@ -285,24 +279,13 @@ func osFamily(workerOS string) string {
 // cpuArch translates a worker's self-reported CPU architecture into the token
 // OpenJD's reserved attr.worker.cpu.arch attribute is spelled with.
 //
-// Exactly the shape of [osFamily], and it was broken worse. The worker reports
-// runtime.GOARCH, which says "amd64" where the specification says "x86_64" and
-// agrees on "arm64". But until this landed the switch above had NO case for
-// attr.worker.cpu.arch at all: the name fell through to the tag lookup,
-// resolved to "", and could never match on any platform — and the worker did
-// not report its architecture in the first place, so there was nothing to
-// compare even if it had. internal/openjd validates the attribute (its enum is
-// {x86_64, arm64}), so a template gating on it was accepted and then waited for
-// a worker that could not exist. Found 2026-08-15 while fixing the os.family
-// version of the same mistake.
+// The worker reports runtime.GOARCH, which says "amd64" where the
+// specification says "x86_64" and agrees on "arm64". internal/openjd validates
+// the attribute against {x86_64, arm64}.
 //
-// An UNREPORTED architecture stays "" and matches nothing. That is the safe
-// direction: the alternative — treating unknown as universally acceptable —
-// would dispatch x86_64 work to an arm64 host. A worker upgraded past this
-// change reports its architecture as soon as it restarts and re-registers.
-//
-// One-way, for [osFamily]'s reason: this attribute carries the specification's
-// vocabulary, so Go's "amd64" must not match it either.
+// An unreported architecture stays "" and matches nothing, so x86_64 work is
+// never dispatched to a host of unknown architecture. The mapping is one-way,
+// for [osFamily]'s reason: "amd64" in a requirement does not match.
 func cpuArch(workerArch string) string {
 	arch := strings.ToLower(workerArch)
 	if arch == "amd64" {
@@ -312,18 +295,18 @@ func cpuArch(workerArch string) string {
 }
 
 // tagValueFold returns the value of the worker tag whose key matches key
-// case-insensitively, or "" if none. An exact match is preferred; otherwise keys
-// are compared with EqualFold.
-func tagValueFold(tags map[string]string, key string) string {
+// case-insensitively, and whether there is one. An exact match is preferred;
+// otherwise keys are compared with EqualFold.
+func tagValueFold(tags map[string]string, key string) (string, bool) {
 	if v, ok := tags[key]; ok {
-		return v
+		return v, true
 	}
 	for k, v := range tags {
 		if strings.EqualFold(k, key) {
-			return v
+			return v, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // hasPrefixFold reports whether s begins with prefix, compared case-insensitively.

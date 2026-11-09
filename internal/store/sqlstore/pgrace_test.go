@@ -256,7 +256,7 @@ func TestPGRace_LeaseEnforcesTheCapUnderTheLock(t *testing.T) {
 // between the lease's scope read and its job lock must not be leased against
 // the old queue. The move here is from an uncapped queue to one whose cap is
 // already full, so a lease that kept the queue it read first would anchor and
-// count nothing and land past the new queue's cap (I5).
+// count nothing and land past the new queue's cap.
 func TestPGRace_LeaseRefusesAJobMovedBeforeItsLock(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 1, "w1")
@@ -323,6 +323,54 @@ func TestPGRace_LeaseRefusesAWorkerDisabledBeforeItsLock(t *testing.T) {
 	}
 	if got := mustTask(t, st, w.Tasks[0]); got.Status != store.TaskStatusReady {
 		t.Fatalf("task status = %s, want ready (the refused lease writes nothing)", got.Status)
+	}
+}
+
+// TestPGRace_LeaseRequiringOnlineRefusesAWorkerGoneBeforeItsLock: a lease that
+// requires its worker online (the scheduler read it online) is refused when
+// the worker is taken offline, or taken offline and deleted, after the
+// lease's scope read but before it locks the worker row. The online check is
+// part of the guarded task write, which runs under that lock.
+func TestPGRace_LeaseRequiringOnlineRefusesAWorkerGoneBeforeItsLock(t *testing.T) {
+	tests := []struct {
+		name string
+		gone func(ctx context.Context, st store.Store) error
+	}{
+		{"offline", func(ctx context.Context, st store.Store) error {
+			_, _, err := st.OfflineWorker(ctx, "w1", "", time.Now().UTC())
+			return err
+		}},
+		{"offline and deleted", func(ctx context.Context, st store.Store) error {
+			if _, _, err := st.OfflineWorker(ctx, "w1", "", time.Now().UTC()); err != nil {
+				return err
+			}
+			return st.DeleteWorkerIfRemovable(ctx, "w1")
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st, p := pgRace(t)
+			w := seedWorld(t, st, 1, "w1")
+			p.atAnchor("workers", "w1") // after the scope read, before the worker lock
+			req := leaseReq(w.Tasks[0], "w1")
+			req.RequireOnline = true
+			var lease store.LeaseResult
+			lerr, gerr, _ := interleave(t, p,
+				func() (err error) { lease, err = st.LeaseTask(t.Context(), req); return },
+				func() error { return tc.gone(t.Context(), st) })
+			if got, want := p.matched(), "anchor workers/w1"; got != want {
+				t.Fatalf("paused at %q, want %q", got, want)
+			}
+			if lerr != nil || gerr != nil {
+				t.Fatalf("lease err %v, %s err %v", lerr, tc.name, gerr)
+			}
+			if lease.Outcome != store.LeaseLost {
+				t.Fatalf("lease outcome = %s, want lost: a worker gone before the lock was leased to", lease.Outcome)
+			}
+			if got := mustTask(t, st, w.Tasks[0]); got.Status != store.TaskStatusReady {
+				t.Fatalf("task status = %s, want ready (the refused lease writes nothing)", got.Status)
+			}
+		})
 	}
 }
 
@@ -644,8 +692,8 @@ func appendLateLog(t *testing.T, st *postgres.Store, task, attempt string) error
 
 // assertLogHeldOff checks how a log append that raced a job's delete cascade
 // ended: it waited on a lock, failed on its foreign key once the delete
-// committed, left no line behind, and the delete ran no more than once (no
-// transaction retried since before).
+// committed, left no line behind, and the delete ran only once (the store's
+// transaction retry count is unchanged).
 func assertLogHeldOff(t *testing.T, st *postgres.Store, before int64, waited bool, lerr error, attempt string) {
 	t.Helper()
 	if !waited {

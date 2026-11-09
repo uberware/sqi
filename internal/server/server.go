@@ -55,11 +55,8 @@ import (
 // cancellation within this window are abandoned.
 const ShutdownTimeout = 30 * time.Second
 
-// Config holds runtime parameters for the server.
-//
-// This struct is a stand-in used by the serve subcommand; the serve subcommand
-// can also load a [config.Config] and derive a [Config] from it rather than
-// using defaults.
+// Config holds runtime parameters for the server. The serve command derives it
+// from a loaded [config.Config]; [DefaultConfig] supplies development defaults.
 type Config struct {
 	// HTTPAddr is the TCP address the REST + WebSocket server listens on.
 	HTTPAddr string // default "0.0.0.0:8080"
@@ -192,14 +189,12 @@ type Config struct {
 	// password.Hash before it reaches the store.
 	AuthBootstrapPassword string
 
-	// AuthLDAP mirrors config.AuthConfig.LDAP. Carried as a nested struct
-	// rather than flattened into Auth* fields like its siblings: the block
-	// has seventeen fields, and flattening them would bury the rest of this
-	// struct. Only consulted when AuthEnabled is true.
+	// AuthLDAP mirrors config.AuthConfig.LDAP. It is carried as a nested struct
+	// rather than flattened into Auth* fields like its siblings, because the
+	// block is large. Only consulted when AuthEnabled is true.
 	AuthLDAP config.LDAPConfig
 
-	// AuthOIDC mirrors config.AuthConfig.OIDC, carried whole for the same
-	// reason as AuthLDAP above. Only consulted when AuthEnabled is true.
+	// AuthOIDC mirrors config.AuthConfig.OIDC, carried whole like AuthLDAP. Only consulted when AuthEnabled is true.
 	AuthOIDC config.OIDCConfig
 
 	// SeedDefaults, when true, creates a "default" farm and queue on first
@@ -353,11 +348,10 @@ func (s *Server) serveHTTP(ctx context.Context) error {
 // warnTLSConfig emits the advisory startup warnings for both TLS blocks:
 // certificates staged but not switched on, and certificates close to expiry.
 //
-// Neither is a load error — staging a certificate before flipping the switch
-// is a legitimate rollout step, and a certificate 29 days from expiry still
-// works — but both are worth saying out loud once at startup. The broker's
-// warnings are emitted here rather than in internal/bus so that package does
-// not have to import internal/config. In external mode there is no embedded
+// Neither is a load error: staging a certificate before enabling it is a
+// legitimate rollout step, and a certificate close to expiry still works. The
+// broker's warnings are emitted here rather than in internal/bus so that
+// package does not have to import internal/config. In external mode there is no embedded
 // listener, so nats.embedded.tls is inert and not checked; the certificate
 // that matters is the client one in nats.external.tls, which a cluster
 // requiring mTLS refuses once it expires.
@@ -398,10 +392,9 @@ func warnTLSConfig(ctx context.Context, logger *slog.Logger, httpTLS config.TLSC
 // warnIfBrokerUnauthenticated emits a WARN when the NATS broker has no
 // credential requirement and may be reachable from outside this machine.
 //
-// This is the highest-value line in the whole broker-auth component: broker
-// auth is opt-in and off by default, so this is the only thing that tells an
-// operator who turned on auth.enabled that their worker transport is still
-// wide open.
+// Broker authentication is opt-in and off by default, so this warning is how an
+// operator who turned on auth.enabled learns that the worker transport is
+// still open.
 //
 // For the embedded broker it stays silent on loopback, where the exposure does
 // not exist, and silent on an unparseable address, where config validation
@@ -520,11 +513,10 @@ func (s *Server) buildBroker(ctx context.Context) (bus.Broker, error) {
 }
 
 // revokeBrokerTimeout is the least time [Server.RevokeWorker] allows the
-// broker's part. The broker needs about its auth timeout plus a margin
-// (2.25s embedded, 3.25s on an external cluster at nats-server's defaults);
-// a broker whose [bus.Broker.RevokeBudget] says it needs longer, a cluster
-// with a long auth timeout, gets that instead. Either way the bound stops a
-// stuck broker from holding the request open indefinitely.
+// broker's part. The broker needs about its auth timeout plus a margin; a
+// broker whose [bus.Broker.RevokeBudget] says it needs longer, such as a
+// cluster with a long auth timeout, gets that instead. Either way the bound
+// stops a stuck broker from holding the request open indefinitely.
 const revokeBrokerTimeout = 10 * time.Second
 
 // RevokeWorker revokes workerID's active broker credential and, when broker
@@ -554,6 +546,13 @@ func (s *Server) RevokeWorker(ctx context.Context, workerID string) error {
 	if err := s.store.RevokeWorkerCredential(ctx, workerID, time.Now().UTC()); err != nil {
 		return err
 	}
+	return s.disconnectWorker(ctx, workerID)
+}
+
+// disconnectWorker drops workerID's broker connections when broker
+// authentication is enabled, after its credential has been revoked in the
+// store. See [Server.RevokeWorker] for the context and time bound it uses.
+func (s *Server) disconnectWorker(ctx context.Context, workerID string) error {
 	if !s.cfg.NATS.Auth.Enabled {
 		return nil
 	}
@@ -730,7 +729,7 @@ func (s *Server) start(ctx context.Context) error {
 	// consumer), and heartbeat timeout sweep.
 	// The hub is passed as the notifier so live events are
 	// pushed to subscribed WebSocket clients after each state change.
-	s.sched = scheduler.New(schedulerConfig(s.cfg, busClient), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
+	s.sched = scheduler.New(s.schedulerConfigFor(busClient), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
 	// The scheduler runs on its own child context so a failed start can stop
 	// it (see abortStart) without racing Run's own setup of Scheduler.Stop.
 	schedCtx, cancelSched := context.WithCancel(ctx)
@@ -743,8 +742,8 @@ func (s *Server) start(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "scheduler: started")
 
 	// ── HTTP server (chi router) ──────────────────────────────────────────
-	// Chi router with standard middleware mounts all routes.
-	// Job REST endpoints are now registered via api.Deps.
+	// Chi router with standard middleware mounts all routes. The REST
+	// endpoints take their dependencies from api.Deps.
 	deps := s.apiDeps()
 	if err := s.wireAuthDeps(ctx, &deps); err != nil {
 		return err
@@ -809,6 +808,14 @@ func (s *Server) apiDeps() api.Deps {
 		CookieSecure:  s.cfg.AuthCookieSecure,
 	}
 	natsAuthDeps(s.cfg, &deps)
+	// The scheduler is the capacity-group status source. Assign it only when it
+	// exists: a typed-nil *Scheduler in the interface would read as present and
+	// panic on the first call. A standby builds its router with the scheduler it
+	// will run on promotion (no new one is made then), so one wiring serves
+	// start and failover.
+	if s.sched != nil {
+		deps.CapacityStatus = s.sched
+	}
 	// Only expose the diagnostics reader when diagnostics are enabled. Leaving
 	// DiagReader as a nil interface (rather than a typed-nil *diag.Buffer) makes
 	// the endpoint return 503 instead of panicking on Query.
@@ -882,17 +889,13 @@ func (s *Server) advertisedNATSURL() (string, error) {
 
 // wsJobOwnerResolverTimeout bounds each individual wsJobOwnerResolver lookup;
 // it does not bound the aggregate time spent across many lookups. The query
-// is a single indexed primary-key read (jobs.id), so this is generous
-// headroom rather than a tuned budget — its purpose is only to guarantee each
-// call returns, since it runs synchronously on the calling scheduler
-// goroutine inside NotifyTask/NotifyJob and an unbounded context.Background()
-// call would block that goroutine indefinitely if the store ever hung.
+// is a single indexed primary-key read (jobs.id), so the value only
+// guarantees that each call returns: the lookup runs synchronously on the
+// calling scheduler goroutine inside NotifyTask/NotifyJob, and an unbounded
+// context.Background() call would block that goroutine if the store hung.
 // Failed resolutions are never cached (see ownerCache.get), so during a
-// sustained store outage every single event pays up to this timeout, not
-// just one — this constant caps the per-call cost, not the total stall an
-// outage can accumulate across many events. newWSHub avoids that cost
-// entirely when auth is disabled (no resolver, no store calls at all), and
-// bounds the one-time-per-job lookup when auth is enabled.
+// sustained store outage every event pays up to this timeout. newWSHub makes
+// no lookups when auth is disabled, and one per job when it is enabled.
 const wsJobOwnerResolverTimeout = 2 * time.Second
 
 // wsJobOwnerResolver returns a jobID → owner lookup for [ws.NewHub], backed by
@@ -900,11 +903,11 @@ const wsJobOwnerResolverTimeout = 2 * time.Second
 // including an empty owner, which is what every job submitted before auth was
 // enabled carries.
 //
-// The error is propagated rather than collapsed into an empty owner precisely
-// so the hub can tell those apart: "this job has no owner" is a permanent fact
-// worth caching, while "the store did not answer" must not be, or one timeout
-// would hide a job from scoped clients for the process's lifetime. A lookup
-// failure (including a not-found job and a timeout) fails closed.
+// The error is propagated rather than collapsed into an empty owner so the hub
+// can tell the cases apart: "this job has no owner" is a permanent fact worth
+// caching, while "the store did not answer" must not be, or one timeout would
+// hide a job from scoped clients for the process's lifetime. A lookup failure
+// (including a not-found job and a timeout) fails closed.
 func wsJobOwnerResolver(st store.Store) func(jobID string) (string, error) {
 	return func(jobID string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), wsJobOwnerResolverTimeout)
@@ -917,18 +920,15 @@ func wsJobOwnerResolver(st store.Store) func(jobID string) (string, error) {
 	}
 }
 
-// newWSHub constructs the WebSocket hub used by (*Server).start. Extracted to
-// a named function (rather than inlined at the ws.NewHub call site) so this
-// wiring is directly testable without booting the full server: a regression
-// that silently drops owner scoping would otherwise be invisible to every
-// test in this package.
+// newWSHub constructs the WebSocket hub used by (*Server).start. It is a named
+// function so tests can check the wiring without booting the full server.
 //
 // authEnabled drives both hub options together. With auth off, every client
 // registers Scope{All: true} (readLoop's scopeFilter returns scoped=false for
 // the anonymous superuser), so there is nothing to scope and no reason to
-// resolve owners — and the job-summary paths fall back to their hasSubscribers
-// guard, keeping the auth-off hot path free of marshaling and ring-mutex
-// traffic when nobody is connected.
+// resolve owners, and the job-summary paths fall back to their hasSubscribers
+// guard, which keeps marshaling and ring-mutex traffic off the auth-off hot
+// path when nobody is connected.
 func newWSHub(logger *slog.Logger, st store.Store, authEnabled bool) *ws.Hub {
 	if !authEnabled {
 		return ws.NewHub(logger, ws.HubOptions{})
@@ -940,10 +940,8 @@ func newWSHub(logger *slog.Logger, st store.Store, authEnabled bool) *ws.Hub {
 }
 
 // wireAuthDeps selects the request authenticator and, when configured,
-// constructs the directory verifier, assigning both into deps. Split out of
-// start so that the LDAP-specific error branch does not push start over its
-// complexity budget; the two are still sequenced together here because both
-// gate on AuthEnabled and both must succeed before the router is built.
+// constructs the directory verifier, assigning both into deps. Both gate on
+// AuthEnabled and both must succeed before the router is built.
 func (s *Server) wireAuthDeps(ctx context.Context, deps *api.Deps) error {
 	a, err := s.selectAuth(ctx)
 	if err != nil {
@@ -1027,18 +1025,17 @@ func (s *Server) buildLDAPVerifier(ctx context.Context) (ldap.Verifier, error) {
 		return nil, nil
 	}
 	if c.TLSSkipVerify {
-		// Loud on purpose: this disables certificate verification against the
-		// directory, so a MITM can harvest every password that crosses it.
-		s.logger.WarnContext(ctx, "auth: ldap TLS certificate verification is DISABLED (auth.ldap.tls_skip_verify)",
+		// Disabling verification lets a man-in-the-middle read every password
+		// sent to the directory.
+		s.logger.WarnContext(ctx, "auth: ldap TLS certificate verification is disabled (auth.ldap.tls_skip_verify)",
 			slog.String("url", c.URL))
 	}
 	s.logger.InfoContext(
 		ctx, "auth: ldap enabled",
 		slog.String("url", c.URL),
 		slog.Bool("template_bind", c.UserDNTemplate != ""),
-		// Logged because flipping local -> directory silently overwrites
-		// every manual role assignment as users log back in; the operator
-		// deserves a record of which mode was live.
+		// Logged because switching from local to directory overwrites each
+		// account's role as its user logs in again.
 		slog.String("role_source", c.RoleSource),
 		slog.Int("role_mappings", len(c.RoleMap)),
 	)
@@ -1046,10 +1043,9 @@ func (s *Server) buildLDAPVerifier(ctx context.Context) (ldap.Verifier, error) {
 }
 
 // toLDAPConfig converts the loader's config shape into the ldap package's,
-// which is deliberately independent of internal/config. c.Enabled is not
-// carried across: ldap.Config has no such field because the gate is applied
-// here, before ldap.New is ever called, so the verifier type has no use for
-// it.
+// which is independent of internal/config. c.Enabled is not carried across:
+// ldap.Config has no such field because the gate is applied here, before
+// ldap.New is called.
 func toLDAPConfig(c config.LDAPConfig, logger *slog.Logger) ldap.Config {
 	out := ldap.Config{
 		URL:             c.URL,
@@ -1076,7 +1072,7 @@ func toLDAPConfig(c config.LDAPConfig, logger *slog.Logger) ldap.Config {
 
 // toRoleMap converts the loader's role-mapping list into the shared
 // [rolemap.Mapping] form both auth providers consume. The two config blocks
-// stay deliberately parallel, so this bridges both of them.
+// have the same role-mapping shape, so this serves both.
 func toRoleMap(in []config.RoleMappingConfig) []rolemap.Mapping {
 	out := make([]rolemap.Mapping, 0, len(in))
 	for _, m := range in {
@@ -1088,22 +1084,19 @@ func toRoleMap(in []config.RoleMappingConfig) []rolemap.Mapping {
 // buildOIDCProvider constructs the SSO provider, or nil when SSO is disabled.
 //
 // Unlike buildLDAPVerifier this cannot fail on a network fault, because it
-// performs no network I/O: discovery is lazy. That is deliberate. Discovery is
-// an HTTP call to an external service, and a render farm's scheduler must not
-// fail to start because the identity provider is briefly unreachable — that
-// would make an external service a hard dependency of the whole system rather
-// than of SSO alone. Configuration faults still abort boot, in Validate.
+// performs no network I/O: discovery is lazy. Discovery is an HTTP call to an
+// external service, and the server must not fail to start because the
+// identity provider is briefly unreachable. Configuration faults still abort
+// boot, in Validate.
 //
 // LDAP draws the same line: ldap.New assembles TLS at boot (so a bad ca_file
 // aborts) but does not dial, so a downed domain controller does not stop
 // startup.
 //
 // The returned key signs the per-login state cookie and is generated fresh on
-// every boot, so a restart invalidates any login already in flight — an
-// acceptable trade for never persisting it. It is returned alongside the
-// provider rather than derived later because the router refuses to register
-// the SSO routes without it: dropping it here produces a 404 on a deployment
-// that believes it configured SSO.
+// every boot, so a restart invalidates any login in flight. It is returned
+// alongside the provider because the router does not register the SSO routes
+// without it.
 func (s *Server) buildOIDCProvider(ctx context.Context) (oidc.Provider, []byte, error) {
 	c := s.cfg.AuthOIDC
 	if !s.cfg.AuthEnabled || !c.Enabled {
@@ -1116,10 +1109,9 @@ func (s *Server) buildOIDCProvider(ctx context.Context) (oidc.Provider, []byte, 
 	s.logger.InfoContext(
 		ctx, "auth: oidc enabled",
 		slog.String("issuer", c.Issuer),
-		// Logged for the same reason as LDAP's: flipping role_source to
-		// directory means every login overwrites the account's role, and the
-		// reauth/logout modes change what a logout actually guarantees. An
-		// operator deserves a record of which modes were live.
+		// Logged because role_source "directory" overwrites the account's
+		// role on every login, and the reauth and logout modes change what
+		// a logout guarantees.
 		slog.String("role_source", c.RoleSource),
 		slog.String("reauth_mode", c.ReauthMode),
 		slog.String("logout_mode", c.LogoutMode),
@@ -1129,9 +1121,9 @@ func (s *Server) buildOIDCProvider(ctx context.Context) (oidc.Provider, []byte, 
 }
 
 // toOIDCConfig converts the loader's config shape into the oidc package's,
-// which is deliberately independent of internal/config. As with toLDAPConfig,
-// c.Enabled is not carried across: oidc.Config has no such field because the
-// gate is applied here, before oidc.New is ever called.
+// which is independent of internal/config. As with toLDAPConfig, c.Enabled is
+// not carried across: oidc.Config has no such field because the gate is
+// applied here, before oidc.New is called.
 func toOIDCConfig(c config.OIDCConfig, logger *slog.Logger) oidc.Config {
 	out := oidc.Config{
 		Issuer:                c.Issuer,
@@ -1156,12 +1148,11 @@ func toOIDCConfig(c config.OIDCConfig, logger *slog.Logger) oidc.Config {
 
 // browseURL turns a TCP bind address into a URL a human can paste into a
 // browser. A server binds to the wildcard host "0.0.0.0" (all IPv4 interfaces)
-// or "::" (all IPv6 interfaces), but those are not connectable addresses:
-// Chrome silently rewrites "0.0.0.0" to localhost, while Safari refuses it and
-// jumps to about:blank. To avoid that confusion we substitute "localhost" for
-// any wildcard or empty host, leaving an explicit host (e.g. "127.0.0.1" or a
-// LAN IP) untouched. The original bind address is still logged separately under
-// the "addr" key for operators.
+// or "::" (all IPv6 interfaces), but those are not connectable addresses and
+// browsers handle them inconsistently. The function substitutes "localhost" for
+// any wildcard or empty host and leaves an explicit host (such as "127.0.0.1"
+// or a LAN IP) untouched. The original bind address is logged separately under
+// the "addr" key.
 func browseURL(addr string, tlsOn bool) string {
 	scheme := "http://"
 	if tlsOn {
@@ -1330,13 +1321,12 @@ func sweepEvery(ctx context.Context, now bool, sweep func()) {
 
 // startSessionSweeper runs a periodic DeleteExpiredSessions until ctx is
 // canceled. It sweeps once immediately so a server that is restarted more
-// often than the interval still makes progress, rather than never reaching
-// its first tick.
+// often than the interval still reaps.
 //
-// Nothing else deletes a session on expiry — logout deletes by id, a password
-// change deletes by user — so without this the sessions table grows by one row
-// per login forever, enlarging the token_hash index that every authenticated
-// request probes.
+// Nothing else deletes a session on expiry (logout deletes by id, a password
+// change deletes by user), so without this the sessions table grows by one row
+// per login and enlarges the token_hash index that every authenticated request
+// probes.
 //
 // It is a no-op when auth is disabled: no sessions are minted, so there is
 // nothing to reap, and an auth-off server does no auth work at all.

@@ -339,7 +339,7 @@ func (s *Server) buildStandbyAPI(ctx context.Context) error {
 	s.wsHub = newWSHub(s.logger, s.store, s.cfg.AuthEnabled)
 	s.notifyDiagToHub()
 
-	schedCfg := schedulerConfig(s.cfg, busClient)
+	schedCfg := s.schedulerConfigFor(busClient)
 	schedCfg.OnFenced = func(err error) { s.ha.elector.Lose(ha.ReasonFenced, err) }
 	s.sched = scheduler.New(schedCfg, s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
 	if err := s.sched.StartDiag(); err != nil {

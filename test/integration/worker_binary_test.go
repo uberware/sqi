@@ -5,15 +5,15 @@ package integration
 // worker_binary_test.go — end-to-end test with a real sqi-worker subprocess.
 //
 // Unlike the mock-worker tests in e2e_test.go, this test compiles the real
-// sqi-worker binary and runs it as a subprocess so the full execution path
-// (NATS connect, registration, pull loop, OS process execution, log streaming,
-// status publishing) is exercised from first principles.
+// sqi-worker binary and runs it as a subprocess, so the full execution path
+// (NATS connect, registration, lease loop, OS process execution, log streaming,
+// status publishing) is exercised.
 //
-// The test is automatically skipped if the sqi-worker binary cannot be built
-// (e.g. partial build environment), so it never blocks the overall suite.
+// The test is skipped if the sqi-worker binary cannot be built (e.g. a partial
+// build environment).
 //
-// Build cost: the binary is compiled once per test-binary run and cached via
-// a package-level sync.Once, so running multiple tests in this file is cheap.
+// The binary is compiled once per test-binary run and cached via a
+// package-level sync.Once, so running several tests in this file is cheap.
 
 import (
 	"context"
@@ -41,15 +41,14 @@ var (
 )
 
 // packageCleanups holds teardown for resources that are shared across tests and
-// therefore cannot be released by any one test's t.Cleanup — the tagged OIDC
-// suite's single Keycloak container is the one caller today. Appended to under
-// the same sync.Once that creates the resource, and drained by TestMain.
+// therefore cannot be released by any one test's t.Cleanup. The tagged OIDC
+// suite's single Keycloak container is registered here. Entries are appended
+// under the same sync.Once that creates the resource, and drained by TestMain.
 var packageCleanups []func()
 
 // TestMain runs all tests in the integration package and releases what outlives
 // them: the worker binary directory (cached across tests via sync.Once, so
 // t.TempDir() cannot own it) and anything registered in packageCleanups.
-// TestMain is the only reliable hook for both.
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if workerBinaryDir != "" {
@@ -65,15 +64,15 @@ func TestMain(m *testing.M) {
 // returns the path to the executable.  The build runs once per test binary
 // invocation; subsequent calls return the cached path instantly.
 //
-// The test is skipped (not failed) when the build cannot complete so that CI
-// environments without a full Go toolchain do not block the suite.
+// The test is skipped, not failed, when the build cannot complete, so CI
+// environments without a full Go toolchain still run the rest of the suite.
 func buildWorkerBinary(tb testing.TB) string {
 	tb.Helper()
 
 	workerBinaryOnce.Do(func() {
 		// Locate the repository root by walking up from this source file.
 		// runtime.Caller(0) returns the source path at compile time, which is
-		// always valid when running tests from the source tree.
+		// valid when running tests from the source tree.
 		_, thisFile, _, ok := runtime.Caller(0)
 		if !ok {
 			errWorkerBinary = errors.New("runtime.Caller(0) returned no file path")
@@ -81,9 +80,9 @@ func buildWorkerBinary(tb testing.TB) string {
 		}
 		repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
 
-		// os.MkdirTemp (not tb.TempDir) is intentional: the directory must
-		// outlive the individual test because the binary is cached via
-		// sync.Once for the entire test-binary run.  TestMain removes it.
+		// os.MkdirTemp, not tb.TempDir: the directory must outlive the
+		// individual test because the binary is cached via sync.Once for the
+		// entire test-binary run. TestMain removes it.
 		tmpDir, err := os.MkdirTemp("", "sqi-worker-binary-*") //nolint:usetesting // must outlive the calling test; cached via sync.Once; removed by TestMain
 		if err != nil {
 			errWorkerBinary = fmt.Errorf("create temp dir for worker binary: %w", err)
@@ -97,7 +96,7 @@ func buildWorkerBinary(tb testing.TB) string {
 		}
 		out := filepath.Join(tmpDir, name)
 
-		// A 3-minute timeout prevents a hung build from blocking the suite
+		// The 3-minute timeout stops a hung build from holding the suite
 		// until the outer go test -timeout fires.
 		buildCtx, buildCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		cmd := exec.CommandContext(buildCtx, "go", "build", "-o", out, "./cmd/sqi-worker")
@@ -139,21 +138,21 @@ func startRealWorkerWithOptions(t *testing.T, ts *testServer, farmID, queueID st
 }
 
 // startRealWorkerAnyOS is [startRealWorker] for callers whose job commands are
-// genuinely cross-platform, so the Windows skip below does not apply to them.
+// cross-platform, so the Windows skip below does not apply to them.
 //
-// The skip guards the job COMMANDS, not the worker: sqi-worker itself runs on
+// The skip guards the job commands, not the worker: sqi-worker itself runs on
 // Windows (scripts/smoke.sh drives it there), but every caller above submits a
 // template whose onRun is a POSIX command such as `echo`, which has no
-// executable equivalent on a Windows worker. A caller whose command is a real
-// cross-platform binary — ffmpeg — is not subject to that limitation, and
-// skipping it on Windows would silently drop the only automated coverage of the
-// PowerShell-gated preset, which by construction cannot run anywhere else.
+// equivalent on a Windows worker. A caller whose command is a real
+// cross-platform binary, such as ffmpeg, is not subject to that limitation;
+// skipping it on Windows would drop the only automated coverage of the
+// PowerShell-gated preset, which cannot run anywhere else.
 //
 // The Tier-3 preset harness is the other caller, passing extraEnv to put its
 // stubs on PATH: every command it runs is test/stubproc under the vendor's
-// name, so there is no POSIX command anywhere in the path. Which presets can
-// run on this host is decided per preset by unsatisfiableOSFamily, reading
-// each template's own attr.worker.os.family -- not by a platform check here.
+// name, so no POSIX command is involved. Which presets can run on this host is
+// decided per preset by unsatisfiableOSFamily, reading each template's own
+// attr.worker.os.family, not by a platform check here.
 func startRealWorkerAnyOS(t *testing.T, ts *testServer, farmID, queueID string, extraEnv ...string) string {
 	t.Helper()
 	return startRealWorkerCore(t, ts, farmID, queueID, nil, extraEnv, true)
@@ -166,8 +165,6 @@ func startRealWorkerCore(t *testing.T, ts *testServer, farmID, queueID string, e
 	startRealWorkerNoWait(t, ts, farmID, queueID, extraArgs, extraEnv, allowWindows)
 
 	// Poll GET /api/v1/workers until this worker appears with status "online".
-	// The worker needs to connect to NATS, register, and receive at least one
-	// heartbeat sweep before the server marks it online.
 	workerID := pollForOnlineWorker(t, ts, farmID, 30*time.Second)
 	t.Logf("real worker registered: id=%s", workerID)
 	return workerID
@@ -176,9 +173,12 @@ func startRealWorkerCore(t *testing.T, ts *testServer, farmID, queueID string, e
 // startRealWorkerNoWait starts a real worker subprocess and returns as soon as
 // it is launched, without waiting for it to come online.
 //
-// A test asserting a worker must NEVER register needs this: for it, "never
-// came online" is the expected outcome rather than a fatal error.
-func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string, allowWindows bool) {
+// A test asserting that a worker never registers needs this: for it, "never
+// came online" is the expected outcome, not a fatal error.
+//
+// It returns the started process so a test can signal it; the cleanup below
+// still stops and reaps it, and owns cmd.Wait, so callers must not call Wait.
+func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string, allowWindows bool) *exec.Cmd {
 	t.Helper()
 
 	if runtime.GOOS == "windows" && !allowWindows {
@@ -244,6 +244,7 @@ func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string,
 			<-done                 // join the Wait goroutine; never call Wait again
 		}
 	})
+	return cmd
 }
 
 // pollForOnlineWorker polls GET /api/v1/workers until any worker in farmID
@@ -258,8 +259,8 @@ func pollForOnlineWorker(t *testing.T, ts *testServer, farmID string, timeout ti
 }
 
 // findOnlineWorker is [pollForOnlineWorker] without the fatal: it returns ""
-// on timeout. A test asserting a worker must NEVER register needs that, since
-// for it a timeout is the expected result rather than a failure.
+// on timeout. A test asserting that a worker never registers needs that, since
+// for it a timeout is the expected result.
 func findOnlineWorker(t *testing.T, ts *testServer, farmID string, timeout time.Duration) string {
 	t.Helper()
 
@@ -308,8 +309,8 @@ func findOnlineWorker(t *testing.T, ts *testServer, farmID string, timeout time.
 // ── Job YAML for real execution ───────────────────────────────────────────────
 
 // workerBinaryJobYAML is an OpenJD job with a real echo command that the
-// worker subprocess will actually execute.  The output ("hello from real
-// sqi-worker") is asserted in the log assertion step below.
+// worker subprocess executes. TestWorkerBinaryEndToEnd asserts its output
+// ("hello from real sqi-worker") in the task's logs.
 const workerBinaryJobYAML = `specificationVersion: "jobtemplate-2023-09"
 name: Real Worker Integration Test
 
@@ -354,8 +355,7 @@ func TestWorkerBinaryEndToEnd(t *testing.T) {
 	}
 	t.Logf("submitted job %s to farm %s queue %s", jobResp.ID, farmID, queueID)
 
-	// Wait for the job to reach a terminal state.  The real worker executes
-	// "echo hello from real sqi-worker" which should complete quickly.
+	// Wait for the job to reach a terminal state.
 	finalStatus := pollJobStatus(t, ts, jobResp.ID,
 		[]string{"completed", "failed", "canceled"}, 60*time.Second)
 	if finalStatus != "completed" {

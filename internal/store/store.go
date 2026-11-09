@@ -51,6 +51,7 @@ type Store interface {
 	ComputeLocationStore
 	ProductStore
 	UsagePoolStore
+	CapacityGroupStore
 	UsageClaimStore
 	WorkerStore
 	JobStore

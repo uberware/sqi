@@ -89,7 +89,8 @@ LIMIT ?`
 	// leased, over the aliases t (tasks), j (jobs) and q (queues): the task is
 	// ready and its backoff has elapsed (its one bind parameter is now), its
 	// queue is unpaused, and its job is neither paused nor terminal.
-	// sqlListReadyTasks, sqlCountReadyTasksByQueue and sqlLeaseTaskGuarded
+	// sqlListReadyTasks, sqlLeasableReadyScope (so sqlCountReadyTasksByQueue and
+	// sqlReadyStepDemand) and sqlLeaseTaskGuarded
 	// (lease.go) all embed it, so the lease's guard cannot drift from the list
 	// the scheduler chose the task from.
 	sqlLeasableTask = `t.status  = 'ready'
@@ -140,7 +141,7 @@ JOIN   jobs  j ON t.job_id = j.id
 WHERE  j.farm_id = ?
   AND  t.status IN ('assigned', 'running')`
 
-	// Per-queue count of LEASABLE ready tasks for a given farm — the same
+	// Per-queue count of leasable ready tasks for a given farm, by the same
 	// eligibility predicate as sqlListReadyTasks (sqlLeasableTask: backoff
 	// elapsed, queue unpaused, job schedulable), so the sweep neither reports
 	// depth for nor wakes lease waiters on queues whose only ready work is
@@ -149,12 +150,46 @@ WHERE  j.farm_id = ?
 	// heartbeat-sweep queue wake. farmID = '' means "all farms".
 	sqlCountReadyTasksByQueue = `
 SELECT j.queue_id, COUNT(*)
-FROM   tasks  t
+` + sqlLeasableReadyScope + `
+GROUP BY j.queue_id`
+
+	// sqlLeasableReadyScope is the FROM and WHERE of every grouped read of a
+	// farm's leasable ready tasks: sqlCountReadyTasksByQueue and
+	// sqlReadyStepDemand share it, so the two cannot disagree about which
+	// tasks count. Binds: farm ID twice ('' = all farms), then now.
+	sqlLeasableReadyScope = `FROM   tasks  t
 JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
 WHERE  (? = '' OR j.farm_id = ?)
-  AND  ` + sqlLeasableTask + `
-GROUP BY j.queue_id`
+  AND  ` + sqlLeasableTask
+
+	// sqlReadyStepDemand groups the leasable ready tasks by step and declared
+	// core reservation (0 = undeclared; the scheduler never stores a
+	// reservation below 1). Grouped in the database, so a farm of millions of
+	// ready tasks yields one row per (step, reservation).
+	sqlReadyStepDemand = `
+SELECT j.id, t.step_id, j.queue_id, COALESCE(t.required_cores, 0), COUNT(*)
+` + sqlLeasableReadyScope + `
+GROUP BY j.id, t.step_id, j.queue_id, COALESCE(t.required_cores, 0)`
+
+	// sqlWorkerCommitments is sqlCommittedCores for every worker of a farm at
+	// once: the declared cores summed and the undeclared tasks counted, so the
+	// caller prices the undeclared ones at each worker's machine size. The
+	// assigned_worker_id test is implied by the status test and does not
+	// narrow the scan: a finished task keeps its assigned_worker_id. On
+	// SQLite, with no ANALYZE statistics, the planner reads the tasks through
+	// the tasks_status index (status = ?), so the cost is in the number of
+	// assigned and running tasks. Binds: farm ID twice ('' = all farms).
+	sqlWorkerCommitments = `
+SELECT t.assigned_worker_id,
+       COALESCE(SUM(t.required_cores), 0),
+       SUM(CASE WHEN t.required_cores IS NULL THEN 1 ELSE 0 END)
+FROM   tasks t
+JOIN   jobs  j ON t.job_id = j.id
+WHERE  t.assigned_worker_id IS NOT NULL
+  AND  t.status IN ('assigned', 'running')
+  AND  (? = '' OR j.farm_id = ?)
+GROUP BY t.assigned_worker_id`
 
 	// Counts tasks for a given job grouped by status.
 	// Used by the REST layer to include aggregate task counts in job detail responses.
@@ -629,6 +664,45 @@ func (s *Store) CountReadyTasksByQueue(ctx context.Context, farmID string, now t
 	return counts, rows.Err()
 }
 
+// ListReadyStepDemand implements [store.TaskStore].
+func (s *Store) ListReadyStepDemand(ctx context.Context, farmID string, now time.Time) ([]store.StepDemand, error) {
+	rows, err := s.r.QueryContext(ctx, sqlReadyStepDemand, farmID, farmID, TimeText(now.UTC()))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	var out []store.StepDemand
+	for rows.Next() {
+		var d store.StepDemand
+		if err := rows.Scan(&d.JobID, &d.StepID, &d.QueueID, &d.RequiredCores, &d.Ready); err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, d)
+	}
+	return out, mapErr(rows.Err())
+}
+
+// ListWorkerCommitments implements [store.TaskStore].
+func (s *Store) ListWorkerCommitments(ctx context.Context, farmID string) (map[string]store.WorkerCommitment, error) {
+	rows, err := s.r.QueryContext(ctx, sqlWorkerCommitments, farmID, farmID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]store.WorkerCommitment)
+	for rows.Next() {
+		var workerID string
+		var c store.WorkerCommitment
+		if err := rows.Scan(&workerID, &c.DeclaredCores, &c.UndeclaredTasks); err != nil {
+			return nil, mapErr(err)
+		}
+		out[workerID] = c
+	}
+	return out, mapErr(rows.Err())
+}
+
 // RetryTasks implements [store.TaskStore].
 func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, now time.Time) ([]store.Task, error) {
 	nowText := TimeText(now.UTC())
@@ -744,13 +818,13 @@ func (s *Store) CommittedCores(ctx context.Context, workerID string, fullMachine
 // RecordTaskFailure implements [store.TaskStore].
 //
 // The attempt close, task increment, and job increment run inside a single
-// transaction. The counter increments are GATED on the attempt's running→failed
+// transaction. The counter increments are gated on the attempt's running→failed
 // transition: closing the attempt (which only affects a row while it is still
-// running) is what authorizes the increment, so an at-least-once redelivery of
-// the same status message — whose attempt is already terminal — counts zero
-// rows, skips both increments, and returns the current counts instead. This
-// makes the failure count exactly-once per attempt, and keeps the two counters
-// in lockstep: either both increment or neither does.
+// running) authorizes the increment, so an at-least-once redelivery of the same
+// status message, whose attempt is already terminal, counts zero rows, skips
+// both increments, and returns the current counts instead. The failure count is
+// therefore exactly once per attempt, and the two counters stay in lockstep:
+// either both increment or neither does.
 //
 // Invariant I3: the same transaction releases the attempt's claims, so a
 // closed attempt never keeps a usage slot. Anchor: the task's job row, taken
@@ -792,7 +866,7 @@ func (s *Store) RecordTaskFailure(
 
 		if closed == 0 {
 			// Redelivery (or unknown attempt): the attempt is already terminal, so
-			// do NOT re-count. Return the current counters so the caller's decision
+			// do not re-count. Return the current counters so the caller's decision
 			// is identical to the first delivery. No matching task ⇒ ErrNotFound.
 			if err = tx.QueryRowContext(ctx, sqlReadFailureCounts, taskID).Scan(&out.taskFailed, &out.jobFailed); err != nil {
 				return result{}, txRollback, mapErr(err)
@@ -816,8 +890,8 @@ func (s *Store) RecordTaskFailure(
 
 // RequeueTaskForRetry implements [store.TaskStore]. Zero rows (task missing,
 // no longer assigned/running, or attemptID not the task's latest attempt) is a
-// legitimate no-op reported as false: NOT an error, so a stale redelivery
-// never naks into a redelivery loop.
+// no-op reported as false, not an error, so a stale redelivery never naks into
+// a redelivery loop.
 //
 // Anchor: the task's job row, so the latest-attempt check in the guard cannot
 // be overtaken by a lease committing a new attempt (a lease holds the job row

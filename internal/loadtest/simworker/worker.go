@@ -444,8 +444,8 @@ func (inc *incarnation) stop(ctx context.Context) {
 	inc.disp.shutdown(endShutdown) // refuses any late dispatch
 	inc.stopHB()
 	<-inc.hbDone
-	inc.reg.Deregister("graceful shutdown") // best effort, logged, as in sqi-worker
-	inc.nc.Close()                          // flushes the deregistration and any terminal statuses
+	inc.reg.Deregister("graceful shutdown", "") // best effort, logged, as in sqi-worker
+	inc.nc.Close()                              // flushes the deregistration and any terminal statuses
 }
 
 // crash is the abrupt end behind Crash and Restart: loops stop, attempts are

@@ -13,21 +13,21 @@ import (
 
 // LeaseTask implements [store.TaskStore]. Every outcome is decided under the
 // store lock before anything is written, so a non-leased outcome or an error
-// changes nothing, as SQLite's rolled-back transaction does.
+// changes nothing, as a rolled-back transaction does in the SQL stores.
 //
-// The outcomes match the SQLite store's, which is the reference:
+// The outcomes match the SQL stores':
 //   - an unknown task, or one whose job, queue or farm row is missing, is Lost
-//     (SQLite's lease joins all three);
+//     (the SQL lease joins all three);
 //   - a task failing ListReadyTasks' eligibility predicate (isReadyInFarm) is
 //     Lost;
 //   - a disabled worker is Lost; an offline worker, or one with no row, is
-//     not refused;
+//     Lost only when the request sets RequireOnline;
 //   - the queue cap is checked before the farm cap;
 //   - pools are checked in pool-ID order, whatever order the request lists
 //     them in, so the same full pool is reported;
 //   - a request naming one pool twice sees its own first claim, so it is
-//     PoolFull when that fills the pool, and ErrConflict otherwise (SQLite's
-//     unique (task_attempt_id, pool_id) index).
+//     PoolFull when that fills the pool, and ErrConflict otherwise (the SQL
+//     stores' unique (task_attempt_id, pool_id) index).
 func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.LeaseResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -39,9 +39,11 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 	if !ok || !s.leasableLocked(t, req) {
 		return store.LeaseResult{Outcome: store.LeaseLost}, nil
 	}
-	// The worker re-check (see the SQL store's sqlLeaseTaskGuarded): a
-	// disabled worker is refused; an offline or unknown one is not.
-	if w, ok := s.workers[req.WorkerID]; ok && w.Disabled {
+	// The worker re-check (see the SQL stores' sqlLeaseTaskGuarded): a
+	// disabled worker is refused; an offline or unknown one only when the
+	// request requires the worker online (sqlLeaseTaskGuardedOnline).
+	w, known := s.workers[req.WorkerID]
+	if (known && w.Disabled) || (req.RequireOnline && (!known || w.Status != store.WorkerStatusOnline)) {
 		return store.LeaseResult{Outcome: store.LeaseLost}, nil
 	}
 	if full := s.leaseCapsFullLocked(s.jobs[t.JobID]); full != "" {
@@ -53,7 +55,7 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 		return res, err
 	}
 
-	// SQLite stores and returns these times in UTC.
+	// The SQL stores keep and return these times in UTC.
 	now := req.Now.UTC()
 	at := now
 	t.Status, t.AssignedWorkerID, t.AssignedAt, t.UnschedulableReason, t.UpdatedAt = store.TaskStatusAssigned, req.WorkerID, &at, "", now
@@ -73,7 +75,7 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 	return store.LeaseResult{Outcome: store.LeaseLeased, Attempt: attempt}, nil
 }
 
-// leasableLocked is SQLite's lease guard: the task's job, queue and farm rows
+// leasableLocked is the SQL stores' lease guard: the task's job, queue and farm rows
 // all exist, and the task passes the eligibility predicate ListReadyTasks
 // lists by. Caller holds s.mu.
 func (s *Store) leasableLocked(t store.Task, req store.LeaseRequest) bool {
@@ -107,7 +109,7 @@ func (s *Store) leaseCapsFullLocked(j store.Job) store.LeaseOutcome {
 	return ""
 }
 
-// leasePoolsFullLocked checks each claim's pool in turn, as SQLite does,
+// leasePoolsFullLocked checks each claim's pool in turn, as the SQL stores do,
 // counting the claims this request has already accepted for the pool. It
 // returns a PoolFull result naming the first pool without room (the caller's
 // name when the pool is gone), an error for a pool named twice that still has
