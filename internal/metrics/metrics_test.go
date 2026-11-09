@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/uberware/sqi/internal/metrics"
 )
 
@@ -78,15 +80,33 @@ func TestNew_CapacityMetrics(t *testing.T) {
 	m.CapacityDemandCores.WithLabelValues("burst").Set(8)
 	m.CapacityDesiredMachines.WithLabelValues("burst").Set(2)
 	m.CapacityMembers.WithLabelValues("burst", "online").Set(1)
+	m.CapacityMachines.WithLabelValues("lan", "asleep").Set(3)
+	m.CapacityActionsTotal.WithLabelValues("lan", "wake", "ok").Inc()
+	m.CapacityBootTimeoutsTotal.WithLabelValues("lan").Inc()
+	m.CapacityGroupDegraded.WithLabelValues("lan").Set(1)
 	body := serve()
 	for _, want := range []string{
 		`sqi_capacity_demand_cores{group="burst"} 8`,
 		`sqi_capacity_desired_machines{group="burst"} 2`,
 		`sqi_capacity_members{group="burst",state="online"} 1`,
+		`sqi_capacity_machines{group="lan",power_state="asleep"} 3`,
+		`sqi_capacity_actions_total{action="wake",group="lan",result="ok"} 1`,
+		`sqi_capacity_boot_timeouts_total{group="lan"} 1`,
+		`sqi_capacity_group_degraded{group="lan"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("exposition missing %q", want)
 		}
+	}
+
+	// A group's series go together, by its name alone.
+	for _, v := range []interface{ DeletePartialMatch(prometheus.Labels) int }{
+		m.CapacityMachines, m.CapacityActionsTotal, m.CapacityBootTimeoutsTotal, m.CapacityGroupDegraded,
+	} {
+		v.DeletePartialMatch(prometheus.Labels{"group": "lan"})
+	}
+	if body := serve(); strings.Contains(body, `group="lan"`) {
+		t.Errorf("series of a deleted group remain:\n%s", body)
 	}
 }
 

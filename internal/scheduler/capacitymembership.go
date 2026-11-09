@@ -48,17 +48,20 @@ type registrationContext struct {
 	cred    store.WorkerCredential
 	hasCred bool
 	// prior is the worker row as it was before this registration. It is read
-	// only when the worker may be an ephemeral member, and nil otherwise or
+	// only when the worker may be an ephemeral member or the farm's capacity
+	// groups manage power ([Scheduler.powerManaged]), and nil otherwise or
 	// when there is no row yet.
 	prior *store.Worker
 }
 
 // beforeRegistration touches the worker's broker credential when broker
 // authentication is on, and reads the worker's current row when the worker
-// may be an ephemeral member: one that names a group with authentication off,
-// or whose credential was enrolled into a group with it on. Both are
-// best-effort and never stop a registration; a fenced touch is recorded, and
-// the registration write that follows is fenced too.
+// may be an ephemeral member (one that names a group with authentication off,
+// or whose credential was enrolled into a group with it on) or the farm's
+// capacity groups manage power, so that a member the registration wakes is
+// seen ([Scheduler.noteMemberWoke]). Both are best-effort and never stop a
+// registration; a fenced touch is recorded, and the registration write that
+// follows is fenced too.
 //
 // The touch comes before the registration write so that the credential is
 // known in time to decide whether the row is worth reading. A registration
@@ -71,7 +74,7 @@ func (s *Scheduler) beforeRegistration(ctx context.Context, m protocol.RegisterM
 		rc.cred, rc.hasCred = s.touchWorkerCredential(ctx, m.WorkerID, now)
 		mayBeEphemeral = rc.hasCred && rc.cred.CapacityGroupID != ""
 	}
-	if !mayBeEphemeral {
+	if !mayBeEphemeral && !s.powerManaged() {
 		return rc
 	}
 	prior, err := s.store.GetWorker(ctx, m.WorkerID)
@@ -208,6 +211,81 @@ func (s *Scheduler) warnOnClonedWorkerID(ctx context.Context, m protocol.Registe
 		slog.String("previous_instance_id", prior.InstanceID),
 		slog.String("remediation", "build machine images without a worker ID in the worker's data directory, "+
 			"so each machine creates its own on first boot"))
+}
+
+// noteMemberWoke logs a capacity-group member whose registration turned it
+// from waking, asleep or wake_failed (prior, the row read before it, nil when
+// not read) to awake (stored), and wakes any lease request it parked while it
+// could take no work. The store made the transition; this only reports it.
+func (s *Scheduler) noteMemberWoke(ctx context.Context, prior *store.Worker, stored store.Worker, now time.Time) {
+	if prior == nil || stored.PowerState != store.PowerAwake {
+		return
+	}
+	switch prior.PowerState {
+	case store.PowerWaking, store.PowerAsleep, store.PowerWakeFailed:
+	default:
+		return
+	}
+	attrs := []any{
+		slog.String("worker_id", stored.ID), slog.String("capacity_group_id", stored.CapacityGroupID),
+		slog.String("previous_power_state", string(prior.PowerState)),
+	}
+	if prior.PowerStateAt != nil {
+		attrs = append(attrs, slog.Duration("after", now.Sub(*prior.PowerStateAt)))
+	}
+	s.logger.InfoContext(ctx, "scheduler: capacity group member woke", attrs...)
+	s.WakeWorker(stored.ID)
+}
+
+// deregisteredStatus reads workerID after its deregistration was applied,
+// finishes its retirement when the capacity actuator was retiring it
+// ([Scheduler.finishRetirementOnDeregister]), and returns the status its
+// worker event carries: offline, or disabled for a disabled worker. removed
+// is true when the worker was deleted, and fenced when a write was fenced.
+func (s *Scheduler) deregisteredStatus(ctx context.Context, workerID string) (status store.WorkerStatus, removed, fenced bool) {
+	w, err := s.store.GetWorker(ctx, workerID)
+	if err != nil {
+		return store.WorkerStatusOffline, false, false
+	}
+	if w.PowerState == store.PowerRetiring {
+		if w, removed, fenced = s.finishRetirementOnDeregister(ctx, w); removed || fenced {
+			return "", removed, fenced
+		}
+	}
+	return w.EffectiveStatus(), false, false
+}
+
+// finishRetirementOnDeregister finishes the retirement of w, a worker found
+// retiring after its deregistration was applied: the capacity actuator told it
+// to sleep or shut down, and it left. A named member becomes asleep and
+// offline; an ephemeral one is deleted and its credential revoked. It returns
+// the worker as it now stands, removed when it was deleted, and fenced when
+// the write was fenced: the caller must stop and leave the message for the new
+// leader. A member that still holds a task is left retiring, as the store
+// refuses it, for the boot timeout to settle.
+func (s *Scheduler) finishRetirementOnDeregister(ctx context.Context, w store.Worker) (store.Worker, bool, bool) {
+	done, deleted, ok, err := s.store.FinishRetirement(ctx, w.ID, time.Now().UTC())
+	if s.stopIfFenced(ctx, err) {
+		return w, false, true
+	}
+	if err != nil || !ok {
+		s.warnUnlessStopped(ctx, err, "scheduler: finish capacity retirement on deregister failed",
+			slog.String("worker_id", w.ID))
+		return w, false, false
+	}
+	action := "retired"
+	if g, err := s.store.GetCapacityGroup(ctx, w.CapacityGroupID); err == nil {
+		action = g.RetireAction
+	}
+	s.logger.InfoContext(ctx, "scheduler: capacity group member retired: "+action,
+		slog.String("worker_id", w.ID), slog.String("capacity_group_id", w.CapacityGroupID),
+		slog.Bool("removed", deleted))
+	if deleted {
+		s.announceRemovedWorker(done)
+		s.revokeRemovedWorker(ctx, w.ID)
+		return done, true, false
+	}
+	return done, false, false
 }
 
 // removeDepartedEphemeral deletes workerID when kind says it left for good and

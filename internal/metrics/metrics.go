@@ -133,6 +133,27 @@ type Metrics struct {
 	// or offline).
 	CapacityMembers *prometheus.GaugeVec
 
+	// The capacity families below are set only for groups whose provider
+	// acts (not external), and counted as actions happen. A group's series
+	// are deleted together, by its name, with DeletePartialMatch.
+
+	// CapacityMachines counts each acting group's members by power state
+	// (awake, waking, retiring, asleep, wake_failed).
+	CapacityMachines *prometheus.GaugeVec
+
+	// CapacityActionsTotal counts provider actions by group, action (wake,
+	// grow, retire, list) and result (ok, failed, refused, unsupported,
+	// timeout, expired).
+	CapacityActionsTotal *prometheus.CounterVec
+
+	// CapacityBootTimeoutsTotal counts woken machines that did not register
+	// within their group's boot timeout.
+	CapacityBootTimeoutsTotal *prometheus.CounterVec
+
+	// CapacityGroupDegraded is 1 while an acting group is degraded and 0
+	// otherwise.
+	CapacityGroupDegraded *prometheus.GaugeVec
+
 	// ── High availability ─────────────────────────────────────────────────────
 	// Created by New but exposed only once [Metrics.RegisterHA] is called, so a
 	// server outside a group serves no sqi_server_ha_* series.
@@ -353,6 +374,46 @@ func New() *Metrics {
 			[]string{"group", "state"},
 		),
 
+		CapacityMachines: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "capacity",
+				Name:      "machines",
+				Help:      "Members of a capacity group whose provider acts, partitioned by power state (awake, waking, retiring, asleep, wake_failed).",
+			},
+			[]string{"group", "power_state"},
+		),
+
+		CapacityActionsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sqi",
+				Subsystem: "capacity",
+				Name:      "actions_total",
+				Help:      "Capacity provider actions, partitioned by group, action (wake, grow, retire, list) and result (ok, failed, refused, unsupported, timeout, expired).",
+			},
+			[]string{"group", "action", "result"},
+		),
+
+		CapacityBootTimeoutsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sqi",
+				Subsystem: "capacity",
+				Name:      "boot_timeouts_total",
+				Help:      "Machines woken for a capacity group that did not register within its boot timeout.",
+			},
+			[]string{"group"},
+		),
+
+		CapacityGroupDegraded: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "capacity",
+				Name:      "group_degraded",
+				Help:      "1 while a capacity group whose provider acts is degraded, 0 otherwise.",
+			},
+			[]string{"group"},
+		),
+
 		HALeader: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Namespace: "sqi",
@@ -410,6 +471,10 @@ func New() *Metrics {
 		m.CapacityDemandCores,
 		m.CapacityDesiredMachines,
 		m.CapacityMembers,
+		m.CapacityMachines,
+		m.CapacityActionsTotal,
+		m.CapacityBootTimeoutsTotal,
+		m.CapacityGroupDegraded,
 	)
 
 	// Both causes are exported from the start, at 0, so a rate over them is

@@ -142,6 +142,30 @@ type Status struct {
 	// mismatched member is still a member.
 	Mismatches  []Mismatch
 	EvaluatedAt time.Time
+
+	// Requested, Degraded and LastAction are what the actuator recorded for
+	// the group: the size it last asked a sized group's provider for, why the
+	// group is degraded (nil when it is not), and its latest provider action
+	// (nil before the first). Evaluate leaves them empty.
+	Requested  int
+	Degraded   *Degraded
+	LastAction *ActionRecord
+}
+
+// Degraded is why a group stopped growing, and until when.
+type Degraded struct {
+	Reason              string
+	Since, BackoffUntil time.Time
+}
+
+// ActionRecord is one provider action and its result.
+type ActionRecord struct {
+	// Action is wake, grow, retire, list or configure.
+	Action string
+	// Result is ok, failed, refused, unsupported, timeout or expired.
+	Result  string
+	Message string
+	At      time.Time
 }
 
 // Mismatch is a member whose registration does not match its sized group's

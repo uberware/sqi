@@ -58,6 +58,10 @@ func (*stubBus) SubscribeLease(_ func(string, string, []byte) []byte) (*nats.Sub
 	return nil, nil
 }
 
+func (*stubBus) RequestWorkerControl(context.Context, string, []byte) ([]byte, error) {
+	return nil, nats.ErrNoResponders
+}
+
 func (b *stubBus) PublishTaskCancel(_ context.Context, workerID string, data []byte) error {
 	var m protocol.TaskCancelMsg
 	if err := json.Unmarshal(data, &m); err != nil || workerID == "" {

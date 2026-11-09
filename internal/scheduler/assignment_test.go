@@ -58,6 +58,12 @@ func (*recordBus) SubscribeLease(_ func(string, string, []byte) []byte) (*nats.S
 	return nil, nil
 }
 
+// RequestWorkerControl answers as a broker does when no worker is
+// subscribed.
+func (*recordBus) RequestWorkerControl(context.Context, string, []byte) ([]byte, error) {
+	return nil, nats.ErrNoResponders
+}
+
 // newMetricsScheduler builds a Scheduler with a real metrics registry so the
 // gauge helpers do not nil-panic. cfg.FarmID is set to farmID.
 func newMetricsScheduler(st store.Store, bus busClient, farmID string) *Scheduler {
