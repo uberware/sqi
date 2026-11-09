@@ -33,6 +33,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -113,8 +114,10 @@ type boundProvider struct {
 // orphan cleanup after a degradation) recorded at a time. A new transition or
 // record makes a new key.
 type intentKey struct {
-	// subject is "worker:<id>" or "group:<id>".
-	subject string
+	// group is true for a group-level request, whose id is the group's; a
+	// member's intent has the worker's.
+	group bool
+	id    string
 	// intent is the member's power state, or the group-level request.
 	intent string
 	at     int64 // the recorded time as Unix nanoseconds; 0 when unset
@@ -128,7 +131,7 @@ const (
 
 // groupIntent is the key of groupID's intent recorded at at.
 func groupIntent(groupID, intent string, at time.Time) intentKey {
-	return intentKey{subject: "group:" + groupID, intent: intent, at: at.UnixNano()}
+	return intentKey{group: true, id: groupID, intent: intent, at: at.UnixNano()}
 }
 
 // actuatorState is what the actuator keeps between ticks. It lives in memory
@@ -137,10 +140,15 @@ type actuatorState struct {
 	// dispatched, begun and unconfigured are touched only with the capacity
 	// sweep's sweepMu held.
 	//
-	// dispatched holds every intent this process has sent; it is never
-	// pruned, so each intent is sent at most once per process. Each entry
-	// is a few words, one per transition the server has made.
-	dispatched map[intentKey]struct{}
+	// dispatched holds the intents this process has sent, each with the time
+	// after which it is forgotten, so each is sent at most once per process
+	// while it can matter. That time is two of its group's boot timeouts
+	// after the send: by then the member has moved on, a waking or retiring
+	// member being expired after one boot timeout and a group-level request
+	// consulted only within one, so its key can never be current again. A
+	// key that somehow still is (an expiry that kept failing) is sent again,
+	// as after a restart, which every intent tolerates.
+	dispatched map[intentKey]time.Time
 	// begun holds the retirements this process began (its own
 	// BeginRetirement moved the member to retiring) and has not yet sent, so
 	// the dispatch can tell a first request from one re-sent after a restart
@@ -291,35 +299,6 @@ func (g *writeGate) isClosed() bool {
 	return g.closed
 }
 
-// powerManaged reports whether the farm's capacity groups may have moved a
-// worker's power state, as the last sweep found: a group whose provider acts,
-// or a member in a state other than awake. Registration reads the prior
-// worker row only then, so a farm whose groups are all external, or that has
-// none, makes no extra read per registration. Until the first sweep it is
-// false.
-func (s *Scheduler) powerManaged() bool {
-	return s.capState.powerManaged.Load()
-}
-
-// notePowerManaged records, for [Scheduler.powerManaged], what this sweep
-// read.
-func (s *Scheduler) notePowerManaged(groups []store.CapacityGroup, members map[string][]store.Worker) {
-	managed := false
-	for _, g := range groups {
-		if g.Provider != store.CapacityProviderExternal {
-			managed = true
-			break
-		}
-		for _, w := range members[g.ID] {
-			if w.EffectivePowerState() != store.PowerAwake {
-				managed = true
-				break
-			}
-		}
-	}
-	s.capState.powerManaged.Store(managed)
-}
-
 // expireCapacityTransitions fails the overdue wakes and aborts the overdue
 // retirements of every group of groups, enabled or not, whatever its
 // provider, and updates members (by group ID) to match. A group with no
@@ -433,6 +412,7 @@ func (s *Scheduler) actuateCapacity(
 	act.mu.Unlock()
 	act.unconfigured = keepGroups(act.unconfigured, groups)
 	act.launches = keepGroups(act.launches, groups)
+	act.pruneDispatched(now)
 	for i, g := range groups {
 		if p, ok := s.groupProvider(ctx, now, g); ok {
 			if s.actOnGroup(ctx, now, g, p, members[g.ID], &statuses[i], records) {
@@ -676,10 +656,11 @@ func (s *Scheduler) dispatchIntents(
 		return
 	}
 	if act.dispatched == nil {
-		act.dispatched = map[intentKey]struct{}{}
+		act.dispatched = map[intentKey]time.Time{}
 	}
+	forget := now.Add(dispatchMemory(g.BootTimeout))
 	for _, k := range keys {
-		act.dispatched[k] = struct{}{}
+		act.dispatched[k] = forget
 		delete(act.begun, k)
 	}
 	act.setInFlight(g.ID, true)
@@ -694,9 +675,28 @@ func (s *Scheduler) dispatchIntents(
 	}
 }
 
+// dispatchMemory is how long a sent intent of a group whose boot timeout is
+// bootTimeout is remembered (see actuatorState.dispatched).
+func dispatchMemory(bootTimeout time.Duration) time.Duration {
+	if bootTimeout > math.MaxInt64/2 {
+		return math.MaxInt64
+	}
+	return 2 * bootTimeout
+}
+
+// pruneDispatched forgets the sent intents whose time to be forgotten is
+// before now. It is called with the capacity sweep's sweepMu held.
+func (a *actuatorState) pruneDispatched(now time.Time) {
+	for k, forget := range a.dispatched {
+		if forget.Before(now) {
+			delete(a.dispatched, k)
+		}
+	}
+}
+
 // memberIntent is w's current intent key.
 func memberIntent(w store.Worker) intentKey {
-	k := intentKey{subject: "worker:" + w.ID, intent: string(w.PowerState)}
+	k := intentKey{id: w.ID, intent: string(w.PowerState)}
 	if w.PowerStateAt != nil {
 		k.at = w.PowerStateAt.UnixNano()
 	}

@@ -33,10 +33,10 @@ const (
 	// outside sqi.
 	CapacityProviderExternal CapacityProvider = "external"
 	// CapacityProviderWakeOnLAN ("wake_on_lan") wakes a named group's known
-	// machines. "script:<name>" names a provider program from the server's
-	// configuration. [CapacityGroup.Validate] admits both on either kind; the
-	// API refuses wake_on_lan on a sized group and a script provider that is
-	// not configured.
+	// machines, so [CapacityGroup.Validate] refuses it on a sized group.
+	// "script:<name>" names a provider program from the server's
+	// configuration; Validate admits one on either kind, and the API refuses
+	// one that is not configured.
 	CapacityProviderWakeOnLAN CapacityProvider = "wake_on_lan"
 )
 
@@ -295,6 +295,9 @@ func (g CapacityGroup) Validate() error {
 	}
 	if !validCapacityProvider(g.Provider) {
 		bad("provider %q must be %q, %q or \"script:<name>\"", g.Provider, CapacityProviderExternal, CapacityProviderWakeOnLAN)
+	}
+	if g.Provider == CapacityProviderWakeOnLAN && g.Kind == CapacityGroupSized {
+		bad("provider %q needs a named group: it wakes machines it already knows", CapacityProviderWakeOnLAN)
 	}
 	errs = append(errs, g.validateScaling()...)
 	if g.Kind == CapacityGroupSized && g.Profile.CPUCount < 1 {

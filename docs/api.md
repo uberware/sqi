@@ -794,8 +794,9 @@ for; `null` for any other group), `degraded` (`null`, or `reason`, `since` and
 `action`, `result`, `message` and `at`) and `evaluated_at`. Workers, in
 `GET /workers` and a group's members, carry `power_state` (always present;
 `awake`, `waking`, `retiring`, `asleep` or `wake_failed`), `power_state_at`,
-`power_reason`, `cloud_instance_id` and `interfaces` (each `name`, `mac` and
-`addrs`). Under high availability only the leader
+`power_reason`, `cloud_instance_id` and `has_wake_address` (whether the worker
+reported an interface with a MAC); `GET /workers/{id}` alone also carries the
+`interfaces` (each `name`, `mac` and `addrs`). Under high availability only the leader
 evaluates groups: a standby answers `503` on these routes, as on every route
 other than the probes and `/metrics`, and exports no `sqi_capacity_*` series, so
 an autoscaler reads the leader.

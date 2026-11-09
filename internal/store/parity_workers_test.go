@@ -41,10 +41,11 @@ func TestParity_UpdateWorkerHeartbeat(t *testing.T) {
 func registerStamped(t *testing.T, st store.Store, farmID, instance string, stamp *time.Time) (store.Worker, []store.Task, error) {
 	t.Helper()
 	now := time.Now().UTC()
-	return st.RegisterWorker(t.Context(), store.Worker{
+	w, reg, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: fixtureWorkerID, FarmID: farmID, Hostname: "node", Status: store.WorkerStatusOnline,
 		LastHeartbeatAt: &now, InstanceID: instance, RegistrationBrokerAt: stamp,
 	})
+	return w, reg.Reclaimed, err
 }
 
 func TestParity_RegisterWorker_RegistrationBrokerAtRoundTrip(t *testing.T) {

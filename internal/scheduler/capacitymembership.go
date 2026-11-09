@@ -49,8 +49,7 @@ type registrationContext struct {
 	cred    store.WorkerCredential
 	hasCred bool
 	// prior is the worker row as it was before this registration. It is read
-	// only when the worker may be an ephemeral member or the farm's capacity
-	// groups manage power ([Scheduler.powerManaged]), and nil otherwise or
+	// only when the worker may be an ephemeral member, and nil otherwise or
 	// when there is no row yet.
 	prior *store.Worker
 }
@@ -75,7 +74,7 @@ func (s *Scheduler) beforeRegistration(ctx context.Context, m protocol.RegisterM
 		rc.cred, rc.hasCred = s.touchWorkerCredential(ctx, m.WorkerID, now)
 		mayBeEphemeral = rc.hasCred && rc.cred.CapacityGroupID != ""
 	}
-	if !mayBeEphemeral && !s.powerManaged() {
+	if !mayBeEphemeral {
 		return rc
 	}
 	prior, err := s.store.GetWorker(ctx, m.WorkerID)
@@ -215,24 +214,19 @@ func (s *Scheduler) warnOnClonedWorkerID(ctx context.Context, m protocol.Registe
 }
 
 // noteMemberWoke logs a capacity-group member whose registration turned it
-// from waking, asleep or wake_failed (prior, the row read before it, nil when
-// not read) to awake (stored), and wakes any lease request it parked while it
-// could take no work. The store made the transition; this only reports it.
-func (s *Scheduler) noteMemberWoke(ctx context.Context, prior *store.Worker, stored store.Worker, now time.Time) {
-	if prior == nil || stored.PowerState != store.PowerAwake {
-		return
-	}
-	switch prior.PowerState {
-	case store.PowerWaking, store.PowerAsleep, store.PowerWakeFailed:
-	default:
+// from waking, asleep or wake_failed to awake (stored), as reg reports, and
+// wakes any lease request it parked while it could take no work. The store
+// made the transition; this only reports it.
+func (s *Scheduler) noteMemberWoke(ctx context.Context, reg store.Registration, stored store.Worker, now time.Time) {
+	if reg.WokeFrom == "" {
 		return
 	}
 	attrs := []any{
 		slog.String("worker_id", stored.ID), slog.String("capacity_group_id", stored.CapacityGroupID),
-		slog.String("previous_power_state", string(prior.PowerState)),
+		slog.String("previous_power_state", string(reg.WokeFrom)),
 	}
-	if prior.PowerStateAt != nil {
-		attrs = append(attrs, slog.Duration("after", now.Sub(*prior.PowerStateAt)))
+	if reg.WokeFromAt != nil {
+		attrs = append(attrs, slog.Duration("after", now.Sub(*reg.WokeFromAt)))
 	}
 	s.logger.InfoContext(ctx, "scheduler: capacity group member woke", attrs...)
 	s.WakeWorker(stored.ID)

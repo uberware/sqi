@@ -379,7 +379,7 @@ type registerStatusSt struct {
 	store.Store
 }
 
-func (r *registerStatusSt) RegisterWorker(ctx context.Context, w store.Worker) (store.Worker, []store.Task, error) {
+func (r *registerStatusSt) RegisterWorker(ctx context.Context, w store.Worker) (store.Worker, store.Registration, error) {
 	out, reclaimed, err := r.Store.RegisterWorker(ctx, w)
 	out.Disabled = true
 	return out, reclaimed, err
@@ -432,11 +432,11 @@ func mustRegisterInstance(t *testing.T, st store.Store, w store.Worker, instance
 	w.InstanceID = instance
 	now := time.Now().UTC()
 	w.LastHeartbeatAt = &now
-	_, reclaimed, err := st.RegisterWorker(t.Context(), w)
+	_, reg, err := st.RegisterWorker(t.Context(), w)
 	if err != nil {
 		t.Fatalf("RegisterWorker(%q): %v", instance, err)
 	}
-	return reclaimed
+	return reg.Reclaimed
 }
 
 // TestLeaseHeldBackUntilARestartedProcessRegisters pins the lease side of the

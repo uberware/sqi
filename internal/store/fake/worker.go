@@ -28,16 +28,25 @@ import (
 // process, whose assigned and running tasks are reclaimed as the offline
 // transitions reclaim them, with [store.FailureReasonWorkerRestarted]; the
 // store lock stands in for the SQL stores' worker-row and job-row anchors.
-func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
+func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, store.Registration, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.fenceLocked(ctx); err != nil {
-		return store.Worker{}, nil, err
+		return store.Worker{}, store.Registration{}, err
 	}
 
 	existing, isUpdate := s.workers[worker.ID]
 	if isUpdate && store.StaleRegistration(existing, worker) {
-		return cloneWorker(existing), nil, store.ErrStaleRegistration
+		return cloneWorker(existing), store.Registration{}, store.ErrStaleRegistration
+	}
+	var reg store.Registration
+	if isUpdate {
+		var at *time.Time
+		if existing.PowerStateAt != nil {
+			t := *existing.PowerStateAt
+			at = &t
+		}
+		reg.WokeFrom, reg.WokeFromAt = store.RegistrationWake(existing.PowerState, at)
 	}
 	worker = cloneWorker(worker)
 	worker.Disabled = existing.Disabled                   // false for a new worker
@@ -45,7 +54,6 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	worker.Ephemeral = existing.Ephemeral                 // false for a new worker
 	worker.HeartbeatBrokerAt = existing.HeartbeatBrokerAt // nil for a new worker
 	worker.PowerState, worker.PowerStateAt, worker.PowerReason = registeredPowerState(existing, isUpdate)
-	var reclaimed []store.Task
 	if isUpdate {
 		worker.RegisteredAt = existing.RegisteredAt
 		if worker.RegistrationBrokerAt == nil {
@@ -60,11 +68,11 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 		if worker.InstanceID == "" {
 			worker.InstanceID = existing.InstanceID
 		} else if existing.InstanceID != "" && existing.InstanceID != worker.InstanceID {
-			reclaimed = s.reclaimWorkerTasksLocked(worker.ID, store.FailureReasonWorkerRestarted, time.Now().UTC())
+			reg.Reclaimed = s.reclaimWorkerTasksLocked(worker.ID, store.FailureReasonWorkerRestarted, time.Now().UTC())
 		}
 	}
 	s.workers[worker.ID] = worker
-	return worker, reclaimed, nil
+	return worker, reg, nil
 }
 
 // registeredPowerState is the power state a registration leaves a worker in,

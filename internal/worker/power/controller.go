@@ -404,13 +404,19 @@ func runCommand(ctx context.Context, argv []string) error {
 	if err == nil {
 		return nil
 	}
+	return commandError(err, out)
+}
+
+// commandError is err carrying the start of out, a failed command's output:
+// at most maxCommandOutput bytes, cut at a rune boundary.
+func commandError(err error, out []byte) error {
 	text := strings.TrimSpace(string(out))
 	if len(text) > maxCommandOutput {
-		text = text[:maxCommandOutput]
-		for !utf8.ValidString(text) {
-			text = text[:len(text)-1]
+		n := maxCommandOutput
+		for n > 0 && !utf8.RuneStart(text[n]) {
+			n--
 		}
-		text += "..."
+		text = text[:n] + "..."
 	}
 	if text == "" {
 		return err

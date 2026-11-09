@@ -127,7 +127,7 @@ function makeWorker(overrides: Partial<Worker> = {}): Worker {
     status: 'online',
     removable: false,
     power_state: 'awake',
-    interfaces: [],
+    has_wake_address: false,
     gpu: {},
     registered_at: '2024-01-01T08:00:00Z',
     updated_at: '2024-01-01T10:00:00Z',

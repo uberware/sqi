@@ -369,9 +369,10 @@ blind server. Reading the status needs `infra.read` when `auth.enabled` is on.
 
 `GET /api/v1/capacity-groups/{id}/members` lists a group's workers in the shape
 `GET /workers` returns. Every worker there carries `power_state` (`awake` for a
-worker no group has moved), and, when set, `power_state_at`, `power_reason`
-(why it last changed, such as a failed wake), `cloud_instance_id` and the
-`interfaces` it reported.
+worker no group has moved) and `has_wake_address` (whether it reported an
+interface with a MAC), and, when set, `power_state_at`, `power_reason` (why it
+last changed, such as a failed wake) and `cloud_instance_id`. The interfaces
+themselves are in the worker's detail, `GET /api/v1/workers/{id}`.
 
 ### Metrics
 
@@ -781,7 +782,12 @@ a firmware or network-card setting.
 ### How a wake reaches a machine
 
 Each time a worker registers it reports its network interfaces: those that are
-up, not loopback, and have a hardware address, with their addresses. sqi
+up, not loopback, and have a hardware address, with their addresses. It leaves
+out the host side of container and VM networking (interfaces named `veth*`,
+`docker*`, `br-*`, `cni*`, `flannel*`, `cali*`, `vxlan*`, `virbr*`, `vmnet*`,
+`vboxnet*`, `lxcbr*`, `lxdbr*`, `podman*`, `kube-*` or `weave*`), which cannot
+carry a wake. A plain bridge such as `br0` and a Hyper-V `vEthernet` switch are
+kept, since on a hypervisor host they hold the machine's own address. sqi
 addresses a wake from that record: every distinct 6-byte MAC address of an
 interface that has an IPv4 address, aimed at the IPv4 network of the interface
 carrying the worker's registered IP address (or, failing that, the first IPv4

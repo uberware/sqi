@@ -333,7 +333,7 @@ type deposeAfterRegisterStore struct {
 	depose func()
 }
 
-func (s *deposeAfterRegisterStore) RegisterWorker(ctx context.Context, w store.Worker) (store.Worker, []store.Task, error) {
+func (s *deposeAfterRegisterStore) RegisterWorker(ctx context.Context, w store.Worker) (store.Worker, store.Registration, error) {
 	out, reclaimed, err := s.Store.RegisterWorker(ctx, w)
 	s.depose()
 	return out, reclaimed, err

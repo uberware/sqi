@@ -61,6 +61,32 @@ func TestLocalInterfaces(t *testing.T) {
 		}
 	})
 
+	t.Run("drops the host side of container and VM networking", func(t *testing.T) {
+		var all []net.Interface
+		names := []string{
+			"eth0", "docker0", "br-3f2a9c1d0e4b", "veth1a2b3c4", "cni0", "flannel.1", "cali12ab34cd", "vxlan.calico",
+			"virbr0", "virbr0-nic", "vmnet1", "vmnet8", "vboxnet0", "lxcbr0", "lxdbr0", "podman0", "kube-ipvs0",
+			"weave", "br0", "vEthernet (External)", "enp3s0",
+		}
+		for i, name := range names {
+			all = append(all, net.Interface{
+				Index: i + 1, Name: name, Flags: up, HardwareAddr: net.HardwareAddr{0x02, 0, 0, 0, 0, byte(i)},
+			})
+		}
+		got := localInterfaces(func() ([]net.Interface, error) { return all, nil },
+			func(net.Interface) ([]net.Addr, error) { return nil, nil })
+		var kept []string
+		for _, ifc := range got {
+			kept = append(kept, ifc.Name)
+		}
+		// A plain bridge and a Hyper-V virtual switch are kept: on a
+		// hypervisor host they carry the machine's own address.
+		want := []string{"eth0", "br0", "vEthernet (External)", "enp3s0"}
+		if !reflect.DeepEqual(kept, want) {
+			t.Fatalf("kept %q, want %q", kept, want)
+		}
+	})
+
 	t.Run("a failing address lookup keeps the interface with no addresses", func(t *testing.T) {
 		failing := func(net.Interface) ([]net.Addr, error) { return nil, errors.New("boom") }
 		got := localInterfaces(func() ([]net.Interface, error) { return []net.Interface{eth0}, nil }, failing)

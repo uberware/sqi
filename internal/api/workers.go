@@ -16,6 +16,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -113,14 +114,17 @@ type workerResponse struct {
 	// PowerState is always present: awake for every worker no capacity
 	// group has moved. The power and machine fields below follow the same
 	// visibility as the rest of the response, as IPAddress does.
-	PowerState      string                 `json:"power_state"`
-	PowerStateAt    *time.Time             `json:"power_state_at,omitempty"`
-	PowerReason     string                 `json:"power_reason,omitempty"`
-	CloudInstanceID string                 `json:"cloud_instance_id,omitempty"`
-	Interfaces      []netInterfaceResponse `json:"interfaces"`
-	LastHeartbeatAt *time.Time             `json:"last_heartbeat_at,omitempty"`
-	RegisteredAt    time.Time              `json:"registered_at"`
-	UpdatedAt       time.Time              `json:"updated_at"`
+	PowerState      string     `json:"power_state"`
+	PowerStateAt    *time.Time `json:"power_state_at,omitempty"`
+	PowerReason     string     `json:"power_reason,omitempty"`
+	CloudInstanceID string     `json:"cloud_instance_id,omitempty"`
+	// HasWakeAddress is whether the worker reported an interface with a
+	// hardware address, which a wake-on-LAN packet is addressed to. The
+	// interfaces themselves are in the detail only, so a list stays small.
+	HasWakeAddress  bool       `json:"has_wake_address"`
+	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
+	RegisteredAt    time.Time  `json:"registered_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // netInterfaceResponse is one network interface a worker reported: what a
@@ -137,7 +141,20 @@ type netInterfaceResponse struct {
 type workerDetailResponse struct {
 	workerResponse
 
-	CurrentTasks []currentTaskResponse `json:"current_tasks"`
+	// Interfaces are the network interfaces the worker reported at
+	// registration, never null.
+	Interfaces   []netInterfaceResponse `json:"interfaces"`
+	CurrentTasks []currentTaskResponse  `json:"current_tasks"`
+}
+
+// toWorkerDetailResponse converts wk into the detail wire type, with no
+// current tasks yet.
+func toWorkerDetailResponse(wk store.Worker) workerDetailResponse {
+	return workerDetailResponse{
+		workerResponse: toWorkerResponse(wk),
+		Interfaces:     toNetInterfaceResponses(wk.Interfaces),
+		CurrentTasks:   []currentTaskResponse{},
+	}
 }
 
 // workerListResponse is the paginated result returned by GET /api/v1/workers.
@@ -227,10 +244,7 @@ func (h *workerHandler) getWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := workerDetailResponse{
-		workerResponse: toWorkerResponse(wk),
-		CurrentTasks:   []currentTaskResponse{},
-	}
+	resp := toWorkerDetailResponse(wk)
 
 	// Attach active-task detail: every task in the assigned or running state that
 	// points to this worker. A worker can execute several tasks at once (bounded
@@ -493,20 +507,22 @@ func toWorkerResponse(wk store.Worker) workerResponse {
 		PowerStateAt:    wk.PowerStateAt,
 		PowerReason:     wk.PowerReason,
 		CloudInstanceID: wk.CloudInstanceID,
-		Interfaces:      toNetInterfaceResponses(wk.Interfaces),
+		HasWakeAddress:  slices.ContainsFunc(wk.Interfaces, func(i store.NetInterface) bool { return i.MAC != "" }),
 		LastHeartbeatAt: wk.LastHeartbeatAt,
 		RegisteredAt:    wk.RegisteredAt,
 		UpdatedAt:       wk.UpdatedAt,
 	}
 }
 
-// toNetInterfaceResponses converts a worker's interfaces, copying them so the
-// response shares nothing with the record.
+// toNetInterfaceResponses converts a worker's interfaces, an empty addrs
+// list as [] rather than null.
 func toNetInterfaceResponses(ifs []store.NetInterface) []netInterfaceResponse {
 	out := make([]netInterfaceResponse, len(ifs))
 	for i, nic := range ifs {
-		addrs := make([]string, len(nic.Addrs))
-		copy(addrs, nic.Addrs)
+		addrs := nic.Addrs
+		if addrs == nil {
+			addrs = []string{}
+		}
 		out[i] = netInterfaceResponse{Name: nic.Name, MAC: nic.MAC, Addrs: addrs}
 	}
 	return out

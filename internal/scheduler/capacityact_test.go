@@ -504,7 +504,7 @@ func TestActuator_SettledRetirementReleasesParkedLease(t *testing.T) {
 				t.Fatalf("BeginRetirement = %v, %v", ok, err)
 			}
 			// The recorded intent is this process's own, so nothing is re-sent.
-			f.s.capState.act.dispatched = map[intentKey]struct{}{memberIntent(f.worker(t, "m1")): {}}
+			f.s.capState.act.dispatched = map[intentKey]time.Time{memberIntent(f.worker(t, "m1")): t0.Add(time.Hour)}
 			done := parkLease(t, f.s, "m1")
 			f.sweep(t, t0.Add(5*time.Minute+time.Second))
 			return done
@@ -877,7 +877,8 @@ func TestRegister_WakingMemberBecomesAwakeAndReleasesLease(t *testing.T) {
 			f.s.leaseHoldTimeout = 30 * time.Second // only a wake answers within the test
 			g := createGroup(t, f.st, wolGroup("lan", nil))
 			addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), false)
-			f.sweep(t, time.Now().UTC()) // the scheduler learns the farm manages power
+			// No capacity sweep runs first: a leader that has just started
+			// sees the wake as well as one that has swept.
 			tc.prior(t, f, g.ID, time.Now().UTC().Add(-time.Minute))
 			tasks := submitReady(t, f.st, 1, store.Step{})
 

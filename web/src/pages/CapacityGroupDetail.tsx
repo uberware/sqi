@@ -33,7 +33,6 @@ import type {
   CapacityGroupDegraded,
   CapacityGroupStatus,
   CapacityGroupTokenCreated,
-  PowerState,
   Worker,
 } from '@/api/types'
 import { EXTERNAL_PROVIDER, WAKE_ON_LAN_PROVIDER } from '@/lib/capacityGroupForm'
@@ -42,22 +41,6 @@ import styles from './CapacityGroupDetail.module.css'
 const DEFAULT_TOKEN_TTL = '720h'
 
 const workerName = (w: Worker): string => w.name || w.hostname
-
-const POWER_LABELS: Record<PowerState, string> = {
-  awake: 'Awake',
-  waking: 'Waking',
-  retiring: 'Retiring',
-  asleep: 'Asleep',
-  wake_failed: 'Wake failed',
-}
-
-/** A worker's power state as a text label; the colour only reinforces it. */
-function PowerBadge({ state }: { state: PowerState }) {
-  return <span className={`${styles.power} ${styles[state] ?? ''}`}>{POWER_LABELS[state]}</span>
-}
-
-/** True when the worker reported a network interface a wake-on-LAN packet can be addressed with. */
-const hasMac = (w: Worker): boolean => w.interfaces.some((i) => i.mac !== '')
 
 /** A grid of label/value pairs. `live` announces changed values to screen readers. */
 function StatGrid({ rows, live }: { rows: Array<[string, ReactNode]>; live?: boolean }) {
@@ -375,13 +358,15 @@ function MembersSection({ group, canManage }: { group: CapacityGroup; canManage:
                 <Link to={`/workers/${w.id}`} className={styles.link}>
                   {workerName(w)}
                 </Link>
-                {wol && !hasMac(w) && <p className={styles.cellNote}>no wake-on-LAN address yet</p>}
+                {wol && !w.has_wake_address && (
+                  <p className={styles.cellNote}>no wake-on-LAN address yet</p>
+                )}
               </td>
               <td>
                 <StatusBadge status={w.status} />
               </td>
               <td>
-                <PowerBadge state={w.power_state} />
+                <StatusBadge status={w.power_state} kind="Power" />
                 {w.power_state_at !== undefined && w.power_state !== 'awake' && (
                   <>
                     {' '}

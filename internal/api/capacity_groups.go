@@ -80,10 +80,6 @@ const errCapacityGroupNameTaken = "a capacity group with that name already exist
 // farm whose broker does not authenticate workers.
 const errGroupTokensNeedBrokerAuth = "group tokens need nats.auth.enabled; workers on an auth-off farm join with worker.capacity_group" //nolint:gosec // G101: a static response string, not a credential
 
-// errWakeOnLANNeedsNamed is the 400 detail for a sized group naming the
-// wake_on_lan provider.
-const errWakeOnLANNeedsNamed = `provider "wake_on_lan" needs a named group: it wakes machines it already knows`
-
 // errScriptProviderNotConfigured is the 400 detail format for a group naming a
 // script provider the server's configuration does not define. Its argument is
 // the provider as the request named it.
@@ -435,9 +431,6 @@ func groupFromInput(
 func validateGroup(g store.CapacityGroup, scripts []string, stored store.CapacityProvider) string {
 	if err := g.Validate(); err != nil {
 		return err.Error()
-	}
-	if g.Provider == store.CapacityProviderWakeOnLAN && g.Kind != store.CapacityGroupNamed {
-		return errWakeOnLANNeedsNamed
 	}
 	if name, ok := g.Provider.ScriptName(); ok && g.Provider != stored {
 		if _, found := slices.BinarySearch(scripts, name); !found {

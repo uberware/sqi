@@ -1071,7 +1071,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	// what capacity-group membership needs (capacitymembership.go).
 	rc := s.beforeRegistration(ctx, m, now)
 
-	stored, reclaimed, err := s.store.RegisterWorker(ctx, w)
+	stored, reg, err := s.store.RegisterWorker(ctx, w)
 	if errors.Is(err, store.ErrStaleRegistration) {
 		// A registration the broker stamped before the one already recorded: a
 		// late redelivery (JetStream can return an older message after a
@@ -1100,15 +1100,15 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		s.nakMsg(ctx, msg)
 		return
 	}
-	if len(reclaimed) > 0 {
+	if len(reg.Reclaimed) > 0 {
 		// A new worker process: the previous one's in-flight tasks went back to
 		// ready inside the registration write.
-		s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, m.Hostname, reclaimRestart, reclaimed)
+		s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, m.Hostname, reclaimRestart, reg.Reclaimed)
 	}
 
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
 	s.afterRegistration(ctx, m, stored, rc, now)
-	s.noteMemberWoke(ctx, rc.prior, stored, now)
+	s.noteMemberWoke(ctx, reg, stored, now)
 	s.warnOnExprCapShortfall(ctx, w)
 
 	s.logger.InfoContext(

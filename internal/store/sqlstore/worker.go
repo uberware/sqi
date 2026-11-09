@@ -96,7 +96,7 @@ RETURNING ` + workerCols
 
 	// sqlGetWorkerRegistration reads what RegisterWorker compares a
 	// registration with: the instance it last came from and its broker stamp.
-	sqlGetWorkerRegistration = `SELECT instance_id, registration_broker_at FROM workers WHERE id = ?`
+	sqlGetWorkerRegistration = `SELECT instance_id, registration_broker_at, power_state, power_state_at FROM workers WHERE id = ?`
 
 	sqlSetWorkerDisabled = `
 UPDATE workers SET disabled = ?, updated_at = ? WHERE id = ?
@@ -325,29 +325,27 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 // order as offlineWorker. A restart's reclaim is ordered against leases the way
 // offlineWorker is: LeaseTask holds the worker row FOR SHARE, so a lease in
 // flight is waited for and its task reclaimed.
-func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
+func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, store.Registration, error) {
 	now := time.Now().UTC()
 	args, err := workerBindArgs(worker, TimeText(now))
 	if err != nil {
-		return store.Worker{}, nil, err
+		return store.Worker{}, store.Registration{}, err
 	}
 
 	type result struct {
-		worker    store.Worker
-		reclaimed []store.Task
-		stale     bool
+		worker store.Worker
+		reg    store.Registration
+		stale  bool
 	}
 	r, err := inTxValue(ctx, s, "register worker", func(tx *dbTx) (result, txOutcome, error) {
 		if err := tx.lockAnchors(ctx, workerAnchor(worker.ID)); err != nil {
 			return result{}, txRollback, err
 		}
-		var prior string
-		var brokerAt sql.NullString
-		err := tx.QueryRowContext(ctx, sqlGetWorkerRegistration, worker.ID).Scan(&prior, &brokerAt)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return result{}, txRollback, fmt.Errorf("store: read worker %s: %w", worker.ID, mapErr(err))
+		prior, found, err := readRegistrationPrior(ctx, tx, worker.ID)
+		if err != nil {
+			return result{}, txRollback, err
 		}
-		if err == nil && store.StaleRegistration(store.Worker{RegistrationBrokerAt: nullTextToTime(brokerAt)}, worker) {
+		if found && store.StaleRegistration(prior, worker) {
 			// Nothing is written; the refusal returns the worker as stored.
 			// Committing runs the fence check, so a deposed leader gets
 			// ErrFenced here as it does for any other write.
@@ -364,8 +362,11 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 		if err != nil {
 			return result{}, txRollback, mapErr(err)
 		}
-		if prior != "" && worker.InstanceID != "" && prior != worker.InstanceID {
-			if out.reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
+		if out.worker.PowerState == store.PowerAwake {
+			out.reg.WokeFrom, out.reg.WokeFromAt = store.RegistrationWake(prior.PowerState, prior.PowerStateAt)
+		}
+		if prior.InstanceID != "" && worker.InstanceID != "" && prior.InstanceID != worker.InstanceID {
+			if out.reg.Reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
 				return result{}, txRollback, err
 			}
 		}
@@ -376,7 +377,24 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 			worker.RegistrationBrokerAt.Format(time.RFC3339Nano), r.worker.RegistrationBrokerAt.Format(time.RFC3339Nano),
 			store.ErrStaleRegistration)
 	}
-	return r.worker, r.reclaimed, err
+	return r.worker, r.reg, err
+}
+
+// readRegistrationPrior reads, under the worker's anchor, what RegisterWorker
+// needs of the row it replaces: its instance ID, its registration's broker
+// time and its power state since when. found is false when there is no row.
+func readRegistrationPrior(ctx context.Context, tx *dbTx, workerID string) (prior store.Worker, found bool, err error) {
+	var brokerAt, powerAt sql.NullString
+	var power string
+	err = tx.QueryRowContext(ctx, sqlGetWorkerRegistration, workerID).Scan(&prior.InstanceID, &brokerAt, &power, &powerAt)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return store.Worker{}, false, nil
+	case err != nil:
+		return store.Worker{}, false, fmt.Errorf("store: read worker %s: %w", workerID, mapErr(err))
+	}
+	prior.RegistrationBrokerAt, prior.PowerState, prior.PowerStateAt = nullTextToTime(brokerAt), store.PowerState(power), nullTextToTime(powerAt)
+	return prior, true, nil
 }
 
 // GetWorker implements [store.WorkerStore].

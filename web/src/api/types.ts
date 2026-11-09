@@ -317,8 +317,12 @@ export interface Worker {
   power_reason?: string
   /** The cloud provider's identifier for the worker's machine; absent when it reported none. */
   cloud_instance_id?: string
-  /** The network interfaces reported at registration (what a wake-on-LAN packet is addressed with). */
-  interfaces: NetInterface[]
+  /**
+   * Whether the worker reported a network interface with a hardware address,
+   * which a wake-on-LAN packet is addressed to. The interfaces themselves are
+   * in {@link WorkerDetail} only.
+   */
+  has_wake_address: boolean
   last_heartbeat_at?: string
   registered_at: string
   updated_at: string
@@ -347,6 +351,8 @@ export interface CurrentTask {
 
 /** Wire shape returned by GET /api/v1/workers/{id}. */
 export interface WorkerDetail extends Worker {
+  /** The network interfaces reported at registration (what a wake-on-LAN packet is addressed with). */
+  interfaces: NetInterface[]
   /** Every task the worker is currently executing; empty when idle. */
   current_tasks: CurrentTask[]
 }

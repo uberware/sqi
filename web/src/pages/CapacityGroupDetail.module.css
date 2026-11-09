@@ -99,42 +99,6 @@
   font-size: var(--font-size-sm);
 }
 
-/* A power state is always written out; the colour only reinforces it. */
-.power {
-  display: inline-block;
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-full);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--line-height-tight);
-  white-space: nowrap;
-}
-
-.awake {
-  background-color: var(--color-status-succeeded-bg);
-  color: var(--color-status-succeeded-text);
-}
-
-.waking {
-  background-color: var(--color-status-running-bg);
-  color: var(--color-status-running-text);
-}
-
-.retiring {
-  background-color: var(--color-status-pending-bg);
-  color: var(--color-status-pending-text);
-}
-
-.asleep {
-  background-color: var(--color-status-canceled-bg);
-  color: var(--color-status-canceled-text);
-}
-
-.wake_failed {
-  background-color: var(--color-status-failed-bg);
-  color: var(--color-status-failed-text);
-}
-
 .plainList {
   margin: 0;
   padding-left: var(--space-5);

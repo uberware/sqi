@@ -59,14 +59,14 @@ func TestRegisterWorker_ExtensionsRoundTrip(t *testing.T) {
 func registerInstance(t *testing.T, st store.Store, farmID, instance string) []store.Task {
 	t.Helper()
 	now := time.Now().UTC()
-	_, reclaimed, err := st.RegisterWorker(t.Context(), store.Worker{
+	_, reg, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: fixtureWorkerID, FarmID: farmID, Hostname: "node", Status: store.WorkerStatusOnline,
 		LastHeartbeatAt: &now, InstanceID: instance,
 	})
 	if err != nil {
 		t.Fatalf("RegisterWorker(%q): %v", instance, err)
 	}
-	return reclaimed
+	return reg.Reclaimed
 }
 
 // TestRegisterWorker_ReclaimsAfterARestart pins that a registration with a new

@@ -833,7 +833,7 @@ components:
 
     Worker:
       type: object
-      required: [id, farm_id, hostname, gpu, status, removable, power_state, interfaces, registered_at, updated_at]
+      required: [id, farm_id, hostname, gpu, status, removable, power_state, has_wake_address, registered_at, updated_at]
       properties:
         id:
           type: string
@@ -925,14 +925,13 @@ components:
             The cloud provider's identifier for the worker's machine, as the
             worker reported it at registration. Left out when it reported
             none.
-        interfaces:
-          type: array
-          items:
-            $ref: "#/components/schemas/NetInterface"
+        has_wake_address:
+          type: boolean
           description: >-
-            The network interfaces the worker reported at registration, at
-            most 32: what a wake-on-LAN packet is addressed with. Empty when it
-            reported none.
+            Whether the worker reported a network interface with a hardware
+            address, which a wake-on-LAN packet is addressed to. The
+            interfaces themselves are in the worker detail
+            (GET /workers/{id}) only.
         last_heartbeat_at:
           type: string
           format: date-time
@@ -983,8 +982,18 @@ components:
       allOf:
         - $ref: "#/components/schemas/Worker"
         - type: object
-          required: [current_tasks]
+          required: [interfaces, current_tasks]
           properties:
+            interfaces:
+              type: array
+              items:
+                $ref: "#/components/schemas/NetInterface"
+              description: >-
+                The network interfaces the worker reported at registration, at
+                most 32: what a wake-on-LAN packet is addressed with. Empty
+                when it reported none. A worker leaves out the host side of
+                container and VM networking (veth, docker, br-, cni and the
+                like).
             current_tasks:
               type: array
               description: >-

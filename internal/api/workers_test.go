@@ -901,8 +901,9 @@ func TestWorkerResponse_Removable(t *testing.T) {
 
 // TestWorkerResponse_PowerAndInterfaces covers the capacity fields of a
 // worker: power_state is always present (awake when the row holds none), the
-// optional fields are left out when empty, and interfaces is an array, its
-// addrs included, never null.
+// optional fields are left out when empty, and has_wake_address says whether
+// an interface carries a MAC. The interfaces themselves are the detail's
+// alone (TestWorkerDetailResponse_Interfaces), so a list row stays small.
 func TestWorkerResponse_PowerAndInterfaces(t *testing.T) {
 	at := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -914,8 +915,16 @@ func TestWorkerResponse_PowerAndInterfaces(t *testing.T) {
 		{
 			name:   "an unmanaged worker",
 			worker: store.Worker{ID: "w1"},
-			want:   map[string]any{"power_state": "awake", "interfaces": []any{}},
-			absent: []string{"power_state_at", "power_reason", "cloud_instance_id"},
+			want:   map[string]any{"power_state": "awake", "has_wake_address": false},
+			absent: []string{"power_state_at", "power_reason", "cloud_instance_id", "interfaces"},
+		},
+		{
+			name: "interfaces with no MAC",
+			worker: store.Worker{
+				ID: "w3", Interfaces: []store.NetInterface{{Name: "tun0", Addrs: []string{"10.8.0.2/24"}}},
+			},
+			want:   map[string]any{"has_wake_address": false},
+			absent: []string{"interfaces"},
 		},
 		{
 			name: "a retiring cloud member",
@@ -929,12 +938,9 @@ func TestWorkerResponse_PowerAndInterfaces(t *testing.T) {
 			},
 			want: map[string]any{
 				"power_state": "retiring", "power_state_at": at.Format(time.RFC3339),
-				"power_reason": "idle for 10m0s", "cloud_instance_id": "i-0abc",
-				"interfaces": []any{
-					map[string]any{"name": "eth0", "mac": "aa:bb:cc:dd:ee:ff", "addrs": []any{"10.0.0.5/24"}},
-					map[string]any{"name": "eth1", "mac": "aa:bb:cc:dd:ee:00", "addrs": []any{}},
-				},
+				"power_reason": "idle for 10m0s", "cloud_instance_id": "i-0abc", "has_wake_address": true,
 			},
+			absent: []string{"interfaces"},
 		},
 	}
 	for _, tc := range tests {
@@ -961,21 +967,62 @@ func TestWorkerResponse_PowerAndInterfaces(t *testing.T) {
 	}
 }
 
+// TestWorkerDetailResponse_Interfaces: the detail carries the interfaces, an
+// array with its addrs included, never null.
+func TestWorkerDetailResponse_Interfaces(t *testing.T) {
+	tests := []struct {
+		name   string
+		worker store.Worker
+		want   string
+	}{
+		{"none", store.Worker{ID: "w1"}, `[]`},
+		{
+			"two",
+			store.Worker{ID: "w2", Interfaces: []store.NetInterface{
+				{Name: "eth0", MAC: "aa:bb:cc:dd:ee:ff", Addrs: []string{"10.0.0.5/24"}},
+				{Name: "eth1", MAC: "aa:bb:cc:dd:ee:00"},
+			}},
+			`[{"name":"eth0","mac":"aa:bb:cc:dd:ee:ff","addrs":["10.0.0.5/24"]},{"name":"eth1","mac":"aa:bb:cc:dd:ee:00","addrs":[]}]`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(toWorkerDetailResponse(tc.worker))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			if g := string(got["interfaces"]); g != tc.want {
+				t.Errorf("interfaces = %s, want %s", g, tc.want)
+			}
+		})
+	}
+}
+
 // TestGetWorker_ReportsPowerState: the detail and list responses of a stored
-// worker carry its power state.
+// worker carry its power state; only the detail carries its interfaces.
 func TestGetWorker_ReportsPowerState(t *testing.T) {
 	st := fake.New()
 	w := seedWorker(t, st, store.WorkerStatusOnline)
 	r := newWorkerRouter(st)
-	for _, path := range []string{"/api/v1/workers/" + w.ID, "/api/v1/workers"} {
+	for _, tc := range []struct {
+		path       string
+		interfaces bool
+	}{{"/api/v1/workers/" + w.ID, true}, {"/api/v1/workers", false}} {
 		rr := httptest.NewRecorder()
-		r.ServeHTTP(rr, newReq(t, http.MethodGet, path, nil))
+		r.ServeHTTP(rr, newReq(t, http.MethodGet, tc.path, nil))
 		if rr.Code != http.StatusOK {
-			t.Fatalf("GET %s: %d", path, rr.Code)
+			t.Fatalf("GET %s: %d", tc.path, rr.Code)
 		}
 		body := rr.Body.String()
-		if !strings.Contains(body, `"power_state":"awake"`) || !strings.Contains(body, `"interfaces":[]`) {
-			t.Errorf("GET %s lacks power_state or interfaces: %s", path, body)
+		if !strings.Contains(body, `"power_state":"awake"`) || !strings.Contains(body, `"has_wake_address":false`) {
+			t.Errorf("GET %s lacks power_state or has_wake_address: %s", tc.path, body)
+		}
+		if got := strings.Contains(body, `"interfaces":[]`); got != tc.interfaces {
+			t.Errorf("GET %s carries interfaces = %v, want %v: %s", tc.path, got, tc.interfaces, body)
 		}
 	}
 }

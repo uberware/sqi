@@ -302,7 +302,7 @@ describe('members power state', () => {
       status: 'offline',
       power_state: 'asleep',
       power_state_at: '2026-11-07T10:00:00Z',
-      interfaces: [{ name: 'eth0', mac: 'aa:bb:cc:dd:ee:ff', addrs: ['10.0.0.3/24'] }],
+      has_wake_address: true,
     }),
   ]
 
@@ -319,17 +319,17 @@ describe('members power state', () => {
     expect(within(table).getByRole('columnheader', { name: /instance/i })).toBeInTheDocument()
 
     const awake = within(table).getByRole('row', { name: /render01/ })
-    expect(within(awake).getByText('Awake')).toBeInTheDocument()
+    expect(within(awake).getByLabelText('Power: Awake')).toHaveTextContent('Awake')
 
     const failed = within(table).getByRole('row', { name: /render02/ })
-    expect(within(failed).getByText('Wake failed')).toBeInTheDocument()
+    expect(within(failed).getByLabelText('Power: Wake failed')).toHaveTextContent('Wake failed')
     // The reason is visible text, not only a tooltip.
     expect(within(failed).getByText('did not register within 10m0s')).toBeVisible()
     expect(within(failed).getByText('i-0abc123')).toBeInTheDocument()
     expect(failed.querySelector('time')).not.toBeNull()
 
     const asleep = within(table).getByRole('row', { name: /render03/ })
-    expect(within(asleep).getByText('Asleep')).toBeInTheDocument()
+    expect(within(asleep).getByLabelText('Power: Asleep')).toHaveTextContent('Asleep')
   })
 
   it('hints at a missing wake-on-LAN address only for a wake_on_lan group', async () => {
@@ -362,14 +362,14 @@ describe('members power state', () => {
     expect(within(sized).queryByText(/no wake-on-lan address yet/i)).not.toBeInTheDocument()
   })
 
-  it('does not count an interface with an empty MAC as an address', async () => {
+  it('shows the note for a member the server reports has no wake address', async () => {
     stubApi({
       ...NAMED,
       'GET /capacity-groups/cg-1': {
         body: group({ kind: 'named', provider: 'wake_on_lan', machine_profile: {} }),
       },
       'GET /capacity-groups/cg-1/members': {
-        body: [worker({ interfaces: [{ name: 'lo', mac: '', addrs: ['127.0.0.1/8'] }] })],
+        body: [worker({ has_wake_address: false })],
       },
     })
     renderPage()

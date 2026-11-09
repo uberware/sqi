@@ -77,20 +77,20 @@ func TestUnschedulable_WaitableMembers(t *testing.T) {
 		cores int
 		want  string
 	}{
-		{"waking", waitableGroup{name: "lan", kind: waitWake, waking: []store.Worker{asleep}}, store.Step{}, 0, waitWakeLan},
-		{"wakeable", waitableGroup{name: "lan", kind: waitWake, wakeable: []store.Worker{asleep}}, store.Step{}, 0, waitWakeLan},
+		{"waking", waitableGroup{name: "lan", verb: "wake", machines: []store.Worker{asleep}}, store.Step{}, 0, waitWakeLan},
+		{"wakeable", waitableGroup{name: "lan", verb: "wake", machines: []store.Worker{asleep}}, store.Step{}, 0, waitWakeLan},
 		{
 			"step needs a tag the member lacks",
-			waitableGroup{name: "lan", kind: waitWake, wakeable: []store.Worker{asleep}},
+			waitableGroup{name: "lan", verb: "wake", machines: []store.Worker{asleep}},
 			houdiniStep(), 0, "",
 		},
 		{
 			"step needs more cores than the member has",
-			waitableGroup{name: "lan", kind: waitWake, wakeable: []store.Worker{asleep}},
+			waitableGroup{name: "lan", verb: "wake", machines: []store.Worker{asleep}},
 			store.Step{},
 			8, "",
 		},
-		{"no machines", waitableGroup{name: "lan", kind: waitWake}, store.Step{}, 0, ""},
+		{"no machines", waitableGroup{name: "lan", verb: "wake"}, store.Step{}, 0, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,9 +111,9 @@ func TestUnschedulable_FirstWaitableGroupWins(t *testing.T) {
 	tagged := m
 	tagged.Tags = map[string]string{"houdini": "20.5"}
 	s.capState.waitable = []waitableGroup{
-		{name: "first", kind: waitWake, wakeable: []store.Worker{m}},
-		{name: "second", kind: waitLaunch, profile: tagged},
-		{name: "third", kind: waitLaunch, profile: tagged},
+		{name: "first", verb: "wake", machines: []store.Worker{m}},
+		{name: "second", verb: "launch", machines: []store.Worker{tagged}},
+		{name: "third", verb: "launch", machines: []store.Worker{tagged}},
 	}
 	job := store.Job{ID: "j", FarmID: capFarm, QueueID: capQueue}
 

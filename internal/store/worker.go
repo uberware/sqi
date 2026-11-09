@@ -192,6 +192,38 @@ type Worker struct {
 	UpdatedAt       time.Time
 }
 
+// Registration is what [WorkerStore.RegisterWorker] did besides writing the
+// worker row.
+type Registration struct {
+	// Reclaimed are the previous process's assigned and running tasks it
+	// reclaimed, as they are after the reset.
+	Reclaimed []Task
+	// WokeFrom is the power state it moved the worker out of, to
+	// [PowerAwake]: [PowerWaking], [PowerAsleep] or [PowerWakeFailed]. Empty
+	// when it left the power state as it was. It is read under the lock the
+	// write takes, so it is exact, not a guess from an earlier read.
+	WokeFrom PowerState
+	// WokeFromAt is when the worker entered WokeFrom, or nil when WokeFrom is
+	// empty or that time was not recorded.
+	WokeFromAt *time.Time
+}
+
+// wokenBy reports whether a registration moves a worker in state to
+// [PowerAwake]. It is the one statement of that rule in Go; the SQL upsert
+// restates it.
+func wokenBy(state PowerState) bool {
+	return state == PowerWaking || state == PowerAsleep || state == PowerWakeFailed
+}
+
+// RegistrationWake is the wake part of the [Registration] for a worker whose
+// stored power state, before the registration, was state since at.
+func RegistrationWake(state PowerState, at *time.Time) (PowerState, *time.Time) {
+	if !wokenBy(state) {
+		return "", nil
+	}
+	return state, at
+}
+
 // StaleRegistration reports whether incoming, a registration for the worker
 // stored describes, is a late redelivery of one the broker delivered before:
 // both carry a broker timestamp and incoming's is strictly the earlier. It is
@@ -287,7 +319,10 @@ type WorkerStore interface {
 	// [ErrStaleRegistration]. Equal timestamps are not stale, and a missing
 	// timestamp on either side is never stale. An incoming nil
 	// RegistrationBrokerAt keeps the stored one.
-	RegisterWorker(ctx context.Context, worker Worker) (Worker, []Task, error)
+	//
+	// The [Registration] says what else the write did: the tasks it
+	// reclaimed, and the power state it woke the worker from.
+	RegisterWorker(ctx context.Context, worker Worker) (Worker, Registration, error)
 
 	// GetWorker returns the worker with the given ID, or [ErrNotFound].
 	GetWorker(ctx context.Context, id string) (Worker, error)

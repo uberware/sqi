@@ -566,7 +566,13 @@ func (s *Scheduler) cleanOrphans(ctx context.Context, now time.Time, g store.Cap
 	if ids, _ = usableInstanceIDs(ids); len(ids) == 0 {
 		return
 	}
-	members, err := s.store.ListCapacityGroupMembers(ctx, g.ID)
+	// The list can take minutes, so shutdown may have abandoned the call by
+	// now: the read goes through the gate like the writes.
+	var members []store.Worker
+	var err error
+	if !s.capState.act.gate.do(func() { members, err = s.store.ListCapacityGroupMembers(ctx, g.ID) }) {
+		return
+	}
 	if err != nil {
 		s.warnUnlessStopped(ctx, err, "scheduler: capacity provider: read members for orphan cleanup failed; nothing retired",
 			slog.String("group", g.Name))

@@ -732,7 +732,7 @@ func (r *stressRun) restart(n int) {
 	// latest an instance ID the store has not stored yet.
 	r.instancesMu.Lock()
 	defer r.instancesMu.Unlock()
-	_, reclaimed, err := r.st.RegisterWorker(r.t.Context(), store.Worker{
+	_, reg, err := r.st.RegisterWorker(r.t.Context(), store.Worker{
 		ID: id, FarmID: r.fx.farmID, Hostname: id, Status: store.WorkerStatusOnline,
 		LastHeartbeatAt: &now, InstanceID: instance,
 	})
@@ -740,7 +740,7 @@ func (r *stressRun) restart(n int) {
 		return
 	}
 	r.instances[id] = append(r.instances[id], instance)
-	r.counts.restartReclaims.Add(int64(len(reclaimed)))
+	r.counts.restartReclaims.Add(int64(len(reg.Reclaimed)))
 }
 
 // reconcile is the server's reconciliation write racing the rest: it lists the
