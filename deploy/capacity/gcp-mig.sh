@@ -13,6 +13,8 @@
 # gcloud reads its credentials from the usual variables (GOOGLE_APPLICATION_CREDENTIALS,
 # CLOUDSDK_*), which the provider's `env` can also carry.
 #
+# Requires bash 4.4 or later (it refuses to run on an older one) and jq.
+#
 # Actions (request and response: internal/capacity/script, and README.md):
 #
 #   grow    Resizes the group to the requested size. It NEVER lowers it: sqi's `current` is its own
@@ -20,23 +22,31 @@
 #           for one), so an absolute `resize` to a smaller number would delete working instances.
 #           The script reads the group's own target size and the instances it runs and resizes to
 #           max(desired, actual): when the request is no larger it answers ok,
-#           "no change: desired <= current size", and changes nothing.
+#           "no change: desired <= current size", and changes nothing. A size it cannot read, or
+#           one that is not a whole number, ends the script with a non-zero status and no change.
 #   retire  Deletes each instance named by `members[].instance_id` with `delete-instances`, which
 #           also lowers the group's target size by the instances it removes, so no replacement is
 #           started. An instance that is not in the group (or is already being deleted) is skipped,
-#           never deleted. It lowers nothing else.
+#           never deleted. It lowers nothing else. Every member needs an instance_id: one without
+#           makes the whole request refused.
 #   list    Answers the names of the group's instances that are not being deleted. The instance
 #           name is the same value the worker reports as its cloud_instance_id.
 #
 # Any other action (wake) is answered "unsupported".
 #
 # Every instance name is checked against GCE's name rule before use; a request with any other
-# value is refused whole. Request text is read with jq and passed to gcloud as separate arguments,
-# never interpolated into a shell string.
+# value is refused whole. `desired` and `current` must be whole numbers from 0 to 100000. Request
+# text is read with jq and passed to gcloud as separate arguments, never interpolated into a shell
+# string. Do not add `set -x`: it would write every command to the log.
 #
 # Documentation-derived: this script has not been run against a real GCP project.
 
 set -euo pipefail
+
+if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4))); then
+  echo "gcp-mig.sh needs bash 4.4 or later (this is $BASH_VERSION)" >&2
+  exit 1
+fi
 
 emit() {
   if [[ -n ${2:-} ]]; then
@@ -50,6 +60,13 @@ emit() {
 die() {
   emit error "$1"
   exit 0
+}
+
+# fatal ends the script with a non-zero status and the reason on standard error. It is for a read
+# that failed or made no sense, where no response should claim anything.
+fatal() {
+  echo "$1" >&2
+  exit 1
 }
 
 req=$(cat)
@@ -82,30 +99,37 @@ if [[ -n ${GCP_PROJECT:-} ]]; then
   [[ $GCP_PROJECT =~ ^[a-z][-a-z0-9:.]*$ ]] || die "GCP_PROJECT is not a valid project ID"
   scope+=(--project "$GCP_PROJECT")
 fi
+# --quiet makes gcloud answer its prompts instead of waiting for a terminal that is not there.
+scope+=(--quiet)
 
-# load_group fills $live_json with the names of the group's instances that are not being deleted,
-# and $actual with the larger of the group's target size and their number.
-load_group() {
-  local described listed target
-  described=$(gcloud compute instance-groups managed describe "$mig" --format=json "${scope[@]}")
-  target=$(jq -r '.targetSize // 0 | if type == "number" then tostring else "0" end' <<<"$described")
-  listed=$(gcloud compute instance-groups managed list-instances "$mig" --format=json "${scope[@]}")
-  live_json=$(jq -c '[.[]? | select(.instance != null and (.currentAction // "") != "DELETING") | .instance | split("/") | last]' <<<"$listed")
-  actual=$(jq -r --argjson target "$target" '[$target, length] | max' <<<"$live_json")
-}
-
-# list_group is load_group without the size: only the list-instances call.
+# list_group fills $live_json with the names of the group's instances that are not being deleted.
 list_group() {
   local listed
   listed=$(gcloud compute instance-groups managed list-instances "$mig" --format=json "${scope[@]}")
   live_json=$(jq -c '[.[]? | select(.instance != null and (.currentAction // "") != "DELETING") | .instance | split("/") | last]' <<<"$listed")
 }
 
+# group_size fills $actual, and $live_json, with the larger of the group's target size and the
+# number of instances it runs. A value that is not a whole number is fatal: comparing against it
+# could read as "smaller" and lower the group.
+group_size() {
+  local described target live_count
+  described=$(gcloud compute instance-groups managed describe "$mig" --format=json "${scope[@]}")
+  target=$(jq -r '.targetSize | if type == "number" and . >= 0 and . <= 100000 and . == floor then tostring else "bad" end' <<<"$described")
+  [[ $target =~ ^[0-9]+$ ]] || fatal "the group's target size is not a whole number from 0 to 100000"
+  list_group
+  live_count=$(jq 'length' <<<"$live_json")
+  [[ $live_count =~ ^[0-9]+$ ]] || fatal "the instance count is not a whole number"
+  actual=$((target > live_count ? target : live_count))
+}
+
 case $action in
   grow)
-    want=$(jq -r '(.desired // 0) | if type == "number" and . >= 0 and . == floor then tostring else "bad" end' <<<"$req")
-    [[ $want =~ ^[0-9]+$ ]] || die "desired must be a non-negative integer"
-    load_group
+    want=$(jq -r '(.desired // 0) | if type == "number" and . >= 0 and . <= 100000 and . == floor then tostring else "bad" end' <<<"$req")
+    [[ $want =~ ^[0-9]+$ ]] || die "desired must be a whole number from 0 to 100000"
+    have=$(jq -r '(.current // 0) | if type == "number" and . >= 0 and . <= 100000 and . == floor then tostring else "bad" end' <<<"$req")
+    [[ $have =~ ^[0-9]+$ ]] || die "current must be a whole number from 0 to 100000"
+    group_size
     if ((want <= actual)); then
       emit ok "no change: desired <= current size"
       exit 0
@@ -137,7 +161,10 @@ case $action in
       fi
     done
     if ((${#doomed[@]} > 0)); then
-      names=$(IFS=,; printf '%s' "${doomed[*]}")
+      names=$(
+        IFS=,
+        printf '%s' "${doomed[*]}"
+      )
       gcloud compute instance-groups managed delete-instances "$mig" "--instances=$names" "${scope[@]}" >&2
     fi
     emit ok "deleted ${#doomed[@]}; $skipped not a member, skipped"

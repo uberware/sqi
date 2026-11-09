@@ -17,8 +17,10 @@ BMC.** `examples_test.go` runs each against stub `aws`, `gcloud`, `az` and `ipmi
 record their arguments, which shows the scripts build the commands their authors intended, not that
 the real tools accept them. Try one against a scratch group before pointing a production group at it.
 
-They need `bash` (4.4 or later) and [`jq`](https://jqlang.github.io/jq/), plus the CLI of the cloud
-they drive (`aws`, `gcloud`, `az`) or `ipmitool`, on the server's `PATH`.
+They need `bash` **4.4 or later** and [`jq`](https://jqlang.github.io/jq/), plus the CLI of the
+cloud they drive (`aws`, `gcloud`, `az`) or `ipmitool`, on the server's `PATH`. Each script checks
+`BASH_VERSINFO` first and, on an older bash (the stock macOS `/bin/bash` is 3.2), exits non-zero
+with a message on standard error instead of running; put a newer bash first on the server's `PATH`.
 
 ## Configuring a provider
 
@@ -71,9 +73,20 @@ The authoritative description is the package comment in `internal/capacity/scrip
 - **`retire` acts only on the instance IDs it is given.** It never lowers anything else, and before
   terminating an instance it checks that the instance belongs to the configured group, answering ok
   with a "not a member, skipped" count rather than touching a foreign instance.
+- **Every member of a sized group needs a `cloud_instance_id`.** `retire` names members by it, and a
+  script that finds a member without one (or with one it cannot validate) refuses the **whole**
+  retire batch rather than guess, which blocks scale-in until it is fixed. Set
+  `worker.cloud_instance_id.source` (`aws`, `gcp` or `azure`) in each worker's configuration so it
+  reports the ID when it registers.
+- **A size that cannot be read ends the script with a non-zero exit.** `grow` compares the request
+  with the size the cloud reports; a CLI failure, or a size that is not a whole number, makes the
+  script exit non-zero (reason on standard error) and change nothing, never fall through to a
+  resize. `desired` and `current` must be whole numbers from 0 to 100000.
 - **`list` answers the form a worker reports** as its `cloud_instance_id`: the EC2 instance ID
   (`i-0123456789abcdef0`), the GCE instance name, the Azure scale-set instance ID (the last segment
-  of the VM's resource ID, `3`).
+  of the VM's resource ID, `3`). Azure `retire` accepts **only** that bare ID and refuses a resource
+  ID: keeping the last segment of one would let a VM of another scale set pass the membership check
+  as an instance of the configured set.
 - **Treat the request as data.** Read it with `jq`, validate every instance ID and name against a
   strict pattern before use, pass values as separate arguments, quote everything, and never `eval`
   or build a command string from request text. A request holding an invalid ID is refused whole.

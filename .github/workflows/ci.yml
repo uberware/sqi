@@ -194,6 +194,15 @@ jobs:
         with:
           python-version: "3.13"
 
+      # deploy/capacity's TestExampleScripts runs the example capacity provider
+      # scripts against stub cloud tools and skips, with the suite still green,
+      # when bash (4.4 or later) or jq is missing. ubuntu-latest ships both; the
+      # install comes before the suite so that stays true there too, and the
+      # test is asserted by name below because a skip would otherwise pass
+      # unnoticed.
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
+
       # `make test-cover` runs the suite with -race (RACE=on, the Makefile
       # default), writes coverage.out, and fails below COVERAGE_MIN. The
       # threshold is set only in the Makefile (default 70).
@@ -206,14 +215,6 @@ jobs:
       # install on this job's critical path.
       - name: Test (race detector + coverage gate)
         run: make test-cover TEST_EXCLUDE_PKGS=github.com/uberware/sqi/test/integration
-
-      # deploy/capacity's TestExampleScripts runs the example capacity provider
-      # scripts against stub cloud tools and skips, with the suite still green,
-      # when bash or jq is missing. ubuntu-latest ships both; the install is
-      # explicit so that stays true, and the test is asserted by name because
-      # a skip would otherwise pass unnoticed.
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
 
       - name: Example capacity provider scripts
         run: |

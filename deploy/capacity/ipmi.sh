@@ -24,9 +24,17 @@
 # touched and counts as failed; the others are still acted on, and the answer is an error so sqi
 # retries.
 #
+# Requires bash 4.4 or later (it refuses to run on an older one) and jq. The mapping file may use
+# CRLF line endings. Do not add `set -x`: it would write every command to the log.
+#
 # Documentation-derived: this script has not been run against a real BMC.
 
 set -euo pipefail
+
+if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4))); then
+  echo "ipmi.sh needs bash 4.4 or later (this is $BASH_VERSION)" >&2
+  exit 1
+fi
 
 emit() {
   if [[ -n ${2:-} ]]; then
@@ -71,6 +79,7 @@ bmc_file=${IPMI_BMC_FILE:-}
 bmc_for() {
   local want=${1,,} host addr rest
   while read -r host addr rest || [[ -n $host ]]; do
+    addr=${addr%$'\r'}
     [[ -n $host && $host != '#'* && -n $addr ]] || continue
     if [[ ${host,,} == "$want" ]]; then
       printf '%s' "$addr"
