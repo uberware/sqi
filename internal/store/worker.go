@@ -168,7 +168,25 @@ type Worker struct {
 	// Ephemeral marks a member the server created for a group and removes
 	// when it retires; it is meaningful only with a CapacityGroupID. A member
 	// that is not ephemeral is a named machine and outlives its time offline.
-	Ephemeral       bool
+	Ephemeral bool
+	// PowerState is where the worker is in the capacity group power cycle; it
+	// is never empty on a stored row. A registration moves a waking, asleep or
+	// wake-failed worker to [PowerAwake] and leaves a retiring one retiring;
+	// [WorkerStore.SetWorkerCapacityGroup] with an empty group resets it.
+	// [PowerRetiring] and [PowerAsleep] refuse new leases ([TaskStore.LeaseTask]).
+	PowerState PowerState
+	// PowerStateAt is when PowerState last changed, or nil if it has not
+	// changed since the row was created.
+	PowerStateAt *time.Time
+	// PowerReason says why the state is what it is, when that is worth
+	// saying: why a wake failed, or what idle period retired the worker.
+	PowerReason string
+	// Interfaces are the network interfaces the worker reported at
+	// registration, which a wake-on-LAN packet is addressed with.
+	Interfaces []NetInterface
+	// CloudInstanceID is the cloud provider's identifier for the machine the
+	// worker reported at registration, or empty.
+	CloudInstanceID string
 	LastHeartbeatAt *time.Time
 	RegisteredAt    time.Time
 	UpdatedAt       time.Time
@@ -228,9 +246,14 @@ type WorkerStore interface {
 	// RegisterWorker inserts or replaces the worker record for the given ID.
 	// Called by the server when a worker sends its registration message. If the
 	// worker ID already exists its record is updated in full, except that an
-	// empty InstanceID keeps the stored one and Disabled, CapacityGroupID and
-	// Ephemeral are never written: a disabled worker stays disabled, a new one
-	// is enabled, and a worker keeps its group membership. When the stored
+	// empty InstanceID keeps the stored one and Disabled, CapacityGroupID,
+	// Ephemeral, PowerReason and PowerStateAt are never written from the
+	// worker: a disabled worker stays disabled, a new one is enabled, and a
+	// worker keeps its group membership. Interfaces and CloudInstanceID are
+	// written from the registration. PowerState is decided by the store, in the
+	// same statement: a waking, asleep or wake-failed worker becomes awake
+	// (PowerStateAt is now and PowerReason is cleared), a retiring worker stays
+	// retiring, and a new worker is awake. When the stored
 	// InstanceID is non-empty and differs from a non-empty incoming one, the
 	// previous worker process is gone: in the same transaction its assigned and
 	// running tasks are reclaimed exactly as [WorkerStore.OfflineWorker]

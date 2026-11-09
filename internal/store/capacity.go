@@ -52,6 +52,37 @@ const (
 	MinCapacityGroupTimeout = time.Minute
 )
 
+// PowerState is where a worker is in the capacity machinery's power cycle. It
+// is separate from the worker's liveness ([WorkerStatus]) and from an
+// operator's disabled flag.
+type PowerState string
+
+const (
+	// PowerAwake is a running worker, and the state of every worker that is
+	// not managed by a capacity group.
+	PowerAwake PowerState = "awake"
+	// PowerWaking is a machine the server has asked to start and that has not
+	// registered yet.
+	PowerWaking PowerState = "waking"
+	// PowerRetiring is a worker told to sleep or shut down; it takes no new
+	// work while it finishes what it holds.
+	PowerRetiring PowerState = "retiring"
+	// PowerAsleep is a machine that has deregistered and is suspended or off.
+	PowerAsleep PowerState = "asleep"
+	// PowerWakeFailed is a machine that did not register within its group's
+	// boot timeout.
+	PowerWakeFailed PowerState = "wake_failed"
+)
+
+// NetInterface is one network interface of a worker's machine: what a
+// wake-on-LAN packet is addressed with. The JSON tags are the wire form, and
+// the form the interfaces column stores.
+type NetInterface struct {
+	Name  string   `json:"name"`
+	MAC   string   `json:"mac"`
+	Addrs []string `json:"addrs,omitempty"`
+}
+
 // MachineProfile describes the machine a group's machines are expected to be.
 // It is stored as JSON; a zero value means the field is not declared.
 type MachineProfile struct {

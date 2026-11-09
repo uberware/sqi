@@ -47,8 +47,8 @@ func TestStoreCopy_CopiesEveryRowVerbatim(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("copied %d tables in %s", len(res.Tables), res.Elapsed)
-	if len(res.Tables) != 25 {
-		t.Errorf("copied %d tables, want 25", len(res.Tables))
+	if len(res.Tables) != 26 {
+		t.Errorf("copied %d tables, want 26", len(res.Tables))
 	}
 	counts := sqliteCounts(t, src)
 	for _, tr := range res.Tables {
@@ -543,12 +543,15 @@ func seedEveryTable(t *testing.T, path string) {
 		ID: "worker-1", FarmID: "farm-1", QueueID: "queue-1", Name: "node 1", Hostname: "node1", IPAddress: "10.0.0.7",
 		ComputeLocation: "onprem", OS: "linux", OSVersion: "6.1", Arch: "amd64", Version: "0.3.0", InstanceID: "i-1",
 		CPUCount: 16, RAMMb: 65536, Tags: map[string]string{"gpu": "yes"}, Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
+		Interfaces:      []store.NetInterface{{Name: "eth0", MAC: "aa:bb:cc:dd:ee:01", Addrs: []string{"10.0.0.7/24"}}},
+		CloudInstanceID: "i-0abc123",
 	})
 	must("worker", err)
 	_, _, err = st.RegisterWorker(ctx, store.Worker{ID: "worker-2", Hostname: "node2", Status: store.WorkerStatusOffline})
 	must("second worker", err)
 	_, err = st.SetWorkerDisabled(ctx, "worker-2", true)
 	must("disable worker", err)
+	must("worker power state", st.InjectWorkerPowerState(ctx, "worker-2", store.PowerAsleep, now, "idle for 10m"))
 	_, err = st.CreateWorkerCredential(ctx, store.WorkerCredential{ID: "cred-1", WorkerID: "worker-1", PublicKey: "ssh-ed25519 AAAA", Name: "node1"})
 	must("worker credential", err)
 	_, err = st.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
@@ -599,6 +602,7 @@ func seedEveryTable(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	seedServerHA(t, path, now)
+	seedCapacityGroupState(t, path, now)
 
 	for tbl, n := range sqliteCounts(t, path) {
 		if n == 0 {
@@ -621,6 +625,53 @@ func seedServerHA(t *testing.T, path string, at time.Time) {
 		(instance_id, name, host, pid, version, grants_fingerprint, started_at, last_seen_us, broker_ok_us)
 		VALUES ('instance-a', 'sqi-a', 'host-a', 4242, '0.9.0', 'fp-1', '`+stamp+`', 1788000000000000, NULL),
 		       ('instance-b', 'sqi-b', 'host-b', 4343, '0.9.0', 'fp-1', '`+stamp+`', 1788000001000000, 1788000001000000)`)
+}
+
+// seedCapacityGroupState gives capacity group cg-1 a state row, which no store
+// method writes yet: every column off its default, including the three
+// nullable times.
+func seedCapacityGroupState(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	stamp := sqlstore.TimeText(at)
+	execSQLite(t, path, `INSERT INTO capacity_group_state
+		(group_id, requested, requested_at, degraded_reason, degraded_at, backoff_until, updated_at)
+		VALUES ('cg-1', 3, '`+stamp+`', 'provider refused: quota', '`+stamp+`', '`+stamp+`', '`+stamp+`')`)
+}
+
+// TestStoreCopy_CopiesCapacityGroupState pins the capacity group runtime state
+// and the worker power columns through the copy: assertRowsEqual compares every
+// column, and these reads show the values are the seeded ones rather than the
+// defaults a copy that skipped the columns would leave.
+func TestStoreCopy_CopiesCapacityGroupState(t *testing.T) {
+	skipWithoutPostgres(t)
+	src := t.TempDir() + "/sqi.db"
+	seedEveryTable(t, src)
+	dst := storetest.PostgresEmptyDSN(t)
+	if _, err := storecopy.Copy(t.Context(), storecopy.Options{SQLitePath: src, PostgresDSN: dst}); err != nil {
+		t.Fatal(err)
+	}
+	assertRowsEqual(t, src, dst)
+
+	pg := openPG(t, dst)
+	var requested int64
+	var reason string
+	var backoff sql.NullString
+	if err := pg.QueryRowContext(t.Context(),
+		`SELECT requested, degraded_reason, backoff_until FROM capacity_group_state WHERE group_id = 'cg-1'`).
+		Scan(&requested, &reason, &backoff); err != nil || requested != 3 || reason != "provider refused: quota" || !backoff.Valid {
+		t.Fatalf("capacity_group_state on the copy = (%d, %q, %v), %v; want the seeded 3, a reason and a backoff", requested, reason, backoff, err)
+	}
+	var state, power, cloudID, ifaces string
+	if err := pg.QueryRowContext(t.Context(),
+		`SELECT power_state, power_reason FROM workers WHERE id = 'worker-2'`).Scan(&state, &power); err != nil ||
+		state != "asleep" || power != "idle for 10m" {
+		t.Fatalf("worker-2 power on the copy = (%q, %q), %v; want asleep, idle for 10m", state, power, err)
+	}
+	if err := pg.QueryRowContext(t.Context(),
+		`SELECT cloud_instance_id, interfaces FROM workers WHERE id = 'worker-1'`).Scan(&cloudID, &ifaces); err != nil ||
+		cloudID != "i-0abc123" || !strings.Contains(ifaces, "aa:bb:cc:dd:ee:01") {
+		t.Fatalf("worker-1 on the copy = (%q, %q), %v; want its cloud instance and interfaces", cloudID, ifaces, err)
+	}
 }
 
 func seedFarmQueue(t *testing.T, st store.Store) {

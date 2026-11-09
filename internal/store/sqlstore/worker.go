@@ -16,7 +16,8 @@ const workerCols = `
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
 	last_heartbeat_at, registered_at, updated_at, instance_id, disabled, registration_broker_at,
-	heartbeat_broker_at, capacity_group_id, ephemeral`
+	heartbeat_broker_at, capacity_group_id, ephemeral,
+	power_state, power_state_at, power_reason, interfaces, cloud_instance_id`
 
 // sqlWorkerHasWorkInFlight is true when the worker row's id holds an assigned
 // or running task. It is a fragment for a WHERE clause over workers.
@@ -39,15 +40,22 @@ const (
 	// ON CONFLICT preserves registered_at, so re-registration does not reset it,
 	// and an empty instance_id (a worker that sends none) keeps the stored one,
 	// as a NULL registration_broker_at does. disabled, heartbeat_broker_at,
-	// capacity_group_id and ephemeral are not in the column list, so a new
-	// worker is enabled and in no group, and a re-registration never changes
-	// them.
+	// capacity_group_id, ephemeral, power_reason and the power-state columns
+	// are not in the column list, so a new worker is enabled, in no group and
+	// awake, and a re-registration never changes the first three.
+	//
+	// interfaces and cloud_instance_id are written from the registration. The
+	// power state is decided here, in the same statement: a waking, asleep or
+	// wake-failed worker has registered, so it is awake as of now with no
+	// reason; a retiring worker is kept retiring (its machine is still going to
+	// sleep); an awake one is unchanged.
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
-	last_heartbeat_at, registered_at, updated_at, instance_id, registration_broker_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	last_heartbeat_at, registered_at, updated_at, instance_id, registration_broker_at,
+	interfaces, cloud_instance_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
 	queue_id          = excluded.queue_id,
@@ -69,7 +77,15 @@ ON CONFLICT (id) DO UPDATE SET
 	last_heartbeat_at = excluded.last_heartbeat_at,
 	updated_at        = excluded.updated_at,
 	instance_id       = CASE WHEN excluded.instance_id = '' THEN workers.instance_id ELSE excluded.instance_id END,
-	registration_broker_at = COALESCE(excluded.registration_broker_at, workers.registration_broker_at)
+	registration_broker_at = COALESCE(excluded.registration_broker_at, workers.registration_broker_at),
+	interfaces        = excluded.interfaces,
+	cloud_instance_id = excluded.cloud_instance_id,
+	power_state_at    = CASE WHEN workers.power_state IN ('waking', 'asleep', 'wake_failed')
+	                         THEN excluded.updated_at ELSE workers.power_state_at END,
+	power_reason      = CASE WHEN workers.power_state IN ('waking', 'asleep', 'wake_failed')
+	                         THEN '' ELSE workers.power_reason END,
+	power_state       = CASE WHEN workers.power_state IN ('waking', 'asleep', 'wake_failed')
+	                         THEN 'awake' ELSE workers.power_state END
 RETURNING ` + workerCols
 
 	sqlGetWorker = `SELECT ` + workerCols + ` FROM workers WHERE id = ?`
@@ -150,10 +166,20 @@ RETURNING ` + workerCols
 
 	sqlGetCapacityGroupExists = `SELECT 1 FROM capacity_groups WHERE id = ?`
 
-	// sqlSetWorkerCapacityGroup writes the membership; a NULL group clears it
-	// and the ephemeral flag with it.
+	// sqlSetWorkerCapacityGroup writes the membership.
 	sqlSetWorkerCapacityGroup = `
 UPDATE workers SET capacity_group_id = ?, ephemeral = ?, updated_at = ? WHERE id = ?
+RETURNING ` + workerCols
+
+	// sqlLeaveWorkerCapacityGroup clears the membership and the ephemeral flag
+	// and returns the worker to awake: power state belongs to the group, and a
+	// worker outside one is not asleep. The state's time moves only when the
+	// state does. Binds: ephemeral (false), the time, updated_at, worker.
+	sqlLeaveWorkerCapacityGroup = `
+UPDATE workers SET capacity_group_id = NULL, ephemeral = ?,
+	power_state_at = CASE WHEN power_state <> 'awake' THEN ? ELSE power_state_at END,
+	power_reason = '', power_state = 'awake', updated_at = ?
+WHERE id = ?
 RETURNING ` + workerCols
 
 	sqlListCapacityGroupMembers = `SELECT ` + workerCols + `
@@ -174,8 +200,8 @@ RETURNING ` + workerCols
 
 func scanWorker(row scanner) (store.Worker, error) {
 	var w store.Worker
-	var farmID, queueID, lastHeartbeat, registrationBroker, heartbeatBroker, capacityGroupID sql.NullString
-	var gpuJSON, tagsJSON, exprJSON, extJSON, status string
+	var farmID, queueID, lastHeartbeat, registrationBroker, heartbeatBroker, capacityGroupID, powerAt sql.NullString
+	var gpuJSON, tagsJSON, exprJSON, extJSON, ifaceJSON, status, powerState string
 	var registeredAt, updatedAt string
 	var disabled, ephemeral dbBool
 
@@ -184,6 +210,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &extJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &disabled, &registrationBroker,
 		&heartbeatBroker, &capacityGroupID, &ephemeral,
+		&powerState, &powerAt, &w.PowerReason, &ifaceJSON, &w.CloudInstanceID,
 	); err != nil {
 		return store.Worker{}, err
 	}
@@ -199,6 +226,8 @@ func scanWorker(row scanner) (store.Worker, error) {
 	w.Disabled = bool(disabled)
 	w.CapacityGroupID = capacityGroupID.String
 	w.Ephemeral = bool(ephemeral)
+	w.PowerState = store.PowerState(powerState)
+	w.PowerStateAt = nullTextToTime(powerAt)
 
 	gpu, err := unmarshalJSON(gpuJSON, store.GPUInfo{})
 	if err != nil {
@@ -223,6 +252,14 @@ func scanWorker(row scanner) (store.Worker, error) {
 		return store.Worker{}, err
 	}
 	w.Extensions = extensions
+
+	interfaces, err := unmarshalJSON(ifaceJSON, []store.NetInterface(nil))
+	if err != nil {
+		return store.Worker{}, err
+	}
+	if len(interfaces) > 0 {
+		w.Interfaces = interfaces
+	}
 
 	return w, nil
 }
@@ -255,15 +292,26 @@ func workerJSONCols(w store.Worker) (gpuJSON, tagsJSON, exprJSON, extJSON string
 	return gpuJSON, tagsJSON, exprJSON, extJSON, nil
 }
 
+// workerBindArgs are the arguments of sqlUpsertWorker, in its column order.
 func workerBindArgs(w store.Worker, now string) ([]any, error) {
 	gpuJSON, tagsJSON, exprJSON, extJSON, err := workerJSONCols(w)
+	if err != nil {
+		return nil, err
+	}
+	// A nil slice marshals as "null"; the column holds a list, '[]' when empty.
+	ifaces := w.Interfaces
+	if ifaces == nil {
+		ifaces = []store.NetInterface{}
+	}
+	ifaceJSON, err := marshalJSON(ifaces)
 	if err != nil {
 		return nil, err
 	}
 	return []any{
 		w.ID, nullString(w.FarmID), nullString(w.QueueID), w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
 		w.OS, w.OSVersion, w.Arch, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, exprJSON, extJSON, string(w.Status),
-		nullTimeToText(w.LastHeartbeatAt), now, now,
+		nullTimeToText(w.LastHeartbeatAt), now, now, w.InstanceID, nullTimeToText(w.RegistrationBrokerAt),
+		ifaceJSON, w.CloudInstanceID,
 	}, nil
 }
 
@@ -279,7 +327,6 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	if err != nil {
 		return store.Worker{}, nil, err
 	}
-	args = append(args, worker.InstanceID, nullTimeToText(worker.RegistrationBrokerAt))
 
 	type result struct {
 		worker    store.Worker
@@ -568,8 +615,13 @@ func (s *Store) SetWorkerCapacityGroup(ctx context.Context, workerID, groupID st
 					workerID, current.CapacityGroupID, store.ErrConflict)
 			}
 		}
-		updated, err := scanWorker(tx.QueryRowContext(ctx, sqlSetWorkerCapacityGroup,
-			nullString(groupID), ephemeral && groupID != "", now, workerID))
+		var row scanner
+		if groupID == "" {
+			row = tx.QueryRowContext(ctx, sqlLeaveWorkerCapacityGroup, false, now, now, workerID)
+		} else {
+			row = tx.QueryRowContext(ctx, sqlSetWorkerCapacityGroup, groupID, ephemeral, now, workerID)
+		}
+		updated, err := scanWorker(row)
 		if err != nil {
 			return store.Worker{}, txRollback, mapErr(err)
 		}

@@ -1900,6 +1900,20 @@ not a foreign key, like its `worker_id`. A worker belongs to at
 most one group, and the membership write is a compare-and-set under the worker's
 anchor.
 
+**Power state (migration pair `00047`).** `workers` gains `power_state`
+(`awake`, `waking`, `retiring`, `asleep` or `wake_failed`; never empty),
+`power_state_at`, `power_reason`, `interfaces` (JSON, what a wake-on-LAN packet
+is addressed with) and `cloud_instance_id`; a registration writes the last two.
+The same upsert moves a `waking`, `asleep` or `wake_failed` worker to `awake`
+and keeps a `retiring` one retiring, and leaving a group resets the state to
+`awake`. The lease guard (`sqlLeaseTaskGuarded`) refuses a `retiring` or
+`asleep` worker, as it does a disabled one: a retiring worker keeps asking for
+leases until its machine suspends. A heartbeat writes only `last_heartbeat_at`,
+so it cannot change the power state. `capacity_group_state` holds what the
+server decides about a group at run time (machines requested, degraded reason,
+backoff); it is a table of its own so that replacing an operator's fields in
+`UpdateCapacityGroup` cannot overwrite it.
+
 **The capacity sweep step.** `sweepCapacity` is one step of the heartbeat sweep
 tick (`sweepOnce`), after the unschedulable sweep and before the blocked-job
 sweep, so it runs on the leader only and stops when the scheduler is deposed.
@@ -2029,6 +2043,7 @@ The primary tables are:
 | `task_logs` | Persisted task process output |
 | `workers` | Registered workers with capabilities and status |
 | `capacity_groups` | Named or sized sets of machines the server publishes a scaling signal for ([Capacity groups](#capacity-groups)) |
+| `capacity_group_state` | Runtime state of a capacity group: machines requested, degraded reason, backoff |
 | `products` | Product/preset catalog above OpenJD (built-in, installed, custom) |
 | `compute_locations` | Named compute-location registry (curated catalog; auto-populated from worker registrations) |
 | `storage_locations` | Named storage locations with per-compute-location root mappings |

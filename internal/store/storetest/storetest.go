@@ -175,6 +175,9 @@ func FailAndRequeue(t testing.TB, st store.Store, req store.LeaseRequest, retryA
 type Injector interface {
 	InjectTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error)
 	InjectClaim(ctx context.Context, claim store.UsageClaim) (store.UsageClaim, error)
+	// InjectWorkerPowerState sets a registered worker's power state, time and
+	// reason as given, with no transition checks.
+	InjectWorkerPowerState(ctx context.Context, workerID string, state store.PowerState, at time.Time, reason string) error
 }
 
 // InjectorFor returns st's injectors, failing the test when st has none. A
@@ -217,6 +220,15 @@ func InjectClaim(t testing.TB, st store.Store, claim store.UsageClaim) store.Usa
 		t.Fatalf("InjectClaim %s: %v", claim.ID, err)
 	}
 	return out
+}
+
+// InjectWorkerPower sets worker id's power state through st's injector, stamped
+// now, failing the test on error.
+func InjectWorkerPower(t testing.TB, st store.Store, id string, state store.PowerState, reason string) {
+	t.Helper()
+	if err := InjectorFor(t, st).InjectWorkerPowerState(t.Context(), id, state, time.Now().UTC(), reason); err != nil {
+		t.Fatalf("InjectWorkerPowerState %s: %v", id, err)
+	}
 }
 
 // InvariantChecker runs a backend's diagnostic for invariant I3 ("an active

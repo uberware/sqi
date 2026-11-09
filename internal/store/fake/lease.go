@@ -20,7 +20,7 @@ import (
 //     (the SQL lease joins all three);
 //   - a task failing ListReadyTasks' eligibility predicate (isReadyInFarm) is
 //     Lost;
-//   - a disabled worker is Lost; an offline worker, or one with no row, is
+//   - a disabled, retiring or asleep worker is Lost; an offline worker, or one with no row, is
 //     Lost only when the request sets RequireOnline;
 //   - the queue cap is checked before the farm cap;
 //   - pools are checked in pool-ID order, whatever order the request lists
@@ -39,11 +39,7 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 	if !ok || !s.leasableLocked(t, req) {
 		return store.LeaseResult{Outcome: store.LeaseLost}, nil
 	}
-	// The worker re-check (see the SQL stores' sqlLeaseTaskGuarded): a
-	// disabled worker is refused; an offline or unknown one only when the
-	// request requires the worker online (sqlLeaseTaskGuardedOnline).
-	w, known := s.workers[req.WorkerID]
-	if (known && w.Disabled) || (req.RequireOnline && (!known || w.Status != store.WorkerStatusOnline)) {
+	if s.leaseRefusedForWorkerLocked(req) {
 		return store.LeaseResult{Outcome: store.LeaseLost}, nil
 	}
 	if full := s.leaseCapsFullLocked(s.jobs[t.JobID]); full != "" {
@@ -73,6 +69,18 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 		s.usageClaims[c.ClaimID] = store.UsageClaim{ID: c.ClaimID, PoolID: c.PoolID, TaskAttemptID: attempt.ID, ClaimedAt: now}
 	}
 	return store.LeaseResult{Outcome: store.LeaseLeased, Attempt: attempt}, nil
+}
+
+// leaseRefusedForWorkerLocked is the worker re-check of the SQL stores'
+// sqlLeaseTaskGuarded: a disabled, retiring or asleep worker is refused; an
+// offline or unknown one only when the request requires the worker online
+// (sqlLeaseTaskGuardedOnline). Caller holds s.mu.
+func (s *Store) leaseRefusedForWorkerLocked(req store.LeaseRequest) bool {
+	w, known := s.workers[req.WorkerID]
+	if known && (w.Disabled || w.PowerState == store.PowerRetiring || w.PowerState == store.PowerAsleep) {
+		return true
+	}
+	return req.RequireOnline && (!known || w.Status != store.WorkerStatusOnline)
 }
 
 // leasableLocked is the SQL stores' lease guard: the task's job, queue and farm rows

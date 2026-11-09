@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -332,4 +333,17 @@ func (b *backgroundCalls) Close(timeout time.Duration) bool {
 // reading what the calls did; it must not run alongside a call to Go.
 func (b *backgroundCalls) Wait() {
 	b.wg.Wait()
+}
+
+// storeInterfaces converts the interfaces a worker reported at registration to
+// the store's form, which carries the same fields.
+func storeInterfaces(in []protocol.NetInterface) []store.NetInterface {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]store.NetInterface, len(in))
+	for i, n := range in {
+		out[i] = store.NetInterface{Name: n.Name, MAC: n.MAC, Addrs: slices.Clone(n.Addrs)}
+	}
+	return out
 }

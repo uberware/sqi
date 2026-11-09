@@ -15,7 +15,11 @@ import (
 // worker record for the given ID, except that an empty InstanceID keeps the
 // stored one and Disabled, CapacityGroupID and Ephemeral are never taken from
 // the registration: a new worker is enabled and in no group, and an existing
-// one keeps them, as the SQL upsert leaves those columns alone. A nil
+// one keeps them, as the SQL upsert leaves those columns alone. Interfaces and
+// CloudInstanceID are taken from it. The power state is decided as the SQL
+// upsert decides it: a waking, asleep or wake-failed worker becomes awake (its
+// time is now and its reason is cleared), a retiring one stays retiring, and a
+// new worker is awake. A nil
 // RegistrationBrokerAt keeps the stored one. A registration stamped earlier
 // than the stored one ([store.StaleRegistration]) is refused with
 // [store.ErrStaleRegistration], returning the stored worker. A non-empty stored
@@ -39,6 +43,7 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	worker.CapacityGroupID = existing.CapacityGroupID     // empty for a new worker
 	worker.Ephemeral = existing.Ephemeral                 // false for a new worker
 	worker.HeartbeatBrokerAt = existing.HeartbeatBrokerAt // nil for a new worker
+	worker.PowerState, worker.PowerStateAt, worker.PowerReason = registeredPowerState(existing, isUpdate)
 	var reclaimed []store.Task
 	if isUpdate {
 		worker.RegisteredAt = existing.RegisteredAt
@@ -53,6 +58,24 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	}
 	s.workers[worker.ID] = worker
 	return worker, reclaimed, nil
+}
+
+// registeredPowerState is the power state a registration leaves a worker in,
+// given the row it replaces: awake for a new worker, awake as of now for a
+// waking, asleep or wake-failed one, and unchanged otherwise.
+func registeredPowerState(existing store.Worker, isUpdate bool) (store.PowerState, *time.Time, string) {
+	if !isUpdate {
+		return store.PowerAwake, nil, ""
+	}
+	switch existing.PowerState {
+	case store.PowerWaking, store.PowerAsleep, store.PowerWakeFailed:
+		at := time.Now().UTC()
+		return store.PowerAwake, &at, ""
+	case "":
+		return store.PowerAwake, existing.PowerStateAt, existing.PowerReason
+	default:
+		return existing.PowerState, existing.PowerStateAt, existing.PowerReason
+	}
 }
 
 // GetWorker returns the worker with the given ID, or [store.ErrNotFound].
@@ -137,6 +160,14 @@ func (s *Store) SetWorkerCapacityGroup(ctx context.Context, workerID, groupID st
 
 	worker.CapacityGroupID = groupID
 	worker.Ephemeral = ephemeral && groupID != ""
+	if groupID == "" {
+		// Power state belongs to the group: a worker outside one is awake.
+		if worker.PowerState != store.PowerAwake {
+			at := time.Now().UTC()
+			worker.PowerStateAt = &at
+		}
+		worker.PowerState, worker.PowerReason = store.PowerAwake, ""
+	}
 	worker.UpdatedAt = time.Now().UTC()
 	s.workers[workerID] = worker
 	return cloneWorker(worker), nil
@@ -417,7 +448,16 @@ func cmpWorker(a, b store.Worker, field store.WorkerSortField, dir store.SortDir
 // cloneWorker returns w with its map and slice fields copied, so a worker the
 // fake returns or stores shares no backing storage with its caller.
 func cloneWorker(w store.Worker) store.Worker {
+	ifaces := w.Interfaces
 	w.Tags = copyMap(w.Tags)
 	w.Extensions = copySlice(w.Extensions)
+	w.Interfaces = nil
+	if len(ifaces) > 0 {
+		w.Interfaces = make([]store.NetInterface, len(ifaces))
+		for i, n := range ifaces {
+			n.Addrs = copySlice(n.Addrs)
+			w.Interfaces[i] = n
+		}
+	}
 	return w
 }

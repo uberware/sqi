@@ -1026,6 +1026,8 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		Tags:            m.Tags,
 		ExprLimits:      store.WorkerExprLimits(m.ExprLimits),
 		Extensions:      slices.Clone(m.Extensions),
+		Interfaces:      storeInterfaces(m.Interfaces),
+		CloudInstanceID: m.CloudInstanceID,
 		Status:          store.WorkerStatusOnline,
 		LastHeartbeatAt: &now,
 	}
