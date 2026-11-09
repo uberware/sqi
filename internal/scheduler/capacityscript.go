@@ -301,14 +301,14 @@ func (s *Scheduler) planLaunches(
 	if !ok {
 		rec = store.CapacityGroupState{GroupID: g.ID}
 	}
-	online := st.OnlineMembers
+	present, rows := launchCounts(*st)
 	var call groupCall
-	if s.settleLaunch(ctx, now, g, &rec, online) {
+	if s.settleLaunch(ctx, now, g, &rec, present) {
 		return groupCall{}, true
 	}
 	if !act.isInFlight(g.ID) {
 		s.planOrphanCleanup(now, g, rec, &call)
-		if s.planGrow(ctx, now, g, &rec, st.DesiredMachines, online, &call) {
+		if s.planGrow(ctx, now, g, &rec, st.DesiredMachines, rows, &call) {
 			return groupCall{}, true
 		}
 	}
@@ -320,38 +320,57 @@ func (s *Scheduler) planLaunches(
 	return call, false
 }
 
-// settleLaunch brings g's launch record up to date with the members online.
+// launchCounts returns, from a sized group's evaluation, the machines its
+// launch record counts as present (every member row, online or offline, that
+// is not retiring) and all its member rows.
 //
-// A launch is unmet while RequestedAt is set. Once as many members are online
-// as were asked for, it is met: RequestedAt is cleared, and a degradation
-// that an earlier launch left is cleared with it (its backoff is left to run
-// out). Only an unmet launch degrades, when its machines have not all
-// registered a boot timeout after it was asked for: the record falls back to
-// the members online, the launch is resolved, and growth backs off for two
-// boot timeouts.
+// The record follows rows, not members online: a member that restarts or
+// misses heartbeats keeps its row and its machine, and must neither lower the
+// record nor make a grow's current fall below the cloud group's real size
+// (an absolute grow below it would terminate working instances). A machine
+// that is really gone loses its row: a retired or preempted member is deleted
+// when it deregisters, and one that vanished is deleted after a boot timeout
+// (see [Scheduler.removeVanishedEphemerals]). A retiring member is not
+// present: its retirement lowers the record before its row is deleted
+// ([Scheduler.lowerRequested]), so counting it would count it twice.
+func launchCounts(st capacity.Status) (present, rows int) {
+	rows = st.OnlineMembers + st.OfflineMembers
+	return max(rows-st.Retiring, 0), rows
+}
+
+// settleLaunch brings g's launch record up to date with the machines present
+// (see [launchCounts]).
 //
-// With no launch unmet, Requested follows the members online, so a machine
-// lost later (retired, preempted, crashed) is replaced by a normal grow and
-// never reads as a launch that failed; and members online beyond the record
-// (machines that registered late) clear a degradation at once. It returns
-// true when the write was fenced.
-func (s *Scheduler) settleLaunch(ctx context.Context, now time.Time, g store.CapacityGroup, rec *store.CapacityGroupState, online int) bool {
+// A launch is unmet while RequestedAt is set. Once as many machines are
+// present as were asked for, it is met: RequestedAt is cleared, and a
+// degradation that an earlier launch left is cleared with it (its backoff is
+// left to run out). Only an unmet launch degrades, when its machines have not
+// all registered a boot timeout after it was asked for: the record falls back
+// to the machines present, the launch is resolved, and growth backs off for
+// two boot timeouts.
+//
+// With no launch unmet, Requested follows the machines present, so a machine
+// lost later (retired, preempted, vanished) is replaced by a normal grow and
+// never reads as a launch that failed; and machines present beyond the record
+// (that registered late) clear a degradation at once. It returns true when the
+// write was fenced.
+func (s *Scheduler) settleLaunch(ctx context.Context, now time.Time, g store.CapacityGroup, rec *store.CapacityGroupState, present int) bool {
 	next := *rec
 	var warn, recovered bool
 	switch {
-	case rec.RequestedAt != nil && online >= rec.Requested:
-		next.Requested, next.RequestedAt = online, nil
+	case rec.RequestedAt != nil && present >= rec.Requested:
+		next.Requested, next.RequestedAt = present, nil
 		recovered = rec.DegradedReason != ""
 	case rec.RequestedAt != nil && now.After(rec.RequestedAt.Add(g.BootTimeout)):
-		next.Requested, next.RequestedAt = online, nil
+		next.Requested, next.RequestedAt = present, nil
 		next.DegradedReason = fmt.Sprintf("%d of %d machines did not register within boot_timeout (%s)",
-			rec.Requested-online, rec.Requested, g.BootTimeout)
+			rec.Requested-present, rec.Requested, g.BootTimeout)
 		next.DegradedAt = new(now)
 		next.BackoffUntil = new(now.Add(2 * g.BootTimeout))
 		warn = true
 	case rec.RequestedAt == nil:
-		recovered = rec.DegradedReason != "" && online > rec.Requested
-		next.Requested = online
+		recovered = rec.DegradedReason != "" && present > rec.Requested
+		next.Requested = present
 	}
 	if recovered {
 		next.DegradedReason, next.DegradedAt = "", nil
@@ -372,10 +391,10 @@ func (s *Scheduler) settleLaunch(ctx context.Context, now time.Time, g store.Cap
 	case warn:
 		s.logger.WarnContext(ctx, "scheduler: capacity group degraded: machines it launched did not register",
 			slog.String("group", g.Name), slog.String("reason", next.DegradedReason), slog.Int("requested", rec.Requested),
-			slog.Int("online", online), slog.Time("backoff_until", *next.BackoffUntil))
+			slog.Int("present", present), slog.Time("backoff_until", *next.BackoffUntil))
 	case recovered:
 		s.logger.InfoContext(ctx, "scheduler: capacity group is no longer degraded: machines registered",
-			slog.String("group", g.Name), slog.Int("online", online))
+			slog.String("group", g.Name), slog.Int("present", present))
 	}
 	*rec = next
 	return false
@@ -393,6 +412,14 @@ func sameLaunchRecord(a, b store.CapacityGroupState) bool {
 // may still be booting, and must not look orphaned) and the degradation is
 // younger than a boot timeout: later, the backend may be booting replacements
 // of its own.
+//
+// One case this cannot tell apart: a member lost (its row deleted) while a
+// launch is unmet, whose replacement the backend starts on its own and which
+// has not registered by the launch's deadline. That launch degrades, and the
+// replacement is listed as an orphan and may be retired; the refusal of more
+// orphans than max_machines less the members bounds it. A degradation cleared
+// by late registrations before its cleanup runs (see [Scheduler.settleLaunch])
+// is not cleaned up at all, and nothing records that it was not.
 func (s *Scheduler) planOrphanCleanup(now time.Time, g store.CapacityGroup, rec store.CapacityGroupState, call *groupCall) {
 	if rec.DegradedAt == nil || rec.RequestedAt != nil || !now.Before(rec.DegradedAt.Add(g.BootTimeout)) {
 		return
@@ -406,17 +433,20 @@ func (s *Scheduler) planOrphanCleanup(now time.Time, g store.CapacityGroup, rec 
 }
 
 // planGrow records a grow to desired when it is more than both the size last
-// asked for and the members online and no backoff holds, and adds it to call:
-// the record is written before the call, so a failure between the two leaves
-// a request the next leader repeats. An unmet launch younger than the boot
-// timeout that this process has not sent (the previous leader recorded it)
-// is repeated, re-stamped first so the machines it starts get a whole boot
-// timeout. It returns true when the write was fenced.
+// asked for and the group's member rows (see [launchCounts]) and no backoff
+// holds, and adds it to call: the record is written before the call, so a
+// failure between the two leaves a request the next leader repeats. An unmet
+// launch younger than the boot timeout that this process has not sent (the
+// previous leader recorded it) is repeated, re-stamped first so the machines
+// it starts get a whole boot timeout. A grow is absolute, so one below the
+// rows or below its own current would shrink the cloud group, which only a
+// retire of named members may do: none is ever sent. It returns true when
+// the write was fenced.
 func (s *Scheduler) planGrow(
-	ctx context.Context, now time.Time, g store.CapacityGroup, rec *store.CapacityGroupState, desired, online int, call *groupCall,
+	ctx context.Context, now time.Time, g store.CapacityGroup, rec *store.CapacityGroupState, desired, rows int, call *groupCall,
 ) bool {
 	backingOff := rec.BackoffUntil != nil && now.Before(*rec.BackoffUntil)
-	current := max(rec.Requested, online)
+	current := max(rec.Requested, rows)
 	var req growRequest
 	switch {
 	case desired > current && !backingOff:
@@ -427,8 +457,11 @@ func (s *Scheduler) planGrow(
 		}
 		// The size it was last asked for is this request's own: a script
 		// that reads a delta from current does nothing twice.
-		req = growRequest{desired: rec.Requested, current: rec.Requested}
+		req = growRequest{desired: current, current: current}
 	default:
+		return false
+	}
+	if req.desired < req.current || req.desired < rows {
 		return false
 	}
 	next := *rec
@@ -584,7 +617,8 @@ func unreported(ids []string, members []store.Worker) []string {
 //
 //   - with a launch unmet, by one per member retired, to no less than zero
 //     (the machines still booting are counted in no member);
-//   - otherwise to at most the members online that were not retired. That is
+//   - otherwise to at most the member rows that are neither retired nor
+//     retiring, the machines present as [launchCounts] counts them. That is
 //     what the record would follow to anyway, and it cannot subtract twice: a
 //     retired member that already left, and a sweep that already lowered the
 //     record for it, leave it unchanged.
@@ -605,7 +639,7 @@ func (s *Scheduler) lowerRequested(ctx context.Context, now time.Time, g store.C
 		}
 		staying := 0
 		for _, w := range members {
-			if w.Status == store.WorkerStatusOnline && !slices.Contains(retired, w.ID) {
+			if w.PowerState != store.PowerRetiring && !slices.Contains(retired, w.ID) {
 				staying++
 			}
 		}

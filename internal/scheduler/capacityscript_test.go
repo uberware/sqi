@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/capacity"
 	"github.com/uberware/sqi/internal/capacity/script"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -343,21 +344,26 @@ func TestScriptActuator_DegradesAndBacksOff(t *testing.T) {
 }
 
 // degradeWith grows f's group to three machines with c1 (reporting
-// instanceID) online, and lets the boot timeout pass. It returns the time of
-// the degrading sweep.
+// instanceID) online beside any member rows already there, and lets the boot
+// timeout pass. It returns the time of the degrading sweep.
 func degradeWith(t *testing.T, f *scriptFixture, instanceID string) time.Time {
 	t.Helper()
 	cloudMember(t, f.st, f.g.ID, "c1", instanceID)
+	members, err := f.st.ListCapacityGroupMembers(t.Context(), f.g.ID)
+	if err != nil {
+		t.Fatalf("ListCapacityGroupMembers: %v", err)
+	}
+	rows := len(members)
 	submitReady(t, f.st, 3, store.Step{})
 	t0 := time.Now().UTC()
 	f.sweep(t, t0)
-	if grows := f.prov.callsOf("grow"); len(grows) != 1 || grows[0].desired != 3 || grows[0].current != 1 {
-		t.Fatalf("grow calls = %+v, want grow{3, 1}", grows)
+	if grows := f.prov.callsOf("grow"); len(grows) != 1 || grows[0].desired != 3 || grows[0].current != rows {
+		t.Fatalf("grow calls = %+v, want grow{3, %d}", grows, rows)
 	}
 	d := t0.Add(5*time.Minute + time.Second)
 	f.sweep(t, d)
-	if got := groupState(t, f.st, f.g.ID); got.Requested != 1 || got.DegradedAt == nil {
-		t.Fatalf("state = %+v, want degraded to Requested 1", got)
+	if got := groupState(t, f.st, f.g.ID); got.Requested != rows || got.DegradedAt == nil {
+		t.Fatalf("state = %+v, want degraded to Requested %d", got, rows)
 	}
 	return d
 }
@@ -732,6 +738,114 @@ func TestScriptActuator_PreemptionAfterMetLaunchRegrowsWithoutDegrading(t *testi
 	grows := f.prov.callsOf("grow")
 	if len(grows) != 1 || grows[0].desired != 3 || grows[0].current != 2 {
 		t.Errorf("grow calls = %+v, want one grow{3, 2} replacing the machine", grows)
+	}
+}
+
+// After a met launch, members that restart (deregistering to come back) or
+// miss heartbeats keep their rows and their machines: the record must not
+// fall below the rows, or an absolute grow would shrink the cloud group and
+// terminate working instances.
+func TestScriptActuator_RestartOrBlipAfterMetLaunchNeverShrinks(t *testing.T) {
+	restart := func(t *testing.T, f *scriptFixture, id string) {
+		t.Helper()
+		if !handleDeregister(f.s, id, "") {
+			t.Fatalf("the deregistration of %s was not acknowledged", id)
+		}
+	}
+	blip := func(t *testing.T, f *scriptFixture, id string) {
+		t.Helper()
+		if _, _, err := f.st.OfflineWorker(t.Context(), id, "", time.Now().UTC()); err != nil {
+			t.Fatalf("OfflineWorker %s: %v", id, err)
+		}
+	}
+	tests := []struct {
+		name    string
+		mut     func(*store.CapacityGroup)
+		demand  int
+		offline []string
+		lose    func(*testing.T, *scriptFixture, string)
+	}{
+		{"restart with demand", func(g *store.CapacityGroup) { g.MaxStepUp = 1 }, 4, []string{"c3", "c4"}, restart},
+		{"heartbeat blip with demand", func(g *store.CapacityGroup) { g.MaxStepUp = 1 }, 4, []string{"c3", "c4"}, blip},
+		{
+			"whole group restarts, min_machines, no demand", func(g *store.CapacityGroup) { g.MinMachines = 2 }, 0,
+			[]string{"c1", "c2", "c3", "c4"},
+			restart,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newScriptFixture(t, tc.mut)
+			for i, id := range []string{"c1", "c2", "c3", "c4"} {
+				cloudMember(t, f.st, f.g.ID, id, fmt.Sprintf("i-%d", i+1))
+			}
+			if tc.demand > 0 {
+				submitReady(t, f.st, tc.demand, store.Step{})
+			}
+			t0 := time.Now().UTC()
+			putGroupState(t, f.st, store.CapacityGroupState{GroupID: f.g.ID, Requested: 4, RequestedAt: new(t0.Add(-time.Hour))})
+
+			f.sweep(t, t0)
+			for _, id := range tc.offline {
+				tc.lose(t, f, id)
+			}
+			f.sweep(t, t0.Add(15*time.Second))
+			f.sweep(t, t0.Add(30*time.Second))
+
+			for _, g := range f.prov.callsOf("grow") {
+				if g.desired < 4 || g.current < 4 {
+					t.Errorf("grow %+v sent with 4 member rows: it would shrink the cloud group", g)
+				}
+			}
+			if got := groupState(t, f.st, f.g.ID); got.Requested < 4 || got.DegradedReason != "" {
+				t.Errorf("state = %+v, want Requested at least the 4 rows and no degradation", got)
+			}
+		})
+	}
+}
+
+// The record counts every member row that is not retiring as present, and
+// every row toward a grow's current.
+func TestLaunchCounts(t *testing.T) {
+	tests := []struct {
+		name                       string
+		online, offline, retiring  int
+		wantPresent, wantRowsCount int
+	}{
+		{"all online", 4, 0, 0, 4, 4},
+		{"some offline", 2, 2, 0, 4, 4},
+		{"one retiring", 3, 0, 1, 2, 3},
+		{"retiring offline", 1, 1, 1, 1, 2},
+		{"none", 0, 0, 0, 0, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			present, rows := launchCounts(capacity.Status{OnlineMembers: tc.online, OfflineMembers: tc.offline, Retiring: tc.retiring})
+			if present != tc.wantPresent || rows != tc.wantRowsCount {
+				t.Errorf("launchCounts = %d, %d, want %d, %d", present, rows, tc.wantPresent, tc.wantRowsCount)
+			}
+		})
+	}
+}
+
+// A retiring member does not meet an unmet launch: its retirement lowers the
+// record before its row goes, so it must not also count as present.
+func TestScriptActuator_RetiringMemberDoesNotMeetALaunch(t *testing.T) {
+	f := newScriptFixture(t, nil)
+	for i, id := range []string{"c1", "c2", "c3"} {
+		cloudMember(t, f.st, f.g.ID, id, fmt.Sprintf("i-%d", i+1))
+	}
+	submitReady(t, f.st, 3, store.Step{})
+	t0 := time.Now().UTC()
+	putGroupState(t, f.st, store.CapacityGroupState{GroupID: f.g.ID, Requested: 3, RequestedAt: new(t0.Add(-time.Minute))})
+	if _, ok, err := f.st.BeginRetirement(t.Context(), f.g.ID, "c3", t0); err != nil || !ok {
+		t.Fatalf("BeginRetirement = %v, %v", ok, err)
+	}
+
+	f.sweep(t, t0)
+
+	if got := groupState(t, f.st, f.g.ID); got.RequestedAt == nil {
+		t.Errorf("state = %+v, want the launch still unmet with c3 retiring", got)
 	}
 }
 
