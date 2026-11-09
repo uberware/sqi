@@ -1794,6 +1794,15 @@ jobs:
             TestAutoRetry_RetryThenSucceed
             TestTLSEndToEnd
             TestTLSWorkerWithoutCAIsRefused
+            # Capacity providers that act, against real workers: a
+            # wake_on_lan member put to sleep and woken by a magic packet,
+            # and refusing without its opt-in (it skips on a host with no
+            # interface to wake, which the runner has), and a script
+            # provider growing and retiring a sized group.
+            TestCapacityGroup_WakeOnLANSleepAndWake
+            TestCapacityGroup_WakeOnLANSleepAndWake/sleeps-and-wakes
+            TestCapacityGroup_WakeOnLANSleepAndWake/refused-without-opt-in
+            TestCapacityGroup_ScriptGrowAndRetire
             # Fails if a tier-2 case the preset registry claims skipped for
             # want of ffmpeg or oiiotool, so it must be seen to pass here: the
             # unit-test job does not run ./test/integration.
