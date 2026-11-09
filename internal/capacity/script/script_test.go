@@ -11,13 +11,18 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const modeVar = "SQI_SCRIPT_TEST_MODE"
+
+// redacted is the text that stands in for a provider env value.
+const redacted = "<redacted>"
 
 // TestMain turns the test binary into the provider script the tests run. The mode arrives through
 // Provider.Env, which Run applies after it filters the SQI_ variables out of the server's own
@@ -60,7 +65,33 @@ func runChild(mode string) int {
 			}
 		}
 	case "env":
-		os.Stdout.Write(mustJSON(Response{Result: "ok", Message: strings.Join(os.Environ(), "\n")}))
+		// Only the variables the tests care about: a full environment would exceed the message cap.
+		var lines []string
+		for _, kv := range os.Environ() {
+			up := strings.ToUpper(kv)
+			if strings.HasPrefix(up, "SQI_") || strings.HasPrefix(up, "SCRIPT_TEST_") || strings.HasPrefix(up, "PROVIDER_") {
+				lines = append(lines, kv)
+			}
+		}
+		os.Stdout.Write(mustJSON(Response{Result: "ok", Message: strings.Join(lines, "\n")}))
+	case "echostderr":
+		os.Stderr.WriteString("calling api with token " + os.Getenv("API_TOKEN") + " now\n")
+	case "echomessage":
+		os.Stdout.Write(mustJSON(Response{Result: "ok", Message: "using " + os.Getenv("API_TOKEN") + " and flag " + os.Getenv("SHORT_FLAG")}))
+	case "echofail":
+		os.Stderr.WriteString("earlier line\ncurl: auth failed for " + os.Getenv("API_TOKEN") + "\n")
+		return 4
+	case "ctrl":
+		os.Stdout.Write(mustJSON(Response{Result: "ok", Message: "a\nb\r\tc\x1b[31md"}))
+	case "longmsg":
+		os.Stdout.Write(mustJSON(Response{Result: "ok", Message: strings.Repeat("é", 5000)}))
+	case "exact", "exactplus":
+		const head, tail = `{"result":"ok","message":"`, `"}`
+		size := maxStdout
+		if mode == "exactplus" {
+			size++
+		}
+		os.Stdout.WriteString(head + strings.Repeat("a", size-len(head)-len(tail)) + tail)
 	case "empty":
 	default:
 		os.Stderr.WriteString("unknown test mode " + mode)
@@ -287,7 +318,9 @@ func TestRun_EnvFilteredAndMerged(t *testing.T) {
 	t.Setenv("SQI_SECRET", "parent-secret-value")
 	t.Setenv("SCRIPT_TEST_KEEP", "kept")
 	t.Setenv("SCRIPT_TEST_OVERRIDE", "parent")
-	p := provider("env", map[string]string{"SCRIPT_TEST_OVERRIDE": "child", "PROVIDER_TOKEN": "tok"})
+	// Values of four bytes or more are redacted from what the script reports, so the child's
+	// environment is read back in its redacted form; "tok" is too short to be scrubbed.
+	p := provider("env", map[string]string{"SCRIPT_TEST_OVERRIDE": "child", "PROVIDER_TOKEN": "tok", "PROVIDER_SECRET": "longsecretvalue"})
 	resp, err := Run(context.Background(), p, Request{Version: 1, Action: "list", Group: testGroup}, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -295,7 +328,7 @@ func TestRun_EnvFilteredAndMerged(t *testing.T) {
 	if resp.Result != "ok" {
 		t.Fatalf("result = %q (%s)", resp.Result, resp.Message)
 	}
-	env := strings.Split(resp.Message, "\n")
+	env := strings.Fields(resp.Message) // newlines in a message become spaces
 	count := func(entry string) int {
 		n := 0
 		for _, e := range env {
@@ -308,13 +341,151 @@ func TestRun_EnvFilteredAndMerged(t *testing.T) {
 	if strings.Contains(resp.Message, "parent-secret-value") || strings.Contains(resp.Message, "SQI_SECRET") {
 		t.Errorf("the child inherited a parent SQI_ variable:\n%s", resp.Message)
 	}
-	for _, want := range []string{"SCRIPT_TEST_KEEP=kept", "SCRIPT_TEST_OVERRIDE=child", "PROVIDER_TOKEN=tok", modeVar + "=env"} {
+	for _, want := range []string{
+		"SCRIPT_TEST_KEEP=kept",
+		"SCRIPT_TEST_OVERRIDE=" + redacted,
+		"PROVIDER_SECRET=" + redacted,
+		"PROVIDER_TOKEN=tok",
+		modeVar + "=env",
+	} {
 		if count(want) != 1 {
-			t.Errorf("child environment holds %q %d times, want once", want, count(want))
+			t.Errorf("child environment holds %q %d times, want once:\n%s", want, count(want), resp.Message)
 		}
 	}
 	if count("SCRIPT_TEST_OVERRIDE=parent") != 0 {
 		t.Error("the parent's value survived a p.Env override")
+	}
+}
+
+func TestRun_EnvFilterIsCaseInsensitiveOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("environment variable names are case-sensitive here")
+	}
+	t.Setenv("sqi_lower_case_secret", "lowercase-parent-value")
+	resp, err := Run(context.Background(), provider("env", nil), Request{Version: 1, Action: "list", Group: testGroup}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(strings.ToLower(resp.Message), "sqi_lower_case_secret") {
+		t.Errorf("a lowercase sqi_ variable reached the child:\n%s", resp.Message)
+	}
+}
+
+func TestRun_StdoutBoundary(t *testing.T) {
+	tests := []struct {
+		mode string
+		want string
+	}{
+		{"exact", "ok"},
+		{"exactplus", "error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			resp, err := Run(context.Background(), provider(tt.mode, nil), Request{Version: 1, Action: "list", Group: testGroup}, nil)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if resp.Result != tt.want {
+				t.Errorf("result = %q (%.80s), want %q", resp.Result, resp.Message, tt.want)
+			}
+		})
+	}
+}
+
+func TestRun_RedactsEchoedEnvValues(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		env  map[string]string
+		// leaks are strings that must appear nowhere in the log or the response.
+		leaks []string
+		// wantMessage is the exact message expected; empty skips the check.
+		wantMessage string
+		wantLogged  bool
+	}{
+		{
+			name: "stderr line", mode: "echostderr",
+			leaks:      []string{"s3cr3t-token-value"},
+			wantLogged: true,
+		},
+		{
+			name: "json message", mode: "echomessage",
+			leaks:       []string{"s3cr3t-token-value"},
+			wantMessage: "using " + redacted + " and flag on",
+		},
+		{
+			name: "last stderr line of a failure", mode: "echofail",
+			leaks:      []string{"s3cr3t-token-value"},
+			wantLogged: true,
+		},
+		{
+			name: "value containing a shorter one", mode: "echomessage",
+			env:         map[string]string{"API_TOKEN": "secretabc", "OTHER": "secret"},
+			leaks:       []string{"secretabc", "abc"},
+			wantMessage: "using " + redacted + " and flag on",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := map[string]string{"API_TOKEN": "s3cr3t-token-value", "SHORT_FLAG": "on"}
+			maps.Copy(env, tt.env)
+			logger, logs := capturedLogger()
+			resp, err := Run(context.Background(), provider(tt.mode, env), Request{Version: 1, Action: "wake", Group: testGroup}, logger)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			for _, leak := range tt.leaks {
+				if strings.Contains(logs.String(), leak) || strings.Contains(resp.Message, leak) {
+					t.Errorf("%q leaked.\nmessage: %q\nlog: %s", leak, resp.Message, logs.String())
+				}
+			}
+			if tt.wantMessage != "" && resp.Message != tt.wantMessage {
+				t.Errorf("message = %q, want %q", resp.Message, tt.wantMessage)
+			}
+			if tt.wantLogged && !strings.Contains(logs.String(), redacted) {
+				t.Errorf("the log lacks %s: %s", redacted, logs.String())
+			}
+			if tt.mode == "echofail" && (resp.Result != "error" || !strings.Contains(resp.Message, redacted)) {
+				t.Errorf("response = %+v, want an error message carrying %s", resp, redacted)
+			}
+		})
+	}
+}
+
+func TestRun_MessageIsSanitizedAndCapped(t *testing.T) {
+	resp, err := Run(context.Background(), provider("ctrl", nil), Request{Version: 1, Action: "list", Group: testGroup}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if resp.Message != "a b  c [31md" {
+		t.Errorf("message = %q, want control characters replaced by spaces", resp.Message)
+	}
+
+	resp, err = Run(context.Background(), provider("longmsg", nil), Request{Version: 1, Action: "list", Group: testGroup}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(resp.Message) > 2048+len("...") || !utf8.ValidString(resp.Message) || !strings.HasSuffix(resp.Message, "...") {
+		t.Errorf("message of %d bytes (valid UTF-8: %v) is not capped on a rune boundary", len(resp.Message), utf8.ValidString(resp.Message))
+	}
+}
+
+func TestTruncate_KeepsRunesWhole(t *testing.T) {
+	tests := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"hello", 10, "hello"},
+		{"hello", 3, "hel..."},
+		{"héllo", 2, "h..."},
+		{"héllo", 3, "hé..."},
+		{"世界", 4, "世..."},
+	}
+	for _, tt := range tests {
+		if got := truncate(tt.in, tt.n); got != tt.want || !utf8.ValidString(got) {
+			t.Errorf("truncate(%q, %d) = %q, want %q", tt.in, tt.n, got, tt.want)
+		}
 	}
 }
 

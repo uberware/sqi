@@ -34,8 +34,15 @@
 //   - Standard error is the script's log. It is logged at Info line by line, up to 64 KiB per run,
 //     carrying the provider, action and group name; it is never parsed.
 //   - The environment is the server's own minus every variable named `SQI_*`, plus the provider's
-//     configured `env`. The server's secrets therefore do not reach a script that was not given
-//     them.
+//     configured `env`. Only the `SQI_` variables are removed: every other variable (PG*, cloud
+//     credentials, proxies) is inherited, so an operator who needs the script isolated from them
+//     wraps the command (`env -i`, a container, a service account).
+//   - Each configured `env` value of four bytes or more is replaced by `<redacted>` wherever the
+//     script's own output carries it: in logged standard-error lines, in the last standard-error
+//     line quoted in a failure message and in the response `message`. Values are replaced longest
+//     first. A value split across the 8 KiB chunks of one very long line is not caught.
+//   - A response `message` is cut to 2 KiB on a character boundary and has its control characters
+//     (newlines included) replaced by spaces, so a script cannot forge log lines through it.
 //   - The run is bounded by the provider's timeout; a script still running at the deadline is
 //     killed and [Run] returns an error.
 //
@@ -57,6 +64,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -73,6 +82,13 @@ const (
 	waitDelay = 5 * time.Second
 	// defaultTimeout applies when a Provider sets none.
 	defaultTimeout = 2 * time.Minute
+	// maxMessage caps a Response.Message returned from a script.
+	maxMessage = 2 << 10
+	// minRedactLen is the shortest env value that is redacted; shorter ones are flags and numbers
+	// that would mangle ordinary output.
+	minRedactLen = 4
+	// redactedText replaces a redacted env value.
+	redactedText = "<redacted>"
 )
 
 // Provider is one configured script provider.
@@ -150,9 +166,11 @@ func Run(ctx context.Context, p Provider, req Request, logger *slog.Logger) (Res
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	redact := newRedactor(p.Env)
 	stdout := &capWriter{limit: maxStdout, onOverflow: cancel}
 	stderr := &lineLogger{
 		ctx:    ctx,
+		redact: redact,
 		logger: logger.With("provider", p.Name, "action", req.Action, "group", req.Group.Name),
 		budget: maxStderrLogged,
 	}
@@ -173,21 +191,25 @@ func Run(ctx context.Context, p Provider, req Request, logger *slog.Logger) (Res
 		return Response{}, fmt.Errorf("provider %q could not start: %w", p.Name, err)
 	}
 
-	// A parent that ended wins over everything the killed child reported.
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return Response{}, fmt.Errorf("provider %q: %w", p.Name, ctxErr)
+	// A parent that ended, or a deadline that hit, matters only when it cut the child short.
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Response{}, fmt.Errorf("provider %q: %w", p.Name, ctxErr)
+		}
 	}
 	if stdout.overflowed() {
 		return errorResponse("standard output exceeded the 1 MiB limit"), nil
 	}
-	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+	if err != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return Response{}, fmt.Errorf("provider %q timed out after %s: %w", p.Name, timeout, context.DeadlineExceeded)
 	}
-	return interpret(p, err, stdout.bytes(), stderr.last()), nil
+	resp := interpret(p, redact, err, stdout.bytes(), stderr.last())
+	resp.Message = tidyMessage(resp.Message)
+	return resp, nil
 }
 
 // interpret turns a finished run into a Response.
-func interpret(p Provider, runErr error, out []byte, lastStderr string) Response {
+func interpret(p Provider, redact *redactor, runErr error, out []byte, lastStderr string) Response {
 	if runErr != nil && !errors.Is(runErr, exec.ErrWaitDelay) {
 		var exitErr *exec.ExitError
 		if !errors.As(runErr, &exitErr) {
@@ -195,7 +217,7 @@ func interpret(p Provider, runErr error, out []byte, lastStderr string) Response
 		}
 		msg := fmt.Sprintf("provider %q failed: %s", p.Name, exitErr.Error())
 		if lastStderr != "" {
-			msg += ": " + truncate(lastStderr, 512)
+			msg += ": " + truncate(lastStderr, 512) // lastStderr is already redacted
 		}
 		return errorResponse(msg)
 	}
@@ -210,9 +232,10 @@ func interpret(p Provider, runErr error, out []byte, lastStderr string) Response
 	}
 	switch resp.Result {
 	case "ok", "unsupported", "error":
+		resp.Message = redact.apply(resp.Message)
 		return resp
 	default:
-		return errorResponse(fmt.Sprintf("unknown result %q in the response", truncate(resp.Result, 64)))
+		return errorResponse(fmt.Sprintf("unknown result %q in the response", truncate(redact.apply(resp.Result), 64)))
 	}
 }
 
@@ -220,11 +243,66 @@ func errorResponse(msg string) Response {
 	return Response{Result: "error", Message: msg}
 }
 
+// truncate cuts s to at most n bytes without splitting a multi-byte character and marks the cut.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
 	return s[:n] + "..."
+}
+
+// tidyMessage replaces control characters with spaces and caps the length, so a script's message
+// cannot forge log lines or flood a caller.
+func tidyMessage(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+	return truncate(s, maxMessage)
+}
+
+// redactor replaces provider env values in text the script produced.
+type redactor struct {
+	r *strings.Replacer
+}
+
+// newRedactor covers every env value of minRedactLen bytes or more. Longest values come first, so a
+// value that contains another is replaced whole rather than leaving a fragment.
+func newRedactor(env map[string]string) *redactor {
+	seen := make(map[string]bool, len(env))
+	var values []string
+	for _, v := range env {
+		if len(v) >= minRedactLen && !seen[v] {
+			seen[v] = true
+			values = append(values, v)
+		}
+	}
+	if len(values) == 0 {
+		return &redactor{}
+	}
+	sort.Slice(values, func(i, j int) bool {
+		if len(values[i]) != len(values[j]) {
+			return len(values[i]) > len(values[j])
+		}
+		return values[i] < values[j]
+	})
+	pairs := make([]string, 0, 2*len(values))
+	for _, v := range values {
+		pairs = append(pairs, v, redactedText)
+	}
+	return &redactor{r: strings.NewReplacer(pairs...)}
+}
+
+func (d *redactor) apply(s string) string {
+	if d == nil || d.r == nil {
+		return s
+	}
+	return d.r.Replace(s)
 }
 
 // buildEnv returns the server's environment without SQI_ variables, with extra applied on top.
@@ -310,6 +388,7 @@ func (w *capWriter) bytes() []byte {
 // remembers the last non-empty line for the failure message.
 type lineLogger struct {
 	mu        sync.Mutex
+	redact    *redactor
 	ctx       context.Context //nolint:containedctx // scoped to one Run; only passed to the logger
 	logger    *slog.Logger
 	budget    int
@@ -349,7 +428,8 @@ func (l *lineLogger) last() string {
 
 // emit logs and clears the held line. The caller holds l.mu.
 func (l *lineLogger) emit() {
-	line := strings.TrimRight(string(l.partial), "\r")
+	// A value split across two chunks of an over-long line is not seen whole and is not caught.
+	line := l.redact.apply(strings.TrimRight(string(l.partial), "\r"))
 	l.partial = l.partial[:0]
 	if strings.TrimSpace(line) == "" {
 		return
