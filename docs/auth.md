@@ -316,13 +316,22 @@ enrollment, and cover only that worker's own subtree:
 - **Publish:** `task.status.<id>.*`, `task.logs.<id>.*`,
   `worker.register.<id>`, `worker.heartbeat.<id>`, `worker.deregister.<id>`,
   `worker.diag.<id>`, `work.lease.<id>.*`.
-- **Subscribe:** `_INBOX_<id>.>` — this worker's own reply inboxes — and
+- **Subscribe:** `_INBOX_<id>.>` — this worker's own reply inboxes —
   `task.cancel.<id>`, where the server sends every cancel for this worker's
-  runs.
+  runs, and `worker.control.<id>`, where the server sends this worker's power
+  commands for a [capacity group](capacity.md#power-control-on-the-worker).
+- **Reply once to a request it received:** a power command is a core-NATS
+  request, and its reply goes to the requester's reply subject, which no fixed
+  publish permission can name. The worker may publish one message, within a
+  minute, to the reply subject of a message delivered to it, and nothing else;
+  the grant opens no subject by itself. The only messages delivered to a worker
+  are those on the subscriptions above, all addressed to it, so the only reply
+  subjects it can reach are the server's own control request and the publish
+  acknowledgement of its own cancel.
 
 Everything else is denied. A worker cannot subscribe to `task.status.>`,
-`task.logs.>` or another worker's `task.cancel.<id>`, so it cannot observe
-another worker's status, log or cancel traffic.
+`task.logs.>` or another worker's `task.cancel.<id>` or `worker.control.<id>`,
+so it cannot observe another worker's status, log, cancel or power traffic.
 
 The reply-inbox prefix is **per worker**, not nats.go's process-global
 `_INBOX`. That matters because a work lease is core-NATS request/reply: the
@@ -465,7 +474,7 @@ policy. There are four built-in roles (there is no custom-role builder):
 | `jobs.submit_as` — set `Owner` to another user | ❌ | ❌ | ✅ | ✅ |
 | workers.read | ✅ | ✅ | ✅ | ✅ |
 | workers.manage | ❌ | ❌ | ✅ | ✅ |
-| infra.read (farms/queues/storage/compute/usage-pools) | ✅ | ✅ | ✅ | ✅ |
+| infra.read (farms/queues/storage/compute/usage-pools/capacity groups and providers) | ✅ | ✅ | ✅ | ✅ |
 | infra.manage | ❌ | ❌ | ✅ | ✅ |
 | products.read (products/presets) | ✅ | ✅ | ✅ | ✅ |
 | products.manage | ❌ | ❌ | ✅ | ✅ |

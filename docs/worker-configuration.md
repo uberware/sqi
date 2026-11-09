@@ -837,7 +837,14 @@ read and no network request is made.
 Each request has a 2 s timeout and goes to the metadata service directly, never
 through a proxy named by `HTTP_PROXY` or `HTTPS_PROXY`. The read is made once and
 never retried: a metadata service that does not answer is one warning in the
-log, and the worker registers without an ID.
+log, and the worker registers without an ID. A registration without an ID keeps
+the one the server already stored for the worker.
+
+The server shows the ID as `cloud_instance_id` in `GET /workers`, and sends it
+to a capacity group's script provider as the member's `instance_id`. Every
+member of a sized group driven by a script needs one: orphan cleanup is skipped
+while any member lacks it, and the example scripts refuse a retire batch holding
+such a member. See [Cloud instance IDs](capacity.md#cloud-instance-ids).
 
 ```yaml
 worker:
@@ -875,6 +882,19 @@ a boolean fails startup naming the variable. Asking a worker to send
 Wake-on-LAN packets for a peer is not governed by this setting. See
 [Power control on the worker](capacity.md#power-control-on-the-worker).
 
+This is the worker's half of a double opt-in: the server sends a sleep or
+shutdown only to a member of a group whose provider is `wake_on_lan` (the
+group's `retire_action` says which), and the worker carries it out only with
+this set. Grant the worker's account the privilege its command needs as well
+(a polkit rule on Linux, root for `shutdown` on macOS; the Windows service's
+LocalSystem account has it); see the
+[setup checklist](capacity.md#setup-checklist).
+
+Whatever this says, a worker reports its network interfaces (name, MAC address
+and addresses of each interface that is up, not loopback and has a hardware
+address) when it registers, so the server can wake it with a magic packet later.
+A registration that reports none keeps the interfaces already stored.
+
 ```yaml
 worker:
   power:
@@ -896,6 +916,13 @@ suspend` / `systemctl poweroff` on Linux, `pmset sleepnow` / `shutdown -h now`
 on macOS, and a PowerShell suspend call / `shutdown.exe /s /t 0` on Windows.
 There is no default on any other platform, so a request there is refused until
 one is set. The first element must not be blank.
+
+The Windows sleep command is
+`powershell.exe -NoProfile -NonInteractive -Command` with
+`[System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)`:
+sleep, not hibernate. After a successful sleep command the worker registers
+again when it sees the machine resume, or 60 seconds after the command
+returned, whichever is first.
 
 ```yaml
 worker:

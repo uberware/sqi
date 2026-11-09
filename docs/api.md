@@ -145,7 +145,7 @@ exception of `POST /api/v1/workers/enroll` noted above (`/healthz`,
 | `GET /workers`, `GET /workers/{id}` | `workers.read` |
 | `POST /workers/{id}/disable`, `POST /workers/{id}/enable`, `DELETE /workers/{id}` | `workers.manage` |
 | `POST /workers/join-tokens`, `DELETE /workers/{id}/credential` | `workers.enroll` |
-| `GET` on farms, queues, storage-locations, compute-locations, usage-pools, capacity-groups (including a group's members) | `infra.read` |
+| `GET` on farms, queues, storage-locations, compute-locations, usage-pools, capacity-groups (including a group's members), capacity-providers | `infra.read` |
 | `POST`/`PUT`/`DELETE` on farms, queues, storage-locations, compute-locations, usage-pools, capacity-groups; adding and removing a capacity group's members; listing, minting and revoking its tokens | `infra.manage` |
 | `GET /products`, `GET /products/{name}`, `GET /products/{name}/parameters`, `GET /presets`, `GET /presets/{name}` | `products.read` |
 | `POST /products`, `PUT /products/{name}`, `DELETE /products/{name}`, `POST /presets/{name}/install` | `products.manage` |
@@ -770,14 +770,32 @@ DELETE /api/v1/capacity-groups/{id}/members/{workerID}  # remove a worker (409 f
 GET    /api/v1/capacity-groups/{id}/tokens              # the group's tokens (never the secret)
 POST   /api/v1/capacity-groups/{id}/tokens              # mint a reusable token for a sized group
 DELETE /api/v1/capacity-groups/{id}/tokens/{tokenID}    # revoke a token
+GET    /api/v1/capacity-providers                       # the providers a group may name, with the kinds each serves
 ```
 
 Durations are in seconds (`scale_up_cooldown_seconds`, `idle_timeout_seconds`,
-`boot_timeout_seconds`), unknown request fields are refused with `400`, and only
-`provider: external` is accepted. A group's `status` carries `demand_cores`,
-`desired_machines` (the total the group should have, retire candidates
-included), `online_members`, `offline_members`, `retire_candidates`,
-`mismatches` and `evaluated_at`. Under high availability only the leader
+`boot_timeout_seconds`), and unknown request fields are refused with `400`.
+`provider` is `external`, `wake_on_lan` (a named group only) or
+`script:<name>`, where the name is defined under `capacity.providers` in the
+server's configuration; anything else is a `400`.
+`GET /capacity-providers` (`infra.read`) lists exactly those, by name and kinds
+only, never a script's command or environment. A `PUT` that keeps the group's
+stored provider is accepted even when that script has since been removed from
+the configuration, so such a group can still be disabled or renamed; switching
+a group to an unconfigured provider is refused.
+
+A group's `status` carries `demand_cores`, `desired_machines` (the total the
+group should have, retire candidates included), `online_members`,
+`offline_members`, the members by power state (`waking`, `retiring`, `asleep`,
+`wake_failed`), `wake_candidates`, `retire_candidates`, `mismatches`,
+`requested_machines` (the size a sized script group last asked its provider
+for; `null` for any other group), `degraded` (`null`, or `reason`, `since` and
+`backoff_until`), `last_action` (`null`, or the latest provider action's
+`action`, `result`, `message` and `at`) and `evaluated_at`. Workers, in
+`GET /workers` and a group's members, carry `power_state` (always present;
+`awake`, `waking`, `retiring`, `asleep` or `wake_failed`), `power_state_at`,
+`power_reason`, `cloud_instance_id` and `interfaces` (each `name`, `mac` and
+`addrs`). Under high availability only the leader
 evaluates groups: a standby answers `503` on these routes, as on every route
 other than the probes and `/metrics`, and exports no `sqi_capacity_*` series, so
 an autoscaler reads the leader.

@@ -2059,7 +2059,7 @@ variable, so providers are defined in the config file only. Capacity groups
 themselves are not configuration; they live in the store and are managed
 through the API.
 
-### `capacity.providers.<name>`
+### `capacity.providers`
 
 | | |
 |---|---|
@@ -2095,6 +2095,15 @@ On Windows write an absolute path with a drive letter, for example
 `'C:\sqi\providers\cloud.cmd'` in single quotes; `/opt/...` is not absolute
 there.
 
+**Put secrets in `env`, never in `command`.** `config print` redacts the `env`
+values only, and the server also replaces them with `<redacted>` wherever the
+program's own output repeats them in the server's logs. The arguments in
+`command` are redacted nowhere and are visible in the host's process list.
+
+The program runs with the server's environment minus every `SQI_*` variable,
+plus `env`, and is never run through a shell. What it receives and must answer
+is described in [The script provider](capacity.md#the-script-provider).
+
 ---
 
 ### `capacity.wake_on_lan.port`
@@ -2105,8 +2114,8 @@ there.
 | **Default** | `9` |
 | **Env var** | none |
 
-UDP port the wake-on-LAN provider sends magic packets to. Between `1` and
-`65535`.
+UDP port the wake-on-LAN provider sends magic packets to, from the server and
+through a relaying worker. Between `1` and `65535`.
 
 ### `capacity.wake_on_lan.send_to`
 
@@ -2118,8 +2127,10 @@ UDP port the wake-on-LAN provider sends magic packets to. Between `1` and
 
 Extra targets for machines the server's own broadcast does not reach, such as
 a router's directed broadcast address. Each entry is an IP literal and a port
-between `1` and `65535` (IPv6 as `[ip]:port`); a host name is rejected, so
-nothing is resolved at send time.
+between `1` and `65535`; a host name is rejected, so nothing is resolved at send
+time. Use IPv4 addresses: the packets are sent over IPv4, and an IPv6 entry
+(`[ip]:port`), which validation accepts, makes every wake sent from the server read `failed`.
+See [How a wake reaches a machine](capacity.md#how-a-wake-reaches-a-machine).
 
 ```yaml
 capacity:

@@ -33,6 +33,7 @@ through scheduling, worker execution, and final state.
 │             │  task.logs.<worker>.<task>     task.cancel.<worker>        │ │
 │             │  worker.register.<worker>      worker.heartbeat.<worker>   │ │
 │             │  worker.deregister.<worker>    worker.diag.<worker>        │ │
+│             │  worker.control.<worker>                                   │ │
 │             └────────┬────────────────────────────────────────────────┬─┘ │
 │                      │                                                │    │
 │          ┌───────────▼──────────┐                   ┌────────────────▼──┐ │
@@ -1887,8 +1888,10 @@ last, so a client never reaches a leader that has not finished promoting.
 ## Capacity groups
 
 A capacity group is a named set of machines the server publishes a scaling
-signal for. The server computes and exports the signal and acts on no
-machine; the operator's guide is [Capacity groups](capacity.md). With no group
+signal for. For a group with `provider: external` the server computes and
+exports the signal and acts on no machine; for `wake_on_lan` and
+`script:<name>` groups it also acts on it, through the actuator described
+below. The operator's guide is [Capacity groups](capacity.md). With no group
 defined the scheduler reads the group list on each tick and does nothing more:
 no member or demand query, no log line and no `sqi_capacity_*` series.
 
@@ -1933,22 +1936,66 @@ Each tick it:
    returns;
 2. reads each group's members and deletes the vanished ephemeral members
    (ephemeral, not disabled, offline, last heartbeat older than the group's
-   `boot_timeout`), revoking their credentials, which is the step's only write.
-   It skips this while the liveness sweeps are deferred after a broker outage;
-3. for the enabled groups, reads the per-worker commitments, the other online
+   `boot_timeout`, whatever their deregistration said), revoking their
+   credentials. It skips this while the liveness sweeps are deferred after a
+   broker outage;
+3. expires the power transitions that overran: for every group of the farm,
+   enabled or not and whatever its provider, a `waking` member older than the
+   group's `boot_timeout` becomes `wake_failed` (`FailWakes`) and a `retiring`
+   one goes back to `awake` (`ExpireRetirements`). This runs before the
+   evaluation, so a member whose wake failed is no longer counted as pending;
+4. for the enabled groups, reads the per-worker commitments, the other online
    workers, and the ready work per step (`ListReadyStepDemand`, one row per
    step with leasable ready tasks, then one job and one step read each), so the
-   cost follows the number of steps with ready work, never their tasks;
-4. runs the pure policy in `internal/capacity` (`Evaluate`), whose
+   cost follows the number of steps with ready work, never their tasks; and,
+   when any group is a sized script group, the launch records
+   (`ListCapacityGroupStates`), held under a lock to the end of the tick;
+5. runs the pure policy in `internal/capacity` (`Evaluate`), whose
    `couldRun` check is the lease path's static eligibility and nothing that
-   varies with load;
-5. fills each sized group's profile mismatches, and publishes the statuses (read
-   by `GET /api/v1/capacity-groups`) and the `sqi_capacity_*` gauges, deleting
-   the series of groups that are gone, renamed or disabled.
+   varies with load, and fills each sized group's profile mismatches;
+6. acts, for each group whose provider acts (the actuator, below);
+7. publishes the statuses (read by `GET /api/v1/capacity-groups`) and the
+   `sqi_capacity_*` gauges, deleting the series of groups that are gone,
+   renamed or disabled, and records which acting groups could bring a machine
+   for the unschedulable sweep's `waiting for capacity group …` reason.
 
 If any read fails the step logs a warning and keeps the previous evaluation and its
 gauges, rather than publishing zeros that would read as "no demand" and scale a
 farm in.
+
+**The actuator (`internal/scheduler/capacityact.go`).** For a group whose
+provider acts (`wake_on_lan`, or a `script:<name>` the server's configuration
+defines; a script it does not define is recorded as the group's last action and
+logged once), the actuator follows one rule: **record the intent, then act.**
+It first writes each transition the evaluation chose: `MarkWaking` for the wake
+candidates, `BeginRetirement` for each retire candidate (a compare-and-set
+under the worker's row lock that refuses a member holding an assigned or running
+task, so it serializes with `LeaseTask`; see [Anchor rows](#anchor-rows)), and,
+for a sized script group, the launch record (`PutCapacityGroupState`) before a
+`grow`. It then starts one provider call per group, on a goroutine of its own,
+never two at once for a group, carrying every intent of the group this process
+has not yet sent: each `waking` member, each `retiring` member that is online,
+and the group's grow or orphan cleanup. The call's results are written back
+through fenced writes behind a write gate that shutdown closes. The actuator
+acts only on named candidates, or for a sized group on the size it recorded,
+never on a count alone.
+
+**The re-issue rule.** The actuator remembers, in memory, each intent it has
+sent, keyed by subject (member or group), intent and the time it was recorded,
+and never sends the same one twice in a process. A new leader starts with an
+empty set, so it sends every intent it finds recorded once: a member still
+`waking` or `retiring`, or an unmet launch younger than the boot timeout
+(stamped afresh first, so its machines get a whole boot timeout). Every request is
+absolute, so a repeat is harmless; a worker told to sleep while it is already
+retiring answers `already retiring`, which the provider treats as success. A
+retirement finishes when the worker deregisters (any kind;
+`FinishRetirement` makes a named member `asleep` and offline and deletes an
+ephemeral one with its credential, refusing either while the member still holds
+a task) or, for a script, when the script answers `ok`. At shutdown,
+`Scheduler.Run` waits for provider calls for the longest one could take plus a
+second, capped at 20 s so it returns inside `scheduler.StopCeiling` (30 s), then
+closes the gate; a call cut off writes nothing more, and the next leader repeats
+its recorded request.
 
 **In-memory state, and why it resets on failover.** The step keeps, per
 process: when each online member was first seen idle, when each group last
@@ -1957,16 +2004,22 @@ logged. None of it is persisted. A restart or a failover therefore starts it
 empty. Idle times restart, so no machine is offered for retirement sooner than
 its idle timeout after the new leader first sees it idle. The step-up record is
 lost too, so for up to one `boot_timeout` the desired size can fall below the
-machines that were still booting.
+machines that were still booting, except for a sized script group, whose pacing
+is seeded from its launch record. What must survive a failover is in the store:
+the power states and the launch records (`capacity_group_state`); the
+actuator's record of what it has sent is in memory, which is what makes a new
+leader repeat each recorded intent once.
 
 **Membership.** At registration the scheduler touches the worker's broker
-credential and, when the worker may be an ephemeral member, reads its row first
-so a cloned worker ID can be reported. With broker authentication on, only the
+credential and, when the worker may be an ephemeral member or the farm's groups
+manage power, reads its row first, so a cloned worker ID can be reported and a
+member the registration woke is logged and its parked lease request released. With broker authentication on, only the
 credential's group counts and the worker's own `worker.capacity_group` is
 ignored with a warning; with it off, the worker's setting names a sized group of
 its farm. A deregistration of kind `retired` or `preempted` deletes an
 ephemeral member (offline, no assigned or running task) and revokes its
-credential in one transaction; any other kind keeps the row. The
+credential in one transaction; any other kind keeps the row. A deregistration
+of any kind from a member the actuator is retiring finishes its retirement. The
 offline-worker retention sweep skips every capacity-group member: an ephemeral
 one is deleted, and its credential revoked, only by the capacity sweep or a
 deregistration.
@@ -1985,6 +2038,7 @@ deregistration.
 | `worker.heartbeat.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
 | `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks. Ignored when its `instance_id` names a process a later registration replaced. Its optional `kind` (`retired` or `preempted`) makes the server delete an ephemeral capacity-group member and revoke its credential; with no kind the worker is kept |
 | `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |
+| `worker.control.<worker_id>` | Core NATS request/reply (no stream) | server → worker (request); worker → server (reply) | Power command for a capacity group: `sleep` or `shutdown` (the worker's own host), or `wake` (send Wake-on-LAN packets for a peer). Each worker subscribes once before its first lease request. No stream covers it, because a stream would answer the request with a JetStream ack in place of the worker's reply; a worker that is not connected answers with no responders |
 
 Every worker → server subject carries the publishing worker's ID directly after
 its class prefix. A worker's permissions are fixed when its connection is

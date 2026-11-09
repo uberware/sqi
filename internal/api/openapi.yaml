@@ -4805,7 +4805,11 @@ paths:
         Requires `infra.manage`. Replaces every setting; an omitted optional
         field takes its default. The farm cannot change. Changing `kind`
         while the group has members is a 409. The provider rule of
-        `POST /capacity-groups` applies.
+        `POST /capacity-groups` applies, with one exception: a request that
+        keeps the provider the group already has is accepted even when that
+        `script:<name>` is no longer in the server's configuration, so such a
+        group can still be disabled or renamed. Switching to an unconfigured
+        provider is refused with 400.
       requestBody:
         required: true
         content:

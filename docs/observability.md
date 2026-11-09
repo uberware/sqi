@@ -215,7 +215,11 @@ Where it surfaces:
   `compute location mismatch`, `amount requirement not met`,
   `attribute requirement not met`, `usage pool at capacity`, or a
   `worker EXPR limits are tighter than this server's: …` sentence naming both
-  numbers and both config keys (see below). Empty/absent means schedulable.
+  numbers and both config keys (see below). When a capacity group whose
+  provider acts could bring a machine that runs the task, the reason is
+  `waiting for capacity group <name> to wake a machine` (a named group) or
+  `… to launch a machine` (a sized group) instead; see
+  [Waiting tasks](capacity.md#waiting-tasks). Empty/absent means schedulable.
 - **Job**: `task_counts.unschedulable` — the number of `ready` tasks currently
   flagged, a subset of `ready`, not an additional task status.
 - **Web UI**: an "Unschedulable" badge on the job detail page (per affected
@@ -333,7 +337,7 @@ are visible (component `server`) in Admin → Server log and
 ## Capacity group metrics
 
 With at least one enabled [capacity group](capacity.md), `sqi-server` exports
-three gauges from the capacity step of its sweep tick (about every 15 seconds,
+three gauges per group from the capacity step of its sweep tick (about every 15 seconds,
 on the leader only). The `group` label is the group name. With no enabled
 group none of them has a series, and a group's series are removed when it is
 disabled, renamed or deleted.
@@ -344,10 +348,27 @@ disabled, renamed or deleted.
 | `sqi_capacity_desired_machines` | gauge | `group` | Total machines the group should have, counting the machines it already has (not the number to add). |
 | `sqi_capacity_members` | gauge | `group`, `state` | Members of the group by liveness, `state` being `online` or `offline`. A disabled member counts in whichever it is. |
 
+A group whose provider acts (`wake_on_lan` or a script, not `external`) also
+has four more families. They exist only for such groups, are deleted with the
+group's other series, and an `external` group has none:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `sqi_capacity_machines` | gauge | `group`, `power_state` | Members by [power state](capacity.md#power-states): `awake`, `waking`, `retiring`, `asleep` or `wake_failed`. |
+| `sqi_capacity_actions_total` | counter | `group`, `action`, `result` | Provider actions. `action` is `wake`, `grow`, `retire` or `list`; `result` is `ok`, `failed`, `refused`, `unsupported`, `timeout`, or `expired` (a retirement the boot timeout ended). A call naming several members counts once per member. |
+| `sqi_capacity_boot_timeouts_total` | counter | `group` | Woken machines whose worker did not register within the group's `boot_timeout_seconds` and became `wake_failed`. |
+| `sqi_capacity_group_degraded` | gauge | `group` | `1` while the group is [degraded](capacity.md#degraded-groups) (a sized script group whose launch did not register), `0` otherwise. |
+
+Worth alerting on: a rising `sqi_capacity_boot_timeouts_total` (machines that
+do not wake: firmware, network card or a broken image), `sqi_capacity_group_degraded == 1`,
+and `sqi_capacity_actions_total` with `result` other than `ok` and
+`unsupported`. The group's `status.last_action` gives the latest message.
+
 If the server cannot read the store during a tick it keeps the previous values
 rather than zeroing them; the `evaluated_at` of the group's `status` in
 `GET /api/v1/capacity-groups/{id}` shows how old they are. The same figures,
-with the group's retire candidates and profile mismatches, are in that status.
+with the group's wake and retire candidates and profile mismatches, are in that
+status.
 
 `sqi_scheduler_queue_depth` (the label is the queue ID, not its name) is
 set back to `0` when a queue that had ready work drains, so a scaling signal
