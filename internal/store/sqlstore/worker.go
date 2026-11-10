@@ -16,7 +16,8 @@ const workerCols = `
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
 	last_heartbeat_at, registered_at, updated_at, instance_id, disabled, registration_broker_at,
-	heartbeat_broker_at, capacity_group_id, ephemeral`
+	heartbeat_broker_at, capacity_group_id, ephemeral,
+	power_state, power_state_at, power_reason, interfaces, cloud_instance_id`
 
 // sqlWorkerHasWorkInFlight is true when the worker row's id holds an assigned
 // or running task. It is a fragment for a WHERE clause over workers.
@@ -39,15 +40,25 @@ const (
 	// ON CONFLICT preserves registered_at, so re-registration does not reset it,
 	// and an empty instance_id (a worker that sends none) keeps the stored one,
 	// as a NULL registration_broker_at does. disabled, heartbeat_broker_at,
-	// capacity_group_id and ephemeral are not in the column list, so a new
-	// worker is enabled and in no group, and a re-registration never changes
-	// them.
+	// capacity_group_id, ephemeral, power_reason and the power-state columns
+	// are not in the column list, so a new worker is enabled, in no group and
+	// awake, and a re-registration never changes disabled, heartbeat_broker_at,
+	// capacity_group_id or ephemeral.
+	//
+	// interfaces and cloud_instance_id are written from the registration, except
+	// that an empty report ('[]', '') keeps the stored value: a failed interface
+	// or metadata read on one start must not erase the only record of the
+	// machine's wake address and instance. The power state is decided in the
+	// same statement: a waking, asleep or wake-failed worker has registered, so
+	// it is awake as of now with no reason; a retiring worker is kept retiring
+	// (its machine is still going to sleep); an awake one is unchanged.
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
-	last_heartbeat_at, registered_at, updated_at, instance_id, registration_broker_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	last_heartbeat_at, registered_at, updated_at, instance_id, registration_broker_at,
+	interfaces, cloud_instance_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
 	queue_id          = excluded.queue_id,
@@ -69,14 +80,23 @@ ON CONFLICT (id) DO UPDATE SET
 	last_heartbeat_at = excluded.last_heartbeat_at,
 	updated_at        = excluded.updated_at,
 	instance_id       = CASE WHEN excluded.instance_id = '' THEN workers.instance_id ELSE excluded.instance_id END,
-	registration_broker_at = COALESCE(excluded.registration_broker_at, workers.registration_broker_at)
+	registration_broker_at = COALESCE(excluded.registration_broker_at, workers.registration_broker_at),
+	interfaces        = CASE WHEN excluded.interfaces = '[]' THEN workers.interfaces ELSE excluded.interfaces END,
+	cloud_instance_id = CASE WHEN excluded.cloud_instance_id = '' THEN workers.cloud_instance_id
+	                         ELSE excluded.cloud_instance_id END,
+	power_state_at    = CASE WHEN workers.power_state IN ('waking', 'asleep', 'wake_failed')
+	                         THEN excluded.updated_at ELSE workers.power_state_at END,
+	power_reason      = CASE WHEN workers.power_state IN ('waking', 'asleep', 'wake_failed')
+	                         THEN '' ELSE workers.power_reason END,
+	power_state       = CASE WHEN workers.power_state IN ('waking', 'asleep', 'wake_failed')
+	                         THEN 'awake' ELSE workers.power_state END
 RETURNING ` + workerCols
 
 	sqlGetWorker = `SELECT ` + workerCols + ` FROM workers WHERE id = ?`
 
 	// sqlGetWorkerRegistration reads what RegisterWorker compares a
 	// registration with: the instance it last came from and its broker stamp.
-	sqlGetWorkerRegistration = `SELECT instance_id, registration_broker_at FROM workers WHERE id = ?`
+	sqlGetWorkerRegistration = `SELECT instance_id, registration_broker_at, power_state, power_state_at FROM workers WHERE id = ?`
 
 	sqlSetWorkerDisabled = `
 UPDATE workers SET disabled = ?, updated_at = ? WHERE id = ?
@@ -150,10 +170,20 @@ RETURNING ` + workerCols
 
 	sqlGetCapacityGroupExists = `SELECT 1 FROM capacity_groups WHERE id = ?`
 
-	// sqlSetWorkerCapacityGroup writes the membership; a NULL group clears it
-	// and the ephemeral flag with it.
+	// sqlSetWorkerCapacityGroup writes the membership.
 	sqlSetWorkerCapacityGroup = `
 UPDATE workers SET capacity_group_id = ?, ephemeral = ?, updated_at = ? WHERE id = ?
+RETURNING ` + workerCols
+
+	// sqlLeaveWorkerCapacityGroup clears the membership and the ephemeral flag
+	// and returns the worker to awake: power state belongs to the group, and a
+	// worker outside one is not asleep. The state's time moves only when the
+	// state does. Binds: ephemeral (false), the time, updated_at, worker.
+	sqlLeaveWorkerCapacityGroup = `
+UPDATE workers SET capacity_group_id = NULL, ephemeral = ?,
+	power_state_at = CASE WHEN power_state <> 'awake' THEN ? ELSE power_state_at END,
+	power_reason = '', power_state = 'awake', updated_at = ?
+WHERE id = ?
 RETURNING ` + workerCols
 
 	sqlListCapacityGroupMembers = `SELECT ` + workerCols + `
@@ -174,8 +204,8 @@ RETURNING ` + workerCols
 
 func scanWorker(row scanner) (store.Worker, error) {
 	var w store.Worker
-	var farmID, queueID, lastHeartbeat, registrationBroker, heartbeatBroker, capacityGroupID sql.NullString
-	var gpuJSON, tagsJSON, exprJSON, extJSON, status string
+	var farmID, queueID, lastHeartbeat, registrationBroker, heartbeatBroker, capacityGroupID, powerAt sql.NullString
+	var gpuJSON, tagsJSON, exprJSON, extJSON, ifaceJSON, status, powerState string
 	var registeredAt, updatedAt string
 	var disabled, ephemeral dbBool
 
@@ -184,6 +214,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &extJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &disabled, &registrationBroker,
 		&heartbeatBroker, &capacityGroupID, &ephemeral,
+		&powerState, &powerAt, &w.PowerReason, &ifaceJSON, &w.CloudInstanceID,
 	); err != nil {
 		return store.Worker{}, err
 	}
@@ -199,6 +230,8 @@ func scanWorker(row scanner) (store.Worker, error) {
 	w.Disabled = bool(disabled)
 	w.CapacityGroupID = capacityGroupID.String
 	w.Ephemeral = bool(ephemeral)
+	w.PowerState = store.PowerState(powerState)
+	w.PowerStateAt = nullTextToTime(powerAt)
 
 	gpu, err := unmarshalJSON(gpuJSON, store.GPUInfo{})
 	if err != nil {
@@ -223,6 +256,14 @@ func scanWorker(row scanner) (store.Worker, error) {
 		return store.Worker{}, err
 	}
 	w.Extensions = extensions
+
+	interfaces, err := unmarshalJSON(ifaceJSON, []store.NetInterface(nil))
+	if err != nil {
+		return store.Worker{}, err
+	}
+	if len(interfaces) > 0 {
+		w.Interfaces = interfaces
+	}
 
 	return w, nil
 }
@@ -255,15 +296,26 @@ func workerJSONCols(w store.Worker) (gpuJSON, tagsJSON, exprJSON, extJSON string
 	return gpuJSON, tagsJSON, exprJSON, extJSON, nil
 }
 
+// workerBindArgs are the arguments of sqlUpsertWorker, in its column order.
 func workerBindArgs(w store.Worker, now string) ([]any, error) {
 	gpuJSON, tagsJSON, exprJSON, extJSON, err := workerJSONCols(w)
+	if err != nil {
+		return nil, err
+	}
+	// A nil slice marshals as "null"; the column holds a list, '[]' when empty.
+	ifaces := w.Interfaces
+	if ifaces == nil {
+		ifaces = []store.NetInterface{}
+	}
+	ifaceJSON, err := marshalJSON(ifaces)
 	if err != nil {
 		return nil, err
 	}
 	return []any{
 		w.ID, nullString(w.FarmID), nullString(w.QueueID), w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
 		w.OS, w.OSVersion, w.Arch, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, exprJSON, extJSON, string(w.Status),
-		nullTimeToText(w.LastHeartbeatAt), now, now,
+		nullTimeToText(w.LastHeartbeatAt), now, now, w.InstanceID, nullTimeToText(w.RegistrationBrokerAt),
+		ifaceJSON, w.CloudInstanceID,
 	}, nil
 }
 
@@ -273,30 +325,27 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 // order as offlineWorker. A restart's reclaim is ordered against leases the way
 // offlineWorker is: LeaseTask holds the worker row FOR SHARE, so a lease in
 // flight is waited for and its task reclaimed.
-func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
+func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, store.Registration, error) {
 	now := time.Now().UTC()
 	args, err := workerBindArgs(worker, TimeText(now))
 	if err != nil {
-		return store.Worker{}, nil, err
+		return store.Worker{}, store.Registration{}, err
 	}
-	args = append(args, worker.InstanceID, nullTimeToText(worker.RegistrationBrokerAt))
 
 	type result struct {
-		worker    store.Worker
-		reclaimed []store.Task
-		stale     bool
+		worker store.Worker
+		reg    store.Registration
+		stale  bool
 	}
 	r, err := inTxValue(ctx, s, "register worker", func(tx *dbTx) (result, txOutcome, error) {
 		if err := tx.lockAnchors(ctx, workerAnchor(worker.ID)); err != nil {
 			return result{}, txRollback, err
 		}
-		var prior string
-		var brokerAt sql.NullString
-		err := tx.QueryRowContext(ctx, sqlGetWorkerRegistration, worker.ID).Scan(&prior, &brokerAt)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return result{}, txRollback, fmt.Errorf("store: read worker %s: %w", worker.ID, mapErr(err))
+		prior, found, err := readRegistrationPrior(ctx, tx, worker.ID)
+		if err != nil {
+			return result{}, txRollback, err
 		}
-		if err == nil && store.StaleRegistration(store.Worker{RegistrationBrokerAt: nullTextToTime(brokerAt)}, worker) {
+		if found && store.StaleRegistration(prior, worker) {
 			// Nothing is written; the refusal returns the worker as stored.
 			// Committing runs the fence check, so a deposed leader gets
 			// ErrFenced here as it does for any other write.
@@ -313,8 +362,11 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 		if err != nil {
 			return result{}, txRollback, mapErr(err)
 		}
-		if prior != "" && worker.InstanceID != "" && prior != worker.InstanceID {
-			if out.reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
+		if out.worker.PowerState == store.PowerAwake {
+			out.reg.WokeFrom, out.reg.WokeFromAt = store.RegistrationWake(prior.PowerState, prior.PowerStateAt)
+		}
+		if prior.InstanceID != "" && worker.InstanceID != "" && prior.InstanceID != worker.InstanceID {
+			if out.reg.Reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
 				return result{}, txRollback, err
 			}
 		}
@@ -325,7 +377,24 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 			worker.RegistrationBrokerAt.Format(time.RFC3339Nano), r.worker.RegistrationBrokerAt.Format(time.RFC3339Nano),
 			store.ErrStaleRegistration)
 	}
-	return r.worker, r.reclaimed, err
+	return r.worker, r.reg, err
+}
+
+// readRegistrationPrior reads, under the worker's anchor, what RegisterWorker
+// needs of the row it replaces: its instance ID, its registration's broker
+// time and its power state since when. found is false when there is no row.
+func readRegistrationPrior(ctx context.Context, tx *dbTx, workerID string) (prior store.Worker, found bool, err error) {
+	var brokerAt, powerAt sql.NullString
+	var power string
+	err = tx.QueryRowContext(ctx, sqlGetWorkerRegistration, workerID).Scan(&prior.InstanceID, &brokerAt, &power, &powerAt)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return store.Worker{}, false, nil
+	case err != nil:
+		return store.Worker{}, false, fmt.Errorf("store: read worker %s: %w", workerID, mapErr(err))
+	}
+	prior.RegistrationBrokerAt, prior.PowerState, prior.PowerStateAt = nullTextToTime(brokerAt), store.PowerState(power), nullTextToTime(powerAt)
+	return prior, true, nil
 }
 
 // GetWorker implements [store.WorkerStore].
@@ -568,8 +637,13 @@ func (s *Store) SetWorkerCapacityGroup(ctx context.Context, workerID, groupID st
 					workerID, current.CapacityGroupID, store.ErrConflict)
 			}
 		}
-		updated, err := scanWorker(tx.QueryRowContext(ctx, sqlSetWorkerCapacityGroup,
-			nullString(groupID), ephemeral && groupID != "", now, workerID))
+		var row scanner
+		if groupID == "" {
+			row = tx.QueryRowContext(ctx, sqlLeaveWorkerCapacityGroup, false, now, now, workerID)
+		} else {
+			row = tx.QueryRowContext(ctx, sqlSetWorkerCapacityGroup, groupID, ephemeral, now, workerID)
+		}
+		updated, err := scanWorker(row)
 		if err != nil {
 			return store.Worker{}, txRollback, mapErr(err)
 		}
@@ -628,19 +702,34 @@ func (s *Store) deleteEphemeralWorker(
 		if err := tx.lockAnchors(ctx, workerAnchor(id)); err != nil {
 			return result{}, txRollback, err
 		}
-		w, err := scanWorker(tx.QueryRowContext(ctx, query, args...))
-		if errors.Is(err, sql.ErrNoRows) {
-			// Nothing matched. Committing runs the fence check, so a deposed
-			// leader still gets ErrFenced here.
-			return result{}, txCommit, nil
-		}
+		w, deleted, err := deleteEphemeralWorkerTx(ctx, tx, id, now, query, args...)
 		if err != nil {
-			return result{}, txRollback, mapErr(err)
+			return result{}, txRollback, err
 		}
-		if _, err := tx.ExecContext(ctx, sqlRevokeWorkerCredential, TimeText(now.UTC()), id); err != nil {
-			return result{}, txRollback, fmt.Errorf("store: revoke credential of worker %s: %w", id, mapErr(err))
-		}
-		return result{worker: w, deleted: true}, txCommit, nil
+		// Nothing matched is not an error. Committing runs the fence check, so
+		// a deposed leader still gets ErrFenced here.
+		return result{worker: w, deleted: deleted}, txCommit, nil
 	})
 	return r.worker, r.deleted, err
+}
+
+// deleteEphemeralWorkerTx runs query, a DELETE of worker id returning its row,
+// in tx, which holds the worker's anchor, and revokes the worker's credential
+// at now when it deleted the row. deleted is false, with no error, when the
+// DELETE matched nothing. [Store.FinishRetirement] shares it with the deletes
+// above.
+func deleteEphemeralWorkerTx(
+	ctx context.Context, tx *dbTx, id string, now time.Time, query string, args ...any,
+) (w store.Worker, deleted bool, err error) {
+	w, err = scanWorker(tx.QueryRowContext(ctx, query, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.Worker{}, false, nil
+	}
+	if err != nil {
+		return store.Worker{}, false, mapErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, sqlRevokeWorkerCredential, TimeText(now.UTC()), id); err != nil {
+		return store.Worker{}, false, fmt.Errorf("store: revoke credential of worker %s: %w", id, mapErr(err))
+	}
+	return w, true, nil
 }

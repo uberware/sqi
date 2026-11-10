@@ -194,7 +194,7 @@ var concatAllowed = []string{
 	"qmarks(len(deps))",       // finalize.go: scan.go qmarks, only "?" and ","
 	"qmarks(len(taskIDs))",    // task_attempt.go LatestAttemptProgress: scan.go qmarks output, only ? marks and ","
 	"qmarks(len(jobIDs))",     // task_attempt.go RunningProgressByJobs: scan.go qmarks output, only ? marks and ","
-	"placeholders",            // job.go expiredJobsQuery, task.go RetryTasks and reclaimStaleBatch, attemptclose.go closeTasksAttemptsTx: scan.go qmarks output, only ? marks and ","
+	"placeholders",            // job.go expiredJobsQuery, task.go RetryTasks and reclaimStaleBatch, attemptclose.go closeTasksAttemptsTx, capacitypower.go transitions: scan.go qmarks output, only ? marks and ","
 	"string(placeholders)",    // task.go ListTasks: a byte slice that only receives ',' and '?'
 	"inSuffix",                // task.go RetryTasks: "" or a literal around a "?" list
 	"query",                   // job.go DeleteTerminalJobsBefore: expiredJobsQuery output, two literals around a "?" list

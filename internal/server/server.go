@@ -202,6 +202,12 @@ type Config struct {
 	// Default true.
 	SeedDefaults bool
 
+	// Capacity mirrors config.CapacityConfig: the script capacity providers
+	// and the wake-on-LAN sender. The scheduler runs the providers and sends
+	// the packets ([schedulerConfig]); the API learns only the providers'
+	// names ([Server.apiDeps]).
+	Capacity config.CapacityConfig
+
 	// HA mirrors config.HAConfig. With HA.Enabled the server joins a
 	// high-availability group: it starts as a warm standby and leads only
 	// while it holds the leader lease (see ha.go). The zero value, as without
@@ -261,6 +267,22 @@ type Server struct {
 
 	// cancelSched stops the scheduler's Run; set once it is started.
 	cancelSched context.CancelFunc
+
+	// schedDone closes when the scheduler's Run returns; nil until it runs.
+	schedDone chan struct{}
+
+	// schedStopAt is when the scheduler was first told to stop (a hand-over,
+	// a demotion or the shutdown itself); zero until then. The wait for it
+	// to return is measured from here.
+	schedStopAt time.Time
+
+	// schedStopCeiling, when positive, replaces [scheduler.StopCeiling];
+	// shutdownTimeout, when positive, replaces [ShutdownTimeout]; and
+	// abandonCalls, when set, replaces the scheduler's AbandonCapacityCalls.
+	// Test seams; production leaves them unset.
+	schedStopCeiling time.Duration
+	shutdownTimeout  time.Duration
+	abandonCalls     func()
 
 	// wrapBroker, when set, wraps the broker newBroker built before it is
 	// started. It is a test seam, set only by tests that observe start's
@@ -732,14 +754,9 @@ func (s *Server) start(ctx context.Context) error {
 	s.sched = scheduler.New(s.schedulerConfigFor(busClient), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
 	// The scheduler runs on its own child context so a failed start can stop
 	// it (see abortStart) without racing Run's own setup of Scheduler.Stop.
-	schedCtx, cancelSched := context.WithCancel(ctx)
-	s.cancelSched = cancelSched
-	go func() {
-		if err := s.sched.Run(schedCtx); err != nil && !errors.Is(err, context.Canceled) {
-			s.logger.ErrorContext(ctx, "scheduler: exited with error", slog.Any("error", err))
-		}
-	}()
-	s.logger.InfoContext(ctx, "scheduler: started")
+	s.launchScheduler(ctx, func(err error) {
+		s.logger.ErrorContext(ctx, "scheduler: exited with error", slog.Any("error", err))
+	})
 
 	// ── HTTP server (chi router) ──────────────────────────────────────────
 	// Chi router with standard middleware mounts all routes. The REST
@@ -806,6 +823,9 @@ func (s *Server) apiDeps() api.Deps {
 		SessionTTL:    s.cfg.AuthSessionTTL,
 		CookieName:    s.cfg.AuthCookieName,
 		CookieSecure:  s.cfg.AuthCookieSecure,
+		// Names only: a provider's command and environment stay with the
+		// scheduler.
+		CapacityProviderNames: capacityProviderNames(s.cfg.Capacity),
 	}
 	natsAuthDeps(s.cfg, &deps)
 	// The scheduler is the capacity-group status source. Assign it only when it
@@ -1203,9 +1223,16 @@ func (s *Server) abortStart() {
 }
 
 // shutdown stops all running components in reverse dependency order within
-// a [ShutdownTimeout] deadline.
+// a [ShutdownTimeout] deadline, the wait for the scheduler included. The
+// bus drain, the checkpoint wait and the store close get at least
+// [shutdownReserve] whatever the steps before them took.
 func (s *Server) shutdown() error {
-	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
+	budget := ShutdownTimeout
+	if s.shutdownTimeout > 0 {
+		budget = s.shutdownTimeout
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
 	var errs []error
@@ -1234,12 +1261,15 @@ func (s *Server) shutdown() error {
 	}
 
 	// ── Scheduler ─────────────────────────────────────────────────────────
-	// Signal the scheduler to stop. Its goroutines exit when their context is
-	// canceled; the bus client drain below ensures any in-flight NATS messages
-	// are processed before the connection closes.
-	if s.sched != nil {
-		s.sched.Stop()
-	}
+	// Stop the scheduler and wait for it to return before the bus and the
+	// store close: its shutdown drains capacity provider calls, which use
+	// both. The wait shares the budget and is capped at
+	// [scheduler.StopCeiling]. The bus client drain below then processes any
+	// in-flight NATS messages before the connection closes.
+	timedOut := ctx.Err() != nil
+	s.awaitScheduler(start.Add(budget))
+	ctx, cancelRest := context.WithTimeout(context.Background(), max(time.Until(start.Add(budget)), shutdownReserve))
+	defer cancelRest()
 
 	// ── Message bus ───────────────────────────────────────────────────────
 	// Drain the typed client first — stops push consumers,
@@ -1270,8 +1300,8 @@ func (s *Server) shutdown() error {
 		}
 	}
 
-	if ctx.Err() != nil {
-		errs = append(errs, fmt.Errorf("graceful shutdown timed out after %s", ShutdownTimeout))
+	if timedOut || ctx.Err() != nil {
+		errs = append(errs, fmt.Errorf("graceful shutdown timed out after %s", budget))
 	}
 
 	if len(errs) == 0 {
@@ -1280,6 +1310,91 @@ func (s *Server) shutdown() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// launchScheduler runs the scheduler on a child context of ctx, which
+// [Server.cancelSched] cancels and [Server.schedDone] reports the end of, and
+// passes onErr any error Run returns other than a cancellation.
+func (s *Server) launchScheduler(ctx context.Context, onErr func(error)) {
+	schedCtx, cancelSched := context.WithCancel(ctx)
+	s.cancelSched = cancelSched
+	done := make(chan struct{})
+	s.schedDone = done
+	go func() {
+		defer close(done)
+		if err := s.sched.Run(schedCtx); err != nil && !errors.Is(err, context.Canceled) {
+			onErr(err)
+		}
+	}()
+	s.logger.InfoContext(ctx, "scheduler: started")
+}
+
+// shutdownReserve is the least time the bus drain, the checkpoint wait and
+// the store close get, even when the steps before them used the budget up.
+const shutdownReserve = 5 * time.Second
+
+// stopCeiling is the longest shutdown waits for the scheduler's Run to
+// return, counted from when the scheduler was first told to stop, so an HA
+// hand-over's wait counts against it: [scheduler.StopCeiling], inside which
+// the scheduler caps its own drains, or the test override.
+func (s *Server) stopCeiling() time.Duration {
+	if s.schedStopCeiling > 0 {
+		return s.schedStopCeiling
+	}
+	return scheduler.StopCeiling
+}
+
+// awaitScheduler stops the scheduler and waits for its Run to return, until
+// budgetEnd or [Server.stopCeiling] after the scheduler was first told to
+// stop, whichever comes first. Once Run has returned no capacity provider
+// call writes to the store again (the scheduler closes their write gate on
+// its way out). A scheduler still running at the deadline is logged once,
+// its provider calls are abandoned so none writes to the store about to
+// close, and shutdown goes on.
+func (s *Server) awaitScheduler(budgetEnd time.Time) {
+	if s.sched != nil {
+		s.sched.Stop()
+	}
+	s.markSchedulerStopping()
+	deadline := s.schedStopAt.Add(s.stopCeiling())
+	if budgetEnd.Before(deadline) {
+		deadline = budgetEnd
+	}
+	var stopped bool
+	func() {
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		defer cancel()
+		stopped = s.stopScheduler(ctx)
+	}()
+	if stopped {
+		return
+	}
+	s.logger.WarnContext(context.Background(),
+		"scheduler: still stopping at the end of its shutdown bound; abandoning its capacity provider calls and closing the bus and the store without it",
+		slog.Duration("waited", time.Since(s.schedStopAt)), slog.Duration("limit", max(deadline.Sub(s.schedStopAt), 0)))
+	s.abandonCapacityCalls()
+}
+
+// markSchedulerStopping cancels the scheduler's Run and records when it was
+// first told to stop.
+func (s *Server) markSchedulerStopping() {
+	if s.cancelSched != nil {
+		s.cancelSched()
+	}
+	if s.schedStopAt.IsZero() {
+		s.schedStopAt = time.Now()
+	}
+}
+
+// abandonCapacityCalls closes the scheduler's capacity write gate, for a
+// scheduler that did not return in time.
+func (s *Server) abandonCapacityCalls() {
+	switch {
+	case s.abandonCalls != nil:
+		s.abandonCalls()
+	case s.sched != nil:
+		s.sched.AbandonCapacityCalls()
+	}
 }
 
 // waitCheckpoint waits for the SQLite checkpointer's final TRUNCATE, if there

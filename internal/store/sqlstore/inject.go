@@ -61,3 +61,27 @@ func (s *Store) InjectClaim(ctx context.Context, claim store.UsageClaim) (store.
 	}
 	return claim, nil
 }
+
+// InjectWorkerPowerState sets worker workerID's power state, its time and its
+// reason as given. Same contract as [Store.InjectTaskAttempt]: it stands in for
+// the power-transition writers where a test needs a state, and is not part of
+// store.Store. It returns [store.ErrNotFound] for an unknown worker.
+func (s *Store) InjectWorkerPowerState(
+	ctx context.Context, workerID string, state store.PowerState, at time.Time, reason string,
+) error {
+	res, err := s.exec(ctx, "inject worker power state", sqlInjectWorkerPowerState,
+		string(state), TimeText(at), reason, workerID)
+	if err != nil {
+		return mapErr(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		if err != nil {
+			return mapErr(err)
+		}
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+const sqlInjectWorkerPowerState = `
+UPDATE workers SET power_state = ?, power_state_at = ?, power_reason = ? WHERE id = ?`

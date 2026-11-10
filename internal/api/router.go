@@ -256,6 +256,14 @@ type Deps struct {
 	// /api/v1/capacity-groups endpoints. Nil-tolerant: with none, every
 	// group's status is null. Production supplies the scheduler.
 	CapacityStatus CapacityStatusReader
+
+	// CapacityProviderNames are the script capacity providers the server's
+	// configuration defines (capacity.providers), by bare name: "aws" here is
+	// what a group names as "script:aws". Only the names reach the API; a
+	// provider's command, environment and timeout never do. A group may name
+	// only a configured script provider, and GET /capacity-providers lists
+	// them. Nil means none.
+	CapacityProviderNames []string
 }
 
 // resolveCORSOrigins returns the CORS allow-list to configure, dropping the
@@ -475,7 +483,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
-	capacityGroups := newCapacityGroupHandler(deps.Store, deps.CapacityStatus, deps.NATSAuthEnabled, logger)
+	capacityGroups := newCapacityGroupHandler(deps.Store, deps.CapacityStatus, deps.NATSAuthEnabled, deps.CapacityProviderNames, logger)
 	products := productHandlerFor(cfg, deps, logger)
 	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger,
 		cfg.ExprLimits, cfg.ExprSubmissionDeadline)
@@ -731,8 +739,9 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Delete("/usage-pools/{id}", usagePools.deleteUsagePool)
 			})
 
-			// infra.read / infra.manage (capacity groups); minting a
-			// capacity group token is mounted only when auth.enabled
+			// infra.read / infra.manage (capacity groups and the providers
+			// they may name); minting a capacity group token is mounted only
+			// when auth.enabled
 			capacityGroups.mount(rest, az, cfg.AuthEnabled)
 
 			// products.read / products.manage

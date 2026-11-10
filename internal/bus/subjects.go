@@ -15,6 +15,7 @@
 //	worker.register.<worker>    — worker → server: capability advertisement
 //	worker.deregister.<worker>  — worker → server: graceful departure notification
 //	task.cancel.<worker>        — server → worker: interrupt a running task
+//	worker.control.<worker>     — server → worker: request/reply power command
 //
 // Every worker → server subject carries the publishing worker's ID directly
 // after its class prefix, and so does the one server → worker subject,
@@ -70,6 +71,15 @@ const (
 	// Full subject: SubjectWorkerDeregisterPrefix + "." + workerID.
 	SubjectWorkerDeregisterPrefix = "worker.deregister"
 
+	// SubjectWorkerControlPrefix is the prefix of the subject the server sends
+	// a worker a power command on. Core NATS request/reply: the worker
+	// subscribes to its own subject before it asks for work and answers each
+	// request. No stream covers it (SQI_WORKER lists its three worker prefixes
+	// by name, not "worker.>"), because a stream would answer the request with
+	// a JetStream ack in place of the worker's reply.
+	// Full subject: SubjectWorkerControlPrefix + "." + workerID.
+	SubjectWorkerControlPrefix = "worker.control"
+
 	// SubjectWorkLeasePrefix is the prefix for worker work-lease requests.
 	// Full subject: SubjectWorkLeasePrefix + "." + workerID + "." + queueID.
 	// Core NATS request/reply — workers ask for work; the server replies with
@@ -121,6 +131,12 @@ func WorkerHeartbeatSubject(workerID string) string {
 // publishes its graceful-departure notification to.
 func WorkerDeregisterSubject(workerID string) string {
 	return SubjectWorkerDeregisterPrefix + "." + workerID
+}
+
+// WorkerControlSubject returns the full NATS subject on which the given worker
+// receives power commands.
+func WorkerControlSubject(workerID string) string {
+	return SubjectWorkerControlPrefix + "." + workerID
 }
 
 // WorkLeaseSubject returns the full NATS subject the given worker requests

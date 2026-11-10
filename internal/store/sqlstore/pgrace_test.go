@@ -1090,3 +1090,162 @@ func TestPGRace_SubmissionDoesNotBlockLeasesOnItsQueue(t *testing.T) {
 			"its queue or farm anchor conflicts with the submission's foreign-key locks")
 	}
 }
+
+// joinRaceGroup creates a capacity group in farmID and makes workerID a named
+// member of it.
+func joinRaceGroup(t *testing.T, st store.Store, farmID, workerID string) store.CapacityGroup {
+	t.Helper()
+	g, err := st.CreateCapacityGroup(t.Context(), store.CapacityGroup{
+		ID: "cg-" + uuid.NewString()[:8], FarmID: farmID, Name: "g-" + uuid.NewString()[:8],
+		Kind: store.CapacityGroupNamed, Provider: store.CapacityProviderWakeOnLAN, Enabled: true,
+		MaxMachines: 1, MaxStepUp: 1, IdleTimeout: time.Minute, BootTimeout: time.Minute,
+		RetireAction: store.CapacityRetireSleep,
+	})
+	if err != nil {
+		t.Fatalf("CreateCapacityGroup: %v", err)
+	}
+	if _, err := st.SetWorkerCapacityGroup(t.Context(), workerID, g.ID, false); err != nil {
+		t.Fatalf("SetWorkerCapacityGroup: %v", err)
+	}
+	return g
+}
+
+// TestPGRace_LeaseVersusBeginRetirement races a lease to an idle group member
+// against the capacity sweep beginning its retirement, in both orders. The
+// worker row orders the two (the lease holds it shared, BeginRetirement
+// exclusive, and each decides under it), so exactly one wins: a lease that
+// holds the row first lands and the retirement, waiting for it, sees the task
+// and refuses; a retirement that holds it first lands and the lease, waiting
+// for it, sees the member retiring and is lost. Neither order may leave a
+// retiring member holding a task. TestSQLiteRace_LeaseVersusBeginRetirement
+// runs the same race on SQLite.
+func TestPGRace_LeaseVersusBeginRetirement(t *testing.T) {
+	leaseVersusBeginRetirement(t, func(t *testing.T) (store.Store, *pause) { return pgRace(t) })
+}
+
+// TestSQLiteRace_LeaseVersusBeginRetirement is
+// TestPGRace_LeaseVersusBeginRetirement on SQLite, where the single write
+// connection, not a row lock, makes the second operation wait.
+func TestSQLiteRace_LeaseVersusBeginRetirement(t *testing.T) {
+	leaseVersusBeginRetirement(t, func(t *testing.T) (store.Store, *pause) { return sqliteRace(t) })
+}
+
+// leaseVersusBeginRetirement runs the lease-versus-retirement race in both
+// orders on the stores open returns.
+func leaseVersusBeginRetirement(t *testing.T, open func(t *testing.T) (store.Store, *pause)) {
+	t.Run("lease first", func(t *testing.T) {
+		st, p := open(t)
+		w := seedWorld(t, st, 1, "w1")
+		g := joinRaceGroup(t, st, w.FarmID, "w1")
+		p.atStatement(sqlstore.SQLNextAttemptNumber) // the task is moved, the worker row held, nothing committed
+		var (
+			lease   store.LeaseResult
+			retired bool
+		)
+		lerr, rerr, waited := interleave(t, p,
+			func() (err error) { lease, err = st.LeaseTask(t.Context(), leaseReq(w.Tasks[0], "w1")); return },
+			func() (err error) {
+				_, retired, err = st.BeginRetirement(t.Context(), g.ID, "w1", time.Now().UTC())
+				return
+			})
+		assertPausedAt(t, p, sqlstore.SQLNextAttemptNumber)
+		if lerr != nil || rerr != nil {
+			t.Fatalf("lease err %v, retirement err %v", lerr, rerr)
+		}
+		if !waited {
+			t.Error("the retirement did not wait for the lease's hold on the worker")
+		}
+		if lease.Outcome != store.LeaseLeased || retired {
+			t.Fatalf("lease %s, retirement began %v; want the lease alone to win", lease.Outcome, retired)
+		}
+		assertOneWinner(t, st, w.Tasks[0], "w1")
+	})
+	t.Run("retirement first", func(t *testing.T) {
+		st, p := open(t)
+		w := seedWorld(t, st, 1, "w1")
+		g := joinRaceGroup(t, st, w.FarmID, "w1")
+		p.atStatement(sqlstore.SQLBeginRetirement) // the worker row held, its state not yet written
+		var (
+			lease   store.LeaseResult
+			retired bool
+		)
+		rerr, lerr, waited := interleave(t, p,
+			func() (err error) {
+				_, retired, err = st.BeginRetirement(t.Context(), g.ID, "w1", time.Now().UTC())
+				return
+			},
+			func() (err error) { lease, err = st.LeaseTask(t.Context(), leaseReq(w.Tasks[0], "w1")); return })
+		assertPausedAt(t, p, sqlstore.SQLBeginRetirement)
+		if lerr != nil || rerr != nil {
+			t.Fatalf("lease err %v, retirement err %v", lerr, rerr)
+		}
+		if !waited {
+			t.Error("the lease did not wait for the retirement's hold on the worker")
+		}
+		if !retired || lease.Outcome != store.LeaseLost {
+			t.Fatalf("retirement began %v, lease %s; want the retirement alone to win", retired, lease.Outcome)
+		}
+		assertOneWinner(t, st, w.Tasks[0], "w1")
+	})
+}
+
+// assertOneWinner fails unless exactly one of a lease and a retirement of
+// workerID took effect: the task assigned to an awake worker, or the task ready
+// and the worker retiring.
+func assertOneWinner(t *testing.T, st store.Store, taskID, workerID string) {
+	t.Helper()
+	task := mustTask(t, st, taskID)
+	wk, err := st.GetWorker(t.Context(), workerID)
+	if err != nil {
+		t.Fatalf("GetWorker: %v", err)
+	}
+	leased := task.Status == store.TaskStatusAssigned && task.AssignedWorkerID == workerID
+	retiring := wk.PowerState == store.PowerRetiring
+	switch {
+	case leased && retiring:
+		t.Fatalf("task %s is assigned to %s, which is retiring: both writes landed", taskID, workerID)
+	case leased && wk.PowerState != store.PowerAwake:
+		t.Fatalf("task %s is assigned to %s, which is %s", taskID, workerID, wk.PowerState)
+	case !leased && !retiring:
+		t.Fatalf("task %s is %s and %s is %s: neither write landed", taskID, task.Status, workerID, wk.PowerState)
+	case !leased && task.Status != store.TaskStatusReady:
+		t.Fatalf("task %s is %s, want ready after the lost lease", taskID, task.Status)
+	}
+}
+
+// TestPGRace_PutCapacityGroupStateForAGroupDeletedMeanwhile: a group deleted
+// between the state write's check that it exists and the write itself makes
+// the foreign key refuse the write, which reads as the group not existing,
+// the answer the check would have given a moment later.
+func TestPGRace_PutCapacityGroupStateForAGroupDeletedMeanwhile(t *testing.T) {
+	st, p := pgRace(t)
+	farmID, _ := seedFarmQueueRace(t, st)
+	g, err := st.CreateCapacityGroup(t.Context(), store.CapacityGroup{
+		ID: "cg-" + uuid.NewString()[:8], FarmID: farmID, Name: "g-" + uuid.NewString()[:8],
+		Kind: store.CapacityGroupNamed, Provider: store.CapacityProviderWakeOnLAN, Enabled: true,
+		MaxMachines: 1, MaxStepUp: 1, IdleTimeout: time.Minute, BootTimeout: time.Minute,
+		RetireAction: store.CapacityRetireSleep,
+	})
+	if err != nil {
+		t.Fatalf("CreateCapacityGroup: %v", err)
+	}
+	p.atStatement(sqlstore.SQLPutCapacityGroupState) // the group was found, nothing written yet
+
+	errc := make(chan error, 1)
+	go func() {
+		errc <- st.PutCapacityGroupState(t.Context(), store.CapacityGroupState{GroupID: g.ID, Requested: 2, UpdatedAt: time.Now().UTC()})
+	}()
+	select {
+	case <-p.hit:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the state write never reached its upsert")
+	}
+	if err := st.DeleteCapacityGroup(t.Context(), g.ID); err != nil {
+		t.Fatalf("DeleteCapacityGroup: %v", err)
+	}
+	p.resume()
+	if err := <-errc; !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("PutCapacityGroupState = %v, want ErrNotFound", err)
+	}
+	assertPausedAt(t, p, sqlstore.SQLPutCapacityGroupState)
+}

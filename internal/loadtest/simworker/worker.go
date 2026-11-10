@@ -4,10 +4,13 @@ package simworker
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +29,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/logstreamer"
 	"github.com/uberware/sqi/internal/worker/natsclient"
 	"github.com/uberware/sqi/internal/worker/openjd"
+	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/registration"
 	"github.com/uberware/sqi/internal/worker/status"
 )
@@ -401,11 +405,28 @@ func (w *Worker) registrar(nc *nats.Conn) (*registration.Registrar, error) {
 	}
 	settings := workerconfig.WorkerSettings{FarmID: s.FarmID, QueueIDs: g.Queues, Name: s.Hostname}
 	caps := capabilities.Capabilities{OS: osName, Arch: simArch, CPUCount: g.CPU, RAMMb: g.RAMMb, Tags: g.Tags}
-	reg, err := registration.New(nc, s.ID, settings, fmtres.DefaultExprLimits(), caps, w.logger, registration.WithHost(s.Hostname, ""))
+	reg, err := registration.New(nc, s.ID, settings, fmtres.DefaultExprLimits(), caps, w.logger, registration.WithHost(s.Hostname, ""), registration.WithInterfaces(simInterfaces(s.ID)))
 	if err != nil {
 		return nil, fmt.Errorf("simworker: %w", err)
 	}
 	return reg, nil
+}
+
+// simInterfaces is the network interface a simulated worker reports: one NIC
+// with a MAC and an address, both derived from id so a run is repeatable. The
+// server stores it and decodes it on every worker read, so reporting one keeps
+// that cost in the measurement.
+func simInterfaces(id string) []protocol.NetInterface {
+	h := fnv.New32a()
+	h.Write([]byte(id))
+	b := binary.BigEndian.AppendUint32(nil, h.Sum32())
+	// 02: a locally administered unicast address, never a real vendor's.
+	mac := net.HardwareAddr{0x02, 0x51, b[0], b[1], b[2], b[3]}
+	return []protocol.NetInterface{{
+		Name:  "eth0",
+		MAC:   mac.String(),
+		Addrs: []string{fmt.Sprintf("10.%d.%d.%d/8", b[1], b[2], b[3]|1)},
+	}}
 }
 
 // Register publishes this process's registration through the real registrar.

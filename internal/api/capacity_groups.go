@@ -17,6 +17,7 @@ package api
 //	GET    /api/v1/capacity-groups/{id}/tokens                  — list the group's join tokens
 //	POST   /api/v1/capacity-groups/{id}/tokens                  — mint a join token (sized groups)
 //	DELETE /api/v1/capacity-groups/{id}/tokens/{tokenID}        — revoke a join token
+//	GET    /api/v1/capacity-providers                           — list the providers a group may name
 //
 // Reads need infra.read; everything else, token listing included, needs
 // infra.manage.
@@ -28,6 +29,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -78,6 +80,11 @@ const errCapacityGroupNameTaken = "a capacity group with that name already exist
 // farm whose broker does not authenticate workers.
 const errGroupTokensNeedBrokerAuth = "group tokens need nats.auth.enabled; workers on an auth-off farm join with worker.capacity_group" //nolint:gosec // G101: a static response string, not a credential
 
+// errScriptProviderNotConfigured is the 400 detail format for a group naming a
+// script provider the server's configuration does not define. Its argument is
+// the provider as the request named it.
+const errScriptProviderNotConfigured = "provider %q is not configured: add it under capacity.providers in the server's configuration file"
+
 // CapacityStatusReader supplies a group's last evaluation. The scheduler
 // satisfies it. The returned status shares its slices with the evaluation that
 // produced it: treat them as read-only.
@@ -96,10 +103,23 @@ type capacityGroupHandler struct {
 	// natsAuth is whether the broker requires per-worker credentials, which a
 	// group token needs.
 	natsAuth bool
+
+	// scripts are the configured script provider names, without the
+	// "script:" prefix, sorted.
+	scripts []string
 }
 
-func newCapacityGroupHandler(st store.Store, status CapacityStatusReader, natsAuth bool, logger *slog.Logger) *capacityGroupHandler {
-	return &capacityGroupHandler{store: st, status: status, natsAuth: natsAuth, logger: logger}
+// newCapacityGroupHandler builds the handler. scripts are the script providers
+// the server's configuration defines, by bare name ("aws" for a group's
+// "script:aws"), in any order.
+func newCapacityGroupHandler(
+	st store.Store, status CapacityStatusReader, natsAuth bool, scripts []string, logger *slog.Logger,
+) *capacityGroupHandler {
+	sorted := slices.Clone(scripts)
+	slices.Sort(sorted)
+	return &capacityGroupHandler{
+		store: st, status: status, natsAuth: natsAuth, scripts: slices.Compact(sorted), logger: logger,
+	}
 }
 
 // mount registers the routes on rest behind their permission gates. Minting a
@@ -112,6 +132,7 @@ func (h *capacityGroupHandler) mount(rest chi.Router, az *authz, authEnabled boo
 		g.Get("/capacity-groups", h.list)
 		g.Get("/capacity-groups/{id}", h.get)
 		g.Get("/capacity-groups/{id}/members", h.listMembers)
+		g.Get("/capacity-providers", h.listProviders)
 	})
 	rest.Group(func(g chi.Router) {
 		g.Use(az.require(policy.InfraManage))
@@ -149,15 +170,54 @@ type capacityGroupInput struct {
 	MachineProfile         store.MachineProfile    `json:"machine_profile"`
 }
 
-// capacityStatusResponse is a group's last evaluation.
+// capacityStatusResponse is a group's last evaluation. RequestedMachines,
+// Degraded and LastAction are null when they do not apply: RequestedMachines
+// outside a sized script group, Degraded while the group is not degraded,
+// LastAction before its first provider action.
 type capacityStatusResponse struct {
-	DemandCores      int                        `json:"demand_cores"`
-	DesiredMachines  int                        `json:"desired_machines"`
-	OnlineMembers    int                        `json:"online_members"`
-	OfflineMembers   int                        `json:"offline_members"`
-	RetireCandidates []string                   `json:"retire_candidates"`
-	Mismatches       []capacityMismatchResponse `json:"mismatches"`
-	EvaluatedAt      time.Time                  `json:"evaluated_at"`
+	DemandCores       int                        `json:"demand_cores"`
+	DesiredMachines   int                        `json:"desired_machines"`
+	OnlineMembers     int                        `json:"online_members"`
+	OfflineMembers    int                        `json:"offline_members"`
+	Waking            int                        `json:"waking"`
+	Retiring          int                        `json:"retiring"`
+	Asleep            int                        `json:"asleep"`
+	WakeFailed        int                        `json:"wake_failed"`
+	WakeCandidates    []string                   `json:"wake_candidates"`
+	RetireCandidates  []string                   `json:"retire_candidates"`
+	Mismatches        []capacityMismatchResponse `json:"mismatches"`
+	RequestedMachines *int                       `json:"requested_machines"`
+	Degraded          *capacityDegradedResponse  `json:"degraded"`
+	LastAction        *capacityActionResponse    `json:"last_action"`
+	EvaluatedAt       time.Time                  `json:"evaluated_at"`
+}
+
+// capacityDegradedResponse is why a group stopped growing, and until when.
+type capacityDegradedResponse struct {
+	Reason       string    `json:"reason"`
+	Since        time.Time `json:"since"`
+	BackoffUntil time.Time `json:"backoff_until"`
+}
+
+// capacityActionResponse is a group's latest provider action and its result.
+type capacityActionResponse struct {
+	Action  string    `json:"action"`
+	Result  string    `json:"result"`
+	Message string    `json:"message"`
+	At      time.Time `json:"at"`
+}
+
+// capacityProviderResponse is one provider a group may name, with the group
+// kinds it serves. It carries the name only: a script provider's command,
+// environment and timeout stay in the server's configuration.
+type capacityProviderResponse struct {
+	Name  string                    `json:"name"`
+	Kinds []store.CapacityGroupKind `json:"kinds"`
+}
+
+// capacityProvidersResponse is the body of GET /capacity-providers.
+type capacityProvidersResponse struct {
+	Providers []capacityProviderResponse `json:"providers"`
 }
 
 type capacityMismatchResponse struct {
@@ -222,21 +282,39 @@ type capacityTokenRequest struct {
 
 // ── Conversions ───────────────────────────────────────────────────────────────
 
-func toCapacityStatusResponse(s capacity.Status) *capacityStatusResponse {
+// toCapacityStatusResponse converts g's evaluation s.
+func toCapacityStatusResponse(g store.CapacityGroup, s capacity.Status) *capacityStatusResponse {
 	r := &capacityStatusResponse{
 		DemandCores:      s.DemandCores,
 		DesiredMachines:  s.DesiredMachines,
 		OnlineMembers:    s.OnlineMembers,
 		OfflineMembers:   s.OfflineMembers,
+		Waking:           s.Waking,
+		Retiring:         s.Retiring,
+		Asleep:           s.Asleep,
+		WakeFailed:       s.WakeFailed,
+		WakeCandidates:   make([]string, len(s.WakeCandidates)),
 		RetireCandidates: make([]string, len(s.RetireCandidates)),
 		Mismatches:       make([]capacityMismatchResponse, len(s.Mismatches)),
 		EvaluatedAt:      s.EvaluatedAt,
 	}
 	// Copies, not aliases: the evaluation's slices are shared with the
 	// scheduler.
+	copy(r.WakeCandidates, s.WakeCandidates)
 	copy(r.RetireCandidates, s.RetireCandidates)
 	for i, m := range s.Mismatches {
 		r.Mismatches[i] = capacityMismatchResponse{WorkerID: m.WorkerID, Reason: m.Reason}
+	}
+	// Only a sized script group asks its provider for a size.
+	if _, isScript := g.Provider.ScriptName(); isScript && g.Kind == store.CapacityGroupSized {
+		requested := s.Requested
+		r.RequestedMachines = &requested
+	}
+	if d := s.Degraded; d != nil {
+		r.Degraded = &capacityDegradedResponse{Reason: d.Reason, Since: d.Since, BackoffUntil: d.BackoffUntil}
+	}
+	if a := s.LastAction; a != nil {
+		r.LastAction = &capacityActionResponse{Action: a.Action, Result: a.Result, Message: a.Message, At: a.At}
 	}
 	return r
 }
@@ -245,7 +323,7 @@ func (h *capacityGroupHandler) toResponse(g store.CapacityGroup) capacityGroupRe
 	var status *capacityStatusResponse
 	if h.status != nil {
 		if s, ok := h.status.CapacityStatus(g.ID); ok {
-			status = toCapacityStatusResponse(s)
+			status = toCapacityStatusResponse(g, s)
 		}
 	}
 	queues := g.QueueIDs
@@ -294,9 +372,13 @@ func decodeCapacityGroupInput(r *http.Request) (in capacityGroupInput, problem s
 }
 
 // groupFromInput applies the defaults and the unit conversions, validates the
-// result with [validateGroup] and returns the group, without its identity.
-// The second result is a 400 detail, or "".
-func groupFromInput(in capacityGroupInput) (g store.CapacityGroup, problem string) {
+// result with [validateGroup] against scripts, the configured script
+// providers, and stored, the provider the group already has ("" on create),
+// and returns the group, without its identity. The second result is a 400
+// detail, or "".
+func groupFromInput(
+	in capacityGroupInput, scripts []string, stored store.CapacityProvider,
+) (g store.CapacityGroup, problem string) {
 	g = store.CapacityGroup{
 		FarmID: in.FarmID, Name: in.Name, Kind: in.Kind, Provider: in.Provider,
 		Enabled: true, QueueIDs: in.QueueIDs,
@@ -334,19 +416,26 @@ func groupFromInput(in capacityGroupInput) (g store.CapacityGroup, problem strin
 	if g.BootTimeout, problem = secondsToDuration("boot_timeout_seconds", boot); problem != "" {
 		return g, problem
 	}
-	return g, validateGroup(g)
+	return g, validateGroup(g, scripts, stored)
 }
 
 // validateGroup checks g against the shared rules and against the providers
-// the API accepts. The result is a 400 detail, or "".
-func validateGroup(g store.CapacityGroup) string {
+// the API accepts: wake_on_lan for a named group only, since it wakes
+// machines it already knows, and a script provider only when scripts, the
+// configured ones (sorted, by bare name), hold it. A group whose script
+// provider was removed from the configuration stays stored, and the
+// scheduler reports it unconfigured, so an update that keeps stored, the
+// provider the group already has, is not refused for it: a PUT re-sends the
+// whole group, and disabling such a group must work. Switching to an
+// unconfigured provider is refused. The result is a 400 detail, or "".
+func validateGroup(g store.CapacityGroup, scripts []string, stored store.CapacityProvider) string {
 	if err := g.Validate(); err != nil {
 		return err.Error()
 	}
-	// The record and its validation admit every provider; the API accepts
-	// only the external one.
-	if g.Provider != store.CapacityProviderExternal {
-		return fmt.Sprintf("provider %q is not available yet", g.Provider)
+	if name, ok := g.Provider.ScriptName(); ok && g.Provider != stored {
+		if _, found := slices.BinarySearch(scripts, name); !found {
+			return fmt.Sprintf(errScriptProviderNotConfigured, g.Provider)
+		}
 	}
 	return ""
 }
@@ -384,6 +473,23 @@ func (h *capacityGroupHandler) list(w http.ResponseWriter, r *http.Request) {
 	resp := make([]capacityGroupResponse, len(groups))
 	for i, g := range groups {
 		resp[i] = h.toResponse(g)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ── GET /capacity-providers ───────────────────────────────────────────────────
+
+// listProviders returns the providers a group may name: the built-in ones,
+// then each configured script provider by name. Nothing of a script
+// provider's configuration beyond its name is returned.
+func (h *capacityGroupHandler) listProviders(w http.ResponseWriter, _ *http.Request) {
+	both := []store.CapacityGroupKind{store.CapacityGroupNamed, store.CapacityGroupSized}
+	resp := capacityProvidersResponse{Providers: []capacityProviderResponse{
+		{Name: string(store.CapacityProviderExternal), Kinds: both},
+		{Name: string(store.CapacityProviderWakeOnLAN), Kinds: []store.CapacityGroupKind{store.CapacityGroupNamed}},
+	}}
+	for _, name := range h.scripts {
+		resp.Providers = append(resp.Providers, capacityProviderResponse{Name: store.CapacityProviderScriptPrefix + name, Kinds: both})
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -427,7 +533,7 @@ func (h *capacityGroupHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "farm_id is required")
 		return
 	}
-	g, problem := groupFromInput(in)
+	g, problem := groupFromInput(in, h.scripts, "")
 	if problem != "" {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
@@ -492,7 +598,7 @@ func (h *capacityGroupHandler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.FarmID = existing.FarmID
-	g, problem := groupFromInput(in)
+	g, problem := groupFromInput(in, h.scripts, existing.Provider)
 	if problem != "" {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return

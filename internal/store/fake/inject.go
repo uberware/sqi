@@ -56,3 +56,21 @@ func (s *Store) InjectClaim(_ context.Context, claim store.UsageClaim) (store.Us
 	s.usageClaims[claim.ID] = claim
 	return claim, nil
 }
+
+// InjectWorkerPowerState sets the worker's power state, its time and its
+// reason as given. Same contract as [Store.InjectTaskAttempt]. It returns
+// [store.ErrNotFound] for an unknown worker.
+func (s *Store) InjectWorkerPowerState(
+	_ context.Context, workerID string, state store.PowerState, at time.Time, reason string,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w, ok := s.workers[workerID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	w.PowerState, w.PowerStateAt, w.PowerReason = state, &at, reason
+	s.workers[workerID] = w
+	return nil
+}

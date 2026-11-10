@@ -26,6 +26,21 @@ describe('StatusBadge', () => {
     expect(badge).toHaveTextContent(expectedLabel)
   })
 
+  it.each([
+    ['awake', 'Awake'],
+    ['waking', 'Waking'],
+    ['retiring', 'Retiring'],
+    ['asleep', 'Asleep'],
+    ['wake_failed', 'Wake failed'],
+  ] satisfies [BadgeStatus, string][])(
+    'names power state "%s" as power',
+    (status, expectedLabel) => {
+      render(<StatusBadge status={status} kind="Power" />)
+      const badge = screen.getByLabelText(`Power: ${expectedLabel}`)
+      expect(badge).toHaveTextContent(expectedLabel)
+    },
+  )
+
   it('applies an extra className when provided', () => {
     const { container } = render(<StatusBadge status="pending" className="extra" />)
     expect(container.firstChild).toHaveClass('extra')

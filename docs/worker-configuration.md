@@ -811,6 +811,129 @@ Ignored with `watch: none`.
 
 ---
 
+### `worker.cloud_instance_id.source`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"none"` |
+| **Env var** | `SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE` |
+
+Read this machine's cloud instance ID from the provider's metadata service once
+at startup, and report it when the worker registers. One of `none`, `aws`, `gcp`
+or `azure`; any other value fails startup naming the key. With `none` nothing is
+read and no network request is made.
+
+| Value | Request | The ID is |
+|---|---|---|
+| `aws` | IMDSv2 token `PUT /latest/api/token`, then `GET /latest/meta-data/instance-id` on `169.254.169.254` | the EC2 instance ID, `i-...` |
+| `gcp` | `GET /computeMetadata/v1/instance/name` with `Metadata-Flavor: Google` on `metadata.google.internal` | the instance name, which `gcloud ... delete-instances` takes |
+| `azure` | `GET /metadata/instance/compute/resourceId?api-version=2021-02-01&format=text` with `Metadata: true` on `169.254.169.254` | the last path segment of the resource ID, the scale-set instance ID |
+
+> Documentation-derived: the requests above are written from each provider's
+> documentation and are exercised only against a stand-in metadata server, not
+> a real cloud.
+
+Each request has a 2 s timeout and goes to the metadata service directly, never
+through a proxy named by `HTTP_PROXY` or `HTTPS_PROXY`. The read is made once and
+never retried: a metadata service that does not answer is one warning in the
+log, and the worker registers without an ID. A registration without an ID keeps
+the one the server already stored for the worker.
+
+The server shows the ID as `cloud_instance_id` in `GET /workers`, and sends it
+to a capacity group's script provider as the member's `instance_id`. Every
+member of a sized group driven by a script needs one: orphan cleanup is skipped
+while any member lacks it, and the example scripts refuse a retire batch holding
+such a member. See [Cloud instance IDs](capacity.md#cloud-instance-ids).
+
+```yaml
+worker:
+  cloud_instance_id:
+    source: gcp
+```
+
+---
+
+### `worker.cloud_instance_id.endpoint`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (the provider's well-known address) |
+| **Env var** | `SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT` |
+
+Replaces the metadata base URL, for a proxy or a test. Ignored with
+`source: none`.
+
+---
+
+### `worker.power.allow_remote_sleep`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_WORKER_POWER_ALLOW_REMOTE_SLEEP` |
+
+Let `sqi-server` order this machine to sleep or shut down when it retires the
+worker from a capacity group. With `false` both are refused. Either is refused
+too while the worker is running a task, whatever this says. A value that is not
+a boolean fails startup naming the variable. Asking a worker to send
+Wake-on-LAN packets for a peer is not governed by this setting. See
+[Power control on the worker](capacity.md#power-control-on-the-worker).
+
+This is the worker's half of a double opt-in: the server sends a sleep or
+shutdown only to a member of a group whose provider is `wake_on_lan` (the
+group's `retire_action` says which), and the worker carries it out only with
+this set. Grant the worker's account the privilege its command needs as well
+(a polkit rule on Linux, root for `shutdown` on macOS; the Windows service's
+LocalSystem account has it); see the
+[setup checklist](capacity.md#setup-checklist).
+
+Whatever this says, a worker reports its network interfaces (name, MAC address
+and addresses of each interface that is up, not loopback and has a hardware
+address) when it registers, so the server can wake it with a magic packet later.
+A registration that reports none keeps the interfaces already stored.
+
+```yaml
+worker:
+  power:
+    allow_remote_sleep: true
+```
+
+---
+
+### `worker.power.sleep_command` and `worker.power.shutdown_command`
+
+| | |
+|---|---|
+| **Type** | `[]string` (program, then arguments; no shell) |
+| **Default** | `[]` (the platform's own command) |
+| **Env var** | none; config file only |
+
+The commands that suspend and power off the machine. Empty uses `systemctl
+suspend` / `systemctl poweroff` on Linux, `pmset sleepnow` / `shutdown -h now`
+on macOS, and a PowerShell suspend call / `shutdown.exe /s /t 0` on Windows.
+There is no default on any other platform, so a request there is refused until
+one is set. The first element must not be blank.
+
+The Windows sleep command is
+`powershell.exe -NoProfile -NonInteractive -Command` with
+`[System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)`:
+sleep, not hibernate. After a successful sleep command the worker registers
+again when it sees the machine resume, or 60 seconds after the command
+returned, whichever is first. A shutdown command that returns success but
+leaves the machine running is handled like a sleep that did not take: the
+worker registers again 60 seconds after it returned.
+
+```yaml
+worker:
+  power:
+    sleep_command: ["/usr/local/bin/sleep-now"]
+```
+
+---
+
 ### `worker.queue_ids`
 
 | | |
@@ -1869,6 +1992,11 @@ log_streamer:
 | `worker.preemption.watch` | string | `none` | `SQI_WORKER_PREEMPTION_WATCH` | — |
 | `worker.preemption.poll_interval` | duration | `5s` | `SQI_WORKER_PREEMPTION_POLL_INTERVAL` | — |
 | `worker.preemption.endpoint` | string | `""` | `SQI_WORKER_PREEMPTION_ENDPOINT` | — |
+| `worker.cloud_instance_id.source` | string | `none` | `SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE` | — |
+| `worker.cloud_instance_id.endpoint` | string | `""` | `SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT` | — |
+| `worker.power.allow_remote_sleep` | bool | `false` | `SQI_WORKER_POWER_ALLOW_REMOTE_SLEEP` | — |
+| `worker.power.sleep_command` | []string | `[]` | — | — |
+| `worker.power.shutdown_command` | []string | `[]` | — | — |
 | `worker.queue_ids` | []string | `[]` | `SQI_WORKER_QUEUE_IDS` | — |
 | `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — (deprecated, no effect) |
 | `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — (deprecated, no effect) |

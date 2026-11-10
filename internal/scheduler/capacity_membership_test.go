@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"maps"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -696,5 +698,44 @@ func TestBackgroundCalls_Close(t *testing.T) {
 				t.Error("a call started after Close ran")
 			}
 		})
+	}
+}
+
+// The server keeps at most protocol.MaxInterfaces interfaces, each with at
+// most protocol.MaxAddrsPerInterface addresses, whatever a worker sends, and
+// drops an interface whose MAC is not a 6-byte hardware address and an
+// address that is not an IP prefix.
+func TestStoreInterfaces_CapsAndDropsMalformed(t *testing.T) {
+	var big []protocol.NetInterface
+	for i := range protocol.MaxInterfaces + 5 {
+		n := protocol.NetInterface{Name: fmt.Sprintf("eth%d", i), MAC: fmt.Sprintf("aa:bb:cc:dd:ee:%02x", i)}
+		for j := range protocol.MaxAddrsPerInterface + 3 {
+			n.Addrs = append(n.Addrs, fmt.Sprintf("10.%d.%d.1/24", i, j))
+		}
+		big = append(big, n)
+	}
+	got := storeInterfaces(big)
+	if len(got) != protocol.MaxInterfaces {
+		t.Fatalf("interfaces kept = %d, want %d", len(got), protocol.MaxInterfaces)
+	}
+	for i, n := range got {
+		if n.Name != big[i].Name || len(n.Addrs) != protocol.MaxAddrsPerInterface {
+			t.Errorf("interface %d = %s with %d addresses, want %s with %d", i, n.Name, len(n.Addrs),
+				big[i].Name, protocol.MaxAddrsPerInterface)
+		}
+	}
+
+	malformed := []protocol.NetInterface{
+		{Name: "ib0", MAC: "00:00:00:00:fe:80:00:00:00:00:00:00:02:00:5e:10:00:00:00:01", Addrs: []string{"10.1.0.1/16"}},
+		{Name: "bad", MAC: "not-a-mac", Addrs: []string{"10.2.0.1/16"}},
+		{Name: "none", Addrs: []string{"10.3.0.1/16"}},
+		{Name: "eth0", MAC: "aa:bb:cc:dd:ee:01", Addrs: []string{"10.0.0.4/8", "not-an-address", "fe80::1/64", "10.0.0.5", ""}},
+	}
+	want := []store.NetInterface{{Name: "eth0", MAC: "aa:bb:cc:dd:ee:01", Addrs: []string{"10.0.0.4/8", "fe80::1/64"}}}
+	if got := storeInterfaces(malformed); !reflect.DeepEqual(got, want) {
+		t.Errorf("storeInterfaces(malformed) = %+v, want %+v", got, want)
+	}
+	if got := storeInterfaces(nil); got != nil {
+		t.Errorf("storeInterfaces(nil) = %+v, want nil", got)
 	}
 }

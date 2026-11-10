@@ -20,8 +20,8 @@ GO_PKGS    = $(eval GO_PKGS := $(shell go list ./... | grep -v '/node_modules/')
 # everything; CI sets it for packages another job already runs in full.
 TEST_EXCLUDE_PKGS ?=
 TEST_PKGS  = $(filter-out $(TEST_EXCLUDE_PKGS),$(GO_PKGS))
-LINT_PKGS := ./cmd/... ./internal/... ./pkg/... ./test/... ./web
-FMT_DIRS  := ./cmd ./internal ./pkg ./test web/embed.go
+LINT_PKGS := ./cmd/... ./internal/... ./pkg/... ./test/... ./deploy/... ./web
+FMT_DIRS  := ./cmd ./internal ./pkg ./test ./deploy web/embed.go
 
 MODULE              := github.com/uberware/sqi
 BINARY              := sqi-server
@@ -516,7 +516,7 @@ vet: ## Run go vet
 # Lint targets use explicit path patterns rather than ./... so that third-party
 # Go code in web/node_modules/ (installed by npm) is not linted.
 # ./web (no trailing /...) targets only the web Go package (embed.go).
-LINT_PKGS := ./cmd/... ./internal/... ./pkg/... ./test/... ./web
+LINT_PKGS := ./cmd/... ./internal/... ./pkg/... ./test/... ./deploy/... ./web
 
 .PHONY: lint
 lint: ## Run golangci-lint (install: https://golangci-lint.run/usage/install/)

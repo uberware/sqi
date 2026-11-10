@@ -35,6 +35,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/natsclient"
 	"github.com/uberware/sqi/internal/worker/obs"
 	"github.com/uberware/sqi/internal/worker/openjd"
+	"github.com/uberware/sqi/internal/worker/power"
 	"github.com/uberware/sqi/internal/worker/preempt"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/registration"
@@ -245,7 +246,8 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// Build the registrar with the merged capability set. Register() is called
 	// once at boot; SetupReconnectHook() re-sends the registration on every
 	// later NATS reconnect so the server keeps a live record.
-	reg, err := registerWorker(ctx, nc, workerID, cfg, caps, logger)
+	cloudID := readCloudInstanceID(ctx, cfg.Worker.CloudInstanceID, logger)
+	reg, err := registerWorker(ctx, nc, workerID, cfg, caps, cloudID, logger)
 	if err != nil {
 		return err
 	}
@@ -315,7 +317,11 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// Subscribe returns once the server has the subscription, and it is made
 	// before the lease loop starts, so a cancel for any lease this worker
 	// takes finds it in place.
-	if _, err := cancel.Subscribe(nc, workerID, exec, logger); err != nil {
+	//
+	// The server's sleep, shutdown and wake-relay requests arrive on
+	// worker.control.<workerID>. That subscription is made here too, before
+	// the lease loop starts.
+	if err := subscribeServerSignals(ctx, nc, workerID, cfg.Worker.Power, exec, reg, logger); err != nil {
 		return err
 	}
 
@@ -417,6 +423,32 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	return nil
 }
 
+// subscribeServerSignals opens the core-NATS subscriptions the server sends
+// this worker's cancels (task.cancel.<workerID>) and power commands
+// (worker.control.<workerID>) on, each flushed before it returns. Sleep and
+// shutdown are refused unless worker.power.allow_remote_sleep is set, and by a
+// worker that is running a task.
+func subscribeServerSignals(
+	ctx context.Context, nc *nats.Conn, workerID string, cfg workerconfig.PowerConfig,
+	exec *executor.Executor, reg *registration.Registrar, logger *slog.Logger,
+) error {
+	if _, err := cancel.Subscribe(nc, workerID, exec, logger); err != nil {
+		return err
+	}
+	_, err := power.Subscribe(ctx, nc, power.Config{
+		AllowRemoteSleep: cfg.AllowRemoteSleep,
+		SleepCommand:     cfg.SleepCommand,
+		ShutdownCommand:  cfg.ShutdownCommand,
+	}, power.Deps{
+		WorkerID:   workerID,
+		Busy:       exec.ActiveTaskCount,
+		Deregister: reg.Deregister,
+		Reregister: reg.Register,
+		Logger:     logger,
+	})
+	return err
+}
+
 // registerWorker builds the registrar, wires re-registration into NATS
 // reconnects and publishes the initial registration.
 func registerWorker(
@@ -425,12 +457,14 @@ func registerWorker(
 	workerID string,
 	cfg workerconfig.WorkerConfig,
 	caps capabilities.Capabilities,
+	cloudInstanceID string,
 	logger *slog.Logger,
 ) (*registration.Registrar, error) {
 	// This is the same exprLimitsFromConfig call the session manager is built
 	// with (see newSessionManager): what this worker advertises must be what it
 	// enforces.
-	reg, err := registration.New(nc, workerID, cfg.Worker, exprLimitsFromConfig(cfg.Expr), caps, logger)
+	reg, err := registration.New(nc, workerID, cfg.Worker, exprLimitsFromConfig(cfg.Expr), caps, logger,
+		registration.WithCloudInstanceID(cloudInstanceID))
 	if err != nil {
 		return nil, fmt.Errorf("build registrar: %w", err)
 	}
@@ -450,6 +484,25 @@ func registerWorker(
 		return nil, fmt.Errorf("worker registration: %w", err)
 	}
 	return reg, nil
+}
+
+// readCloudInstanceID reads the cloud instance ID once, before the worker
+// registers, when worker.cloud_instance_id.source names a provider. It never
+// fails startup and never retries: a metadata service that does not answer is
+// one warning, and the worker registers without an ID.
+func readCloudInstanceID(ctx context.Context, cfg workerconfig.CloudInstanceIDConfig, logger *slog.Logger) string {
+	if cfg.Source == "" || cfg.Source == workerconfig.CloudInstanceIDSourceNone {
+		return ""
+	}
+	id, err := preempt.InstanceID(ctx, cfg.Source, cfg.Endpoint, nil)
+	if err != nil {
+		logger.WarnContext(ctx, "sqi-worker could not read its cloud instance ID; registering without one",
+			slog.String("source", cfg.Source), slog.Any("error", err))
+		return ""
+	}
+	logger.InfoContext(ctx, "sqi-worker read its cloud instance ID",
+		slog.String("source", cfg.Source), slog.String("instance_id", id))
+	return id
 }
 
 // drainer is the part of *executor.Executor the shutdown sequence uses.

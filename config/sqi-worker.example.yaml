@@ -269,6 +269,36 @@ worker:
     # Type: string   Env: SQI_WORKER_PREEMPTION_ENDPOINT
     endpoint: ""
 
+  # Read this machine's cloud instance ID from the provider's metadata service
+  # once at startup and report it at registration. With source "none" (the
+  # default) no metadata endpoint is ever contacted.
+  cloud_instance_id:
+    # Provider to read: none | aws | gcp | azure.
+    # Type: string   Env: SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE
+    source: "none"
+    # Replace the provider's metadata base URL (a proxy, or a test). Empty uses
+    # http://169.254.169.254 (aws, azure) or http://metadata.google.internal (gcp).
+    # Type: string   Env: SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT
+    endpoint: ""
+
+  # Whether sqi-server may put this machine to sleep or power it off when a
+  # wake_on_lan capacity group retires it (docs/capacity.md, "Wake-on-LAN").
+  # Both are refused while the worker runs a task, whatever this says.
+  # Answering a request to send Wake-on-LAN packets for a peer needs no opt-in.
+  power:
+    # Allow the server to sleep or shut down this machine. Off by default.
+    # Type: bool   Env: SQI_WORKER_POWER_ALLOW_REMOTE_SLEEP
+    allow_remote_sleep: false
+    # The commands that suspend and power off the machine: program, then
+    # arguments, run with no shell. Empty uses the platform's own:
+    # systemctl suspend / systemctl poweroff on Linux (the worker's user needs a
+    # polkit rule), pmset sleepnow / shutdown -h now on macOS (shutdown needs
+    # root), and a PowerShell suspend call / shutdown.exe /s /t 0 on Windows.
+    # Config file only.
+    # Type: list of strings
+    sleep_command: []
+    shutdown_command: []
+
   # Restrict this worker to serving specific queue IDs. The worker keeps one
   # outstanding lease request per listed queue (work.lease.<workerID>.<queueID>). When
   # empty (the default) it issues a single lease request on the reserved

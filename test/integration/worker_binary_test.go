@@ -16,10 +16,12 @@ package integration
 // package-level sync.Once, so running several tests in this file is cheap.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -49,7 +51,13 @@ var packageCleanups []func()
 // TestMain runs all tests in the integration package and releases what outlives
 // them: the worker binary directory (cached across tests via sync.Once, so
 // t.TempDir() cannot own it) and anything registered in packageCleanups.
+//
+// The capacity tests also run this binary as a program of their own (see
+// [runStandIn]); then it does that and exits without running any test.
 func TestMain(m *testing.M) {
+	if code, ok := runStandIn(); ok {
+		os.Exit(code)
+	}
 	code := m.Run()
 	if workerBinaryDir != "" {
 		_ = os.RemoveAll(workerBinaryDir)
@@ -58,6 +66,100 @@ func TestMain(m *testing.M) {
 		fn()
 	}
 	os.Exit(code)
+}
+
+// ── Stand-in programs ─────────────────────────────────────────────────────────
+
+// The ways the capacity tests (capacity_act_test.go) run this test binary as a
+// program. Arguments are checked before the environment: a task inherits its
+// worker's environment, which may carry standInEnv.
+const (
+	// standInGateArg, followed by a path, waits until that path exists and
+	// exits 0: a task the test releases.
+	standInGateArg = "sqi-standin-gate"
+	// capScriptURLEnv makes the binary a capacity provider script: it posts
+	// its standard input to the URL and prints the reply.
+	capScriptURLEnv = "SQI_CAPSCRIPT_URL"
+	// standInEnv set to "sleep" makes the binary a worker's sleep command: it
+	// creates the file standInMarkerEnv names and exits 0.
+	standInEnv       = "SQI_STANDIN"
+	standInMarkerEnv = "SQI_STANDIN_MARKER"
+)
+
+// standInGateLimit bounds a gate stand-in's wait, so a test that never
+// releases it does not leave the process behind.
+const standInGateLimit = 10 * time.Minute
+
+// runStandIn runs the stand-in this process was started as, if any, and
+// reports its exit code.
+func runStandIn() (code int, ok bool) {
+	switch {
+	case len(os.Args) == 3 && os.Args[1] == standInGateArg:
+		return standInWaitGate(os.Args[2]), true
+	case os.Getenv(capScriptURLEnv) != "":
+		return standInProvider(os.Getenv(capScriptURLEnv)), true
+	case os.Getenv(standInEnv) == "sleep":
+		return standInSleep(os.Getenv(standInMarkerEnv)), true
+	}
+	return 0, false
+}
+
+// standInWaitGate waits until path exists.
+func standInWaitGate(path string) int {
+	deadline := time.Now().Add(standInGateLimit)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return 0
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	fmt.Fprintf(os.Stderr, "gate %s did not appear within %s\n", path, standInGateLimit)
+	return 1
+}
+
+// standInProvider posts its standard input to url and prints the reply body.
+func standInProvider(url string) int {
+	body, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read the request: %v\n", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "build the request: %v\n", err)
+		return 1
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "post the request: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	reply, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "reply: HTTP %d, %v: %s\n", resp.StatusCode, err, reply)
+		return 1
+	}
+	if _, err := os.Stdout.Write(reply); err != nil {
+		return 1
+	}
+	return 0
+}
+
+// standInSleep creates the marker file at path.
+func standInSleep(path string) int {
+	if path == "" {
+		fmt.Fprintln(os.Stderr, standInMarkerEnv+" is not set")
+		return 1
+	}
+	if err := os.WriteFile(path, []byte("slept\n"), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "write the marker: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // buildWorkerBinary compiles cmd/sqi-worker into a temporary directory and
@@ -198,22 +300,7 @@ func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string,
 	// Use context.Background so that the subprocess lifetime is controlled by
 	// t.Cleanup below rather than any caller-supplied context.
 	cmd := exec.CommandContext(context.Background(), binaryPath, args...)
-	cmd.Env = append(
-		os.Environ(),
-		"SQI_WORKER_NATS_URL=nats://"+ts.NATSAddr,
-		"SQI_WORKER_DISCOVERY_ENABLE_MDNS=false",
-		"SQI_WORKER_FARM_ID="+farmID,
-		"SQI_WORKER_QUEUE_IDS="+queueID,
-		"SQI_WORKER_DATA_DIR="+dataDir,
-		"SQI_WORKER_ALLOW_ROOT=true",
-		"SQI_WORKER_LOG_FORMAT=text",
-		"SQI_WORKER_LOG_LEVEL=warn",
-		"SQI_WORKER_HEARTBEAT_INTERVAL=1s",
-		"SQI_WORKER_SHUTDOWN_GRACE_PERIOD=5s",
-		"SQI_WORKER_PULL_IDLE_BACKOFF=200ms",
-		fmt.Sprintf("SQI_WORKER_METRICS_ADDR=127.0.0.1:%d", metricsPort),
-	)
-	cmd.Env = append(cmd.Env, extraEnv...)
+	cmd.Env = append(realWorkerEnv(ts, farmID, queueID, dataDir, metricsPort), extraEnv...)
 
 	// Route subprocess stdout/stderr to test stderr so output appears in
 	// `go test -v` and in CI logs when the test fails.
@@ -245,6 +332,28 @@ func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string,
 		}
 	})
 	return cmd
+}
+
+// realWorkerEnv is the environment a real worker subprocess runs with: this
+// process's own, then the settings that point it at ts, serving queueID in
+// farmID from dataDir, with its metrics on metricsPort and test-friendly
+// timings.
+func realWorkerEnv(ts *testServer, farmID, queueID, dataDir string, metricsPort int) []string {
+	return append(
+		os.Environ(),
+		"SQI_WORKER_NATS_URL=nats://"+ts.NATSAddr,
+		"SQI_WORKER_DISCOVERY_ENABLE_MDNS=false",
+		"SQI_WORKER_FARM_ID="+farmID,
+		"SQI_WORKER_QUEUE_IDS="+queueID,
+		"SQI_WORKER_DATA_DIR="+dataDir,
+		"SQI_WORKER_ALLOW_ROOT=true",
+		"SQI_WORKER_LOG_FORMAT=text",
+		"SQI_WORKER_LOG_LEVEL=warn",
+		"SQI_WORKER_HEARTBEAT_INTERVAL=1s",
+		"SQI_WORKER_SHUTDOWN_GRACE_PERIOD=5s",
+		"SQI_WORKER_PULL_IDLE_BACKOFF=200ms",
+		fmt.Sprintf("SQI_WORKER_METRICS_ADDR=127.0.0.1:%d", metricsPort),
+	)
 }
 
 // pollForOnlineWorker polls GET /api/v1/workers until any worker in farmID

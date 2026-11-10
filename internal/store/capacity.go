@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strings"
@@ -32,11 +34,23 @@ const (
 	// CapacityProviderExternal leaves starting and stopping to something
 	// outside sqi.
 	CapacityProviderExternal CapacityProvider = "external"
-	// CapacityProviderWakeOnLAN ("wake_on_lan") and "script:<name>" pass
-	// [CapacityGroup.Validate], but no provider implements them and the API
-	// accepts only [CapacityProviderExternal].
+	// CapacityProviderWakeOnLAN ("wake_on_lan") wakes a named group's known
+	// machines, so [CapacityGroup.Validate] refuses it on a sized group.
+	// "script:<name>" names a provider program from the server's
+	// configuration; Validate admits one on either kind, and the API refuses
+	// one that is not configured.
 	CapacityProviderWakeOnLAN CapacityProvider = "wake_on_lan"
 )
+
+// CapacityProviderScriptPrefix starts the name of a script provider:
+// "script:<name>".
+const CapacityProviderScriptPrefix = "script:"
+
+// ScriptName returns the configured script p names and true, or "" and false
+// when p is not a script provider.
+func (p CapacityProvider) ScriptName() (string, bool) {
+	return strings.CutPrefix(string(p), CapacityProviderScriptPrefix)
+}
 
 // Capacity group retire actions.
 const (
@@ -51,6 +65,51 @@ const (
 	// MinCapacityGroupTimeout is the shortest IdleTimeout and BootTimeout.
 	MinCapacityGroupTimeout = time.Minute
 )
+
+// PowerState is where a worker is in the capacity machinery's power cycle. It
+// is separate from the worker's liveness ([WorkerStatus]) and from an
+// operator's disabled flag.
+type PowerState string
+
+const (
+	// PowerAwake is a running worker, and the state of every worker that is
+	// not managed by a capacity group.
+	PowerAwake PowerState = "awake"
+	// PowerWaking is a machine the server has asked to start and that has not
+	// registered yet.
+	PowerWaking PowerState = "waking"
+	// PowerRetiring is a worker told to sleep or shut down; it takes no new
+	// work while it finishes what it holds.
+	PowerRetiring PowerState = "retiring"
+	// PowerAsleep is a machine that has deregistered and is suspended or off.
+	PowerAsleep PowerState = "asleep"
+	// PowerWakeFailed is a machine that did not register within its group's
+	// boot timeout.
+	PowerWakeFailed PowerState = "wake_failed"
+)
+
+// NetInterface is one network interface of a worker's machine: what a
+// wake-on-LAN packet is addressed with. The JSON tags are the wire form, and
+// the form the interfaces column stores.
+type NetInterface struct {
+	Name  string   `json:"name"`
+	MAC   string   `json:"mac"`
+	Addrs []string `json:"addrs,omitempty"`
+}
+
+// WakeAddressable reports whether a wake-on-LAN packet can be addressed with
+// i: it has a 6-byte MAC and an IPv4 address in CIDR form, whose network the
+// packet is broadcast on. It is the one statement of that rule, which the
+// wake_on_lan provider and the API's has_wake_address both apply.
+func (i NetInterface) WakeAddressable() bool {
+	if mac, err := net.ParseMAC(i.MAC); err != nil || len(mac) != 6 {
+		return false
+	}
+	return slices.ContainsFunc(i.Addrs, func(a string) bool {
+		p, err := netip.ParsePrefix(a)
+		return err == nil && p.Addr().Is4()
+	})
+}
 
 // MachineProfile describes the machine a group's machines are expected to be.
 // It is stored as JSON; a zero value means the field is not declared.
@@ -128,6 +187,84 @@ type CapacityGroupStore interface {
 	DeleteCapacityGroup(ctx context.Context, id string) error
 }
 
+// CapacityGroupState is what the server has decided about a group at run
+// time, kept apart from the operator's [CapacityGroup] fields so that
+// replacing those can never overwrite it.
+type CapacityGroupState struct {
+	GroupID string
+	// Requested is how many machines the server last asked the group's
+	// provider for, and RequestedAt when.
+	Requested   int
+	RequestedAt *time.Time
+	// DegradedReason says why the group is degraded, empty when it is not;
+	// DegradedAt is when it became so.
+	DegradedReason string
+	DegradedAt     *time.Time
+	// BackoffUntil is the earliest time the server asks for more machines
+	// again, or nil.
+	BackoffUntil *time.Time
+	UpdatedAt    time.Time
+}
+
+// CapacityPowerStore holds the capacity machinery's power transitions of group
+// members and each group's [CapacityGroupState]. Every write is made by the
+// leader and fenced, and each one that touches a worker locks that worker's
+// row first, so a transition and a lease to the same worker are ordered.
+//
+// A transition that does not apply (the worker is unknown, or not in the state
+// or condition it requires) is not an error: the methods report what moved.
+type CapacityPowerStore interface {
+	// MarkWaking moves each of workerIDs that is a member of groupID, offline,
+	// not disabled and in [PowerAwake], [PowerAsleep] or [PowerWakeFailed] to
+	// [PowerWaking] at now, with no reason, and returns the IDs it moved in
+	// ascending order.
+	MarkWaking(ctx context.Context, groupID string, workerIDs []string, now time.Time) ([]string, error)
+
+	// FailWakes moves every member of groupID in [PowerWaking] whose
+	// PowerStateAt is before cutoff to [PowerWakeFailed] at now with reason,
+	// and returns the IDs it moved in ascending order.
+	FailWakes(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]string, error)
+
+	// BeginRetirement moves workerID from [PowerAwake] to [PowerRetiring] at
+	// now, with no reason, only while it is a member of groupID, online, not
+	// disabled and holds no assigned or running task (the predicate
+	// [WorkerStore.DeleteEphemeralWorker] uses). ok is false, with no error,
+	// when any condition fails. It is decided under the worker's row lock, so
+	// a lease to the worker either committed first and is seen, or waits and
+	// is refused ([TaskStore.LeaseTask] refuses a retiring worker).
+	BeginRetirement(ctx context.Context, groupID, workerID string, now time.Time) (w Worker, ok bool, err error)
+
+	// FinishRetirement completes the retirement of workerID, which must be in
+	// [PowerRetiring]. A named member becomes [PowerAsleep] and offline at now,
+	// with no reason, and is returned. An ephemeral member is deleted and its
+	// active credential revoked at now, as [WorkerStore.DeleteEphemeralWorker]
+	// does, and returned as it was last stored (deleted = true). ok is false,
+	// with no error, when the worker is unknown or not retiring. A retiring
+	// member holding an assigned or running task, which BeginRetirement and
+	// the lease guard leave no way to reach, is refused with [ErrConflict] and
+	// left retiring, rather than put to sleep or deleted under its task.
+	FinishRetirement(ctx context.Context, workerID string, now time.Time) (w Worker, deleted, ok bool, err error)
+
+	// AbortRetirement moves workerID from [PowerRetiring] back to [PowerAwake]
+	// at now with reason; ok is false, with no error, when it is not retiring.
+	AbortRetirement(ctx context.Context, workerID string, now time.Time, reason string) (bool, error)
+
+	// ExpireRetirements aborts, as AbortRetirement does, every member of
+	// groupID in [PowerRetiring] whose PowerStateAt is before cutoff, and
+	// returns their IDs in ascending order.
+	ExpireRetirements(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]string, error)
+
+	// ListCapacityGroupStates returns every recorded state by group ID; a
+	// group with none is absent.
+	ListCapacityGroupStates(ctx context.Context) (map[string]CapacityGroupState, error)
+
+	// PutCapacityGroupState stores s as its group's state, replacing any
+	// earlier one whole. A zero UpdatedAt is stamped with the current time.
+	// It returns [ErrNotFound] when the group does not exist. A group's state
+	// is deleted with the group.
+	PutCapacityGroupState(ctx context.Context, s CapacityGroupState) error
+}
+
 // ProfileWorker returns a synthetic worker standing for one machine of g: the
 // group's farm and the hardware, platform, tags, extensions and EXPR limits its
 // profile declares. The worker owns copies of the profile's tags and
@@ -174,6 +311,9 @@ func (g CapacityGroup) Validate() error {
 	}
 	if !validCapacityProvider(g.Provider) {
 		bad("provider %q must be %q, %q or \"script:<name>\"", g.Provider, CapacityProviderExternal, CapacityProviderWakeOnLAN)
+	}
+	if g.Provider == CapacityProviderWakeOnLAN && g.Kind == CapacityGroupSized {
+		bad("provider %q needs a named group: it wakes machines it already knows", CapacityProviderWakeOnLAN)
 	}
 	errs = append(errs, g.validateScaling()...)
 	if g.Kind == CapacityGroupSized && g.Profile.CPUCount < 1 {
@@ -224,6 +364,6 @@ func validCapacityProvider(p CapacityProvider) bool {
 	if p == CapacityProviderExternal || p == CapacityProviderWakeOnLAN {
 		return true
 	}
-	name, ok := strings.CutPrefix(string(p), "script:")
+	name, ok := p.ScriptName()
 	return ok && name != ""
 }

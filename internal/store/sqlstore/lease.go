@@ -44,9 +44,13 @@ WHERE  t.id = ?`
 	//     for the old rows (I5). The job row is held FOR SHARE, so a move
 	//     either committed before the lock and is seen here, or waits for the
 	//     lease.
-	//   - the worker is not disabled, the one worker state that refuses new
-	//     work. The worker row is held FOR SHARE, so a disable that committed
-	//     before the lock is seen. An offline worker is not refused: the
+	//   - the worker is not disabled and not retiring or asleep, the worker
+	//     states that refuse new work. A retiring worker is finishing what it
+	//     holds before its machine sleeps or shuts down; an asleep one has
+	//     deregistered and is about to be suspended, but its lease loop can
+	//     still ask until the operating system stops it. The worker row is
+	//     held FOR SHARE, so a change that committed before the lock is seen.
+	//     An offline worker is not refused: the
 	//     heartbeat sweep can mark a live worker offline after one missed
 	//     window and heartbeats never restore online, so refusing it would
 	//     starve it for good (see "Known gaps" in docs/architecture.md). A
@@ -62,7 +66,8 @@ WHERE  t.id = ?`
                WHERE  j.id = t.job_id
                  AND  j.queue_id = ? AND j.farm_id = ?
                  AND  ` + sqlLeasableTask + `)
-  AND  NOT EXISTS (SELECT 1 FROM workers w WHERE w.id = ? AND w.disabled)`
+  AND  NOT EXISTS (SELECT 1 FROM workers w
+                   WHERE w.id = ? AND (w.disabled OR w.power_state IN ('retiring', 'asleep')))`
 
 	// sqlLeaseTaskGuardedOnline is sqlLeaseTaskGuarded for a request with
 	// RequireOnline: the worker's row must also exist and be online. The
@@ -120,10 +125,10 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // they share in the same order, so they cannot deadlock on Postgres.
 //
 // Under those locks the guarded task write (sqlLeaseTaskGuarded) re-checks
-// that the worker is not disabled and that the job is still in the queue and
-// farm the scope read named, and fullTx re-reads each anchored cap with its
-// count, so the lease decides on committed values, not the ones read before
-// the locks. An offline worker, or one with no row, is refused only when the
+// that the worker is not disabled, retiring or asleep and that the job is
+// still in the queue and farm the scope read named, and fullTx re-reads each
+// anchored cap with its count, so the lease decides on the values committed
+// under the locks. An offline worker, or one with no row, is refused only when the
 // request sets RequireOnline (see sqlLeaseTaskGuarded).
 //
 // Because the lease holds the worker and job rows FOR SHARE, every operation
@@ -161,7 +166,8 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // not anchored (see fullTx). The attempt is inserted before its claims, which
 // reference it. On SQLite the locks do nothing, since the single write
 // connection serializes the whole transaction, but the worker re-check still
-// refuses a worker disabled after the scheduler read it.
+// refuses a worker that became disabled, retiring or asleep after the
+// scheduler read it.
 func leaseTx(ctx context.Context, tx *dbTx, req store.LeaseRequest) (store.LeaseResult, error) {
 	lost := store.LeaseResult{Outcome: store.LeaseLost}
 	scope, found, err := readLeaseScopeTx(ctx, tx, req.TaskID)

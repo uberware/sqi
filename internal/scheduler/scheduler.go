@@ -76,6 +76,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"slices"
 	"strings"
 	"sync"
@@ -86,10 +87,12 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/capacity/script"
 	"github.com/uberware/sqi/internal/diag"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/wol"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -254,6 +257,26 @@ type Config struct {
 	// wires it.
 	RevokeWorker func(ctx context.Context, workerID string) error
 
+	// ScriptProviders are the capacity provider programs from the server's
+	// configuration file, by name without the "script:" prefix. A group
+	// naming one that is not here does not act. Not a tuning knob; the
+	// server wires it.
+	ScriptProviders map[string]script.Provider
+
+	// WakeOnLANPort is the UDP port magic packets go to. A value <= 0 is
+	// coerced to [wol.DefaultPort] in [New].
+	WakeOnLANPort int
+
+	// WakeOnLANSendTo are extra "ip:port" endpoints the server sends magic
+	// packets to when it sends them itself.
+	WakeOnLANSendTo []string
+
+	// SendWakePackets sends magic packets for macs to each of targets
+	// ("ip:port") and reports how many targets it reached, with an error
+	// joining every failure. Nil means [wol.Send] with its default burst and
+	// gap.
+	SendWakePackets func(ctx context.Context, macs []net.HardwareAddr, targets []string) (int, error)
+
 	// OnFenced is called once, with the error, the first time a store write
 	// made under the context [Scheduler.Run] was given fails with
 	// [store.ErrFenced]: another server has taken the leadership, so this one
@@ -274,6 +297,7 @@ type busClient interface {
 	PublishTaskCancel(ctx context.Context, workerID string, data []byte) error
 	SubscribeWorkerDiag(handler func(subject string, data []byte)) (*nats.Subscription, error)
 	SubscribeLease(handler func(workerID, queueID string, data []byte) []byte) (*nats.Subscription, error)
+	RequestWorkerControl(ctx context.Context, workerID string, data []byte) ([]byte, error)
 }
 
 // Scheduler owns the assignment loop, worker registry, and heartbeat sweep.
@@ -471,6 +495,12 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	if cfg.BusReconnectGrace <= 0 {
 		cfg.BusReconnectGrace = cfg.WorkerTimeout
 	}
+	if cfg.WakeOnLANPort <= 0 {
+		cfg.WakeOnLANPort = wol.DefaultPort
+	}
+	if cfg.SendWakePackets == nil {
+		cfg.SendWakePackets = wol.SendDefault
+	}
 	n := notifier
 	if n == nil {
 		n = ws.NoopNotifier{}
@@ -630,6 +660,10 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	// Stop any backoff-wake timers still pending so they don't outlive Run.
 	s.stopRetryWakeTimers()
+
+	// Capacity provider calls first: one that finishes a retirement starts a
+	// broker revocation, which the wait below then covers.
+	s.closeCapacityCalls(ctx)
 
 	// Let broker revocations of removed workers finish, briefly, so none
 	// outlives the broker the server closes next.
@@ -1026,6 +1060,8 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		Tags:            m.Tags,
 		ExprLimits:      store.WorkerExprLimits(m.ExprLimits),
 		Extensions:      slices.Clone(m.Extensions),
+		Interfaces:      storeInterfaces(m.Interfaces),
+		CloudInstanceID: m.CloudInstanceID,
 		Status:          store.WorkerStatusOnline,
 		LastHeartbeatAt: &now,
 	}
@@ -1035,7 +1071,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	// what capacity-group membership needs (capacitymembership.go).
 	rc := s.beforeRegistration(ctx, m, now)
 
-	stored, reclaimed, err := s.store.RegisterWorker(ctx, w)
+	stored, reg, err := s.store.RegisterWorker(ctx, w)
 	if errors.Is(err, store.ErrStaleRegistration) {
 		// A registration the broker stamped before the one already recorded: a
 		// late redelivery (JetStream can return an older message after a
@@ -1064,14 +1100,15 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		s.nakMsg(ctx, msg)
 		return
 	}
-	if len(reclaimed) > 0 {
+	if len(reg.Reclaimed) > 0 {
 		// A new worker process: the previous one's in-flight tasks went back to
 		// ready inside the registration write.
-		s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, m.Hostname, reclaimRestart, reclaimed)
+		s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, m.Hostname, reclaimRestart, reg.Reclaimed)
 	}
 
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
 	s.afterRegistration(ctx, m, stored, rc, now)
+	s.noteMemberWoke(ctx, reg, stored, now)
 	s.warnOnExprCapShortfall(ctx, w)
 
 	s.logger.InfoContext(
@@ -1229,7 +1266,9 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 // acked and ignored: applying it would take the new process offline and
 // reclaim the tasks it is running. A deregister whose kind is retired or
 // preempted then deletes an ephemeral capacity-group member and revokes its
-// credential ([Scheduler.removeDepartedEphemeral]).
+// credential ([Scheduler.removeDepartedEphemeral]). A member the capacity
+// actuator was retiring then has its retirement finished
+// ([Scheduler.finishRetirementOnDeregister]).
 //
 // subjectWorkerID is the worker the message's subject attributes it to.
 func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
@@ -1322,9 +1361,14 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		return
 	}
 
-	status := store.WorkerStatusOffline
-	if w, err := s.store.GetWorker(ctx, m.WorkerID); err == nil {
-		status = w.EffectiveStatus() // a disabled worker stays disabled
+	status, removed, fenced := s.deregisteredStatus(ctx, m.WorkerID)
+	if fenced {
+		return
+	}
+	if removed {
+		s.refreshWorkerGauge(ctx)
+		s.ackMsg(ctx, msg)
+		return
 	}
 	s.notifier.NotifyWorker(ws.WorkerEvent{
 		WorkerID: m.WorkerID,
@@ -1875,11 +1919,13 @@ func (s *Scheduler) WakeQueue(queueID string) {
 	}
 }
 
-// WakeWorker wakes the lease requests a disabled worker has parked, so a worker
-// that has just been enabled is leased work at once rather than after the rest
-// of its leaseHoldTimeout. Called by the API's enable handler after the write. A
-// woken request re-reads the worker, so a wake for a worker that is still
-// disabled leases nothing.
+// WakeWorker wakes the lease requests a worker that may not take new work
+// (disabled, retiring or asleep) has parked, so a worker that has just become
+// able to is leased work at once rather than after the rest of its
+// leaseHoldTimeout. Called by the API's enable handler after the write, and
+// when a woken capacity-group member registers ([Scheduler.noteMemberWoke]). A
+// woken request re-reads the worker, so a wake for a worker that still may not
+// take work leases nothing.
 func (s *Scheduler) WakeWorker(workerID string) {
 	s.disabledWaiters.notify(workerID)
 }

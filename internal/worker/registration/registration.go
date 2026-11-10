@@ -113,6 +113,13 @@ type Registrar struct {
 	// in every RegisterMsg.
 	host *hostInfo
 
+	// interfaces are the network interfaces every RegisterMsg reports, read once
+	// in New unless [WithInterfaces] supplies them. cloudInstanceID is the cloud
+	// instance ID from [WithCloudInstanceID], empty off a cloud.
+	interfaces      []protocol.NetInterface
+	interfacesSet   bool
+	cloudInstanceID string
+
 	// lastRegisteredAt records the Unix nanosecond timestamp of the most
 	// recent successful Register call. Stored atomically so the heartbeat
 	// watchdog can read it without a mutex.
@@ -130,6 +137,19 @@ type Option func(*Registrar)
 // harness's simulated workers, thousands to one host, each report their own.
 func WithHost(hostname, ip string) Option {
 	return func(r *Registrar) { r.host = &hostInfo{name: hostname, ip: ip} }
+}
+
+// WithInterfaces reports ifaces in every registration instead of the host's own
+// interfaces. The load harness passes a synthetic interface per simulated
+// worker, so thousands of them do not each report the generator host's network
+// cards.
+func WithInterfaces(ifaces []protocol.NetInterface) Option {
+	return func(r *Registrar) { r.interfaces, r.interfacesSet = ifaces, true }
+}
+
+// WithCloudInstanceID reports id as the cloud instance this worker runs on.
+func WithCloudInstanceID(id string) Option {
+	return func(r *Registrar) { r.cloudInstanceID = id }
 }
 
 // New creates a Registrar over an established NATS connection. caps should
@@ -169,6 +189,9 @@ func New(
 	}
 	for _, o := range opts {
 		o(r)
+	}
+	if !r.interfacesSet {
+		r.interfaces = hostInterfaces()
 	}
 	return r, nil
 }
@@ -224,7 +247,9 @@ func (r *Registrar) Register(ctx context.Context) error {
 		},
 		// The extensions this binary enforces itself, so the scheduler will lease
 		// it a job that declares one.
-		Extensions: protocol.WorkerEnforcedExtensions(),
+		Extensions:      protocol.WorkerEnforcedExtensions(),
+		Interfaces:      r.interfaces,
+		CloudInstanceID: r.cloudInstanceID,
 	}
 
 	data, err := json.Marshal(msg)
@@ -319,9 +344,10 @@ func (r *Registrar) publishRegister(ctx context.Context, data []byte) error {
 // its machine is being reclaimed.
 //
 // Deregister is best-effort: failures are logged as warnings since the server
-// will detect the absence via heartbeat timeout regardless. The caller is
-// responsible for flushing any buffered publishes before closing the NATS
-// connection (typically via natsclient.Drain deferred in start.go).
+// will detect the absence via heartbeat timeout regardless. It flushes the
+// connection before it returns, waiting up to deregisterFlushTimeout, so the
+// message is not lost when the caller then stops the process or suspends the
+// machine.
 func (r *Registrar) Deregister(reason string, kind protocol.DeregisterKind) {
 	ctx := context.Background()
 
@@ -347,6 +373,14 @@ func (r *Registrar) Deregister(reason string, kind protocol.DeregisterKind) {
 			slog.Any("error", err))
 		return
 	}
+	// A publish is buffered. The caller is usually about to stop the process
+	// or suspend the machine, which would lose a message still in the buffer,
+	// so wait for the NATS server to have it.
+	if err := r.nc.FlushTimeout(deregisterFlushTimeout); err != nil {
+		r.logger.WarnContext(ctx, "registration: deregister may not have reached the server — it will detect absence via heartbeat timeout",
+			slog.String("worker_id", r.workerID),
+			slog.Any("error", err))
+	}
 
 	attrs := []any{slog.String("worker_id", r.workerID), slog.String("reason", reason)}
 	if kind != "" {
@@ -354,6 +388,10 @@ func (r *Registrar) Deregister(reason string, kind protocol.DeregisterKind) {
 	}
 	r.logger.InfoContext(ctx, "registration: worker deregistered", attrs...)
 }
+
+// deregisterFlushTimeout bounds how long [Registrar.Deregister] waits for the
+// NATS server to receive the message.
+const deregisterFlushTimeout = 2 * time.Second
 
 // SetupReconnectHook installs a NATS reconnect handler that re-publishes the
 // registration message whenever the connection is restored. It replaces any

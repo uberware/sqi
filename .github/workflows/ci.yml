@@ -182,7 +182,7 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.1
-          args: --timeout=5m ./cmd/... ./internal/... ./pkg/... ./test/... ./web
+          args: --timeout=5m ./cmd/... ./internal/... ./pkg/... ./test/... ./deploy/... ./web
 
       # The internal/openjd/expr path-engine differentials compare against
       # python3's pathlib. sqi implements CPython 3.13 path semantics, so
@@ -193,6 +193,13 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
+
+      # deploy/capacity's TestExampleScripts runs the example capacity provider
+      # scripts against stub cloud tools and skips when bash (4.4 or later) or
+      # jq is missing. jq is installed before the suite, and the test is
+      # asserted by name below so that a skip fails the job.
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
 
       # `make test-cover` runs the suite with -race (RACE=on, the Makefile
       # default), writes coverage.out, and fails below COVERAGE_MIN. The
@@ -206,6 +213,16 @@ jobs:
       # install on this job's critical path.
       - name: Test (race detector + coverage gate)
         run: make test-cover TEST_EXCLUDE_PKGS=github.com/uberware/sqi/test/integration
+
+      - name: Example capacity provider scripts
+        run: |
+          go test -count=1 -v -run 'TestExampleScripts' ./deploy/capacity/ 2>&1 | tee /tmp/capacity-examples.log
+          for t in TestExampleScripts TestExampleScripts_Layout; do
+            if ! grep -q -- "--- PASS: $t " /tmp/capacity-examples.log; then
+              echo "::error::$t did not pass (or was skipped)"
+              exit 1
+            fi
+          done
 
       # Needs the CODECOV_TOKEN repository secret (setup in
       # docs/development.md). fail_ci_if_error is false so a Codecov outage
@@ -1093,6 +1110,10 @@ jobs:
             TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin
             TestPGRace_G11_LateReportCannotEndATaskReLeasedMeanwhile
             TestPGRace_G12_ReaperAndCompletionDoNotDeadlock
+            TestPGRace_LeaseVersusBeginRetirement
+            TestPGRace_LeaseVersusBeginRetirement/lease_first
+            TestPGRace_LeaseVersusBeginRetirement/retirement_first
+            TestPGRace_PutCapacityGroupStateForAGroupDeletedMeanwhile
             TestSchemaParity
             TestJobStore_CreateJobSubmission_RollsBackEntirely
             TestCreateJobSubmission_ConcurrentObserverSeesWholeJobs
@@ -1774,6 +1795,15 @@ jobs:
             TestAutoRetry_RetryThenSucceed
             TestTLSEndToEnd
             TestTLSWorkerWithoutCAIsRefused
+            # Capacity providers acting on real workers: a wake_on_lan
+            # member put to sleep and woken by a magic packet, and refused
+            # without the worker's opt-in (it skips on a host with no
+            # interface to wake; the runner has one); a script provider
+            # growing and retiring a sized group.
+            TestCapacityGroup_WakeOnLANSleepAndWake
+            TestCapacityGroup_WakeOnLANSleepAndWake/sleeps-and-wakes
+            TestCapacityGroup_WakeOnLANSleepAndWake/refused-without-opt-in
+            TestCapacityGroup_ScriptGrowAndRetire
             # Fails if a tier-2 case the preset registry claims skipped for
             # want of ffmpeg or oiiotool, so it must be seen to pass here: the
             # unit-test job does not run ./test/integration.

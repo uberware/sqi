@@ -114,8 +114,8 @@ type registerErrSt struct {
 	store.Store
 }
 
-func (*registerErrSt) RegisterWorker(_ context.Context, _ store.Worker) (store.Worker, []store.Task, error) {
-	return store.Worker{}, nil, context.DeadlineExceeded
+func (*registerErrSt) RegisterWorker(_ context.Context, _ store.Worker) (store.Worker, store.Registration, error) {
+	return store.Worker{}, store.Registration{}, context.DeadlineExceeded
 }
 
 func TestHandleWorkerRegister_StoreError_Nacked(t *testing.T) {

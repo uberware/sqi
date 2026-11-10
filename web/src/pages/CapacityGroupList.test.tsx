@@ -58,6 +58,35 @@ describe('CapacityGroupList', () => {
     expect(within(row).getByText('3 desired / 2 online')).toBeInTheDocument()
   })
 
+  it('marks a degraded group, and only that group', async () => {
+    stubApi({
+      'GET /capacity-groups': {
+        body: [
+          group({
+            id: 'cg-2',
+            name: 'burst',
+            provider: 'script:burst',
+            status: status({
+              degraded: {
+                reason: 'provider refused',
+                since: '2026-11-07T11:00:00Z',
+                backoff_until: '2026-11-07T12:30:00Z',
+              },
+            }),
+          }),
+          group(),
+        ],
+      },
+    })
+    renderPage()
+    await screen.findByRole('link', { name: 'burst' })
+    const degraded = within(screen.getByRole('row', { name: /burst/ })).getByText(/^degraded$/i)
+    expect(degraded).toHaveAttribute('title', 'provider refused')
+    expect(
+      within(screen.getByRole('row', { name: /cloud-spot/ })).queryByText(/^degraded$/i),
+    ).not.toBeInTheDocument()
+  })
+
   it('says "not evaluated yet" for a group whose status is null', async () => {
     stubApi({ 'GET /capacity-groups': { body: [group({ status: null })] } })
     renderPage()

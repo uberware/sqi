@@ -91,11 +91,12 @@ type capacityGroupWire struct {
 
 // capacityTask is the subset of a task these tests read.
 type capacityTask struct {
-	ID               string `json:"id"`
-	Status           string `json:"status"`
-	AssignedWorkerID string `json:"assigned_worker_id"`
-	FailureReason    string `json:"failure_reason"`
-	FailedAttempts   int    `json:"failed_attempts"`
+	ID                  string `json:"id"`
+	Status              string `json:"status"`
+	AssignedWorkerID    string `json:"assigned_worker_id"`
+	FailureReason       string `json:"failure_reason"`
+	FailedAttempts      int    `json:"failed_attempts"`
+	UnschedulableReason string `json:"unschedulable_reason"`
 }
 
 // ── REST helpers ─────────────────────────────────────────────────────────────

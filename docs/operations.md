@@ -310,6 +310,10 @@ that advertises its broker in a `nats_url` record, and skips an advertisement
 without one; a worker with an explicit `nats.url` does not use discovery, but
 is still subject to the protocol check.
 
+The wire protocol is version `6`. Upgrade the server first, then its workers;
+until a worker is upgraded the server discards its messages and leases it
+nothing.
+
 After any server start, worker-offline detection waits about 3 minutes (at
 the defaults) before acting, so a worker that died while the server was down
 is marked offline, and its tasks reclaimed, that much later. See
@@ -1847,11 +1851,10 @@ High availability is off by default. A server with no `ha` block, or with
   or the Windows service's recovery actions. A leader that loses its leadership
   exits with code `75` (see [Demotion](#demotion-exit-code-75)) and comes back,
   as a standby, only if something starts it again. Its stop timeout must also
-  be longer than the server's 30 s shutdown deadline plus up to 7 s of handing
-  over (stopping the scheduler, at most 2 s, and releasing the lease, at most
-  5 s): the example unit's `TimeoutStopSec=60s` and the Windows service's 45 s
-  PreShutdown timeout both are; give Compose a `stop_grace_period` of 45 s or
-  more.
+  be longer than the server's shutdown, which ends within about 35 s, handing
+  over included (see [Graceful shutdown](#graceful-shutdown)): the example
+  unit's `TimeoutStopSec=60s` and the Windows service's 45 s PreShutdown
+  timeout both are; give Compose a `stop_grace_period` of 45 s or more.
 - **A load balancer that health-checks `GET /leaderz`**, which answers 200 on
   the leader only. Point clients (browsers, `sqi-cli`, the SDK, and workers
   enrolling with a join token through `nats.server_url`) at the balancer.
@@ -2351,7 +2354,16 @@ groups:
    service immediately instead of waiting for the record to expire).
 2. Stop accepting new HTTP and WebSocket connections.
 3. Wait for in-flight HTTP requests to complete.
-4. Stop the scheduler.
+4. Stop the scheduler and wait for it to return, so that
+   [capacity provider](capacity.md#acting-providers) calls still running finish,
+   or are cut off, before the bus and the store close. This happens on a single
+   server and in a high-availability group alike. The wait is bounded at 30 s
+   counted from when the scheduler was first told to stop
+   (`scheduler.StopCeiling`), and by the shutdown deadline below; within it the
+   scheduler waits at most 20 s for provider calls. A provider call still
+   running at the end is abandoned and writes nothing more to the store.
+   Nothing is lost: every provider request is absolute and recorded before it
+   is made, so the next leader sends it again.
 5. Drain and flush sqi's JetStream consumers (in-flight messages are
    acknowledged or requeued), then shut the broker down. The embedded broker
    stops through lame duck mode; with an external broker, `sqi-server`
@@ -2365,10 +2377,12 @@ groups:
 
 The server has its own 30 s internal drain deadline
 (`server.ShutdownTimeout`, a compile-time constant, not a config key); past
-that it logs `graceful shutdown timed out after 30s` and exits. The example
-unit's `TimeoutStopSec=60s` is headroom over that 30 s so systemd does not
-SIGKILL mid-drain; raising it further has no effect on how long the server
-waits.
+that it logs `graceful shutdown timed out after 30s` and exits. The bus drain,
+the final checkpoint and the store close always get at least 5 s, even when the
+steps before them used the 30 s up, so the whole sequence ends within about
+35 s. The example unit's `TimeoutStopSec=60s` is headroom over that so systemd
+does not SIGKILL mid-drain; raising it further has no effect on how long the
+server waits.
 
 As a Windows service, a service Stop or a shutdown (PreShutdown) request
 starts the same sequence. The service is registered with a 45 s PreShutdown
@@ -2378,8 +2392,10 @@ In a [high-availability group](#running-more-than-one-server-high-availability)
 the leader hands over first: it closes its API and `/leaderz`, stops the
 scheduler (answering workers' waiting lease requests empty, at most 2 s) and
 releases the lease (at most 5 s), so a standby takes over at its next poll.
-That can add up to 7 s to the 30 s deadline, which both the example unit's
-`TimeoutStopSec` and the Windows PreShutdown timeout cover.
+The hand-over runs inside the 30 s deadline. A scheduler still draining
+capacity provider calls when its 2 s are up is waited for again in step 4,
+within the same 30 s ceiling counted from the hand-over, and anything it writes
+after the lease is released is refused by the leader fence.
 
 ---
 

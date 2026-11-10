@@ -129,9 +129,13 @@ func capacitySeries(t *testing.T, m *metrics.Metrics) map[string]float64 {
 	t.Helper()
 	out := map[string]float64{}
 	for name, c := range map[string]prometheus.Collector{
-		"sqi_capacity_demand_cores":     m.CapacityDemandCores,
-		"sqi_capacity_desired_machines": m.CapacityDesiredMachines,
-		"sqi_capacity_members":          m.CapacityMembers,
+		"sqi_capacity_demand_cores":        m.CapacityDemandCores,
+		"sqi_capacity_desired_machines":    m.CapacityDesiredMachines,
+		"sqi_capacity_members":             m.CapacityMembers,
+		"sqi_capacity_machines":            m.CapacityMachines,
+		"sqi_capacity_actions_total":       m.CapacityActionsTotal,
+		"sqi_capacity_boot_timeouts_total": m.CapacityBootTimeoutsTotal,
+		"sqi_capacity_group_degraded":      m.CapacityGroupDegraded,
 	} {
 		ch := make(chan prometheus.Metric)
 		go func() { c.Collect(ch); close(ch) }()
@@ -145,7 +149,11 @@ func capacitySeries(t *testing.T, m *metrics.Metrics) map[string]float64 {
 				labels = append(labels, l.GetName()+"="+l.GetValue())
 			}
 			sort.Strings(labels)
-			out[name+"{"+strings.Join(labels, ",")+"}"] = d.GetGauge().GetValue()
+			v := d.GetGauge().GetValue()
+			if d.Counter != nil {
+				v = d.GetCounter().GetValue()
+			}
+			out[name+"{"+strings.Join(labels, ",")+"}"] = v
 		}
 	}
 	return out
@@ -220,9 +228,10 @@ func (s *spyStore) ListUsagePools(ctx context.Context) ([]store.UsagePool, error
 }
 
 // With no capacity group the sweep makes one query and changes nothing: no
-// demand query, no log line, no series. With only a disabled
-// group it also reads that group's members, whose vanished ephemeral machines
-// it must still remove, and nothing else.
+// demand query, no log line, no series, no power transition, no control
+// request and no packet. With only a disabled group it also reads that group's
+// members, whose vanished ephemeral machines it must still remove, and nothing
+// else.
 func TestCapacitySweep_NoGroupsDoesNothing(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -241,6 +250,9 @@ func TestCapacitySweep_NoGroupsDoesNothing(t *testing.T) {
 				spy = &spyStore{Store: st, calls: map[string]int{}}
 				return spy
 			})
+			ctl, packets := &controlBus{}, &packetRecorder{}
+			s.bus = ctl
+			s.cfg.SendWakePackets = packets.send
 			tc.setup(t, st)
 			// Work and an idle worker exist, so any demand query would find some.
 			submitReady(t, st, 3, store.Step{})
@@ -267,6 +279,12 @@ func TestCapacitySweep_NoGroupsDoesNothing(t *testing.T) {
 			}
 			if sts := s.capacityStatuses(); len(sts) != 0 {
 				t.Errorf("CapacityStatuses = %v, want none", sts)
+			}
+			if c := ctl.sent(); len(c) != 0 {
+				t.Errorf("control requests = %+v, want none", c)
+			}
+			if p := packets.all(); len(p) != 0 {
+				t.Errorf("packets = %+v, want none", p)
 			}
 		})
 	}

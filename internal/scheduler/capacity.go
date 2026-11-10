@@ -4,17 +4,19 @@ package scheduler
 
 // capacity.go is the capacity sweep step. Once per heartbeat-sweep tick, and
 // so on the leader only, it removes the ephemeral members of every group that
-// vanished (see [Scheduler.removeVanishedEphemerals]), then reads what
-// internal/capacity's policy needs, evaluates every enabled capacity group, and
-// publishes the result as each group's status (read by the API) and as the
-// sqi_capacity_* gauges (read by external autoscalers). Removing a vanished
-// member is its only write.
+// vanished (see [Scheduler.removeVanishedEphemerals]) and expires the power
+// transitions that overran their boot timeout (capacityact.go), then reads
+// what internal/capacity's policy needs, evaluates every enabled capacity
+// group, acts on the result for the groups whose provider acts (the actuator,
+// capacityact.go), and publishes it as each group's status (read by the API)
+// and as the sqi_capacity_* gauges (read by external autoscalers).
 //
 // With no group at all it reads the group list and nothing else: no member or
 // demand query, no log line and no series, so a farm that has not set up
 // capacity groups is unaffected. With only disabled groups it also
-// reads their members, whose vanished ephemeral machines still need removing,
-// but evaluates and exports nothing.
+// reads their members, whose vanished ephemeral machines and overrun
+// transitions still need settling, but evaluates and exports nothing. External
+// groups are evaluated and exported, never acted on.
 
 import (
 	"context"
@@ -26,6 +28,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/uberware/sqi/internal/capacity"
 	"github.com/uberware/sqi/internal/store"
@@ -48,14 +52,21 @@ type capacityState struct {
 	// warned is, per mismatched member, the reason last logged, so each
 	// mismatch is logged once.
 	warned map[string]string
+	// act is the actuator's state; see capacityact.go. Its own mutex guards
+	// what provider calls update from their goroutines.
+	act actuatorState
 
-	// mu guards statuses, which the API reads concurrently with the sweep.
-	// Only the sweep writes statuses, with sweepMu held, so the sweep may
-	// read them under sweepMu alone.
+	// mu guards statuses, which the API reads concurrently with the sweep
+	// and which a provider call updates (each status's LastAction) from its
+	// own goroutine, so every access takes it. The sweep replaces statuses
+	// with sweepMu held.
 	mu sync.Mutex
 	// statuses are the last evaluation's, in group order. Their group names
 	// are the ones the gauges hold series for.
 	statuses []capacity.Status
+	// waitable are the groups the last sweep found acting, in group order, for
+	// the unschedulable sweep ([Scheduler.capacityWaitReason]).
+	waitable []waitableGroup
 }
 
 // CapacityStatus returns the last evaluation of the enabled group groupID,
@@ -103,6 +114,7 @@ func (s *Scheduler) sweepCapacityAt(ctx context.Context, now time.Time) {
 		return
 	}
 	farmGroups := s.farmCapacityGroups(all)
+	s.pruneCapacitySeries(farmGroups)
 	if len(farmGroups) == 0 {
 		s.clearCapacity()
 		return
@@ -118,12 +130,29 @@ func (s *Scheduler) sweepCapacityAt(ctx context.Context, now time.Time) {
 	if s.removeVanishedEphemerals(ctx, now, farmGroups, members) {
 		return // fenced
 	}
+	// Before the evaluation, so a member whose wake overran is no longer
+	// counted as pending and another can be chosen on the same tick.
+	if s.expireCapacityTransitions(ctx, now, farmGroups, members) {
+		return // fenced
+	}
 	groups := enabledCapacityGroups(farmGroups)
 	if len(groups) == 0 {
 		s.clearCapacity()
 		return
 	}
-	s.evaluateCapacity(ctx, now, groups, members)
+	// Held to the end of the sweep, so a provider call's result cannot
+	// rewrite a launch record between this read and the sweep's writes.
+	records, release := s.readLaunchRecords(ctx, groups)
+	defer release()
+	statuses, ok := s.evaluateCapacity(ctx, now, groups, members, records)
+	if !ok {
+		return
+	}
+	if s.actuateCapacity(ctx, now, groups, members, statuses, records) {
+		return // fenced
+	}
+	s.publishCapacity(groups, statuses)
+	s.noteWaitable(now, groups, members, statuses)
 }
 
 // farmCapacityGroups keeps the groups of the scheduler's farm (of every farm
@@ -231,32 +260,36 @@ func vanishedEphemeral(w store.Worker, g store.CapacityGroup, now time.Time) boo
 // no metric unless an earlier sweep exported one.
 func (s *Scheduler) clearCapacity() {
 	cs := &s.capState
-	for _, st := range cs.statuses {
+	for _, st := range s.capacityStatuses() {
 		s.deleteCapacitySeries(st.GroupName)
 	}
 	cs.idleSince, cs.lastStepUp, cs.lastDesired, cs.warned = nil, nil, nil, nil
 	cs.mu.Lock()
-	cs.statuses = nil
+	cs.statuses, cs.waitable = nil, nil
 	cs.mu.Unlock()
 }
 
 // evaluateCapacity evaluates groups, whose members workers holds by group ID,
-// and publishes the result. A failed read keeps the last evaluation.
+// and returns one status per group, in order. The policy's pacing is first
+// seeded from records ([Scheduler.seedPacing]). A failed read returns false,
+// and the last evaluation stands.
 func (s *Scheduler) evaluateCapacity(
 	ctx context.Context, now time.Time, groups []store.CapacityGroup, workers map[string][]store.Worker,
-) {
+	records launchRecords,
+) ([]capacity.Status, bool) {
 	in, err := s.capacityInputs(ctx, now, groups, workers)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.logger.WarnContext(ctx, "scheduler: capacity sweep: read failed; keeping the last evaluation",
 				slog.Any("error", err))
 		}
-		return
+		return nil, false
 	}
 	cs := &s.capState
 	cs.idleSince = in.idleSince
 	cs.lastStepUp = keepGroups(cs.lastStepUp, groups)
 	cs.lastDesired = keepGroups(cs.lastDesired, groups)
+	s.seedPacing(now, groups, records)
 
 	statuses := capacity.Evaluate(capacity.Snapshot{
 		Now:     now,
@@ -271,7 +304,7 @@ func (s *Scheduler) evaluateCapacity(
 		LastDesired: cs.lastDesired,
 	})
 	s.recordMismatches(ctx, groups, in.members, statuses)
-	s.publishCapacity(statuses)
+	return statuses, true
 }
 
 // keepGroups returns m, made if nil, without the entries of groups not in
@@ -321,7 +354,9 @@ func (s *Scheduler) capacityInputs(
 
 // capacityMembers builds each group's members, online and offline, from
 // workers (by group ID), and records in idle when each online member holding
-// nothing was first seen so.
+// nothing was first seen so. A member's power state changing restarts its idle
+// time: one put back to awake by a refused or overrun retirement is not
+// retired again before another idle timeout.
 func (s *Scheduler) capacityMembers(
 	now time.Time, groups []store.CapacityGroup, workers map[string][]store.Worker,
 	commitments map[string]store.WorkerCommitment, idle map[string]time.Time,
@@ -337,6 +372,9 @@ func (s *Scheduler) capacityMembers(
 				since, seen := s.capState.idleSince[w.ID]
 				if !seen {
 					since = now
+				}
+				if at := w.PowerStateAt; at != nil && at.After(since) && !at.After(now) {
+					since = *at
 				}
 				idle[w.ID] = since
 				m.IdleSince = &since
@@ -466,35 +504,166 @@ func (s *Scheduler) recordMismatches(
 	cs.warned = warned
 }
 
-// publishCapacity stores statuses for the API and sets the gauges, deleting
-// the series of groups that are gone or renamed.
-func (s *Scheduler) publishCapacity(statuses []capacity.Status) {
+// publishCapacity stores statuses, one per group of groups, for the API and
+// sets the gauges, deleting the series of groups that are gone or renamed.
+// The power-state and degraded gauges are set only for groups whose provider
+// acts.
+func (s *Scheduler) publishCapacity(groups []store.CapacityGroup, statuses []capacity.Status) {
 	cs := &s.capState
 	current := make(map[string]struct{}, len(statuses))
-	for _, st := range statuses {
+	for i, st := range statuses {
 		s.metrics.CapacityDemandCores.WithLabelValues(st.GroupName).Set(float64(st.DemandCores))
 		s.metrics.CapacityDesiredMachines.WithLabelValues(st.GroupName).Set(float64(st.DesiredMachines))
 		s.metrics.CapacityMembers.WithLabelValues(st.GroupName, "online").Set(float64(st.OnlineMembers))
 		s.metrics.CapacityMembers.WithLabelValues(st.GroupName, "offline").Set(float64(st.OfflineMembers))
+		if groups[i].Provider == store.CapacityProviderExternal {
+			// A group switched to external keeps no power series.
+			s.deletePowerGauges(st.GroupName)
+		} else {
+			s.publishPowerGauges(st)
+		}
 		current[st.GroupName] = struct{}{}
 	}
-	for _, old := range cs.statuses {
+	for _, old := range s.capacityStatuses() {
 		if _, ok := current[old.GroupName]; !ok {
 			s.deleteCapacitySeries(old.GroupName)
 		}
 	}
 
 	cs.mu.Lock()
+	for i := range statuses {
+		statuses[i].LastAction = cs.act.lastActionOf(statuses[i].GroupID)
+	}
 	cs.statuses = statuses
 	cs.mu.Unlock()
 }
 
-// deleteCapacitySeries removes every sqi_capacity_* series of the group name.
+// waitableGroup is an enabled group whose provider acts, as the last capacity
+// sweep left it: what a task that no online worker can run may be waiting for.
+type waitableGroup struct {
+	name string
+	// verb is what the group does to bring a machine: "wake" a member it
+	// already has (a named group), or "launch" one from its profile (sized).
+	verb string
+	// machines are what it could bring: a named group's members asked to
+	// start that have not registered and those the policy could pick to
+	// wake, or one machine of a sized group's profile
+	// (store.CapacityGroup.ProfileWorker).
+	machines []store.Worker
+}
+
+// noteWaitable records, for [Scheduler.capacityWaitReason], the groups that
+// will bring capacity: each whose provider acts, with the machines it is
+// waking or could wake (named), or its profile (sized). A sized group that is
+// degraded and backing off is left out, as is a named group with no member to
+// wake. members is as the sweep read it, before it moved candidates to waking,
+// so a machine woken this tick is among the wakeable ones. groups and statuses
+// are in the same order.
+func (s *Scheduler) noteWaitable(
+	now time.Time, groups []store.CapacityGroup, members map[string][]store.Worker, statuses []capacity.Status,
+) {
+	var out []waitableGroup
+	for i, g := range groups {
+		if !s.providerActs(g) {
+			continue
+		}
+		w := waitableGroup{name: g.Name, verb: "wake"}
+		if g.Kind == store.CapacityGroupSized {
+			if d := statuses[i].Degraded; d != nil && now.Before(d.BackoffUntil) {
+				continue
+			}
+			w.verb, w.machines = "launch", []store.Worker{g.ProfileWorker()}
+		} else {
+			for _, m := range members[g.ID] {
+				if capacity.Pending(m) || capacity.Wakeable(m, g.BootTimeout, now) {
+					w.machines = append(w.machines, m)
+				}
+			}
+			if len(w.machines) == 0 {
+				continue
+			}
+		}
+		out = append(out, w)
+	}
+	cs := &s.capState
+	cs.mu.Lock()
+	cs.waitable = out
+	cs.mu.Unlock()
+}
+
+// providerActs reports whether g's provider acts: wake_on_lan, or a script
+// this server configures. It has no side effect, unlike groupProvider.
+func (s *Scheduler) providerActs(g store.CapacityGroup) bool {
+	if g.Provider == store.CapacityProviderWakeOnLAN {
+		return true
+	}
+	_, ok := s.configuredScript(g)
+	return ok
+}
+
+// hasWaitable reports whether any group is waitable.
+func (s *Scheduler) hasWaitable() bool {
+	cs := &s.capState
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return len(cs.waitable) > 0
+}
+
+// capacityWaitReason returns the unschedulable reason for a task of step and
+// job needing requiredCores: that it waits for the first waitable group, in
+// the sweep's order (priority descending, then name), with a machine that
+// could run it ([Scheduler.couldRun], with pools), or "" when none has. It
+// reads memory only, and holds the capacity state's lock only to take the
+// groups: a sweep replaces that slice whole and never changes it.
+func (s *Scheduler) capacityWaitReason(job store.Job, step store.Step, requiredCores int, pools map[string]store.UsagePool) string {
+	cs := &s.capState
+	cs.mu.Lock()
+	waitable := cs.waitable
+	cs.mu.Unlock()
+	for _, g := range waitable {
+		if slices.ContainsFunc(g.machines, func(w store.Worker) bool { return s.couldRun(w, job, step, requiredCores, pools) }) {
+			return fmt.Sprintf("waiting for capacity group %s to %s a machine", g.name, g.verb)
+		}
+	}
+	return ""
+}
+
+// publishPowerGauges sets an acting group's members by power state and its
+// degraded flag.
+func (s *Scheduler) publishPowerGauges(st capacity.Status) {
+	all := st.OnlineMembers + st.OfflineMembers
+	awake := max(all-st.Waking-st.Retiring-st.Asleep-st.WakeFailed, 0)
+	for state, n := range map[store.PowerState]int{
+		store.PowerAwake: awake, store.PowerWaking: st.Waking, store.PowerRetiring: st.Retiring,
+		store.PowerAsleep: st.Asleep, store.PowerWakeFailed: st.WakeFailed,
+	} {
+		s.metrics.CapacityMachines.WithLabelValues(st.GroupName, string(state)).Set(float64(n))
+	}
+	degraded := 0.0
+	if st.Degraded != nil {
+		degraded = 1
+	}
+	s.metrics.CapacityGroupDegraded.WithLabelValues(st.GroupName).Set(degraded)
+}
+
+// deletePowerGauges removes the group name's power-state and degraded series.
+func (s *Scheduler) deletePowerGauges(name string) {
+	byGroup := prometheus.Labels{"group": name}
+	s.metrics.CapacityMachines.DeletePartialMatch(byGroup)
+	s.metrics.CapacityGroupDegraded.DeletePartialMatch(byGroup)
+}
+
+// deleteCapacitySeries removes every sqi_capacity_* series of the group name,
+// its action counters included.
 func (s *Scheduler) deleteCapacitySeries(name string) {
 	s.metrics.CapacityDemandCores.DeleteLabelValues(name)
 	s.metrics.CapacityDesiredMachines.DeleteLabelValues(name)
 	s.metrics.CapacityMembers.DeleteLabelValues(name, "online")
 	s.metrics.CapacityMembers.DeleteLabelValues(name, "offline")
+	s.deletePowerGauges(name)
+	byGroup := prometheus.Labels{"group": name}
+	s.metrics.CapacityActionsTotal.DeletePartialMatch(byGroup)
+	s.metrics.CapacityBootTimeoutsTotal.DeletePartialMatch(byGroup)
 }
 
 // profileMismatch returns every way w's registration falls short of the sized

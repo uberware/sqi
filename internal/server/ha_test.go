@@ -416,7 +416,7 @@ func TestHandOver_ReleasesWhenSchedulerHangs(t *testing.T) {
 			}
 			s.ha.role.promote("self", 1)
 			s.cancelSched = func() {}
-			s.ha.schedDone = make(chan struct{}) // a scheduler that never returns
+			s.schedDone = make(chan struct{}) // a scheduler that never returns
 
 			ctx, cancel := tc.ctx()
 			defer cancel()

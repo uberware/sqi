@@ -5,6 +5,7 @@ package brokerauth_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 
@@ -108,6 +109,32 @@ func TestWorkerPermissions_ConfinesToOwnSubtree(t *testing.T) {
 	}
 	if subjectAllowed(p.Subscribe, "_INBOX.x.1") {
 		t.Error("a worker must NOT be able to subscribe to the process-global _INBOX subtree")
+	}
+}
+
+// TestWorkerPermissions_AllowsOneResponse: the worker answers a control
+// request it received through a response grant of one message, and holds no
+// general publish grant on reply subjects.
+func TestWorkerPermissions_AllowsOneResponse(t *testing.T) {
+	p := brokerauth.WorkerPermissions("worker-a")
+	if p.Response == nil {
+		t.Fatal("Response grant missing")
+	}
+	if p.Response.MaxMsgs != 1 || p.Response.Expires != time.Minute {
+		t.Errorf("Response = {MaxMsgs: %d, Expires: %v}, want {1, 1m}", p.Response.MaxMsgs, p.Response.Expires)
+	}
+	if !subjectAllowed(p.Subscribe, "worker.control.worker-a") {
+		t.Error("a worker must be able to subscribe to its own worker.control.<workerID>")
+	}
+	for _, s := range []string{"worker.control.worker-b", "worker.control.>", "worker.control.*"} {
+		if subjectAllowed(p.Subscribe, s) {
+			t.Errorf("subscribe %q must not be allowed", s)
+		}
+	}
+	for _, s := range []string{"worker.control.worker-a", "_INBOX.x.1", "_INBOX_worker-b.x"} {
+		if subjectAllowed(p.Publish, s) {
+			t.Errorf("publish %q must not be allowed", s)
+		}
 	}
 }
 

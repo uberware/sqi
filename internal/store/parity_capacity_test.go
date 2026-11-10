@@ -220,7 +220,10 @@ func TestCapacityGroup_Validate(t *testing.T) {
 		{"name with space", func(g *store.CapacityGroup) { g.Name = "a b" }, "name"},
 		{"kind named", func(g *store.CapacityGroup) { g.Kind = store.CapacityGroupNamed }, ""},
 		{"kind unknown", func(g *store.CapacityGroup) { g.Kind = "pooled" }, "kind"},
-		{"provider wake_on_lan", func(g *store.CapacityGroup) { g.Provider = "wake_on_lan" }, ""},
+		{"provider wake_on_lan named", func(g *store.CapacityGroup) {
+			g.Provider, g.Kind, g.Profile = "wake_on_lan", store.CapacityGroupNamed, store.MachineProfile{}
+		}, ""},
+		{"provider wake_on_lan sized", func(g *store.CapacityGroup) { g.Provider = "wake_on_lan" }, "needs a named group"},
 		{"provider script", func(g *store.CapacityGroup) { g.Provider = "script:boot" }, ""},
 		{"provider empty script name", func(g *store.CapacityGroup) { g.Provider = "script:" }, "provider"},
 		{"provider unknown", func(g *store.CapacityGroup) { g.Provider = "aws" }, "provider"},

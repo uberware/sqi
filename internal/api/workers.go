@@ -110,9 +110,28 @@ type workerResponse struct {
 	Tags            map[string]string `json:"tags,omitempty"`
 	Status          string            `json:"status"`
 	Removable       bool              `json:"removable"`
-	LastHeartbeatAt *time.Time        `json:"last_heartbeat_at,omitempty"`
-	RegisteredAt    time.Time         `json:"registered_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
+	// PowerState is always present: awake for every worker no capacity
+	// group has moved. The power and machine fields below follow the same
+	// visibility as the rest of the response, as IPAddress does.
+	PowerState      string     `json:"power_state"`
+	PowerStateAt    *time.Time `json:"power_state_at,omitempty"`
+	PowerReason     string     `json:"power_reason,omitempty"`
+	CloudInstanceID string     `json:"cloud_instance_id,omitempty"`
+	// HasWakeAddress is [store.Worker.HasWakeAddress]: whether a wake-on-LAN
+	// packet can be addressed to the worker. The interfaces themselves are in
+	// the detail only, so a list stays small.
+	HasWakeAddress  bool       `json:"has_wake_address"`
+	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
+	RegisteredAt    time.Time  `json:"registered_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+// netInterfaceResponse is one network interface a worker reported: what a
+// wake-on-LAN packet is addressed with. Addrs is an array, never null.
+type netInterfaceResponse struct {
+	Name  string   `json:"name"`
+	MAC   string   `json:"mac"`
+	Addrs []string `json:"addrs"`
 }
 
 // workerDetailResponse extends [workerResponse] with the active-task detail
@@ -121,7 +140,20 @@ type workerResponse struct {
 type workerDetailResponse struct {
 	workerResponse
 
-	CurrentTasks []currentTaskResponse `json:"current_tasks"`
+	// Interfaces are the network interfaces the worker reported at
+	// registration, never null.
+	Interfaces   []netInterfaceResponse `json:"interfaces"`
+	CurrentTasks []currentTaskResponse  `json:"current_tasks"`
+}
+
+// toWorkerDetailResponse converts wk into the detail wire type, with no
+// current tasks yet.
+func toWorkerDetailResponse(wk store.Worker) workerDetailResponse {
+	return workerDetailResponse{
+		workerResponse: toWorkerResponse(wk),
+		Interfaces:     toNetInterfaceResponses(wk.Interfaces),
+		CurrentTasks:   []currentTaskResponse{},
+	}
 }
 
 // workerListResponse is the paginated result returned by GET /api/v1/workers.
@@ -211,10 +243,7 @@ func (h *workerHandler) getWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := workerDetailResponse{
-		workerResponse: toWorkerResponse(wk),
-		CurrentTasks:   []currentTaskResponse{},
-	}
+	resp := toWorkerDetailResponse(wk)
 
 	// Attach active-task detail: every task in the assigned or running state that
 	// points to this worker. A worker can execute several tasks at once (bounded
@@ -447,7 +476,8 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 // toWorkerResponse converts a [store.Worker] into the API wire type. Status is
 // the worker's effective status ([store.Worker.EffectiveStatus]), so a
 // disabled worker reads "disabled" whatever its liveness, and Removable is the
-// server-authoritative [store.Worker.Removable].
+// server-authoritative [store.Worker.Removable]. PowerState is
+// [store.Worker.EffectivePowerState].
 func toWorkerResponse(wk store.Worker) workerResponse {
 	return workerResponse{
 		ID:              wk.ID,
@@ -472,10 +502,29 @@ func toWorkerResponse(wk store.Worker) workerResponse {
 		Tags:            wk.Tags,
 		Status:          string(wk.EffectiveStatus()),
 		Removable:       wk.Removable(),
+		PowerState:      string(wk.EffectivePowerState()),
+		PowerStateAt:    wk.PowerStateAt,
+		PowerReason:     wk.PowerReason,
+		CloudInstanceID: wk.CloudInstanceID,
+		HasWakeAddress:  wk.HasWakeAddress(),
 		LastHeartbeatAt: wk.LastHeartbeatAt,
 		RegisteredAt:    wk.RegisteredAt,
 		UpdatedAt:       wk.UpdatedAt,
 	}
+}
+
+// toNetInterfaceResponses converts a worker's interfaces, an empty addrs
+// list as [] rather than null.
+func toNetInterfaceResponses(ifs []store.NetInterface) []netInterfaceResponse {
+	out := make([]netInterfaceResponse, len(ifs))
+	for i, nic := range ifs {
+		addrs := nic.Addrs
+		if addrs == nil {
+			addrs = []string{}
+		}
+		out[i] = netInterfaceResponse{Name: nic.Name, MAC: nic.MAC, Addrs: addrs}
+	}
+	return out
 }
 
 // ── Sort helpers ──────────────────────────────────────────────────────────────

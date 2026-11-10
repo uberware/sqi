@@ -41,6 +41,10 @@ func (s *Scheduler) sweepUnschedulable(ctx context.Context) {
 		return
 	}
 
+	// A task's answer depends only on its step (which fixes its job) and the
+	// cores it needs, so each is evaluated once per sweep: a backlog of one
+	// step costs one job, step and pool read, not one per task.
+	verdicts := map[stepCores]string{}
 	for _, task := range ready {
 		if s.deposed() {
 			return
@@ -55,15 +59,40 @@ func (s *Scheduler) sweepUnschedulable(ctx context.Context) {
 		if task.UnschedulableReason == "" && task.UpdatedAt.After(cutoff) {
 			continue // still within grace, not yet flagged
 		}
-		s.reconcileTaskSchedulability(ctx, task, workers)
+		key := stepCores{stepID: task.StepID, cores: requiredCores(task)}
+		reason, ok := verdicts[key]
+		if !ok {
+			reason = s.evaluateSchedulability(ctx, task, workers)
+			verdicts[key] = reason
+		}
+		s.applySchedulability(ctx, task, reason)
 	}
 }
 
+// stepCores is what a task's schedulability depends on besides the workers:
+// its step and the cores it needs.
+type stepCores struct {
+	stepID string
+	cores  int
+}
+
+// requiredCores is the cores task declares it needs, or 0 for none.
+func requiredCores(task store.Task) int {
+	if task.RequiredCores != nil {
+		return *task.RequiredCores
+	}
+	return 0
+}
+
 // reconcileTaskSchedulability computes task's current schedulability against
-// workers and, only when the result differs from the task's stored
-// UnschedulableReason, persists the change and notifies WebSocket subscribers.
+// workers and applies it ([Scheduler.applySchedulability]).
 func (s *Scheduler) reconcileTaskSchedulability(ctx context.Context, task store.Task, workers []store.Worker) {
-	reason := s.evaluateSchedulability(ctx, task, workers)
+	s.applySchedulability(ctx, task, s.evaluateSchedulability(ctx, task, workers))
+}
+
+// applySchedulability persists reason as task's UnschedulableReason and
+// notifies WebSocket subscribers, only when it differs from the stored one.
+func (s *Scheduler) applySchedulability(ctx context.Context, task store.Task, reason string) {
 	if reason == task.UnschedulableReason {
 		return // no change — avoid notification churn
 	}
@@ -97,22 +126,45 @@ func (s *Scheduler) reconcileTaskSchedulability(ctx context.Context, task store.
 // is eligible to run task, otherwise a human-readable reason suitable for
 // [store.Task.UnschedulableReason]. A store lookup failure returns ""
 // (schedulable), so a likely transient error does not flag the task.
+//
+// Where no worker is eligible, the reason is that the task waits for a
+// capacity group when one that acts could bring a machine that runs it
+// ([Scheduler.capacityWaitReason]). That view is in memory, so it adds no
+// store call.
 func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task, workers []store.Worker) string {
-	if len(workers) == 0 {
+	if len(workers) == 0 && !s.hasWaitable() {
 		return "no online workers"
 	}
 
+	// A read that fails reports the task schedulable, which leaves it alone,
+	// except with no worker online: that reason needs no read, and reporting
+	// it keeps a passing store error from clearing it.
+	unread := ""
+	if len(workers) == 0 {
+		unread = "no online workers"
+	}
 	job, err := s.store.GetJob(ctx, task.JobID)
 	if err != nil {
-		return ""
+		return unread
 	}
 	step, err := s.store.GetStep(ctx, task.StepID)
 	if err != nil {
-		return ""
+		return unread
 	}
 	pools, activeCounts, err := s.buildUsageContext(ctx, step)
 	if err != nil {
-		return ""
+		return unread
+	}
+
+	cores := requiredCores(task)
+	wait := func(reason string) string {
+		if r := s.capacityWaitReason(job, step, cores, pools); r != "" {
+			return r
+		}
+		return reason
+	}
+	if len(workers) == 0 {
+		return wait("no online workers")
 	}
 
 	var lastReason string
@@ -139,7 +191,7 @@ func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task,
 		}
 		return "" // at least one eligible worker — schedulable
 	}
-	return "no eligible online worker: " + lastReason
+	return wait("no eligible online worker: " + lastReason)
 }
 
 // onlineWorkers returns every online worker the scheduler's farm can dispatch

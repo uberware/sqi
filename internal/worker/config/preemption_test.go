@@ -112,3 +112,53 @@ func TestLoad_MalformedPreemptionPollIntervalEnv(t *testing.T) {
 		t.Fatalf("Load error = %v, want it to name SQI_WORKER_PREEMPTION_POLL_INTERVAL", err)
 	}
 }
+
+func TestDefault_CloudInstanceID(t *testing.T) {
+	cfg := Default()
+	want := CloudInstanceIDConfig{Source: "none"}
+	if cfg.Worker.CloudInstanceID != want {
+		t.Errorf("default cloud_instance_id = %+v, want %+v", cfg.Worker.CloudInstanceID, want)
+	}
+}
+
+func TestLoad_CloudInstanceIDFromFileAndEnv(t *testing.T) {
+	path := writeTempYAML(t, "worker:\n  cloud_instance_id:\n    source: gcp\n    endpoint: http://127.0.0.1:9\n")
+	t.Setenv("SQI_WORKER_NATS_URL", "nats://localhost:4222")
+	cfg, err := Load(path, FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := CloudInstanceIDConfig{Source: "gcp", Endpoint: "http://127.0.0.1:9"}
+	if cfg.Worker.CloudInstanceID != want {
+		t.Fatalf("from file: %+v, want %+v", cfg.Worker.CloudInstanceID, want)
+	}
+
+	t.Setenv("SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE", "azure")
+	t.Setenv("SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT", "http://proxy:80")
+	cfg, err = Load(path, FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load with env: %v", err)
+	}
+	want = CloudInstanceIDConfig{Source: "azure", Endpoint: "http://proxy:80"}
+	if cfg.Worker.CloudInstanceID != want {
+		t.Errorf("env did not override the file: %+v, want %+v", cfg.Worker.CloudInstanceID, want)
+	}
+}
+
+func TestLoad_CloudInstanceIDSourceInvalid(t *testing.T) {
+	t.Setenv("SQI_WORKER_NATS_URL", "nats://localhost:4222")
+	t.Setenv("SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE", "oracle")
+	_, err := Load("", FlagOverrides{})
+	if err == nil || !strings.Contains(err.Error(), "worker.cloud_instance_id.source") {
+		t.Fatalf("Load error = %v, want it to name worker.cloud_instance_id.source", err)
+	}
+}
+
+func TestLoad_CloudInstanceIDRejectsUnknownKey(t *testing.T) {
+	t.Setenv("SQI_WORKER_NATS_URL", "nats://localhost:4222")
+	path := writeTempYAML(t, "worker:\n  cloud_instance_id:\n    sorce: aws\n")
+	_, err := Load(path, FlagOverrides{})
+	if err == nil || !strings.Contains(err.Error(), "unknown key worker.cloud_instance_id.sorce") {
+		t.Fatalf("Load error = %v, want the misspelled key named", err)
+	}
+}

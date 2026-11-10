@@ -127,4 +127,12 @@ func TestSubjectHelpers_MatchWorkerSubscribeGrant(t *testing.T) {
 		t.Errorf("subject %q is granted for subscribe by WorkerPermissions(%q) — a worker can read another worker's cancels",
 			TaskCancelSubject(other), me)
 	}
+	if !permAllows(perms.Subscribe, WorkerControlSubject(me)) {
+		t.Errorf("subject %q is not granted for subscribe by WorkerPermissions(%q); allow list: %v",
+			WorkerControlSubject(me), me, perms.Subscribe.Allow)
+	}
+	if permAllows(perms.Subscribe, WorkerControlSubject(other)) {
+		t.Errorf("subject %q is granted for subscribe by WorkerPermissions(%q): a worker can receive another worker's power commands",
+			WorkerControlSubject(other), me)
+	}
 }

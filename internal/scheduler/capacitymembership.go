@@ -27,6 +27,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -54,10 +56,12 @@ type registrationContext struct {
 
 // beforeRegistration touches the worker's broker credential when broker
 // authentication is on, and reads the worker's current row when the worker
-// may be an ephemeral member: one that names a group with authentication off,
-// or whose credential was enrolled into a group with it on. Both are
-// best-effort and never stop a registration; a fenced touch is recorded, and
-// the registration write that follows is fenced too.
+// may be an ephemeral member (one that names a group with authentication off,
+// or whose credential was enrolled into a group with it on), for the cloned
+// worker ID check. A member the registration wakes needs no read: the
+// registration write reports it ([store.Registration]). Both are best-effort
+// and never stop a registration; a fenced touch is recorded, and the
+// registration write that follows is fenced too.
 //
 // The touch comes before the registration write so that the credential is
 // known in time to decide whether the row is worth reading. A registration
@@ -209,6 +213,72 @@ func (s *Scheduler) warnOnClonedWorkerID(ctx context.Context, m protocol.Registe
 			"so each machine creates its own on first boot"))
 }
 
+// noteMemberWoke logs a capacity-group member whose registration turned it
+// from waking, asleep or wake_failed to awake (stored), as reg reports, and
+// wakes any lease request it parked while it could take no work. The store
+// made the transition; this only reports it.
+func (s *Scheduler) noteMemberWoke(ctx context.Context, reg store.Registration, stored store.Worker, now time.Time) {
+	if reg.WokeFrom == "" {
+		return
+	}
+	attrs := []any{
+		slog.String("worker_id", stored.ID), slog.String("capacity_group_id", stored.CapacityGroupID),
+		slog.String("previous_power_state", string(reg.WokeFrom)),
+	}
+	if reg.WokeFromAt != nil {
+		attrs = append(attrs, slog.Duration("after", now.Sub(*reg.WokeFromAt)))
+	}
+	s.logger.InfoContext(ctx, "scheduler: capacity group member woke", attrs...)
+	s.WakeWorker(stored.ID)
+}
+
+// deregisteredStatus reads workerID after its deregistration was applied,
+// finishes its retirement when the capacity actuator was retiring it
+// ([Scheduler.finishRetirementOnDeregister]), and returns the status its
+// worker event carries: offline, or disabled for a disabled worker. removed
+// is true when the worker was deleted, and fenced when a write was fenced.
+func (s *Scheduler) deregisteredStatus(ctx context.Context, workerID string) (status store.WorkerStatus, removed, fenced bool) {
+	w, err := s.store.GetWorker(ctx, workerID)
+	if err != nil {
+		return store.WorkerStatusOffline, false, false
+	}
+	if w.PowerState == store.PowerRetiring {
+		if w, removed, fenced = s.finishRetirementOnDeregister(ctx, w); removed || fenced {
+			return "", removed, fenced
+		}
+	}
+	return w.EffectiveStatus(), false, false
+}
+
+// finishRetirementOnDeregister finishes the retirement of w, a worker found
+// retiring after its deregistration was applied: the capacity actuator told it
+// to sleep or shut down, and it left. A named member becomes asleep and
+// offline; an ephemeral one is deleted and its credential revoked. It returns
+// the worker as it now stands, removed when it was deleted, and fenced when
+// the write was fenced: the caller must stop and leave the message for the new
+// leader. A member that still holds a task is left retiring, as the store
+// refuses it, for the boot timeout to settle.
+func (s *Scheduler) finishRetirementOnDeregister(ctx context.Context, w store.Worker) (store.Worker, bool, bool) {
+	// A script provider ignores retire_action, so only another names it.
+	action := "retired"
+	if g, err := s.store.GetCapacityGroup(ctx, w.CapacityGroupID); err == nil {
+		if _, isScript := g.Provider.ScriptName(); !isScript {
+			action = g.RetireAction
+		}
+	}
+	done, deleted, ok, err := s.finishRetirement(ctx, w, time.Now().UTC(), "scheduler: capacity group member retired: "+action,
+		slog.String("capacity_group_id", w.CapacityGroupID))
+	if s.stopIfFenced(ctx, err) {
+		return w, false, true
+	}
+	if err != nil || !ok {
+		s.warnUnlessStopped(ctx, err, "scheduler: finish capacity retirement on deregister failed",
+			slog.String("worker_id", w.ID))
+		return w, false, false
+	}
+	return done, deleted, false
+}
+
 // removeDepartedEphemeral deletes workerID when kind says it left for good and
 // it is an ephemeral capacity-group member, revoking its credential, and
 // reports whether it did. Any other kind, the empty one included, keeps the
@@ -332,4 +402,33 @@ func (b *backgroundCalls) Close(timeout time.Duration) bool {
 // reading what the calls did; it must not run alongside a call to Go.
 func (b *backgroundCalls) Wait() {
 	b.wg.Wait()
+}
+
+// storeInterfaces converts the interfaces a worker reported at registration to
+// the store's form, which carries the same fields. What a wake cannot use is
+// dropped: an interface whose MAC is not a 6-byte hardware address, and an
+// address that is not an IP prefix. What is left is capped as the worker caps
+// it ([protocol.MaxInterfaces], [protocol.MaxAddrsPerInterface]), so a worker
+// that sends more cannot make the server store more.
+func storeInterfaces(in []protocol.NetInterface) []store.NetInterface {
+	var out []store.NetInterface
+	for _, n := range in {
+		if len(out) == protocol.MaxInterfaces {
+			break
+		}
+		if mac, err := net.ParseMAC(n.MAC); err != nil || len(mac) != 6 {
+			continue
+		}
+		var addrs []string
+		for _, a := range n.Addrs {
+			if len(addrs) == protocol.MaxAddrsPerInterface {
+				break
+			}
+			if _, err := netip.ParsePrefix(a); err == nil {
+				addrs = append(addrs, a)
+			}
+		}
+		out = append(out, store.NetInterface{Name: n.Name, MAC: n.MAC, Addrs: addrs})
+	}
+	return out
 }

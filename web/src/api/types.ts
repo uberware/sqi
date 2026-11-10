@@ -306,9 +306,38 @@ export interface Worker {
    * disabled or not, are never removable.
    */
   removable: boolean
+  /**
+   * Where the worker is in its capacity group's power cycle, apart from its
+   * liveness (`status`). `awake` for every worker no capacity group has moved.
+   */
+  power_state: PowerState
+  /** When `power_state` last changed; absent when it has not changed since creation. */
+  power_state_at?: string
+  /** Why the power state is what it is (a failed wake, an idle retirement); absent when empty. */
+  power_reason?: string
+  /** The cloud provider's identifier for the worker's machine; absent when it reported none. */
+  cloud_instance_id?: string
+  /**
+   * Whether the worker reported a network interface with a 6-byte hardware
+   * address and an IPv4 address, which a wake-on-LAN packet is addressed to.
+   * The interfaces themselves are in {@link WorkerDetail} only.
+   */
+  has_wake_address: boolean
   last_heartbeat_at?: string
   registered_at: string
   updated_at: string
+}
+
+/** A worker's position in its capacity group's power cycle. */
+export type PowerState = 'awake' | 'waking' | 'retiring' | 'asleep' | 'wake_failed'
+
+/** One network interface of a worker's machine. */
+export interface NetInterface {
+  name: string
+  /** The hardware address, such as "aa:bb:cc:dd:ee:ff"; may be empty. */
+  mac: string
+  /** Addresses in CIDR form; empty when the interface has none. */
+  addrs: string[]
 }
 
 /** Minimal active-task info embedded in {@link WorkerDetail}. */
@@ -322,6 +351,8 @@ export interface CurrentTask {
 
 /** Wire shape returned by GET /api/v1/workers/{id}. */
 export interface WorkerDetail extends Worker {
+  /** The network interfaces reported at registration (what a wake-on-LAN packet is addressed with). */
+  interfaces: NetInterface[]
   /** Every task the worker is currently executing; empty when idle. */
   current_tasks: CurrentTask[]
 }
@@ -449,10 +480,50 @@ export interface CapacityGroupStatus {
   desired_machines: number
   online_members: number
   offline_members: number
+  /** Members in each non-awake power state, whatever their liveness and disabled flag. */
+  waking: number
+  retiring: number
+  asleep: number
+  wake_failed: number
+  /** A named group's members to wake now, by worker ID; empty for a sized group. */
+  wake_candidates: string[]
   /** Worker IDs idle past the group's idle timeout, longest idle first. */
   retire_candidates: string[]
   mismatches: Array<{ worker_id: string; reason: string }>
+  /** The size a sized `script` group last asked its provider for; null for every other group. */
+  requested_machines: number | null
+  /** Why the group stopped growing, and until when; null while it is not degraded. */
+  degraded: CapacityGroupDegraded | null
+  /** The group's latest provider action; null before its first. */
+  last_action: CapacityGroupAction | null
   evaluated_at: string
+}
+
+export interface CapacityGroupDegraded {
+  reason: string
+  since: string
+  /** The group asks its provider for no more machines before this time. */
+  backoff_until: string
+}
+
+export type CapacityActionName = 'wake' | 'grow' | 'retire' | 'list' | 'configure'
+export type CapacityActionResult =
+  'ok' | 'failed' | 'refused' | 'unsupported' | 'timeout' | 'expired'
+
+export interface CapacityGroupAction {
+  action: CapacityActionName
+  result: CapacityActionResult
+  /** What the provider or the server said about the result; may be empty. */
+  message: string
+  at: string
+}
+
+/** A provider a capacity group may name, as `GET /capacity-providers` lists it. */
+export interface CapacityProvider {
+  /** `external`, `wake_on_lan`, or `script:<name>`. */
+  name: string
+  /** The group kinds that may name the provider. */
+  kinds: CapacityGroupKind[]
 }
 
 /** Wire shape returned by capacity group endpoints. */

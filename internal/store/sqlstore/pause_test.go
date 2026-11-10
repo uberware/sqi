@@ -32,8 +32,9 @@ type pause struct {
 	stmt    string
 	table   string
 	id      string
-	what    string // the point the pause fired at, for matched
-	dsn     string // the store's database, which interleave watches for lock waits
+	what    string  // the point the pause fired at, for matched
+	dsn     string  // PostgreSQL: the store's database, which interleave watches for lock waits
+	wdb     *sql.DB // SQLite: the store's write pool, which interleave watches for connection waits
 	hit     chan struct{}
 	release chan struct{}
 	once    sync.Once
@@ -132,11 +133,28 @@ func pgRace(t *testing.T) (*postgres.Store, *pause) {
 	return st, p
 }
 
+// sqliteRace opens a SQLite store with a pause hook. SQLite takes no row
+// locks: its single write connection serializes every write transaction, so a
+// competitor of a paused transaction waits for that connection, which
+// interleave watches for instead of a lock. The pause is released when the
+// test ends. It runs whatever SQI_TEST_PG_FORCE_TX_RETRY says, since only the
+// PostgreSQL stores rehearse their transactions.
+func sqliteRace(t *testing.T) (*sqlstore.Store, *pause) {
+	t.Helper()
+	p := newPause()
+	base := openTestStoreWB(t)
+	st := withDialect(t, base, pauseDialect{Dialect: base.Dialect(), p: p})
+	p.wdb = base.WriteDB()
+	t.Cleanup(p.resume)
+	return st, p
+}
+
 // interleave runs paused until it reaches the armed point, then runs
 // competitor, and watches until competitor either finishes or is seen waiting
 // on a lock (a backend of the store's database, other than the watcher's,
 // with wait_event_type 'Lock' in pg_stat_activity; the paused transaction is
-// idle, not waiting). Then it resumes paused and waits for both.
+// idle, not waiting) or, on SQLite, for the write connection the paused
+// transaction holds. Then it resumes paused and waits for both.
 // competitorWaited reports which came first: whether a lock made competitor
 // wait. Watching the database rather than a timer means a competitor that is
 // merely slow (a loaded runner) is not mistaken for one that waited.
@@ -156,7 +174,12 @@ func interleave(t *testing.T, p *pause, paused, competitor func() error) (paused
 	case <-time.After(10 * time.Second):
 		t.Fatal("pause point never reached: the operation did not run the armed statement or anchor dynamically")
 	}
-	waiting := lockWaitProbe(t, p.dsn)
+	var waiting func() bool
+	if p.wdb != nil {
+		waiting = connWaitProbe(p.wdb)
+	} else {
+		waiting = lockWaitProbe(t, p.dsn)
+	}
 	cdone := make(chan error, 1)
 	go func() { cdone <- competitor() }()
 	tick := time.NewTicker(5 * time.Millisecond)
@@ -206,6 +229,14 @@ SELECT EXISTS (
 		}
 		return waiting
 	}
+}
+
+// connWaitProbe returns a check of whether anything has waited for one of
+// db's connections since the probe was made. On a pool of one connection held
+// by a paused transaction, that is a competitor queued behind it.
+func connWaitProbe(db *sql.DB) func() bool {
+	before := db.Stats().WaitCount
+	return func() bool { return db.Stats().WaitCount > before }
 }
 
 // finish waits for an operation interleave started, failing the test if it is

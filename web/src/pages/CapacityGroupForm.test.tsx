@@ -33,10 +33,20 @@ const queuePage = (farm: string) => ({
     offset: 0,
   },
 })
+const PROVIDERS = [
+  { name: 'external', kinds: ['named', 'sized'] },
+  { name: 'wake_on_lan', kinds: ['named'] },
+  { name: 'script:burst', kinds: ['sized'] },
+  { name: 'script:both', kinds: ['named', 'sized'] },
+]
 const BASE_ROUTES = {
   'GET /farms': { body: FARMS },
   'GET /queues': queuePage('farm-1'),
+  'GET /capacity-providers': { body: { providers: PROVIDERS } },
 }
+
+const optionValues = (select: HTMLElement): Array<string | null> =>
+  Array.from(select.querySelectorAll('option')).map((o) => o.getAttribute('value'))
 
 function renderAt(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -63,14 +73,143 @@ async function fillSized(name = 'spot') {
 }
 
 describe('CapacityGroupForm (create)', () => {
-  it('offers only the external provider', async () => {
+  it('offers the providers the server lists for the chosen kind', async () => {
     stubApi(BASE_ROUTES)
     renderAt('/capacity-groups/new')
     const select = await screen.findByLabelText(/^provider$/i)
-    const options = Array.from(select.querySelectorAll('option')).map((o) =>
-      o.getAttribute('value'),
+    await waitFor(() =>
+      expect(optionValues(select)).toEqual(['external', 'script:burst', 'script:both']),
     )
-    expect(options).toEqual(['external'])
+
+    fireEvent.change(screen.getByLabelText(/^kind$/i), { target: { value: 'named' } })
+    expect(optionValues(screen.getByLabelText(/^provider$/i))).toEqual([
+      'external',
+      'wake_on_lan',
+      'script:both',
+    ])
+  })
+
+  it('clears a provider the new kind does not allow, and keeps one it does', async () => {
+    stubApi(BASE_ROUTES)
+    renderAt('/capacity-groups/new')
+    await waitFor(() => expect(screen.getByLabelText(/^provider$/i)).toBeEnabled())
+
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'script:burst' } })
+    fireEvent.change(screen.getByLabelText(/^kind$/i), { target: { value: 'named' } })
+    expect(screen.getByLabelText(/^provider$/i)).toHaveValue('external')
+
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'script:both' } })
+    fireEvent.change(screen.getByLabelText(/^kind$/i), { target: { value: 'sized' } })
+    expect(screen.getByLabelText(/^provider$/i)).toHaveValue('script:both')
+  })
+
+  it('shows the retire action only for wake_on_lan', async () => {
+    const fetchMock = stubApi({
+      ...BASE_ROUTES,
+      'POST /capacity-groups': { status: 201, body: group({ kind: 'named' }) },
+    })
+    renderAt('/capacity-groups/new')
+    await waitFor(() => expect(screen.getByLabelText(/^provider$/i)).toBeEnabled())
+    expect(screen.queryByLabelText(/retire action/i)).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText(/^kind$/i), { target: { value: 'named' } })
+    expect(screen.queryByLabelText(/retire action/i)).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'wake_on_lan' } })
+    const retire = screen.getByLabelText(/retire action/i)
+    expect(optionValues(retire)).toEqual(['sleep', 'shutdown'])
+
+    fireEvent.change(retire, { target: { value: 'shutdown' } })
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'boxes' } })
+    fireEvent.change(screen.getByLabelText(/^max machines$/i), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: /create capacity group/i }))
+    await waitFor(() => expect(screen.getByText('group list')).toBeInTheDocument())
+    expect(bodyOf(fetchMock, 'POST /capacity-groups')).toMatchObject({
+      kind: 'named',
+      provider: 'wake_on_lan',
+      retire_action: 'shutdown',
+    })
+  })
+
+  it('hides the retire action again when the provider changes away from wake_on_lan', async () => {
+    stubApi(BASE_ROUTES)
+    renderAt('/capacity-groups/new')
+    await waitFor(() => expect(screen.getByLabelText(/^provider$/i)).toBeEnabled())
+    fireEvent.change(screen.getByLabelText(/^kind$/i), { target: { value: 'named' } })
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'wake_on_lan' } })
+    expect(screen.getByLabelText(/retire action/i)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'external' } })
+    expect(screen.queryByLabelText(/retire action/i)).not.toBeInTheDocument()
+  })
+
+  it('resets the retire action to sleep when the provider changes away from wake_on_lan', async () => {
+    const fetchMock = stubApi({
+      ...BASE_ROUTES,
+      'POST /capacity-groups': { status: 201, body: group({ kind: 'named' }) },
+    })
+    renderAt('/capacity-groups/new')
+    await waitFor(() => expect(screen.getByLabelText(/^provider$/i)).toBeEnabled())
+    fireEvent.change(screen.getByLabelText(/^kind$/i), { target: { value: 'named' } })
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'wake_on_lan' } })
+    fireEvent.change(screen.getByLabelText(/retire action/i), { target: { value: 'shutdown' } })
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'external' } })
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'wake_on_lan' } })
+    expect(screen.getByLabelText(/retire action/i)).toHaveValue('sleep')
+
+    fireEvent.change(screen.getByLabelText(/retire action/i), { target: { value: 'shutdown' } })
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'external' } })
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'boxes' } })
+    fireEvent.change(screen.getByLabelText(/^max machines$/i), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: /create capacity group/i }))
+    await waitFor(() => expect(screen.getByText('group list')).toBeInTheDocument())
+    expect(bodyOf(fetchMock, 'POST /capacity-groups')).toMatchObject({
+      provider: 'external',
+      retire_action: 'sleep',
+    })
+  })
+
+  it('disables the provider choice if the list fails to load, and keeps external usable', async () => {
+    stubApi({
+      ...BASE_ROUTES,
+      'GET /capacity-providers': { status: 500, body: { detail: 'boom' } },
+    })
+    renderAt('/capacity-groups/new')
+    const select = await screen.findByLabelText(/^provider$/i)
+    await waitFor(() => expect(screen.getByText(/could not load the provider list/i)).toBeVisible())
+    expect(select).toBeDisabled()
+    expect(select).toHaveValue('external')
+
+    await fillSized()
+    expect(screen.getByRole('button', { name: /create capacity group/i })).toBeEnabled()
+  })
+
+  it('shows the provider list as loading before it arrives', async () => {
+    stubApi(BASE_ROUTES)
+    renderAt('/capacity-groups/new')
+    const select = await screen.findByLabelText(/^provider$/i)
+    expect(select).toBeDisabled()
+    expect(screen.getByText(/loading providers/i)).toBeInTheDocument()
+    await waitFor(() => expect(select).toBeEnabled())
+  })
+
+  it('shows the server refusing a script provider on the provider field', async () => {
+    stubApi({
+      ...BASE_ROUTES,
+      'POST /capacity-groups': {
+        status: 400,
+        body: {
+          detail:
+            'provider "script:burst" is not configured: add it under capacity.providers in the server\'s configuration file',
+        },
+      },
+    })
+    renderAt('/capacity-groups/new')
+    await waitFor(() => expect(screen.getByLabelText(/^provider$/i)).toBeEnabled())
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'script:burst' } })
+    await fillSized()
+    fireEvent.click(screen.getByRole('button', { name: /create capacity group/i }))
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^provider$/i)).toHaveAccessibleDescription(/not configured/),
+    )
   })
 
   it('shows the profile fields for a sized group and a hint for a named one', async () => {
@@ -323,6 +462,47 @@ describe('CapacityGroupForm (edit)', () => {
     await waitFor(() => expect(calls(fetchMock)).toContain('PUT /capacity-groups/cg-1'))
     expect(bodyOf(fetchMock, 'PUT /capacity-groups/cg-1')).toMatchObject({
       machine_profile: { cpu_count: 4 },
+    })
+  })
+
+  it('keeps a stored script provider the server no longer offers, and sends it back unchanged', async () => {
+    const fetchMock = stubApi({
+      ...BASE_ROUTES,
+      'GET /capacity-groups/cg-1': { body: group({ provider: 'script:gone' }) },
+      'PUT /capacity-groups/cg-1': { body: group() },
+    })
+    renderAt('/capacity-groups/cg-1/edit')
+    await screen.findByDisplayValue('cloud-spot')
+    const select = screen.getByLabelText(/^provider$/i)
+    await waitFor(() => expect(select).toBeEnabled())
+    expect(select).toHaveValue('script:gone')
+    expect(screen.getByRole('option', { name: /script:gone.*not configured/i })).toBeInTheDocument()
+    expect(screen.getByText(/no longer configured on the server/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+    await waitFor(() => expect(calls(fetchMock)).toContain('PUT /capacity-groups/cg-1'))
+    expect(bodyOf(fetchMock, 'PUT /capacity-groups/cg-1')).toMatchObject({
+      provider: 'script:gone',
+    })
+  })
+
+  it('shows the stored provider while the list is unavailable and saves it unchanged', async () => {
+    const fetchMock = stubApi({
+      ...BASE_ROUTES,
+      'GET /capacity-providers': { status: 403, body: { detail: 'forbidden' } },
+      'GET /capacity-groups/cg-1': { body: group({ provider: 'script:burst' }) },
+      'PUT /capacity-groups/cg-1': { body: group() },
+    })
+    renderAt('/capacity-groups/cg-1/edit')
+    await screen.findByDisplayValue('cloud-spot')
+    const select = screen.getByLabelText(/^provider$/i)
+    await waitFor(() => expect(screen.getByText(/could not load the provider list/i)).toBeVisible())
+    expect(select).toBeDisabled()
+    expect(select).toHaveValue('script:burst')
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+    await waitFor(() => expect(calls(fetchMock)).toContain('PUT /capacity-groups/cg-1'))
+    expect(bodyOf(fetchMock, 'PUT /capacity-groups/cg-1')).toMatchObject({
+      provider: 'script:burst',
     })
   })
 

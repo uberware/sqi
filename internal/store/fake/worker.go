@@ -15,7 +15,11 @@ import (
 // worker record for the given ID, except that an empty InstanceID keeps the
 // stored one and Disabled, CapacityGroupID and Ephemeral are never taken from
 // the registration: a new worker is enabled and in no group, and an existing
-// one keeps them, as the SQL upsert leaves those columns alone. A nil
+// one keeps them, as the SQL upsert leaves those columns alone. Interfaces and
+// CloudInstanceID are taken from it unless empty, when the stored ones are
+// kept. The power state is decided as the SQL upsert decides it: a waking,
+// asleep or wake-failed worker becomes awake (its time is now and its reason
+// is cleared), a retiring one stays retiring, and a new worker is awake. A nil
 // RegistrationBrokerAt keeps the stored one. A registration stamped earlier
 // than the stored one ([store.StaleRegistration]) is refused with
 // [store.ErrStaleRegistration], returning the stored worker. A non-empty stored
@@ -23,36 +27,70 @@ import (
 // process, whose assigned and running tasks are reclaimed as the offline
 // transitions reclaim them, with [store.FailureReasonWorkerRestarted]; the
 // store lock stands in for the SQL stores' worker-row and job-row anchors.
-func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
+func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, store.Registration, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.fenceLocked(ctx); err != nil {
-		return store.Worker{}, nil, err
+		return store.Worker{}, store.Registration{}, err
 	}
 
 	existing, isUpdate := s.workers[worker.ID]
 	if isUpdate && store.StaleRegistration(existing, worker) {
-		return cloneWorker(existing), nil, store.ErrStaleRegistration
+		return cloneWorker(existing), store.Registration{}, store.ErrStaleRegistration
+	}
+	var reg store.Registration
+	if isUpdate {
+		var at *time.Time
+		if existing.PowerStateAt != nil {
+			t := *existing.PowerStateAt
+			at = &t
+		}
+		reg.WokeFrom, reg.WokeFromAt = store.RegistrationWake(existing.PowerState, at)
 	}
 	worker = cloneWorker(worker)
 	worker.Disabled = existing.Disabled                   // false for a new worker
 	worker.CapacityGroupID = existing.CapacityGroupID     // empty for a new worker
 	worker.Ephemeral = existing.Ephemeral                 // false for a new worker
 	worker.HeartbeatBrokerAt = existing.HeartbeatBrokerAt // nil for a new worker
-	var reclaimed []store.Task
+	worker.PowerState, worker.PowerStateAt, worker.PowerReason = registeredPowerState(existing, isUpdate)
 	if isUpdate {
 		worker.RegisteredAt = existing.RegisteredAt
 		if worker.RegistrationBrokerAt == nil {
 			worker.RegistrationBrokerAt = existing.RegistrationBrokerAt
 		}
+		if len(worker.Interfaces) == 0 {
+			worker.Interfaces = cloneWorker(existing).Interfaces
+		}
+		if worker.CloudInstanceID == "" {
+			worker.CloudInstanceID = existing.CloudInstanceID
+		}
 		if worker.InstanceID == "" {
 			worker.InstanceID = existing.InstanceID
 		} else if existing.InstanceID != "" && existing.InstanceID != worker.InstanceID {
-			reclaimed = s.reclaimWorkerTasksLocked(worker.ID, store.FailureReasonWorkerRestarted, time.Now().UTC())
+			reg.Reclaimed = s.reclaimWorkerTasksLocked(worker.ID, store.FailureReasonWorkerRestarted, time.Now().UTC())
 		}
 	}
 	s.workers[worker.ID] = worker
-	return worker, reclaimed, nil
+	return worker, reg, nil
+}
+
+// registeredPowerState is the power state a registration leaves a worker in,
+// given the row it replaces: awake for a new worker, awake as of now for a
+// waking, asleep or wake-failed one, awake for an empty state (with its time
+// and reason kept), and unchanged otherwise.
+func registeredPowerState(existing store.Worker, isUpdate bool) (store.PowerState, *time.Time, string) {
+	if !isUpdate {
+		return store.PowerAwake, nil, ""
+	}
+	switch existing.PowerState {
+	case store.PowerWaking, store.PowerAsleep, store.PowerWakeFailed:
+		at := time.Now().UTC()
+		return store.PowerAwake, &at, ""
+	case "":
+		return store.PowerAwake, existing.PowerStateAt, existing.PowerReason
+	default:
+		return existing.PowerState, existing.PowerStateAt, existing.PowerReason
+	}
 }
 
 // GetWorker returns the worker with the given ID, or [store.ErrNotFound].
@@ -137,6 +175,14 @@ func (s *Store) SetWorkerCapacityGroup(ctx context.Context, workerID, groupID st
 
 	worker.CapacityGroupID = groupID
 	worker.Ephemeral = ephemeral && groupID != ""
+	if groupID == "" {
+		// Power state belongs to the group: a worker outside one is awake.
+		if worker.PowerState != store.PowerAwake {
+			at := time.Now().UTC()
+			worker.PowerStateAt = &at
+		}
+		worker.PowerState, worker.PowerReason = store.PowerAwake, ""
+	}
 	worker.UpdatedAt = time.Now().UTC()
 	s.workers[workerID] = worker
 	return cloneWorker(worker), nil
@@ -190,10 +236,16 @@ func (s *Store) deleteEphemeralWorker(
 	if err := s.fenceLocked(ctx); err != nil {
 		return store.Worker{}, false, err
 	}
+	w, deleted := s.deleteEphemeralWorkerLocked(id, now, also)
+	return w, deleted, nil
+}
 
+// deleteEphemeralWorkerLocked is deleteEphemeralWorker under s.mu, which
+// FinishRetirement shares. Caller holds s.mu.
+func (s *Store) deleteEphemeralWorkerLocked(id string, now time.Time, also func(store.Worker) bool) (store.Worker, bool) {
 	w, ok := s.workers[id]
 	if !ok || !w.Ephemeral || w.Status != store.WorkerStatusOffline || !also(w) || s.hasWorkInFlightLocked(id) {
-		return store.Worker{}, false, nil
+		return store.Worker{}, false
 	}
 	delete(s.workers, id)
 	for credID, c := range s.workerCredentials {
@@ -203,7 +255,7 @@ func (s *Store) deleteEphemeralWorker(
 			s.workerCredentials[credID] = c
 		}
 	}
-	return cloneWorker(w), true, nil
+	return cloneWorker(w), true
 }
 
 // UpdateWorkerHeartbeat records the most recent heartbeat time for the given
@@ -417,7 +469,16 @@ func cmpWorker(a, b store.Worker, field store.WorkerSortField, dir store.SortDir
 // cloneWorker returns w with its map and slice fields copied, so a worker the
 // fake returns or stores shares no backing storage with its caller.
 func cloneWorker(w store.Worker) store.Worker {
+	ifaces := w.Interfaces
 	w.Tags = copyMap(w.Tags)
 	w.Extensions = copySlice(w.Extensions)
+	w.Interfaces = nil
+	if len(ifaces) > 0 {
+		w.Interfaces = make([]store.NetInterface, len(ifaces))
+		for i, n := range ifaces {
+			n.Addrs = copySlice(n.Addrs)
+			w.Interfaces[i] = n
+		}
+	}
 	return w
 }

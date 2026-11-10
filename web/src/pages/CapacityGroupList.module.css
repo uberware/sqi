@@ -35,6 +35,18 @@
   white-space: nowrap;
 }
 
+/* Written out as text; the colour only reinforces it. */
+.degraded {
+  display: inline-block;
+  padding: 2px var(--space-2);
+  background: var(--color-warning-muted);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+}
+
 .muted {
   color: var(--color-text-muted);
 }

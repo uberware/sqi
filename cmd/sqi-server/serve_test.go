@@ -17,6 +17,27 @@ import (
 	"github.com/uberware/sqi/internal/scheduler"
 )
 
+// TestServerConfig_CarriesTheCapacityBlock covers the CLI's hop of the
+// capacity providers and the wake-on-LAN sender: config.Config ->
+// server.Config. internal/server takes them on to the scheduler and the API.
+func TestServerConfig_CarriesTheCapacityBlock(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Capacity = config.CapacityConfig{
+		Providers: map[string]config.CapacityProviderConfig{
+			"aws": {Command: []string{"/opt/aws"}, Env: map[string]string{"K": "v"}, Timeout: time.Minute},
+		},
+		WakeOnLAN: config.WakeOnLANConfig{Port: 4009, SendTo: []string{"10.0.0.255:9"}},
+	}
+	got := serverConfig(cfg, scheduler.Config{}).Capacity
+	if p, ok := got.Providers["aws"]; !ok || len(got.Providers) != 1 || p.Command[0] != "/opt/aws" ||
+		p.Env["K"] != "v" || p.Timeout != time.Minute {
+		t.Errorf("Capacity.Providers = %+v, want the configured provider", got.Providers)
+	}
+	if got.WakeOnLAN.Port != 4009 || len(got.WakeOnLAN.SendTo) != 1 || got.WakeOnLAN.SendTo[0] != "10.0.0.255:9" {
+		t.Errorf("Capacity.WakeOnLAN = %+v, want the configured sender", got.WakeOnLAN)
+	}
+}
+
 // TestServerConfig_CarriesTheExprCostBounds covers the FIRST of the three hops
 // that carry an operator's expression cost bounds from the config file to the
 // code that enforces them: config.Config -> server.Config, here in the CLI.

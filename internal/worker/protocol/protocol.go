@@ -5,9 +5,10 @@
 //
 // # Message flow
 //
-// Each message type flows in a specific direction over NATS. Five of the seven
+// Each message type flows in a specific direction over NATS. Five of the eight
 // ride JetStream streams for at-least-once delivery. AssignMsg is the reply
-// half of a core-NATS request/reply exchange with no stream behind it.
+// half of a core-NATS request/reply exchange with no stream behind it, and
+// ControlMsg is the request half of another.
 // TaskCancelMsg is published through JetStream but received on a core
 // subscription, so a cancel sent while the worker is disconnected is missed
 // (see internal/bus for the full subject/stream split):
@@ -19,6 +20,7 @@
 //	TaskStatusMsg  worker → server   JetStream    (task.status.<worker>.<job>)
 //	LogChunkMsg    worker → server   JetStream    (task.logs.<worker>.<task>)
 //	TaskCancelMsg  server → worker   core NATS    (received on task.cancel.<worker>)
+//	ControlMsg     server → worker   core NATS    (request on worker.control.<worker>; reply is ControlReplyMsg)
 //
 // # Versioning
 //
@@ -78,7 +80,10 @@ import (
 //   - The EXPR fields of [AssignMsg] and [AssignEnvironment] are omitempty and
 //     populated only for a template that declares the EXPR extension, so a
 //     base-spec assignment's wire bytes carry none of them.
-const ProtocolVersion = "5"
+//   - A worker subscribes to worker.control.<workerID> before it asks for work
+//     and answers power commands ([ControlMsg]) there. A worker that does not
+//     listen would leave a sleep or shutdown request unanswered.
+const ProtocolVersion = "6"
 
 // ── Message type constants ────────────────────────────────────────────────────
 
@@ -93,6 +98,7 @@ const (
 	TypeAssign     = "assign"      // server → worker
 	TypeTaskStatus = "task_status" // worker → server
 	TypeLogChunk   = "log_chunk"   // worker → server
+	TypeControl    = "control"     // server → worker
 	// TypeTaskCancel completes the set of message-type constants.
 	// TaskCancelMsg has no Version/Type envelope (the subject
 	// task.cancel.<workerID> and the message's task and attempt IDs route it),
@@ -217,6 +223,17 @@ type RegisterMsg struct {
 	// and a worker that omits it is read as enforcing nothing.
 	Extensions []string `json:"extensions,omitempty"`
 
+	// Interfaces lists the worker's network interfaces that carry a hardware
+	// address, so the server can wake a sleeping worker with a Wake-on-LAN
+	// packet from a peer on the same subnet. Optional: a worker that omits it
+	// cannot be woken.
+	Interfaces []NetInterface `json:"interfaces,omitempty"`
+
+	// CloudInstanceID is the cloud provider's identifier for the instance this
+	// worker runs on, when it is one. The server uses it to find the instance
+	// a power command or a scaling decision names. Optional.
+	CloudInstanceID string `json:"cloud_instance_id,omitempty"`
+
 	// CapacityGroup names the capacity group this worker asks to join (its
 	// worker.capacity_group configuration). The server honors it only with
 	// broker authentication off, and only for a sized group in the worker's
@@ -227,6 +244,78 @@ type RegisterMsg struct {
 	// server ignores it, and an older worker omits it and joins nothing.
 	CapacityGroup string `json:"capacity_group,omitempty"`
 }
+
+// NetInterface is one network interface a worker reports in
+// [RegisterMsg.Interfaces].
+type NetInterface struct {
+	// Name is the operating system's name for the interface ("eth0").
+	Name string `json:"name"`
+	// MAC is the hardware address, as "aa:bb:cc:dd:ee:ff".
+	MAC string `json:"mac"`
+	// Addrs are the interface's addresses in CIDR form, "192.168.1.20/24".
+	Addrs []string `json:"addrs,omitempty"`
+}
+
+// Limits on [RegisterMsg.Interfaces]: a worker reports at most MaxInterfaces
+// interfaces, each with at most MaxAddrsPerInterface addresses, and the server
+// drops anything beyond.
+const (
+	MaxInterfaces        = 32
+	MaxAddrsPerInterface = 16
+)
+
+// ControlCommand names a power command the server sends a worker.
+type ControlCommand string
+
+// The control commands.
+const (
+	// ControlSleep asks the worker to suspend its host.
+	ControlSleep ControlCommand = "sleep"
+	// ControlShutdown asks the worker to power its host off.
+	ControlShutdown ControlCommand = "shutdown"
+	// ControlWake asks the worker to send Wake-on-LAN packets for the
+	// addresses in [ControlMsg.MACs] to the endpoints in [ControlMsg.Targets].
+	// It goes to a running peer, never to the sleeping host.
+	ControlWake ControlCommand = "wake"
+)
+
+// ControlMsg is the request the server sends to worker.control.<workerID> over
+// core NATS request/reply. The worker answers with a [ControlReplyMsg].
+type ControlMsg struct {
+	// Version must equal [ProtocolVersion].
+	Version string `json:"version"`
+	// Type must equal [TypeControl].
+	Type string `json:"type"`
+	// Command is the power command.
+	Command ControlCommand `json:"command"`
+
+	// MACs and Targets apply to [ControlWake] only: the hardware addresses to
+	// wake and the "ip:port" endpoints to send the packets to.
+	MACs    []string `json:"macs,omitempty"`
+	Targets []string `json:"targets,omitempty"`
+}
+
+// ControlReplyMsg is the worker's answer to a [ControlMsg].
+type ControlReplyMsg struct {
+	// Accepted is true when the worker will carry the command out.
+	Accepted bool `json:"accepted"`
+	// Reason says why the worker refused. Set only when Accepted is false.
+	Reason string `json:"reason,omitempty"`
+}
+
+// The reasons a worker refuses a sleep or shutdown with, as
+// [ControlReplyMsg.Reason] carries them. The server matches
+// [ControlRefusalAlreadyRetiring] and reports the others as given.
+const (
+	// ControlRefusalBusy: the worker is running a task.
+	ControlRefusalBusy = "busy"
+	// ControlRefusalNotAllowed: the operator has not allowed remote sleep.
+	ControlRefusalNotAllowed = "worker.power.allow_remote_sleep is false"
+	// ControlRefusalAlreadyRetiring: the worker is already carrying out a
+	// sleep or shutdown. The command is under way, so a server repeating it
+	// reads this as accepted.
+	ControlRefusalAlreadyRetiring = "already retiring"
+)
 
 // ExtensionLogChecks is the name of the sqi-defined step-level log-check
 // extension, as a worker advertises it in [RegisterMsg.Extensions].

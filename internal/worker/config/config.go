@@ -261,6 +261,52 @@ type PreemptionConfig struct {
 	Endpoint string `yaml:"endpoint"`
 }
 
+// CloudInstanceIDSourceNone is the worker.cloud_instance_id.source value that
+// reads nothing. The vendor values are [preempt.VendorAWS], [preempt.VendorGCP]
+// and [preempt.VendorAzure].
+const CloudInstanceIDSourceNone = "none"
+
+// CloudInstanceIDConfig controls reading the cloud provider's identifier for
+// the instance the worker runs on, so the server can find that instance when it
+// powers a worker off or scales a group down. The worker reads it once at
+// startup and reports it when it registers.
+type CloudInstanceIDConfig struct {
+	// Source selects the provider whose metadata service is read: "none" (the
+	// default, in which case no network request is made), "aws", "gcp" or
+	// "azure".
+	// Env: SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE
+	Source string `yaml:"source"`
+
+	// Endpoint, when set, replaces the provider's metadata base URL, for a
+	// proxy or a test. Empty uses the provider's well-known address.
+	// Env: SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT
+	Endpoint string `yaml:"endpoint"`
+}
+
+// PowerConfig controls whether the server may suspend or power off this
+// machine on a capacity group's behalf. Both are off unless the operator opts
+// in, and a worker that is running a task refuses either way.
+type PowerConfig struct {
+	// AllowRemoteSleep lets sqi-server order this machine to sleep or shut
+	// down when it retires the worker from a capacity group. Off (the default)
+	// refuses both. Waking a peer needs no opt-in: it only sends UDP
+	// broadcasts.
+	// Env: SQI_WORKER_POWER_ALLOW_REMOTE_SLEEP
+	AllowRemoteSleep bool `yaml:"allow_remote_sleep"`
+
+	// SleepCommand is the program and arguments that suspend the machine,
+	// run directly with no shell. Empty uses the platform's own: systemctl
+	// suspend on Linux, pmset sleepnow on macOS, and a PowerShell suspend call
+	// on Windows. There is no default on any other platform. File only.
+	SleepCommand []string `yaml:"sleep_command"`
+
+	// ShutdownCommand is the program and arguments that power the machine off,
+	// run directly with no shell. Empty uses the platform's own: systemctl
+	// poweroff on Linux, shutdown -h now on macOS and shutdown.exe /s /t 0 on
+	// Windows. File only.
+	ShutdownCommand []string `yaml:"shutdown_command"`
+}
+
 // DiagnosticsConfig controls the diagnostic-log sink that ships the worker's
 // own slog output to sqi-server over core NATS (worker.diag.<workerID>), where
 // it is surfaced in the web UI.
@@ -540,6 +586,14 @@ type WorkerSettings struct {
 	// a spot or preemptible reclaim notice. Off by default.
 	Preemption PreemptionConfig `yaml:"preemption"`
 
+	// CloudInstanceID configures reading this machine's cloud instance ID from
+	// the provider's metadata service. Off by default.
+	CloudInstanceID CloudInstanceIDConfig `yaml:"cloud_instance_id"`
+
+	// Power configures whether the server may put this machine to sleep or
+	// power it off. Off by default.
+	Power PowerConfig `yaml:"power"`
+
 	// QueueIDs restricts this worker to serving the listed queue IDs. An empty
 	// list means the worker accepts assignments from all queues (it requests
 	// leases on the wildcard queue token). Set this when running a
@@ -684,6 +738,7 @@ func Default() WorkerConfig {
 				Watch:        PreemptionWatchNone,
 				PollInterval: 5 * time.Second,
 			},
+			CloudInstanceID: CloudInstanceIDConfig{Source: CloudInstanceIDSourceNone},
 		},
 		Log: LogConfig{
 			Level:      "info",
@@ -803,11 +858,14 @@ func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sour
 		cfg.NATS.InsecureSkipVerify = true
 	}
 
-	// A watcher that cannot be built fails here rather than waiting for
-	// [Validate]: an unrecognized vendor or an out-of-range interval is
-	// reported naming the key, so no caller of Load can run with a misspelled
-	// watch silently off.
-	if errs := validatePreemption(cfg.Worker.Preemption); len(errs) > 0 {
+	// A watcher or instance-ID read that cannot be built fails here rather than
+	// waiting for [Validate]: an unrecognized vendor or an out-of-range interval
+	// is reported naming the key, so no caller of Load can run with a misspelled
+	// vendor silently off.
+	errs := validatePreemption(cfg.Worker.Preemption)
+	errs = append(errs, validateCloudInstanceID(cfg.Worker.CloudInstanceID)...)
+	errs = append(errs, validatePower(cfg.Worker.Power)...)
+	if len(errs) > 0 {
 		joined := make([]error, len(errs))
 		for i, e := range errs {
 			joined[i] = e
@@ -942,6 +1000,9 @@ func applyWorkerEnv(c *WorkerSettings, collect func(error)) {
 	envvar.String(&c.Preemption.Watch, "SQI_WORKER_PREEMPTION_WATCH")
 	collect(envvar.Duration(&c.Preemption.PollInterval, "SQI_WORKER_PREEMPTION_POLL_INTERVAL"))
 	envvar.String(&c.Preemption.Endpoint, "SQI_WORKER_PREEMPTION_ENDPOINT")
+	envvar.String(&c.CloudInstanceID.Source, "SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE")
+	envvar.String(&c.CloudInstanceID.Endpoint, "SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT")
+	collect(envvar.Bool(&c.Power.AllowRemoteSleep, "SQI_WORKER_POWER_ALLOW_REMOTE_SLEEP"))
 	if v := os.Getenv("SQI_WORKER_QUEUE_IDS"); v != "" {
 		// splitCSV, not envvar.StringSlice: a blank queue ID must reach Validate.
 		c.QueueIDs = splitCSV(v)
@@ -1073,6 +1134,8 @@ func Validate(cfg WorkerConfig) []ValidationError {
 
 	errs = append(errs, validateIsolation(cfg)...)
 	errs = append(errs, validatePreemption(cfg.Worker.Preemption)...)
+	errs = append(errs, validateCloudInstanceID(cfg.Worker.CloudInstanceID)...)
+	errs = append(errs, validatePower(cfg.Worker.Power)...)
 	errs = append(errs, validateExpr(cfg.Expr)...)
 	errs = append(errs, validateQueueIDs(cfg.Worker.QueueIDs)...)
 	errs = append(errs, validateCommands(cfg.Worker.Commands)...)
@@ -1100,6 +1163,40 @@ func validatePreemption(p PreemptionConfig) []ValidationError {
 			Message: fmt.Sprintf("%s is out of range; must be between %s and %s",
 				p.PollInterval, MinPreemptionPollInterval, MaxPreemptionPollInterval),
 		})
+	}
+	return errs
+}
+
+// validateCloudInstanceID validates worker.cloud_instance_id: the source is one
+// of the known vendors or none.
+func validateCloudInstanceID(c CloudInstanceIDConfig) []ValidationError {
+	switch c.Source {
+	case CloudInstanceIDSourceNone, preempt.VendorAWS, preempt.VendorGCP, preempt.VendorAzure:
+		return nil
+	}
+	return []ValidationError{{
+		Field:   "worker.cloud_instance_id.source",
+		Message: fmt.Sprintf("unrecognized value %q; must be none, aws, gcp, or azure", c.Source),
+	}}
+}
+
+// validatePower validates worker.power: a command given must name a program.
+// An empty list is valid and means the platform default.
+func validatePower(p PowerConfig) []ValidationError {
+	var errs []ValidationError
+	for _, c := range []struct {
+		field string
+		argv  []string
+	}{
+		{"worker.power.sleep_command", p.SleepCommand},
+		{"worker.power.shutdown_command", p.ShutdownCommand},
+	} {
+		if len(c.argv) > 0 && strings.TrimSpace(c.argv[0]) == "" {
+			errs = append(errs, ValidationError{
+				Field:   c.field,
+				Message: "the first element must name the program to run; leave the list empty for the platform default",
+			})
+		}
 	}
 	return errs
 }
