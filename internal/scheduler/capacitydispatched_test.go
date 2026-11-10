@@ -39,16 +39,20 @@ func TestActuator_DispatchedIntentsArePruned(t *testing.T) {
 }
 
 // TestActuatorState_PruneDispatched keeps exactly the records whose expiry
-// has not passed.
+// has not passed, of the sent intents and the begun retirements alike.
 func TestActuatorState_PruneDispatched(t *testing.T) {
 	now := time.Now()
 	live := intentKey{id: "live", intent: "waking"}
 	due := intentKey{id: "due", intent: "waking"}
 	past := intentKey{id: "past", intent: "retiring"}
-	a := actuatorState{dispatched: map[intentKey]time.Time{
-		live: now.Add(time.Second), due: now, past: now.Add(-time.Second),
-	}}
+	a := actuatorState{
+		dispatched: map[intentKey]time.Time{live: now.Add(time.Second), due: now, past: now.Add(-time.Second)},
+		begun:      map[intentKey]time.Time{live: now.Add(time.Second), past: now.Add(-time.Second)},
+	}
 	a.pruneDispatched(now)
+	if _, ok := a.begun[live]; !ok || len(a.begun) != 1 {
+		t.Errorf("begun after prune = %v, want only live kept", a.begun)
+	}
 	if _, ok := a.dispatched[live]; !ok || len(a.dispatched) != 2 {
 		t.Errorf("after prune = %v, want live and due kept", a.dispatched)
 	}

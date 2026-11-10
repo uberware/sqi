@@ -412,10 +412,10 @@ func (w *Worker) registrar(nc *nats.Conn) (*registration.Registrar, error) {
 	return reg, nil
 }
 
-// simInterfaces is the network interface a simulated worker reports, as a
-// real render node's would be: one NIC with a MAC and an address, both
-// derived from id so a run is repeatable. The server stores and decodes it on
-// every worker read, so a run without one would not measure that cost.
+// simInterfaces is the network interface a simulated worker reports: one NIC
+// with a MAC and an address, both derived from id so a run is repeatable. The
+// server stores it and decodes it on every worker read, so reporting one keeps
+// that cost in the measurement.
 func simInterfaces(id string) []protocol.NetInterface {
 	h := fnv.New32a()
 	h.Write([]byte(id))

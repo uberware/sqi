@@ -902,8 +902,8 @@ func TestWorkerResponse_Removable(t *testing.T) {
 // TestWorkerResponse_PowerAndInterfaces covers the capacity fields of a
 // worker: power_state is always present (awake when the row holds none), the
 // optional fields are left out when empty, and has_wake_address says whether
-// an interface carries a MAC. The interfaces themselves are the detail's
-// alone (TestWorkerDetailResponse_Interfaces), so a list row stays small.
+// an interface carries a MAC and an IPv4 address. The interfaces themselves
+// are the detail's alone (TestWorkerDetailResponse_Interfaces), so a list row stays small.
 func TestWorkerResponse_PowerAndInterfaces(t *testing.T) {
 	at := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -922,6 +922,14 @@ func TestWorkerResponse_PowerAndInterfaces(t *testing.T) {
 			name: "interfaces with no MAC",
 			worker: store.Worker{
 				ID: "w3", Interfaces: []store.NetInterface{{Name: "tun0", Addrs: []string{"10.8.0.2/24"}}},
+			},
+			want:   map[string]any{"has_wake_address": false},
+			absent: []string{"interfaces"},
+		},
+		{
+			name: "a MAC with only an IPv6 address",
+			worker: store.Worker{
+				ID: "w4", Interfaces: []store.NetInterface{{Name: "eth0", MAC: "aa:bb:cc:dd:ee:ff", Addrs: []string{"fe80::1/64"}}},
 			},
 			want:   map[string]any{"has_wake_address": false},
 			absent: []string{"interfaces"},

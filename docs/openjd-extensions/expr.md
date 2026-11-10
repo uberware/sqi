@@ -389,8 +389,8 @@ carries an envelope `Version` field, checked by the worker's lease loop
 a version mismatch is rejected outright rather than silently decoded with
 unrecognized fields dropped, so a partially upgraded farm fails loudly
 instead of quietly running a task with the wrong command line.
-`protocol.ProtocolVersion` was raised to `"2"` for the fields EXPR phase-3
-evaluation needs (later changes have since raised it to `"6"`). All nine are `omitempty`, so they add nothing to a
+Version `"2"` and later carry the fields EXPR phase-3 evaluation needs;
+`protocol.ProtocolVersion` is `"6"`. All nine are `omitempty`, so they add nothing to a
 base-spec assignment's wire bytes; only the envelope's own `"version"` value
 differs from version `"1"`, which is what the worker's receiver-side check
 keys off:

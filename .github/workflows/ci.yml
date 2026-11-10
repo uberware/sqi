@@ -195,11 +195,9 @@ jobs:
           python-version: "3.13"
 
       # deploy/capacity's TestExampleScripts runs the example capacity provider
-      # scripts against stub cloud tools and skips, with the suite still green,
-      # when bash (4.4 or later) or jq is missing. ubuntu-latest ships both; the
-      # install comes before the suite so that stays true there too, and the
-      # test is asserted by name below because a skip would otherwise pass
-      # unnoticed.
+      # scripts against stub cloud tools and skips when bash (4.4 or later) or
+      # jq is missing. jq is installed before the suite, and the test is
+      # asserted by name below so that a skip fails the job.
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
 
@@ -1797,11 +1795,11 @@ jobs:
             TestAutoRetry_RetryThenSucceed
             TestTLSEndToEnd
             TestTLSWorkerWithoutCAIsRefused
-            # Capacity providers that act, against real workers: a
-            # wake_on_lan member put to sleep and woken by a magic packet,
-            # and refusing without its opt-in (it skips on a host with no
-            # interface to wake, which the runner has), and a script
-            # provider growing and retiring a sized group.
+            # Capacity providers acting on real workers: a wake_on_lan
+            # member put to sleep and woken by a magic packet, and refused
+            # without the worker's opt-in (it skips on a host with no
+            # interface to wake; the runner has one); a script provider
+            # growing and retiring a sized group.
             TestCapacityGroup_WakeOnLANSleepAndWake
             TestCapacityGroup_WakeOnLANSleepAndWake/sleeps-and-wakes
             TestCapacityGroup_WakeOnLANSleepAndWake/refused-without-opt-in

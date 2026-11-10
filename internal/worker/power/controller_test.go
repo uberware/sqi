@@ -329,7 +329,7 @@ func TestController_NoDefaultCommandRefused(t *testing.T) {
 	}
 }
 
-// Review focus 3: a command that fails to suspend must not leave the worker
+// A command that fails to suspend must not leave the worker
 // deregistered. It re-registers at once, without waiting for any resume.
 func TestController_FailedSleepReregistersAtOnce(t *testing.T) {
 	for _, cmd := range []protocol.ControlCommand{protocol.ControlSleep, protocol.ControlShutdown} {
@@ -359,7 +359,7 @@ func TestController_UnrunnableCommandReregisters(t *testing.T) {
 	}
 }
 
-// Review focus 3: a sleep that returned success but never suspended the host
+// A sleep that returned success but never suspended the host
 // (or whose resume went unseen) re-registers once 60 s have passed.
 func TestController_NoResumeReregistersAfterFallback(t *testing.T) {
 	h := newHarness(t, optedIn())

@@ -9,19 +9,19 @@
 #   AZURE_VMSS_NAME        the scale set's name (required)
 #   AZURE_SUBSCRIPTION     the subscription ID or name (optional; az's default is used when unset)
 #
-# az reads its login from its own configuration or from the AZURE_* variables the provider's `env`
-# can carry.
+# az uses the login stored in its configuration directory (`az login`), which AZURE_CONFIG_DIR
+# selects; the provider's `env` can carry that and az's other AZURE_* configuration variables.
 #
 # Requires bash 4.4 or later (it refuses to run on an older one) and jq.
 #
 # Instance IDs: the worker reports the scale-set instance ID, the last segment of the VM's
 # resource ID ("3"), as its cloud_instance_id, and `list` answers that same form. `retire` accepts
-# ONLY that bare ID. A resource ID is refused: keeping its last segment would let the ID of a VM in
+# only that bare ID. A resource ID is refused: keeping its last segment would let the ID of a VM in
 # another scale set pass the membership check as an instance of this one.
 #
 # Actions (request and response: internal/capacity/script, and README.md):
 #
-#   grow    Scales the set to the requested capacity. It NEVER lowers it: sqi's `current` is its own
+#   grow    Scales the set to the requested capacity. It never lowers it: sqi's `current` is its own
 #           record and can be below the set's real size (a set replacing preempted instances, for
 #           one), so an absolute `scale` to a smaller number would delete working instances. The
 #           script reads the set's own capacity and the instances it runs and scales to
@@ -125,7 +125,7 @@ case $action in
   grow)
     want=$(jq -r '(.desired // 0) | if type == "number" and . >= 0 and . <= 100000 and . == floor then tostring else "bad" end' <<<"$req")
     [[ $want =~ ^[0-9]+$ ]] || die "desired must be a whole number from 0 to 100000"
-    # current is only checked: the group's own size decides, not sqi's record of it (see grow above).
+    # current is only checked: the set's own size decides, not sqi's record of it (see grow above).
     [[ $(jq -r '(.current // 0) | if type == "number" and . >= 0 and . <= 100000 and . == floor then tostring else "bad" end' <<<"$req") =~ ^[0-9]+$ ]] ||
       die "current must be a whole number from 0 to 100000"
     group_size

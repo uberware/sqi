@@ -48,10 +48,9 @@ WHERE  t.id = ?`
 	//     states that refuse new work. A retiring worker is finishing what it
 	//     holds before its machine sleeps or shuts down; an asleep one has
 	//     deregistered and is about to be suspended, but its lease loop can
-	//     still ask until the operating system stops it, so the store refuses
-	//     rather than leasing a task to a machine that is going away. The
-	//     worker row is held FOR SHARE, so a change that committed before the
-	//     lock is seen. An offline worker is not refused: the
+	//     still ask until the operating system stops it. The worker row is
+	//     held FOR SHARE, so a change that committed before the lock is seen.
+	//     An offline worker is not refused: the
 	//     heartbeat sweep can mark a live worker offline after one missed
 	//     window and heartbeats never restore online, so refusing it would
 	//     starve it for good (see "Known gaps" in docs/architecture.md). A
@@ -128,8 +127,8 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // Under those locks the guarded task write (sqlLeaseTaskGuarded) re-checks
 // that the worker is not disabled, retiring or asleep and that the job is
 // still in the queue and farm the scope read named, and fullTx re-reads each
-// anchored cap with its count, so the lease decides on committed values, not the ones read before
-// the locks. An offline worker, or one with no row, is refused only when the
+// anchored cap with its count, so the lease decides on the values committed
+// under the locks. An offline worker, or one with no row, is refused only when the
 // request sets RequireOnline (see sqlLeaseTaskGuarded).
 //
 // Because the lease holds the worker and job rows FOR SHARE, every operation
@@ -167,7 +166,8 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // not anchored (see fullTx). The attempt is inserted before its claims, which
 // reference it. On SQLite the locks do nothing, since the single write
 // connection serializes the whole transaction, but the worker re-check still
-// refuses a worker disabled or retired after the scheduler read it.
+// refuses a worker that became disabled, retiring or asleep after the
+// scheduler read it.
 func leaseTx(ctx context.Context, tx *dbTx, req store.LeaseRequest) (store.LeaseResult, error) {
 	lost := store.LeaseResult{Outcome: store.LeaseLost}
 	scope, found, err := readLeaseScopeTx(ctx, tx, req.TaskID)

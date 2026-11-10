@@ -2053,7 +2053,7 @@ off. The block defines the external provider programs a group can name
 provider. Nothing here is required; a group can only name a provider that is
 defined here.
 
-**There is no environment variable for any `capacity.*` key.** A provider is a
+There is no environment variable for any `capacity.*` key. A provider is a
 program plus the secrets it needs, and a list of commands does not fit a
 variable, so providers are defined in the config file only. Capacity groups
 themselves are not configuration; they live in the store and are managed
@@ -2095,7 +2095,7 @@ On Windows write an absolute path with a drive letter, for example
 `'C:\sqi\providers\cloud.cmd'` in single quotes; `/opt/...` is not absolute
 there.
 
-**Put secrets in `env`, never in `command`.** `config print` redacts the `env`
+Put secrets in `env`, never in `command`. `config print` redacts the `env`
 values only, and the server also replaces them with `<redacted>` wherever the
 program's own output repeats them in the server's logs. The arguments in
 `command` are redacted nowhere and are visible in the host's process list.
@@ -2128,8 +2128,8 @@ through a relaying worker. Between `1` and `65535`.
 Extra targets for machines the server's own broadcast does not reach, such as
 a router's directed broadcast address. Each entry is an IPv4 literal and a port
 between `1` and `65535`, as `ip:port`. The packets are sent over IPv4, so
-validation rejects an IPv6 entry, and a host name, so nothing is resolved at
-send time. A wake sent from the server counts as sent when at least one of its
+validation rejects an IPv6 entry; it also rejects a host name, so nothing is
+resolved at send time. A wake sent from the server counts as sent when at least one of its
 targets was reached. See
 [How a wake reaches a machine](capacity.md#how-a-wake-reaches-a-machine).
 

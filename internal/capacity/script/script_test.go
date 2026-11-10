@@ -11,7 +11,10 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -55,6 +58,24 @@ func runChild(mode string) int {
 		os.Stderr.WriteString("one\r\ntwo\nthree")
 	case "sleep":
 		time.Sleep(time.Minute)
+	case "spawn":
+		// A script that starts a program of its own (aws, gcloud) and is
+		// still running at the deadline. The grandchild holds none of the
+		// script's pipes, so nothing but a kill of the whole tree stops it.
+		gc := exec.CommandContext(context.Background(), os.Args[0])
+		gc.Env = append(os.Environ(), modeVar+"=grandchild")
+		if err := gc.Start(); err != nil {
+			return 1
+		}
+		if err := os.WriteFile(os.Getenv("SCRIPT_TEST_PIDFILE"), []byte(strconv.Itoa(gc.Process.Pid)), 0o600); err != nil {
+			return 1
+		}
+		time.Sleep(time.Minute)
+	case "grandchild":
+		time.Sleep(5 * time.Second)
+		if err := os.WriteFile(os.Getenv("SCRIPT_TEST_MARKER"), []byte("survived"), 0o600); err != nil {
+			return 1
+		}
 	case "garbage":
 		os.Stdout.WriteString("this is not json")
 	case "big":
@@ -257,6 +278,29 @@ func TestRun_TimeoutKills(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 20*time.Second {
 		t.Errorf("Run took %s to give up on a 300ms timeout", elapsed)
+	}
+}
+
+// A script killed at its timeout takes what it started with it: a program it
+// ran (aws, gcloud) does not go on to carry out an action sqi has already
+// recorded as timed out.
+func TestRun_TimeoutKillsTheWholeTree(t *testing.T) {
+	dir := t.TempDir()
+	pidFile, marker := filepath.Join(dir, "pid"), filepath.Join(dir, "marker")
+	p := provider("spawn", map[string]string{"SCRIPT_TEST_PIDFILE": pidFile, "SCRIPT_TEST_MARKER": marker})
+	p.Timeout = 3 * time.Second
+	start := time.Now()
+	_, err := Run(context.Background(), p, Request{Version: 1, Action: "retire", Group: testGroup}, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want one wrapping context.DeadlineExceeded", err)
+	}
+	if _, err := os.Stat(pidFile); err != nil {
+		t.Fatalf("the script never started its child: %v", err)
+	}
+	// The grandchild writes its marker five seconds after it starts.
+	time.Sleep(time.Until(start.Add(7 * time.Second)))
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a process the script started outlived the script's timeout")
 	}
 }
 

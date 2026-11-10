@@ -830,9 +830,9 @@ read and no network request is made.
 | `gcp` | `GET /computeMetadata/v1/instance/name` with `Metadata-Flavor: Google` on `metadata.google.internal` | the instance name, which `gcloud ... delete-instances` takes |
 | `azure` | `GET /metadata/instance/compute/resourceId?api-version=2021-02-01&format=text` with `Metadata: true` on `169.254.169.254` | the last path segment of the resource ID, the scale-set instance ID |
 
-> **Documentation-derived: not run against a real cloud.** The requests above are
-> written from each provider's documentation and are exercised only against a
-> stand-in metadata server.
+> Documentation-derived: the requests above are written from each provider's
+> documentation and are exercised only against a stand-in metadata server, not
+> a real cloud.
 
 Each request has a 2 s timeout and goes to the metadata service directly, never
 through a proxy named by `HTTP_PROXY` or `HTTPS_PROXY`. The read is made once and

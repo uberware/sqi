@@ -146,14 +146,14 @@ type actuatorState struct {
 	// after the send: by then the member has moved on, a waking or retiring
 	// member being expired after one boot timeout and a group-level request
 	// consulted only within one, so its key can never be current again. A
-	// key that somehow still is (an expiry that kept failing) is sent again,
+	// key that still is (an expiry that kept failing) is sent again,
 	// as after a restart, which every intent tolerates.
 	dispatched map[intentKey]time.Time
 	// begun holds the retirements this process began (its own
 	// BeginRetirement moved the member to retiring) and has not yet sent, so
 	// the dispatch can tell a first request from one re-sent after a restart
 	// or a failover. An entry goes when its intent is dispatched.
-	begun map[intentKey]struct{}
+	begun map[intentKey]time.Time
 	// unconfigured is, per group ID, the script provider whose absence from
 	// the configuration was last logged.
 	unconfigured map[string]store.CapacityProvider
@@ -193,6 +193,10 @@ type actuatorState struct {
 
 	// gate lets provider calls write to the store until shutdown closes it.
 	gate writeGate
+	// cut cancels every provider call's context when shutdown gives up on
+	// the calls ([actuatorState.cutCalls]), so a store write or a script
+	// still running returns rather than holding the gate's close.
+	cut callCut
 	// calls runs the provider calls. [Scheduler.Run] closes it at shutdown
 	// and waits, for at most [Scheduler.capacityDrainTimeout], for the calls
 	// still running.
@@ -258,13 +262,48 @@ func (s *Scheduler) StopTimeout() time.Duration {
 	return s.capacityDrainTimeout() + revokeDrainTimeout
 }
 
-// AbandonCapacityCalls closes the provider calls' write gate, waiting only for
-// a write already under way. A server that stops waiting for [Scheduler.Run]
-// calls it before it closes the store, so no provider call still running
-// writes to a closed store. Calling it again, or after Run has returned, does
-// nothing more.
+// AbandonCapacityCalls cancels the provider calls still running and closes
+// their write gate. A server that stops waiting for [Scheduler.Run] calls it
+// before it closes the store, so no provider call still running writes to a
+// closed store. The cancel comes first: a write already under way, which the
+// close waits for, may be on a connection to a database that will never
+// answer, and only its context ends it. Calling it again, or after Run has
+// returned, does nothing more.
 func (s *Scheduler) AbandonCapacityCalls() {
-	s.capState.act.gate.close()
+	s.capState.act.cutCalls()
+}
+
+// cutCalls cancels the provider calls' contexts and then closes their write
+// gate, so once it returns no provider call writes to the store again.
+func (a *actuatorState) cutCalls() {
+	a.cut.cancel()
+	a.gate.close()
+}
+
+// callCut is a cancel shared by every provider call. Its zero value is ready
+// to use.
+type callCut struct {
+	mu   sync.Mutex
+	ctx  context.Context //nolint:containedctx // the cancel every provider call's context watches
+	stop context.CancelFunc
+}
+
+// done returns the context whose end cancels each call.
+func (c *callCut) done() context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ctx == nil {
+		c.ctx, c.stop = context.WithCancel(context.Background())
+	}
+	return c.ctx
+}
+
+// cancel ends every call's context, those started later included.
+func (c *callCut) cancel() {
+	c.done()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stop()
 }
 
 // writeGate lets provider calls write to the store until it is closed.
@@ -520,34 +559,14 @@ func (s *Scheduler) actOnGroup(
 	ctx context.Context, now time.Time, g store.CapacityGroup, p boundProvider, members []store.Worker, st *capacity.Status,
 	records launchRecords,
 ) bool {
-	moved := false
-	if len(st.WakeCandidates) > 0 {
-		ids, err := s.store.MarkWaking(ctx, g.ID, st.WakeCandidates, now)
-		if s.stopIfFenced(ctx, err) {
+	// While the group's call runs no request can be sent, and a recorded
+	// transition starts its boot-timeout clock at once, so new ones wait for
+	// the next sweep after it: a slow call would otherwise expire members no
+	// request reached, and hold idle ones retiring for nothing.
+	moved, fenced := false, false
+	if !s.capState.act.isInFlight(g.ID) {
+		if moved, fenced = s.recordTransitions(ctx, now, g, p, members, st); fenced {
 			return true
-		}
-		s.warnUnlessStopped(ctx, err, "scheduler: capacity sweep: mark members waking failed", slog.String("group", g.Name))
-		if len(ids) > 0 {
-			moved = true
-			s.logger.InfoContext(ctx, "scheduler: capacity group waking members",
-				slog.String("group", g.Name), slog.Any("worker_ids", ids))
-		}
-	}
-	if p.kind == providerKindScript && g.Kind == store.CapacityGroupSized {
-		st.RetireCandidates = s.retirableByInstance(ctx, g, members, st.RetireCandidates)
-	}
-	for _, id := range st.RetireCandidates {
-		w, ok, err := s.store.BeginRetirement(ctx, g.ID, id, now)
-		if s.stopIfFenced(ctx, err) {
-			return true
-		}
-		s.warnUnlessStopped(ctx, err, "scheduler: capacity sweep: begin retirement failed",
-			slog.String("group", g.Name), slog.String("worker_id", id))
-		if ok {
-			moved = true
-			s.capState.act.noteBegun(w)
-			s.logger.InfoContext(ctx, "scheduler: capacity group retiring an idle member",
-				slog.String("group", g.Name), slog.String("worker_id", id), slog.String("action", g.RetireAction))
 		}
 	}
 	if moved {
@@ -563,13 +582,50 @@ func (s *Scheduler) actOnGroup(
 	}
 	var gc groupCall
 	if p.kind == providerKindScript && g.Kind == store.CapacityGroupSized {
-		var fenced bool
 		if gc, fenced = s.planLaunches(ctx, now, g, st, records); fenced {
 			return true
 		}
 	}
 	s.dispatchIntents(ctx, now, g, p, members, gc)
 	return false
+}
+
+// recordTransitions moves st's wake candidates to waking and its retire
+// candidates to retiring. moved reports whether any member moved, and fenced
+// whether a write was fenced.
+func (s *Scheduler) recordTransitions(
+	ctx context.Context, now time.Time, g store.CapacityGroup, p boundProvider, members []store.Worker, st *capacity.Status,
+) (moved, fenced bool) {
+	if len(st.WakeCandidates) > 0 {
+		ids, err := s.store.MarkWaking(ctx, g.ID, st.WakeCandidates, now)
+		if s.stopIfFenced(ctx, err) {
+			return moved, true
+		}
+		s.warnUnlessStopped(ctx, err, "scheduler: capacity sweep: mark members waking failed", slog.String("group", g.Name))
+		if len(ids) > 0 {
+			moved = true
+			s.logger.InfoContext(ctx, "scheduler: capacity group waking members",
+				slog.String("group", g.Name), slog.Any("worker_ids", ids))
+		}
+	}
+	if p.kind == providerKindScript && g.Kind == store.CapacityGroupSized {
+		st.RetireCandidates = s.retirableByInstance(ctx, g, members, st.RetireCandidates)
+	}
+	for _, id := range st.RetireCandidates {
+		w, ok, err := s.store.BeginRetirement(ctx, g.ID, id, now)
+		if s.stopIfFenced(ctx, err) {
+			return moved, true
+		}
+		s.warnUnlessStopped(ctx, err, "scheduler: capacity sweep: begin retirement failed",
+			slog.String("group", g.Name), slog.String("worker_id", id))
+		if ok {
+			moved = true
+			s.capState.act.noteBegun(w, now.Add(dispatchMemory(g.BootTimeout)))
+			s.logger.InfoContext(ctx, "scheduler: capacity group retiring an idle member",
+				slog.String("group", g.Name), slog.String("worker_id", id), slog.String("action", g.RetireAction))
+		}
+	}
+	return moved, false
 }
 
 // retirableByInstance returns the candidates of g, a sized script group, that
@@ -606,12 +662,13 @@ type capacityCall struct {
 }
 
 // noteBegun records that this process moved w to retiring (see
-// actuatorState.begun). It is called with the capacity sweep's sweepMu held.
-func (a *actuatorState) noteBegun(w store.Worker) {
+// actuatorState.begun), to be forgotten at forget. It is called with the
+// capacity sweep's sweepMu held.
+func (a *actuatorState) noteBegun(w store.Worker, forget time.Time) {
 	if a.begun == nil {
-		a.begun = map[intentKey]struct{}{}
+		a.begun = map[intentKey]time.Time{}
 	}
-	a.begun[memberIntent(w)] = struct{}{}
+	a.begun[memberIntent(w)] = forget
 }
 
 // dispatchIntents starts one provider call for g, unless one is running, with
@@ -665,12 +722,18 @@ func (s *Scheduler) dispatchIntents(
 	}
 	act.setInFlight(g.ID, true)
 	// The call keeps ctx's values, the leader epoch among them, so its
-	// writes stay fenced, but not its cancellation.
-	callCtx := context.WithoutCancel(ctx)
+	// writes stay fenced, but not its cancellation: a sweep's end does not
+	// stop it. Only shutdown giving up on the calls does ([actuatorState.cut]).
+	callCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(act.cut.done(), cancel)
 	if !act.calls.Go(func() {
 		defer act.setInFlight(g.ID, false)
+		defer stop()
+		defer cancel()
 		s.runCapacityCall(callCtx, now, g, p, c)
 	}) {
+		stop()
+		cancel()
 		act.setInFlight(g.ID, false)
 	}
 }
@@ -684,12 +747,17 @@ func dispatchMemory(bootTimeout time.Duration) time.Duration {
 	return 2 * bootTimeout
 }
 
-// pruneDispatched forgets the sent intents whose time to be forgotten is
-// before now. It is called with the capacity sweep's sweepMu held.
+// pruneDispatched forgets the sent intents, and the begun retirements, whose
+// time to be forgotten is before now: a retirement this process began but
+// that was settled before it was sent (a deregistration or an expiry finished
+// it) would otherwise stay for good. It is called with the capacity sweep's
+// sweepMu held.
 func (a *actuatorState) pruneDispatched(now time.Time) {
-	for k, forget := range a.dispatched {
-		if forget.Before(now) {
-			delete(a.dispatched, k)
+	for _, m := range []map[intentKey]time.Time{a.dispatched, a.begun} {
+		for k, forget := range m {
+			if forget.Before(now) {
+				delete(m, k)
+			}
 		}
 	}
 }
@@ -962,7 +1030,7 @@ func (s *Scheduler) closeCapacityCalls(ctx context.Context) {
 	act := &s.capState.act
 	wait := s.capacityDrainTimeout()
 	finished := act.calls.Close(wait)
-	act.gate.close()
+	act.cutCalls()
 	if !finished {
 		s.logger.WarnContext(ctx, "scheduler: a capacity provider call was still running at shutdown; "+
 			"its result is not applied, and the next leader repeats the request it recorded",

@@ -297,9 +297,8 @@ func Pending(w store.Worker) bool {
 }
 
 // Wakeable reports whether w could be woken at now, bootTimeout being its
-// group's: offline, not disabled,
-// and awake or asleep, or wake_failed for at least wakeFailedBackoff boot
-// timeouts. A wake_failed member with no recorded time is wakeable, and one
+// group's: offline, not disabled, and awake or asleep, or wake_failed for at
+// least wakeFailedBackoff boot timeouts. A wake_failed member with no recorded time is wakeable, and one
 // recorded in the future holds for at most one backoff, as [within] does.
 func Wakeable(w store.Worker, bootTimeout time.Duration, now time.Time) bool {
 	if online(w) || w.Disabled {

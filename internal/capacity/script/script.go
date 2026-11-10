@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package script runs an operator-configured capacity provider: an executable named by a
-// `script:<name>` provider in the server's configuration. It depends on the standard library only.
+// `script:<name>` provider in the server's configuration. It imports no other sqi package: the
+// standard library, and golang.org/x/sys on Windows to hold the script's processes in a job.
 //
 // # Wire contract (version 1)
 //
@@ -25,7 +26,8 @@
 // A response carries `result`, `message` and, for `list`, `instance_ids`. `result` is one of:
 //
 //   - `ok`: the action was carried out (or, for wake, started).
-//   - `unsupported`: the script does not implement the action. Not a failure; the caller falls back.
+//   - `unsupported`: the script does not implement the action. Not a failure: the caller records it
+//     and carries on.
 //   - `error`: the action failed. `message` says why.
 //
 // Rules the runner applies to the child:
@@ -47,10 +49,11 @@
 //     script's own output carries it: in logged standard-error lines, in the last standard-error
 //     line quoted in a failure message and in the response `message`. Values are replaced longest
 //     first. A value split across the 8 KiB chunks of one very long line is not caught.
-//   - A response `message` is cut to 2 KiB on a character boundary and has its control characters
-//     (newlines included) replaced by spaces, so a script cannot forge log lines through it.
-//   - The run is bounded by the provider's timeout; a script still running at the deadline is
-//     killed and [Run] returns an error.
+//   - A response `message` is cut to 2 KiB on a character boundary, with `...` marking the cut, and
+//     has its control characters (newlines included) replaced by spaces, so a script cannot forge
+//     log lines through it.
+//   - The run is bounded by the provider's timeout, two minutes when none is set; a script still
+//     running at the deadline is killed and [Run] returns an error.
 //
 // [Run] returns a non-nil error only for a command that cannot start and for a timeout or a
 // canceled context; every other failure is an `error` [Response].
@@ -88,7 +91,7 @@ const (
 	waitDelay = 5 * time.Second
 	// defaultTimeout applies when a Provider sets none.
 	defaultTimeout = 2 * time.Minute
-	// maxMessage caps a Response.Message returned from a script.
+	// maxMessage caps the Response.Message that Run returns.
 	maxMessage = 2 << 10
 	// minRedactLen is the shortest env value that is redacted; shorter ones are flags and numbers
 	// that would mangle ordinary output.
@@ -141,7 +144,7 @@ type Member struct {
 }
 
 // NetInterface is this package's own copy of protocol.NetInterface's JSON shape, so the package
-// stays stdlib-only.
+// imports no other sqi package.
 type NetInterface struct {
 	Name  string   `json:"name"`
 	MAC   string   `json:"mac"`
@@ -200,7 +203,14 @@ func Run(ctx context.Context, p Provider, req Request, logger *slog.Logger) (Res
 	cmd.Stderr = stderr
 	cmd.WaitDelay = waitDelay
 
-	err = cmd.Run()
+	// The script runs with everything it starts in one process tree, which
+	// cancellation (the timeout, a parent that ended, a stdout overflow)
+	// kills whole.
+	release, err := startTree(cmd, logger)
+	if err == nil {
+		err = cmd.Wait()
+	}
+	release()
 	stderr.flush()
 	// A parent that ended, or a deadline that hit, matters only when it cut the child short.
 	if err != nil {

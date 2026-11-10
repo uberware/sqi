@@ -320,7 +320,7 @@ func (s *Scheduler) planLaunches(
 // misses heartbeats keeps its row and its machine, and must neither lower the
 // record nor make a grow's current fall below the cloud group's real size
 // (an absolute grow below it would terminate working instances). A machine
-// that is really gone loses its row: a retired or preempted member is deleted
+// that is gone loses its row: a retired or preempted member is deleted
 // when it deregisters, and one that vanished is deleted after a boot timeout
 // (see [Scheduler.removeVanishedEphemerals]). A retiring member is not
 // present: its retirement lowers the record before its row is deleted

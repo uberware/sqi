@@ -128,12 +128,12 @@ func TestWorkerPermissions_AllowsOneResponse(t *testing.T) {
 	}
 	for _, s := range []string{"worker.control.worker-b", "worker.control.>", "worker.control.*"} {
 		if subjectAllowed(p.Subscribe, s) {
-			t.Errorf("subscribe %q must NOT be allowed", s)
+			t.Errorf("subscribe %q must not be allowed", s)
 		}
 	}
 	for _, s := range []string{"worker.control.worker-a", "_INBOX.x.1", "_INBOX_worker-b.x"} {
 		if subjectAllowed(p.Publish, s) {
-			t.Errorf("publish %q must NOT be allowed", s)
+			t.Errorf("publish %q must not be allowed", s)
 		}
 	}
 }

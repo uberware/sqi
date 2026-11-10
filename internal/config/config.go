@@ -590,8 +590,8 @@ type CapacityProviderConfig struct {
 
 // MarshalYAML redacts every Env value so a provider's credentials never appear
 // in YAML output (e.g. `sqi-server config print`); the names stay visible. It
-// does not affect unmarshaling or the loaded value. Round-tripping a redacted
-// dump is intentionally not supported — redaction wins.
+// does not affect unmarshaling or the loaded value. A redacted dump does not
+// round-trip.
 func (p CapacityProviderConfig) MarshalYAML() (any, error) {
 	type plain CapacityProviderConfig
 	out := plain(p)
@@ -609,7 +609,7 @@ type WakeOnLANConfig struct {
 	// Port is the UDP port magic packets are sent to. 1–65535, default 9.
 	Port int `yaml:"port"`
 
-	// SendTo lists extra "ip:port" targets, each an IP literal, such as a
+	// SendTo lists extra "ip:port" targets, each an IPv4 literal, such as a
 	// router's directed broadcast address, for machines the server's own
 	// broadcast does not reach.
 	SendTo []string `yaml:"send_to"`

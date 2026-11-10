@@ -42,16 +42,16 @@ const (
 	// as a NULL registration_broker_at does. disabled, heartbeat_broker_at,
 	// capacity_group_id, ephemeral, power_reason and the power-state columns
 	// are not in the column list, so a new worker is enabled, in no group and
-	// awake, and a re-registration never changes the first three.
+	// awake, and a re-registration never changes disabled, heartbeat_broker_at,
+	// capacity_group_id or ephemeral.
 	//
 	// interfaces and cloud_instance_id are written from the registration, except
 	// that an empty report ('[]', '') keeps the stored value: a failed interface
 	// or metadata read on one start must not erase the only record of the
-	// machine's wake address and instance. The power state is decided here, in
-	// the same statement: a waking, asleep or
-	// wake-failed worker has registered, so it is awake as of now with no
-	// reason; a retiring worker is kept retiring (its machine is still going to
-	// sleep); an awake one is unchanged.
+	// machine's wake address and instance. The power state is decided in the
+	// same statement: a waking, asleep or wake-failed worker has registered, so
+	// it is awake as of now with no reason; a retiring worker is kept retiring
+	// (its machine is still going to sleep); an awake one is unchanged.
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,

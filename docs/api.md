@@ -780,7 +780,7 @@ Durations are in seconds (`scale_up_cooldown_seconds`, `idle_timeout_seconds`,
 server's configuration; anything else is a `400`.
 `GET /capacity-providers` (`infra.read`) lists exactly those, by name and kinds
 only, never a script's command or environment. A `PUT` that keeps the group's
-stored provider is accepted even when that script has since been removed from
+stored provider is accepted even when that script is no longer in
 the configuration, so such a group can still be disabled or renamed; switching
 a group to an unconfigured provider is refused.
 
@@ -795,7 +795,7 @@ for; `null` for any other group), `degraded` (`null`, or `reason`, `since` and
 `GET /workers` and a group's members, carry `power_state` (always present;
 `awake`, `waking`, `retiring`, `asleep` or `wake_failed`), `power_state_at`,
 `power_reason`, `cloud_instance_id` and `has_wake_address` (whether the worker
-reported an interface with a MAC); `GET /workers/{id}` alone also carries the
+reported an interface with a 6-byte MAC and an IPv4 address); `GET /workers/{id}` alone also carries the
 `interfaces` (each `name`, `mac` and `addrs`). Under high availability only the leader
 evaluates groups: a standby answers `503` on these routes, as on every route
 other than the probes and `/metrics`, and exports no `sqi_capacity_*` series, so

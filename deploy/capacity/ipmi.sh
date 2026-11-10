@@ -17,7 +17,8 @@
 #
 #   wake    `ipmitool ... chassis power on` for each member's BMC.
 #   retire  `ipmitool ... chassis power soft` for each member's BMC: an ACPI soft shutdown, which
-#           lets the operating system stop cleanly. sqi has already drained the member.
+#           lets the operating system stop cleanly. sqi retires only an idle member that holds
+#           no task.
 #
 # Any other action (grow, list) is answered "unsupported": a named group has a fixed set of
 # machines. A member whose hostname is not in the file (or is not a plain hostname) is not

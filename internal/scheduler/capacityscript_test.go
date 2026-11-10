@@ -530,8 +530,8 @@ func TestScriptActuator_MemberWithoutInstanceIDNeverRetired(t *testing.T) {
 }
 
 // A retirement that begins and then aborts leaves a degradation in place: the
-// member that came back is not a machine that registered late. One that
-// really does still clears it.
+// member that came back is not a machine that registered late. A member that
+// registers late still clears it.
 func TestScriptActuator_AbortedRetirementKeepsDegradation(t *testing.T) {
 	f := newScriptFixture(t, func(g *store.CapacityGroup) { g.MinMachines = 1 })
 	f.prov.set("list", actionResult{Result: resultUnsupported})
@@ -816,8 +816,7 @@ func TestScriptActuator_PreemptionAfterMetLaunchRegrowsWithoutDegrading(t *testi
 	if _, err := f.st.GetWorker(t.Context(), "c3"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetWorker(c3) = %v, want it deleted", err)
 	}
-	// Long after the launch: the old code read this shortfall as a failed
-	// launch.
+	// Long after the launch, this shortfall must not read as a failed launch.
 	f.sweep(t, t0.Add(15*time.Second))
 	// The backend's replacement registers within the regrow's boot timeout.
 	cloudMember(t, f.st, f.g.ID, "c4", "i-4")
@@ -971,7 +970,7 @@ func TestScriptActuator_OrphansSkippedWhenAnOfflineMemberHasNoInstanceID(t *test
 	}
 }
 
-// sqi never asked for more than max_machines, so a list naming more
+// sqi never asks for more than max_machines, so a list naming more
 // unreported instances than max_machines less the members is refused.
 func TestScriptActuator_OrphansBeyondMaxMachinesRefused(t *testing.T) {
 	f := newScriptFixture(t, func(g *store.CapacityGroup) { g.MaxMachines = 4 })

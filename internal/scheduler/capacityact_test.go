@@ -158,8 +158,8 @@ func newActFixture(t *testing.T, wrap func(*fake.Store) store.Store) *actFixture
 	return f
 }
 
-// sweep runs one capacity sweep at now under ctx and waits for the provider
-// calls it started.
+// sweepCtx runs one capacity sweep at now under ctx and waits for the
+// provider calls it started.
 func (f *actFixture) sweepCtx(ctx context.Context, now time.Time) {
 	f.s.sweepCapacityAt(ctx, now)
 	f.s.capState.act.calls.Wait()
@@ -1008,7 +1008,7 @@ func TestLease_RetiringAndAsleepParked(t *testing.T) {
 
 // ── no action without an acting group ────────────────────────────────────────
 
-// External groups are evaluated and exported as before and never acted on:
+// External groups are evaluated and exported and never acted on:
 // no power transition, no control request, no packet and no new series, even
 // with wake and retire candidates.
 func TestCapacitySweep_ExternalGroupsNeverAct(t *testing.T) {

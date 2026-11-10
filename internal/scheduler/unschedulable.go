@@ -129,8 +129,8 @@ func (s *Scheduler) applySchedulability(ctx context.Context, task store.Task, re
 //
 // Where no worker is eligible, the reason is that the task waits for a
 // capacity group when one that acts could bring a machine that runs it
-// ([Scheduler.capacityWaitReason]). That view is in memory, so a farm with no
-// such group makes the same store calls as before.
+// ([Scheduler.capacityWaitReason]). That view is in memory, so it adds no
+// store call.
 func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task, workers []store.Worker) string {
 	if len(workers) == 0 && !s.hasWaitable() {
 		return "no online workers"

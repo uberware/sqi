@@ -254,10 +254,10 @@ func (b orderedCloseBackend) Close() error {
 // TestRun_ClosesTheStoreOnlyAfterTheSchedulerStops is a wiring smoke test: it
 // drives a real single server (embedded broker, SQLite) through start and a
 // graceful stop, and checks that start records when the scheduler's Run
-// returns and that it has returned before the store closes. It cannot tell
-// the old ordering from the new one: an idle scheduler returns faster than
-// the bus drain, so it passed when shutdown did not wait at all. The wait is
-// pinned by TestShutdown_WaitsForTheSchedulerBeforeClosingTheStore.
+// returns and that it has returned before the store closes. It does not pin
+// the wait itself: an idle scheduler returns faster than the bus drain, so it
+// would pass if shutdown did not wait. The wait is pinned by
+// TestShutdown_WaitsForTheSchedulerBeforeClosingTheStore.
 func TestRun_ClosesTheStoreOnlyAfterTheSchedulerStops(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := Config{

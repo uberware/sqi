@@ -12,8 +12,8 @@ import (
 func TestCommandError(t *testing.T) {
 	base := errors.New("exit status 1")
 	long := strings.Repeat("x", maxCommandOutput+10)
-	// An invalid byte at the start used to make the trim loop eat the whole
-	// message, as the cut text never became valid UTF-8.
+	// An invalid byte at the start must not make the trim loop eat the whole
+	// message.
 	invalidFirst := "\xff" + strings.Repeat("y", maxCommandOutput+10)
 	// A multi-byte rune straddling the cap is dropped whole.
 	straddling := strings.Repeat("z", maxCommandOutput-1) + "é" + "tail"

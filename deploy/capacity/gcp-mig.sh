@@ -10,14 +10,16 @@
 #   GCP_REGION     its region, for a regional group (set exactly one of the two)
 #   GCP_PROJECT    the project (optional; gcloud's configured project is used when unset)
 #
-# gcloud reads its credentials from the usual variables (GOOGLE_APPLICATION_CREDENTIALS,
-# CLOUDSDK_*), which the provider's `env` can also carry.
+# gcloud uses the credentials of its active configuration (`gcloud auth login` or
+# `gcloud auth activate-service-account`), not GOOGLE_APPLICATION_CREDENTIALS. CLOUDSDK_* variables
+# override its properties (CLOUDSDK_CONFIG selects the configuration directory), and the provider's
+# `env` can carry them.
 #
 # Requires bash 4.4 or later (it refuses to run on an older one) and jq.
 #
 # Actions (request and response: internal/capacity/script, and README.md):
 #
-#   grow    Resizes the group to the requested size. It NEVER lowers it: sqi's `current` is its own
+#   grow    Resizes the group to the requested size. It never lowers it: sqi's `current` is its own
 #           record and can be below the group's real size (a group replacing preempted instances,
 #           for one), so an absolute `resize` to a smaller number would delete working instances.
 #           The script reads the group's own target size and the instances it runs and resizes to

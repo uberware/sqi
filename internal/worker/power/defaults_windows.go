@@ -3,8 +3,9 @@
 package power
 
 // defaultCommands returns the commands that suspend and power off a Windows
-// machine. Suspend calls SetSuspendState with 'Suspend' (sleep, not
-// hibernate), forcing neither the suspend nor the wake events.
+// machine. Suspend calls SetSuspendState('Suspend', force=false,
+// disableWakeEvent=false): sleep rather than hibernate, not forced, with wake
+// events left enabled.
 func defaultCommands() (sleep, shutdown []string) {
 	return []string{
 			"powershell.exe", "-NoProfile", "-NonInteractive", "-Command",

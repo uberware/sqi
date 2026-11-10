@@ -683,8 +683,8 @@ func getTaskDetailAct(t *testing.T, ts *testServer, id string) capacityTask {
 // starts at the first sweep that sees it idle, so two members that finish
 // their work within one interval of each other are retired by one request;
 // the test releases the work just after a sweep, leaving the whole interval
-// for it to finish. The work takes about 2 s on a developer machine, so the
-// interval leaves room for a slower one.
+// for it to finish. The interval is several times what the work takes, so a
+// slow or loaded machine still finishes within it.
 const scriptSweepInterval = 10 * time.Second
 
 // scriptProvider is the HTTP end of the provider stand-in. It records each

@@ -192,7 +192,7 @@ func txOutcomeFor(err error) txOutcome {
 // Anchor: the worker row, exclusive. LeaseTask holds it shared and re-checks
 // the power state under it, so the two serialize on it: a lease that committed
 // first holds a task the in-flight condition sees, and one that waits sees the
-// worker retiring and is lost.
+// worker retiring and is Lost.
 func (s *Store) BeginRetirement(ctx context.Context, groupID, workerID string, now time.Time) (store.Worker, bool, error) {
 	at := TimeText(now.UTC())
 	type result struct {
@@ -335,9 +335,9 @@ func (s *Store) ListCapacityGroupStates(ctx context.Context) (map[string]store.C
 // PutCapacityGroupState implements [store.CapacityPowerStore]. An unknown
 // group is found by a read before the write, in the same transaction, so a
 // leadership context's fence check still runs for it. A group deleted between
-// the read and the write makes the foreign key refuse the write; a conflict is
-// reported as the group not existing only when a fresh read confirms it is
-// gone, and as the conflict it is otherwise.
+// the read and the write makes the foreign key refuse the write; that conflict
+// is reported as [store.ErrNotFound] when a fresh read confirms the group is
+// gone, and as [store.ErrConflict] otherwise.
 func (s *Store) PutCapacityGroupState(ctx context.Context, st store.CapacityGroupState) error {
 	updated := st.UpdatedAt
 	if updated.IsZero() {

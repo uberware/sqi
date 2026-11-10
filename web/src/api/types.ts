@@ -318,9 +318,9 @@ export interface Worker {
   /** The cloud provider's identifier for the worker's machine; absent when it reported none. */
   cloud_instance_id?: string
   /**
-   * Whether the worker reported a network interface with a hardware address,
-   * which a wake-on-LAN packet is addressed to. The interfaces themselves are
-   * in {@link WorkerDetail} only.
+   * Whether the worker reported a network interface with a 6-byte hardware
+   * address and an IPv4 address, which a wake-on-LAN packet is addressed to.
+   * The interfaces themselves are in {@link WorkerDetail} only.
    */
   has_wake_address: boolean
   last_heartbeat_at?: string

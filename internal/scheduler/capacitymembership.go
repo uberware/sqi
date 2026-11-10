@@ -57,11 +57,11 @@ type registrationContext struct {
 // beforeRegistration touches the worker's broker credential when broker
 // authentication is on, and reads the worker's current row when the worker
 // may be an ephemeral member (one that names a group with authentication off,
-// or whose credential was enrolled into a group with it on) or the farm's
-// capacity groups manage power, so that a member the registration wakes is
-// seen ([Scheduler.noteMemberWoke]). Both are best-effort and never stop a
-// registration; a fenced touch is recorded, and the registration write that
-// follows is fenced too.
+// or whose credential was enrolled into a group with it on), for the cloned
+// worker ID check. A member the registration wakes needs no read: the
+// registration write reports it ([store.Registration]). Both are best-effort
+// and never stop a registration; a fenced touch is recorded, and the
+// registration write that follows is fenced too.
 //
 // The touch comes before the registration write so that the credential is
 // known in time to decide whether the row is worth reading. A registration
@@ -259,9 +259,12 @@ func (s *Scheduler) deregisteredStatus(ctx context.Context, workerID string) (st
 // leader. A member that still holds a task is left retiring, as the store
 // refuses it, for the boot timeout to settle.
 func (s *Scheduler) finishRetirementOnDeregister(ctx context.Context, w store.Worker) (store.Worker, bool, bool) {
+	// A script provider ignores retire_action, so only another names it.
 	action := "retired"
 	if g, err := s.store.GetCapacityGroup(ctx, w.CapacityGroupID); err == nil {
-		action = g.RetireAction
+		if _, isScript := g.Provider.ScriptName(); !isScript {
+			action = g.RetireAction
+		}
 	}
 	done, deleted, ok, err := s.finishRetirement(ctx, w, time.Now().UTC(), "scheduler: capacity group member retired: "+action,
 		slog.String("capacity_group_id", w.CapacityGroupID))

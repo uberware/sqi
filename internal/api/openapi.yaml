@@ -928,10 +928,10 @@ components:
         has_wake_address:
           type: boolean
           description: >-
-            Whether the worker reported a network interface with a hardware
-            address, which a wake-on-LAN packet is addressed to. The
-            interfaces themselves are in the worker detail
-            (GET /workers/{id}) only.
+            Whether a wake-on-LAN packet can be addressed to the worker: it
+            reported a network interface with a 6-byte hardware address and
+            an IPv4 address. The interfaces themselves are in the worker
+            detail (GET /workers/{id}) only.
         last_heartbeat_at:
           type: string
           format: date-time

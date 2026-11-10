@@ -12,12 +12,12 @@ it, and adapt it to your estate.
 | `azure-vmss.sh` | sized | `grow`, `retire`, `list` for an Azure scale set (uniform orchestration) |
 | `ipmi.sh` | named | `wake` (`chassis power on`) and `retire` (`chassis power soft`) through each machine's BMC |
 
-**These scripts are documentation-derived. They were not run against a real cloud account or a real
-BMC.** `examples_test.go` runs each against stub `aws`, `gcloud`, `az` and `ipmitool` programs that
-record their arguments, which shows the scripts build the commands their authors intended, not that
-the real tools accept them. Try one against a scratch group before pointing a production group at it.
+These scripts are documentation-derived and have not been run against a real cloud account or a
+real BMC. `examples_test.go` runs each against stub `aws`, `gcloud`, `az` and `ipmitool` programs
+that record their arguments; that checks the commands each script builds, not that the real tools
+accept them. Try one against a scratch group before pointing a production group at it.
 
-They need `bash` **4.4 or later** and [`jq`](https://jqlang.github.io/jq/), plus the CLI of the
+They need `bash` 4.4 or later and [`jq`](https://jqlang.github.io/jq/), plus the CLI of the
 cloud they drive (`aws`, `gcloud`, `az`) or `ipmitool`, on the server's `PATH`. Each script checks
 `BASH_VERSINFO` first and, on an older bash (the stock macOS `/bin/bash` is 3.2), exits non-zero
 with a message on standard error instead of running; put a newer bash first on the server's `PATH`.
@@ -53,13 +53,15 @@ The authoritative description is the package comment in `internal/capacity/scrip
   or `list`), `group` (`id`, `name`, `kind`), and by action `desired` and `current` (`grow`) or
   `members` (`wake`, `retire`; each has `worker_id` and, when known, `hostname`, `ip_address`,
   `instance_id`, `interfaces`).
-- **Response** (standard output, **a single JSON object**): `result` (`ok`, `unsupported` or `error`),
+- **Response** (standard output, a single JSON object): `result` (`ok`, `unsupported` or `error`),
   an optional `message`, and for `list` the `instance_ids`. Print nothing else on standard output:
   send command output and logs to standard error, which the server logs line by line.
 - A non-zero exit status is an error. An action the script does not implement answers
-  `{"result":"unsupported"}`, and the server falls back.
+  `{"result":"unsupported"}`, and the server records it as the group's last action and carries on:
+  an unsupported `retire` puts the member back to awake, and a script with no `list` leaves
+  orphaned instances to the operator.
 - An orphaned instance (one that booted and never registered) is retired by a `retire` request whose
-  member carries `instance_id` **only**, with no `worker_id`.
+  member carries `instance_id` only, with no `worker_id`.
 
 ## Rules every implementation must follow
 
@@ -72,7 +74,7 @@ The authoritative description is the package comment in `internal/capacity/scrip
   sized examples do this.
 - **`retire` of a sized group must also lower the group's desired size** by the instances it
   removes (AWS `--should-decrement-desired-capacity`; `delete-instances` on GCP and Azure does it
-  implicitly), or the cloud group starts replacements and sqi pays for machines it just retired.
+  implicitly), or the cloud group starts replacements for the machines sqi just retired.
 - **`retire` acts only on the instance IDs it is given.** It never lowers anything else, and before
   terminating anything it checks that every instance belongs to the configured group.
 - **One answer covers the whole `retire` batch.** A request may name several members, and sqi
@@ -86,7 +88,7 @@ The authoritative description is the package comment in `internal/capacity/scrip
 - **Every member of a sized group needs a `cloud_instance_id`.** `retire` names members by it. sqi
   never makes a member without one a retire candidate (it logs one warning per member instead),
   and a script that still finds a member without one (or with one it cannot validate) refuses the
-  **whole** retire batch rather than guess. Set `worker.cloud_instance_id.source` (`aws`, `gcp` or
+  whole retire batch rather than guess. Set `worker.cloud_instance_id.source` (`aws`, `gcp` or
   `azure`) in each worker's configuration so it reports the ID when it registers.
 - **A size that cannot be read ends the script with a non-zero exit.** `grow` compares the request
   with the size the cloud reports; a CLI failure, or a size that is not a whole number, makes the
@@ -94,7 +96,7 @@ The authoritative description is the package comment in `internal/capacity/scrip
   resize. `desired` and `current` must be whole numbers from 0 to 100000.
 - **`list` answers the form a worker reports** as its `cloud_instance_id`: the EC2 instance ID
   (`i-0123456789abcdef0`), the GCE instance name, the Azure scale-set instance ID (the last segment
-  of the VM's resource ID, `3`). Azure `retire` accepts **only** that bare ID and refuses a resource
+  of the VM's resource ID, `3`). Azure `retire` accepts only that bare ID and refuses a resource
   ID: keeping the last segment of one would let a VM of another scale set pass the membership check
   as an instance of the configured set.
 - **Treat the request as data.** Read it with `jq`, validate every instance ID and name against a

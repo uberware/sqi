@@ -52,7 +52,8 @@ func TestUnschedulable_WaitingForWake(t *testing.T) {
 		t.Errorf("reason with no workers = %q, want %q", got, waitWakeLan)
 	}
 
-	// It replaces the old reason when workers are online but none can run it.
+	// It replaces the no-eligible-worker reason when workers are online but
+	// none can run it.
 	registerOnline(t, f.st, store.Worker{ID: "busy", FarmID: capFarm, CPUCount: 4, QueueID: "elsewhere"})
 	online, err := f.s.onlineWorkers(t.Context())
 	if err != nil {
@@ -176,9 +177,9 @@ func TestUnschedulable_IncapableGroupKeepsOldReason(t *testing.T) {
 	}
 }
 
-// With no online worker, a read the capacity wait needs that fails keeps the
-// reason the task would have had without acting groups, rather than reading
-// as schedulable and clearing it, so a passing store error does not flip it.
+// With no online worker, a failed read during the capacity wait keeps the
+// reason the task has without acting groups, so a transient store error does
+// not read as schedulable and clear it.
 func TestUnschedulable_NoOnlineWorkersWhenAReadFails(t *testing.T) {
 	failing := false
 	f := newActFixture(t, func(st *fake.Store) store.Store {
@@ -211,7 +212,8 @@ func (r readSwitch) GetJob(ctx context.Context, id string) (store.Job, error) {
 }
 
 // A group whose provider does not act (external, or a script this server does
-// not configure) brings nothing, so the old reason stays.
+// not configure) brings nothing, so the task keeps the reason it has without
+// capacity groups.
 func TestUnschedulable_ExternalGroupKeepsOldReason(t *testing.T) {
 	tests := []struct {
 		name string
@@ -257,8 +259,8 @@ func TestUnschedulable_WaitableClearedWithGroups(t *testing.T) {
 	}
 }
 
-// With no capacity group the unschedulable sweep makes exactly the calls it
-// always has: the capacity view is memory only.
+// With no capacity group the unschedulable sweep makes only its own store
+// calls: the capacity view is read from memory.
 func TestUnschedulable_NoGroupsUnchanged(t *testing.T) {
 	tests := []struct {
 		name   string

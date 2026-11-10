@@ -273,10 +273,11 @@ func wakeAddresses(w store.Worker) (macs []net.HardwareAddr, target netip.Prefix
 				target = p
 			}
 		}
-		mac, err := net.ParseMAC(iface.MAC)
-		if err != nil || len(mac) != 6 {
+		if !iface.WakeAddressable() {
 			continue
 		}
+		mac, _ := net.ParseMAC(iface.MAC) //nolint:errcheck // WakeAddressable has parsed it
+
 		if !slices.ContainsFunc(macs, func(m net.HardwareAddr) bool { return m.String() == mac.String() }) {
 			macs = append(macs, mac)
 		}

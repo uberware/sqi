@@ -11,8 +11,8 @@
 -- for the machine; both are reported at registration.
 --
 -- capacity_group_state holds what the server decides about a group at run
--- time: how many machines it has asked for, and whether it is degraded. It is a
--- table of its own, not columns of capacity_groups, so that replacing an
+-- time: how many machines it has asked for, whether it is degraded, and when it
+-- may ask for more. It is kept out of capacity_groups so that replacing an
 -- operator's fields can never overwrite it. requested_at, degraded_at and
 -- backoff_until are NULL until set.
 ALTER TABLE workers ADD COLUMN power_state TEXT COLLATE "C" NOT NULL DEFAULT 'awake';

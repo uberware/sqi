@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strings"
@@ -93,6 +95,20 @@ type NetInterface struct {
 	Name  string   `json:"name"`
 	MAC   string   `json:"mac"`
 	Addrs []string `json:"addrs,omitempty"`
+}
+
+// WakeAddressable reports whether a wake-on-LAN packet can be addressed with
+// i: it has a 6-byte MAC and an IPv4 address in CIDR form, whose network the
+// packet is broadcast on. It is the one statement of that rule, which the
+// wake_on_lan provider and the API's has_wake_address both apply.
+func (i NetInterface) WakeAddressable() bool {
+	if mac, err := net.ParseMAC(i.MAC); err != nil || len(mac) != 6 {
+		return false
+	}
+	return slices.ContainsFunc(i.Addrs, func(a string) bool {
+		p, err := netip.ParsePrefix(a)
+		return err == nil && p.Addr().Is4()
+	})
 }
 
 // MachineProfile describes the machine a group's machines are expected to be.

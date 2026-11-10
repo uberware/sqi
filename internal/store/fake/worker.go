@@ -17,10 +17,9 @@ import (
 // the registration: a new worker is enabled and in no group, and an existing
 // one keeps them, as the SQL upsert leaves those columns alone. Interfaces and
 // CloudInstanceID are taken from it unless empty, when the stored ones are
-// kept. The power state is decided as the SQL
-// upsert decides it: a waking, asleep or wake-failed worker becomes awake (its
-// time is now and its reason is cleared), a retiring one stays retiring, and a
-// new worker is awake. A nil
+// kept. The power state is decided as the SQL upsert decides it: a waking,
+// asleep or wake-failed worker becomes awake (its time is now and its reason
+// is cleared), a retiring one stays retiring, and a new worker is awake. A nil
 // RegistrationBrokerAt keeps the stored one. A registration stamped earlier
 // than the stored one ([store.StaleRegistration]) is refused with
 // [store.ErrStaleRegistration], returning the stored worker. A non-empty stored
@@ -77,7 +76,8 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 
 // registeredPowerState is the power state a registration leaves a worker in,
 // given the row it replaces: awake for a new worker, awake as of now for a
-// waking, asleep or wake-failed one, and unchanged otherwise.
+// waking, asleep or wake-failed one, awake for an empty state (with its time
+// and reason kept), and unchanged otherwise.
 func registeredPowerState(existing store.Worker, isUpdate bool) (store.PowerState, *time.Time, string) {
 	if !isUpdate {
 		return store.PowerAwake, nil, ""

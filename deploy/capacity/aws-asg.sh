@@ -14,7 +14,7 @@
 #
 # Actions (request and response: internal/capacity/script, and README.md):
 #
-#   grow    Raises the group's desired capacity to the requested size. It NEVER lowers it: sqi's
+#   grow    Raises the group's desired capacity to the requested size. It never lowers it: sqi's
 #           `current` is its own record and can be below the group's real size (a group replacing
 #           preempted instances, for one), so an absolute `set-desired-capacity` to a smaller
 #           number would terminate working instances. The script reads the group's own desired

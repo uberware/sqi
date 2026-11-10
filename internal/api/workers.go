@@ -16,7 +16,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -118,9 +117,9 @@ type workerResponse struct {
 	PowerStateAt    *time.Time `json:"power_state_at,omitempty"`
 	PowerReason     string     `json:"power_reason,omitempty"`
 	CloudInstanceID string     `json:"cloud_instance_id,omitempty"`
-	// HasWakeAddress is whether the worker reported an interface with a
-	// hardware address, which a wake-on-LAN packet is addressed to. The
-	// interfaces themselves are in the detail only, so a list stays small.
+	// HasWakeAddress is [store.Worker.HasWakeAddress]: whether a wake-on-LAN
+	// packet can be addressed to the worker. The interfaces themselves are in
+	// the detail only, so a list stays small.
 	HasWakeAddress  bool       `json:"has_wake_address"`
 	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
 	RegisteredAt    time.Time  `json:"registered_at"`
@@ -507,7 +506,7 @@ func toWorkerResponse(wk store.Worker) workerResponse {
 		PowerStateAt:    wk.PowerStateAt,
 		PowerReason:     wk.PowerReason,
 		CloudInstanceID: wk.CloudInstanceID,
-		HasWakeAddress:  slices.ContainsFunc(wk.Interfaces, func(i store.NetInterface) bool { return i.MAC != "" }),
+		HasWakeAddress:  wk.HasWakeAddress(),
 		LastHeartbeatAt: wk.LastHeartbeatAt,
 		RegisteredAt:    wk.RegisteredAt,
 		UpdatedAt:       wk.UpdatedAt,

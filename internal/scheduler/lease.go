@@ -129,16 +129,16 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 }
 
 // holdDisabledLease answers the lease request of a worker that may not take
-// new work ([store.Worker.MayTakeNewWork]): one disabled, or a capacity-group member that
-// is retiring or asleep. A worker re-requests as soon as a reply arrives and
-// can stay that way for days, so the request is parked for leaseHoldTimeout,
-// as an idle worker's is, rather than refused at once (which would spin its
-// lease loop) or after a short delay (which would still have it ask about once
-// a second per queue for as long as it stays so). [Scheduler.WakeWorker],
-// called when the worker is enabled or registers awake again, ends the park
-// early, and the request then makes the one retry a parked request makes,
-// which leases work only if the worker may take it by then. It holds no lock
-// while parked.
+// new work ([store.Worker.MayTakeNewWork]): one disabled, or a capacity-group
+// member that is retiring or asleep. A worker re-requests as soon as a reply
+// arrives and can stay that way for days, so the request is parked for
+// leaseHoldTimeout, as an idle worker's is, rather than refused at once (which
+// would spin its lease loop) or after a short delay (which would still have it
+// ask about once a second per queue for as long as it stays so).
+// [Scheduler.WakeWorker], called when the worker is enabled or registers awake
+// again, ends the park early, and the request then makes the one retry a
+// parked request makes, which leases work only if the worker may take it by
+// then. It holds no lock while parked.
 func (s *Scheduler) holdDisabledLease(ctx context.Context, workerID, instanceID string) [][]byte {
 	if s.disabledWaiters.wait(ctx, workerID, s.leaseHoldTimeout) {
 		return s.leaseAfterPark(ctx, workerID, instanceID)
@@ -165,10 +165,11 @@ func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
 
 // leaseAfterPark is the one retry a parked lease request makes once woken: it
 // re-reads the worker and, unless the worker may no longer take new work
-// ([store.Worker.MayTakeNewWork]), was taken offline, or re-registered from another process
-// while the request was parked, selects a batch. A failure to read the worker is an empty batch; a failure part way
-// through selection returns the tasks already leased, which must reach the
-// worker (see [Scheduler.selectLeaseBatch]).
+// ([store.Worker.MayTakeNewWork]), was taken offline, or re-registered from
+// another process while the request was parked, selects a batch. A failure to
+// read the worker is an empty batch; a failure part way through selection
+// returns the tasks already leased, which must reach the worker (see
+// [Scheduler.selectLeaseBatch]).
 //
 // The offline check is here and not at the front of the handler. A worker
 // that went offline while its request was parked (a graceful deregister, or

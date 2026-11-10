@@ -353,11 +353,12 @@ has four more families. The two gauges, `sqi_capacity_machines` and
 `sqi_capacity_group_degraded`, exist only for such groups (a group naming a
 script provider this server does not configure included); they go when the
 group is disabled, renamed, deleted or switched to `external`. The two counters
-go with the group's other series when it is disabled, renamed or deleted, and
-stay when it is switched to `external`. Only a rename or a deletion keeps them
-gone: a disabled group, or one switched to `external`, can still count a wake
-or retirement the boot timeout settles, or one a provider call still running
-finishes, so its counters carry on, or come back after a disable.
+are removed with the group's other series when it is disabled, renamed or
+deleted, and kept when it is switched to `external`. A disabled group, or one
+switched to `external`, can still count a wake or retirement that the boot
+timeout settles or that a provider call still running finishes, so its
+counters continue, or reappear after a disable; after a rename or a deletion
+they do not.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|

@@ -384,7 +384,7 @@ func TestControlReplyMsg_RoundTrip(t *testing.T) {
 }
 
 // The refusal reasons are wire values: the server matches a worker's reply
-// against them, so a change here changes what older peers understand.
+// against them.
 func TestControlRefusalReasons(t *testing.T) {
 	tests := []struct{ got, want string }{
 		{protocol.ControlRefusalBusy, "busy"},

@@ -20,8 +20,8 @@ import (
 //     (the SQL lease joins all three);
 //   - a task failing ListReadyTasks' eligibility predicate (isReadyInFarm) is
 //     Lost;
-//   - a disabled, retiring or asleep worker is Lost; an offline worker, or one with no row, is
-//     Lost only when the request sets RequireOnline;
+//   - a disabled, retiring or asleep worker is Lost; an offline worker, or one
+//     with no row, is Lost only when the request sets RequireOnline;
 //   - the queue cap is checked before the farm cap;
 //   - pools are checked in pool-ID order, whatever order the request lists
 //     them in, so the same full pool is reported;

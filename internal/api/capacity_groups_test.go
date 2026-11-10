@@ -964,7 +964,8 @@ func TestCapacityGroup_TokenMintingNeedsRESTAuth(t *testing.T) {
 	}
 }
 
-// The exact refusal details for the two acting providers a group cannot use.
+// The refusal details for wake_on_lan on a sized group and for an
+// unconfigured script provider.
 const (
 	errWakeOnLANSized         = `provider "wake_on_lan" needs a named group: it wakes machines it already knows`
 	errScriptAWSNotConfigured = `provider "script:aws" is not configured: add it under capacity.providers in the server's configuration file`
@@ -1016,7 +1017,7 @@ func TestCapacityGroup_AcceptsActingProviders(t *testing.T) {
 		{"configured script sized", "sized", "script:aws"},
 		{"configured script named", "named", "script:aws"},
 		{"second configured script", "sized", "script:gcp"},
-		{"external still accepted", "sized", "external"},
+		{"external accepted", "sized", "external"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

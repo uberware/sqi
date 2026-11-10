@@ -319,8 +319,8 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// takes finds it in place.
 	//
 	// The server's sleep, shutdown and wake-relay requests arrive on
-	// worker.control.<workerID>. That subscription is made here too, so a
-	// command is never lost to one made after the lease loop starts.
+	// worker.control.<workerID>. That subscription is made here too, before
+	// the lease loop starts.
 	if err := subscribeServerSignals(ctx, nc, workerID, cfg.Worker.Power, exec, reg, logger); err != nil {
 		return err
 	}

@@ -11,7 +11,7 @@ import (
 )
 
 // InstanceID reads the identifier of the cloud instance the worker runs on from
-// vendor's (aws, gcp or azure) instance metadata service, with the same base
+// the instance metadata service of vendor (aws, gcp or azure), with the same base
 // URLs, endpoint override and client rules as [New]. The identifier is the one
 // a scale-set or instance-group operation names:
 //

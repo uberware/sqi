@@ -310,11 +310,9 @@ that advertises its broker in a `nats_url` record, and skips an advertisement
 without one; a worker with an explicit `nats.url` does not use discovery, but
 is still subject to the protocol check.
 
-The release that adds wake-on-LAN and script capacity providers raises the wire
-protocol to version `6`: a worker now listens for power commands on
-`worker.control.<workerID>` ([Capacity groups](capacity.md#power-control-on-the-worker)).
-Upgrade the server first, then its workers; until a worker is upgraded the
-server discards its messages and leases it nothing.
+The wire protocol is version `6`. Upgrade the server first, then its workers;
+until a worker is upgraded the server discards its messages and leases it
+nothing.
 
 After any server start, worker-offline detection waits about 3 minutes (at
 the defaults) before acting, so a worker that died while the server was down
@@ -2363,9 +2361,9 @@ groups:
    counted from when the scheduler was first told to stop
    (`scheduler.StopCeiling`), and by the shutdown deadline below; within it the
    scheduler waits at most 20 s for provider calls. A provider call still
-   running at the end is abandoned: it writes nothing more to the store. That
-   loses nothing, because every provider request is absolute and was recorded
-   before it was made, so the next leader sends it again.
+   running at the end is abandoned and writes nothing more to the store.
+   Nothing is lost: every provider request is absolute and recorded before it
+   is made, so the next leader sends it again.
 5. Drain and flush sqi's JetStream consumers (in-flight messages are
    acknowledged or requeued), then shut the broker down. The embedded broker
    stops through lame duck mode; with an external broker, `sqi-server`

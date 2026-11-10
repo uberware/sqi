@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"time"
 )
 
@@ -201,7 +202,7 @@ type Registration struct {
 	// WokeFrom is the power state it moved the worker out of, to
 	// [PowerAwake]: [PowerWaking], [PowerAsleep] or [PowerWakeFailed]. Empty
 	// when it left the power state as it was. It is read under the lock the
-	// write takes, so it is exact, not a guess from an earlier read.
+	// write takes.
 	WokeFrom PowerState
 	// WokeFromAt is when the worker entered WokeFrom, or nil when WokeFrom is
 	// empty or that time was not recorded.
@@ -241,6 +242,12 @@ func (w Worker) EffectiveStatus() WorkerStatus {
 		return WorkerStatusDisabled
 	}
 	return w.Status
+}
+
+// HasWakeAddress reports whether a wake-on-LAN packet can reach the worker:
+// one of its interfaces is [NetInterface.WakeAddressable].
+func (w Worker) HasWakeAddress() bool {
+	return slices.ContainsFunc(w.Interfaces, NetInterface.WakeAddressable)
 }
 
 // EffectivePowerState is the worker's power state. An empty one, which no
@@ -301,11 +308,11 @@ type WorkerStore interface {
 	// worker keeps its group membership. Interfaces and CloudInstanceID are
 	// written from the registration, except that an empty one keeps the stored
 	// value, so a failed read on the worker never erases them. PowerState is
-	// decided by the store, in the
-	// same statement: a waking, asleep or wake-failed worker becomes awake
-	// (PowerStateAt is now and PowerReason is cleared), a retiring worker stays
-	// retiring, and a new worker is awake. When the stored
-	// InstanceID is non-empty and differs from a non-empty incoming one, the
+	// decided by the store in the same statement: a waking, asleep or
+	// wake-failed worker becomes awake (PowerStateAt is now and PowerReason is
+	// cleared), a retiring worker stays retiring, and a new worker is awake.
+	// When the stored InstanceID is non-empty and differs from a non-empty
+	// incoming one, the
 	// previous worker process is gone: in the same transaction its assigned and
 	// running tasks are reclaimed exactly as [WorkerStore.OfflineWorker]
 	// reclaims them (attempts closed as failed with

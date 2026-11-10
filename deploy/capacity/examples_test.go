@@ -4,9 +4,9 @@
 // against stub cloud and BMC command-line tools, and checks the exact commands each one runs and
 // the response it writes.
 //
-// The stubs record their argument vector and print canned JSON; they are not the real tools, so a
-// pass shows the scripts build the commands their authors intended, not that the real tools accept
-// them. The test needs bash and jq and is skipped on Windows and where either is missing.
+// The stubs record their argument vector and print canned JSON. A pass shows the scripts build the
+// intended commands; it does not show that the real tools accept them. The test needs bash and jq
+// and is skipped on Windows and where either is missing.
 package capacityexamples_test
 
 import (
@@ -24,8 +24,9 @@ import (
 )
 
 // stubScript is every stub tool. It records its argument vector (NUL-separated, the record ended by
-// 0x1e) and the IPMI_PASSWORD it was started with (one line in <log>.env), prints the canned answer for the first argument that names one (<responses>/<tool>/<arg>.json)
-// and exits with the status in <responses>/<tool>.exit when that file exists.
+// 0x1e) and the IPMI_PASSWORD it was started with (one line in <log>.env), prints the canned answer
+// for the first argument that names one (<responses>/<tool>/<arg>.json) and exits with the status
+// in <responses>/<tool>.exit when that file exists.
 const stubScript = `#!/usr/bin/env bash
 tool=$(basename "$0")
 printf '%s\0' "$tool" "$@" >> "$STUB_LOG"
@@ -412,7 +413,7 @@ func awsCases() []tc {
 			wantCalls: []string{awsDescribeCall, "aws autoscaling set-desired-capacity --auto-scaling-group-name render-asg --desired-capacity 5 --no-cli-pager"},
 		},
 		{
-			// R19: sqi's current can be below the cloud's real size; a lower desired must not shrink it.
+			// sqi's current can be below the cloud's real size; a lower desired must not shrink it.
 			name: "grow never lowers the cloud size", script: s, env: env, responses: describe(3),
 			request:   request("grow", `"desired":2,"current":2`),
 			wantResp:  `{"result":"ok","message":"no change: desired <= current size"}`,
@@ -443,7 +444,7 @@ func awsCases() []tc {
 			wantResp: `{"result":"error","message":"desired must be a whole number from 0 to 100000"}`,
 		},
 		{
-			// R27: sqi finishes every member an ok names, so a batch naming an instance of another
+			// sqi finishes every member an ok names, so a batch naming an instance of another
 			// group must terminate nothing and answer an error, not skip it.
 			name: "retire a member beside a foreign instance terminates nothing", script: s, env: env, responses: describe(3),
 			request:   request("retire", `"members":[`+member(awsA)+`,`+member(awsForeign)+`]`),
@@ -549,7 +550,7 @@ func awsCases() []tc {
 			wantResp: `{"result":"error","message":"AWS_ASG_NAME must be set and must not start with a dash"}`,
 		},
 		{
-			// R19: a read that fails must not become a grow.
+			// A read that fails must not become a grow.
 			name: "grow whose read fails changes nothing", script: s, env: env, failTool: "aws",
 			request:   request("grow", `"desired":5,"current":3`),
 			wantExit:  1,
@@ -678,7 +679,7 @@ func gcpCases() []tc {
 			wantCalls: []string{list, base + "delete-instances render-mig --instances=render-a1b2,render-c3d4 --zone us-central1-a --quiet"},
 		},
 		{
-			// R27: sqi finishes every member an ok names, so a batch naming an instance of another
+			// sqi finishes every member an ok names, so a batch naming an instance of another
 			// group must delete nothing and answer an error, not skip it.
 			name: "retire members beside a foreign instance deletes nothing", script: s, env: env, responses: resp("2"),
 			request:   request("retire", `"members":[{"worker_id":"w-1","instance_id":"render-a1b2"},{"instance_id":"other-vm-zzzz"},{"instance_id":"render-c3d4"}]`),
@@ -748,7 +749,7 @@ func gcpCases() []tc {
 			wantResp: `{"result":"error","message":"set exactly one of GCP_ZONE and GCP_REGION"}`,
 		},
 		{
-			// R19: a read that fails must not become a grow.
+			// A read that fails must not become a grow.
 			name: "grow whose read fails changes nothing", script: s, env: env, failTool: "gcloud",
 			request:   request("grow", `"desired":5,"current":2`),
 			wantExit:  1,
@@ -861,7 +862,7 @@ func azureCases() []tc {
 			wantCalls: []string{list, "az vmss delete-instances" + rg + " --instance-ids 0 1 --only-show-errors"},
 		},
 		{
-			// R27: sqi finishes every member an ok names, so a batch naming an instance the set does
+			// sqi finishes every member an ok names, so a batch naming an instance the set does
 			// not list must delete nothing and answer an error, not skip it.
 			name: "retire members beside a non-member deletes nothing", script: s, env: env, responses: resp("2"),
 			request:   request("retire", `"members":[{"worker_id":"w-1","instance_id":"0"},{"instance_id":"1"},{"instance_id":"7"}]`),
@@ -891,8 +892,8 @@ func azureCases() []tc {
 			wantResp: `{"result":"error","message":"invalid or missing instance_id in members"}`,
 		},
 		{
-			// R25: only the bare scale-set instance ID. Keeping the last segment of a resource ID would
-			// let a VM of another scale set pass the membership check as instance 1 of this one.
+			// Only the bare scale-set instance ID is accepted. Keeping the last segment of a resource
+			// ID would let a VM of another scale set pass the membership check as instance 1 of this one.
 			name: "retire rejects a resource ID of this scale set", script: s, env: env, responses: resp("2"),
 			request:  request("retire", `"members":[{"instance_id":"`+azVMSS+`1"}]`),
 			wantResp: `{"result":"error","message":"invalid or missing instance_id in members"}`,
@@ -936,7 +937,7 @@ func azureCases() []tc {
 			wantResp: `{"result":"error","message":"AZURE_RESOURCE_GROUP and AZURE_VMSS_NAME must be set and must not start with a dash"}`,
 		},
 		{
-			// R19: a read that fails must not become a grow.
+			// A read that fails must not become a grow.
 			name: "grow whose read fails changes nothing", script: s, env: env, failTool: "az",
 			request:   request("grow", `"desired":5,"current":2`),
 			wantExit:  1,

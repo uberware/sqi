@@ -1907,7 +1907,7 @@ not a foreign key, like its `worker_id`. A worker belongs to at
 most one group, and the membership write is a compare-and-set under the worker's
 anchor.
 
-**Power state (migration pair `00047`).** `workers` gains `power_state`
+**Power state (migration pair `00047`).** `workers` carries `power_state`
 (`awake`, `waking`, `retiring`, `asleep` or `wake_failed`; never empty),
 `power_state_at`, `power_reason`, `interfaces` (JSON, what a wake-on-LAN packet
 is addressed with) and `cloud_instance_id`; a registration writes the last two,
@@ -1969,7 +1969,7 @@ farm in.
 **The actuator (`internal/scheduler/capacityact.go`).** For a group whose
 provider acts (`wake_on_lan`, or a `script:<name>` the server's configuration
 defines; a script it does not define is recorded as the group's last action and
-logged once), the actuator follows one rule: **record the intent, then act.**
+logged once), the actuator follows one rule: record the intent, then act.
 It first writes each transition the evaluation chose: `MarkWaking` for the wake
 candidates, `BeginRetirement` for each retire candidate (a compare-and-set
 under the worker's row lock that refuses a member holding an assigned or running

@@ -152,7 +152,7 @@ as the group's last action, logs it once, and acts on nothing, and a `PUT` that
 keeps the group's stored provider is still accepted, so the group can be
 disabled or edited. Switching a group *to* an unconfigured provider is refused.
 
-The two acting providers need opting in twice, on purpose, before sqi stops a
+The two acting providers need two opt-ins before sqi stops a
 machine: on the server, the group must name `wake_on_lan` or a script; for
 `wake_on_lan`, each worker must also set
 [`worker.power.allow_remote_sleep`](worker-configuration.md#workerpowerallow_remote_sleep)
@@ -370,7 +370,7 @@ blind server. Reading the status needs `infra.read` when `auth.enabled` is on.
 `GET /api/v1/capacity-groups/{id}/members` lists a group's workers in the shape
 `GET /workers` returns. Every worker there carries `power_state` (`awake` for a
 worker no group has moved) and `has_wake_address` (whether it reported an
-interface with a MAC), and, when set, `power_state_at`, `power_reason` (why it
+interface with a 6-byte MAC and an IPv4 address), and, when set, `power_state_at`, `power_reason` (why it
 last changed, such as a failed wake) and `cloud_instance_id`. The interfaces
 themselves are in the worker's detail, `GET /api/v1/workers/{id}`.
 
@@ -395,12 +395,12 @@ authentication.
 The power-state and degraded gauges exist only for a group whose provider acts,
 which includes a group naming a script provider this server does not configure.
 They are removed when a group is switched to `external`. A group's gauges
-disappear when it is disabled, renamed or deleted. The two counters go with
-them, and stay when a group is switched to `external`. Only a rename or a
-deletion keeps them gone: a disabled group, or one switched to `external`, can
-still count a wake or retirement that the boot timeout settles, or that a
-provider call still running finishes, so its counters carry on, or come back
-after a disable. See also [Observability](observability.md).
+disappear when it is disabled, renamed or deleted. The two counters are
+removed with them, and kept when a group is switched to `external`. A disabled
+group, or one switched to `external`, can still count a wake or retirement that
+the boot timeout settles or that a provider call still running finishes, so its
+counters continue, or reappear after a disable; after a rename or a deletion
+they do not. See also [Observability](observability.md).
 
 `sqi_scheduler_queue_depth{queue}` (the label is the queue ID) falls back to `0`
 when a queue drains, so a scaling signal built on it falls too. Only a queue the
@@ -710,8 +710,11 @@ sqi writes what it is about to do to the store before it does it: a wake moves
 the members to `waking`, a retirement moves the member to `retiring`, and a
 sized group's grow records the size it asks for (its launch record). Only then
 is the provider called, on a goroutine of its own, at most one call per group at
-a time. Its results are applied through writes fenced like every leader write,
-so a server that has lost the leadership meanwhile changes nothing.
+a time. While a group's call runs, sqi records no new wake or retirement for it:
+the request could not be sent before the call ends, and a recorded transition
+starts its boot timeout at once. Its results are applied through writes fenced
+like every leader write, so a server that has lost the leadership meanwhile
+changes nothing.
 
 Every request is absolute: wake this machine, sleep that one, make the group 14
 machines in all. Sending one twice is harmless, and that is what a new leader
@@ -745,7 +748,8 @@ a member stuck.
 When `sqi-server` stops, or a leader hands over, it waits up to 20 s for the
 provider calls still running, inside the server's 30 s shutdown budget (see
 [Graceful shutdown](operations.md#graceful-shutdown)). A call still running then
-is cut off: its results are not written, and it starts no further action.
+is cut off: its context is canceled, so a store write or a script it is still
+running stops, its results are not written, and it starts no further action.
 Nothing is lost by that. Its request was recorded before it was made, so the
 next leader sends it again, or the boot timeout settles it. A call that runs
 longer than 20 s (any script on the default 2-minute timeout can, as can a call
@@ -851,8 +855,8 @@ again at once, as it is when no reply comes within 10 s. `already retiring` is
 the exception: the command is under way, so sqi takes it as accepted.
 
 A request that reaches no one (no worker listens on the member's control
-subject) is read by who began the retirement. When this server began it, the
-request was its first: nothing was delivered, so the retirement is refused with
+subject) is handled according to which server began the retirement. When this
+server began it, the request was its first: nothing was delivered, so the retirement is refused with
 `worker is not listening on its control subject` and the member is `awake`
 again at once. A request this server only repeats, for a retirement recorded
 before it started (after a restart or a failover), leaves the member `retiring`
@@ -978,14 +982,14 @@ Do this on each machine before adding it to a `wake_on_lan` group.
    ResultActive=yes
    ```
 
-   Check it with `sudo -u sqiworker systemctl suspend`. That really suspends
+   Check it with `sudo -u sqiworker systemctl suspend`. That suspends
    the machine, so run it where you can wake the machine again.
 6. **Register once while awake.** Start the worker with its network up and let
    it register, so the server records its MAC address. `GET /api/v1/workers/{id}`
    should list an interface with a `mac` and an IPv4 address in `addrs`.
 7. **Try it.** Put the machine to sleep or shut it down by hand, then wake it
    with any Wake-on-LAN tool from another machine on its network. If that does
-   not work, sqi cannot do better.
+   not wake it, sqi cannot either.
 
 ## The script provider
 
@@ -1110,10 +1114,15 @@ The rules the server applies:
   put a secret on the command line. Do not `set -x` either: it writes every
   command to standard error, which the server logs.
 - **Timeout.** Each run is bounded by the provider's `timeout` (2 minutes by
-  default, 5 s to 30 minutes); a script still running then is killed, and the
-  action is recorded as `timeout`.
+  default, 5 s to 30 minutes); a script still running then is killed along
+  with every process it started (its process group on Linux and macOS, a job
+  object on Windows), so an `aws` or `gcloud` call it made does not go on to
+  finish the action, and the action is recorded as `timeout`.
 - **One call per group at a time.** A slow script delays only its own group's
-  next actions.
+  next actions. Keep the provider's `timeout` below the group's
+  `boot_timeout_seconds`: a member's boot timeout starts when its wake is
+  recorded, just before the call, so a wake call that runs longer than the boot
+  timeout fails the members it is waking.
 - **Requests are absolute, and may come again.** After a failover, or a call cut
   off at shutdown, the next leader repeats what was recorded. Write every action
   so that running it twice does no harm.
@@ -1127,7 +1136,7 @@ never sends a `grow` below `current`, and it never shrinks a group by lowering
 its size: it retires named members. One `retire` request may name several
 members, and its one answer applies to every member it names.
 
-> **`grow` must never lower the cloud group's size.** sqi's `current` is its
+> `grow` must never lower the cloud group's size. sqi's `current` is its
 > own record and can be below the cloud group's real size: a group that replaces
 > preempted instances on its own runs more machines than sqi has counted.
 > Setting the size to a smaller `desired` would terminate live instances doing
@@ -1157,11 +1166,11 @@ process naming `worker.cloud_instance_id.source`, and the member stays `awake`.
 
 For a sized group the script must also:
 
-- **lower the cloud group's desired size** by the instances it removes (AWS
+- lower the cloud group's desired size by the instances it removes (AWS
   `terminate-instance-in-auto-scaling-group --should-decrement-desired-capacity`;
   `delete-instances` on GCP and Azure does it already), or the cloud group
   starts replacements;
-- **act only on the instance IDs it is given**, and check that every one
+- act only on the instance IDs it is given, and check that every one
   belongs to the configured group before removing any. One that does not makes
   the whole request an `error` with nothing removed. Orphan cleanup sends
   `retire` with members that carry an `instance_id` only.
@@ -1189,7 +1198,7 @@ repeats.
 - Once a launch is met, `requested_machines` follows the group's member rows,
   online and offline. A worker restarting, or missing a heartbeat, keeps its row
   and so never lowers the record; a lowered record could make the next absolute
-  `grow` terminate live instances. A machine really lost does drop out: a
+  `grow` terminate live instances. A machine that is gone drops out: a
   retired or preempted member's row is deleted when it deregisters, and an
   ephemeral member that vanished without a word is deleted after
   `boot_timeout_seconds`.
@@ -1210,10 +1219,10 @@ cloud group's instances, and retires every listed instance that no member
 reports as its `cloud_instance_id`, by instance ID alone. It does this only
 while no launch is unmet, and only within a boot timeout of the degradation.
 
-- It is **skipped**, with one warning naming them, if any member of the group,
+- It is skipped, with one warning naming them, if any member of the group,
   online or offline, has no cloud instance ID: that member's own instance would
   look orphaned.
-- It is **refused**, with a warning, if the instances to retire outnumber
+- It is refused, with a warning, if the instances to retire outnumber
   `max_machines` less the members: those cannot all be machines sqi asked for.
 - A script with no `list` leaves the degraded reason ending
   `instances that never registered may still be running; the provider has no
@@ -1256,7 +1265,7 @@ orphan cleanup retires the whole group:
    of them, so every one is retired.
 
 No sqi work is lost: the tasks were reclaimed and run elsewhere when the
-members went offline. But the fleet is terminated and launched again.
+members went offline, but the fleet is terminated and launched again.
 `boot_timeout_seconds` is the knob: a longer one rides out a longer partition.
 The server's
 [reconnect grace](architecture.md#after-a-broker-outage-the-reconnect-grace)
@@ -1273,8 +1282,8 @@ answering `wake` (`chassis power on`) and `retire` (`chassis power soft`). Its
 
 > **Documentation-derived: not run against a real cloud or BMC.** The scripts
 > are tested against stub `aws`, `gcloud`, `az` and `ipmitool` programs that
-> record their arguments, which shows they build the commands intended, not
-> that the real tools accept them. Try one against a scratch group first.
+> record their arguments; that checks the commands they build, not that the
+> real tools accept them. Try one against a scratch group first.
 
 - They need `bash` 4.4 or later and `jq`, plus the cloud's CLI or `ipmitool`,
   on the server's `PATH`. Each refuses to run on an older bash (macOS's stock
@@ -1485,9 +1494,8 @@ be chosen and will drain (up to the grace period) before it exits.
   in for the suspend and a process restart standing in for the wake.
 - The example scripts in `deploy/capacity/` are documentation-derived, tested
   only against stub command-line tools ([Example scripts](#example-scripts)).
-- There is no `sqi-load` capacity scenario. The load simulator cannot model a
-  suspended machine cheaply, and the two end-to-end tests above are the stronger
-  proof.
+- There is no `sqi-load` capacity scenario: the load simulator does not model a
+  suspended machine.
 - A self-healing cloud group (one that replaces preempted instances by itself)
   is safe only because `grow` never lowers the group's size
   ([Growing a sized group](#growing-a-sized-group)). A script that sets the

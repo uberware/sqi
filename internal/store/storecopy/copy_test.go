@@ -627,9 +627,8 @@ func seedServerHA(t *testing.T, path string, at time.Time) {
 		       ('instance-b', 'sqi-b', 'host-b', 4343, '0.9.0', 'fp-1', '`+stamp+`', 1788000001000000, 1788000001000000)`)
 }
 
-// seedCapacityGroupState gives capacity group cg-1 a state row, which no store
-// method writes yet: every column off its default, including the three
-// nullable times.
+// seedCapacityGroupState gives capacity group cg-1 a state row with every
+// column off its default, including the three nullable times.
 func seedCapacityGroupState(t *testing.T, path string, at time.Time) {
 	t.Helper()
 	stamp := sqlstore.TimeText(at)
@@ -640,7 +639,7 @@ func seedCapacityGroupState(t *testing.T, path string, at time.Time) {
 
 // TestStoreCopy_CopiesCapacityGroupState pins the capacity group runtime state
 // and the worker power columns through the copy: assertRowsEqual compares every
-// column, and these reads show the values are the seeded ones rather than the
+// column, and these reads check the values are the seeded ones and not the
 // defaults a copy that skipped the columns would leave.
 func TestStoreCopy_CopiesCapacityGroupState(t *testing.T) {
 	skipWithoutPostgres(t)

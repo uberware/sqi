@@ -225,18 +225,13 @@ type RegisterMsg struct {
 
 	// Interfaces lists the worker's network interfaces that carry a hardware
 	// address, so the server can wake a sleeping worker with a Wake-on-LAN
-	// packet from a peer on the same subnet.
-	//
-	// A registration-payload field, not a [ProtocolVersion] change: an older
-	// server ignores it, and an older worker omits it and cannot be woken.
+	// packet from a peer on the same subnet. Optional: a worker that omits it
+	// cannot be woken.
 	Interfaces []NetInterface `json:"interfaces,omitempty"`
 
 	// CloudInstanceID is the cloud provider's identifier for the instance this
 	// worker runs on, when it is one. The server uses it to find the instance
-	// a power command or a scaling decision names.
-	//
-	// A registration-payload field, not a [ProtocolVersion] change, for the
-	// reason Interfaces gives.
+	// a power command or a scaling decision names. Optional.
 	CloudInstanceID string `json:"cloud_instance_id,omitempty"`
 
 	// CapacityGroup names the capacity group this worker asks to join (its
@@ -261,9 +256,9 @@ type NetInterface struct {
 	Addrs []string `json:"addrs,omitempty"`
 }
 
-// The most of [RegisterMsg.Interfaces] that counts: a worker reports at most
-// MaxInterfaces interfaces, each with at most MaxAddrsPerInterface addresses,
-// and the server drops anything beyond.
+// Limits on [RegisterMsg.Interfaces]: a worker reports at most MaxInterfaces
+// interfaces, each with at most MaxAddrsPerInterface addresses, and the server
+// drops anything beyond.
 const (
 	MaxInterfaces        = 32
 	MaxAddrsPerInterface = 16
@@ -309,7 +304,8 @@ type ControlReplyMsg struct {
 }
 
 // The reasons a worker refuses a sleep or shutdown with, as
-// [ControlReplyMsg.Reason] carries them. The server reads them.
+// [ControlReplyMsg.Reason] carries them. The server matches
+// [ControlRefusalAlreadyRetiring] and reports the others as given.
 const (
 	// ControlRefusalBusy: the worker is running a task.
 	ControlRefusalBusy = "busy"

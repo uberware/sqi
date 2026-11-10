@@ -15,7 +15,7 @@ import (
 )
 
 // closedAfterStore fails every member read once closed is set, as a store
-// shutdown has closed does.
+// closed by shutdown does.
 type closedAfterStore struct {
 	store.Store
 
