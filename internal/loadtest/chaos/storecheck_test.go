@@ -3,6 +3,7 @@
 package chaos
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -393,4 +394,32 @@ func TestExecutionsRecorded_UnknownKeyFails(t *testing.T) {
 	unknown := scenario.TaskKey("job-x", "step-1", "4", "")
 	got := check(t, ts, StoreInput{Markers: []marker.Exec{mainExec("e1", unknown)}})
 	wantFail(t, got[NameExecutionsRecorded], unknown)
+}
+
+func TestExecutionsRecorded_SkippedMarkersAreANote(t *testing.T) {
+	ts := newSQLiteStore(t)
+	seedRun(t, ts.st, realJob(), "t1", store.TaskStatusSucceeded)
+	key := scenario.TaskKey("job-x", "step-1", "3", "")
+	got := check(t, ts, StoreInput{Markers: []marker.Exec{mainExec("e1", key)}, SkippedMarkers: 2})
+	r := got[NameExecutionsRecorded]
+	if !r.OK {
+		t.Fatalf("executions-recorded failed: %q", r.Evidence)
+	}
+	if len(r.Evidence) != 1 || !strings.Contains(r.Evidence[0], "2 marker files unreadable") {
+		t.Errorf("evidence = %q, want one note about the 2 unreadable files", r.Evidence)
+	}
+	wantOK(t, got[NameStoreIntegrity])
+}
+
+func TestStoreChecks_WithStoreSeesTheOpenedStore(t *testing.T) {
+	ts := newSQLiteStore(t)
+	a := seedRun(t, ts.st, readyJob("j1", "s1", "t1"), "t1", store.TaskStatusSucceeded)
+	var got store.TaskAttempt
+	var err error
+	check(t, ts, StoreInput{WithStore: func(ctx context.Context, st store.Store) {
+		got, err = st.GetTaskAttempt(ctx, a.ID)
+	}})
+	if err != nil || got.ID != a.ID {
+		t.Errorf("GetTaskAttempt in WithStore = %+v, %v", got, err)
+	}
 }

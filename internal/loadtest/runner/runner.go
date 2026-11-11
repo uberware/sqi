@@ -44,6 +44,7 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/simworker"
 	"github.com/uberware/sqi/internal/loadtest/target"
 	"github.com/uberware/sqi/internal/loadtest/verify"
+	"github.com/uberware/sqi/internal/store"
 )
 
 const (
@@ -323,6 +324,9 @@ type run struct {
 	// for submissions it gave no 2xx answer, in a chaos run.
 	serverUp time.Time
 	orphans  []driver.SubmittedJob
+	// rework is what the stopped server's store says the faults cost, nil
+	// until measured.
+	rework *report.Rework
 
 	uiCancel, obsCancel context.CancelFunc
 	uiDone, obsDone     chan struct{}
@@ -818,8 +822,6 @@ func (r *run) check(ctx context.Context) {
 		TaskSeen:            r.taskSeen,
 	}
 	r.chaosInput(&in)
-	// Hook: the marker checks of a chaos run go here, with the fleet and the
-	// real workers still up.
 	if r.o.BeforeVerify != nil {
 		r.o.BeforeVerify(&in)
 	}
@@ -830,8 +832,34 @@ func (r *run) check(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	results = append(results, r.markerChecks()...)
 	r.invariants = results
 	r.complete = true
+}
+
+// markerChecks runs a chaos run's no-orphans and single-writer checks on what
+// the real tasks' processes wrote, with the real workers still up: none when
+// the run had no real task. Markers that cannot be read fail the check that
+// needs them.
+func (r *run) markerChecks() []verify.Result {
+	if r.faults == nil || r.faults.MarkerDir() == "" {
+		return nil
+	}
+	dir := r.faults.MarkerDir()
+	execs, skipped, err := marker.ReadAll(dir)
+	if err != nil {
+		msg := "read the real tasks' markers: " + err.Error()
+		return []verify.Result{
+			{Name: chaos.NameNoOrphans, Evidence: []string{msg}},
+			{Name: chaos.NameSingleWriter, Evidence: []string{msg}},
+		}
+	}
+	outputs, outErr := marker.Outputs(dir)
+	results := chaos.MarkerChecks(execs, skipped, outputs, r.faults.Incarnations())
+	if outErr != nil {
+		results[1] = verify.Result{Name: chaos.NameSingleWriter, Evidence: []string{"read the real tasks' outputs: " + outErr.Error()}}
+	}
+	return results
 }
 
 // chaosInput fills what a chaos run adds to the verifier's input: the
@@ -932,13 +960,20 @@ func (r *run) storeChecks(ctx context.Context) {
 			verify.Result{Name: chaos.NameExecutionsRecorded, Evidence: []string{msg}})
 		return
 	}
-	markers, markerErr := mainMarkers(r.faults.MarkerDir())
+	markers, skipped, markerErr := mainMarkers(r.faults.MarkerDir())
 	results := chaos.StoreChecks(sctx, chaos.StoreInput{
-		Options: r.faults.StoreOptions(),
-		FarmID:  r.tgt.FarmID(),
-		Ledger:  r.ledger,
-		Markers: markers,
+		Options:        r.faults.StoreOptions(),
+		FarmID:         r.tgt.FarmID(),
+		Ledger:         r.ledger,
+		Markers:        markers,
+		SkippedMarkers: skipped,
+		WithStore: func(ctx context.Context, st store.Store) {
+			r.measureRework(ctx, st, markers, markerErr)
+		},
 	})
+	if r.rework == nil {
+		r.unavail("rework", "the stopped server's store could not be read")
+	}
 	for i := range results {
 		if markerErr != nil && results[i].Name == chaos.NameExecutionsRecorded {
 			results[i].OK = false
@@ -948,17 +983,34 @@ func (r *run) storeChecks(ctx context.Context) {
 	r.invariants = append(r.invariants, results...)
 }
 
-// mainMarkers reads the real tasks' main executions from dir, none when dir
-// is "".
-func mainMarkers(dir string) ([]marker.Exec, error) {
-	if dir == "" {
-		return nil, nil
+// measureRework records what the faults cost, from the stopped server's store.
+func (r *run) measureRework(ctx context.Context, st store.Store, markers []marker.Exec, markerErr error) {
+	var faults []report.FaultRecord
+	if r.ctl != nil {
+		faults = r.ctl.Records()
 	}
-	execs, _, err := marker.ReadAll(dir)
+	rw, err := chaos.ComputeRework(ctx, st, r.ledger, markers, r.tgt.FarmID(), faults)
 	if err != nil {
-		return nil, fmt.Errorf("read the real tasks' markers: %w", err)
+		r.unavail("rework", err.Error())
+		return
 	}
-	return slices.DeleteFunc(execs, func(e marker.Exec) bool { return e.Role != marker.RoleMain }), nil
+	if markerErr != nil {
+		r.unavail("rework", "the real tasks' executions are not counted: "+markerErr.Error())
+	}
+	r.rework = &rw
+}
+
+// mainMarkers reads the real tasks' main executions from dir, none when dir
+// is "", and how many exec files it could not parse.
+func mainMarkers(dir string) (execs []marker.Exec, skipped int, err error) {
+	if dir == "" {
+		return nil, 0, nil
+	}
+	execs, skipped, err = marker.ReadAll(dir)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read the real tasks' markers: %w", err)
+	}
+	return slices.DeleteFunc(execs, func(e marker.Exec) bool { return e.Role != marker.RoleMain }), skipped, nil
 }
 
 // healFaults ends the fault controller's Run, if it is still running, then

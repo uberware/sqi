@@ -191,6 +191,22 @@ type Record struct {
 	// Faults are the faults the run injected, in scenario order; empty for a
 	// run without faults.
 	Faults []FaultRecord `json:"faults,omitempty"`
+	// Rework is the work faults made the farm do twice; nil when the run did
+	// not measure it (a run without chaos checks, or a store it could not read).
+	Rework *Rework `json:"rework,omitempty"`
+}
+
+// Rework is the attempts that ran to completion on a worker and still did not
+// count: the server recorded another outcome for a simulated worker's, or a
+// real task's process finished more times than the server credited.
+type Rework struct {
+	Attempts int     `json:"attempts"`
+	Seconds  float64 `json:"seconds"`
+	// ByFault maps a fault's index to the attempts attributed to it: the latest
+	// fault that began before the attempt's worker-side end.
+	ByFault map[int]int `json:"by_fault,omitempty"`
+	// Examples are the first few, at most 20.
+	Examples []string `json:"examples,omitempty"`
 }
 
 // warmup returns the scenario's warmup, or zero when there is no scenario.

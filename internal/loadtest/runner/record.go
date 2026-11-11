@@ -80,6 +80,7 @@ func (r *run) record() *report.Record {
 	}
 	r.unavail("lease_reply", "a lease request parks on the server until work appears, so its reply time is idle wait, not server latency; first_lease measures dispatch")
 	rec.Faults = r.faultRecords()
+	rec.Rework = r.rework
 	rec.Invariants = r.invariants
 	if rec.Invariants == nil {
 		rec.Invariants = []verify.Result{}

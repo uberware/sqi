@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
@@ -39,6 +40,14 @@ type StoreInput struct {
 	// Markers are the real tasks' executions; only the main ones count. Nil
 	// when the run had no real task.
 	Markers []marker.Exec
+	// SkippedMarkers is how many exec files the markers' read could not parse,
+	// so a real task's execution count may be low. It is a note on
+	// executions-recorded, never a failure.
+	SkippedMarkers int
+	// WithStore, when set, is called with the opened store after the checks and
+	// before it closes, so a measurement can read the same stopped store. It is
+	// not called when the store could not be opened.
+	WithStore func(ctx context.Context, st store.Store)
 }
 
 // StoreChecks opens the stopped server's store and returns
@@ -87,6 +96,12 @@ func StoreChecks(ctx context.Context, in StoreInput) []verify.Result {
 	integrity.addAll(farm.statusViolations(ctx))
 	executions.addAll(leasedAttempts(ctx, st, in.Ledger))
 	executions.addAll(farm.realExecutions(ctx, in.Markers))
+	if in.SkippedMarkers > 0 {
+		executions.note(fmt.Sprintf("%d marker files unreadable, so a real task's execution count may be low", in.SkippedMarkers))
+	}
+	if in.WithStore != nil {
+		in.WithStore(ctx, st)
+	}
 	return []verify.Result{integrity.result(NameStoreIntegrity), executions.result(NameExecutionsRecorded)}
 }
 
@@ -306,6 +321,9 @@ type ledgerAttempt struct {
 	id, taskID, workerID string
 	// outcome is the last terminal event's, "" when there is none.
 	outcome string
+	// leasedAt is when the worker received the assignment, endedAt when it
+	// recorded the terminal event (zero when there is none).
+	leasedAt, endedAt time.Time
 }
 
 // ledgerAttempts returns every attempt the ledger has a leased event for, in
@@ -321,11 +339,11 @@ func ledgerAttempts(l *simworker.Ledger) []ledgerAttempt {
 		case simworker.KindLeased:
 			if _, ok := index[e.AttemptID]; !ok {
 				index[e.AttemptID] = len(out)
-				out = append(out, ledgerAttempt{id: e.AttemptID, taskID: e.TaskID, workerID: e.WorkerID})
+				out = append(out, ledgerAttempt{id: e.AttemptID, taskID: e.TaskID, workerID: e.WorkerID, leasedAt: e.At})
 			}
 		case simworker.KindTerminal:
 			if i, ok := index[e.AttemptID]; ok {
-				out[i].outcome = e.Outcome
+				out[i].outcome, out[i].endedAt = e.Outcome, e.At
 			}
 		}
 	}
@@ -426,7 +444,11 @@ func (f *farmView) tasksByKey() map[string][]string {
 type evidence struct {
 	lines []string
 	n     int
+	// notes are shown after the violations and fail nothing.
+	notes []string
 }
+
+func (e *evidence) note(s string) { e.notes = append(e.notes, s) }
 
 func (e *evidence) add(s string) {
 	e.n++
@@ -446,5 +468,5 @@ func (e *evidence) result(name string) verify.Result {
 	if e.n > verify.MaxEvidence {
 		lines = append(lines[:verify.MaxEvidence-1:verify.MaxEvidence-1], fmt.Sprintf("... and %d more", e.n-(verify.MaxEvidence-1)))
 	}
-	return verify.Result{Name: name, OK: e.n == 0, Evidence: lines}
+	return verify.Result{Name: name, OK: e.n == 0, Evidence: append(slices.Clip(lines), e.notes...)}
 }
