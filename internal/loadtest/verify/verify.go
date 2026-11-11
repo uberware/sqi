@@ -171,6 +171,16 @@ type Result struct {
 	Evidence []string
 }
 
+// FaultWindow is when a network, server or power-cut fault was in effect: from
+// when it fired to when it healed (or, for one that never healed, to the end
+// of the run).
+type FaultWindow struct {
+	Start, End time.Time
+	// Groups are the worker groups the fault hit; empty means every group, as
+	// for a server or power-cut fault.
+	Groups []string
+}
+
 // Check evaluates the six run invariants and returns their results in a fixed
 // order: terminal, outcomes, single-attempt, logs, workers-converge, caps.
 // Call it once [WaitDrained] has returned nil and the fleet's churn has

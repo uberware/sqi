@@ -124,6 +124,22 @@ type Finding struct {
 	Message  string `json:"message"`
 }
 
+// FaultRecord is one fault the run injected: when it fired and when it
+// healed.
+type FaultRecord struct {
+	// Index is the fault's position in the scenario's faults.
+	Index int    `json:"index"`
+	Kind  string `json:"kind"`
+	// Target is what the fault hit: "server", "group render (real 0,1)",
+	// "groups [rack-b]" or "all".
+	Target string    `json:"target"`
+	Start  time.Time `json:"start"`
+	// Healed is zero when the fault never healed: a worker left dead, an
+	// error, or a run interrupted before the heal.
+	Healed time.Time `json:"healed"`
+	Error  string    `json:"error,omitempty"`
+}
+
 // Record is everything one run measured. It is what run.json holds.
 type Record struct {
 	RunID string `json:"run_id"`
@@ -172,6 +188,9 @@ type Record struct {
 	Invariants  []verify.Result  `json:"invariants"`
 	Unavailable []string         `json:"unavailable"`
 	Findings    []Finding        `json:"findings"`
+	// Faults are the faults the run injected, in scenario order; empty for a
+	// run without faults.
+	Faults []FaultRecord `json:"faults,omitempty"`
 }
 
 // warmup returns the scenario's warmup, or zero when there is no scenario.
