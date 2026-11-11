@@ -29,6 +29,7 @@ func TestTransientJetStreamError(t *testing.T) {
 		{"request timed out", fmt.Errorf("wrapped: %w", context.DeadlineExceeded), true},
 		{"no responders", nats.ErrNoResponders, true},
 		{"jetstream not enabled (no responders)", jetstream.ErrJetStreamNotEnabled, true},
+		{"stream has no leader yet", fmt.Errorf("take guard: %w", jetstream.ErrNoStreamResponse), true},
 		{"not enabled for the account", jetstream.ErrJetStreamNotEnabledForAccount, false},
 		{"replicas not supported", apiErr(10074), false},
 		{"unrelated", errors.New("boom"), false},
