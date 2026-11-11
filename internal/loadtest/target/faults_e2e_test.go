@@ -5,6 +5,7 @@ package target
 import (
 	"context"
 	"net"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -205,12 +206,25 @@ func waitHeartbeatAfter(t *testing.T, m *managed, c *client.Client, after time.T
 	t.Fatalf("no heartbeat after %s within %s\nworker log:\n%s", after, timeout, tailLines(m.workerLog(0), 30))
 }
 
-// TestManaged_LanesFrontTheBroker cuts and heals the real worker's lane: its
-// heartbeats stop reaching the server and resume, and once the server's
-// post-start liveness grace (almost three minutes) has passed, the cut takes
-// the worker offline and the heal brings it back.
-func TestManaged_LanesFrontTheBroker(t *testing.T) {
-	skipShort(t)
+// registrations counts the worker log's registrations as worker id.
+func registrations(log, id string) int {
+	n := 0
+	for line := range strings.Lines(log) {
+		if strings.Contains(line, "registration: worker registered") && strings.Contains(line, "worker_id="+id) {
+			n++
+		}
+	}
+	return n
+}
+
+// slowTestsEnv opts in to the tests that wait out the server's liveness grace.
+const slowTestsEnv = "SQI_LOAD_SLOW_TESTS"
+
+// startLaneTarget starts a managed target with one real worker in group
+// render behind a lane, and returns it once the worker is online and
+// heartbeating, with that worker and when the server's liveness grace ends.
+func startLaneTarget(t *testing.T) (m *managed, c *client.Client, lane Lane, w client.Worker, graceEnds time.Time) {
+	t.Helper()
 	server, worker, noop := binaries(t)
 	sc := testScenario(scenario.ServerSpec{
 		Store:  "sqlite",
@@ -223,19 +237,27 @@ func TestManaged_LanesFrontTheBroker(t *testing.T) {
 		At: scenario.Duration{Duration: time.Second}, Duration: scenario.Duration{Duration: time.Second},
 		Partition: &scenario.NetTarget{Groups: []string{"render"}},
 	}}
-	m := startManaged(t, ManagedConfig{RunDir: t.TempDir(), ServerBin: server, WorkerBin: worker, NoopBin: noop, Scenario: sc})
-	graceEnds := time.Now().Add(livenessGrace(heartbeatTimeout))
-	c := mustClient(t, m)
+	m = startManaged(t, ManagedConfig{RunDir: t.TempDir(), ServerBin: server, WorkerBin: worker, NoopBin: noop, Scenario: sc})
+	graceEnds = time.Now().Add(livenessGrace(heartbeatTimeout))
+	c = mustClient(t, m)
 
-	lane := m.Lane("render")
+	lane = m.Lane("render")
 	if lane == nil {
 		t.Fatal("Lane(render) is nil on a scenario with a partition fault")
 	}
 	if m.NATSURLFor("render") == m.NATSURL() {
 		t.Fatalf("NATSURLFor(render) = the broker's own %s; the worker does not go through its lane", m.NATSURL())
 	}
-	w := waitWorker(t, m, c, "online", 30*time.Second)
+	w = waitWorker(t, m, c, "online", 30*time.Second)
 	waitHeartbeatAfter(t, m, c, lastHeartbeat(t, c, m.FarmID()), 5*heartbeatInterval)
+	return m, c, lane, w, graceEnds
+}
+
+// TestManaged_LanesFrontTheBroker cuts and heals the real worker's lane: its
+// heartbeats stop reaching the server and resume.
+func TestManaged_LanesFrontTheBroker(t *testing.T) {
+	skipShort(t)
+	m, c, lane, _, _ := startLaneTarget(t)
 
 	// Heartbeats stop reaching the server while the lane is cut.
 	lane.Cut()
@@ -247,8 +269,18 @@ func TestManaged_LanesFrontTheBroker(t *testing.T) {
 	}
 	lane.Heal()
 	waitHeartbeatAfter(t, m, c, frozen, 30*time.Second)
+}
 
-	// Only after the grace does a silent worker go offline.
+// TestManaged_LaneCutTakesTheWorkerOffline waits out the server's post-start
+// liveness grace (almost three minutes), then cuts the lane: the server takes
+// the worker offline, and the heal brings it back. It runs only with
+// SQI_LOAD_SLOW_TESTS=1.
+func TestManaged_LaneCutTakesTheWorkerOffline(t *testing.T) {
+	skipShort(t)
+	if os.Getenv(slowTestsEnv) != "1" {
+		t.Skipf("waits about three minutes for the server's liveness grace; set %s=1 to run it", slowTestsEnv)
+	}
+	m, c, lane, w, graceEnds := startLaneTarget(t)
 	if wait := time.Until(graceEnds); wait > 0 {
 		t.Logf("waiting %s for the server's liveness grace to pass", wait.Round(time.Second))
 		time.Sleep(wait)
@@ -268,7 +300,9 @@ func TestManaged_RestartWorkerKeepsWorkerID(t *testing.T) {
 	skipShort(t)
 	server, worker, noop := binaries(t)
 	sc := testScenario(scenario.ServerSpec{Store: "sqlite"})
-	sc.Workers = []scenario.WorkerGroup{{Name: "real", Real: 1, Queues: []string{"render"}}}
+	sc.Workers = []scenario.WorkerGroup{{
+		Name: "real", Real: 1, Queues: []string{"render"}, Heartbeat: scenario.Duration{Duration: heartbeatInterval},
+	}}
 	m := startManaged(t, ManagedConfig{RunDir: t.TempDir(), ServerBin: server, WorkerBin: worker, NoopBin: noop, Scenario: sc})
 	c := mustClient(t, m)
 	w := waitWorker(t, m, c, "online", 30*time.Second)
@@ -286,6 +320,9 @@ func TestManaged_RestartWorkerKeepsWorkerID(t *testing.T) {
 	if n := m.RealLive(); n != 0 {
 		t.Errorf("RealLive = %d after the kill, want 0", n)
 	}
+	// The killed worker's row stays online through the server's liveness
+	// grace, so only a heartbeat stored after this proves the new process.
+	killed := time.Now()
 	if err := m.RestartWorker(t.Context(), 0); err != nil {
 		t.Fatalf("RestartWorker: %v", err)
 	}
@@ -295,17 +332,25 @@ func TestManaged_RestartWorkerKeepsWorkerID(t *testing.T) {
 	if err := m.RestartWorker(t.Context(), 0); err == nil {
 		t.Error("RestartWorker of a running worker succeeded; two processes would share its data directory")
 	}
-	// The registration of the new process: same worker ID, online.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	// The new process heartbeats as the same worker, and no second worker
+	// appears.
+	assertOnlyWorker := func() {
+		t.Helper()
 		page, err := c.ListWorkers(t.Context(), m.FarmID(), 100, 0)
-		if err == nil && len(page.Items) == 1 && page.Items[0].ID == w.ID && page.Items[0].Status == "online" {
-			break
-		}
-		if time.Now().After(deadline) {
+		if err != nil || len(page.Items) != 1 || page.Items[0].ID != w.ID || page.Items[0].Status != "online" {
 			t.Fatalf("after the restart workers = %+v, %v; want only %s, online", page.Items, err, w.ID)
 		}
-		time.Sleep(250 * time.Millisecond)
+	}
+	waitHeartbeatAfter(t, m, c, killed, 30*time.Second)
+	assertOnlyWorker()
+	time.Sleep(2 * heartbeatInterval)
+	assertOnlyWorker()
+	log, err := os.ReadFile(m.workerLog(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := registrations(string(log), w.ID); n != 2 {
+		t.Errorf("worker log has %d registrations as %s, want 2 (one per incarnation)\n%s", n, w.ID, tailLines(m.workerLog(0), 30))
 	}
 
 	incs := m.Incarnations()

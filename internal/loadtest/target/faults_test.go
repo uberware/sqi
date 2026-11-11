@@ -164,6 +164,51 @@ func TestSignals_KillOneLeavesSiblings(t *testing.T) {
 	}
 }
 
+// TestManaged_CloseEndsWhatAKilledWorkerLeft gives a real worker slot a
+// process that started a child, kills the worker: the child lives on, for
+// the checks to find, through StopForChecks too; Close then ends it.
+func TestManaged_CloseEndsWhatAKilledWorkerLeft(t *testing.T) {
+	m := newTestManaged(t, laneScenario(false))
+	m.addWorkerSlots()
+	childFile := filepath.Join(t.TempDir(), "child.pid")
+	p := startHelper(t, "parent", helperChildPIDEnv+"="+childFile)
+	child := readPID(t, childFile)
+	t.Cleanup(func() {
+		if c, err := os.FindProcess(child); err == nil {
+			c.Kill()    //nolint:errcheck // best-effort cleanup if the assertion below fails
+			c.Release() //nolint:errcheck // best-effort cleanup
+		}
+	})
+	m.mu.Lock()
+	m.workers[0].proc, m.workers[0].started, m.workers[0].inc = p, 1, 0
+	m.incarnations = []Incarnation{{ID: incarnationID(0, 0), Started: time.Now()}}
+	m.mu.Unlock()
+
+	if err := m.KillWorker(t.Context(), 0); err != nil {
+		t.Fatalf("KillWorker: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if !proctest.Alive(child) {
+		t.Fatalf("child %d died with the killed worker; KillWorker must leave it for the checks", child)
+	}
+	if err := m.StopForChecks(t.Context()); err != nil {
+		t.Fatalf("StopForChecks: %v", err)
+	}
+	if !proctest.Alive(child) {
+		t.Fatalf("child %d died in StopForChecks; only Close may end it", child)
+	}
+	if err := m.Close(t.Context()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for proctest.Alive(child) {
+		if time.Now().After(deadline) {
+			t.Fatalf("child %d of the killed worker still running 5s after Close", child)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // readCounter returns the helper's count, waiting out a missing file.
 func readCounter(t *testing.T, path string) int {
 	t.Helper()

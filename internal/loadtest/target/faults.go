@@ -110,8 +110,9 @@ type realWorker struct {
 	started int
 	// inc indexes the current incarnation in managed.incarnations.
 	inc int
-	// retired are the earlier incarnations' processes. Close releases them:
-	// on Windows that ends what they left running.
+	// retired are the earlier incarnations' processes. Close releases them,
+	// which ends what they left running (their job on Windows, their process
+	// group elsewhere).
 	retired []*proc
 }
 
@@ -320,7 +321,8 @@ func (m *managed) KillWorker(ctx context.Context, i int) error {
 }
 
 // TermWorker leaves the worker's supervision in place, as KillWorker does, so
-// on Windows what it left running is ended only when the target closes.
+// what it left running (in its job on Windows, its process group elsewhere)
+// is ended only when the target closes.
 func (m *managed) TermWorker(ctx context.Context, i int) error {
 	p, err := m.workerProc(i)
 	if err != nil {

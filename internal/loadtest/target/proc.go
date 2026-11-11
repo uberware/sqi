@@ -101,9 +101,9 @@ func (p *proc) exited() bool {
 	}
 }
 
-// release frees what supervises the process (on Windows, closing its job
-// kills whatever the process left running). It is safe to call more than
-// once.
+// release frees what supervises the process and kills whatever the process
+// left running: on Windows by closing its job, elsewhere by killing its
+// process group. It is safe to call more than once.
 func (p *proc) release() { p.releaseOnce.Do(p.plat.release) }
 
 // stall stops the process alone with SIGSTOP; on Windows it returns
@@ -146,8 +146,8 @@ func (p *proc) isStalled() bool {
 // killOne kills the process alone, not its group: what it started keeps
 // running. It returns once the process is reaped, or an error when it was not
 // reaped within killWait or ctx ended first. It does not release the process's
-// supervision, so on Windows its job (and the processes still in it) stays
-// until stopCtx or release.
+// supervision, so what it started (in its job on Windows, its process group
+// elsewhere) keeps running until stopCtx or release.
 func (p *proc) killOne(ctx context.Context) error {
 	if p.exited() {
 		return nil
