@@ -30,6 +30,11 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # jwt/v2 must equal the version the pinned nats-server requires
+      # (internal/brokerauth TestJWTVersionMatchesNATSServer). It moves with
+      # the nats-server bump, not on its own.
+      - dependency-name: "github.com/nats-io/jwt/v2"
 
   # ── GitHub Actions ────────────────────────────────────────────────────────────
   # Opens PRs to bump action versions in .github/workflows/*.yml.
