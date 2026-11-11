@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
+	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/netfault"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
@@ -211,6 +212,9 @@ func (m *managed) start(ctx context.Context) error {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return fmt.Errorf("target: create %s: %w", dir, err)
 		}
+	}
+	if err := m.writeNoopConfig(); err != nil {
+		return err
 	}
 	steps := []func(context.Context) error{
 		m.checkBinaries,
@@ -715,12 +719,42 @@ func (m *managed) Credentials() simworker.Credentials { return m.creds }
 func (m *managed) TLS() simworker.TLSFiles            { return m.tlsFiles }
 
 // NoopCommand is the no-op binary, or a placeholder when the run has no real
-// workers and was given no no-op binary.
+// workers and was given no no-op binary. When a job class has real_task its
+// first argument names noop.json.
 func (m *managed) NoopCommand() scenario.Command {
 	if m.cfg.NoopBin == "" {
 		return scenario.Command{Path: placeholderCommand}
 	}
-	return scenario.Command{Path: m.cfg.NoopBin}
+	cmd := scenario.Command{Path: m.cfg.NoopBin}
+	if m.markerDir != "" {
+		cmd.Args = []string{marker.ConfigArg(m.noopConfigPath())}
+	}
+	return cmd
+}
+
+func (m *managed) noopConfigPath() string { return filepath.Join(m.settings.RunDir, "noop.json") }
+
+// writeNoopConfig writes noop.json, which tells the no-op command where the
+// markers go and how each class with real_task behaves, when there is one.
+func (m *managed) writeNoopConfig() error {
+	if m.markerDir == "" {
+		return nil
+	}
+	cfg := marker.NoopConfig{MarkerDir: m.markerDir, Classes: map[string]marker.NoopClass{}}
+	for _, j := range m.cfg.Scenario.Jobs {
+		if rt := j.RealTask; rt != nil {
+			cfg.Classes[j.Name] = marker.NoopClass{
+				DurationMS:  int(rt.Duration.Milliseconds()),
+				LogEveryMS:  int(rt.LogEvery.Milliseconds()),
+				ChattyChild: rt.ChattyChild,
+				SilentChild: rt.SilentChild,
+			}
+		}
+	}
+	if err := marker.WriteConfig(m.noopConfigPath(), cfg); err != nil {
+		return fmt.Errorf("target: %w", err)
+	}
+	return nil
 }
 
 // PoolName is name itself: the server is the run's own, so its usage pools
@@ -764,12 +798,13 @@ func (m *managed) workerPIDs() []int {
 	return pids
 }
 
-// Close first continues every process the harness stalled, then stops the
-// real workers (together), then the server: each gets an interrupt and the
-// stop grace (30 s by default) to exit before it is killed, and a done ctx
-// kills at once. It then drops a database the harness created and closes the
-// broker lanes. Every process is reaped before Close returns, whatever the
-// error, and nothing is started once it has begun.
+// Close first continues every task group and process the harness stalled,
+// then stops the real workers (together), then ends the task process groups
+// the markers still show running, then stops the server: each process gets
+// an interrupt and the stop grace (30 s by default) to exit before it is
+// killed, and a done ctx kills at once. It then drops a database the harness
+// created and closes the broker lanes. Every process is reaped before Close
+// returns, whatever the error, and nothing is started once it has begun.
 func (m *managed) Close(ctx context.Context) error {
 	m.closeOnce.Do(func() {
 		m.mu.Lock()
@@ -777,7 +812,7 @@ func (m *managed) Close(ctx context.Context) error {
 		m.mu.Unlock()
 		m.resumeAll(ctx)
 		errs := m.stopWorkers(ctx, true)
-		errs = append(errs, m.stopServer(ctx))
+		errs = append(errs, m.endTaskGroups(ctx), m.stopServer(ctx))
 		if m.pgDB != "" {
 			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cliTimeout)
 			if err := dropDatabase(dctx, m.pgAdminDSN, m.pgDB); err != nil {

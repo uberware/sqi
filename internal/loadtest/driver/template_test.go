@@ -145,8 +145,9 @@ func TestBuildTemplate_Structure(t *testing.T) {
 				if tmpl.Name != "load-job" {
 					t.Errorf("name = %q", tmpl.Name)
 				}
-				wantArgs := append(slices.Clone(noopCmd.Args), "--sqi-load-class=shot-render")
 				for _, st := range tmpl.Steps {
+					wantArgs := append(slices.Clone(noopCmd.Args),
+						"--sqi-load-key=load-job/"+st.Name+"/{{Task.Param.Frame}}", "--sqi-load-class=shot-render")
 					run := st.Script.Actions.OnRun
 					if run.Command != noopCmd.Path || !reflect.DeepEqual(run.Args, wantArgs) {
 						t.Errorf("%s onRun = %q %q, want %q %q", st.Name, run.Command, run.Args, noopCmd.Path, wantArgs)
@@ -169,8 +170,9 @@ func TestBuildTemplate_Structure(t *testing.T) {
 					t.Errorf("let = %v, want one binding", st.Script.Let)
 				}
 				args := st.Script.Actions.OnRun.Args
-				if len(args) != len(noopCmd.Args)+2 || args[len(args)-1] != "--sqi-load-class=comp" {
-					t.Errorf("args = %v, want the command's, one expression, then the class arg", args)
+				if len(args) != len(noopCmd.Args)+3 || args[len(args)-1] != "--sqi-load-class=comp" ||
+					args[len(args)-2] != scenario.KeyArg("load-job/step-1/{{Task.Param.Frame}}") {
+					t.Errorf("args = %v, want the command's, one expression, the key arg, then the class arg", args)
 				}
 			},
 		},
@@ -204,6 +206,43 @@ func TestBuildTemplate_Structure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpl, _ := buildAndValidate(t, tc.jc)
 			tc.check(t, tmpl)
+		})
+	}
+}
+
+func TestBuildTemplate_KeyArgBeforeClassArg(t *testing.T) {
+	tests := []struct {
+		name    string
+		jc      scenario.JobClass
+		wantKey string
+	}{
+		{"one range", scenario.JobClass{Name: "shot", Steps: 1, TasksPerStep: 10}, "job-x/step-1/{{Task.Param.Frame}}"},
+		{"split step", scenario.JobClass{Name: "shot", Steps: 1, TasksPerStep: 4000}, "job-x/step-1/{{Task.Param.Frame}}/{{Task.Param.Block}}"},
+		{"expr", scenario.JobClass{Name: "shot", Steps: 1, TasksPerStep: 10, EXPR: true}, "job-x/step-1/{{Task.Param.Frame}}"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := BuildTemplate(tc.jc, "job-x", noopCmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tmpl, err := openjd.Parse(b, openjd.FormatYAML)
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := tmpl.Steps[0].Script.Actions.OnRun.Args
+			if len(args) < 2 {
+				t.Fatalf("args = %q, want at least the key and class args", args)
+			}
+			if got, want := args[len(args)-2:], []string{scenario.KeyArg(tc.wantKey), scenario.ClassArg("shot")}; !reflect.DeepEqual(got, want) {
+				t.Errorf("args end %q, want %q", got, want)
+			}
+			if class, ok := scenario.ClassFromArgs(args); !ok || class != "shot" {
+				t.Errorf("ClassFromArgs = %q, %v; want shot", class, ok)
+			}
+			if key, ok := scenario.KeyFromArgs(args); !ok || key != tc.wantKey {
+				t.Errorf("KeyFromArgs = %q, %v; want %q", key, ok, tc.wantKey)
+			}
 		})
 	}
 }

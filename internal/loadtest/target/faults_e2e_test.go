@@ -4,15 +4,18 @@ package target
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/internal/proctest"
+	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
@@ -372,5 +375,167 @@ func TestManaged_RestartWorkerKeepsWorkerID(t *testing.T) {
 	}
 	if incs := m.Incarnations(); incs[1].Ended.IsZero() {
 		t.Errorf("incarnation 0.1 has no end after TermWorker: %+v", incs[1])
+	}
+}
+
+// realTaskJob is a one-task job whose onRun is the no-op with the arguments
+// the driver gives a task: the target's own, the task key, then the class.
+const realTaskJob = `specificationVersion: jobtemplate-2023-09
+name: %s
+steps:
+  - name: step-1
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1"
+    script:
+      actions:
+        onRun:
+          command: %q
+          args: [%s]
+`
+
+// startRealTaskTarget starts a managed target with one real worker on queue
+// render and one job class, "slow", running rt.
+func startRealTaskTarget(t *testing.T, rt scenario.RealTask) (*managed, *client.Client) {
+	t.Helper()
+	server, worker, noop := binaries(t)
+	sc := testScenario(scenario.ServerSpec{Store: "sqlite"})
+	sc.Workers = []scenario.WorkerGroup{{Name: "real", Real: 1, Queues: []string{"render"}}}
+	sc.Jobs = []scenario.JobClass{{Name: "slow", RealTask: &rt}}
+	m := startManaged(t, ManagedConfig{RunDir: t.TempDir(), ServerBin: server, WorkerBin: worker, NoopBin: noop, Scenario: sc})
+	return m, mustClient(t, m)
+}
+
+// submitRealTask submits a realTaskJob named name of class slow.
+func submitRealTask(t *testing.T, m *managed, c *client.Client, name string) string {
+	t.Helper()
+	cmd := m.NoopCommand()
+	args := append(append([]string(nil), cmd.Args...),
+		scenario.KeyArg(scenario.TaskKey(name, "step-1", "{{Task.Param.Frame}}", "")), scenario.ClassArg("slow"))
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = strconv.Quote(a)
+	}
+	tmpl := fmt.Sprintf(realTaskJob, name, cmd.Path, strings.Join(quoted, ", "))
+	id, _, err := c.SubmitJob(t.Context(), client.SubmitRequest{FarmID: m.FarmID(), QueueID: m.QueueIDs()["render"], Template: []byte(tmpl)})
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+	return id
+}
+
+// waitExecRole waits for the markers to show a live exec of role and returns
+// it.
+func waitExecRole(t *testing.T, m *managed, role string, timeout time.Duration) marker.Exec {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if e, ok := execOfRole(t, m, role); ok && time.Since(e.LastSeen) < time.Second {
+			return e
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("no live %s exec after %s\nworker log:\n%s", role, timeout, tailLines(m.workerLog(0), 30))
+	return marker.Exec{}
+}
+
+func execOfRole(t *testing.T, m *managed, role string) (marker.Exec, bool) {
+	t.Helper()
+	execs, _, err := marker.ReadAll(m.MarkerDir())
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	for _, e := range execs {
+		if e.Role == role {
+			return e, true
+		}
+	}
+	return marker.Exec{}, false
+}
+
+func TestManaged_TaskInheritsMarkerEnv(t *testing.T) {
+	skipShort(t)
+	m, c := startRealTaskTarget(t, scenario.RealTask{Duration: scenario.Duration{Duration: time.Second}})
+	const name = "marker-job"
+	jobID := submitRealTask(t, m, c, name)
+	deadline := time.Now().Add(60 * time.Second)
+	var job client.Job
+	for time.Now().Before(deadline) {
+		var err error
+		if job, err = c.GetJob(t.Context(), jobID); err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		if job.Status == "completed" || job.Status == "failed" || job.Status == "canceled" {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if job.Status != "completed" {
+		t.Fatalf("job status = %q, want completed\nworker log:\n%s", job.Status, tailLines(m.workerLog(0), 40))
+	}
+	execs, skipped, err := marker.ReadAll(m.MarkerDir())
+	if err != nil || skipped != 0 || len(execs) != 1 {
+		t.Fatalf("ReadAll = %+v, skipped %d, %v; want one exec", execs, skipped, err)
+	}
+	e := execs[0]
+	if e.Role != marker.RoleMain || e.Incarnation != "0.0" || e.Key != scenario.TaskKey(name, "step-1", "1", "") {
+		t.Errorf("exec = %+v, want the main process of incarnation 0.0 keyed %s", e, scenario.TaskKey(name, "step-1", "1", ""))
+	}
+	if e.End == nil || e.ExitCode != 0 || e.End.Sub(e.Start) < time.Second {
+		t.Errorf("exec = %+v, want it ended with 0 after its 1s duration", e)
+	}
+}
+
+// TestManaged_StallWorkerStopsItsTasks stalls a real worker running a task
+// with a silent child: the child stops too, and resumes with the worker. A
+// second stall is left for Close, which must continue the task's group and
+// end it.
+func TestManaged_StallWorkerStopsItsTasks(t *testing.T) {
+	skipShort(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGSTOP is POSIX only")
+	}
+	m, c := startRealTaskTarget(t, scenario.RealTask{Duration: scenario.Duration{Duration: time.Minute}, SilentChild: true})
+	submitRealTask(t, m, c, "stall-job")
+	silent := waitExecRole(t, m, marker.RoleSilent, 60*time.Second)
+
+	if err := m.StallWorker(0); err != nil {
+		t.Fatalf("StallWorker: %v", err)
+	}
+	time.Sleep(marker.RefreshInterval) // a refresh in flight lands
+	frozen, _ := execOfRole(t, m, marker.RoleSilent)
+	time.Sleep(time.Second)
+	if now, _ := execOfRole(t, m, marker.RoleSilent); !now.LastSeen.Equal(frozen.LastSeen) {
+		t.Fatalf("the silent child's LastSeen advanced from %s to %s while its worker was stalled", frozen.LastSeen, now.LastSeen)
+	}
+	if err := m.ResumeWorker(0); err != nil {
+		t.Fatalf("ResumeWorker: %v", err)
+	}
+	time.Sleep(time.Second)
+	if now, _ := execOfRole(t, m, marker.RoleSilent); !now.LastSeen.After(frozen.LastSeen) {
+		t.Fatalf("the silent child's LastSeen stayed at %s after ResumeWorker", frozen.LastSeen)
+	}
+
+	if err := m.StallWorker(0); err != nil {
+		t.Fatalf("second StallWorker: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	start := time.Now()
+	if err := m.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// The worker's own shutdown grace is 10s; a task group left stopped would
+	// hold Close to the harness's 30s stop grace.
+	if elapsed := time.Since(start); elapsed > 25*time.Second {
+		t.Errorf("Close took %s after a stall", elapsed)
+	}
+	main, _ := execOfRole(t, m, marker.RoleMain)
+	for _, pid := range []int{silent.PID, main.PID} {
+		if proctest.Alive(pid) {
+			t.Errorf("task process %d still running after Close", pid)
+		}
 	}
 }

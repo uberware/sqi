@@ -16,3 +16,9 @@ func stopProcess(int) error { return errStallUnsupported }
 func stopGroup(int) error   { return errStallUnsupported }
 func contProcess(int) error { return errStallUnsupported }
 func contGroup(int) error   { return errStallUnsupported }
+
+// Windows has no process groups to signal: the job object the harness put a
+// worker in holds what its tasks started.
+func killGroup(int) error { return nil }
+
+func groupGone(error) bool { return false }

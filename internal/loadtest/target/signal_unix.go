@@ -5,6 +5,7 @@
 package target
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
@@ -24,3 +25,10 @@ func contProcess(pid int) error { return syscall.Kill(pid, syscall.SIGCONT) }
 
 // contGroup sends SIGCONT to every process in the group.
 func contGroup(pgid int) error { return syscall.Kill(-pgid, syscall.SIGCONT) }
+
+// killGroup sends SIGKILL to every process in the group.
+func killGroup(pgid int) error { return syscall.Kill(-pgid, syscall.SIGKILL) }
+
+// groupGone reports whether a group signal failed because nothing is left in
+// the group.
+func groupGone(err error) bool { return errors.Is(err, syscall.ESRCH) }

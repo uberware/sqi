@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/netfault"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/store/backend"
@@ -40,10 +41,13 @@ type Faults interface {
 	KillWorker(ctx context.Context, i int) error
 	// TermWorker stops real worker i gracefully.
 	TermWorker(ctx context.Context, i int) error
-	// StallWorker stops real worker i's process with SIGSTOP (POSIX only).
+	// StallWorker stops real worker i's process with SIGSTOP (POSIX only),
+	// then the process group of every task its current incarnation is
+	// running, as the markers show them, so a sleeping machine's renders
+	// stop too.
 	StallWorker(i int) error
 	// ResumeWorker continues what StallWorker stopped, in reverse order of
-	// the stops.
+	// the stops: the tasks' groups first, then the worker.
 	ResumeWorker(i int) error
 	// RestartWorker starts real worker i again as a new process, a new
 	// incarnation, on the same data directory, so with the same worker ID.
@@ -114,7 +118,20 @@ type realWorker struct {
 	// which ends what they left running (their job on Windows, their process
 	// group elsewhere).
 	retired []*proc
+	// taskGroups are the process groups of the worker's tasks that
+	// StallWorker stopped and nothing has continued yet, in stop order.
+	taskGroups []int
 }
+
+// taskStaleAfter is how long a live exec's marker can go without a refresh
+// (every marker.RefreshInterval) before it counts as gone: a task killed by a
+// signal records no end.
+const taskStaleAfter = 2 * time.Second
+
+// taskSettle is how long StallWorker waits before looking for the worker's
+// tasks a second time, for a task the worker started just before it was
+// stopped that had not written its first marker yet.
+const taskSettle = 300 * time.Millisecond
 
 func incarnationID(worker, restarts int) string {
 	return strconv.Itoa(worker) + "." + strconv.Itoa(restarts)
@@ -341,7 +358,16 @@ func (m *managed) StallWorker(i int) error {
 	if err != nil {
 		return err
 	}
-	return p.stall()
+	if err := p.stall(); err != nil {
+		return err
+	}
+	if m.markerDir == "" {
+		return nil
+	}
+	inc := m.currentIncarnation(i)
+	err = m.stopTaskGroups(i, inc)
+	time.Sleep(taskSettle)
+	return errors.Join(err, m.stopTaskGroups(i, inc))
 }
 
 func (m *managed) ResumeWorker(i int) error {
@@ -349,7 +375,97 @@ func (m *managed) ResumeWorker(i int) error {
 	if err != nil {
 		return err
 	}
-	return p.resume()
+	return errors.Join(m.contTaskGroups(i), p.resume())
+}
+
+// currentIncarnation is the ID of real worker i's current incarnation, which
+// has started.
+func (m *managed) currentIncarnation(i int) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.incarnations[m.workers[i].inc].ID
+}
+
+// liveTaskGroups returns the process groups of the execs the markers show
+// running: no end, refreshed within taskStaleAfter, and, unless inc is "",
+// of incarnation inc. Each group appears once, in marker order.
+func (m *managed) liveTaskGroups(inc string) ([]int, error) {
+	execs, _, err := marker.ReadAll(m.markerDir)
+	if err != nil {
+		return nil, fmt.Errorf("target: read the task markers: %w", err)
+	}
+	now := time.Now()
+	var groups []int
+	for _, e := range execs {
+		live := e.End == nil && e.PGID > 0 && now.Sub(e.LastSeen) <= taskStaleAfter
+		if live && (inc == "" || e.Incarnation == inc) && !slices.Contains(groups, e.PGID) {
+			groups = append(groups, e.PGID)
+		}
+	}
+	return groups, nil
+}
+
+// stopTaskGroups stops the process group of every running task of
+// incarnation inc of real worker i not stopped yet, and records it.
+func (m *managed) stopTaskGroups(i int, inc string) error {
+	groups, err := m.liveTaskGroups(inc)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	w := m.workers[i]
+	var errs []error
+	for _, g := range groups {
+		if slices.Contains(w.taskGroups, g) {
+			continue
+		}
+		if err := stopGroup(g); err != nil {
+			if !groupGone(err) {
+				errs = append(errs, fmt.Errorf("target: stop task process group %d of real worker %d: %w", g, i, err))
+			}
+			continue
+		}
+		w.taskGroups = append(w.taskGroups, g)
+	}
+	return errors.Join(errs...)
+}
+
+// contTaskGroups continues the task groups StallWorker stopped for real
+// worker i, in reverse order of the stops, and forgets them.
+func (m *managed) contTaskGroups(i int) error {
+	m.mu.Lock()
+	w := m.workers[i]
+	groups := w.taskGroups
+	w.taskGroups = nil
+	m.mu.Unlock()
+	var errs []error
+	for _, g := range slices.Backward(groups) {
+		if err := contGroup(g); err != nil && !groupGone(err) {
+			errs = append(errs, fmt.Errorf("target: continue task process group %d of real worker %d: %w", g, i, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// endTaskGroups kills the process group of every task the markers show still
+// running, whichever incarnation started it: what a killed or stopped worker
+// left behind. Close calls it once the workers are stopped.
+func (m *managed) endTaskGroups(ctx context.Context) error {
+	if m.markerDir == "" {
+		return nil
+	}
+	groups, err := m.liveTaskGroups("")
+	if err != nil {
+		return err
+	}
+	for _, g := range groups {
+		m.logger.InfoContext(ctx, "ending a task process group a worker left running", slog.Int("pgid", g))
+		if err := killGroup(g); err != nil && !groupGone(err) {
+			m.logger.WarnContext(ctx, "could not end a task process group", slog.Int("pgid", g), slog.Any("error", err))
+		}
+	}
+	return nil
 }
 
 func (m *managed) RestartWorker(ctx context.Context, i int) error {
@@ -394,15 +510,21 @@ func (m *managed) StopForChecks(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// resumeAll continues every process the harness stalled, so none of them
-// waits out its stop grace.
+// resumeAll continues every task group and process the harness stalled, the
+// task groups first, so none of them waits out its stop grace.
 func (m *managed) resumeAll(ctx context.Context) {
 	m.mu.Lock()
 	procs := []*proc{m.server}
 	for _, w := range m.workers {
 		procs = append(procs, w.proc)
 	}
+	n := len(m.workers)
 	m.mu.Unlock()
+	for i := range n {
+		if err := m.contTaskGroups(i); err != nil {
+			m.logger.WarnContext(ctx, "could not continue a stalled task", slog.Any("error", err))
+		}
+	}
 	for _, p := range procs {
 		if p == nil || !p.isStalled() {
 			continue

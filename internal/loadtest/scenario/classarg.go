@@ -25,3 +25,31 @@ func ClassFromArgs(args []string) (string, bool) {
 	}
 	return "", false
 }
+
+// KeyArgPrefix starts the onRun argument that names a task: the driver puts
+// it before the class argument, with the task's parameters as format
+// strings, so a real task's no-op command can name what it writes.
+const KeyArgPrefix = "--sqi-load-key="
+
+// KeyArg returns the onRun argument naming the task key.
+func KeyArg(key string) string { return KeyArgPrefix + key }
+
+// KeyFromArgs returns the value of the last key argument.
+func KeyFromArgs(args []string) (string, bool) {
+	for _, arg := range slices.Backward(args) {
+		if key, ok := strings.CutPrefix(arg, KeyArgPrefix); ok {
+			return key, true
+		}
+	}
+	return "", false
+}
+
+// TaskKey is the key of one task: "<job name>/<step name>/<Frame>", with
+// "/<Block>" added when block is not empty.
+func TaskKey(jobName, stepName, frame, block string) string {
+	key := jobName + "/" + stepName + "/" + frame
+	if block != "" {
+		key += "/" + block
+	}
+	return key
+}
