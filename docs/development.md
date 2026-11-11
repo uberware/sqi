@@ -492,11 +492,15 @@ three passes:
    server on PostgreSQL (`SQI_TEST_STORE_DRIVER=postgres`), skipping the LDAP,
    OIDC and isolation tests, which have targets of their own.
 
-It ends with `POSTGRES TESTS PASSED (PG_VERSION=…)`. The variables it uses can
-also be set by hand:
+It ends with `POSTGRES TESTS PASSED (PG_VERSION=…)`. `PG_PHASE` runs one pass
+alone (`make test-postgres PG_PHASE=packages`, `retry` or `integration`; the
+default is `all`), and the final line then reads
+`POSTGRES TESTS PASSED (PG_VERSION=… PHASE=…)`. CI runs the three passes as
+separate jobs. The variables it uses can also be set by hand:
 
 | Variable | Effect |
 |---|---|
+| `PG_PHASE` | Which pass to run: `all` (default), `packages`, `retry` or `integration`. |
 | `SQI_TEST_POSTGRES_DSN` | An existing server to test against instead of a container (a `postgres://` URL for a role that can create databases). Each test gets a fresh database, cloned from a migrated template and dropped when the test ends. |
 | `SQI_TEST_REQUIRE_POSTGRES=1` | A PostgreSQL test **fails** instead of skipping when no DSN is set. |
 | `SQI_TEST_PG_FORCE_TX_RETRY=1` | Rehearse every transaction once (the second pass above). The forced-interleaving race tests skip under it. |
@@ -507,14 +511,22 @@ also be set by hand:
 tests` and exits 0, and without `SQI_TEST_POSTGRES_DSN` every PostgreSQL test
 skips. A skip verifies nothing.** Confirm the run with `--- PASS` lines for
 `/postgres` subtests and the final `POSTGRES TESTS PASSED` line. CI's
-`postgres-integration` job runs the target on PostgreSQL 16 and 18. It fails
-when Docker is unavailable; when any of its named tests does not pass (the
-`TestPGRace_G1_…` to `TestPGRace_G12_…` race tests, the schema parity,
-atomic-submission, readiness and backup round-trip tests, the PostgreSQL
-stress test, the EXPR end-to-end job, and the restore, store copy and upgrade
-tests); when any `/postgres` subtest is skipped; and when none passed, over the
-whole run or within the forced-retry pass. The 18 leg also runs `make smoke`
-with the server on PostgreSQL.
+`postgres-integration` job runs each of the three passes as its own job, on
+PostgreSQL 18 for pull requests and on 16 and 18 for pushes to `main` and manual
+dispatch. Each job fails when Docker is unavailable; when any named test of its
+pass does not pass (the `TestPGRace_G1_…` to `TestPGRace_G12_…` race tests, the
+schema parity, atomic-submission, readiness and backup round-trip tests, the
+PostgreSQL stress test and the restore and store copy tests in the first pass;
+the EXPR end-to-end job and the restore, store copy and upgrade tests that run
+the server in the third); when any `/postgres` subtest is skipped; and, in the
+first two passes, when none passed. The 18 leg's integration job also runs
+`make smoke` with the server on PostgreSQL.
+
+CI starts the PostgreSQL jobs, the high-availability job and the integration
+suite without waiting for the build, lint and unit-test job, and skips all Go
+jobs on a pull request that changes only files under `web/` (the web jobs cover
+it). The `merge_group` trigger lets a GitHub merge queue run the workflow once
+on the queued change merged onto `main`.
 
 A local `PG_VERSION=16` run needs a PostgreSQL 16 `pg_dump` and `pg_restore`
 first on `PATH`. The backup round trip restores a dump into the test server,
