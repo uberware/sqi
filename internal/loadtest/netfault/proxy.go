@@ -287,6 +287,9 @@ func (l *link) serve() {
 	pumps.Wait()
 }
 
+// sourceEnd is how a pump's source ended: err is nil for a clean end.
+type sourceEnd struct{ err error }
+
 type chunk struct {
 	data      []byte
 	deliverAt time.Time
@@ -298,15 +301,16 @@ type chunk struct {
 func (l *link) pump(src, dst net.Conn) {
 	q := make(chan chunk, queueDepth)
 	var rw sync.WaitGroup
-	rw.Go(func() { l.readLoop(src, q) })
-	ok := l.writeLoop(dst, q)
+	var end sourceEnd // set before q is closed, so the writer reads it safely after the drain
+	rw.Go(func() { l.readLoop(src, q, &end) })
+	ok := l.writeLoop(dst, q, &end)
 	if !ok {
 		l.close()
 	}
 	rw.Wait()
 }
 
-func (l *link) readLoop(src net.Conn, q chan<- chunk) {
+func (l *link) readLoop(src net.Conn, q chan<- chunk, end *sourceEnd) {
 	defer close(q)
 	buf := make([]byte, bufSize)
 	var prev time.Time
@@ -328,7 +332,7 @@ func (l *link) readLoop(src net.Conn, q chan<- chunk) {
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				l.close()
+				end.err = err
 			}
 			return
 		}
@@ -337,8 +341,11 @@ func (l *link) readLoop(src net.Conn, q chan<- chunk) {
 
 // writeLoop delivers queued chunks. It reports false when the link failed or
 // was closed, and true when the source ended cleanly after everything it sent
-// was written (the write side is then half-closed).
-func (l *link) writeLoop(dst net.Conn, q <-chan chunk) bool {
+// was written (the write side is then half-closed). The source ending is
+// passed on only when the proxy is not blackholed, so a partition hides a
+// teardown as well as data: a read error closes the link, and a clean end
+// half-closes the peer, once the blackhole lifts.
+func (l *link) writeLoop(dst net.Conn, q <-chan chunk, end *sourceEnd) bool {
 	for c := range q {
 		if !l.sleepUntil(c.deliverAt) || !l.waitPass() {
 			return false
@@ -353,7 +360,7 @@ func (l *link) writeLoop(dst net.Conn, q <-chan chunk) bool {
 			}
 		}
 	}
-	if l.ctx.Err() != nil {
+	if !l.waitPass() || end.err != nil {
 		return false
 	}
 	if cw, ok := dst.(interface{ CloseWrite() error }); ok {

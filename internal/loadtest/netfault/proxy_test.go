@@ -412,3 +412,65 @@ func setReadDeadline(t *testing.T, c net.Conn, d time.Duration) {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
 }
+
+// TestProxy_BlackholeHoldsTeardown checks that a partition hides one side
+// closing, whether cleanly or by reset, from the other until Heal.
+func TestProxy_BlackholeHoldsTeardown(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reset bool
+	}{{"close", false}, {"reset", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			ended := make(chan error, 1)
+			ready := make(chan struct{})
+			go func() {
+				c, err := ln.Accept()
+				if err != nil {
+					ended <- err
+					return
+				}
+				defer c.Close()
+				close(ready)
+				_, err = io.Copy(io.Discard, c) // returns nil on EOF
+				ended <- err
+			}()
+
+			p := newProxy(t, ln.Addr().String())
+			c := dial(t, p.Addr())
+			select {
+			case <-ready:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the target never saw the connection")
+			}
+
+			p.Blackhole()
+			if tc.reset {
+				tcp, ok := c.(*net.TCPConn)
+				if !ok {
+					t.Fatalf("dialed %T, want *net.TCPConn", c)
+				}
+				if err := tcp.SetLinger(0); err != nil {
+					t.Fatalf("SetLinger: %v", err)
+				}
+			}
+			_ = c.Close()
+			select {
+			case err := <-ended:
+				t.Fatalf("the target saw the client's teardown through a blackhole (err=%v)", err)
+			case <-time.After(500 * time.Millisecond):
+			}
+
+			p.Heal()
+			select {
+			case <-ended:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the teardown was not delivered after Heal")
+			}
+		})
+	}
+}
