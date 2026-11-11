@@ -1213,6 +1213,69 @@ func TestLogs_LossInsideFaultWindowIsCounted(t *testing.T) {
 	}
 }
 
+// lateLogs is a server whose missing chunk of t1 (lines 11-14) is ingested
+// just before the read number arriveOn; 0 never.
+type lateLogs struct {
+	*fakeView
+
+	w        *world
+	arriveOn int
+	mu       sync.Mutex
+	reads    int
+}
+
+func (l *lateLogs) TaskLogs(ctx context.Context, taskID string, after int64, limit int) ([]client.LogLine, int64, error) {
+	if taskID == "t1" && after == 0 {
+		l.mu.Lock()
+		l.reads++
+		if l.reads == l.arriveOn {
+			l.fakeView.mu.Lock()
+			l.logs["t1"] = append(l.logs["t1"], logChunk(l.w, "t1", "a1", 2, span(11, 14)...))
+			l.fakeView.mu.Unlock()
+		}
+		l.mu.Unlock()
+	}
+	return l.fakeView.TaskLogs(ctx, taskID, after, limit)
+}
+
+func (l *lateLogs) readCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.reads
+}
+
+func TestLogs_LateLinesInsideFaultWindowAreNotLost(t *testing.T) {
+	w := faultLogWorld("sim")
+	w.in.LogSettle = 5 * time.Second
+	v := &lateLogs{fakeView: w.view, w: w, arriveOn: 2}
+	results := verify.Check(t.Context(), v, w.in)
+	assertResultsNamed(t, chaosNames, results, nil)
+	if got := resultNamed(t, results, verify.NameLogs).Counters[verify.CounterLogsLostInFault]; got != 0 {
+		t.Errorf("Counters[%q] = %d, want 0: the 4 missing lines arrived on the second read", verify.CounterLogsLostInFault, got)
+	}
+	if n := v.readCount(); n != 2 {
+		t.Errorf("t1's logs were read %d times, want 2 (re-read until complete)", n)
+	}
+}
+
+func TestLogs_LossInsideFaultWindowOutlastsTheSettle(t *testing.T) {
+	w := faultLogWorld("sim")
+	w.in.LogSettle = 300 * time.Millisecond
+	v := &lateLogs{fakeView: w.view, w: w}
+	start := time.Now()
+	results := verify.Check(t.Context(), v, w.in)
+	assertResultsNamed(t, chaosNames, results, nil)
+	if got := resultNamed(t, results, verify.NameLogs).Counters[verify.CounterLogsLostInFault]; got != 4 {
+		t.Errorf("Counters[%q] = %d, want 4", verify.CounterLogsLostInFault, got)
+	}
+	if n := v.readCount(); n < 2 {
+		t.Errorf("t1's logs were read %d times, want re-reads while the settle time lasted", n)
+	}
+	if took := time.Since(start); took < 300*time.Millisecond {
+		t.Errorf("Check took %s, less than the 300ms logs settle time", took)
+	}
+}
+
 func TestLogs_LossOutsideFaultWindowFails(t *testing.T) {
 	t.Run("window on another group", func(t *testing.T) {
 		w := faultLogWorld("other")
@@ -1231,24 +1294,27 @@ func TestLogs_LossOutsideFaultWindowFails(t *testing.T) {
 }
 
 func TestLogs_ReorderInsideFaultWindowFails(t *testing.T) {
+	const inWindow = "job j1 task t1 attempt a1 (inside a fault window)"
 	cases := []struct {
 		name   string
 		chunks func(w *world) []client.LogLine
+		want   string
 	}{
 		{"reordered", func(w *world) []client.LogLine {
 			return []client.LogLine{logChunk(w, "t1", "a1", 1, 1, 3, 2)}
-		}},
+		}, inWindow},
 		{"duplicated", func(w *world) []client.LogLine {
 			return []client.LogLine{logChunk(w, "t1", "a1", 1, 1, 2, 2, 3)}
-		}},
+		}, inWindow},
 		{"corrupted", func(w *world) []client.LogLine {
 			c := logChunk(w, "t1", "a1", 1, 1, 2, 3)
 			c.Data += "x"
 			return []client.LogLine{c}
-		}},
+		}, inWindow},
+		// Checked before the window is: the chunks themselves are wrong.
 		{"a chunk stored twice", func(w *world) []client.LogLine {
 			return []client.LogLine{logChunk(w, "t1", "a1", 1, 1), logChunk(w, "t1", "a1", 1, 1)}
-		}},
+		}, "chunk seq_num 1 stored twice"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1259,7 +1325,7 @@ func TestLogs_ReorderInsideFaultWindowFails(t *testing.T) {
 			w.view.attempts = map[string][]client.Attempt{}
 			w.task("j1", "t1", "succeeded", att{"a1", 0, 10, "succeeded", "succeeded", 3})
 			w.view.logs["t1"] = tc.chunks(w)
-			assertResultsNamed(t, chaosNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": "job j1 task t1"})
+			assertResultsNamed(t, chaosNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": tc.want})
 		})
 	}
 }

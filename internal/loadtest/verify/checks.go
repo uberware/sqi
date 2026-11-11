@@ -472,15 +472,21 @@ func stamp(t time.Time) string { return t.UTC().Format("15:04:05.000000") }
 // its lease to its end, overlaps a window that hit the attempt's worker (its
 // group is in the window's Groups, or Groups is empty), the server's lines
 // need only be an in-order subsequence of the lines sent: none duplicated,
-// reordered or corrupted, any missing. The missing lines are counted in
-// [CounterLogsLostInFault], which the result carries in a chaos run.
+// reordered or corrupted, any missing. A line still missing may only be late,
+// in the log consumer's backlog (a restarted server replays the log stream),
+// so such a task is re-read like a disagreeing one, for the logs settle time;
+// what its last read still misses is counted in [CounterLogsLostInFault],
+// which the result carries in a chaos run.
 func (c *checker) logs(ctx context.Context, refs []taskRef) Result {
 	var ev evidence
-	ev.addAll(settleLoop(ctx, c.logSettle, refs, func(rs []taskRef) []string {
+	msgs := settleLoop(ctx, c.logSettle, refs, func(rs []taskRef) []string {
 		x := c.ledger
 		x.refresh()
 		return parallelMap(len(rs), func(i int) string { return c.logMsg(ctx, rs[i], x) })
-	}))
+	})
+	// A task still missing lines inside a fault window once the settle time
+	// is up passes, with its loss counted.
+	ev.addAll(slices.DeleteFunc(msgs, func(m string) bool { return m == pendingLoss }))
 	r := ev.result(NameLogs)
 	if c.in.chaos() {
 		var lost int64
@@ -493,6 +499,11 @@ func (c *checker) logs(ctx context.Context, refs []taskRef) Result {
 	}
 	return r
 }
+
+// pendingLoss is what logMsg reports for a task inside a fault window whose
+// lines so far are in order but some are missing: not a violation, but a
+// reason to read it again while the settle time lasts.
+const pendingLoss = "\x00pending loss inside a fault window"
 
 // setLost records what the task's latest logs read found lost inside a fault
 // window.
@@ -533,6 +544,7 @@ func (c *checker) inFaultWindow(a *ledgerAttempt) bool {
 }
 
 func (c *checker) logMsg(ctx context.Context, ref taskRef, x *ledgerIndex) string {
+	c.setLost(ref.taskID, 0)
 	chunks, err := c.readLogs(ctx, ref.taskID)
 	if err != nil {
 		return fmt.Sprintf("job %s task %s: reading logs: %v", ref.jobID, ref.taskID, err)
@@ -565,11 +577,8 @@ func (c *checker) logMsg(ctx context.Context, ref taskRef, x *ledgerIndex) strin
 	lines := chunkLines(chunks)
 	want := func(n int) string { return simworker.LogLine(ref.taskID, n, jc.Task.LogLineBytes) }
 	if c.inFaultWindow(a) {
-		lost, msg := subsequenceDiff(where+" (inside a fault window)", lines, a.end.LogLines, want)
-		c.setLost(ref.taskID, lost)
-		return msg
+		return c.windowDiff(where, ref.taskID, lines, a.end.LogLines, want)
 	}
-	c.setLost(ref.taskID, 0)
 	if c.in.LogOverflowExpected {
 		return overflowDiff(where, chunks, lines, a.end.LogLines, want)
 	}
@@ -656,6 +665,18 @@ func exactDiff(where string, got []string, first, last int, want func(int) strin
 		}
 	}
 	return ""
+}
+
+// windowDiff compares a task's lines inside a fault window (see
+// subsequenceDiff), records how many are missing, and reports pendingLoss
+// while any are, so the task is read again.
+func (c *checker) windowDiff(where, taskID string, got []string, n int, want func(int) string) string {
+	lost, msg := subsequenceDiff(where+" (inside a fault window)", got, n, want)
+	c.setLost(taskID, lost)
+	if msg == "" && lost > 0 {
+		return pendingLoss
+	}
+	return msg
 }
 
 // subsequenceDiff checks that got is lines 1..n of want in order with any
