@@ -620,7 +620,9 @@ func minTime(a, b time.Time) time.Time {
 
 // powerCut kills the server and every running real worker and crashes the
 // simulated fleet, all at once; after Down it brings back the order's first
-// side, after Gap the second.
+// side, after Gap the second. Workers brought back first boot with no server
+// and fail, so once the server is back they are started again, as their
+// supervisor would (see [Controller.supervise]).
 func (c *Controller) powerCut(ctx context.Context, i int, pc *scenario.PowerCut) error {
 	c.started(ctx, i, "all", true, nil)
 	var workers []int
@@ -642,21 +644,64 @@ func (c *Controller) powerCut(ctx context.Context, i int, pc *scenario.PowerCut)
 			realWorkers = append(realWorkers, u)
 		}
 	}
-	first := func() []error { return restartUnits(ctx, server, nil) }
-	second := func() []error { return restartUnits(ctx, realWorkers, restartFleet) }
-	if pc.Order == scenario.PowerCutWorkersFirst {
-		first, second = second, first
-	}
 	if !sleep.For(ctx, pc.Down.Duration) {
 		return errors.Join(append(errs, interrupted(ctx))...)
 	}
-	errs = append(errs, first()...)
+	if pc.Order == scenario.PowerCutWorkersFirst {
+		// The workers boot with no server to reach. sqi-worker exits when
+		// it cannot reach the broker at boot, and its supervisor starts it
+		// again (the shipped systemd unit: Restart=on-failure,
+		// RestartSec=5s), so these failures are expected, and the
+		// supervisor's retries below bring the workers up.
+		if boot := restartUnits(ctx, realWorkers, restartFleet); len(boot) > 0 {
+			c.logger.InfoContext(ctx, "workers failed to boot with the server down, as expected; retrying them once it is back",
+				slog.Int("fault", i), slog.Any("error", errors.Join(boot...)))
+		}
+	} else {
+		errs = append(errs, restartUnits(ctx, server, nil)...)
+	}
 	if !sleep.For(ctx, pc.Gap.Duration) {
 		return errors.Join(append(errs, interrupted(ctx))...)
 	}
-	errs = append(errs, second()...)
+	if pc.Order == scenario.PowerCutWorkersFirst {
+		errs = append(errs, restartUnits(ctx, server, nil)...)
+		errs = append(errs, c.supervise(ctx, realWorkers, restartFleet)...)
+	} else {
+		errs = append(errs, restartUnits(ctx, realWorkers, restartFleet)...)
+	}
 	if len(errs) == 0 {
 		c.healed(ctx, i)
 	}
 	return errors.Join(errs...)
+}
+
+// supervisorEvery and supervisorTries are how often, and how many times, a
+// power cut's supervisor tries to start the workers that are not running:
+// the shipped systemd unit's RestartSec, for about a minute.
+var (
+	supervisorEvery = 5 * time.Second
+	supervisorTries = 12
+)
+
+// supervise restarts every real worker of workers that is not running, and
+// runs fleet, which restarts the simulated workers that are not, as a service
+// supervisor does: every supervisorEvery until none fails, at most
+// supervisorTries times. It returns the last try's errors. A real worker
+// that is already running is left alone.
+func (c *Controller) supervise(ctx context.Context, workers []unit, fleet func(context.Context) error) []error {
+	var errs []error
+	for try := 1; try <= supervisorTries; try++ {
+		errs = slices.DeleteFunc(restartUnits(ctx, workers, fleet), func(err error) bool {
+			return errors.Is(err, target.ErrWorkerRunning)
+		})
+		if len(errs) == 0 || try == supervisorTries {
+			break
+		}
+		c.logger.InfoContext(ctx, "supervisor: workers still failing to start; retrying",
+			slog.Int("try", try), slog.Duration("every", supervisorEvery), slog.Any("error", errors.Join(errs...)))
+		if !sleep.For(ctx, supervisorEvery) {
+			return append(errs, interrupted(ctx))
+		}
+	}
+	return errs
 }

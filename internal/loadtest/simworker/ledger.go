@@ -34,6 +34,9 @@ type Event struct {
 	TaskID     string
 	AttemptID  string
 	JobID      string
+	// AssignedAt is the server's time for the attempt's assignment, from its
+	// assignment message; zero when the message carried none.
+	AssignedAt time.Time
 	Kind       string
 	// Outcome is set on terminal events.
 	Outcome string

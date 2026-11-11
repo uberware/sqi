@@ -558,7 +558,7 @@ func (m *managed) spawnWorker(ctx context.Context, w *realWorker) error {
 	case m.closing:
 		return errClosing
 	case w.proc != nil && !w.proc.exited():
-		return fmt.Errorf("target: real worker %d is still running; kill or term it before restarting it", w.index)
+		return fmt.Errorf("%w: worker %d; kill or term it before restarting it", ErrWorkerRunning, w.index)
 	case w.started != restarts:
 		return fmt.Errorf("target: real worker %d was restarted concurrently", w.index)
 	}

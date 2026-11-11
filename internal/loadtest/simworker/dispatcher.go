@@ -445,7 +445,7 @@ func (d *Dispatcher) record(m *protocol.AssignMsg, kind, outcome string, lines i
 	d.ledger.Record(Event{
 		At:       at,
 		WorkerID: d.workerID, InstanceID: d.instanceID,
-		TaskID: m.TaskID, AttemptID: m.AttemptID, JobID: m.JobID,
+		TaskID: m.TaskID, AttemptID: m.AttemptID, JobID: m.JobID, AssignedAt: m.AssignedAt,
 		Kind: kind, Outcome: outcome, LogLines: lines,
 	})
 }

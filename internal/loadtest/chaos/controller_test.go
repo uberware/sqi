@@ -35,6 +35,11 @@ type fakeTarget struct {
 	incs             []target.Incarnation
 	lanes            map[string]*fakeLane
 	restartServerErr error
+	// bootNeedsServer makes workers fail to boot while the server is down, as
+	// sqi-worker does: a real worker's process exits at once, and the fleet's
+	// restart fails.
+	bootNeedsServer bool
+	serverDown      bool
 }
 
 func newFakeTarget(workers map[string][]int, lanes ...string) *fakeTarget {
@@ -89,13 +94,32 @@ func (t *fakeTarget) endWorker(i int) {
 	}
 }
 
-func (t *fakeTarget) KillServer(context.Context) error { t.record("KillServer", -1); return nil }
+func (t *fakeTarget) KillServer(context.Context) error {
+	t.record("KillServer", -1)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.serverDown = true
+	return nil
+}
+
+// down reports whether a worker booting now would find no server.
+func (t *fakeTarget) down() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.bootNeedsServer && t.serverDown
+}
+
 func (t *fakeTarget) TermServer(context.Context) error { t.record("TermServer", -1); return nil }
 func (t *fakeTarget) StallServer() error               { t.record("StallServer", -1); return nil }
 func (t *fakeTarget) ResumeServer() error              { t.record("ResumeServer", -1); return nil }
 
 func (t *fakeTarget) RestartServer(context.Context) error {
 	t.record("RestartServer", -1)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.restartServerErr == nil {
+		t.serverDown = false
+	}
 	return t.restartServerErr
 }
 
@@ -121,10 +145,24 @@ func (t *fakeTarget) StallWorker(i int) error  { t.record("StallWorker", i); ret
 func (t *fakeTarget) ResumeWorker(i int) error { t.record("ResumeWorker", i); return nil }
 
 func (t *fakeTarget) RestartWorker(_ context.Context, i int) error {
-	t.record("RestartWorker", i)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.incs = append(t.incs, target.Incarnation{ID: incID(i, 1), Worker: i, Started: time.Now()})
+	n := 0
+	for _, inc := range t.incs {
+		if inc.Worker != i {
+			continue
+		}
+		if inc.Ended.IsZero() {
+			return target.ErrWorkerRunning
+		}
+		n++
+	}
+	t.calls = append(t.calls, call{at: time.Now(), name: "RestartWorker", arg: i})
+	inc := target.Incarnation{ID: incID(i, n), Worker: i, Started: time.Now()}
+	if t.bootNeedsServer && t.serverDown {
+		inc.Ended = inc.Started // the process exited: no server to reach
+	}
+	t.incs = append(t.incs, inc)
 	return nil
 }
 
@@ -217,8 +255,14 @@ func ops(cs []laneCall) []string {
 // fakeFleet records CrashAll and RestartAll in the target's call log.
 type fakeFleet struct{ t *fakeTarget }
 
-func (f fakeFleet) CrashAll()                        { f.t.record("CrashAll", -1) }
-func (f fakeFleet) RestartAll(context.Context) error { f.t.record("RestartAll", -1); return nil }
+func (f fakeFleet) CrashAll() { f.t.record("CrashAll", -1) }
+func (f fakeFleet) RestartAll(context.Context) error {
+	f.t.record("RestartAll", -1)
+	if f.t.down() {
+		return errors.New("no servers available for connection")
+	}
+	return nil
+}
 
 func quiet() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
@@ -480,6 +524,68 @@ func TestController_PowerCutOrder(t *testing.T) {
 				t.Errorf("windows = %+v, want one over the whole farm", ws)
 			}
 		})
+	}
+}
+
+// TestController_PowerCutWorkersFirstSupervisesWorkers proves workers that
+// fail to boot before the server is back are started again once it is, as
+// their supervisor would, and the fault heals without an error.
+func TestController_PowerCutWorkersFirstSupervisesWorkers(t *testing.T) {
+	old := supervisorEvery
+	supervisorEvery = 50 * time.Millisecond
+	t.Cleanup(func() { supervisorEvery = old })
+	ft := newFakeTarget(map[string][]int{"render": {0, 1}})
+	ft.bootNeedsServer = true
+	c := newController(t, []scenario.Fault{{
+		PowerCut: &scenario.PowerCut{Order: scenario.PowerCutWorkersFirst, Down: d(100 * time.Millisecond), Gap: d(100 * time.Millisecond)},
+	}}, groups("render"), ft)
+	start, err := run(t, c)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	rs, _ := ft.firstNamed("RestartServer")
+	near(t, "RestartServer", start, rs.at, 200*time.Millisecond)
+	for _, w := range []int{0, 1} {
+		var at []time.Duration
+		for _, r := range ft.named("RestartWorker") {
+			if r.arg == w {
+				at = append(at, r.at.Sub(start))
+			}
+		}
+		if len(at) != 2 || at[0] > 200*time.Millisecond-tolerance || at[1] < rs.at.Sub(start) {
+			t.Errorf("worker %d started at %v, want once at the boot (100ms) and once after the server (%s)", w, at, rs.at.Sub(start))
+		}
+	}
+	fleet := ft.named("RestartAll")
+	if len(fleet) != 2 || fleet[1].at.Before(rs.at) {
+		t.Errorf("RestartAll calls = %+v, want one at the boot and one after the server", fleet)
+	}
+	running := c.running()
+	if !running[0] || !running[1] {
+		t.Errorf("running = %v, want both workers up", running)
+	}
+	if r := c.Records(); len(r) != 1 || r[0].Healed.IsZero() || r[0].Error != "" {
+		t.Errorf("records = %+v, want one healed fault with no error", r)
+	}
+}
+
+// TestController_PowerCutSupervisorGivesUp proves the supervisor stops after
+// supervisorTries and the fault reports the workers that never started.
+func TestController_PowerCutSupervisorGivesUp(t *testing.T) {
+	oldEvery, oldTries := supervisorEvery, supervisorTries
+	supervisorEvery, supervisorTries = 20*time.Millisecond, 3
+	t.Cleanup(func() { supervisorEvery, supervisorTries = oldEvery, oldTries })
+	ft := newFakeTarget(map[string][]int{"render": {0}})
+	ft.bootNeedsServer = true
+	ft.restartServerErr = errors.New("server would not start")
+	c := newController(t, []scenario.Fault{{
+		PowerCut: &scenario.PowerCut{Order: scenario.PowerCutWorkersFirst, Down: d(50 * time.Millisecond), Gap: d(50 * time.Millisecond)},
+	}}, groups("render"), ft)
+	if _, err := run(t, c); err == nil || !strings.Contains(err.Error(), "no servers available") {
+		t.Fatalf("Run error = %v, want the fleet's last start failure", err)
+	}
+	if n := len(ft.named("RestartAll")); n != 1+3 {
+		t.Errorf("RestartAll called %d times, want the boot plus 3 supervisor tries", n)
 	}
 }
 

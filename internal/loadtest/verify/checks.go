@@ -26,6 +26,8 @@ type ledgerAttempt struct {
 	// that was; zero and "" when the ledger has no leased event for it.
 	leased   time.Time
 	workerID string
+	// assigned is the server's time for the assignment, zero when unknown.
+	assigned time.Time
 	// end is the attempt's first terminal, canceled or crashed event; nil
 	// while the simulator has not ended it.
 	end *simworker.Event
@@ -37,9 +39,14 @@ type ledgerAttempt struct {
 type ledgerIndex struct {
 	l    *simworker.Ledger
 	seen int // events folded in so far
-	// byTask lists each task's attempts in the order they were leased. The
-	// server leases a task's next attempt only after closing the previous
-	// one, so the last is the attempt the server holds as the task's latest.
+	// byTask lists each task's attempts in the order the server assigned
+	// them. The server leases a task's next attempt only after closing the
+	// previous one, so the last is the attempt the server holds as the task's
+	// latest. The order the leases reached the workers can differ: a reply
+	// held up in flight (after a server stall, say) can land after the next
+	// attempt's, so an attempt's place comes from its assignment time when
+	// the message carried one, and from when the ledger first saw it
+	// otherwise.
 	byTask map[string][]*ledgerAttempt
 	byID   map[string]*ledgerAttempt
 	// byJob lists each job's leased tasks, in the order first leased.
@@ -68,12 +75,12 @@ func (x *ledgerIndex) refresh() {
 func (x *ledgerIndex) add(e simworker.Event) {
 	a := x.byID[e.AttemptID]
 	if a == nil {
-		a = &ledgerAttempt{id: e.AttemptID, taskID: e.TaskID, jobID: e.JobID}
+		a = &ledgerAttempt{id: e.AttemptID, taskID: e.TaskID, jobID: e.JobID, assigned: e.AssignedAt}
 		x.byID[e.AttemptID] = a
 		if len(x.byTask[e.TaskID]) == 0 {
 			x.byJob[e.JobID] = append(x.byJob[e.JobID], e.TaskID)
 		}
-		x.byTask[e.TaskID] = append(x.byTask[e.TaskID], a)
+		x.byTask[e.TaskID] = insertByAssignment(x.byTask[e.TaskID], a)
 	}
 	switch e.Kind {
 	case simworker.KindLeased:
@@ -85,6 +92,19 @@ func (x *ledgerIndex) add(e simworker.Event) {
 			a.end = &e
 		}
 	}
+}
+
+// insertByAssignment adds a to atts, a task's attempts in assignment order: it
+// goes after the last attempt assigned no later than it. An attempt with no
+// assignment time, or after one with none, goes at the end.
+func insertByAssignment(atts []*ledgerAttempt, a *ledgerAttempt) []*ledgerAttempt {
+	i := len(atts)
+	if !a.assigned.IsZero() {
+		for i > 0 && !atts[i-1].assigned.IsZero() && atts[i-1].assigned.After(a.assigned) {
+			i--
+		}
+	}
+	return slices.Insert(atts, i, a)
 }
 
 // decision is what the simulator decided for a task: the outcome of its

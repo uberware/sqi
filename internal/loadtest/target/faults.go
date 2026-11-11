@@ -51,7 +51,8 @@ type Faults interface {
 	ResumeWorker(i int) error
 	// RestartWorker starts real worker i again as a new process, a new
 	// incarnation, on the same data directory, so with the same worker ID.
-	// The worker must not be running.
+	// The worker must not be running: if it is, the error wraps
+	// [ErrWorkerRunning].
 	RestartWorker(ctx context.Context, i int) error
 	// RealLive is the number of real worker processes running now.
 	RealLive() int
@@ -92,6 +93,10 @@ type Incarnation struct {
 	// stopped it.
 	Ended time.Time
 }
+
+// ErrWorkerRunning is wrapped by the error of a RestartWorker call on a real
+// worker whose process is still running.
+var ErrWorkerRunning = errors.New("target: real worker is still running")
 
 var (
 	_ Faults = (*managed)(nil)
