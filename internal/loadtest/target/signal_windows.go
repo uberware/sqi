@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//go:build windows
+
+package target
+
+import "os"
+
+// killOne terminates the process alone (TerminateProcess on its handle). The
+// job object the harness put it in stays open, so what the process started
+// keeps running until the job is released when the target closes.
+func killOne(p *os.Process) error { return p.Kill() }
+
+// Windows has no SIGSTOP, so a process cannot be stalled.
+func stopProcess(int) error { return errStallUnsupported }
+func stopGroup(int) error   { return errStallUnsupported }
+func contProcess(int) error { return errStallUnsupported }
+func contGroup(int) error   { return errStallUnsupported }

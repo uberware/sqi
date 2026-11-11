@@ -43,6 +43,9 @@ var (
 
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(helperEnv); mode != "" {
+		if code, ok := runSignalHelper(mode); ok {
+			os.Exit(code)
+		}
 		os.Exit(runHelper(mode))
 	}
 	code := m.Run()

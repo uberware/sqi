@@ -233,6 +233,8 @@ type Worker struct {
 	Name     string `json:"name"`
 	Hostname string `json:"hostname"`
 	Status   string `json:"status"`
+	// LastHeartbeatAt is when the server last stored a heartbeat from it.
+	LastHeartbeatAt time.Time `json:"last_heartbeat_at"`
 }
 
 // SubmitRequest describes a job submission. A zero Priority leaves the server

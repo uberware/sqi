@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -36,6 +37,11 @@ type proc struct {
 
 	done    chan struct{} // closed once the process is reaped
 	waitErr error         // set before done closes
+
+	releaseOnce sync.Once
+
+	mu      sync.Mutex
+	stalled bool // the harness sent SIGSTOP and no SIGCONT since
 }
 
 // startProc starts spec in its own process group (a new console process
@@ -95,15 +101,95 @@ func (p *proc) exited() bool {
 	}
 }
 
-// stopCtx interrupts the process, waits up to grace for it to exit, then
-// kills it (and its process group); a done ctx cuts the grace short. It
-// returns once the process is reaped, or an error when even a kill did not
-// end it. It is safe to call more than once and on a process that already
-// exited.
-func (p *proc) stopCtx(ctx context.Context, grace time.Duration) error {
-	defer p.plat.release()
+// release frees what supervises the process (on Windows, closing its job
+// kills whatever the process left running). It is safe to call more than
+// once.
+func (p *proc) release() { p.releaseOnce.Do(p.plat.release) }
+
+// stall stops the process alone with SIGSTOP; on Windows it returns
+// errStallUnsupported.
+func (p *proc) stall() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.exited() {
+		return fmt.Errorf("target: %s (pid %d) has exited", p.name, p.pid())
+	}
+	if err := stopProcess(p.pid()); err != nil {
+		return fmt.Errorf("target: stop %s (pid %d): %w", p.name, p.pid(), err)
+	}
+	p.stalled = true
+	return nil
+}
+
+// resume continues the process with SIGCONT. Continuing a process that is
+// not stopped does nothing, so it is safe to call on any process.
+func (p *proc) resume() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.exited() {
+		p.stalled = false
+		return nil
+	}
+	if err := contProcess(p.pid()); err != nil {
+		return fmt.Errorf("target: continue %s (pid %d): %w", p.name, p.pid(), err)
+	}
+	p.stalled = false
+	return nil
+}
+
+func (p *proc) isStalled() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stalled
+}
+
+// killOne kills the process alone, not its group: what it started keeps
+// running. It returns once the process is reaped, or an error when it was not
+// reaped within killWait or ctx ended first. It does not release the process's
+// supervision, so on Windows its job (and the processes still in it) stays
+// until stopCtx or release.
+func (p *proc) killOne(ctx context.Context) error {
 	if p.exited() {
 		return nil
+	}
+	if err := killOne(p.cmd.Process); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("target: kill %s (pid %d): %w", p.name, p.pid(), err)
+	}
+	timer := time.NewTimer(killWait)
+	defer timer.Stop()
+	select {
+	case <-p.done:
+		p.mu.Lock()
+		p.stalled = false
+		p.mu.Unlock()
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("target: %s (pid %d) did not exit %s after kill", p.name, p.pid(), killWait)
+	case <-ctx.Done():
+		return fmt.Errorf("target: waiting for %s (pid %d) to exit after kill: %w", p.name, p.pid(), ctx.Err())
+	}
+}
+
+// stopCtx stops the process (see stop) and then releases its supervision.
+// It is safe to call more than once and on a process that already exited.
+func (p *proc) stopCtx(ctx context.Context, grace time.Duration) error {
+	defer p.release()
+	return p.stop(ctx, grace)
+}
+
+// stop interrupts the process, waits up to grace for it to exit, then kills
+// it (and its process group); a done ctx cuts the grace short. A process the
+// harness stalled is continued first, so it can act on the interrupt rather
+// than wait out the grace. It returns once the process is reaped, or an
+// error when even a kill did not end it.
+func (p *proc) stop(ctx context.Context, grace time.Duration) error {
+	if p.exited() {
+		return nil
+	}
+	if p.isStalled() {
+		if err := p.resume(); err != nil {
+			p.logger.WarnContext(ctx, "could not continue the stalled process before stopping it", slog.Any("error", err))
+		}
 	}
 	if err := interrupt(p.cmd.Process); err != nil {
 		p.logger.WarnContext(ctx, "interrupt failed; killing", slog.Any("error", err))

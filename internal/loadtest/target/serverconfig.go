@@ -28,6 +28,9 @@ type serverSettings struct {
 func (s serverSettings) dataDir() string { return filepath.Join(s.RunDir, "data") }
 func (s serverSettings) tlsDir() string  { return filepath.Join(s.RunDir, "tls") }
 
+// sqlitePath is the server's SQLite database.
+func (s serverSettings) sqlitePath() string { return filepath.Join(s.dataDir(), "sqi.db") }
+
 // renderServerConfig returns the server.yaml of a managed server: the
 // harness's settings with the scenario's server.config merged over them.
 func renderServerConfig(s serverSettings) ([]byte, error) {
@@ -77,7 +80,7 @@ func harnessConfig(s serverSettings) map[string]any {
 			"enrollment_endpoint_enabled": true,
 		}
 	}
-	store := map[string]any{"driver": "sqlite", "sqlite_path": filepath.Join(s.dataDir(), "sqi.db")}
+	store := map[string]any{"driver": "sqlite", "sqlite_path": s.sqlitePath()}
 	if s.Spec.Store == "postgres" {
 		store = map[string]any{"driver": "postgres"} // the DSN goes through the environment
 	}
