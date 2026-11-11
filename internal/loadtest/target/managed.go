@@ -114,6 +114,9 @@ type managed struct {
 	workers      []*realWorker
 	incarnations []Incarnation
 	closing      bool // Close has begun: nothing more is started
+	// resumedGroups are the task groups resumeAll continued, which Close
+	// ends.
+	resumedGroups []int
 
 	closeOnce sync.Once
 	closeErr  error

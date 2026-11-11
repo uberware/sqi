@@ -203,15 +203,19 @@ func outputName(key string) string {
 
 // Output appends "<execID> <RFC3339Nano>\n" to
 // <dir>/outputs/<hex sha256(key)[:16]>.out, and remembers key in
-// <dir>/outputs/<same>.key on first use.
+// <dir>/outputs/<same>.key on first use. Writers of one key may make their
+// first call at once.
 func Output(dir, key, execID string, at time.Time) error {
+	if !validID(execID) {
+		return fmt.Errorf("marker: exec id %q is not letters, digits, '-' and '_'", execID)
+	}
 	outputs := filepath.Join(dir, OutputsDir)
 	if err := os.MkdirAll(outputs, 0o750); err != nil {
 		return fmt.Errorf("marker: %w", err)
 	}
 	name := filepath.Join(outputs, outputName(key))
 	if _, err := os.Stat(name + ".key"); errors.Is(err, fs.ErrNotExist) {
-		if err := replaceFile(name+".key", []byte(key), true); err != nil {
+		if err := writeKey(name+".key", key, execID); err != nil {
 			return err
 		}
 	}
@@ -222,6 +226,35 @@ func Output(dir, key, execID string, at time.Time) error {
 	// One write per line, so lines of concurrent writers never interleave.
 	_, err = f.WriteString(execID + " " + at.UTC().Format(time.RFC3339Nano) + "\n")
 	return errors.Join(err, f.Close())
+}
+
+// writeKey creates the key file at path holding key, unless another writer
+// already has. The content goes to a temporary file of this writer's own
+// first and is then linked into place, which fails rather than replaces when
+// the file exists, so a reader never sees a key file empty or half written.
+func writeKey(path, key, execID string) error {
+	dir, base := filepath.Split(path)
+	tmp := filepath.Join(dir, "."+base+"."+execID+".tmp")
+	if err := os.WriteFile(tmp, []byte(key), 0o600); err != nil {
+		return fmt.Errorf("marker: %w", err)
+	}
+	defer os.Remove(tmp)
+	err := os.Link(tmp, path)
+	if err == nil {
+		return nil
+	}
+	if _, serr := os.Stat(path); serr == nil {
+		return nil // another writer's, with the same content
+	}
+	// No hard links on this file system: a rename of this writer's own
+	// temporary file is atomic too.
+	if rerr := os.Rename(tmp, path); rerr != nil {
+		if _, serr := os.Stat(path); serr == nil {
+			return nil
+		}
+		return fmt.Errorf("marker: create %s: %w", path, errors.Join(err, rerr))
+	}
+	return nil
 }
 
 // ReadAll reads every exec file in dir. Unreadable or torn files are skipped
@@ -270,6 +303,9 @@ func Outputs(dir string) (map[string][]OutputLine, error) {
 		key, err := os.ReadFile(name + ".key")
 		if err != nil {
 			return nil, fmt.Errorf("marker: the key of %s: %w", f, err)
+		}
+		if len(key) == 0 {
+			return nil, fmt.Errorf("marker: the key file of %s is empty", f)
 		}
 		data, err := os.ReadFile(f)
 		if err != nil {

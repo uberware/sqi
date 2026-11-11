@@ -539,3 +539,49 @@ func TestManaged_StallWorkerStopsItsTasks(t *testing.T) {
 		}
 	}
 }
+
+// TestManaged_CloseEndsAStalledThenKilledWorkersTasks stalls a real worker
+// running a task with a silent child, kills the worker and closes the target
+// with no StopForChecks first, as a run's error path does: the task's group,
+// continued by Close with a marker gone stale during the stall, must still be
+// ended.
+func TestManaged_CloseEndsAStalledThenKilledWorkersTasks(t *testing.T) {
+	skipShort(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGSTOP is POSIX only")
+	}
+	m, c := startRealTaskTarget(t, scenario.RealTask{Duration: scenario.Duration{Duration: time.Minute}, SilentChild: true})
+	submitRealTask(t, m, c, "stall-kill-job")
+	silent := waitExecRole(t, m, marker.RoleSilent, 60*time.Second)
+	main, _ := execOfRole(t, m, marker.RoleMain)
+	t.Cleanup(func() {
+		killGroup(silent.PGID) //nolint:errcheck // a leak guard; ESRCH when Close already ended it
+	})
+
+	if err := m.StallWorker(0); err != nil {
+		t.Fatalf("StallWorker: %v", err)
+	}
+	if err := m.KillWorker(t.Context(), 0); err != nil {
+		t.Fatalf("KillWorker: %v", err)
+	}
+	// Long enough for the stopped task's marker to go stale.
+	time.Sleep(taskStaleAfter + time.Second)
+	if !proctest.Alive(silent.PID) {
+		t.Fatalf("the silent child %d died with its killed worker; it should survive until Close", silent.PID)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	if err := m.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && (proctest.Alive(silent.PID) || proctest.Alive(main.PID)) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	for _, pid := range []int{silent.PID, main.PID} {
+		if proctest.Alive(pid) {
+			t.Errorf("task process %d still running after Close", pid)
+		}
+	}
+}

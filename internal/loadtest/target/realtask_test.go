@@ -4,9 +4,11 @@ package target
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -79,6 +81,8 @@ func TestManaged_LiveTaskGroups(t *testing.T) {
 		{ID: "d", Incarnation: "0.0", PGID: 300, LastSeen: now.Add(-time.Hour)}, // killed long ago
 		{ID: "e", Incarnation: "0.1", PGID: 400, LastSeen: now},                 // another incarnation
 		{ID: "f", Incarnation: "0.0", PGID: 0, LastSeen: now},                   // no group (Windows)
+		{ID: "g", Incarnation: "0.0", PGID: 1, LastSeen: now},                   // kill(-1) would reach everything
+		{ID: "h", Incarnation: "0.0", PGID: ownGroup(), LastSeen: now},          // the harness's own group
 	} {
 		b, err := json.Marshal(e)
 		if err != nil {
@@ -95,5 +99,21 @@ func TestManaged_LiveTaskGroups(t *testing.T) {
 	got, err = m.liveTaskGroups("")
 	if err != nil || !slices.Equal(got, []int{100, 400}) {
 		t.Errorf("liveTaskGroups(any) = %v, %v; want [100 400]", got, err)
+	}
+}
+
+// TestSignals_RefuseAnUnsafeGroup: a group signal to group 0 or 1 (kill(-1)
+// reaches every process the user may signal) or to the harness's own group
+// is refused before any signal is sent.
+func TestSignals_RefuseAnUnsafeGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no process groups to signal")
+	}
+	for _, g := range []int{-5, 0, 1, ownGroup()} {
+		for name, signal := range map[string]func(int) error{"stop": stopGroup, "cont": contGroup, "kill": killGroup} {
+			if err := signal(g); !errors.Is(err, errUnsafeGroup) {
+				t.Errorf("%sGroup(%d) = %v, want errUnsafeGroup", name, g, err)
+			}
+		}
 	}
 }

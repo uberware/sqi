@@ -104,6 +104,10 @@ var errStallUnsupported = errors.New("target: stall needs SIGSTOP, which Windows
 // errClosing refuses a restart once Close has begun.
 var errClosing = errors.New("target: the target is closing")
 
+// errUnsafeGroup refuses a group signal to a group id that is not safe to
+// signal, such as one read from a corrupt marker.
+var errUnsafeGroup = errors.New("target: refusing to signal process group")
+
 // realWorker is one real worker slot, which its incarnations take in turn.
 type realWorker struct {
 	index int // 0-based, in start order
@@ -375,7 +379,8 @@ func (m *managed) ResumeWorker(i int) error {
 	if err != nil {
 		return err
 	}
-	return errors.Join(m.contTaskGroups(i), p.resume())
+	_, err = m.contTaskGroups(i)
+	return errors.Join(err, p.resume())
 }
 
 // currentIncarnation is the ID of real worker i's current incarnation, which
@@ -397,7 +402,7 @@ func (m *managed) liveTaskGroups(inc string) ([]int, error) {
 	now := time.Now()
 	var groups []int
 	for _, e := range execs {
-		live := e.End == nil && e.PGID > 0 && now.Sub(e.LastSeen) <= taskStaleAfter
+		live := e.End == nil && safeGroup(e.PGID) && now.Sub(e.LastSeen) <= taskStaleAfter
 		if live && (inc == "" || e.Incarnation == inc) && !slices.Contains(groups, e.PGID) {
 			groups = append(groups, e.PGID)
 		}
@@ -432,8 +437,8 @@ func (m *managed) stopTaskGroups(i int, inc string) error {
 }
 
 // contTaskGroups continues the task groups StallWorker stopped for real
-// worker i, in reverse order of the stops, and forgets them.
-func (m *managed) contTaskGroups(i int) error {
+// worker i, in reverse order of the stops, forgets them and returns them.
+func (m *managed) contTaskGroups(i int) ([]int, error) {
 	m.mu.Lock()
 	w := m.workers[i]
 	groups := w.taskGroups
@@ -445,19 +450,26 @@ func (m *managed) contTaskGroups(i int) error {
 			errs = append(errs, fmt.Errorf("target: continue task process group %d of real worker %d: %w", g, i, err))
 		}
 	}
-	return errors.Join(errs...)
+	return groups, errors.Join(errs...)
 }
 
 // endTaskGroups kills the process group of every task the markers show still
 // running, whichever incarnation started it: what a killed or stopped worker
-// left behind. Close calls it once the workers are stopped.
+// left behind. Close calls it once the workers are stopped. The groups
+// resumeAll continued are ended too, whatever their markers say: the markers
+// went stale while the groups were stopped and may not be refreshed yet.
 func (m *managed) endTaskGroups(ctx context.Context) error {
 	if m.markerDir == "" {
 		return nil
 	}
 	groups, err := m.liveTaskGroups("")
-	if err != nil {
-		return err
+	m.mu.Lock()
+	continued := slices.Clone(m.resumedGroups)
+	m.mu.Unlock()
+	for _, g := range continued {
+		if !slices.Contains(groups, g) {
+			groups = append(groups, g)
+		}
 	}
 	for _, g := range groups {
 		m.logger.InfoContext(ctx, "ending a task process group a worker left running", slog.Int("pgid", g))
@@ -465,7 +477,7 @@ func (m *managed) endTaskGroups(ctx context.Context) error {
 			m.logger.WarnContext(ctx, "could not end a task process group", slog.Int("pgid", g), slog.Any("error", err))
 		}
 	}
-	return nil
+	return err
 }
 
 func (m *managed) RestartWorker(ctx context.Context, i int) error {
@@ -511,7 +523,8 @@ func (m *managed) StopForChecks(ctx context.Context) error {
 }
 
 // resumeAll continues every task group and process the harness stalled, the
-// task groups first, so none of them waits out its stop grace.
+// task groups first, so none of them waits out its stop grace. It records the
+// task groups it continued for Close's endTaskGroups.
 func (m *managed) resumeAll(ctx context.Context) {
 	m.mu.Lock()
 	procs := []*proc{m.server}
@@ -521,9 +534,13 @@ func (m *managed) resumeAll(ctx context.Context) {
 	n := len(m.workers)
 	m.mu.Unlock()
 	for i := range n {
-		if err := m.contTaskGroups(i); err != nil {
+		groups, err := m.contTaskGroups(i)
+		if err != nil {
 			m.logger.WarnContext(ctx, "could not continue a stalled task", slog.Any("error", err))
 		}
+		m.mu.Lock()
+		m.resumedGroups = append(m.resumedGroups, groups...)
+		m.mu.Unlock()
 	}
 	for _, p := range procs {
 		if p == nil || !p.isStalled() {

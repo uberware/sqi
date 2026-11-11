@@ -3,8 +3,10 @@
 package marker
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -168,5 +170,61 @@ func TestOutputs_SkipsATornLine(t *testing.T) {
 	outs, err := Outputs(dir)
 	if err != nil || len(outs["k"]) != 1 {
 		t.Errorf("Outputs = %+v, %v; want the one whole line", outs, err)
+	}
+}
+
+// TestOutput_ConcurrentFirstUse has many writers make the first Output call
+// for one key at once, as two attempts of one task starting together do:
+// every call succeeds, every line is kept, and the key is never read empty.
+func TestOutput_ConcurrentFirstUse(t *testing.T) {
+	const writers, rounds = 16, 20
+	at := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	for round := range rounds {
+		dir := t.TempDir()
+		key := fmt.Sprintf("job-%d/step-1/1", round)
+		start := make(chan struct{})
+		errs := make([]error, writers)
+		var wg sync.WaitGroup
+		for i := range writers {
+			wg.Go(func() {
+				<-start
+				errs[i] = Output(dir, key, fmt.Sprintf("exec%d", i), at)
+			})
+		}
+		close(start)
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: writer %d: Output: %v", round, i, err)
+			}
+		}
+		outs, err := Outputs(dir)
+		if err != nil {
+			t.Fatalf("round %d: Outputs: %v", round, err)
+		}
+		if len(outs) != 1 || len(outs[key]) != writers {
+			t.Fatalf("round %d: Outputs = %+v, want %d lines under %s", round, outs, writers, key)
+		}
+	}
+}
+
+func TestOutput_RejectsAnUnsafeExecID(t *testing.T) {
+	for _, id := range []string{"", "a b", "../x", "a\nb"} {
+		if err := Output(t.TempDir(), "k", id, time.Now()); err == nil {
+			t.Errorf("Output with exec id %q succeeded", id)
+		}
+	}
+}
+
+func TestOutputs_RefusesAnEmptyKey(t *testing.T) {
+	dir := t.TempDir()
+	if err := Output(dir, "k", "a", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, OutputsDir, outputName("k")+".key"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if outs, err := Outputs(dir); err == nil {
+		t.Errorf("Outputs = %+v with an empty key file, want an error", outs)
 	}
 }
