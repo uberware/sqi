@@ -25,6 +25,9 @@ func (s *Scenario) Validate(target TargetKind) error {
 	v.clients()
 	v.actions()
 	v.asserts()
+	v.faults()
+	v.expect()
+	v.realTasks()
 	return errors.Join(v.errs...)
 }
 

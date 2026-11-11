@@ -29,6 +29,8 @@ type Scenario struct {
 	Clients      ClientsSpec         `yaml:"clients"`
 	Actions      []Action            `yaml:"actions"`
 	Assert       map[string]Duration `yaml:"assert"`
+	Faults       []Fault             `yaml:"faults,omitempty"`
+	Expect       Expect              `yaml:"expect,omitempty"`
 }
 
 // ServerSpec configures the server a managed target starts.
@@ -110,6 +112,9 @@ type JobClass struct {
 	UsagePool    string   `yaml:"usage_pool"`
 	EXPR         bool     `yaml:"expr"`
 	Task         TaskSpec `yaml:"task"`
+	// RealTask changes what the no-op command does on a real worker; nil keeps
+	// the default.
+	RealTask *RealTask `yaml:"real_task,omitempty"`
 }
 
 // TaskSpec describes how a simulated worker runs the tasks of a job class.
