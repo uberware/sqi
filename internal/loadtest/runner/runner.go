@@ -27,6 +27,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"time"
@@ -932,6 +933,7 @@ func (r *run) teardown(ctx context.Context) {
 		}
 	}
 	r.storeChecks(ctx)
+	r.applyExpectations()
 	if r.tgt != nil {
 		cctx, cancel := r.cleanupCtx(ctx, closeTimeout)
 		if err := r.tgt.Close(cctx); err != nil {
@@ -939,6 +941,16 @@ func (r *run) teardown(ctx context.Context) {
 		}
 		cancel()
 	}
+}
+
+// applyExpectations applies the scenario's rework bound and known violations
+// to a chaos run's invariants. A run that ended before its invariants were
+// checked has none to apply them to.
+func (r *run) applyExpectations() {
+	if r.faults == nil || !r.complete {
+		return
+	}
+	r.invariants = chaos.Apply(r.invariants, r.rework, r.sc.Expect, runtime.GOOS)
 }
 
 // storeChecks stops a chaos run's real workers and server, once its
@@ -955,6 +967,7 @@ func (r *run) storeChecks(ctx context.Context) {
 	if err := r.faults.StopForChecks(sctx); err != nil {
 		// A server still running would write under the checks.
 		msg := "the server and the real workers did not stop for the store checks: " + err.Error()
+		r.unavail("rework", msg)
 		r.invariants = append(r.invariants,
 			verify.Result{Name: chaos.NameStoreIntegrity, Evidence: []string{msg}},
 			verify.Result{Name: chaos.NameExecutionsRecorded, Evidence: []string{msg}})

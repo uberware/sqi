@@ -211,6 +211,9 @@ type Result struct {
 	OK       bool
 	Evidence []string
 	Counters map[string]int64 `json:"counters,omitempty"`
+	// Known is the tracker ID of the known violation that excused a failure:
+	// OK is then true and Evidence says what was found.
+	Known string `json:"known,omitempty"`
 }
 
 // FaultWindow is when a network, server or power-cut fault was in effect: from

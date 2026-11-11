@@ -52,6 +52,8 @@ func writeSummary(w io.Writer, r *Record) error {
 	summaryLatency(&b, r)
 	summaryResources(&b, r)
 	summaryGrowth(&b, r)
+	summaryFaults(&b, r)
+	summaryRework(&b, r)
 	summaryInvariants(&b, r)
 	summaryFindings(&b, r)
 	summaryUnavailable(&b, r)
@@ -223,6 +225,57 @@ func summaryGrowth(b *strings.Builder, r *Record) {
 	b.WriteString("\n")
 }
 
+// summaryFaults lists the faults a chaos run injected, with their times as
+// offsets from the start of submissions. It writes nothing for a run without.
+func summaryFaults(b *strings.Builder, r *Record) {
+	if len(r.Faults) == 0 {
+		return
+	}
+	b.WriteString("## Faults\n\n")
+	b.WriteString("Start and Healed are offsets from the start of submissions.\n\n")
+	b.WriteString("| # | Kind | Target | Start | Healed | Error |\n|---|---|---|---:|---:|---|\n")
+	for _, f := range r.Faults {
+		healed := "never"
+		if !f.Healed.IsZero() {
+			healed = fmtOffset(f.Healed.Sub(r.Started))
+		}
+		fmt.Fprintf(b, "| %d | %s | %s | %s | %s | %s |\n",
+			f.Index, f.Kind, f.Target, fmtOffset(f.Start.Sub(r.Started)), healed, orDash(f.Error))
+	}
+	b.WriteString("\n")
+}
+
+func fmtOffset(d time.Duration) string {
+	if d < 0 {
+		return fmtDur(d)
+	}
+	return "+" + fmtDur(d)
+}
+
+// summaryRework reports the work the faults made the farm do twice. It writes
+// nothing for a run that did not measure it.
+func summaryRework(b *strings.Builder, r *Record) {
+	if r.Rework == nil {
+		return
+	}
+	b.WriteString("## Rework\n\n")
+	fmt.Fprintf(b, "%d attempts, %.1fs of work", r.Rework.Attempts, r.Rework.Seconds)
+	if len(r.Rework.ByFault) > 0 {
+		var parts []string
+		for _, i := range slices.Sorted(maps.Keys(r.Rework.ByFault)) {
+			parts = append(parts, fmt.Sprintf("#%d %d", i, r.Rework.ByFault[i]))
+		}
+		fmt.Fprintf(b, "; by fault: %s", strings.Join(parts, ", "))
+	}
+	b.WriteString("\n\n")
+	for _, e := range r.Rework.Examples {
+		fmt.Fprintf(b, "- %s\n", e)
+	}
+	if len(r.Rework.Examples) > 0 {
+		b.WriteString("\n")
+	}
+}
+
 func summaryInvariants(b *strings.Builder, r *Record) {
 	b.WriteString("## Invariants\n\n")
 	if len(r.Invariants) == 0 {
@@ -235,7 +288,10 @@ func summaryInvariants(b *strings.Builder, r *Record) {
 	}
 	for _, inv := range r.Invariants {
 		status := "PASS"
-		if !inv.OK {
+		switch {
+		case inv.Known != "":
+			status = "known (" + inv.Known + ")"
+		case !inv.OK:
 			status = "FAIL"
 		}
 		fmt.Fprintf(b, "- %s %s\n", status, inv.Name)
