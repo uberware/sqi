@@ -117,3 +117,44 @@ func TestSignals_RefuseAnUnsafeGroup(t *testing.T) {
 		}
 	}
 }
+
+// TestManaged_EndTaskGroupsEndsContinuedGroups: a task group Close continued
+// has a marker gone stale while it was stopped, which the marker filter
+// alone skips; endTaskGroups must end it all the same.
+func TestManaged_EndTaskGroupsEndsContinuedGroups(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no process groups to signal")
+	}
+	m := newTestManaged(t, realTaskScenario())
+	p := startHelper(t, "child") // its own group, whose id is its pid
+	dir := filepath.Join(m.MarkerDir(), marker.ExecsDir)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	stale := marker.Exec{ID: "stalled", Incarnation: "0.0", Role: marker.RoleMain, PID: p.pid(), PGID: p.pid(), LastSeen: time.Now().Add(-time.Minute)}
+	b, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, stale.ID+".json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.endTaskGroups(t.Context()); err != nil {
+		t.Fatalf("endTaskGroups: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if p.exited() {
+		t.Fatal("endTaskGroups ended a group whose stale marker it should not trust on its own")
+	}
+
+	m.resumedGroups = []int{p.pid()}
+	if err := m.endTaskGroups(t.Context()); err != nil {
+		t.Fatalf("endTaskGroups: %v", err)
+	}
+	select {
+	case <-p.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("endTaskGroups left a continued task group running")
+	}
+}

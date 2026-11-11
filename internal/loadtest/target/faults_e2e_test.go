@@ -542,9 +542,12 @@ func TestManaged_StallWorkerStopsItsTasks(t *testing.T) {
 
 // TestManaged_CloseEndsAStalledThenKilledWorkersTasks stalls a real worker
 // running a task with a silent child, kills the worker and closes the target
-// with no StopForChecks first, as a run's error path does: the task's group,
-// continued by Close with a marker gone stale during the stall, must still be
-// ended.
+// with no StopForChecks first, as a run's error path does: no task process
+// may outlive Close. On Linux the kill orphans the task's stopped process
+// group, so the kernel sends it SIGHUP and SIGCONT and the no-op, which does
+// not ignore SIGHUP, usually dies before Close; a task that ignores SIGHUP
+// is left to Close, which TestManaged_EndTaskGroupsEndsContinuedGroups
+// covers directly.
 func TestManaged_CloseEndsAStalledThenKilledWorkersTasks(t *testing.T) {
 	skipShort(t)
 	if runtime.GOOS == "windows" {
@@ -566,9 +569,7 @@ func TestManaged_CloseEndsAStalledThenKilledWorkersTasks(t *testing.T) {
 	}
 	// Long enough for the stopped task's marker to go stale.
 	time.Sleep(taskStaleAfter + time.Second)
-	if !proctest.Alive(silent.PID) {
-		t.Fatalf("the silent child %d died with its killed worker; it should survive until Close", silent.PID)
-	}
+	t.Logf("before Close: silent child alive %v, main alive %v", proctest.Alive(silent.PID), proctest.Alive(main.PID))
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
