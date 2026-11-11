@@ -206,6 +206,7 @@ func TestRun_DrainWaitsForFaultsToHeal(t *testing.T) {
 	want := []string{
 		verify.NameTerminal, verify.NameOutcomes, verify.NameSingleAttempt, verify.NameLogs,
 		verify.NameWorkersConverge, verify.NameCaps, verify.NameSubmissionAtomic,
+		chaos.NameStoreIntegrity, chaos.NameExecutionsRecorded,
 	}
 	if !slices.Equal(names, want) {
 		t.Errorf("invariants %v, want %v", names, want)

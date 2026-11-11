@@ -27,6 +27,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/chaos"
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/driver"
+	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/measure"
 	"github.com/uberware/sqi/internal/loadtest/observe"
 	"github.com/uberware/sqi/internal/loadtest/report"
@@ -72,6 +74,9 @@ const (
 	// emergencyStop bounds the fleet's stop in the teardown after a panic;
 	// closing the target there is bounded by closeTimeout.
 	emergencyStop = 10 * time.Second
+	// storeCheckTimeout bounds stopping a chaos run's target for the store
+	// checks (the same graces as closeTimeout) and the checks themselves.
+	storeCheckTimeout = 15 * time.Minute
 
 	// checkTimeout bounds the invariant checks.
 	checkTimeout = 30 * time.Minute
@@ -898,8 +903,7 @@ func (r *run) teardown(ctx context.Context) {
 			r.unavail("observer", "its last sample and end-of-run profiles did not finish (timed out or aborted), so the record may lack them")
 		}
 	}
-	// A chaos run's checks of the stopped server's store append their
-	// results to r.invariants here, before the target closes.
+	r.storeChecks(ctx)
 	if r.tgt != nil {
 		cctx, cancel := r.cleanupCtx(ctx, closeTimeout)
 		if err := r.tgt.Close(cctx); err != nil {
@@ -907,6 +911,54 @@ func (r *run) teardown(ctx context.Context) {
 		}
 		cancel()
 	}
+}
+
+// storeChecks stops a chaos run's real workers and server, once its
+// invariants are checked, and appends the checks of the stopped server's
+// store to them. A store that cannot be stopped, opened or read fails the
+// checks; it is not a run error.
+func (r *run) storeChecks(ctx context.Context) {
+	if r.faults == nil || !r.complete {
+		return
+	}
+	sctx, cancel := r.cleanupCtx(ctx, storeCheckTimeout)
+	defer cancel()
+	r.logger.InfoContext(ctx, "stopping the server and the real workers to check the store")
+	if err := r.faults.StopForChecks(sctx); err != nil {
+		// A server still running would write under the checks.
+		msg := "the server and the real workers did not stop for the store checks: " + err.Error()
+		r.invariants = append(r.invariants,
+			verify.Result{Name: chaos.NameStoreIntegrity, Evidence: []string{msg}},
+			verify.Result{Name: chaos.NameExecutionsRecorded, Evidence: []string{msg}})
+		return
+	}
+	markers, markerErr := mainMarkers(r.faults.MarkerDir())
+	results := chaos.StoreChecks(sctx, chaos.StoreInput{
+		Options: r.faults.StoreOptions(),
+		FarmID:  r.tgt.FarmID(),
+		Ledger:  r.ledger,
+		Markers: markers,
+	})
+	for i := range results {
+		if markerErr != nil && results[i].Name == chaos.NameExecutionsRecorded {
+			results[i].OK = false
+			results[i].Evidence = append(results[i].Evidence, markerErr.Error())
+		}
+	}
+	r.invariants = append(r.invariants, results...)
+}
+
+// mainMarkers reads the real tasks' main executions from dir, none when dir
+// is "".
+func mainMarkers(dir string) ([]marker.Exec, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	execs, _, err := marker.ReadAll(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read the real tasks' markers: %w", err)
+	}
+	return slices.DeleteFunc(execs, func(e marker.Exec) bool { return e.Role != marker.RoleMain }), nil
 }
 
 // healFaults ends the fault controller's Run, if it is still running, then
