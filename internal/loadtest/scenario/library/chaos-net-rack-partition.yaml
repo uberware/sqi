@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-net-rack-partition
+description: chaos N2 - cut a quarter of the workers (rack-b, 30 of 120) from the broker for 60s, twice heartbeat_timeout, then heal; their work is reclaimed and re-run, 4.5 min
+# The partition starts at 3m15s, not earlier: the server stands its liveness
+# sweeps down for about 3m10s after it starts, and a rack cut inside that
+# window is never marked offline or reclaimed.
+duration: 4m30s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: rack-a
+    count: 90
+    ramp: 50/s
+    cpu: 8
+    os: linux
+  - name: rack-b
+    count: 30
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 3m15s
+    partition: {groups: [rack-b]}
+    duration: 60s

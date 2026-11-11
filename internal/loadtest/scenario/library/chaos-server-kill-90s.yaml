@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-server-kill-90s
+description: chaos S1 - SIGKILL the server at 1m and restart it 90s later under steady load (100 workers, about 2.5 tasks/s); no completed work may be redone, 3.5 min
+# A 90 s outage outlasts a worker's reconnect buffer for some of what it
+# publishes. The server is back at 2m30s and stands its liveness sweeps down
+# for about 3m10s after that, so anything the restart strands is reclaimed
+# only around 5m40s; the drain covers that and a re-run.
+duration: 3m30s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 100
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 1m
+    kill: {server: true}
+    restart_after: 90s
+
+expect:
+  max_rework_attempts: 0

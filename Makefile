@@ -329,6 +329,20 @@ load-sweep: ## Sweep one parameter (SCENARIO=..., VARY='workers[0].count=100,200
 	  echo "load-sweep needs VARY, e.g. make load-sweep SCENARIO=workers-ramp VARY='workers[0].count=100,200,400'"; exit 1; fi
 	go run ./cmd/sqi-load sweep --scenario $(SCENARIO) --vary '$(VARY)'
 
+# Chaos suite (test/chaos, build tag `chaos`): the built-in chaos-* scenarios
+# run as subtests of TestChaos against real binaries. SCENARIO names one only
+# when given on the command line or in the environment; its mixed-medium
+# default above would select nothing. SQI_CHAOS_STORE=postgres runs them on
+# PostgreSQL (needs SQI_TEST_POSTGRES_DSN); SQI_LOAD_OUT keeps the runs.
+CHAOS_SMOKE = chaos-server-kill-20s|chaos-worker-gone|chaos-net-blip
+CHAOS_SCENARIO = $(if $(filter command line environment environment override,$(origin SCENARIO)),$(SCENARIO),)
+
+.PHONY: chaos chaos-smoke
+chaos: ## Run the chaos scenarios (SCENARIO=chaos-... for one)
+	go test $(TEST_FLAGS) -tags chaos -run '$(if $(CHAOS_SCENARIO),^TestChaos$$/^$(CHAOS_SCENARIO)$$,TestChaos)' -v -timeout 3h ./test/chaos/
+chaos-smoke: ## Run the three PR-time chaos scenarios (under 5 minutes each)
+	go test $(TEST_FLAGS) -tags chaos -run '^TestChaos$$/^($(CHAOS_SMOKE))$$' -v -timeout 20m ./test/chaos/
+
 # Validates the published preset library against the validator in this working
 # tree. A validator change can invalidate content already published: a change
 # that tightens validation and fixes every preset in this repo still leaves the

@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-server-stall-short
+description: chaos S3 - SIGSTOP the server (and its embedded broker) for 15s, under heartbeat_timeout, then SIGCONT, under steady load (100 workers); records reclaims, 3.75 min
+# The stall starts at 3m15s, not earlier: the server stands its liveness
+# sweeps down for about 3m10s after it starts, and a stall inside that window
+# cannot show whether a sweep runs before the heartbeat backlog is consumed.
+# POSIX only (SIGSTOP); the chaos test skips it on Windows.
+duration: 3m45s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 100
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 3m15s
+    stall: {server: true}
+    duration: 15s

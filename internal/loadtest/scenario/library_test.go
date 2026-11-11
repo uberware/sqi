@@ -11,6 +11,12 @@ import (
 )
 
 var builtinNames = []string{
+	"chaos-churn-instant-restart", "chaos-churn-storm", "chaos-logs-during-restart",
+	"chaos-net-blip", "chaos-net-flap", "chaos-net-rack-partition", "chaos-net-slow-site",
+	"chaos-power-cut-server-first", "chaos-power-cut-workers-first",
+	"chaos-server-kill-20s", "chaos-server-kill-5s", "chaos-server-kill-90s", "chaos-server-kill-mid-submit",
+	"chaos-server-stall-long", "chaos-server-stall-short", "chaos-server-term",
+	"chaos-worker-gone", "chaos-worker-kill-mid-task", "chaos-worker-sleep",
 	"ci-medium", "expr-mix", "jobs-flood", "logs-heavy", "mixed-medium", "progress-heavy", "queues-many",
 	"smoke", "soak-steady", "steps-deep", "tasks-wide", "ui-heavy", "workers-churn", "workers-ramp",
 }

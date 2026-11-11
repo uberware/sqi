@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-net-blip
+description: chaos N1 - cut every worker (120) from the broker for 5s, then for 15s (half of heartbeat_timeout), under steady load; no reclaims, no rework, 4.25 min
+# The cuts come at 3m15s and 3m40s, not earlier: the server stands its
+# liveness sweeps down for about 3m10s after it starts, and a cut inside that
+# window cannot be mistaken for a dead worker however long it lasts.
+duration: 4m15s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 120
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 3m15s
+    partition: {}
+    duration: 5s
+  - at: 3m40s
+    partition: {}
+    duration: 15s
+
+expect:
+  max_rework_attempts: 0

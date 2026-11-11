@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-worker-sleep
+description: chaos W3 - SIGSTOP one of 2 real workers for 75s, over twice heartbeat_timeout, while it runs 90s tasks, then SIGCONT; stale attempts are canceled, nothing is credited twice, 4.75 min
+# The stall starts at 3m15s, not earlier: the server stands its liveness
+# sweeps down for about 3m10s after it starts, and a worker that sleeps inside
+# that window is never marked offline. The real workers serve their own queue;
+# 60 simulated workers carry the background load on render. POSIX only
+# (SIGSTOP); the chaos test skips it on Windows.
+duration: 4m45s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}, {name: render-real, max_concurrent_tasks: 8}]
+
+workers:
+  - name: sim
+    count: 60
+    ramp: 50/s
+    cpu: 8
+    os: linux
+    queues: [render]
+  - name: render
+    real: 2
+    queues: [render-real]
+
+jobs:
+  - name: frames
+    rate: 0.15/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+  - name: long
+    rate: 4/m
+    queue: render-real
+    steps: 1
+    tasks_per_step: 1
+    cores: 1
+    real_task: {duration: 90s, log_every: 1s}
+
+faults:
+  - at: 3m15s
+    stall: {group: render, real: 1}
+    duration: 75s

@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-worker-kill-mid-task
+description: chaos W1 - kill one of 2 real workers at 1m while it runs 60s process trees (a chatty and a silent child) and restart it 10s later; no orphans, no second writer, 3 min
+# The real workers serve their own queue, so every tree task runs on a real
+# worker; 60 simulated workers carry the background load on render. Tree
+# tasks arrive one every 10 s, so both real workers hold some when the kill
+# lands. The killed worker's attempt is reclaimed only once the server's
+# startup liveness grace (about 3m10s) has passed; the drain covers it.
+duration: 3m
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}, {name: render-real, max_concurrent_tasks: 8}]
+
+workers:
+  - name: sim
+    count: 60
+    ramp: 50/s
+    cpu: 8
+    os: linux
+    queues: [render]
+  - name: render
+    real: 2
+    queues: [render-real]
+
+jobs:
+  - name: frames
+    rate: 0.15/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+  - name: tree
+    rate: 6/m
+    queue: render-real
+    steps: 1
+    tasks_per_step: 1
+    cores: 1
+    real_task: {duration: 60s, log_every: 1s, chatty_child: true, silent_child: true}
+
+faults:
+  - at: 1m
+    kill: {group: render, real: 1}
+    restart_after: 10s
