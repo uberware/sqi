@@ -47,3 +47,18 @@ faults:
   - at: 3m15s
     stall: {group: render, real: 1}
     duration: 75s
+
+# Rework is the stalled worker's tasks: they are reclaimed after
+# heartbeat_timeout and re-run elsewhere, and their own processes, stalled
+# with the worker, reach their end the moment they resume, before the
+# server's cancel lands. At 4 long tasks a minute of 90s, about 6 are in
+# flight across the 2 real workers, so the stalled one cannot hold more (3
+# and 4 seen in two Linux runs). The bound allows 8, so it fails only on
+# rework the stall cannot explain.
+expect:
+  max_rework_attempts: 8
+  known_violations:
+    - check: workers-converge
+      kind: must
+      reason: the worker the sweep marked offline while it slept stays offline once it resumes, since its connection stayed up, heartbeats never bring a worker back online, and it re-registers only on a reconnect
+      tracker: H13f3

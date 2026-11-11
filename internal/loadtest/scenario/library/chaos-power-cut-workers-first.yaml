@@ -33,3 +33,9 @@ jobs:
 faults:
   - at: 1m
     power_cut: {order: workers-first, down: 20s, gap: 10s}
+
+# Everything goes down at once, so an attempt either completed and reported
+# before the cut or never completed: rework can only come from a report
+# lost in flight at the instant of the cut. Linux saw 0; 5 leaves headroom.
+expect:
+  max_rework_attempts: 5

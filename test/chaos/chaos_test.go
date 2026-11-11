@@ -216,7 +216,11 @@ func TestChaos(t *testing.T) {
 		t.Skip("runs real sqi binaries for several minutes per scenario; skipped with -short")
 	}
 	store := chaosStore(t)
-	for _, name := range chaosNames() {
+	names := chaosNames()
+	if len(names) == 0 {
+		t.Fatalf("no built-in scenario is named %s*", chaosPrefix)
+	}
+	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			sc := chaosScenario(t, name, store, nil)
 			if why := stallReason(sc); why != "" {

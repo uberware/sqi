@@ -2,8 +2,11 @@
 name: chaos-churn-storm
 description: chaos W4 - 100 simulated workers each crashing about 30 times an hour and restarting 10s later, under steady load (about 2.5 tasks/s), 3 min
 # No faults: the churn is the simulated fleet's own. The rework bound puts
-# the run in chaos mode, so the store and rework checks run too; at 450, the
-# run's task count, it reports rework rather than limiting it.
+# the run in chaos mode, so the store and rework checks run too. A crashed
+# attempt never completes, so a crash itself costs no rework; only a
+# completed report the churn loses does. The run crashes about 150 workers
+# and Linux saw 0 rework; 5 leaves headroom, and a defect losing a report per
+# crash would still exceed it many times over.
 duration: 3m
 warmup: 10s
 drain_timeout: 5m
@@ -32,4 +35,4 @@ jobs:
       log_line_bytes: 120
 
 expect:
-  max_rework_attempts: 450
+  max_rework_attempts: 5

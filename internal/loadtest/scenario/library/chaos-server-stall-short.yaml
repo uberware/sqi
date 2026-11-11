@@ -35,3 +35,8 @@ faults:
   - at: 3m15s
     stall: {server: true}
     duration: 15s
+
+# A stall shorter than heartbeat_timeout leaves every worker online, so
+# nothing is reclaimed and no completed work is redone.
+expect:
+  max_rework_attempts: 0

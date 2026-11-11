@@ -39,3 +39,9 @@ faults:
   - at: 3m15s
     flap: {groups: [rack-b], period: 6s}
     duration: 60s
+
+# Each cut lasts 3s, well inside heartbeat_timeout, so nothing is reclaimed:
+# rework could only come from a terminal report lost on a cut connection.
+# Linux saw 0; 3 leaves headroom for that rare case.
+expect:
+  max_rework_attempts: 3

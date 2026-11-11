@@ -34,3 +34,10 @@ faults:
   - at: 2s
     kill: {server: true}
     restart_after: 10s
+
+# The kill lands inside the submission's transaction, so the job is rolled
+# back and the run has no work (the record is marked invalid for that, and
+# submission-atomic shows no partial job was left). A job committed without
+# an answer would run once after the restart: no work can be redone.
+expect:
+  max_rework_attempts: 0

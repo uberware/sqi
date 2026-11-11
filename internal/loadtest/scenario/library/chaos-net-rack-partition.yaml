@@ -39,3 +39,12 @@ faults:
   - at: 3m15s
     partition: {groups: [rack-b]}
     duration: 60s
+
+# Rework is rack-b's work in flight when it is cut, which is reclaimed and
+# re-run while the cut workers finish it: about 2.5 tasks/s of 10-30s puts
+# about 50 tasks in flight, 12 or so of them on rack-b's quarter of the fleet
+# (10 and 13 seen in two Linux runs). The run's backlog can hold about 100
+# open tasks at once, a quarter of them on rack-b; the bound of 30 covers
+# that with room to spare.
+expect:
+  max_rework_attempts: 30

@@ -47,3 +47,22 @@ faults:
   - at: 1m
     kill: {group: render, real: 1}
     restart_after: 10s
+
+# Rework is the killed worker's tree tasks, which run to completion as
+# orphans while they are re-run: at 6 tree tasks a minute of 60s, about 6 are
+# in flight across the 2 real workers, so the killed one cannot hold more
+# (1 and 0 seen in two Linux runs). The bound allows 8, so it fails only on
+# rework the kill cannot explain.
+expect:
+  max_rework_attempts: 8
+  known_violations:
+    - check: no-orphans
+      kind: must
+      os: [linux]
+      reason: killing sqi-worker leaves its task's process tree running on bare-process Linux; the silent child, which writes no stdout, never gets SIGPIPE and outlives the worker's restart
+      tracker: H13f4
+    - check: single-writer
+      kind: must
+      os: [linux]
+      reason: the orphaned silent child keeps writing the task's output while the reclaimed task re-runs on a live worker
+      tracker: H13f4

@@ -45,3 +45,10 @@ jobs:
 faults:
   - at: 30s
     kill: {group: render, real: 1}
+
+# The dead worker's tasks are reclaimed and re-run; none of them completes on
+# it, so no work is redone (0 seen on Linux). At 6 hold tasks a minute of 30s
+# over 2 workers it holds about 2 when it dies; the bound allows twice that,
+# for a task process that outlives the kill and completes.
+expect:
+  max_rework_attempts: 4
