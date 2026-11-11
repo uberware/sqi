@@ -3,15 +3,18 @@
 package runner
 
 import (
+	"cmp"
 	"maps"
 	"slices"
 	"time"
 
 	"github.com/uberware/sqi/internal/config"
+	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/driver"
 	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/target"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 const (
@@ -87,6 +90,16 @@ func sampleShare(sc *scenario.Scenario, jobs []driver.SubmittedJob) float64 {
 // worker group's heartbeat, plus a margin. An attached server's own timeout
 // is not visible to the harness, so the default is assumed there.
 func convergeWithin(sc *scenario.Scenario) time.Duration {
+	var slowest time.Duration
+	for _, g := range sc.Workers {
+		slowest = max(slowest, g.Heartbeat.Duration)
+	}
+	return heartbeatTimeout(sc) + slowest + convergeMargin
+}
+
+// heartbeatTimeout is the server's heartbeat timeout: the scenario's
+// scheduler.heartbeat_timeout, else the server default.
+func heartbeatTimeout(sc *scenario.Scenario) time.Duration {
 	hb := config.DefaultConfig().Scheduler.HeartbeatTimeout
 	if sched, ok := sc.Server.Config["scheduler"].(map[string]any); ok {
 		if s, ok := sched["heartbeat_timeout"].(string); ok {
@@ -95,11 +108,93 @@ func convergeWithin(sc *scenario.Scenario) time.Duration {
 			}
 		}
 	}
-	var slowest time.Duration
-	for _, g := range sc.Workers {
-		slowest = max(slowest, g.Heartbeat.Duration)
+	return hb
+}
+
+// serverSweepInterval is how often the server's heartbeat sweep marks silent
+// workers offline (the scheduler's HeartbeatSweepInterval, which the server
+// does not make configurable).
+const serverSweepInterval = 15 * time.Second
+
+// livenessGrace is how long after its broker connection comes up the server
+// marks no worker offline, so that a live worker redialing on its own backoff
+// keeps its tasks: internal/server's busReconnectGrace, which is not
+// configurable.
+func livenessGrace(workerTimeout time.Duration) time.Duration {
+	redial := time.Duration(float64(protocol.MaxReconnectBackoff) * (1 + protocol.ReconnectJitterFraction))
+	return workerTimeout + redial + protocol.DefaultHeartbeatInterval
+}
+
+// chaosConvergeWithin is convergeWithin for a chaos run, measured from now:
+// a worker a fault left dead stays online on the server until the server's
+// liveness grace after its last connection to the broker has passed and a
+// sweep has run. That connection came up when the target started (serverUp)
+// and again at each restart of the server by a fault, by the time the fault
+// healed (now for one that never healed).
+func chaosConvergeWithin(sc *scenario.Scenario, serverUp time.Time, faults []report.FaultRecord, now time.Time) time.Duration {
+	last := serverUp
+	for _, f := range faults {
+		if f.Target != "server" && f.Kind != scenario.FaultPowerCut {
+			continue
+		}
+		at := f.Healed
+		if at.IsZero() {
+			at = now
+		}
+		if at.After(last) {
+			last = at
+		}
 	}
-	return hb + slowest + convergeMargin
+	quiet := last.Add(livenessGrace(heartbeatTimeout(sc)) + serverSweepInterval + convergeMargin)
+	return max(convergeWithin(sc), quiet.Sub(now))
+}
+
+// chaosScenario reports whether a run of sc is a chaos run on a target that
+// can inject faults: it has faults, a rework budget, known violations or a
+// job class with a real task.
+func chaosScenario(sc *scenario.Scenario) bool {
+	if len(sc.Faults) > 0 || sc.Expect.MaxReworkAttempts != nil || len(sc.Expect.KnownViolations) > 0 {
+		return true
+	}
+	return slices.ContainsFunc(sc.Jobs, func(j scenario.JobClass) bool { return j.RealTask != nil })
+}
+
+// orphanJobs returns the farm's jobs that are not accepted submissions but
+// carry the name of a submission the server gave no 2xx answer (a timeout, a
+// dropped connection, a 5xx), each as that submission with its ID set; the
+// Status stays the one the client saw, so it is still not Accepted. Job
+// names are unique within a run (class and sequence number), and every
+// submission is in the ledger once the submitter has returned, the ones that
+// timed out mid-flight too, so a name maps to one submission. Each
+// submission takes the first-created job of its name; a second one, like a
+// job matching no submission at all, is left for submission-atomic to report.
+// The result is never nil.
+func orphanJobs(farm map[string]client.Job, accepted, rejected []driver.SubmittedJob) []driver.SubmittedJob {
+	known := make(map[string]bool, len(accepted))
+	for _, j := range accepted {
+		known[j.ID] = true
+	}
+	byName := make(map[string]driver.SubmittedJob, len(rejected))
+	for _, j := range rejected {
+		if _, dup := byName[j.Name]; !dup && j.Name != "" {
+			byName[j.Name] = j
+		}
+	}
+	jobs := slices.Collect(maps.Values(farm))
+	slices.SortFunc(jobs, func(a, b client.Job) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID, b.ID))
+	})
+	out := []driver.SubmittedJob{}
+	for _, j := range jobs {
+		sub, ok := byName[j.Name]
+		if known[j.ID] || !ok {
+			continue
+		}
+		delete(byName, j.Name)
+		sub.ID = j.ID
+		out = append(out, sub)
+	}
+	return out
 }
 
 // logOverflowExpected reports whether the scenario plans to write more task

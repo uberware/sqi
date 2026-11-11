@@ -79,6 +79,7 @@ func (r *run) record() *report.Record {
 		rec.Series = []measure.Series{}
 	}
 	r.unavail("lease_reply", "a lease request parks on the server until work appears, so its reply time is idle wait, not server latency; first_lease measures dispatch")
+	rec.Faults = r.faultRecords()
 	rec.Invariants = r.invariants
 	if rec.Invariants == nil {
 		rec.Invariants = []verify.Result{}
@@ -91,6 +92,14 @@ func (r *run) record() *report.Record {
 	rec.Unavailable = r.unavailableList()
 	rec.Findings = append(append([]report.Finding{}, report.Findings(rec, rec.SteadyFrom())...), r.findings(rec, saturated)...)
 	return rec
+}
+
+// faultRecords are the faults the run fired, nil for a run without faults.
+func (r *run) faultRecords() []report.FaultRecord {
+	if r.ctl == nil {
+		return nil
+	}
+	return r.ctl.Records()
 }
 
 // judgeValidity sets rec's validity and returns whether the generator

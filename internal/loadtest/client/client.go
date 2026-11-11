@@ -166,7 +166,9 @@ type Page[T any] struct {
 
 // Job is a job summary or detail.
 type Job struct {
-	ID         string         `json:"id"`
+	ID string `json:"id"`
+	// Name is the name in the job's template.
+	Name       string         `json:"name"`
 	Status     string         `json:"status"`
 	TaskCounts map[string]int `json:"task_counts"`
 	CreatedAt  time.Time      `json:"created_at"`

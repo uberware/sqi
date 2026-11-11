@@ -9,6 +9,12 @@
 // last sample, close the target, and write run.json, summary.md and
 // series.csv.
 //
+// A chaos run (a scenario with faults, a rework budget, known violations or
+// real tasks, on a target that can inject faults) also fires the scenario's
+// faults beside the submissions, waits for every one to heal before the
+// drain, waits for the jobs the server created for submissions it gave no
+// 2xx answer, and checks submission-atomic with the six invariants.
+//
 // A run interrupted through its context still tears everything down and
 // writes its record, marked incomplete.
 package runner
@@ -26,6 +32,7 @@ import (
 
 	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
 
+	"github.com/uberware/sqi/internal/loadtest/chaos"
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/driver"
 	"github.com/uberware/sqi/internal/loadtest/measure"
@@ -71,6 +78,9 @@ const (
 	// drainSlack is added to the scenario's drain timeout for the context of
 	// WaitDrained, which applies the timeout itself.
 	drainSlack = time.Minute
+	// faultHealTimeout bounds how long after the end of submissions the
+	// faults may take to heal: a server restart waits for /readyz.
+	faultHealTimeout = 5 * time.Minute
 )
 
 // Options configures a run.
@@ -121,6 +131,29 @@ type Options struct {
 
 	// validated is the scenario and target kind Normalize last validated.
 	validated validation
+
+	// Test seams; nil means the real thing: starting the target, making the
+	// fault controller, and waiting for the jobs to drain.
+	startTarget   func(ctx context.Context, r *run) (target.Target, error)
+	newController func(faults []scenario.Fault, groups []scenario.WorkerGroup, t target.Faults, fleet chaos.Fleet, logger *slog.Logger) (faultController, error)
+	waitDrained   func(ctx context.Context, v verify.ServerView, farmID string, jobs []driver.SubmittedJob, timeout time.Duration) error
+}
+
+// faultController fires the scenario's faults. *chaos.Controller implements
+// it.
+type faultController interface {
+	Run(ctx context.Context, start time.Time) error
+	Records() []report.FaultRecord
+	Windows() []verify.FaultWindow
+	HealAll()
+}
+
+func newChaosController(faults []scenario.Fault, groups []scenario.WorkerGroup, t target.Faults, fleet chaos.Fleet, logger *slog.Logger) (faultController, error) {
+	c, err := chaos.NewController(faults, groups, t, fleet, logger)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // validation is a scenario validated for a kind of target.
@@ -274,6 +307,18 @@ type run struct {
 	obs      *observe.Observer
 	actions  *driver.Actions
 
+	// faults is the target's fault injection in a chaos run (see
+	// chaosScenario), nil otherwise. ctl fires the scenario's faults, nil
+	// when it has none; cancelFaults ends its Run.
+	faults       target.Faults
+	ctl          faultController
+	cancelFaults context.CancelFunc
+	// serverUp is when the target had started, which bounds when its server
+	// last connected to the broker; orphans are the jobs the server created
+	// for submissions it gave no 2xx answer, in a chaos run.
+	serverUp time.Time
+	orphans  []driver.SubmittedJob
+
 	uiCancel, obsCancel context.CancelFunc
 	uiDone, obsDone     chan struct{}
 
@@ -387,18 +432,25 @@ func (r *run) setup(ctx context.Context) error {
 	if err := os.MkdirAll(r.dir, 0o750); err != nil {
 		return fmt.Errorf("runner: create the run directory: %w", err)
 	}
-	tgt, err := r.startTarget(ctx)
+	start := r.startTarget
+	if r.o.startTarget != nil {
+		start = func(ctx context.Context) (target.Target, error) { return r.o.startTarget(ctx, r) }
+	}
+	tgt, err := start(ctx)
 	if err != nil {
 		return err
 	}
-	r.tgt = tgt
+	r.tgt, r.serverUp = tgt, time.Now()
 	if r.o.OnTarget != nil {
 		r.o.OnTarget(tgt)
+	}
+	if err := r.useFaults(); err != nil {
+		return err
 	}
 	if r.c, err = target.NewClient(tgt); err != nil {
 		return err
 	}
-	r.fleet = simworker.NewFleet(simworker.FleetConfig{
+	fc := simworker.FleetConfig{
 		RunID:    r.o.shardRunID(),
 		FarmID:   tgt.FarmID(),
 		NATSURL:  tgt.NATSURL(),
@@ -408,7 +460,15 @@ func (r *run) setup(ctx context.Context) error {
 		Creds:    tgt.Credentials(),
 		TLS:      tgt.TLS(),
 		Seed:     r.seed,
-	}, simworker.ScenarioBehavior(taskSpecs(r.sc)), r.ledger, withLevelFloor(r.logger, fleetLogLevel))
+	}
+	if lanes, ok := tgt.(interface{ NATSURLFor(group string) string }); ok && len(r.sc.Faults) > 0 {
+		// Each group dials its own broker lane, which a network fault acts on.
+		fc.NATSURLFor = lanes.NATSURLFor
+	}
+	r.fleet = simworker.NewFleet(fc, simworker.ScenarioBehavior(taskSpecs(r.sc)), r.ledger, withLevelFloor(r.logger, fleetLogLevel))
+	if err := r.makeController(); err != nil {
+		return err
+	}
 	simulated, _ := r.sc.WorkerCounts()
 	r.logger.InfoContext(ctx, "ramping the simulated fleet", slog.Int("workers", simulated))
 	if err := r.fleet.Start(ctx); err != nil {
@@ -416,6 +476,37 @@ func (r *run) setup(ctx context.Context) error {
 	}
 	r.startObserver(ctx)
 	r.startUI(ctx)
+	return nil
+}
+
+// useFaults puts the run in chaos mode when its scenario is a chaos one and
+// its target can inject faults, and refuses a scenario with faults whose
+// target cannot.
+func (r *run) useFaults() error {
+	if f, ok := r.tgt.(target.Faults); ok && chaosScenario(r.sc) {
+		r.faults = f
+	}
+	if len(r.sc.Faults) > 0 && r.faults == nil {
+		return fmt.Errorf("runner: scenario %s has faults, but its target cannot inject them (only a managed target can)", r.sc.Name)
+	}
+	return nil
+}
+
+// makeController makes the controller of the scenario's faults. The target
+// has started its broker lanes by now, which the controller looks up once.
+func (r *run) makeController() error {
+	if len(r.sc.Faults) == 0 {
+		return nil
+	}
+	newCtl := newChaosController
+	if r.o.newController != nil {
+		newCtl = r.o.newController
+	}
+	ctl, err := newCtl(r.sc.Faults, r.sc.Workers, r.faults, r.fleet, r.logger)
+	if err != nil {
+		return fmt.Errorf("runner: %w", err)
+	}
+	r.ctl = ctl
 	return nil
 }
 
@@ -437,6 +528,9 @@ func (r *run) startTarget(ctx context.Context) (target.Target, error) {
 	cfg := *r.o.Managed
 	cfg.RunDir = filepath.Join(r.dir, "target")
 	cfg.RunID, cfg.Scenario, cfg.Logger = r.o.shardRunID(), r.sc, r.logger
+	if cfg.Seed == 0 {
+		cfg.Seed = uint64(r.seed) //nolint:gosec // G115: a seed is a bit pattern
+	}
 	_, procs := r.sc.WorkerCounts()
 	if err := cfg.ResolveBinaries(ctx, buildDir(r.o.OutDir), procs > 0); err != nil {
 		return nil, err
@@ -500,24 +594,41 @@ func (r *run) measure(ctx context.Context) {
 	r.actions = driver.NewActions(r.c, r.tgt, sc.Actions, r.jobs, r.fleet, driver.WithActionsRand(r.rand(2)))
 	r.logger.InfoContext(ctx, "submitting", slog.Duration("duration", sc.Duration.Duration), slog.Duration("warmup", sc.Warmup.Duration))
 
+	// The faults run on a context of their own, which the end of submissions
+	// does not cancel: a fault still healing then (a server restart, say)
+	// finishes, and the drain below starts only once every fault has healed.
+	// An interrupt or a driver failure cancels it.
+	faultCtx, cancelFaults := context.WithDeadline(ctx, end.Add(faultHealTimeout))
+	defer cancelFaults()
+	r.cancelFaults = cancelFaults
+	stop := func() {
+		cancelSub()
+		cancelFaults()
+	}
+
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		if err := sub.Run(subCtx); err != nil {
 			r.fail(fmt.Errorf("runner: submitter: %w", err))
-			cancelSub()
+			stop()
 		}
 	})
 	wg.Go(func() {
 		if err := r.actions.Run(subCtx, r.started); err != nil {
 			r.fail(fmt.Errorf("runner: actions: %w", err))
-			cancelSub()
+			stop()
 		}
 	})
+	if r.ctl != nil {
+		wg.Go(func() { r.runFaults(ctx, faultCtx, cancelSub) })
+	}
 	wg.Go(func() { r.fleet.RunChurn(subCtx) })
 	wg.Go(func() { r.snapshotSteady(subCtx, steadyFrom) })
 	wg.Go(func() { r.snapshotTail(subCtx, end.Add(-end.Sub(steadyFrom)/10)) })
 	wg.Go(func() { r.profileCPU(subCtx, steadyFrom, end) })
 	<-subCtx.Done()
+	// The fault controller has returned once wg.Wait does, so every fault
+	// has healed before the window snapshot and the drain.
 	wg.Wait()
 	// Submissions stop at end; one in flight then is still the window's.
 	r.windowEnd = time.Now()
@@ -533,10 +644,16 @@ func (r *run) measure(ctx context.Context) {
 		r.logger.InfoContext(ctx, "resumed the queues the run paused, so their jobs can finish", slog.Any("queues", resumed))
 	}
 
+	r.findOrphans(ctx)
+
 	r.logger.InfoContext(ctx, "submissions stopped; waiting for the jobs to finish",
-		slog.Int("jobs", r.jobs.AcceptedCount()), slog.Duration("drain_timeout", sc.DrainTimeout.Duration))
+		slog.Int("jobs", r.jobs.AcceptedCount()), slog.Int("orphans", len(r.orphans)), slog.Duration("drain_timeout", sc.DrainTimeout.Duration))
+	wait := verify.WaitDrained
+	if r.o.waitDrained != nil {
+		wait = r.o.waitDrained
+	}
 	dctx, cancel := context.WithTimeout(ctx, sc.DrainTimeout.Duration+drainSlack)
-	err := verify.WaitDrained(dctx, r.c.RetryingReads(), r.tgt.FarmID(), r.jobs.Accepted(), sc.DrainTimeout.Duration)
+	err := wait(dctx, r.c.RetryingReads(), r.tgt.FarmID(), append(r.jobs.Accepted(), r.orphans...), sc.DrainTimeout.Duration)
 	cancel()
 	r.ended = time.Now()
 	if ctx.Err() != nil {
@@ -547,6 +664,44 @@ func (r *run) measure(ctx context.Context) {
 		r.logger.WarnContext(ctx, "not every job finished", slog.Any("error", err))
 	}
 	r.check(ctx)
+}
+
+// runFaults runs the fault controller until every fault has healed. A fault
+// failing fails the run and ends submissions; an error caused by the run's
+// interrupt, or by the end of faultCtx after another failure, does not.
+func (r *run) runFaults(ctx, faultCtx context.Context, cancelSub context.CancelFunc) {
+	err := r.ctl.Run(faultCtx, r.started)
+	switch {
+	case err == nil:
+	case ctx.Err() != nil || errors.Is(err, context.Canceled):
+		r.logger.WarnContext(ctx, "faults interrupted before they healed", slog.Any("error", err))
+	default:
+		r.fail(fmt.Errorf("runner: faults: %w", err))
+		cancelSub()
+	}
+}
+
+// findOrphans lists the farm's jobs, in a chaos run, and keeps each one the
+// run got no 2xx answer for as an orphan of its submission (see orphanJobs).
+// A listing that fails keeps the orphans found before, if any.
+func (r *run) findOrphans(ctx context.Context) {
+	if r.faults == nil {
+		return
+	}
+	if r.orphans == nil {
+		r.orphans = []driver.SubmittedJob{}
+	}
+	jobs, err := listFarmJobs(ctx, r.c.RetryingReads(), r.tgt.FarmID())
+	if err != nil {
+		if ctx.Err() == nil {
+			r.logger.WarnContext(ctx, "listing the farm's jobs for orphaned submissions failed", slog.Any("error", err))
+		}
+		return
+	}
+	r.orphans = orphanJobs(jobs, r.jobs.Accepted(), r.jobs.Rejected())
+	if len(r.orphans) > 0 {
+		r.logger.InfoContext(ctx, "the server created jobs for submissions it gave no 2xx answer", slog.Int("orphans", len(r.orphans)))
+	}
 }
 
 // snapshotSteady takes the counters at the end of warmup, the base of every
@@ -634,6 +789,9 @@ func (r *run) profileCPU(ctx context.Context, steadyFrom, end time.Time) {
 // check evaluates the invariants with the fleet still up. An interrupt
 // during the checks discards their results.
 func (r *run) check(ctx context.Context) {
+	// A submission the client gave up on may have created its job since the
+	// drain began.
+	r.findOrphans(ctx)
 	accepted := r.jobs.Accepted()
 	records := r.actions.Records()
 	share := sampleShare(r.sc, accepted)
@@ -654,6 +812,9 @@ func (r *run) check(ctx context.Context) {
 		Simulated:           r.fleet.Simulates,
 		TaskSeen:            r.taskSeen,
 	}
+	r.chaosInput(&in)
+	// Hook: the marker checks of a chaos run go here, with the fleet and the
+	// real workers still up.
 	if r.o.BeforeVerify != nil {
 		r.o.BeforeVerify(&in)
 	}
@@ -666,6 +827,26 @@ func (r *run) check(ctx context.Context) {
 	}
 	r.invariants = results
 	r.complete = true
+}
+
+// chaosInput fills what a chaos run adds to the verifier's input: the
+// orphans (never nil, so submission-atomic runs), the fault windows, the
+// workers' groups, the real workers that are running now rather than the
+// scenario's count, and a convergence time that allows for the server's
+// liveness grace after its last start.
+func (r *run) chaosInput(in *verify.Input) {
+	if r.faults == nil {
+		return
+	}
+	in.Orphans = append([]driver.SubmittedJob{}, r.orphans...)
+	in.GroupOf = r.fleet.GroupOf
+	in.LiveWorkers = r.fleet.Live() + r.faults.RealLive()
+	var records []report.FaultRecord
+	if r.ctl != nil {
+		in.FaultWindows = r.ctl.Windows()
+		records = r.ctl.Records()
+	}
+	in.ConvergeWithin = chaosConvergeWithin(r.sc, r.serverUp, records, time.Now())
 }
 
 // taskSeen keeps what terminal_ingest needs of a task the invariant checks
@@ -688,6 +869,7 @@ func (r *run) teardown(ctx context.Context) {
 	}
 	r.tornDown = true
 	interrupted := ctx.Err() != nil
+	r.healFaults()
 	if r.uiCancel != nil {
 		r.uiCancel()
 		// Clients still running could record into a histogram while the
@@ -716,6 +898,8 @@ func (r *run) teardown(ctx context.Context) {
 			r.unavail("observer", "its last sample and end-of-run profiles did not finish (timed out or aborted), so the record may lack them")
 		}
 	}
+	// A chaos run's checks of the stopped server's store append their
+	// results to r.invariants here, before the target closes.
 	if r.tgt != nil {
 		cctx, cancel := r.cleanupCtx(ctx, closeTimeout)
 		if err := r.tgt.Close(cctx); err != nil {
@@ -725,10 +909,24 @@ func (r *run) teardown(ctx context.Context) {
 	}
 }
 
+// healFaults ends the fault controller's Run, if it is still running, then
+// heals every lane and resumes every stalled process, before teardown stops
+// anything. Run must end first: HealAll does not stop a kill or term restart
+// in progress.
+func (r *run) healFaults() {
+	if r.cancelFaults != nil {
+		r.cancelFaults()
+	}
+	if r.ctl != nil {
+		r.ctl.HealAll()
+	}
+}
+
 // emergencyStop is the teardown after a panic: it cancels the UI clients and
 // the observer without waiting for them, and keeps only the steps that stop
 // processes.
 func (r *run) emergencyStop(ctx context.Context) {
+	r.healFaults()
 	for _, cancel := range []context.CancelFunc{r.uiCancel, r.obsCancel} {
 		if cancel != nil {
 			cancel()

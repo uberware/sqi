@@ -13,6 +13,7 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
+	"github.com/uberware/sqi/internal/loadtest/driver"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
 )
 
@@ -140,16 +141,21 @@ func (d decision) why() string {
 
 // ── terminal ─────────────────────────────────────────────────────────────────
 
-// terminal: every accepted job is completed, failed or canceled.
+// terminal: every accepted job and every orphan is completed, failed or
+// canceled.
 func (c *checker) terminal(statuses map[string]string, errs map[string]error) Result {
 	var ev evidence
-	for _, id := range c.order {
+	for _, id := range append(slices.Clone(c.order), c.orphanIDs...) {
+		what := "job " + id
+		if o, ok := c.orphans[id]; ok {
+			what = fmt.Sprintf("job %s (orphan of submission %s)", id, o.Name)
+		}
 		if err := errs[id]; err != nil {
-			ev.add(fmt.Sprintf("job %s: reading its status: %v", id, err))
+			ev.add(fmt.Sprintf("%s: reading its status: %v", what, err))
 			continue
 		}
 		if s := statuses[id]; !terminalJob(s) {
-			ev.add(fmt.Sprintf("job %s is %s, want completed, failed or canceled", id, s))
+			ev.add(fmt.Sprintf("%s is %s, want completed, failed or canceled", what, s))
 		}
 	}
 	return ev.result(NameTerminal)
@@ -461,6 +467,13 @@ func stamp(t time.Time) string { return t.UTC().Format("15:04:05.000000") }
 // least the newest chunk must be there. A chunk lost on a connection drop
 // counts as a violation: the worker publishes log chunks with a core NATS
 // publish, which has no acknowledgement and no retry.
+//
+// Inside a fault window it does not: when the attempt's ledger interval, from
+// its lease to its end, overlaps a window that hit the attempt's worker (its
+// group is in the window's Groups, or Groups is empty), the server's lines
+// need only be an in-order subsequence of the lines sent: none duplicated,
+// reordered or corrupted, any missing. The missing lines are counted in
+// [CounterLogsLostInFault], which the result carries in a chaos run.
 func (c *checker) logs(ctx context.Context, refs []taskRef) Result {
 	var ev evidence
 	ev.addAll(settleLoop(ctx, c.logSettle, refs, func(rs []taskRef) []string {
@@ -468,7 +481,55 @@ func (c *checker) logs(ctx context.Context, refs []taskRef) Result {
 		x.refresh()
 		return parallelMap(len(rs), func(i int) string { return c.logMsg(ctx, rs[i], x) })
 	}))
-	return ev.result(NameLogs)
+	r := ev.result(NameLogs)
+	if c.in.chaos() {
+		var lost int64
+		c.mu.Lock()
+		for _, n := range c.lost {
+			lost += int64(n)
+		}
+		c.mu.Unlock()
+		r.Counters = map[string]int64{CounterLogsLostInFault: lost}
+	}
+	return r
+}
+
+// setLost records what the task's latest logs read found lost inside a fault
+// window.
+func (c *checker) setLost(taskID string, n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if n > 0 {
+		c.lost[taskID] = n
+	} else {
+		delete(c.lost, taskID)
+	}
+}
+
+// inFaultWindow reports whether a fault window overlapping the attempt's
+// interval, from its lease to its end, hit the attempt's worker.
+func (c *checker) inFaultWindow(a *ledgerAttempt) bool {
+	if len(c.in.FaultWindows) == 0 || a.end == nil {
+		return false
+	}
+	lo, hi := a.leased, a.end.At
+	if lo.IsZero() {
+		lo = hi
+	}
+	worker := cmp.Or(a.workerID, a.end.WorkerID)
+	group := ""
+	if c.in.GroupOf != nil && worker != "" {
+		group = c.in.GroupOf(worker)
+	}
+	for _, w := range c.in.FaultWindows {
+		if w.Start.After(hi) || w.End.Before(lo) {
+			continue
+		}
+		if len(w.Groups) == 0 || (group != "" && slices.Contains(w.Groups, group)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *checker) logMsg(ctx context.Context, ref taskRef, x *ledgerIndex) string {
@@ -503,6 +564,12 @@ func (c *checker) logMsg(ctx context.Context, ref taskRef, x *ledgerIndex) strin
 	}
 	lines := chunkLines(chunks)
 	want := func(n int) string { return simworker.LogLine(ref.taskID, n, jc.Task.LogLineBytes) }
+	if c.inFaultWindow(a) {
+		lost, msg := subsequenceDiff(where+" (inside a fault window)", lines, a.end.LogLines, want)
+		c.setLost(ref.taskID, lost)
+		return msg
+	}
+	c.setLost(ref.taskID, 0)
 	if c.in.LogOverflowExpected {
 		return overflowDiff(where, chunks, lines, a.end.LogLines, want)
 	}
@@ -589,6 +656,24 @@ func exactDiff(where string, got []string, first, last int, want func(int) strin
 		}
 	}
 	return ""
+}
+
+// subsequenceDiff checks that got is lines 1..n of want in order with any
+// missing, and returns how many are, or why it is not: a line duplicated,
+// out of order, or matching no line sent.
+func subsequenceDiff(where string, got []string, n int, want func(int) string) (lost int, violation string) {
+	next := 1
+	for i, line := range got {
+		for next <= n && want(next) != line {
+			next++
+		}
+		if next > n {
+			return 0, fmt.Sprintf("%s: server line %d of %d, %q, is not one of the %d lines sent after the lines before it: a duplicated, reordered or corrupted line",
+				where, i+1, len(got), clip(line), n)
+		}
+		next++
+	}
+	return n - len(got), ""
 }
 
 // overflowDiff allows the oldest whole chunks to be missing: the chunks the
@@ -757,4 +842,49 @@ func (c *checker) heldUntil(e simworker.Event, start time.Time) time.Time {
 		return start
 	}
 	return at
+}
+
+// ── submission-atomic ────────────────────────────────────────────────────────
+
+// submissionAtomic: every job of the farm is an accepted job or an orphan, and
+// every orphan has all of its class's tasks (steps x tasks_per_step). A
+// submission is one transaction on the server, so one the server answered
+// with no 2xx (a timeout, a dropped connection, a 5xx) must have created its
+// whole job or nothing. A farm job matching neither, such as a second job
+// created for one submission, is one the run cannot account for.
+func (c *checker) submissionAtomic(ctx context.Context) Result {
+	var ev evidence
+	err := listFarmJobs(ctx, c.v, c.in.FarmID, func(j client.Job) {
+		if _, ok := c.jobs[j.ID]; ok {
+			return
+		}
+		if _, ok := c.orphans[j.ID]; ok {
+			return
+		}
+		ev.add(fmt.Sprintf("farm %s holds job %s (%q), which matches no accepted submission and no orphan of a rejected one", c.in.FarmID, j.ID, j.Name))
+	})
+	if err != nil {
+		ev.add(err.Error())
+	}
+	ev.addAll(parallelMap(len(c.orphanIDs), func(i int) string { return c.orphanMsg(ctx, c.orphans[c.orphanIDs[i]]) }))
+	return ev.result(NameSubmissionAtomic)
+}
+
+// orphanMsg returns why an orphan is not a whole job, or "".
+func (c *checker) orphanMsg(ctx context.Context, o driver.SubmittedJob) string {
+	jc, ok := c.classes[o.Class]
+	if !ok || jc.TasksPerStep <= 0 {
+		return ""
+	}
+	steps := max(jc.Steps, 1)
+	want := steps * jc.TasksPerStep
+	tasks, total, err := c.listTasks(ctx, o.ID)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("orphan job %s (submission %s): listing tasks: %v", o.ID, o.Name, err)
+	case total != want || len(tasks) != want:
+		return fmt.Sprintf("orphan job %s (submission %s, HTTP status %d) has %d of %d tasks (%d listed; %d steps x %d tasks): a submission with no 2xx answer created part of its job",
+			o.ID, o.Name, o.Status, total, want, len(tasks), steps, jc.TasksPerStep)
+	}
+	return ""
 }

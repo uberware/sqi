@@ -417,10 +417,14 @@ func TestSubmitter_ClassesRunIndependently(t *testing.T) {
 func TestJobLedger(t *testing.T) {
 	l := NewJobLedger()
 	l.Record(SubmittedJob{ID: "a", Status: 201})
-	l.Record(SubmittedJob{Status: 422})
+	l.Record(SubmittedJob{Name: "shot-2", Class: "shot", Status: 422})
 	l.Record(SubmittedJob{ID: "b", Status: 201})
-	l.Record(SubmittedJob{Status: 0})
+	l.Record(SubmittedJob{Name: "shot-4", Class: "shot", Status: 0})
 	l.Record(SubmittedJob{ID: "c", Status: 202})
+
+	if got := l.Rejected(); len(got) != 2 || got[0].Name != "shot-2" || got[1].Name != "shot-4" || got[1].Class != "shot" {
+		t.Errorf("Rejected = %+v, want shot-2 and shot-4 with their class", got)
+	}
 
 	var ids []string
 	for _, j := range l.Accepted() {
