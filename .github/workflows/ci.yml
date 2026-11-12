@@ -38,6 +38,7 @@ jobs:
       presets: ${{ steps.filter.outputs.presets }}
       workflows: ${{ steps.filter.outputs.workflows }}
       go: ${{ steps.filter.outputs.go }}
+      chaos: ${{ steps.filter.outputs.chaos }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -96,6 +97,24 @@ jobs:
               - 'Makefile'
               - 'internal/loadtest/**'
               - 'test/load/**'
+              - '.github/workflows/ci.yml'
+            # Gates chaos-smoke below, which runs over thirteen minutes of
+            # fault-injection scenarios. Scoped to the code those scenarios
+            # exercise (the scheduler, store, bus, worker and server) and to
+            # the harness and the suite itself, not to every Go file, to
+            # control runner cost.
+            chaos:
+              - 'internal/scheduler/**'
+              - 'internal/store/**'
+              - 'internal/bus/**'
+              - 'internal/worker/**'
+              - 'internal/server/**'
+              - 'cmd/sqi-server/**'
+              - 'cmd/sqi-worker/**'
+              - 'internal/loadtest/**'
+              - 'test/chaos/**'
+              - 'go.mod'
+              - 'go.sum'
               - '.github/workflows/ci.yml'
 
   # ── Workflow linting ─────────────────────────────────────────────────────────
@@ -2414,6 +2433,63 @@ jobs:
         run: |
           for t in TestLoadSmoke TestLoadSmoke_VerifierCanFail; do
             if ! grep -q -- "--- PASS: $t " "$RUNNER_TEMP/load-smoke.log"; then
+              echo "::error::$t did not pass (or did not run)"
+              exit 1
+            fi
+          done
+
+  # ── Chaos smoke ──────────────────────────────────────────────────────────────
+  # Runs three of the chaos suite's scenarios end to end (`make chaos-smoke`,
+  # SQLite): a server SIGKILL, a real worker killed for good and a short
+  # network cut. Each injects a fault into real sqi-server and sqi-worker
+  # processes and checks that the farm converges with no completed work
+  # redone. They take about 4 to 6 minutes each (the server stands its
+  # liveness sweeps down for about 3m10s after a start, so the run waits for
+  # that). The whole suite runs nightly (load-nightly.yml). See
+  # docs/chaos-testing.md.
+  chaos-smoke:
+    name: Chaos smoke
+    runs-on: ubuntu-latest
+    needs: [changes, test]
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.chaos == 'true' }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # SQI_LOAD_OUT makes the test write its run directories to a known path
+      # so the next step can upload them.
+      - name: Run the chaos smoke scenarios
+        env:
+          SQI_LOAD_OUT: ${{ runner.temp }}/chaos-runs
+        run: |
+          set -o pipefail
+          make chaos-smoke 2>&1 | tee "$RUNNER_TEMP/chaos-smoke.log"
+
+      - name: Upload the run directories
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: chaos-smoke-runs
+          path: |
+            ${{ runner.temp }}/chaos-runs
+            ${{ runner.temp }}/chaos-smoke.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      # A skipped or filtered subtest would still leave `go test` green, so the
+      # three are asserted by name. The trailing space keeps a name from
+      # matching a longer one with the same prefix.
+      - name: Assert the smoke scenarios actually ran
+        run: |
+          for t in TestChaos/chaos-server-kill-20s TestChaos/chaos-worker-gone TestChaos/chaos-net-blip; do
+            if ! grep -q -- "--- PASS: $t " "$RUNNER_TEMP/chaos-smoke.log"; then
               echo "::error::$t did not pass (or did not run)"
               exit 1
             fi

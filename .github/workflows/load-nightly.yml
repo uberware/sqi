@@ -13,6 +13,10 @@ name: Load nightly
 # thresholds are only reported in the summary. Shared runners are too noisy
 # to gate on timings. Compare runs with `sqi-load compare` on the uploaded
 # directories.
+#
+# The `chaos` job runs the whole chaos suite (docs/chaos-testing.md) on SQLite.
+# It ignores `scenario` and runs on a dispatch only when `duration` is empty,
+# since a soak dispatch already holds the day's attention.
 on:
   schedule:
     - cron: "30 3 * * *"
@@ -164,3 +168,91 @@ jobs:
           path: ${{ env.OUT_DIR }}
           if-no-files-found: warn
           retention-days: 30
+
+  # The chaos suite: every built-in chaos-* scenario, one after another, each a
+  # fault injected into real sqi-server and sqi-worker processes (`make chaos`,
+  # SQLite). Only the scenarios listed under `gated` below fail the job; every
+  # other scenario is advisory and raises a warning annotation when it does not
+  # pass. A scenario moves to the gated list after 20 consecutive passing runs
+  # on this hardware. Edit that one list to promote or demote one.
+  chaos:
+    name: Chaos suite (sqlite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    if: ${{ github.event_name == 'schedule' || inputs.duration == '' }}
+
+    env:
+      CHAOS_OUT: ${{ github.workspace }}/chaos-runs
+      CHAOS_LOG: ${{ github.workspace }}/chaos.log
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # `make chaos` exits non-zero when any scenario fails, advisory ones
+      # included, so its status is not what fails the job: the next step reads
+      # the log and decides.
+      - name: Run the chaos suite
+        shell: bash
+        env:
+          SQI_LOAD_OUT: ${{ env.CHAOS_OUT }}
+        run: |
+          make chaos 2>&1 | tee "$CHAOS_LOG" || echo "make chaos exited non-zero; the next step decides what fails the job"
+
+      - name: Upload the run directories
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: chaos-runs-sqlite
+          path: |
+            ${{ env.CHAOS_OUT }}
+            ${{ env.CHAOS_LOG }}
+          if-no-files-found: warn
+          retention-days: 30
+
+      # A skipped or filtered test would still leave `go test` green, so each
+      # is asserted by name. The trailing space keeps a name from matching a
+      # longer one with the same prefix.
+      - name: Assert the gated scenarios passed
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          gated=(
+            TestChaos/chaos-server-kill-20s
+            TestChaos/chaos-worker-gone
+            TestChaos/chaos-net-blip
+            TestChaos_MustViolationThatDoesNotFireFails
+          )
+          fail=0
+          {
+            echo "### Chaos suite"
+            echo "| Test | Gating | Result |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for t in "${gated[@]}"; do
+            if grep -q -- "--- PASS: $t " "$CHAOS_LOG"; then
+              echo "| $t | gated | PASS |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::$t did not pass (or did not run)"
+              echo "| $t | gated | FAIL |" >> "$GITHUB_STEP_SUMMARY"
+              fail=1
+            fi
+          done
+          for f in internal/loadtest/scenario/library/chaos-*.yaml; do
+            t="TestChaos/$(basename "$f" .yaml)"
+            if printf '%s\n' "${gated[@]}" | grep -qxF "$t"; then
+              continue
+            fi
+            if grep -q -- "--- PASS: $t " "$CHAOS_LOG"; then
+              echo "| $t | advisory | PASS |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::advisory scenario $t did not pass (or did not run)"
+              echo "| $t | advisory | not passed |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          exit "$fail"

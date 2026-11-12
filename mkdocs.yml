@@ -67,6 +67,7 @@ nav:
       - Observability: observability.md
       - Capacity Groups: capacity.md
       - Load Testing: load-testing.md
+      - Chaos Testing: chaos-testing.md
       - Release Runbook: release-runbook.md
   - Reference:
       - REST API:

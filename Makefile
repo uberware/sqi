@@ -340,8 +340,8 @@ CHAOS_SCENARIO = $(if $(filter command line environment environment override,$(o
 .PHONY: chaos chaos-smoke
 chaos: ## Run the chaos scenarios (SCENARIO=chaos-... for one)
 	go test $(TEST_FLAGS) -tags chaos -run '$(if $(CHAOS_SCENARIO),^TestChaos$$/^$(CHAOS_SCENARIO)$$,TestChaos)' -v -timeout 3h ./test/chaos/
-chaos-smoke: ## Run the three PR-time chaos scenarios (under 5 minutes each)
-	go test $(TEST_FLAGS) -tags chaos -run '^TestChaos$$/^($(CHAOS_SMOKE))$$' -v -timeout 20m ./test/chaos/
+chaos-smoke: ## Run the three CI chaos scenarios (4 to 6 minutes each, plus the build)
+	go test $(TEST_FLAGS) -tags chaos -run '^TestChaos$$/^($(CHAOS_SMOKE))$$' -v -timeout 40m ./test/chaos/
 
 # Validates the published preset library against the validator in this working
 # tree. A validator change can invalidate content already published: a change

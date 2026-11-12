@@ -39,8 +39,10 @@ It is not:
 - **A fix for what it finds.** The harness measures and records. Known
   defects are listed under [Known server defects](#known-server-defects).
 - **A fault-injection tool.** It simulates worker churn (crashes,
-  disconnects, restarts) because that is a normal condition on a real farm. It
-  does not kill the server, partition the broker or fill disks.
+  disconnects, restarts) because that is a normal condition on a real farm.
+  Killing the server, partitioning the broker and the rest of fault injection
+  belong to the [chaos suite](chaos-testing.md), which is built on this
+  harness.
 - **A test of the web UI's rendering.** UI load is modelled as WebSocket
   subscribers and REST pollers, which is what the server sees.
 - **A release artifact.** `sqi-load` lives in this repository
@@ -868,6 +870,9 @@ to 5 hours 30 minutes, so the job (six hour cap) has room for the build and
 the artifact upload. A longer or malformed duration fails the job before
 anything builds.
 
+The chaos suite has CI jobs of its own, `chaos-smoke` and a nightly `chaos` job
+in the same workflow file; see [Chaos testing](chaos-testing.md#ci).
+
 Every CI job is GitHub-hosted at about 4 vCPU, with no larger or self-hosted
 runner, so `ci-medium` is sized to stay valid on one. `mixed-medium` and the
 large scenarios are local or self-hosted runs.
@@ -1054,6 +1059,47 @@ real restart takes seconds, so real workers are unlikely to hit it. The
 harness's churn crashes a worker, waits `restart_after`, then restarts it;
 keep `restart_after` realistic in your own scenarios.
 
+### A graceful server stop can lose a terminal status (H13f1)
+
+A task's terminal status is a core NATS publish with no acknowledgment, and
+the embedded broker stops JetStream before it closes client connections. A
+status in flight when the server stops gracefully is stored by no stream, and
+the worker, whose publish returned no error, does not retry. The attempt is
+reclaimed after the restart and the finished task re-runs. Found by
+`chaos-server-term`, where it is a known violation of the rework bound.
+
+### A server stall longer than the heartbeat timeout takes every worker offline (H13f2)
+
+On SIGCONT after a stall longer than `heartbeat_timeout`, the heartbeat sweep
+runs before the stall's backlog of heartbeats is consumed, marks every live
+worker offline and reclaims their attempts. Work that finished during the stall
+is rejected when its report lands and runs again, and an attempt reclaimed
+while its lease reply is still in flight can run beside the task's next
+attempt until the stale-running cancel stops it. Found by
+`chaos-server-stall-long`.
+
+### A worker the sweep marks offline stays offline (H13f3)
+
+A live worker the heartbeat sweep marks offline stays offline while its
+connection stays up: heartbeats never bring a worker back online, and it
+re-registers only on a reconnect. Found by `chaos-server-stall-long` and
+`chaos-worker-sleep`, where `workers-converge` fails.
+
+### Killing sqi-worker on Linux leaves its task's processes running (H13f4)
+
+On a bare-process Linux worker, killing `sqi-worker` leaves the process tree of
+its task running. A child with no stdout never gets SIGPIPE, outlives the
+worker's restart and keeps writing the task's output while the reclaimed task
+re-runs on a live worker. Found by `chaos-worker-kill-mid-task`, where
+`no-orphans` and `single-writer` fail on Linux.
+
+### A data race at shutdown in the scheduler (H13f5)
+
+`Scheduler.Stop` reads the scheduler's `cancel` function while
+`Scheduler.Run` is still setting it, when the server shuts down right after it
+launches the scheduler. The race detector reports it. Found while building the
+chaos harness and present on `main`; no scenario depends on it.
+
 ---
 
 ## Open questions
@@ -1085,6 +1131,8 @@ design target), and the knee of each sweep.
 - [Observability](observability.md): server metrics, including the five metric
   families declared but not recorded that the harness measures from the
   client side instead.
+- [Chaos testing](chaos-testing.md): the fault-injection suite built on this
+  harness.
 - [Operations](operations.md): running and sizing `sqi-server`.
 - [Configuration](configuration.md): the keys `server.config` accepts,
   including `http.rate_limit.enabled`.

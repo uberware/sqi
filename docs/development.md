@@ -110,6 +110,8 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make load` | Run one load scenario with `sqi-load` (`SCENARIO=mixed-medium`) |
 | `make soak` | Run a scenario as a soak (`SCENARIO=soak-steady`, `DURATION=8h`) |
 | `make load-sweep` | Sweep one scenario parameter and find the knee (`SCENARIO=…`, `VARY='workers[0].count=100,200,400'`) |
+| `make chaos` | Run the chaos suite (fault injection against real binaries; `SCENARIO=chaos-…` for one; about two hours for all 19) |
+| `make chaos-smoke` | Run the three chaos scenarios CI runs on pull requests (about 14 minutes) |
 | `make docs-site-install` | Create `.venv-docs/` and install the pinned MkDocs dependencies |
 | `make docs-site` | Build the MkDocs documentation site with `--strict` (the CI gate) |
 | `make docs-site-serve` | Serve the documentation site locally with live reload |
@@ -566,6 +568,13 @@ one-minute `smoke` scenario as a Go test (build tag `load`, not part of
 run verifies nothing: look for `--- PASS: TestLoadSmoke`. Scenario format,
 built-in library, reading a report and baselines are in
 [Load testing](load-testing.md).
+
+`make chaos` and `make chaos-smoke` run the chaos suite (`test/chaos`, build
+tag `chaos`, not part of `make test`; CI runs the smoke set as `chaos-smoke`):
+real binaries, with faults injected at fixed times. As with the other
+real-server suites, a skip verifies nothing: look for `--- PASS: TestChaos/`.
+The fault schema, the invariants and the known-violation rule are in
+[Chaos testing](chaos-testing.md).
 
 ### Differential-testing EXPR against the reference implementation
 
