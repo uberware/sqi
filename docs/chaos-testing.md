@@ -8,7 +8,7 @@ process left behind, no database left inconsistent. It is built on the
 `faults` list, an `expect` section and, for some job classes, a `real_task`.
 
 This page covers what the suite is, how to run it, the scenario format for
-faults, the eleven invariants and the rework bound, how known defects are
+faults, the invariants and the rework bound, how known defects are
 recorded, the scenario library, the CI jobs and what comes next.
 
 ---
@@ -203,10 +203,12 @@ want.
 
 ### Fault windows and logs
 
-A server fault (kill, term, stall, power cut) and a network fault (partition,
-blackhole, latency, flap) leave a **fault window**: from when it fired to when
-it healed. The `logs` invariant treats a window differently (see below).
-Faults on real workers leave no window.
+A server fault (kill, term, stall, power cut) and a network fault that can lose
+bytes (partition, blackhole, flap) leave a **fault window**: from when it
+fired to when it healed. The `logs` invariant treats a window differently (see
+below). A latency fault leaves none: it delays and rate-limits a lane and drops
+nothing, so a scenario that only slows a group still has `logs` exact. Faults
+on real workers leave no window.
 
 ---
 
@@ -243,24 +245,31 @@ output appends to. A task killed by a signal records no end, but its last
 refresh shows when it was last alive. The `no-orphans` and `single-writer`
 checks read the markers, and so does the rework measurement.
 
-Real workers serve their own queue in the library scenarios (`queues:
-[render-real]`), so every real task runs on a real worker while simulated
-workers carry the background load.
+In the three library scenarios that run a real task (`chaos-worker-kill-mid-task`,
+`chaos-worker-gone` and `chaos-worker-sleep`) the real workers serve their own
+queue (`queues: [render-real]`), so every real task runs on a real worker while
+simulated workers carry the background load. In the two power-cut scenarios the
+real workers share the `render` queue with the simulated ones and run the
+default no-op task, so they write no markers.
 
 ---
 
 ## Invariants
 
-A chaos run reports eleven invariants. The first six are the load harness's;
-the rest are added by chaos runs. A failing invariant carries evidence naming
-the job, task, attempt or process, at most 20 entries.
+A chaos run reports nine invariants. The first six are the load harness's;
+`submission-atomic`, `executions-recorded` and `store-integrity` are added by
+chaos runs. A scenario with a `real_task` adds `no-orphans` and
+`single-writer`, which read the real tasks' markers, and one with
+`max_rework_attempts` adds `rework`; a `must` known violation that did not
+fire adds a failed `known:<check>` (see below). A failing invariant carries
+evidence naming the job, task, attempt or process, at most 20 entries.
 
 | Invariant | The exact rule |
 |---|---|
 | `terminal` | Every accepted job and every orphan is `completed`, `failed` or `canceled` within `drain_timeout` after submissions stop. A job left open is stranded. |
 | `outcomes` | As in the load harness: every task's final server status is the one the simulator decided; a job has exactly `steps x tasks_per_step` tasks; a `completed` job has only succeeded tasks. A task a real worker ran has no ledger to compare with and is left out. |
 | `single-attempt` | As in the load harness: on each sampled task, no two of the server's attempts are held at once, each attempt after the first follows a failed or canceled one, and a terminal task holds none. On every task, the simulator never ran two attempts at once. A task's attempts are ordered by the server's assignment time, since a lease reply held up in flight can reach the worker after the next attempt's. |
-| `logs` | As in the load harness: on each sampled task, the lines the server returns for the latest attempt equal the lines the simulator sent, in order. **Inside a fault window** the lines need only be an in-order subsequence of those sent: none duplicated, reordered or corrupted, any missing. This applies when the attempt, from its lease to its end, overlaps a window that hit its worker (the worker's group is in the window's groups, or the window names none). A task still missing lines is re-read for the logs settle time, since a restarted server replays the log stream; lines still missing after that are counted in the `logs.lost_in_fault` counter, not failed. |
+| `logs` | As in the load harness: on each sampled task, the lines the server returns for the latest attempt equal the lines the simulator sent, in order. **Inside a fault window** (a latency fault opens none) the lines need only be an in-order subsequence of those sent: none duplicated, reordered or corrupted, any missing. This applies when the attempt, from its lease to its end, overlaps a window that hit its worker (the worker's group is in the window's groups, or the window names none). A task still missing lines is re-read for the logs settle time, since a restarted server replays the log stream; lines still missing after that are counted in the `logs.lost_in_fault` counter, not failed. |
 | `workers-converge` | The farm's online worker count equals the number of workers the harness has running. In a chaos run the allowance runs from the last time the server's broker connection came up (its start, and the heal of each server fault or power cut): the server's liveness grace of about 3 minutes 10 seconds (the worker timeout, a worker's longest redial and one heartbeat), one sweep interval and 10 seconds, or the load harness's allowance, whichever is longer. The check is made after the last fault has healed. |
 | `caps` | As in the load harness, counting the attempts of orphans as well. |
 | `submission-atomic` | Every job in the farm is an accepted job or an orphan, and every orphan holds all of its class's tasks (`steps x tasks_per_step`). A submission is one transaction, so one the server answered with no 2xx must have created its whole job or nothing; a second job for one submission, or a partial one, fails. |
@@ -393,7 +402,7 @@ tasks per second of 2-step jobs.
 | `chaos-worker-gone` | One of 2 real workers killed at 30s while it runs 30s tasks, never restarted: its work is reclaimed and the worker is shown offline. **Smoke.** | rework 4 | 3m |
 | `chaos-worker-sleep` | SIGSTOP one of 2 real workers for 75s at 3m15s while it runs 90s tasks, then SIGCONT: stale attempts are canceled, nothing is credited twice. POSIX. | rework 8; H13f3 `must` on `workers-converge` | 4m45s |
 | `chaos-churn-storm` | No fault: 100 simulated workers each crash about 30 times an hour and restart 10s later. | rework 5 | 3m |
-| `chaos-churn-instant-restart` | The same with an instant restart: the stranded-attempt shape (see [Known server defects](load-testing.md#known-server-defects)). | rework 5 | 3m |
+| `chaos-churn-instant-restart` | The same with an instant restart. It once stranded an attempt and no longer does (see [Known server defects](load-testing.md#known-server-defects)); it stays as a regression guard. | rework 5 | 3m |
 | `chaos-net-blip` | Cut every one of 120 workers from the broker for 5s at 3m15s and for 15s at 3m40s. No reclaim, no rework. **Smoke.** | rework 0 | 4m15s |
 | `chaos-net-rack-partition` | Cut `rack-b`, 30 of 120 workers, for 60s at 3m15s, twice `heartbeat_timeout`: their work is reclaimed and re-run. | rework 30 | 4m30s |
 | `chaos-net-slow-site` | 200ms plus or minus 50ms of latency and a 256 KiB/s cap on `remote`, 40 of 120 workers, from 30s for 4 minutes: no false offline, no reclaim, no lost log. | rework 0 | 4m45s |
@@ -438,6 +447,12 @@ run's `target/` holds the server's and the real workers' logs, and the markers.
 
 ## CI
 
+**No scenario gates yet.** Every chaos check in CI is advisory, because the
+scenarios are timing-sensitive and a shared runner is noisier than a
+workstation. A scenario is promoted to gating only after it passes 20
+consecutive runs on GitHub-hosted runners with only its known violations
+firing; until then a failure is a signal to read, not a blocked merge.
+
 **`chaos-smoke`** in `.github/workflows/ci.yml` runs three scenarios that carry
 no known violation, on Linux with SQLite: `chaos-server-kill-20s`,
 `chaos-worker-gone` and `chaos-net-blip`. It runs on every push to `main`, and on a pull
@@ -448,9 +463,9 @@ requests do not pay for it. It takes about 14 minutes with its build (the job
 allows 45). It runs `make chaos-smoke` with `SQI_LOAD_OUT` set, uploads the run
 directories and the log as `chaos-smoke-runs` (7 days), and asserts by name
 that the three subtests passed, since a skipped or filtered test would leave
-`go test` green. **The three smoke scenarios are the gated set**: they
-carry no known violation, so a pass says something. The 20-run gate described
-below for them is in progress.
+`go test` green. The job is **advisory**: it has `continue-on-error: true`, so
+a failing scenario marks its step failed and keeps the artifacts but does not
+fail the run.
 
 **The nightly** (`chaos` in `.github/workflows/load-nightly.yml`) runs the
 whole suite on Linux with SQLite, `make chaos`, at 03:30 UTC and on a manual
@@ -458,30 +473,21 @@ dispatch without a `duration`. It allows 240 minutes, uploads the run
 directories as `chaos-runs-sqlite` (30 days) and writes a table of the results
 to the job page. It ignores the dispatch's `scenario` input.
 
-Only the **gated** scenarios fail the job:
+The only test that fails the nightly job is
+`TestChaos_MustViolationThatDoesNotFireFails`, which checks the framework (a
+`must` known violation that stops firing fails the run), not a scenario.
+**All 19 scenarios are advisory.** The job does not fail on one, but raises a
+warning annotation naming each that did not pass.
 
-- `chaos-server-kill-20s`, `chaos-worker-gone` and `chaos-net-blip`, and
-- `TestChaos_MustViolationThatDoesNotFireFails`.
+**Promotion.** When a scenario has passed 20 consecutive runs on GitHub-hosted
+runners, add `TestChaos/<name>` to the `gated` list in `load-nightly.yml`. That
+is one list, in the step that asserts the gated scenarios. Once all three smoke
+scenarios have their 20, also remove `continue-on-error` from the `chaos-smoke`
+job in `ci.yml`, so a failing pull request is blocked. A scenario that cannot
+meet 20 stays advisory.
 
-Every other scenario is **advisory**. The job does not fail on it, but raises a
-warning annotation naming each advisory scenario that did not pass. The
-advisory list is the other 16: `chaos-churn-instant-restart`,
-`chaos-churn-storm`, `chaos-logs-during-restart`, `chaos-net-flap`,
-`chaos-net-rack-partition`, `chaos-net-slow-site`,
-`chaos-power-cut-server-first`, `chaos-power-cut-workers-first`,
-`chaos-server-kill-5s`, `chaos-server-kill-90s`,
-`chaos-server-kill-mid-submit`, `chaos-server-stall-long`,
-`chaos-server-stall-short`, `chaos-server-term`, `chaos-worker-kill-mid-task`
-and `chaos-worker-sleep`. The gated list is one list in the workflow, to be
-edited when a scenario is promoted.
-
-**The 20-run gate.** A scenario is promoted to gating only after it passes 20
-consecutive runs on CI hardware with only its known violations firing: a chaos
-scenario is timing-sensitive, and a shared runner is noisier than a
-workstation. A scenario that cannot meet that stays advisory.
-
-Result of the 20-run gate for the three smoke scenarios: in progress (not yet
-recorded; to be filled in).
+Results of runs on a 12-CPU Linux development machine are recorded in the pull
+request description, not in these pages.
 
 ---
 

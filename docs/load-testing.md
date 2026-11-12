@@ -1049,15 +1049,14 @@ attempt's usage-pool claim, so in that window concurrent execution can exceed
 a cap while the server's claim count stays at the limit, and `caps` can
 fail.
 
-### An instant restart can strand an attempt
+### An instant restart once stranded an attempt
 
-A lease request still in flight from a worker's old process can be served
-after a restart's reclaim (the stale worker row is used; the instance is not
-re-checked under the per-worker lock), leaving the re-leased attempt stranded
-as running until `scheduler.reconcile_grace` (default 2 minutes) expires. A
-real restart takes seconds, so real workers are unlikely to hit it. The
-harness's churn crashes a worker, waits `restart_after`, then restarts it;
-keep `restart_after` realistic in your own scenarios.
+A lease request still in flight from a worker's old process could be served
+after a restart's reclaim, leaving the re-leased attempt stranded as running.
+Attempt reconciliation now repairs it: the server reclaims an attempt a live
+worker's heartbeats stop reporting, after `scheduler.reconcile_grace` (default
+2 minutes). `chaos-churn-instant-restart`, whose churn restarts a worker at
+once, no longer strands one; it stays in the library as a regression guard.
 
 ### A graceful server stop can lose a terminal status (H13f1)
 
