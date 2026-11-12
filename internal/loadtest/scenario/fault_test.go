@@ -245,7 +245,13 @@ func TestValidate_Expect(t *testing.T) {
 		want   string
 	}{
 		{name: "valid entry", extra: "expect:\n  known_violations:\n    - " + good + "\n"},
-		{name: "valid with kind and os", extra: "expect:\n  known_violations:\n    - {check: rework, kind: may, os: [linux, darwin, windows], reason: r, tracker: H13f1}\n"},
+		{name: "valid with kind and os", extra: "expect:\n  max_rework_attempts: 0\n  known_violations:\n    - {check: rework, kind: may, os: [linux, darwin, windows], max_attempts: 5, reason: r, tracker: H13f1}\n"},
+		{name: "rework entry without max_attempts", extra: "expect:\n  max_rework_attempts: 0\n  known_violations:\n    - {check: rework, reason: r, tracker: t}\n", want: "expect.known_violations[0].max_attempts"},
+		{name: "rework entry without a rework bound", extra: "expect:\n  known_violations:\n    - {check: rework, max_attempts: 5, reason: r, tracker: t}\n", want: "expect.max_rework_attempts"},
+		{name: "max_attempts equal to the bound", extra: "expect:\n  max_rework_attempts: 5\n  known_violations:\n    - {check: rework, max_attempts: 5, reason: r, tracker: t}\n", want: "expect.known_violations[0].max_attempts"},
+		{name: "max_attempts below the bound", extra: "expect:\n  max_rework_attempts: 5\n  known_violations:\n    - {check: rework, max_attempts: 3, reason: r, tracker: t}\n", want: "expect.known_violations[0].max_attempts"},
+		{name: "max_attempts just above the bound", extra: "expect:\n  max_rework_attempts: 5\n  known_violations:\n    - {check: rework, max_attempts: 6, reason: r, tracker: t}\n"},
+		{name: "max_attempts on another check", extra: "expect:\n  max_rework_attempts: 0\n  known_violations:\n    - {check: terminal, max_attempts: 5, reason: r, tracker: t}\n", want: "expect.known_violations[0].max_attempts"},
 		{name: "unknown check", extra: "expect:\n  known_violations:\n    - {check: nope, reason: r, tracker: t}\n", want: "expect.known_violations[0].check"},
 		{name: "unknown kind", extra: "expect:\n  known_violations:\n    - {check: terminal, kind: sometimes, reason: r, tracker: t}\n", want: "expect.known_violations[0].kind"},
 		{name: "no reason", extra: "expect:\n  known_violations:\n    - {check: terminal, tracker: t}\n", want: "expect.known_violations[0].reason"},

@@ -851,14 +851,14 @@ func (r *run) markerChecks() []verify.Result {
 	if err != nil {
 		msg := "read the real tasks' markers: " + err.Error()
 		return []verify.Result{
-			{Name: chaos.NameNoOrphans, Evidence: []string{msg}},
-			{Name: chaos.NameSingleWriter, Evidence: []string{msg}},
+			{Name: chaos.NameNoOrphans, Evidence: []string{msg}, Unmeasured: true},
+			{Name: chaos.NameSingleWriter, Evidence: []string{msg}, Unmeasured: true},
 		}
 	}
 	outputs, outErr := marker.Outputs(dir)
 	results := chaos.MarkerChecks(execs, skipped, outputs, r.faults.Incarnations())
 	if outErr != nil {
-		results[1] = verify.Result{Name: chaos.NameSingleWriter, Evidence: []string{"read the real tasks' outputs: " + outErr.Error()}}
+		results[1] = verify.Result{Name: chaos.NameSingleWriter, Evidence: []string{"read the real tasks' outputs: " + outErr.Error()}, Unmeasured: true}
 	}
 	return results
 }
@@ -969,8 +969,8 @@ func (r *run) storeChecks(ctx context.Context) {
 		msg := "the server and the real workers did not stop for the store checks: " + err.Error()
 		r.unavail("rework", msg)
 		r.invariants = append(r.invariants,
-			verify.Result{Name: chaos.NameStoreIntegrity, Evidence: []string{msg}},
-			verify.Result{Name: chaos.NameExecutionsRecorded, Evidence: []string{msg}})
+			verify.Result{Name: chaos.NameStoreIntegrity, Evidence: []string{msg}, Unmeasured: true},
+			verify.Result{Name: chaos.NameExecutionsRecorded, Evidence: []string{msg}, Unmeasured: true})
 		return
 	}
 	markers, skipped, markerErr := mainMarkers(r.faults.MarkerDir())

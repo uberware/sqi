@@ -314,6 +314,7 @@ expect:
   known_violations:
     - check: rework
       kind: may
+      max_attempts: 10
       reason: a terminal status still in flight when the embedded broker shuts down is lost and the task re-runs
       tracker: H13f1
 ```
@@ -322,6 +323,7 @@ expect:
 |---|---|
 | `check` | An invariant name from the table above, or `rework`. |
 | `kind` | `must` (the default) or `may`. |
+| `max_attempts` | On a `rework` entry, the most rework it excuses. Required there, and an error on any other check. |
 | `os` | The operating systems (`linux`, `darwin`, `windows`) the entry applies on. Empty means all. On any other system the entry does nothing. |
 | `reason` | What the defect does. Required. |
 | `tracker` | The tracker item, such as `H13f1`. Required. |
@@ -331,6 +333,15 @@ How an entry is applied:
 - A failed result that an entry names becomes OK. The summary shows it as
   `known (H13f1)` and keeps its evidence. Several entries for one check join
   their trackers.
+- A `rework` entry excuses rework only up to its `max_attempts`. Rework above
+  the scenario's `max_rework_attempts` and at or under the ceiling is the
+  defect firing, and the summary notes the ceiling. Rework over the ceiling
+  stays a failure, and its evidence says the known ceiling was exceeded. The
+  ceiling must be greater than `max_rework_attempts`, which the scenario must
+  set, so a regression far larger than the defect still fails the run.
+- A check that could not be measured, or did not run, is never excused: its
+  failure stays, and a `must` entry for it is not counted as fired. Rework
+  that could not be measured is one, as is a store the checks could not open.
 - A **`must`** entry whose check did not fail adds a failed result of its own,
   named `known:<check>`. This is the **stops-firing rule**: when the defect is
   fixed, the scenario fails until the entry is removed, so a fixed defect
@@ -374,9 +385,9 @@ tasks per second of 2-step jobs.
 | `chaos-server-kill-20s` | The same, restarted 20s later. **Smoke.** | rework 0 | 3m |
 | `chaos-server-kill-90s` | The same, restarted 90s later: the outage outlasts a worker's reconnect buffer for some of what it publishes. | rework 0 | 3m30s |
 | `chaos-server-kill-mid-submit` | One job of 100,000 tasks, the server killed 2s in, during the write, restarted 10s later. 200 workers; the drain allows 20 minutes. | rework 0 | 3m |
-| `chaos-server-term` | A graceful stop at 1m, restarted 10s later: the upgrade path. | rework 0; H13f1 `may` on `rework` | 3m |
+| `chaos-server-term` | A graceful stop at 1m, restarted 10s later: the upgrade path. | rework 0; H13f1 `may` on `rework`, up to 10 | 3m |
 | `chaos-server-stall-short` | SIGSTOP the server for 15s at 3m15s, under `heartbeat_timeout`. POSIX. | rework 0 | 3m45s |
-| `chaos-server-stall-long` | SIGSTOP for 60s at 3m15s, about twice `heartbeat_timeout`. POSIX. | rework 0; H13f2 `must` on `rework` and `single-attempt`; H13f3 `must` on `workers-converge` | 4m30s |
+| `chaos-server-stall-long` | SIGSTOP for 60s at 3m15s, about twice `heartbeat_timeout`. POSIX. | rework 0; H13f2 `must` on `rework` (up to 60) and `single-attempt`; H13f3 `must` on `workers-converge` | 4m30s |
 | `chaos-logs-during-restart` | 40 workers, tasks of 5,000 lines of 200 bytes, the server killed at 1m and restarted 20s later: every terminal status must still arrive. | rework 0 | 3m |
 | `chaos-worker-kill-mid-task` | One of 2 real workers killed at 1m while it runs 60s process trees (a chatty and a silent child), restarted 10s later. 60 simulated workers carry the background load. | rework 8; H13f4 `must` on `no-orphans` and `single-writer`, `os: [linux]` | 3m |
 | `chaos-worker-gone` | One of 2 real workers killed at 30s while it runs 30s tasks, never restarted: its work is reclaimed and the worker is shown offline. **Smoke.** | rework 4 | 3m |

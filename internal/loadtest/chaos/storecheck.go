@@ -74,7 +74,11 @@ func StoreChecks(ctx context.Context, in StoreInput) []verify.Result {
 	fail := func(s string) []verify.Result {
 		integrity.add(s)
 		executions.add(s)
-		return []verify.Result{integrity.result(NameStoreIntegrity), executions.result(NameExecutionsRecorded)}
+		out := []verify.Result{integrity.result(NameStoreIntegrity), executions.result(NameExecutionsRecorded)}
+		for i := range out {
+			out[i].Unmeasured = true
+		}
+		return out
 	}
 	if sqliteDriver(opts.Driver) {
 		if _, err := os.Stat(opts.SQLitePath); err != nil {

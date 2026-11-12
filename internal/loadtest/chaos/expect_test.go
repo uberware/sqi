@@ -103,6 +103,13 @@ func TestApply_OSFilter(t *testing.T) {
 	}
 }
 
+// reworkViolation is a known violation on rework with a ceiling.
+func reworkViolation(kind string, ceiling int) scenario.KnownViolation {
+	k := knownViolation(scenario.ReworkCheck, kind)
+	k.MaxAttempts = &ceiling
+	return k
+}
+
 func TestApply_ReworkBound(t *testing.T) {
 	in := []verify.Result{okResult("terminal")}
 	rw := &report.Rework{Attempts: 1, Seconds: 2.5}
@@ -116,7 +123,7 @@ func TestApply_ReworkBound(t *testing.T) {
 		t.Errorf("rework = %+v, want a failure naming the attempts", r)
 	}
 
-	exp.KnownViolations = []scenario.KnownViolation{knownViolation("rework", scenario.KnownMust)}
+	exp.KnownViolations = []scenario.KnownViolation{reworkViolation(scenario.KnownMust, 10)}
 	r = resultByName(t, Apply(in, rw, exp, "linux"), "rework")
 	if !r.OK || r.Known != "H13x" || len(r.Evidence) == 0 {
 		t.Errorf("rework = %+v, want OK with Known and evidence kept", r)
@@ -128,16 +135,105 @@ func TestApply_ReworkBound(t *testing.T) {
 	}
 }
 
+func TestApply_ReworkKnownCeiling(t *testing.T) {
+	tests := []struct {
+		name     string
+		attempts int
+		kind     string
+		wantOK   bool
+		wantKnow bool // a failed known:rework result is expected
+	}{
+		{name: "within the ceiling", attempts: 6, kind: scenario.KnownMust, wantOK: true},
+		{name: "at the ceiling", attempts: 10, kind: scenario.KnownMay, wantOK: true},
+		{name: "over the ceiling, may", attempts: 11, kind: scenario.KnownMay},
+		{name: "over the ceiling, must", attempts: 500, kind: scenario.KnownMust},
+		{name: "within the bound, must", attempts: 2, kind: scenario.KnownMust, wantOK: true, wantKnow: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exp := scenario.Expect{
+				MaxReworkAttempts: new(2),
+				KnownViolations:   []scenario.KnownViolation{reworkViolation(tt.kind, 10)},
+			}
+			got := Apply(nil, &report.Rework{Attempts: tt.attempts, Seconds: 1}, exp, "linux")
+			r := resultByName(t, got, "rework")
+			if r.OK != tt.wantOK {
+				t.Fatalf("rework = %+v, want OK=%v", r, tt.wantOK)
+			}
+			switch {
+			case tt.wantOK && tt.attempts > 2 && r.Known != "H13x":
+				t.Errorf("rework = %+v, want Known H13x", r)
+			case tt.wantOK && tt.attempts > 2 && !slices.ContainsFunc(r.Evidence, func(s string) bool { return strings.Contains(s, "within the known ceiling of 10") }):
+				t.Errorf("rework evidence = %q, want it to show the known ceiling", r.Evidence)
+			case !tt.wantOK && r.Known != "":
+				t.Errorf("rework = %+v, an over-ceiling result must not be known", r)
+			case !tt.wantOK && !slices.ContainsFunc(r.Evidence, func(s string) bool { return strings.Contains(s, "known ceiling of 10") }):
+				t.Errorf("rework evidence = %q, want it to say the known ceiling of 10 was exceeded", r.Evidence)
+			}
+			hasKnown := slices.Contains(resultNames(got), "known:rework")
+			if hasKnown != tt.wantKnow {
+				t.Errorf("results = %v, known:rework present = %v, want %v", resultNames(got), hasKnown, tt.wantKnow)
+			}
+		})
+	}
+}
+
+func TestApply_ReworkEntryWithoutCeilingExcusesNothing(t *testing.T) {
+	exp := scenario.Expect{
+		MaxReworkAttempts: new(0),
+		KnownViolations:   []scenario.KnownViolation{knownViolation(scenario.ReworkCheck, scenario.KnownMay)},
+	}
+	if r := resultByName(t, Apply(nil, &report.Rework{Attempts: 1}, exp, "linux"), "rework"); r.OK || r.Known != "" {
+		t.Errorf("rework = %+v, want a failure", r)
+	}
+}
+
 func TestApply_ReworkUnmeasuredFails(t *testing.T) {
 	exp := scenario.Expect{MaxReworkAttempts: new(5)}
 	r := resultByName(t, Apply(nil, nil, exp, "linux"), "rework")
 	if r.OK || len(r.Evidence) != 1 || r.Evidence[0] != "rework could not be measured" {
 		t.Errorf("rework = %+v", r)
 	}
-	// A known violation covers it like any failed check.
-	exp.KnownViolations = []scenario.KnownViolation{knownViolation("rework", scenario.KnownMay)}
-	if r := resultByName(t, Apply(nil, nil, exp, "linux"), "rework"); !r.OK || r.Known == "" {
-		t.Errorf("rework = %+v", r)
+	// A known violation never covers a measurement that was not made.
+	for _, kind := range []string{scenario.KnownMay, scenario.KnownMust} {
+		exp.KnownViolations = []scenario.KnownViolation{reworkViolation(kind, 60)}
+		got := Apply(nil, nil, exp, "linux")
+		if r := resultByName(t, got, "rework"); r.OK || r.Known != "" {
+			t.Errorf("%s: rework = %+v, want it failed and not known", kind, r)
+		}
+		hasKnown := slices.Contains(resultNames(got), "known:rework")
+		if kind == scenario.KnownMust && !hasKnown {
+			t.Errorf("must: results = %v, want a failed known:rework, the entry did not fire", resultNames(got))
+		}
+		if kind == scenario.KnownMay && hasKnown {
+			t.Errorf("may: results = %v, want no known:rework", resultNames(got))
+		}
+		if hasKnown {
+			k := resultByName(t, got, "known:rework")
+			if k.OK || !strings.Contains(k.Evidence[0], "could not be measured") {
+				t.Errorf("known:rework = %+v, want a failure saying it could not be measured", k)
+			}
+		}
+	}
+}
+
+func TestApply_UnmeasuredResultIsNeverKnown(t *testing.T) {
+	unmeasured := verify.Result{Name: "store-integrity", Evidence: []string{"open the store: boom"}, Unmeasured: true}
+	for _, kind := range []string{scenario.KnownMay, scenario.KnownMust} {
+		exp := scenario.Expect{KnownViolations: []scenario.KnownViolation{knownViolation("store-integrity", kind)}}
+		got := Apply([]verify.Result{unmeasured}, nil, exp, "linux")
+		r := resultByName(t, got, "store-integrity")
+		if r.OK || r.Known != "" {
+			t.Errorf("%s: store-integrity = %+v, want it failed and not known", kind, r)
+		}
+		hasKnown := slices.Contains(resultNames(got), "known:store-integrity")
+		if kind == scenario.KnownMust {
+			if !hasKnown || !strings.Contains(resultByName(t, got, "known:store-integrity").Evidence[0], "could not be measured") {
+				t.Errorf("must: results = %+v, want a failed known:store-integrity naming the missing measurement", got)
+			}
+		} else if hasKnown {
+			t.Errorf("may: results = %v, want no known:store-integrity", resultNames(got))
+		}
 	}
 }
 

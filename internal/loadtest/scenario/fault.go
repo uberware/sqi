@@ -78,11 +78,15 @@ const (
 // KnownViolation is a finding the scenario expects, recorded against a tracker
 // item.
 type KnownViolation struct {
-	Check   string   `yaml:"check"` // an invariant name, or "rework"
-	Kind    string   `yaml:"kind"`  // "must" (default) or "may"
-	OS      []string `yaml:"os"`    // GOOS values it applies on; empty = every OS
-	Reason  string   `yaml:"reason"`
-	Tracker string   `yaml:"tracker"` // e.g. "H13f1"
+	Check string   `yaml:"check"` // an invariant name, or "rework"
+	Kind  string   `yaml:"kind"`  // "must" (default) or "may"
+	OS    []string `yaml:"os"`    // GOOS values it applies on; empty = every OS
+	// MaxAttempts is a rework entry's ceiling: rework above the scenario's
+	// max_rework_attempts and at or under this is the defect firing, and more
+	// than this fails. Required on a rework entry, an error on any other.
+	MaxAttempts *int   `yaml:"max_attempts,omitempty"`
+	Reason      string `yaml:"reason"`
+	Tracker     string `yaml:"tracker"` // e.g. "H13f1"
 }
 
 // ReworkCheck names the rework budget in a KnownViolation.

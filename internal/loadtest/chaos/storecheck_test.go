@@ -312,6 +312,9 @@ func TestStoreIntegrity_MissingDatabaseFails(t *testing.T) {
 	got := check(t, testStore{opts: backend.Options{Driver: backend.DriverSQLite, SQLitePath: missing}}, StoreInput{})
 	wantFail(t, got[NameStoreIntegrity], missing)
 	wantFail(t, got[NameExecutionsRecorded], missing)
+	if !got[NameStoreIntegrity].Unmeasured || !got[NameExecutionsRecorded].Unmeasured {
+		t.Error("a store the checks could not open must be marked Unmeasured, so a known violation cannot excuse it")
+	}
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
 		t.Errorf("the checks created the database they could not find: %v", err)
 	}

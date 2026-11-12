@@ -215,6 +215,7 @@ func (v *validator) expect() {
 		default:
 			v.failf(path+".kind", "%q is not one of %s, %s", k.Kind, KnownMust, KnownMay)
 		}
+		v.knownCeiling(path, k)
 		if strings.TrimSpace(k.Reason) == "" {
 			v.failf(path+".reason", "is required")
 		}
@@ -246,5 +247,26 @@ func (v *validator) realTasks() {
 		if rt.LogEvery.Duration < 0 {
 			v.failf(path+".log_every", "must not be negative")
 		}
+	}
+}
+
+// knownCeiling checks an entry's max_attempts: a rework entry carries one
+// above the scenario's max_rework_attempts, so the entry never excuses
+// unbounded rework, and an entry for any other check carries none.
+func (v *validator) knownCeiling(path string, k KnownViolation) {
+	if k.Check != ReworkCheck {
+		if k.MaxAttempts != nil {
+			v.failf(path+".max_attempts", "applies only to a %q entry, not %q", ReworkCheck, k.Check)
+		}
+		return
+	}
+	bound := v.s.Expect.MaxReworkAttempts
+	switch {
+	case bound == nil:
+		v.failf("expect.max_rework_attempts", "is required when known_violations names %q, as the bound its ceiling is above", ReworkCheck)
+	case k.MaxAttempts == nil:
+		v.failf(path+".max_attempts", "is required on a %q entry: the most rework it excuses, above max_rework_attempts (%d)", ReworkCheck, *bound)
+	case *k.MaxAttempts <= *bound:
+		v.failf(path+".max_attempts", "%d must be greater than max_rework_attempts (%d)", *k.MaxAttempts, *bound)
 	}
 }

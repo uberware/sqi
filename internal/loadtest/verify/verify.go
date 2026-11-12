@@ -214,6 +214,9 @@ type Result struct {
 	// Known is the tracker ID of the known violation that excused a failure:
 	// OK is then true and Evidence says what was found.
 	Known string `json:"known,omitempty"`
+	// Unmeasured marks a failure that is no finding: the check could not read
+	// what it judges, or did not run. A known violation never excuses it.
+	Unmeasured bool `json:"unmeasured,omitempty"`
 }
 
 // FaultWindow is when a network, server or power-cut fault was in effect: from

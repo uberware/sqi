@@ -5,6 +5,10 @@ description: chaos S3 - SIGSTOP the server (and its embedded broker) for 60s, ab
 # sweeps down for about 3m10s after it starts, and a stall inside that window
 # cannot show whether a sweep runs before the heartbeat backlog is consumed.
 # POSIX only (SIGSTOP); the chaos test skips it on Windows.
+# The rework known violation (H13f2) carries a ceiling of 60 attempts: runs
+# measured 12 to 20 attempts of rework, and the sweep can reclaim the work of
+# up to 45 workers, so 60 leaves headroom. Rework past it is a different
+# defect and fails the run.
 duration: 4m30s
 warmup: 10s
 drain_timeout: 5m
@@ -41,6 +45,7 @@ expect:
   known_violations:
     - check: rework
       kind: must
+      max_attempts: 60
       reason: on SIGCONT the heartbeat sweep runs before the stall's heartbeat backlog is consumed, marks every live worker offline and reclaims its attempts, so work that finished during the stall is rejected when its report lands and re-run
       tracker: H13f2
     - check: single-attempt
