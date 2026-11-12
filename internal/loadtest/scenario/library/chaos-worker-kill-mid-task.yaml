@@ -55,14 +55,20 @@ faults:
 # rework the kill cannot explain.
 expect:
   max_rework_attempts: 8
+  # The orphaned silent child lives only for what remains of its 60 s real
+  # task when the worker is killed, so it outlives the 10 s orphan grace in
+  # most runs but not all (a closing Linux run saw it last seen 10.012 s after
+  # its worker ended, and that run's re-run did not overlap it). A double write
+  # needs the reclaimed re-run to start while the orphan is still writing, so
+  # both entries are `may`.
   known_violations:
     - check: no-orphans
-      kind: must
+      kind: may
       os: [linux]
       reason: killing sqi-worker leaves its task's process tree running on bare-process Linux; the silent child, which writes no stdout, never gets SIGPIPE and outlives the worker's restart
       tracker: H13f4
     - check: single-writer
-      kind: must
+      kind: may
       os: [linux]
       reason: the orphaned silent child keeps writing the task's output while the reclaimed task re-runs on a live worker
       tracker: H13f4

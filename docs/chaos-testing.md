@@ -375,7 +375,7 @@ defects](load-testing.md#known-server-defects).
 | H13f1 | A worker's terminal status in flight when the server stops gracefully is lost and the finished task re-runs. Task status is a core NATS publish with no acknowledgment, and the embedded broker stops JetStream before it closes client connections. | `chaos-server-term`, `rework`, `may` |
 | H13f2 | On SIGCONT after a server stall longer than `heartbeat_timeout`, the heartbeat sweep runs before the stall's backlog of heartbeats is consumed and takes every live worker offline, so their work is reclaimed and re-run, and a reclaimed attempt can run beside the new one. | `chaos-server-stall-long`, `rework` and `single-attempt`, `must` |
 | H13f3 | A live worker the sweep marks offline stays offline while its connection stays up: heartbeats never bring it back, and it re-registers only on a reconnect. | `chaos-server-stall-long` and `chaos-worker-sleep`, `workers-converge`, `must` |
-| H13f4 | Killing `sqi-worker` on Linux leaves its task's process tree running. A silent child, which writes no stdout, never gets SIGPIPE, outlives the worker's restart and writes alongside the re-run. | `chaos-worker-kill-mid-task`, `no-orphans` and `single-writer`, `must`, `os: [linux]` |
+| H13f4 | Killing `sqi-worker` on Linux leaves its task's process tree running. A silent child, which writes no stdout, never gets SIGPIPE, outlives the worker's restart and writes alongside the re-run. | `chaos-worker-kill-mid-task`, `no-orphans` and `single-writer`, `may`, `os: [linux]` |
 | H13f5 | A data race: `Scheduler.Stop` reads `s.cancel` while `Scheduler.Run` is still setting it, when the server shuts down right after launching the scheduler. Found while building the harness and reproduces on `main`. | Not tied to a scenario. |
 
 ---
@@ -398,7 +398,7 @@ tasks per second of 2-step jobs.
 | `chaos-server-stall-short` | SIGSTOP the server for 15s at 3m15s, under `heartbeat_timeout`. POSIX. | rework 0 | 3m45s |
 | `chaos-server-stall-long` | SIGSTOP for 60s at 3m15s, about twice `heartbeat_timeout`. POSIX. | rework 0; H13f2 `must` on `rework` (up to 60) and `single-attempt`; H13f3 `must` on `workers-converge` | 4m30s |
 | `chaos-logs-during-restart` | 40 workers, tasks of 5,000 lines of 200 bytes, the server killed at 1m and restarted 20s later: every terminal status must still arrive. | rework 0 | 3m |
-| `chaos-worker-kill-mid-task` | One of 2 real workers killed at 1m while it runs 60s process trees (a chatty and a silent child), restarted 10s later. 60 simulated workers carry the background load. | rework 8; H13f4 `must` on `no-orphans` and `single-writer`, `os: [linux]` | 3m |
+| `chaos-worker-kill-mid-task` | One of 2 real workers killed at 1m while it runs 60s process trees (a chatty and a silent child), restarted 10s later. 60 simulated workers carry the background load. | rework 8; H13f4 `may` on `no-orphans` and `single-writer`, `os: [linux]` | 3m |
 | `chaos-worker-gone` | One of 2 real workers killed at 30s while it runs 30s tasks, never restarted: its work is reclaimed and the worker is shown offline. **Smoke.** | rework 4 | 3m |
 | `chaos-worker-sleep` | SIGSTOP one of 2 real workers for 75s at 3m15s while it runs 90s tasks, then SIGCONT: stale attempts are canceled, nothing is credited twice. POSIX. | rework 8; H13f3 `must` on `workers-converge` | 4m45s |
 | `chaos-churn-storm` | No fault: 100 simulated workers each crash about 30 times an hour and restart 10s later. | rework 5 | 3m |
