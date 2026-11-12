@@ -424,6 +424,34 @@ func TestController_PartitionHeals(t *testing.T) {
 	}
 }
 
+// TestController_LatencyOpensNoFaultWindow proves a latency fault, which only
+// slows a lane and loses nothing, opens no window, while a partition on the
+// same group does: a window relaxes the logs check, which only a fault that
+// can lose lines may do.
+func TestController_LatencyOpensNoFaultWindow(t *testing.T) {
+	ft := newFakeTarget(nil, "rack-a", "rack-b")
+	c := newController(t, []scenario.Fault{
+		{
+			Duration: d(100 * time.Millisecond),
+			Latency:  &scenario.LatencySpec{Groups: []string{"rack-a"}, Delay: d(20 * time.Millisecond), BytesPerSec: 1000},
+		},
+		{
+			At: d(50 * time.Millisecond), Duration: d(100 * time.Millisecond),
+			Partition: &scenario.NetTarget{Groups: []string{"rack-b"}},
+		},
+	}, groups("rack-a", "rack-b"), ft)
+	if _, err := run(t, c); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if r := c.Records(); len(r) != 2 || r[0].Kind != scenario.FaultLatency || r[0].Healed.IsZero() {
+		t.Fatalf("records = %+v, want the latency fault recorded and healed", r)
+	}
+	ws := c.Windows()
+	if len(ws) != 1 || !slices.Equal(ws[0].Groups, []string{"rack-b"}) {
+		t.Errorf("windows = %+v, want only the partition's, on rack-b", ws)
+	}
+}
+
 func TestController_EmptyGroupsMeansEveryLane(t *testing.T) {
 	ft := newFakeTarget(nil, "render", "rack-b")
 	c := newController(t, []scenario.Fault{{
@@ -631,8 +659,8 @@ func TestController_OverlappingFaultsEndHealed(t *testing.T) {
 			t.Errorf("record %+v: want healed without error", r)
 		}
 	}
-	if ws := c.Windows(); len(ws) != 3 {
-		t.Errorf("windows = %+v, want three", ws)
+	if ws := c.Windows(); len(ws) != 2 {
+		t.Errorf("windows = %+v, want two (the latency opens none)", ws)
 	}
 }
 

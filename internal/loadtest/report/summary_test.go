@@ -181,6 +181,24 @@ func TestSummary_InvariantsNotRun(t *testing.T) {
 	}
 }
 
+// TestSummary_FaultsTableEscapesCells proves an error with a pipe or a line
+// break, as errors.Join produces, stays inside its table row.
+func TestSummary_FaultsTableEscapesCells(t *testing.T) {
+	r := baseRecord()
+	r.Faults = []FaultRecord{{
+		Index: 0, Kind: "kill", Target: "group a|b", Start: t0.Add(time.Second),
+		Error: "kill worker 0: refused\r\nkill worker 1: a | b\nthird",
+	}}
+	var b strings.Builder
+	if err := writeSummary(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	want := "| 0 | kill | group a\\|b | +1s | never | kill worker 0: refused kill worker 1: a \\| b third |\n"
+	if !strings.Contains(b.String(), want) {
+		t.Errorf("summary lacks %q:\n%s", want, b.String())
+	}
+}
+
 func TestSummary_RendersFaultsReworkAndKnown(t *testing.T) {
 	r := baseRecord()
 	r.Faults = []FaultRecord{

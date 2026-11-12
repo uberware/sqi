@@ -1008,7 +1008,9 @@ func (r *run) measureRework(ctx context.Context, st store.Store, markers []marke
 		return
 	}
 	if markerErr != nil {
-		r.unavail("rework", "the real tasks' executions are not counted: "+markerErr.Error())
+		msg := "the real tasks' executions are not counted: " + markerErr.Error()
+		r.unavail("rework", msg)
+		rw.Undercount = msg
 	}
 	r.rework = &rw
 }

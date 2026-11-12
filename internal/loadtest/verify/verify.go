@@ -502,6 +502,14 @@ func listFarmJobs(ctx context.Context, v ServerView, farmID string, fn func(clie
 type evidence struct {
 	lines []string
 	n     int
+	// unmeasured is set when a read failed, so the result is no finding.
+	unmeasured bool
+}
+
+// addUnmeasured adds a line saying the check could not read what it judges.
+func (e *evidence) addUnmeasured(s string) {
+	e.unmeasured = true
+	e.add(s)
 }
 
 func (e *evidence) add(s string) {
@@ -524,7 +532,7 @@ func (e *evidence) result(name string) Result {
 	if e.n > MaxEvidence {
 		lines = append(lines[:MaxEvidence-1:MaxEvidence-1], fmt.Sprintf("... and %d more", e.n-(MaxEvidence-1)))
 	}
-	return Result{Name: name, OK: e.n == 0, Evidence: lines}
+	return Result{Name: name, OK: e.n == 0, Evidence: lines, Unmeasured: e.unmeasured}
 }
 
 // sampled reports whether the task id is in the sample of share frac for

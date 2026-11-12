@@ -253,8 +253,9 @@ func (c *Controller) Records() []report.FaultRecord {
 	return out
 }
 
-// Windows returns each fired network, server or power-cut fault as a
-// verify.FaultWindow, in fault order. One that has not healed ends now.
+// Windows returns each fired fault that can lose data (a partition, blackhole
+// or flap, a server fault or a power cut; not latency, a worker fault or a
+// stall) as a verify.FaultWindow, in fault order. One that has not healed ends now.
 func (c *Controller) Windows() []verify.FaultWindow {
 	now := time.Now()
 	c.mu.Lock()
@@ -553,10 +554,12 @@ func (c *Controller) resumeCall(k procKey) error {
 }
 
 // laneFault holds the lanes of the groups in state s for d, also healing them
-// when ctx ends first.
+// when ctx ends first. Only a fault that can lose bytes opens a fault window:
+// shaping delays and rate-limits what a lane carries and drops none of it, so
+// it leaves the exact checks exact.
 func (c *Controller) laneFault(ctx context.Context, i int, spec []string, s laneState, d time.Duration) error {
 	names := c.resolve(spec)
-	c.started(ctx, i, netTarget(spec), true, names)
+	c.started(ctx, i, netTarget(spec), s.level != levelShape, names)
 	tok := c.tokens.Add(1)
 	c.setLanes(names, tok, &s)
 	sleep.For(ctx, d)

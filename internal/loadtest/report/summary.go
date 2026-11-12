@@ -240,10 +240,17 @@ func summaryFaults(b *strings.Builder, r *Record) {
 			healed = fmtOffset(f.Healed.Sub(r.Started))
 		}
 		fmt.Fprintf(b, "| %d | %s | %s | %s | %s | %s |\n",
-			f.Index, f.Kind, f.Target, fmtOffset(f.Start.Sub(r.Started)), healed, orDash(f.Error))
+			f.Index, f.Kind, tableCell(f.Target), fmtOffset(f.Start.Sub(r.Started)), healed, orDash(tableCell(f.Error)))
 	}
 	b.WriteString("\n")
 }
+
+// cellReplacer keeps free text inside one markdown table cell: a pipe would
+// start another cell and a line break would end the row, and errors.Join puts
+// one between the errors it joins.
+var cellReplacer = strings.NewReplacer("|", `\|`, "\r\n", " ", "\n", " ", "\r", " ")
+
+func tableCell(s string) string { return cellReplacer.Replace(s) }
 
 func fmtOffset(d time.Duration) string {
 	if d < 0 {

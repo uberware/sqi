@@ -218,8 +218,11 @@ func TestProxy_ShapeDelays(t *testing.T) {
 	if err := echoOnce(t, c, "slow", 3*time.Second); err != nil {
 		t.Fatalf("echo: %v", err)
 	}
-	if d := time.Since(start); d < 400*time.Millisecond || d >= time.Second {
-		t.Fatalf("round trip took %v, want in [400ms, 1s)", d)
+	// The lower bound proves the delay: the chunk is held 200ms each way. The
+	// upper bound only catches a stuck link, so it is generous enough for the
+	// race detector on a loaded shared runner.
+	if d := time.Since(start); d < 400*time.Millisecond || d >= 3*time.Second {
+		t.Fatalf("round trip took %v, want in [400ms, 3s)", d)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/target"
 	"github.com/uberware/sqi/internal/loadtest/verify"
+	"github.com/uberware/sqi/internal/store/fake"
 )
 
 // stuckFaults is a fault target that cannot stop for the store checks.
@@ -64,5 +65,42 @@ func TestExpectations_NotAppliedToAnIncompleteRun(t *testing.T) {
 	r.applyExpectations()
 	if len(r.invariants) != 0 {
 		t.Errorf("invariants = %+v, want none for a run that did not check them", r.invariants)
+	}
+}
+
+// TestExpectations_UnreadableMarkersLeaveReworkUnmeasured: when the real
+// tasks' markers cannot be read their executions are not counted, so a rework
+// within the bound would be an undercount that passes. It must fail instead,
+// marked unmeasured so no known violation excuses it.
+func TestExpectations_UnreadableMarkersLeaveReworkUnmeasured(t *testing.T) {
+	bound := 5
+	r := &run{
+		logger:   testLogger(t),
+		faults:   stuckFaults{},
+		complete: true,
+		sc: &scenario.Scenario{Expect: scenario.Expect{
+			MaxReworkAttempts: &bound,
+			KnownViolations: []scenario.KnownViolation{
+				{Check: scenario.ReworkCheck, Kind: scenario.KnownMay, Reason: "x", Tracker: "H", MaxAttempts: new(60)},
+			},
+		}},
+		tgt: &plainTarget{},
+	}
+	r.measureRework(t.Context(), fake.New(), nil, errors.New("read the real tasks' markers: boom"))
+	r.applyExpectations()
+	var got *verify.Result
+	for i := range r.invariants {
+		if r.invariants[i].Name == scenario.ReworkCheck {
+			got = &r.invariants[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("no rework result in %+v", r.invariants)
+	}
+	if got.OK || !got.Unmeasured || got.Known != "" {
+		t.Errorf("rework = %+v, want failed, unmeasured and not known", *got)
+	}
+	if !slices.ContainsFunc(r.unavailable, func(u string) bool { return strings.Contains(u, "boom") }) {
+		t.Errorf("unavailable = %q, want the marker error", r.unavailable)
 	}
 }

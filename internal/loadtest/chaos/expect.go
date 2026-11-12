@@ -26,7 +26,9 @@ import (
 //     excuses nothing.
 //   - Max_rework_attempts adds a "rework" result after the invariants: OK
 //     when rw.Attempts is within the bound, failed when it is over, and failed
-//     and Unmeasured with "rework could not be measured" when rw is nil.
+//     and Unmeasured with "rework could not be measured" when rw is nil, or
+//     when rw says its count is short (Undercount) and is within the bound:
+//     a count over the bound is a failure whatever it left out.
 //   - A "must" violation for goos whose check held, was not run or could not
 //     be measured adds a failed "known:<check>" result, after the rest. A
 //     check is not run when there is no result by its name, as "rework" when
@@ -99,6 +101,9 @@ func reworkResult(rw *report.Rework, bound int) verify.Result {
 		if len(rw.Examples) > 0 {
 			res.Evidence = append(res.Evidence, rw.Examples...)
 		}
+	case rw.Undercount != "":
+		res.Evidence = []string{fmt.Sprintf("%d attempts counted, within the bound of %d, but the count is short: %s", rw.Attempts, bound, rw.Undercount)}
+		res.Unmeasured = true
 	default:
 		res.OK = true
 	}

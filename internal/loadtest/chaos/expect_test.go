@@ -268,3 +268,24 @@ func TestApply_ReworkResultBeforeKnownFailures(t *testing.T) {
 		t.Errorf("order = %v", resultNames(got))
 	}
 }
+
+// TestApply_ReworkUndercountWithinBoundIsUnmeasured: a rework that is
+// undercounted passes only by not seeing the work, so within the bound it is
+// failed and unmeasured; over the bound it is a real failure.
+func TestApply_ReworkUndercountWithinBoundIsUnmeasured(t *testing.T) {
+	exp := scenario.Expect{MaxReworkAttempts: new(5)}
+	rw := &report.Rework{Attempts: 1, Undercount: "the real tasks' executions are not counted"}
+	r := resultByName(t, Apply(nil, rw, exp, "linux"), "rework")
+	if r.OK || !r.Unmeasured || len(r.Evidence) == 0 || !strings.Contains(r.Evidence[0], "not counted") {
+		t.Errorf("rework = %+v, want failed, unmeasured, saying why", r)
+	}
+	exp.KnownViolations = []scenario.KnownViolation{reworkViolation(scenario.KnownMay, 60)}
+	if r := resultByName(t, Apply(nil, rw, exp, "linux"), "rework"); r.OK || r.Known != "" {
+		t.Errorf("with a known entry: rework = %+v, want failed and not known", r)
+	}
+	over := &report.Rework{Attempts: 9, Undercount: "the real tasks' executions are not counted"}
+	r = resultByName(t, Apply(nil, over, scenario.Expect{MaxReworkAttempts: new(5)}, "linux"), "rework")
+	if r.OK || r.Unmeasured {
+		t.Errorf("over the bound: rework = %+v, want a plain failure", r)
+	}
+}

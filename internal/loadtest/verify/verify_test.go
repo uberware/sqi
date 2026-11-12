@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,6 +38,7 @@ type fakeView struct {
 	workers     func(poll int) []client.Worker
 	polls       int
 	failAttempt map[string]bool
+	failWorkers bool
 	failTasksAt int                 // a ListTasks at this offset fails; 0 means none
 	calls       map[string][]string // method -> arguments, in call order
 }
@@ -132,6 +134,9 @@ func (f *fakeView) ListWorkers(_ context.Context, farmID string, limit, offset i
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.called("ListWorkers", farmID)
+	if f.failWorkers {
+		return client.Page[client.Worker]{}, &client.APIError{Status: 503, Method: "GET", Path: "/farms/" + farmID + "/workers", Detail: "boom"}
+	}
 	if offset == 0 {
 		f.polls++
 	}
@@ -1398,4 +1403,51 @@ func TestWaitDrained_CoversOrphans(t *testing.T) {
 	if err := verify.WaitDrained(t.Context(), v, "farm", jobs, time.Second); err != nil {
 		t.Fatalf("WaitDrained: %v", err)
 	}
+}
+
+// TestCheck_ReadErrorsAreUnmeasured: a check that could not read the server
+// fails as Unmeasured, which no known violation may excuse, while a real
+// violation stays an ordinary failure.
+func TestCheck_ReadErrorsAreUnmeasured(t *testing.T) {
+	byName := func(rs []verify.Result, name string) verify.Result {
+		for _, r := range rs {
+			if r.Name == name {
+				return r
+			}
+		}
+		t.Fatalf("no result %q in %v", name, rs)
+		return verify.Result{}
+	}
+	t.Run("single-attempt", func(t *testing.T) {
+		w := newWorld()
+		w.job("j1", "completed", false)
+		w.task("j1", "t1", "succeeded", att{"a1", 0, 1, "succeeded", "succeeded", 0})
+		w.view.failAttempt["t1"] = true
+		r := byName(verify.Check(t.Context(), w.view, w.in), "single-attempt")
+		if r.OK || !r.Unmeasured {
+			t.Errorf("single-attempt = %+v, want failed and unmeasured", r)
+		}
+	})
+	t.Run("workers-converge", func(t *testing.T) {
+		w := newWorld()
+		w.view.failWorkers = true
+		r := byName(verify.Check(t.Context(), w.view, w.in), "workers-converge")
+		if r.OK || !r.Unmeasured {
+			t.Errorf("workers-converge = %+v, want failed and unmeasured", r)
+		}
+	})
+	t.Run("a finding is not unmeasured", func(t *testing.T) {
+		w := newWorld()
+		w.view.workers = func(int) []client.Worker { return workersOf(4, 0) }
+		r := byName(verify.Check(t.Context(), w.view, w.in), "workers-converge")
+		if r.OK || r.Unmeasured {
+			t.Errorf("workers-converge = %+v, want an ordinary failure", r)
+		}
+	})
+	t.Run("a result that holds omits the field", func(t *testing.T) {
+		f, ok := reflect.TypeFor[verify.Result]().FieldByName("Unmeasured")
+		if !ok || f.Tag.Get("json") != "unmeasured,omitempty" {
+			t.Errorf("Unmeasured field = %+v, want the tag unmeasured,omitempty so a plain run's run.json is unchanged", f)
+		}
+	})
 }

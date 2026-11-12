@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
@@ -368,10 +369,12 @@ func (c *checker) outcomeMsg(ref taskRef, server string, x *ledgerIndex) string 
 // attempt. On every task, the simulator never ran two attempts at once (see
 // [ledgerOverlaps]).
 func (c *checker) singleAttempt(ctx context.Context, refs []taskRef) Result {
+	var unread atomic.Bool
 	msgs := parallelMap(len(refs), func(i int) string {
 		ref := refs[i]
 		atts, err := c.v.ListAttempts(ctx, ref.taskID)
 		if err != nil {
+			unread.Store(true)
 			return fmt.Sprintf("job %s task %s: listing attempts: %v", ref.jobID, ref.taskID, err)
 		}
 		return attemptsMsg(ref, atts)
@@ -379,6 +382,9 @@ func (c *checker) singleAttempt(ctx context.Context, refs []taskRef) Result {
 	var ev evidence
 	ev.addAll(c.ledgerOverlaps())
 	ev.addAll(msgs)
+	// A task whose attempts could not be listed was not judged: the result
+	// says so, and no known violation may excuse it.
+	ev.unmeasured = unread.Load()
 	return ev.result(NameSingleAttempt)
 }
 
@@ -753,7 +759,7 @@ func (c *checker) workersConverge(ctx context.Context) Result {
 		if !time.Now().Before(deadline) || ctx.Err() != nil {
 			var ev evidence
 			if err != nil {
-				ev.add(fmt.Sprintf("farm %s: listing workers: %v", c.in.FarmID, err))
+				ev.addUnmeasured(fmt.Sprintf("farm %s: listing workers: %v", c.in.FarmID, err))
 			} else {
 				ev.add(fmt.Sprintf("farm %s: %d workers online and %d disabled, want %d online (the live fleet) after %s",
 					c.in.FarmID, online, disabled, c.in.LiveWorkers, c.in.ConvergeWithin))

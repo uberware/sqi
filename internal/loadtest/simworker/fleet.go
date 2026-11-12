@@ -460,6 +460,9 @@ func (f *Fleet) crashMember(m *member) {
 // has begun. ctx bounds the whole call; each restart is also bounded by
 // [restartTimeout]. Workers restarted here count in [ChurnCounts].Restarts.
 func (f *Fleet) RestartAll(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("simworker: restart all: %w", err)
+	}
 	var (
 		errs errList
 		wg   sync.WaitGroup

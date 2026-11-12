@@ -207,6 +207,9 @@ type Rework struct {
 	ByFault map[int]int `json:"by_fault,omitempty"`
 	// Examples are the first few, at most 20.
 	Examples []string `json:"examples,omitempty"`
+	// Undercount, when set, says why Attempts leaves out some real tasks'
+	// executions: the count is a lower bound, not a measurement.
+	Undercount string `json:"undercount,omitempty"`
 }
 
 // warmup returns the scenario's warmup, or zero when there is no scenario.
