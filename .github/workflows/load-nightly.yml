@@ -171,10 +171,12 @@ jobs:
 
   # The chaos suite: every built-in chaos-* scenario, one after another, each a
   # fault injected into real sqi-server and sqi-worker processes (`make chaos`,
-  # SQLite). Only the scenarios listed under `gated` below fail the job; every
-  # other scenario is advisory and raises a warning annotation when it does not
-  # pass. A scenario moves to the gated list after 20 consecutive passing runs
-  # on this hardware. Edit that one list to promote or demote one.
+  # SQLite). Only the tests listed under `gated` below fail the job. No
+  # scenario is gated yet: the list holds the one test that checks the
+  # framework itself, and every TestChaos/<scenario> is advisory and raises a
+  # warning annotation when it does not pass. A scenario moves to the gated
+  # list after 20 consecutive passing runs on GitHub-hosted runners (design
+  # section 8.2); add its TestChaos/<name> line to that one list to promote it.
   chaos:
     name: Chaos suite (sqlite)
     runs-on: ubuntu-latest
@@ -223,9 +225,6 @@ jobs:
         shell: bash
         run: |
           gated=(
-            TestChaos/chaos-server-kill-20s
-            TestChaos/chaos-worker-gone
-            TestChaos/chaos-net-blip
             TestChaos_MustViolationThatDoesNotFireFails
           )
           fail=0
