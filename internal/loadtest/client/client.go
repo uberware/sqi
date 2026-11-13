@@ -846,6 +846,14 @@ func (c *Client) SetWorkerDisabled(ctx context.Context, id string, disabled bool
 	return c.do(ctx, call{method: http.MethodPost, path: "/workers/" + escape(id) + "/" + action}, nil)
 }
 
+// RevokeWorkerCredential revokes a worker's broker credential
+// (DELETE /workers/{id}/credential). The server disconnects the worker from
+// the broker before it answers, which can take a few seconds. A worker with no
+// active credential is a 404.
+func (c *Client) RevokeWorkerCredential(ctx context.Context, workerID string) error {
+	return c.do(ctx, call{method: http.MethodDelete, path: "/workers/" + escape(workerID) + "/credential"}, nil)
+}
+
 // Enroll exchanges a join token for a broker credential (POST /workers/enroll).
 // The route is authenticated by the token alone, so the client sends no API key
 // or session.

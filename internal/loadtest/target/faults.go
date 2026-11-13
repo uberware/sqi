@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/netfault"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/store/backend"
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
 
 // Faults is what a fault controller drives. Only the managed target has it.
@@ -103,6 +105,17 @@ type Faults interface {
 	// ServerReady probes the server's /readyz: "ready", or the probe's error
 	// text.
 	ServerReady(ctx context.Context) (status string)
+	// RealWorkerID is real worker i's worker ID, read from its data directory's
+	// worker.id. It is an error until the worker has started once.
+	RealWorkerID(i int) (string, error)
+	// RevokeWorker removes real worker i's join-token file, then revokes its
+	// credential through the REST API, and returns its worker ID. Without the
+	// file a restarted worker cannot enroll again. The run must have broker
+	// authentication.
+	RevokeWorker(ctx context.Context, i int) (workerID string, err error)
+	// ServerLog is the path of the server's log, which every incarnation
+	// appends to.
+	ServerLog() string
 }
 
 // The volumes a disk_full fault can fill.
@@ -497,6 +510,59 @@ func (m *managed) ServerReady(ctx context.Context) string {
 		return err.Error()
 	}
 	return "ready"
+}
+
+// ServerLog is the path of server.log.
+func (m *managed) ServerLog() string { return m.serverLog() }
+
+// RealWorkerID reads real worker i's ID from its data directory.
+func (m *managed) RealWorkerID(i int) (string, error) {
+	m.mu.Lock()
+	n := len(m.workers)
+	m.mu.Unlock()
+	if i < 0 || i >= n {
+		return "", fmt.Errorf("target: no real worker %d (the run has %d)", i, n)
+	}
+	path := workerconfig.WorkerIDFilePath(m.workerDir(i + 1))
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("target: real worker %d has not started: it has no %s", i, path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("target: read the ID of real worker %d: %w", i, err)
+	}
+	id := strings.TrimSpace(string(raw))
+	if id == "" {
+		return "", fmt.Errorf("target: %s is empty", path)
+	}
+	return id, nil
+}
+
+// RevokeWorker takes the join token away before it revokes, so the worker cannot
+// enroll again in the gap between the two. The error of a failed REST call
+// comes with the ID, and the token stays gone.
+func (m *managed) RevokeWorker(ctx context.Context, i int) (string, error) {
+	if m.isClosing() {
+		return "", errClosing
+	}
+	if m.joinToken == "" {
+		return "", errors.New("target: the run has no broker authentication, so there is no credential to revoke")
+	}
+	if m.client == nil {
+		return "", errors.New("target: the target has no REST client yet")
+	}
+	id, err := m.RealWorkerID(i)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Remove(m.workerJoinTokenFile(i + 1)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return id, fmt.Errorf("target: remove the join token of real worker %d: %w", i, err)
+	}
+	m.logger.InfoContext(ctx, "revoking a real worker's credential", slog.Int("worker", i), slog.String("worker_id", id))
+	if err := m.client.RevokeWorkerCredential(ctx, id); err != nil {
+		return id, fmt.Errorf("target: revoke the credential of real worker %d (%s): %w", i, id, err)
+	}
+	return id, nil
 }
 
 func (m *managed) isClosing() bool {

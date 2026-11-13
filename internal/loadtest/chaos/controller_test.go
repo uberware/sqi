@@ -194,6 +194,15 @@ func (t *fakeTarget) RestoreServerFDs() error {
 
 func (*fakeTarget) ServerReady(context.Context) string { return "ready" }
 
+func (*fakeTarget) RealWorkerID(i int) (string, error) { return "worker-" + strconv.Itoa(i), nil }
+
+func (t *fakeTarget) RevokeWorker(_ context.Context, i int) (string, error) {
+	t.record("RevokeWorker", i)
+	return "worker-" + strconv.Itoa(i), nil
+}
+
+func (*fakeTarget) ServerLog() string { return "" }
+
 func (*fakeTarget) RealLive() int { return 0 }
 
 func (t *fakeTarget) Incarnations() []target.Incarnation {

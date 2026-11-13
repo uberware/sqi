@@ -706,3 +706,61 @@ func TestManaged_PostgresDatabaseFaultsThroughProxy(t *testing.T) {
 		submitWithin(t, m, c, 30*time.Second)
 	}
 }
+
+// TestManaged_E2E_RevokeWorker revokes the credential of a real worker that is
+// enrolled and online: the broker cuts the worker off, so its heartbeats stop
+// reaching the server, and the target's own copy of the join token is gone.
+// The server lists the worker offline only after its post-start liveness grace
+// (almost three minutes), which the test waits out only with
+// SQI_LOAD_SLOW_TESTS=1.
+func TestManaged_E2E_RevokeWorker(t *testing.T) {
+	skipShort(t)
+	server, worker, noop := binaries(t)
+	sc := testScenario(scenario.ServerSpec{
+		Store:      "sqlite",
+		BrokerAuth: true,
+		HTTPAuth:   true,
+		Config:     map[string]any{"scheduler": map[string]any{"heartbeat_timeout": heartbeatTimeout.String()}},
+	})
+	sc.Workers = []scenario.WorkerGroup{{
+		Name: "render", Real: 1, Queues: []string{"render"}, Heartbeat: scenario.Duration{Duration: heartbeatInterval},
+	}}
+	m := startManaged(t, ManagedConfig{RunDir: t.TempDir(), ServerBin: server, WorkerBin: worker, NoopBin: noop, Scenario: sc})
+	graceEnds := time.Now().Add(scheduler.ReconnectGrace(heartbeatTimeout))
+	c := mustClient(t, m)
+	online := waitWorker(t, m, c, "online", 30*time.Second)
+	waitHeartbeatAfter(t, m, c, lastHeartbeat(t, c, m.FarmID()), 5*heartbeatInterval)
+
+	id, err := m.RevokeWorker(t.Context(), 0)
+	if err != nil {
+		t.Fatalf("RevokeWorker: %v\nserver log:\n%s", err, tailLines(m.ServerLog(), 30))
+	}
+	if id != online.ID {
+		t.Errorf("RevokeWorker returned %q, the server lists the worker as %q", id, online.ID)
+	}
+	if exists(m.workerJoinTokenFile(1)) {
+		t.Error("the worker's join token copy still exists after the revocation")
+	}
+	if !exists(m.joinTokenFile()) {
+		t.Error("the shared join token was removed; the simulated fleet needs it")
+	}
+	time.Sleep(heartbeatInterval) // one in flight lands
+	frozen := lastHeartbeat(t, c, m.FarmID())
+	time.Sleep(3 * heartbeatInterval)
+	if got := lastHeartbeat(t, c, m.FarmID()); !got.Equal(frozen) {
+		t.Errorf("the server stored a heartbeat at %s from the revoked worker (last before: %s)", got, frozen)
+	}
+	if info, err := os.Stat(m.ServerLog()); err != nil || info.Size() == 0 {
+		t.Errorf("ServerLog %s: %v, %v; want an existing, non-empty file", m.ServerLog(), info, err)
+	}
+
+	if os.Getenv(slowTestsEnv) != "1" {
+		t.Logf("not waiting out the server's liveness grace for the worker to go offline; set %s=1 to", slowTestsEnv)
+		return
+	}
+	if wait := time.Until(graceEnds); wait > 0 {
+		t.Logf("waiting %s for the server's liveness grace to pass", wait.Round(time.Second))
+		time.Sleep(wait)
+	}
+	waitWorker(t, m, c, "offline", heartbeatTimeout+sweepInterval+10*time.Second)
+}

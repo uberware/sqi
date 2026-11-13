@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -236,5 +237,44 @@ func TestClient_GetRaw(t *testing.T) {
 	var apiErr *client.APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
 		t.Errorf("GetRaw of a missing path = %v, want a 404 APIError", err)
+	}
+}
+
+func TestClient_RevokeWorkerCredential(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		wantErr    bool
+		wantStatus int
+	}{
+		{"no content", http.StatusNoContent, false, 0},
+		{"no active credential", http.StatusNotFound, true, http.StatusNotFound},
+		{"store or broker failure", http.StatusInternalServerError, true, http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var s stub
+			ts := s.start(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
+				reply(w, tt.status, `{"detail":"no active credential"}`)
+			})
+			err := client.New(ts.URL, client.WithAPIKey("k")).RevokeWorkerCredential(t.Context(), "w1")
+			got := s.last()
+			if got.Method != http.MethodDelete || got.Path != "/api/v1/workers/w1/credential" {
+				t.Errorf("request = %s %s, want DELETE /api/v1/workers/w1/credential", got.Method, got.Path)
+			}
+			if a := got.Header.Get("Authorization"); a != "Bearer k" {
+				t.Errorf("Authorization = %q, want the client's key", a)
+			}
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("RevokeWorkerCredential: %v", err)
+				}
+				return
+			}
+			var apiErr *client.APIError
+			if !errors.As(err, &apiErr) || apiErr.Status != tt.wantStatus || !strings.Contains(err.Error(), strconv.Itoa(tt.wantStatus)) {
+				t.Errorf("err = %v, want an APIError naming status %d", err, tt.wantStatus)
+			}
+		})
 	}
 }

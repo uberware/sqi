@@ -598,6 +598,13 @@ func (m *managed) spawnWorker(ctx context.Context, w *realWorker) error {
 	m.mu.Unlock()
 	n := w.index + 1 // the directory and log names count from 1
 	id := incarnationID(w.index, restarts)
+	if restarts == 0 && m.joinToken != "" {
+		// Only the first incarnation gets a copy: a worker whose copy was removed
+		// (a revoked one) finds none when it is restarted.
+		if err := m.writeWorkerJoinToken(n); err != nil {
+			return err
+		}
+	}
 	env, err := m.workerEnv(w.group, n, id)
 	if err != nil {
 		return err
@@ -637,6 +644,41 @@ func (m *managed) spawnWorker(ctx context.Context, w *realWorker) error {
 	return nil
 }
 
+// workerDir is real worker n's data directory (n counts from 1).
+func (m *managed) workerDir(n int) string {
+	return filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(n))
+}
+
+// workerJoinTokenFile is real worker n's own copy of the join token. The shared
+// joinTokenFile stays for the simulated fleet, so removing a copy takes the
+// token from one worker alone.
+func (m *managed) workerJoinTokenFile(n int) string {
+	return filepath.Join(m.workerDir(n), "join-token")
+}
+
+// writeWorkerJoinToken writes real worker n's token copy, mode 0600, in its
+// data directory, which the worker creates with the same mode. A copy that is
+// already there is left as it is.
+func (m *managed) writeWorkerJoinToken(n int) error {
+	if err := os.MkdirAll(m.workerDir(n), 0o700); err != nil {
+		return fmt.Errorf("target: create %s: %w", m.workerDir(n), err)
+	}
+	f, err := os.OpenFile(m.workerJoinTokenFile(n), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("target: write the join token of real worker %d: %w", n, err)
+	}
+	if _, err := f.WriteString(m.joinToken); err != nil {
+		return errors.Join(fmt.Errorf("target: write the join token of real worker %d: %w", n, err), f.Close())
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("target: write the join token of real worker %d: %w", n, err)
+	}
+	return nil
+}
+
 // workerLog is real worker i's log, which every incarnation appends to.
 func (m *managed) workerLog(i int) string {
 	return filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(i+1)+".log")
@@ -649,7 +691,7 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int, inc string) ([]string
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(n))
+	dir := m.workerDir(n)
 	name := g.Name
 	if name == "" {
 		name = "real"
@@ -692,7 +734,7 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int, inc string) ([]string
 		env = append(env, "SQI_WORKER_HEARTBEAT_INTERVAL="+g.Heartbeat.String())
 	}
 	if m.joinToken != "" {
-		env = append(env, "SQI_WORKER_NATS_JOIN_TOKEN_FILE="+m.joinTokenFile(), "SQI_WORKER_NATS_SERVER_URL="+m.httpURL)
+		env = append(env, "SQI_WORKER_NATS_JOIN_TOKEN_FILE="+m.workerJoinTokenFile(n), "SQI_WORKER_NATS_SERVER_URL="+m.httpURL)
 	}
 	if m.tlsFiles.CAFile != "" {
 		env = append(
