@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
+	"github.com/uberware/sqi/internal/loadtest/dbfault"
 	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/netfault"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
@@ -91,7 +92,7 @@ type managed struct {
 	settings   serverSettings
 	configPath string
 
-	pgDSN      string // the run's DSN
+	pgDSN      string // the run's DSN, which the harness's own connections use
 	pgAdminDSN string // set when the harness created pgDB
 	pgDB       string
 
@@ -108,6 +109,16 @@ type managed struct {
 	// starts and never changed after; nil without a network fault.
 	lanes     map[string]*netfault.Proxy
 	markerDir string
+
+	// dbProxy fronts sqi-server's PostgreSQL connections when the scenario has
+	// a database fault, and serverDSN is pgDSN through it; both are set before
+	// the server starts and never changed after. Without a proxy serverDSN is "".
+	dbProxy   *netfault.Proxy
+	serverDSN string
+	// dbMu guards dbLock, the SQLite write lock a database stall holds, and
+	// serializes the database faults with Close.
+	dbMu   sync.Mutex
+	dbLock *dbfault.SQLiteLock
 
 	mu           sync.Mutex // guards what follows against Close and the fault controller
 	server       *proc
@@ -222,6 +233,7 @@ func (m *managed) start(ctx context.Context) error {
 	steps := []func(context.Context) error{
 		m.checkBinaries,
 		m.preparePostgres,
+		m.startDatabaseProxy,
 		m.prepareTLS,
 		m.startServer,
 		m.authenticate,
@@ -392,8 +404,8 @@ func (m *managed) serverEnv() []string {
 	if m.bootstrapPassword != "" {
 		extra = append(extra, "SQI_AUTH_BOOTSTRAP_PASSWORD="+m.bootstrapPassword)
 	}
-	if m.pgDSN != "" {
-		extra = append(extra, "SQI_STORE_POSTGRES_DSN="+m.pgDSN)
+	if dsn := cmp.Or(m.serverDSN, m.pgDSN); dsn != "" {
+		extra = append(extra, "SQI_STORE_POSTGRES_DSN="+dsn)
 	}
 	return childEnv(os.Environ(), extra...)
 }
@@ -801,20 +813,22 @@ func (m *managed) workerPIDs() []int {
 	return pids
 }
 
-// Close first continues every task group and process the harness stalled,
-// then stops the real workers (together), then ends the task process groups
-// the markers still show running, then stops the server: each process gets
-// an interrupt and the stop grace (30 s by default) to exit before it is
-// killed, and a done ctx kills at once. It then drops a database the harness
-// created and closes the broker lanes. Every process is reaped before Close
-// returns, whatever the error, and nothing is started once it has begun.
+// Close first releases a database fault, so the server can finish its writes;
+// then it continues every task group and process the harness stalled, stops the
+// real workers (together), ends the task process groups the markers still show
+// running, and stops the server: each process gets an interrupt and the stop
+// grace (30 s by default) to exit before it is killed, and a done ctx kills at
+// once. It then drops a database the harness created and closes the broker
+// lanes and the database proxy. Every process is reaped before Close returns,
+// whatever the error, and nothing is started once it has begun.
 func (m *managed) Close(ctx context.Context) error {
 	m.closeOnce.Do(func() {
 		m.mu.Lock()
 		m.closing = true
 		m.mu.Unlock()
+		errs := []error{m.HealDatabase(ctx)}
 		m.resumeAll(ctx)
-		errs := m.stopWorkers(ctx, true)
+		errs = append(errs, m.stopWorkers(ctx, true)...)
 		errs = append(errs, m.endTaskGroups(ctx), m.stopServer(ctx))
 		if m.pgDB != "" {
 			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cliTimeout)

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/dbfault"
 	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/netfault"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
@@ -71,6 +72,16 @@ type Faults interface {
 	// StoreOptions says how to open the run's store once the server is
 	// stopped.
 	StoreOptions() backend.Options
+	// StallDatabase stalls the store: on SQLite an outside connection takes
+	// the write lock, on PostgreSQL the proxy in front of the server's
+	// connections forwards nothing.
+	StallDatabase(ctx context.Context) error
+	// DropDatabase cuts the server's PostgreSQL connections and refuses new
+	// ones. PostgreSQL only: on SQLite it is an error.
+	DropDatabase(ctx context.Context) error
+	// HealDatabase releases the lock or heals the proxy. It does nothing when
+	// no database fault is applied.
+	HealDatabase(ctx context.Context) error
 }
 
 // Lane is a worker group's connection to the broker, which a fault can cut,
@@ -109,6 +120,10 @@ var errStallUnsupported = errors.New("target: stall needs SIGSTOP, which Windows
 
 // errClosing refuses a restart once Close has begun.
 var errClosing = errors.New("target: the target is closing")
+
+// errNoDatabaseProxy is what a database fault returns on a PostgreSQL run whose
+// scenario declared none, so no proxy fronts the server's connections.
+var errNoDatabaseProxy = errors.New("target: the run has no database proxy; declare a database fault in the scenario")
 
 // errUnsafeGroup refuses a group signal to a group id that is not safe to
 // signal, such as one read from a corrupt marker.
@@ -180,6 +195,11 @@ func (m *managed) startLanes(ctx context.Context) error {
 
 func (m *managed) closeLanes() error {
 	var errs []error
+	if m.dbProxy != nil {
+		if err := m.dbProxy.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("target: close the database proxy: %w", err))
+		}
+	}
 	for _, name := range slices.Sorted(maps.Keys(m.lanes)) {
 		if err := m.lanes[name].Close(); err != nil {
 			errs = append(errs, fmt.Errorf("target: close the broker lane of worker group %s: %w", name, err))
@@ -214,6 +234,79 @@ func (m *managed) StoreOptions() backend.Options {
 		return backend.Options{Driver: backend.DriverPostgres, PostgresDSN: m.pgDSN, Logger: m.logger}
 	}
 	return backend.Options{Driver: backend.DriverSQLite, SQLitePath: m.settings.sqlitePath()}
+}
+
+// StallDatabase takes the SQLite write lock from outside the server, or
+// blackholes the PostgreSQL proxy. Stalling an already stalled database is a
+// no-op.
+func (m *managed) StallDatabase(ctx context.Context) error {
+	m.dbMu.Lock()
+	defer m.dbMu.Unlock()
+	if m.isClosing() {
+		return errClosing
+	}
+	if m.settings.Spec.Store == backend.DriverPostgres {
+		if m.dbProxy == nil {
+			return errNoDatabaseProxy
+		}
+		m.logger.InfoContext(ctx, "stalling the database")
+		m.dbProxy.Blackhole()
+		return nil
+	}
+	if m.dbLock != nil {
+		return nil
+	}
+	m.logger.InfoContext(ctx, "stalling the database: taking the SQLite write lock")
+	l, err := dbfault.LockSQLite(ctx, m.settings.sqlitePath())
+	if err != nil {
+		return fmt.Errorf("target: stall the database: %w", err)
+	}
+	m.dbLock = l
+	return nil
+}
+
+// DropDatabase cuts the PostgreSQL proxy.
+func (m *managed) DropDatabase(ctx context.Context) error {
+	m.dbMu.Lock()
+	defer m.dbMu.Unlock()
+	if m.isClosing() {
+		return errClosing
+	}
+	if m.settings.Spec.Store != backend.DriverPostgres {
+		return errors.New("target: dropping the database's connections needs PostgreSQL; SQLite has none to drop")
+	}
+	if m.dbProxy == nil {
+		return errNoDatabaseProxy
+	}
+	m.logger.InfoContext(ctx, "dropping the database connections")
+	m.dbProxy.Cut()
+	return nil
+}
+
+// HealDatabase releases the SQLite lock and heals the PostgreSQL proxy,
+// whichever is applied.
+func (m *managed) HealDatabase(ctx context.Context) error {
+	m.dbMu.Lock()
+	defer m.dbMu.Unlock()
+	var err error
+	if m.dbLock != nil {
+		m.logger.InfoContext(ctx, "healing the database: releasing the SQLite write lock")
+		err = m.dbLock.Release()
+		m.dbLock = nil
+	}
+	if m.dbProxy != nil {
+		m.dbProxy.Heal()
+	}
+	if err != nil {
+		return fmt.Errorf("target: heal the database: %w", err)
+	}
+	return nil
+}
+
+func (m *managed) isClosing() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closing
 }
 
 func (m *managed) currentServer() (*proc, error) {

@@ -166,6 +166,12 @@ func (t *fakeTarget) RestartWorker(_ context.Context, i int) error {
 	return nil
 }
 
+func (t *fakeTarget) StallDatabase(context.Context) error { t.record("StallDatabase", -1); return nil }
+
+func (t *fakeTarget) DropDatabase(context.Context) error { t.record("DropDatabase", -1); return nil }
+
+func (t *fakeTarget) HealDatabase(context.Context) error { t.record("HealDatabase", -1); return nil }
+
 func (*fakeTarget) RealLive() int { return 0 }
 
 func (t *fakeTarget) Incarnations() []target.Incarnation {

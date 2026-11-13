@@ -5,6 +5,8 @@ package target
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/dbfault"
 	"github.com/uberware/sqi/internal/loadtest/internal/proctest"
 	"github.com/uberware/sqi/internal/loadtest/netfault"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
@@ -515,4 +518,136 @@ func TestIncarnationID(t *testing.T) {
 	if got := incarnationID(3, 12); got != "3.12" {
 		t.Errorf("incarnationID(3, 12) = %q", got)
 	}
+}
+
+func TestManaged_DropDatabaseOnSQLiteIsAnError(t *testing.T) {
+	m, err := newManaged(ManagedConfig{RunDir: t.TempDir(), Scenario: testScenario(scenario.ServerSpec{Store: "sqlite"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DropDatabase(t.Context()); err == nil || !strings.Contains(err.Error(), "PostgreSQL") {
+		t.Errorf("DropDatabase on SQLite = %v, want an error naming PostgreSQL", err)
+	}
+}
+
+func TestManaged_DatabaseFaultsOnPostgresNeedTheProxy(t *testing.T) {
+	m, err := newManaged(ManagedConfig{RunDir: t.TempDir(), Scenario: testScenario(scenario.ServerSpec{Store: "postgres"}), PostgresDSN: "postgres://u@db.invalid/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, f := range map[string]func(context.Context) error{"StallDatabase": m.StallDatabase, "DropDatabase": m.DropDatabase} {
+		if err := f(t.Context()); err == nil {
+			t.Errorf("%s with no database proxy succeeded", name)
+		}
+	}
+	if err := m.HealDatabase(t.Context()); err != nil {
+		t.Errorf("HealDatabase with nothing applied = %v, want nil", err)
+	}
+}
+
+// TestManaged_DatabaseFaultsDriveTheProxy blackholes, cuts and heals the proxy
+// in front of a listener standing in for PostgreSQL.
+func TestManaged_DatabaseFaultsDriveTheProxy(t *testing.T) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); io.Copy(c, c) }() //nolint:errcheck // echo
+		}
+	}()
+	dsn := "postgres://u@" + ln.Addr().String() + "/x?sslmode=disable"
+	m, err := newManaged(ManagedConfig{RunDir: t.TempDir(), Scenario: pgScenario(scenario.DatabaseDrop), PostgresDSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.pgDSN = dsn
+	if err := m.startDatabaseProxy(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer m.closeLanes() //nolint:errcheck // cleanup
+
+	echo := func(timeout time.Duration) error {
+		var d net.Dialer
+		c, err := d.DialContext(t.Context(), "tcp", m.dbProxy.Addr())
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		c.SetDeadline(time.Now().Add(timeout)) //nolint:errcheck // a failed deadline fails the read
+		if _, err := c.Write([]byte("x")); err != nil {
+			return err
+		}
+		_, err = io.ReadFull(c, make([]byte, 1))
+		return err
+	}
+	if err := echo(2 * time.Second); err != nil {
+		t.Fatalf("echo through a healthy proxy: %v", err)
+	}
+	if err := m.StallDatabase(t.Context()); err != nil {
+		t.Fatalf("StallDatabase: %v", err)
+	}
+	if err := echo(300 * time.Millisecond); err == nil {
+		t.Error("echo succeeded through a blackholed proxy")
+	}
+	if err := m.HealDatabase(t.Context()); err != nil {
+		t.Fatalf("HealDatabase: %v", err)
+	}
+	if err := echo(2 * time.Second); err != nil {
+		t.Errorf("echo after HealDatabase: %v", err)
+	}
+	if err := m.DropDatabase(t.Context()); err != nil {
+		t.Fatalf("DropDatabase: %v", err)
+	}
+	if err := echo(2 * time.Second); err == nil {
+		t.Error("echo succeeded through a cut proxy")
+	}
+	if err := m.HealDatabase(t.Context()); err != nil {
+		t.Fatalf("HealDatabase: %v", err)
+	}
+	if err := echo(2 * time.Second); err != nil {
+		t.Errorf("echo after healing a cut: %v", err)
+	}
+}
+
+// TestManaged_StallDatabaseOnSQLiteHoldsTheLock holds the write lock until
+// HealDatabase, and calling either twice is harmless.
+func TestManaged_StallDatabaseOnSQLiteHoldsTheLock(t *testing.T) {
+	m, err := newManaged(ManagedConfig{RunDir: t.TempDir(), Scenario: testScenario(scenario.ServerSpec{Store: "sqlite"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(m.settings.dataDir(), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StallDatabase(t.Context()); err != nil {
+		t.Fatalf("StallDatabase: %v", err)
+	}
+	if err := m.StallDatabase(t.Context()); err != nil {
+		t.Errorf("second StallDatabase = %v, want nil", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	if l, err := dbfault.LockSQLite(ctx, m.settings.sqlitePath()); err == nil {
+		l.Release() //nolint:errcheck // cleanup
+		t.Fatal("LockSQLite succeeded while StallDatabase held the lock")
+	}
+	if err := m.HealDatabase(t.Context()); err != nil {
+		t.Fatalf("HealDatabase: %v", err)
+	}
+	if err := m.HealDatabase(t.Context()); err != nil {
+		t.Errorf("second HealDatabase = %v, want nil", err)
+	}
+	l, err := dbfault.LockSQLite(t.Context(), m.settings.sqlitePath())
+	if err != nil {
+		t.Fatalf("LockSQLite after HealDatabase: %v", err)
+	}
+	l.Release() //nolint:errcheck // cleanup
 }
