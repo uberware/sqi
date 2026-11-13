@@ -14,19 +14,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/discovery"
 	"github.com/uberware/sqi/internal/fsutil"
 )
 
-// assertSecretRestricted asserts that path holds a PRIVATE KEY only its owner
+// assertSecretRestricted asserts that path holds a private key only its owner
 // can read.
 //
-// The POSIX mode is still asserted where it means something. On Windows it
-// does not: os.Chmod maps only to the read-only ATTRIBUTE and cannot deny read
-// access to anyone, so `perm == 0o600` is unsatisfiable there however well the
-// key is protected — fsutil.IsRestricted inspects the real DACL instead.
-// Asserting the POSIX mode on both platforms is what let `tls init` and
-// `tls issue` write the farm CA key, the server key and every client key with
-// no confidentiality on Windows while CI stayed green on Linux.
+// On POSIX it checks for mode 0600. On Windows the mode says nothing: os.Chmod
+// sets only the read-only attribute and cannot deny read access, so
+// fsutil.IsRestricted inspects the file's DACL instead.
 func assertSecretRestricted(t *testing.T, path string) {
 	t.Helper()
 	if runtime.GOOS != "windows" {
@@ -131,6 +128,37 @@ func TestTLSInit_WritesExpectedFiles(t *testing.T) {
 	}
 }
 
+// TestTLSInit_DefaultCertCoversTheDiscoveredName: with no --host, the server
+// certificate covers the ".local" name discovery advertises, which is the host
+// a worker that found the server by mDNS dials, so that worker can verify it.
+// On Linux and Windows the hostname has no ".local" suffix, and a certificate
+// naming only the hostname fails that worker's TLS verification.
+func TestTLSInit_DefaultCertCoversTheDiscoveredName(t *testing.T) {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		t.Skipf("no hostname: %v", err)
+	}
+	dir := filepath.Join(t.TempDir(), "certs")
+	if _, err := runTLSInitCmd(t, "--out", dir); err != nil {
+		t.Fatalf("tls init: %v", err)
+	}
+
+	server := parseCertFile(t, filepath.Join(dir, "server.crt"))
+	for _, want := range []string{h, discovery.SRVHost()} {
+		if !slices.Contains(server.DNSNames, want) {
+			t.Errorf("DNSNames = %v, want it to contain %s", server.DNSNames, want)
+		}
+	}
+}
+
+// An explicit --host is used as given: the discovered name is not added.
+func TestResolveTLSHosts_ExplicitHostAddsNoDiscoveredName(t *testing.T) {
+	got := resolveTLSHosts([]string{"sqi.example"})
+	if slices.Contains(got, discovery.SRVHost()) {
+		t.Errorf("resolveTLSHosts = %v, want no %s with an explicit --host", got, discovery.SRVHost())
+	}
+}
+
 func TestTLSInit_ClientCerts(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "certs")
 	if _, err := runTLSInitCmd(t, "--out", dir, "--client", "worker-01", "--client", "worker-02"); err != nil {
@@ -200,9 +228,8 @@ func TestTLSInit_PrintsConfigKeys(t *testing.T) {
 
 // ── tls issue ────────────────────────────────────────────────────────────────
 //
-// `tls init` deliberately refuses to overwrite a CA, which left no way to add a
-// worker to an established mTLS farm or to rotate a server certificate: the
-// whole command failed, taking --client with it. `tls issue` is that path.
+// `tls init` refuses to overwrite a CA, so adding a worker to an established
+// mTLS farm or rotating the server certificate goes through `tls issue`.
 
 // runTLSIssueCmd drives "tls issue" and returns its stdout.
 func runTLSIssueCmd(t *testing.T, args ...string) (string, error) {
@@ -243,7 +270,7 @@ func TestTLSIssue_ClientCertAgainstAnExistingCA(t *testing.T) {
 		t.Errorf("ExtKeyUsage = %v, want [ClientAuth]", cert.ExtKeyUsage)
 	}
 
-	// It must chain to the farm's EXISTING CA, or the broker rejects it.
+	// It must chain to the farm's existing CA, or the broker rejects it.
 	ca := parseCertFile(t, filepath.Join(dir, "ca.crt"))
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
@@ -342,7 +369,7 @@ func TestTLSIssue_ErrorsWithNothingToIssue(t *testing.T) {
 
 func TestTLSInit_PointsAtIssueWhenTheCAExists(t *testing.T) {
 	dir := existingFarm(t)
-	// The original gap: this failed with no hint that another command does it.
+	// The refusal must name the command that issues against an existing CA.
 	_, err := runTLSInitCmd(t, "--out", dir, "--client", "render-07")
 	if err == nil {
 		t.Fatal("tls init overwrote an existing CA")

@@ -20,15 +20,16 @@ import (
 	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/pathmap"
+	"github.com/uberware/sqi/internal/worker/procout"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
 )
 
 // applyCredential attaches an isolation.Credential to a process before it
 // starts. Defaults to isolation.Apply; tests override it to record that the
-// task-process launch site attaches a credential without needing a real OS
-// identity switch (see isolation.NewFake's own doc: a fake cannot verify real
-// uid/gid switching — that needs a real OS, exercised by make test-isolation).
+// task-process launch site attaches a credential without a real OS identity
+// switch. A fake cannot verify real uid/gid switching (see isolation.NewFake);
+// make test-isolation covers that.
 var applyCredential = isolation.Apply
 
 // ── processResult ─────────────────────────────────────────────────────────────
@@ -47,7 +48,7 @@ type processResult struct {
 	// exited (cmd.Wait() returned).
 	EndedAt time.Time
 	// Err is a non-nil error only for unexpected failures (failed to start,
-	// unexpected wait error).  A non-zero exit code is NOT reflected in Err;
+	// unexpected wait error).  A non-zero exit code is not reflected in Err;
 	// it is captured in ExitCode.  Process termination due to a signal (when
 	// TimedOut or Canceled is true) also does not set Err.
 	Err error
@@ -70,26 +71,26 @@ func (r processResult) duration() time.Duration {
 //
 //  1. Validate OnRun action.
 //  2. Build env and start the OS process.
-//  3. Publish "running" status (included here as integral to the executor).
+//  3. Publish "running" status.
 //  4. Read stdout/stderr concurrently, forwarding to the OutputHandler.
 //  5. Honor per-task timeout and context cancellation.
 //  6. Publish terminal status (succeeded/failed/canceled).
 //  7. Update metrics.
-//  8. Remove from active-tasks and release the concurrency slot.
+//  8. Remove from active-tasks and release the held attempt.
 //  9. Clean up the session.
 //
 // runTask is launched by [Executor.Dispatch] and runs independently until the
 // task terminates.
 func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun) {
 	// Signal the WaitGroup when this goroutine exits so DrainAndShutdown can
-	// block until all goroutines have published their terminal statuses (tasks
-	// 86–87).  Registered first so it runs last in LIFO order — after all
-	// other cleanup defers have completed.
+	// block until all goroutines have published their terminal statuses.
+	// Registered first so it runs last in LIFO order, after all other cleanup
+	// defers have completed.
 	defer e.wg.Done()
 
 	// Registered second so it runs second to last: the attempt stays held
 	// through the terminal status publish and every cleanup below, and is
-	// released just before wg.Done.
+	// released immediately before wg.Done.
 	defer e.release(run.attemptID)
 
 	// failed controls the keepFailedSessions behavior in Cleanup.
@@ -105,7 +106,8 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	taskCtx, taskCancel := context.WithCancel(e.execCtx)
 	defer taskCancel()
 
-	// Wire the per-task cancel into the OpenJD interceptor, if wired in.
+	// Register the per-task cancel with the OpenJD interceptor, when the output
+	// handler is one.
 	if hook, ok := e.outputHandler.(TaskLifecycleHook); ok {
 		hook.RegisterTask(msg.AttemptID, msg.TaskID, msg.JobID, sess.ID, taskCancel)
 		defer hook.Deregister(msg.AttemptID)
@@ -128,6 +130,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	//   Registered 5th → runs 2nd:         sessionMgr.Cleanup
 	//   Registered 6th → runs 1st:         removeActiveTask
 	//
+	// stager.Cleanup, registered further down, runs before all of these.
 	// wg.Done runs last so DrainAndShutdown.wg.Wait() returns only after all
 	// cleanup is complete.
 	defer func() { e.sessionMgr.Cleanup(context.Background(), sess, failed) }()
@@ -168,7 +171,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// rewrites path_mapping.json when staging rules are added alongside the
 	// translation_file delivery.
 	//
-	// Pre-execution failures below intentionally publish a "running" status
+	// Pre-execution failures below publish a "running" status
 	// immediately before the terminal "failed", consistent with the nil-action
 	// and empty-command branches above and with the execProcess convention
 	// ("Publish running status before Start so the server records the attempt").
@@ -187,8 +190,8 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// rewrites the file with the combined (staging-prepended) rules above.
 
 	// ── Resolve OpenJD {{...}} format strings ──────────────────────────────────
-	// The session working directory (Session.WorkingDirectory) is only known now,
-	// at run time, so command/args, environment-variable values, and embedded
+	// The session working directory (Session.WorkingDirectory) is known only at
+	// run time, so command/args, environment-variable values, and embedded
 	// file data are resolved here on the worker rather than server-side.  A bad
 	// reference fails the task cleanly with a descriptive message naming the
 	// offending variable.  resolvedFiles are the step embedded files with their
@@ -434,19 +437,18 @@ func (e *Executor) publishTerminal(msg *protocol.AssignMsg, sessID, status strin
 //     may reference Task.Param.* and Task.File.* (the materialized path of any
 //     step file, including itself or a sibling);
 //   - the merged environment-variable values against the environment scope
-//     (Task.Param.* intentionally unavailable; Env.File.* of every environment
+//     (Task.Param.* is unavailable; Env.File.* of every environment
 //     exposed so env-var values may reference an environment file's path).
 //
 // It returns the resolved action copy, the resolved environment-variable map,
 // and the step embedded files with their data resolved, or a descriptive error
 // naming the offending reference.
 //
-// msg.EXPR selects the resolution family: a base-spec assignment (EXPR
-// false, the zero value) takes the fmtstring.Resolve-backed path, byte for
-// byte -- see resolveAssignmentBaseSpec. Only when EXPR is true does this
-// function build the phase-3 symbol table (fmtres.TaskSymbols) and resolve
-// through the EXPR-aware evaluator (fmtres.ResolveActionExpr /
-// ResolveEmbeddedFilesExpr) -- see resolveAssignmentExpr.
+// msg.EXPR selects the resolution path. A base-spec assignment (EXPR false,
+// the zero value) takes the fmtstring.Resolve-backed resolveAssignmentBaseSpec.
+// An EXPR assignment takes resolveAssignmentExpr, which builds the worker-side
+// (phase-3) symbol table with fmtres.TaskSymbols and resolves through the
+// EXPR-aware evaluator (fmtres.ResolveActionExpr / ResolveEmbeddedFilesExpr).
 func resolveAssignment(msg *protocol.AssignMsg, sess *session.Session) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
 	if !msg.EXPR {
 		return resolveAssignmentBaseSpec(msg, sess)
@@ -455,10 +457,10 @@ func resolveAssignment(msg *protocol.AssignMsg, sess *session.Session) (*protoco
 }
 
 // resolveAssignmentBaseSpec is resolveAssignment's base-spec implementation:
-// plain "{{...}}" substitution via
-// fmtstring.Resolve (through fmtres.TaskScope/ResolveAction/
-// ResolveEmbeddedFiles). This is the code path every base-spec assignment
-// must keep taking byte for byte -- see resolveAssignment's own doc comment.
+// plain "{{...}}" substitution via fmtstring.Resolve (through
+// fmtres.TaskScope/ResolveAction/ResolveEmbeddedFiles). Every base-spec
+// assignment resolves through this path, so its output must not depend on
+// EXPR support.
 func resolveAssignmentBaseSpec(msg *protocol.AssignMsg, sess *session.Session) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
 	workDir := sess.WorkDir
 	pathMapFile := sess.PathMappingRulesFile()
@@ -466,7 +468,7 @@ func resolveAssignmentBaseSpec(msg *protocol.AssignMsg, sess *session.Session) (
 
 	taskScope := fmtres.TaskScope(msg.JobParameters, msg.Parameters, workDir, pathMapFile, hasPathMap)
 	// Expose Task.File.<name> -> materialized path for each step embedded file
-	// BEFORE resolving the command/args and the files' own data, so both can
+	// before resolving the command/args and the files' own data, so both can
 	// reference a file's on-disk path.
 	if err := fmtres.AddFileVars(taskScope, "Task.File", msg.EmbeddedFiles, workDir); err != nil {
 		return nil, nil, nil, fmt.Errorf("step embedded files: %w", err)
@@ -480,58 +482,51 @@ func resolveAssignmentBaseSpec(msg *protocol.AssignMsg, sess *session.Session) (
 		return nil, nil, nil, fmt.Errorf("resolve embedded file data: %w", err)
 	}
 
-	// Reuse the static environment that session.Create already resolved at
-	// enter time. Each environment's Variables were resolved against that
-	// environment's OWN Env.File.* scope; re-resolving here against a merged
-	// all-environments scope would both duplicate the work and risk resolving a
+	// Reuse the static environment that session.Create resolved at enter
+	// time. Each environment's Variables are resolved against that
+	// environment's own Env.File.* scope; re-resolving here against a merged
+	// all-environments scope would repeat the work and could resolve a
 	// same-named Env.File.* reference to a different file (last-wins across
-	// environments). The session is the single source of truth.
+	// environments).
 	resolvedEnvVars := sess.StaticEnv()
 	return resolvedRun, resolvedEnvVars, resolvedFiles, nil
 }
 
-// resolveAssignmentExpr is resolveAssignment's EXPR-aware implementation:
-// it builds the phase-3 symbol table
-// (fmtres.TaskSymbols), evaluates the task's let: bindings into it EXACTLY
-// ONCE (fmtres.ApplyTaskLet -- see that function's own doc comment: calling
-// it a second time over the same table makes every binding fail the shadow
-// check), and then resolves OnRun and the step embedded files against that
-// ONE table via ResolveActionExpr/ResolveEmbeddedFilesExpr. This is where an
-// expression's value reaches a real command line.
+// resolveAssignmentExpr is resolveAssignment's EXPR-aware implementation. It
+// builds the worker-side (phase-3) symbol table (fmtres.TaskSymbols),
+// evaluates the task's let: bindings into it once (fmtres.ApplyTaskLet: a
+// second call over the same table makes every binding fail the shadow
+// check), and resolves OnRun and the step embedded files against that one
+// table via ResolveActionExpr/ResolveEmbeddedFilesExpr.
 func resolveAssignmentExpr(msg *protocol.AssignMsg, sess *session.Session) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
 	workDir := sess.WorkDir
 	pathMapFile := sess.PathMappingRulesFile()
 	hasPathMap := sess.HasPathMappingRules()
 
-	// sess.ExprBudget() is the ONE fmtres.AssignmentBudget this whole
-	// assignment shares -- every environment table this session already
-	// entered (session.go's enterOne) charged the SAME object, and this
-	// task's own table does too, so
-	// the assignment's total resolved-position and retained-byte spend,
-	// across every table it builds, is bounded together. See
-	// fmtres.AssignmentBudget's own doc comment.
+	// sess.ExprBudget() is the one fmtres.AssignmentBudget the whole
+	// assignment shares: every environment table the session entered
+	// (session.go's enterOne) charges it, and so does this task's table, so
+	// the assignment's total resolved-position and retained-byte spend across
+	// every table it builds is bounded together. See fmtres.AssignmentBudget.
 	budget := sess.ExprBudget()
 
-	// NOT "step embedded files": the base-spec path uses that label because it
-	// wraps AddFileVars alone, but TaskSymbols also fails from job- and
-	// task-parameter binding (mapPathParamValue, via bindJobParamSymbols /
-	// bindTaskParamSymbols). Inheriting the narrower label would send an
-	// operator to look at embeddedFiles for a PATH-parameter fault.
+	// The error label is wider than the base-spec path's "step embedded
+	// files" because TaskSymbols also fails on job- and task-parameter
+	// binding (mapPathParamValue, via bindJobParamSymbols /
+	// bindTaskParamSymbols), such as a PATH parameter that cannot be mapped.
 	//
-	// budget is passed here for its LIMITS, not to charge it: binding a PATH
-	// parameter runs a real apply_path_mapping evaluation, and it must be
-	// metered by the same operator-configured numbers as every other
-	// evaluation below. Building the table BEFORE obtaining the budget would
-	// leave that one evaluation on the compiled-in defaults on a host
-	// configured otherwise.
+	// budget supplies the limits here and is not charged: binding a PATH
+	// parameter runs an apply_path_mapping evaluation, which must be metered
+	// by the same operator-configured limits as every evaluation below. The
+	// budget must therefore be obtained before the table is built, or that
+	// evaluation falls back to the compiled-in defaults.
 	syms, err := fmtres.TaskSymbols(msg, workDir, pathMapFile, hasPathMap, budget)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("build expression symbols: %w", err)
 	}
 
-	// Exactly one call over this table -- see fmtres.ApplyTaskLet's doc
-	// comment. Every resolution below (OnRun, then the embedded files) reuses
-	// this same syms.
+	// One call over this table (see fmtres.ApplyTaskLet). Every resolution
+	// below (OnRun, then the embedded files) reuses this syms.
 	if err := fmtres.ApplyTaskLet(msg, syms, msg.PathMap, budget); err != nil {
 		return nil, nil, nil, fmt.Errorf("let bindings: %w", err)
 	}
@@ -544,9 +539,8 @@ func resolveAssignmentExpr(msg *protocol.AssignMsg, sess *session.Session) (*pro
 		return nil, nil, nil, fmt.Errorf("resolve embedded file data: %w", err)
 	}
 
-	// Reuse the static environment that session.Create already resolved at
-	// enter time -- see resolveAssignmentBaseSpec's identical comment; the
-	// same reasoning applies unchanged to the EXPR path.
+	// Reuse the static environment that session.Create resolved at enter
+	// time, for the reason given in resolveAssignmentBaseSpec.
 	resolvedEnvVars := sess.StaticEnv()
 	return resolvedRun, resolvedEnvVars, resolvedFiles, nil
 }
@@ -597,7 +591,7 @@ func (e *Executor) failResolution(ctx context.Context, msg *protocol.AssignMsg, 
 
 // execProcess starts the OS process for msg.OnRun, reads its output, and
 // waits for it to exit (or timeout/cancel).  It returns only after the process
-// has exited and all output has been consumed.
+// has exited and its output has been read as procout.Output.Wait describes.
 //
 // lookup contains the resolved-mode path map parsed by the caller; it is
 // applied to the OnRun command and args before the process is started.
@@ -611,9 +605,9 @@ func (e *Executor) failResolution(ctx context.Context, msg *protocol.AssignMsg, 
 func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun, lookup *pathmap.Lookup, resolvedRun *protocol.Action, envVars map[string]string, handler OutputHandler) processResult {
 	// Apply path-delivery transformations: swap_in_place substitutes paths in
 	// the action, command_flags appends rendered flag strings, and environment
-	// sets the configured variable.  translation_file is handled at session/
-	// session-creation time (and rewritten by buildEffectiveLookup when staging
-	// adds rules), not here.
+	// sets the configured variable.  translation_file is written at session
+	// creation (and rewritten by buildEffectiveLookup when staging adds rules),
+	// not here.
 	action, envVars := applyDeliveries(msg.PathDeliveries, lookup, resolvedRun, envVars)
 
 	// Swap the job's command name for the operator's worker.commands entry, if
@@ -623,30 +617,25 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// the session package makes the same call.
 	action = sess.ResolveAction(action)
 
-	// Build process environment.
-	// Set working directory to the session working directory.
-	// Capture stdout and stderr via explicit pipes (not inheriting
-	//          the worker's own fds) so output can be attributed and forwarded.
-	// exec.Command is used intentionally instead of exec.CommandContext (noctx)
-	// because CommandContext sends a fixed signal when ctx is canceled, bypassing
-	// the OpenJD Action.cancelation policy (TERMINATE vs NOTIFY_THEN_TERMINATE)
-	// that killAndWait applies.  We manage the process lifetime explicitly.
+	// exec.Command, not exec.CommandContext (noctx): CommandContext sends a
+	// fixed signal when ctx is canceled, bypassing the OpenJD
+	// Action.cancelation policy (TERMINATE vs NOTIFY_THEN_TERMINATE) that
+	// killAndWait applies.
 	cmd := exec.Command(action.Command, action.Args...) //nolint:gosec,noctx // command from server-signed assignment; context handled manually
 	cmd.Dir = sess.WorkDir
 
-	// Start the task in its own process group so a timeout/cancel can terminate
-	// the whole tree — the task and any children it spawns — not just the direct
-	// child. Without this, a shell's orphaned grandchild (e.g. a `sleep`) keeps
-	// the inherited stdout/stderr pipes open and stalls cmd.Wait() until it
-	// exits on its own, defeating the per-task timeout.
+	// Start the task in its own process group so a timeout or cancel
+	// terminates the task and every child it spawns, and so procout keeps
+	// waiting for output while any process of the group runs. On Windows the
+	// group is the job object superviseTree creates after Start.
 	configureProcessGroup(cmd)
 
-	// This is job-supplied code (the task's OnRun action) — site 2 of the two
-	// launch sites that must carry a credential (site 1 is the OpenJD
-	// environment onEnter/onExit action in session.go's runAction). Applied
-	// AFTER configureProcessGroup so Setpgid is already set: isolation.Apply
-	// preserves any SysProcAttr fields the caller configured rather than
-	// replacing the struct, but only if they were set first.
+	// The task's OnRun action is job-supplied code, and this is one of the two
+	// launch sites that must carry a credential (the other is the OpenJD
+	// environment onEnter/onExit action in session.go's runAction). It is
+	// applied after configureProcessGroup because isolation.Apply keeps the
+	// SysProcAttr fields already set, such as Setpgid, and would not see ones
+	// set later.
 	if err := applyCredential(cmd, sess.Credential()); err != nil {
 		return processResult{Err: fmt.Errorf("apply run-as-user credential: %w", err)}
 	}
@@ -665,27 +654,20 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	}
 	cmd.Env = envutil.BuildFromBase(sess.BaseEnv(), overrides, sess.EnvUnset())
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return processResult{Err: fmt.Errorf("stdout pipe: %w", err)}
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return processResult{Err: fmt.Errorf("stderr pipe: %w", err)}
-	}
-
-	// Record start time.
 	startedAt := time.Now()
 
 	// Publish "running" status before Start so the server records the attempt
 	// even if the command is not found or cannot be executed.  If Start fails
-	// the caller will publish a terminal "failed" immediately after, giving the
-	// server a well-formed running→failed transition rather than an orphaned
-	// "failed" with no preceding "running".
+	// the caller publishes a terminal "failed" immediately after, so the
+	// server always sees a running→failed transition.
 	// lastProgress is nil here because the process has not yet emitted any output.
 	e.statusPub.Running(context.Background(), msg, sess.ID, nil, startedAt)
 
-	if err := cmd.Start(); err != nil {
+	// procout, not StdoutPipe, so the task's exit is seen while a descendant
+	// still holds its output open, such as Unreal Editor's detached
+	// UnrealTraceServer.
+	out, err := procout.Start(cmd)
+	if err != nil {
 		return processResult{
 			Err:       fmt.Errorf("start %q: %w", action.Command, err),
 			StartedAt: startedAt,
@@ -694,37 +676,35 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	}
 
 	// Place the process (and, on Windows, everything it spawns) under
-	// supervision immediately after Start so killAndWait can always reach the
-	// full tree — including a grandchild orphaned before a later kill call,
-	// which "taskkill /F /T" would miss. release() (deferred below) is the
-	// success-path teardown that does NOT kill survivors, keeping Windows
-	// behaviourally identical to POSIX; see procgroup_windows.go's doc.
+	// supervision immediately after Start so killAndWait reaches the full
+	// tree, including a grandchild orphaned before the kill, which
+	// "taskkill /F /T" would miss. release(), deferred below, does not kill
+	// processes still in the tree, matching POSIX; see procgroup_windows.go.
 	tree, err := superviseTree(cmd)
 	if err != nil {
-		// cmd.Start() above already succeeded, so a process is running, but
-		// nothing later in this function — run.pid, sess.AddTask, the
-		// output-reading goroutines — has registered it for cleanup yet, and
-		// there is no tree to call sendKILL on. Kill and reap it directly here
-		// so a superviseTree failure (resource exhaustion, restrictive policy,
-		// or a run-as-user permission edge case) never leaks a running,
-		// fully unmanaged process.
+		// The process is running, but nothing has registered it for cleanup
+		// yet (run.pid, sess.AddTask, the output readers) and there is no
+		// tree to call sendKILL on. Kill and reap it here so a superviseTree
+		// failure (resource exhaustion, restrictive policy, or a run-as-user
+		// permission problem) does not leave an unmanaged process running.
 		if killErr := cmd.Process.Kill(); killErr != nil {
 			e.logger.WarnContext(context.Background(), "executor: kill process after supervise failure", slog.Any("error", killErr))
 		}
-		cmd.Wait() //nolint:errcheck // best-effort reap after a forced kill; the supervise error below is what the caller sees
+		// Nothing reads the output yet, so drop it rather than leave Wait to
+		// the drain delay.
+		out.Discard()
+		out.Wait(nil) //nolint:errcheck // best-effort reap after a forced kill; the supervise error below is what the caller sees
 		return processResult{Err: fmt.Errorf("supervise task process tree: %w", err)}
 	}
 	defer func() {
 		if relErr := tree.release(); relErr != nil {
 			// context.Background(), not ctx: this defer can run after ctx is
-			// already canceled (task done, worker shutting down), and the
-			// warning should still be logged — same reasoning as
-			// flushTaskLogs above.
+			// canceled (task done, worker shutting down), and the warning
+			// should still be logged, as in flushTaskLogs.
 			e.logger.WarnContext(context.Background(), "executor: release process tree", slog.Any("error", relErr))
 		}
 	}()
 
-	// Record PID.
 	pid := cmd.Process.Pid
 	run.pid = pid
 	run.startedAt = startedAt
@@ -744,24 +724,27 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	readWg.Add(2)
 	go func() {
 		defer readWg.Done()
-		scanOutput(ctx, stdoutPipe, "stdout", msg.TaskID, msg.AttemptID, sess.ID, handler, sess.ScrubRedacted, e.logger)
+		scanOutput(ctx, out.Stdout, "stdout", msg.TaskID, msg.AttemptID, sess.ID, handler, sess.ScrubRedacted, e.logger)
 	}()
 	go func() {
 		defer readWg.Done()
-		scanOutput(ctx, stderrPipe, "stderr", msg.TaskID, msg.AttemptID, sess.ID, handler, sess.ScrubRedacted, e.logger)
+		scanOutput(ctx, out.Stderr, "stderr", msg.TaskID, msg.AttemptID, sess.ID, handler, sess.ScrubRedacted, e.logger)
 	}()
 
-	// Wait for the output goroutines to finish and then for cmd.Wait() to
-	// return.  cmd.Wait() must be called after all pipe reads complete (Go
-	// docs: "it is incorrect to call Wait before all reads from the pipe have
-	// completed").
+	// Wait for the process, then end the scanners and wait for them, so every
+	// line read reaches the handler before the result is reported.
 	waitDone := make(chan error, 1)
 	go func() {
+		stillOpen, waitErr := out.Wait(tree.alive)
 		readWg.Wait()
-		waitDone <- cmd.Wait()
+		if stillOpen {
+			e.logger.WarnContext(ctx,
+				"executor: the task and its process group exited but a process outside the group still holds the output; output after the drain delay is not captured",
+				slog.String("task_id", msg.TaskID), slog.Duration("waited", procout.DrainDelay))
+		}
+		waitDone <- waitErr
 	}()
 
-	// Compute effective timeout.
 	var taskTimeout time.Duration
 	if action.TimeoutSeconds > 0 {
 		taskTimeout = time.Duration(action.TimeoutSeconds) * time.Second
@@ -873,8 +856,8 @@ func terminationMode(c *protocol.CancelationMethod) (mode string, notifyPeriod t
 	return modeNotifyThenTerminate, period
 }
 
-// killAndWait terminates the process and blocks until cmd.Wait() returns (which
-// happens only after all pipe-reading goroutines exit).
+// killAndWait terminates the process and blocks until waitDone reports that it
+// has exited and its output readers have finished.
 //
 // The termination strategy follows the OpenJD Action.cancelation method carried
 // by the assignment (cancelation):
@@ -889,10 +872,10 @@ func terminationMode(c *protocol.CancelationMethod) (mode string, notifyPeriod t
 // SIGKILL escalation regardless of the action's cancelation method, so the
 // configured shutdown grace window is honored for every in-flight task.
 //
-// Note: the worker-shutdown-vs-per-task distinction relies on the shuttingDown
-// flag being set before execCtx is canceled in DrainAndShutdown.  A concurrent
-// external Cancel racing a shutdown is harmless — the server tolerates duplicate
-// or short-window terminal status messages (first one wins, subsequent ignored).
+// Telling worker shutdown from a per-task cancel relies on DrainAndShutdown
+// setting the shuttingDown flag before it cancels execCtx.  A concurrent
+// external Cancel racing a shutdown is harmless: the server keeps the first
+// terminal status for a task and ignores later ones.
 func (e *Executor) killAndWait(
 	ctx context.Context,
 	tree *processTree,
@@ -1073,7 +1056,7 @@ func (e *Executor) takeFailReason(attemptID string) (string, bool) {
 // at session/executor file-write time, not here. Returns the (possibly new)
 // action and the env map (mutated in place and returned for clarity).
 //
-// Deliveries are applied in a FIXED canonical order (swap_in_place →
+// Deliveries are applied in a fixed canonical order (swap_in_place →
 // command_flags → environment) regardless of the declared order in the
 // template. This prevents a hand-authored template that lists command_flags
 // before swap_in_place from double-substituting the appended flag strings.
@@ -1119,7 +1102,7 @@ func applyDeliveries(deliveries []protocol.PathDelivery, lookup *pathmap.Lookup,
 }
 
 // hasDelivery reports whether deliveries contains an entry with the given kind.
-// A local copy is intentional: scheduler and executor are same-level internal
+// It is a local copy because scheduler and executor are same-level internal
 // packages that must not cross-import.
 func hasDelivery(ds []protocol.PathDelivery, kind string) bool {
 	for _, d := range ds {
@@ -1324,10 +1307,11 @@ func (e *Executor) stageOutputs(ctx context.Context, msg *protocol.AssignMsg, se
 // ── Output capture ────────────────────────────────────────────────────────────
 
 // scanOutput reads lines from r, scrubs each through scrub, and forwards the
-// result to handler.HandleLine. It returns when r reaches EOF (the process has
-// closed the pipe write end, which happens when the process exits) or a read
-// fails. No line is too long to read, so what a process prints can never stop
-// the reading and leave it blocked on a full pipe.
+// result to handler.HandleLine. It returns when r reaches EOF or a read fails.
+// For a procout stream, EOF comes once every process holding the output has
+// closed it, or when procout.Output.Wait ends delivery after the drain delay.
+// No line is too long to read, so what a process prints cannot stop the
+// reading and leave it blocked on a full pipe.
 //
 // A line longer than maxOutputLine (64 KiB) is forwarded as consecutive pieces
 // of at most that many bytes, never cut inside a UTF-8 character, and the first

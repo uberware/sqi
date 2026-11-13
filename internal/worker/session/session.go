@@ -19,17 +19,16 @@
 //
 // # Scope
 //
-// Sessions are not stored as database rows — they are worker-side runtime
-// constructs. The server records the session ID only on task_attempts. There
-// is no dedicated sessions table (for session-reuse scheduling), and a
-// session runs exactly one task; see docs/architecture.md ("SQLite schema
-// overview").
+// Sessions are worker-side runtime state, not database rows. The server
+// records the session ID only on task_attempts. There is no sessions table
+// (for session-reuse scheduling), and a session runs exactly one task; see
+// docs/architecture.md ("SQLite schema overview").
 //
 // # Usage
 //
 //	mgr := session.NewManager(sessionRoot, cfg.Worker.KeepFailedSessions, provider, cfg.Isolation, limits, logger)
-//	// sessionRoot is resolved by cmd/sqi-worker's effectiveSessionRoot — see
-//	// its doc for why it is deliberately NOT cfg.Worker.DataDir.
+//	// sessionRoot is resolved by cmd/sqi-worker's effectiveSessionRoot; see
+//	// its doc for why it is not cfg.Worker.DataDir.
 //
 //	s, err := mgr.Create(ctx, assignMsg)
 //	if err != nil { ... }
@@ -72,14 +71,14 @@ import (
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/pathmap"
+	"github.com/uberware/sqi/internal/worker/procout"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // applyCredential attaches an isolation.Credential to a process before it
 // starts. Defaults to isolation.Apply; tests override it to record which
-// call sites attach a credential without needing a real OS identity switch
-// (see isolation.NewFake's own doc: a fake cannot verify real uid/gid
-// switching — that needs a real OS, exercised by make test-isolation).
+// call sites attach a credential without a real OS identity switch. Real
+// uid/gid switching is exercised by make test-isolation.
 var applyCredential = isolation.Apply
 
 // ── Session ───────────────────────────────────────────────────────────────────
@@ -92,7 +91,7 @@ var applyCredential = isolation.Apply
 // single session simultaneously.
 type Session struct {
 	// ID is the worker-generated unique identifier for this session.
-	// Callers MUST include this in every [protocol.TaskStatusMsg] (as
+	// Callers include this in every [protocol.TaskStatusMsg] (as
 	// SessionID) and every [protocol.LogChunkMsg] published from within
 	// the session so the server can group attempts by session.
 	ID string
@@ -122,53 +121,43 @@ type Session struct {
 	// exposed to format strings as Session.HasPathMappingRules.
 	hasPathMap bool
 
-	// msg is the assignment that created this session (the only task ever
-	// dispatched into it -- sessions are not reused across tasks, see this
-	// file's package comment). enterOne and
-	// resolveEnvParts read msg.EXPR to select
-	// between the pre-EXPR fmtres.EnvScope/ResolveAction path and the
-	// phase-3 fmtres.EnvSymbols/ResolveActionExpr path, and read msg.PathMap
-	// for the EXPR path's metering/path-mapping options. Never mutated after
-	// Create; safe to read without the mu lock for that reason, exactly like
+	// msg is the assignment that created this session, and the only task
+	// dispatched into it: sessions are not reused across tasks (see the
+	// package comment). resolveEnvParts reads msg.EXPR to choose between the
+	// base-spec fmtres.EnvScope/ResolveAction path and the phase-3
+	// fmtres.EnvSymbols/ResolveActionExpr path, and reads msg.PathMap for the
+	// EXPR path's metering and path-mapping options. Never mutated after
+	// Create, so it is read without the mu lock, like
 	// jobParams/pathMapFile/hasPathMap above.
 	//
-	// ALWAYS NON-NIL for a Session that exists: Manager.Create dereferences
-	// msg (msg.Isolation) before it ever builds one, so a nil assignment
-	// panics there, not here. resolveEnvParts therefore reads s.msg unguarded
-	// on purpose -- a nil check would be dead code suggesting a state the type
-	// cannot be in.
+	// Non-nil for every Session: Manager.Create dereferences msg
+	// (msg.Isolation) before it builds one, so resolveEnvParts reads s.msg
+	// without a nil check.
 	msg *protocol.AssignMsg
 
-	// exprBudget is the ONE [fmtres.AssignmentBudget] this whole assignment's LIVE, entry-time
-	// phase-3 tables share -- allocated once, here, in Manager.Create, BEFORE
-	// enterEnvironments runs (so every environment table entered during
-	// session creation already shares it), and reused by the executor's own
-	// task-table resolution (internal/worker/executor's resolveAssignmentExpr,
-	// via [Session.ExprBudget]). One object per SESSION -- not per table, and
-	// not a worker-process-wide singleton -- is what bounds an assignment's
-	// TOTAL entry-time phase-3 retained bytes and resolved positions across
-	// every table it builds; see fmtres.AssignmentBudget's own doc comment
-	// for the full account, including why per-assignment (rather than
-	// process-wide) is the deliberate scope and how worker concurrency
-	// factors into its size.
+	// exprBudget is the one [fmtres.AssignmentBudget] shared by every live,
+	// entry-time phase-3 table of this assignment. Manager.Create allocates
+	// it before enterEnvironments runs, so every environment table built
+	// during session creation shares it, and the executor's task-table
+	// resolution (internal/worker/executor's resolveAssignmentExpr, via
+	// [Session.ExprBudget]) reuses it. One budget per session, not per table
+	// and not per worker process, bounds an assignment's total entry-time
+	// phase-3 retained bytes and resolved positions across every table it
+	// builds; see fmtres.AssignmentBudget's doc comment for the choice of
+	// scope and how worker concurrency affects its size.
 	//
-	// resolveEnvAction's OWN calls (the teardown
-	// path, reached only via ExitEnvironments) deliberately do NOT charge
-	// this budget -- see that method's own doc comment for why a table that
-	// is rebuilt and immediately discarded at exit must not be charged a
-	// second time against a ledger that cannot avert the memory it would be
-	// charging for, and whose exhaustion would otherwise silently skip
-	// cleanup (ExitEnvironments treats a resolve error as a warning and
-	// continues past it).
+	// The teardown path (resolveEnvAction, reached only via
+	// ExitEnvironments) does not charge this budget; see that method's doc
+	// comment.
 	//
-	// ALWAYS NON-NIL, for the same reason msg is: set in the same struct
-	// literal Create builds before returning.
+	// Non-nil for every Session: Create sets it in the struct literal it
+	// returns.
 	exprBudget *fmtres.AssignmentBudget
 
 	// staticEnv is the merged, fully-resolved static environment from every
 	// environment's Variables, accumulated in enterOne. Each environment's
-	// values are resolved against that environment's OWN Env.File.* scope (the
-	// authoritative resolution), and later environments override earlier ones.
+	// values are resolved against that environment's own Env.File.* scope,
+	// and later environments override earlier ones.
 	// The executor reuses this for the task's static environment rather than
 	// re-resolving msg env vars against a merged all-environments scope, which
 	// could resolve a same-named Env.File reference differently. Built during
@@ -181,7 +170,7 @@ type Session struct {
 
 	// dynamicEnv accumulates environment variables set via openjd_env /
 	// openjd_redacted_env directives emitted to stdout by environment actions.
-	// These apply to all SUBSEQUENT actions in the session (later environments'
+	// These apply to all subsequent actions in the session (later environments'
 	// onEnter/onExit actions and the task OnRun). Guarded by mu: written from the
 	// stdout-reading goroutine in runAction and read concurrently by executing
 	// tasks via EnvOverrides.
@@ -194,24 +183,21 @@ type Session struct {
 	// so they can be scrubbed from any logged output. Guarded by mu.
 	redactedValues map[string]bool
 
-	// HARD INVARIANT — session reuse (deferred, see the package comment at the
-	// top of this file):
+	// cred is the run-as-user identity every action runs under, or nil.
 	//
-	//   A SESSION MUST NOT BE REUSED ACROSS DIFFERENT RUN-AS-USER IDENTITIES.
-	//   ANY REUSE KEY MUST INCLUDE cred's IDENTITY.
-	//
-	// A session accumulates environment state — static Environment.variables and
-	// dynamic openjd_env exports — that persists for its lifetime. Reusing one
-	// across identities hands one user's exported secrets to another user's
-	// tasks, silently defeating isolation while every other control still looks
-	// correct.
+	// Sessions are not reused (see the package comment). Any session reuse
+	// must not cross run-as-user identities, so a reuse key must include
+	// cred's identity: a session accumulates environment state (static
+	// Environment.variables and dynamic openjd_env exports) for its lifetime,
+	// and reusing it across identities hands one user's exported secrets to
+	// another user's tasks.
 	cred *isolation.Credential
 
 	// baseEnv is the daemon environment already filtered by the worker's
-	// isolation.env_passthrough allowlist, computed ONCE here at session
+	// isolation.env_passthrough allowlist, computed once at session
 	// creation. Job-supplied variables (static Environment.variables, dynamic
 	// openjd_env exports, task template vars) are layered on top at action
-	// time via envutil.BuildFromBase and are NEVER filtered — only what is
+	// time via envutil.BuildFromBase and are never filtered; only what is
 	// inherited from the daemon is subject to the allowlist. Equal to the full
 	// (unfiltered) daemon environment when the assignment carries no
 	// run_as_user isolation, so the no-isolation path inherits the daemon
@@ -225,12 +211,11 @@ type Session struct {
 // ResolveAction returns the action to start for a: the same one when its
 // command has no worker.commands entry, otherwise a copy that runs the entry's
 // executable with the entry's arguments ahead of the action's own. a itself is
-// never changed — it belongs to the assignment message, which a retry reuses.
+// never changed: it belongs to the assignment message, which a retry reuses.
 //
 // Both places that start job-supplied commands call this: the executor for a
-// task's onRun and runAction's callers for an environment's onEnter/onExit. A
-// third launch site added without it would silently ignore the operator's
-// mapping, so go through here.
+// task's onRun and runAction's callers for an environment's onEnter/onExit.
+// Any new launch site must call it too, or it ignores the operator's mapping.
 func (s *Session) ResolveAction(a *protocol.Action) *protocol.Action {
 	if a == nil {
 		return nil
@@ -254,14 +239,13 @@ func (s *Session) PathMappingRulesFile() string { return s.pathMapFile }
 // rules. Exposed to format strings as Session.HasPathMappingRules.
 func (s *Session) HasPathMappingRules() bool { return s.hasPathMap }
 
-// ExprBudget returns this assignment's shared [fmtres.AssignmentBudget] --
-// see the exprBudget field's own doc comment. Callers resolving this
-// session's task action (internal/worker/executor) or an environment's
-// ENTRY-side actions (this package's own enterOne, via resolveEnvEntry) pass
-// this SAME object to every fmtres phase-3 call so the assignment's total
-// LIVE resolved-position and retained-byte spend is charged in one place.
-// resolveEnvAction (the EXIT/teardown path, via ExitEnvironments)
-// deliberately does NOT use it -- see that method's own doc comment.
+// ExprBudget returns this assignment's shared [fmtres.AssignmentBudget] (see
+// the exprBudget field). Callers resolving this session's task action
+// (internal/worker/executor) or an environment's entry-side actions (enterOne,
+// via resolveEnvEntry) pass this object to every fmtres phase-3 call, so the
+// assignment's total live resolved-position and retained-byte spend is
+// charged in one place. resolveEnvAction, the teardown path reached via
+// ExitEnvironments, does not use it; see that method's doc comment.
 func (s *Session) ExprBudget() *fmtres.AssignmentBudget { return s.exprBudget }
 
 // WriteEmbeddedFiles materializes files into the session working directory.
@@ -270,8 +254,8 @@ func (s *Session) ExprBudget() *fmtres.AssignmentBudget { return s.exprBudget }
 //
 // Each file's Runnable flag is honored (execute permission set) and its
 // EndOfLine value is applied before writing. Returns an error naming the
-// first file that could not be written, which the caller should use to fail
-// the task via the established pre-execution failure path.
+// first file that could not be written, which the caller uses to fail the
+// task through its pre-execution failure path.
 func (s *Session) WriteEmbeddedFiles(files []protocol.EmbeddedFile) error {
 	return writeEmbeddedFiles(s.WorkDir, files, s.cred)
 }
@@ -319,18 +303,16 @@ func (s *Session) ActiveTaskIDs() []string {
 }
 
 // ExitEnvironments runs each entered environment's OnExit action in reverse
-// entry order, ensuring host state is restored predictably regardless of
-// session outcome.
+// entry order, whatever the session's outcome.
 //
 // All teardown actions are attempted even if an earlier one fails. Errors
-// from individual OnExit actions are logged as warnings, collected, and the
-// first error encountered is returned.
+// from individual OnExit actions are logged as warnings and the first one is
+// returned.
 //
-// ExitEnvironments is idempotent: after it is called the first time the
-// entered-environments list is cleared, so subsequent calls are no-ops.
-// [Manager.Cleanup] always calls ExitEnvironments, so callers that invoke it
-// explicitly beforehand (e.g., on the cancellation path) do not need to skip
-// the Cleanup call — the second invocation will be a safe no-op.
+// ExitEnvironments is idempotent: the first call clears the
+// entered-environments list, so later calls are no-ops. [Manager.Cleanup]
+// always calls ExitEnvironments, so a caller that calls it beforehand (e.g.
+// on the cancellation path) still calls Cleanup.
 func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) error {
 	s.mu.Lock()
 	envs := make([]protocol.AssignEnvironment, len(s.enteredEnvs))
@@ -345,8 +327,8 @@ func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) err
 			continue
 		}
 		// Resolve {{...}} format strings in the onExit action and the environment
-		// variable values against the environment-action scope.  Continue teardown
-		// of the remaining environments even if one fails to resolve.
+		// variable values against the environment-action scope. Teardown of the
+		// remaining environments continues if one fails to resolve.
 		resolvedExit, resolvedVars, err := s.resolveEnvAction(env, env.OnExit, env.Variables)
 		if err != nil {
 			logger.WarnContext(
@@ -392,19 +374,17 @@ func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) err
 // once at worker startup and shared by the executor for the process lifetime.
 type Manager struct {
 	// sessionRoot is the directory under which <sessionID> working
-	// directories are created DIRECTLY (no further nesting). Deliberately NOT
-	// the worker's data_dir: see workerconfig.LoadOrCreateWorkerID's doc and
-	// cmd/sqi-worker's effectiveSessionRoot for why the two must never be the
-	// same directory again.
+	// directories are created directly (no further nesting). It is not the
+	// worker's data_dir: see workerconfig.LoadOrCreateWorkerID's doc and
+	// cmd/sqi-worker's effectiveSessionRoot for why the two must differ.
 	sessionRoot string
 	// sessionRootMode is the mode sessionRoot is created at when it does not
-	// already exist (os.MkdirAll never touches an existing directory's mode —
-	// see prepareSessionsDir). Defaults to 0711 (traversable-from-birth)
-	// unless overridden via
-	// WithSessionRootMode — see cmd/sqi-worker's effectiveSessionRoot for why
-	// production chooses 0750 instead for the non-root DataDir fallback (real
-	// isolation cannot function without root regardless of directory
-	// permissions, so that location gains nothing from the wider 0711).
+	// already exist (os.MkdirAll never changes an existing directory's mode;
+	// see prepareSessionsDir). Defaults to 0711, traversable from creation,
+	// unless overridden via WithSessionRootMode. cmd/sqi-worker's
+	// effectiveSessionRoot passes 0750 for the non-root fallback under
+	// data_dir: run-as-user isolation needs root whatever the directory
+	// permissions, so that location gains nothing from 0711.
 	sessionRootMode    os.FileMode
 	keepFailedSessions bool
 	// provider resolves run-as-user credentials for isolated assignments.
@@ -426,19 +406,19 @@ type Manager struct {
 	logger     *slog.Logger
 	// commands maps a command name a job runs to the executable to run in its
 	// place (worker.commands). Nil resolves nothing. Handed to every session so
-	// both launch sites — the executor's task action and an environment's
-	// onEnter/onExit — resolve a name the same way.
+	// both launch sites (the executor's task action and an environment's
+	// onEnter/onExit) resolve a name the same way.
 	commands *commands.Resolver
 }
 
-// ManagerOption customizes a Manager constructed by NewManager. See
-// WithSessionRootMode for the option currently defined.
+// ManagerOption customizes a Manager constructed by NewManager, e.g.
+// WithSessionRootMode or WithCommands.
 type ManagerOption func(*Manager)
 
 // WithSessionRootMode overrides the mode sessionRoot is created at (see the
-// Manager.sessionRootMode field doc). Only takes effect the first time
-// sessionRoot is created — os.MkdirAll never touches an existing directory's
-// mode — so it has no effect on a session root that already exists.
+// Manager.sessionRootMode field doc). It has no effect on a session root that
+// already exists, because os.MkdirAll never changes an existing directory's
+// mode.
 func WithSessionRootMode(mode os.FileMode) ManagerOption {
 	return func(m *Manager) { m.sessionRootMode = mode }
 }
@@ -450,9 +430,9 @@ func WithCommands(r *commands.Resolver) ManagerOption {
 }
 
 // NewManager returns a Manager that stores session working directories
-// directly under sessionRoot (<sessionRoot>/<sessionID>/) — the caller (in
-// production, cmd/sqi-worker's effectiveSessionRoot) has already resolved
-// this to the right location, separate from the worker's data_dir.
+// directly under sessionRoot (<sessionRoot>/<sessionID>/). The caller
+// (cmd/sqi-worker's effectiveSessionRoot) resolves sessionRoot to a location
+// separate from the worker's data_dir.
 // keepFailedSessions controls whether working directories for failed
 // sessions are retained for post-mortem inspection. provider resolves
 // run-as-user credentials for isolated assignments (see Manager.Create);
@@ -478,13 +458,13 @@ func NewManager(sessionRoot string, keepFailedSessions bool, provider isolation.
 }
 
 // resolveCredential resolves the run-as-user credential for an isolated
-// assignment and secures workDir for it (chown + chmod 0700 — see
+// assignment and secures workDir for it (chown + chmod 0700; see
 // isolation.SecureWorkDir). Returns (nil, nil) when the assignment carries no
-// isolation, which is the pre-isolation default.
+// isolation.
 //
-// On failure it removes workDir itself, so Create can return a clean
-// (nil, err) without duplicating cleanup, and never falls back to the daemon
-// identity: that would run job code privileged while looking isolated.
+// On failure it removes workDir itself, so Create can return (nil, err)
+// without further cleanup. It never falls back to the daemon identity: that
+// would run job code privileged while looking isolated.
 func (m *Manager) resolveCredential(ctx context.Context, msg *protocol.AssignMsg, sessionID, workDir string) (*isolation.Credential, error) {
 	if msg.Isolation == nil {
 		return nil, nil
@@ -502,11 +482,9 @@ func (m *Manager) resolveCredential(ctx context.Context, msg *protocol.AssignMsg
 			sessionID, msg.Isolation.User, err)
 	}
 	if err := isolation.SecureWorkDir(workDir, cred); err != nil {
-		// cred was already obtained above; this function is returning an
-		// error instead of the credential, so it owns closing it here — the
-		// caller never sees it to close it itself (the Credential lifecycle:
-		// every path that obtains one either returns it for the session to
-		// own and close, or closes it itself before erroring out).
+		// Every path that obtains a credential either returns it for the
+		// session to own and close, or closes it before returning an error.
+		// The caller never sees this one, so close it here.
 		closeCredential(ctx, cred, sessionID, m.logger)
 		if rmErr := os.RemoveAll(workDir); rmErr != nil {
 			m.logger.WarnContext(ctx, "session: cleanup after secure-workdir failure",
@@ -517,28 +495,22 @@ func (m *Manager) resolveCredential(ctx context.Context, msg *protocol.AssignMsg
 	return cred, nil
 }
 
-// closeCredentialFn is the seam for cred.Close(), swappable in tests so a
-// counting wrapper can assert Close is invoked exactly once per session
-// across every path that owns a credential — including every error path in
-// Manager.Create, not just the normal Manager.Cleanup path — mirroring the
-// applyCredential-style seam already used for isolation.Apply in this
-// package and internal/worker/executor. Without this seam nothing could
-// distinguish a dropped Close() call from a correct one: POSIX's
-// Credential.Close is a no-op, so a missing call is invisible there, but on
-// Windows Close unloads a mounted profile hive and closes a real token
-// handle — a dropped call leaks both for the worker's lifetime.
+// closeCredentialFn calls cred.Close(). Tests swap it for a counting wrapper
+// to assert Close runs exactly once per session on every path that owns a
+// credential, including each error path in Manager.Create as well as
+// Manager.Cleanup. It is a seam like applyCredential. POSIX's
+// Credential.Close is a no-op, so a missing call is invisible there; on
+// Windows Close unloads a mounted profile hive and closes a token handle,
+// and a missing call leaks both for the worker's lifetime.
 var closeCredentialFn = func(cred *isolation.Credential) error { return cred.Close() }
 
-// closeCredential closes cred if non-nil, logging (not returning) any error —
-// mirroring the other best-effort cleanup helpers in this file. A nil cred
-// (no run_as_user isolation) is a safe no-op, matching every other credential
-// helper's convention in this package.
+// closeCredential closes cred if non-nil, logging rather than returning any
+// error, like the other best-effort cleanup helpers in this file. A nil cred
+// (no run_as_user isolation) is a no-op.
 //
-// POSIX's Credential.Close is a no-op, so this has no observable effect
-// there; on Windows it releases a real token handle and unloads a mounted
-// profile hive, which is exactly why this function exists as the credential's
-// single, clear lifecycle owner rather than something each call site releases
-// ad hoc.
+// Every path that releases a credential goes through here. On POSIX it has
+// no observable effect; on Windows it releases a token handle and unloads a
+// mounted profile hive.
 func closeCredential(ctx context.Context, cred *isolation.Credential, sessionID string, logger *slog.Logger) {
 	if cred == nil {
 		return
@@ -550,42 +522,31 @@ func closeCredential(ctx context.Context, cred *isolation.Credential, sessionID 
 }
 
 // prepareSessionsDir ensures m.sessionRoot (and any missing parent) exists,
-// then — only for an isolated assignment — validates its ancestors, before
-// returning it unchanged for Create to build <sessionID> under. Extracted
-// from Create to keep that function's cyclomatic complexity within the
-// project limit.
+// validates its ancestors when the assignment is isolated, and returns it
+// unchanged for Create to build <sessionID> under. It is a
+// separate function to keep Create within the cyclomatic-complexity limit.
 //
-// Created directly at m.sessionRootMode (0711 by default — search for
-// everyone, nothing readable/writable beyond the owner; see
-// WithSessionRootMode for how production picks 0750 instead for the
-// non-root DataDir fallback) rather than created narrow and widened
-// afterward: os.MkdirAll never touches the mode of a directory that already
-// exists, so this only ever affects a directory this call itself creates for
-// the first time. That distinction is the whole point of this package's
-// isolation split — creating traversable FROM BIRTH and mutating an
-// EXISTING directory's mode to become traversable are different operations,
-// and only the latter (what an earlier version of this function did to
-// m.dataDir and dataDir/"sessions" unconditionally, isolated session or not)
-// is the anti-pattern being eliminated. m.sessionRoot is never the worker's
-// data_dir or an ancestor shared with the persistent worker-id file — see
-// cmd/sqi-worker's effectiveSessionRoot and workerconfig.LoadOrCreateWorkerID's
-// own doc for the split this depends on.
+// The directory is created at m.sessionRootMode (0711 by default: search for
+// everyone, nothing readable or writable beyond the owner; see
+// WithSessionRootMode) rather than created narrow and widened afterward.
+// os.MkdirAll never changes the mode of a directory that already exists, so
+// this affects only a directory this call creates; an existing directory's
+// mode is never widened to make it traversable. m.sessionRoot is never
+// the worker's data_dir or an ancestor shared with the persistent worker-id
+// file; see cmd/sqi-worker's effectiveSessionRoot and
+// workerconfig.LoadOrCreateWorkerID.
 //
-// Ownership is deliberately left as the daemon's (root): many different
-// run-as-user identities share this one root directory, so chowning it to
-// any single one would grant that user nothing (search doesn't require
-// ownership) while breaking every other user's sessions.
+// Ownership stays with the daemon (root): many run-as-user identities share
+// this directory, so chowning it to one would grant that user nothing
+// (search does not require ownership) and break every other user's sessions.
 //
-// isolated is true exactly when msg.Isolation != nil — the moment the
-// worker first learns an identity is in play. cmd/sqi-worker's boot-time
-// validateIsolationAncestors only runs when isolation.required is set
-// (being root and actually receiving an isolated assignment are not the
-// same predicate), so every OTHER isolated assignment is validated HERE
-// instead — the IDENTICAL check with the IDENTICAL actionable message — so
-// a non-traversable ancestor (e.g. an operator-chosen worker.session_dir
-// that is narrower than expected) fails only THIS task, not the whole
-// worker. A non-isolated assignment skips this: no other identity will ever
-// need to chdir through sessionsDir, so there is nothing to validate.
+// isolated is true exactly when msg.Isolation != nil. cmd/sqi-worker's
+// boot-time validateIsolationAncestors runs only when isolation.required is
+// set, so every other isolated assignment is validated here, with the same
+// check and message: a non-traversable ancestor (e.g. an operator-chosen
+// worker.session_dir narrower than expected) fails only this task, not the
+// whole worker. A non-isolated assignment skips the check: no other identity
+// needs to chdir through sessionsDir.
 func (m *Manager) prepareSessionsDir(sessionID string, isolated bool) (string, error) {
 	if err := os.MkdirAll(m.sessionRoot, m.sessionRootMode); err != nil {
 		return "", fmt.Errorf("session %s: create session root %q: %w", sessionID, m.sessionRoot, err)
@@ -605,8 +566,8 @@ func (m *Manager) prepareSessionsDir(sessionID string, isolated bool) (string, e
 //
 // If any OnEnter action fails, already-entered environments are exited in
 // reverse order and the working directory is removed before the
-// error is returned. Create always returns either a ready-to-use session and
-// nil error, or nil and a non-nil error — never both.
+// error is returned. Create returns either a ready-to-use session and a nil
+// error, or nil and a non-nil error.
 //
 // On success the returned Session is ready for task execution.
 func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session, error) {
@@ -618,20 +579,19 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	}
 
 	// WorkDir must be absolute: it becomes cmd.Dir for every action and the base
-	// for Task.File.* / Env.File.* paths. A relative data_dir (e.g. the Makefile's
-	// ./.run/workers/worker-N) would otherwise yield a relative command path that,
-	// combined with cmd.Dir, the forked child resolves against the session dir
-	// itself — doubling the path and failing with "no such file or directory".
+	// for Task.File.* / Env.File.* paths. A relative session root (e.g. under the
+	// Makefile's ./.run/workers) would otherwise yield a relative command path
+	// that the child resolves against cmd.Dir, doubling the path and failing
+	// with "no such file or directory".
 	workDir, err := filepath.Abs(filepath.Join(sessionsDir, sessionID))
 	if err != nil {
 		return nil, fmt.Errorf("session %s: resolve absolute working directory: %w", sessionID, err)
 	}
 	// A workDir that will run job code under a different OS identity is
-	// created 0700 from the start (owner-only) rather than relying solely on
-	// the chown+chmod below to narrow it after the fact. Unlike sessionsDir
-	// above, this leaf directory belongs to exactly one session/one target
-	// user and MUST stay private — SecureWorkDir (called via
-	// resolveCredential below) narrows it further to cred's own uid/gid.
+	// created 0700 (owner-only) rather than narrowed afterward. Unlike
+	// sessionsDir, this directory belongs to one session and one target user
+	// and must stay private; SecureWorkDir (called via resolveCredential
+	// below) then chowns it to cred's uid/gid.
 	workDirMode := os.FileMode(0o750)
 	if msg.Isolation != nil {
 		workDirMode = 0o700
@@ -641,19 +601,19 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	}
 
 	// Resolve the OS identity before any job-supplied code runs. onEnter is
-	// job code (site 1 of the two launch sites that must carry a credential;
-	// the executor's task-process launch is site 2) — it must never run as
-	// the daemon while looking isolated.
+	// job code, one of the two launch sites that must carry a credential (the
+	// executor's task-process launch is the other), and must never run as the
+	// daemon while looking isolated.
 	cred, err := m.resolveCredential(ctx, msg, sessionID, workDir)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build the session's filtered base environment exactly once, here. See
-	// the baseEnv field doc: job-supplied variables are layered on top at
-	// action time and are never subject to this filter. Policy.Enabled is
-	// false when cred is nil, which makes BaseEnv return the full (unfiltered)
-	// daemon environment — the no-isolation path is byte-for-byte unchanged.
+	// Build the session's filtered base environment once, here. See the
+	// baseEnv field doc: job-supplied variables are layered on top at action
+	// time and are never subject to this filter. Policy.Enabled is false when
+	// cred is nil, which makes BaseEnv return the full, unfiltered daemon
+	// environment.
 	envPolicy := envutil.Policy{
 		Enabled:   cred != nil,
 		Allowlist: m.isolationCfg.EnvPassthrough,
@@ -662,17 +622,12 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	if cred != nil {
 		// Point HOME/USERPROFILE at the target user; the daemon's own is
 		// unwritable to them, and DCCs write configs wherever these point.
-		// When the resolved identity has no discoverable home directory
-		// (envutil's own doc on minimalBase flags this as a MUST-rewrite: NSS
-		// resolution can legitimately come back empty — see
-		// isolation.unixProvider.resolveIdentityViaNSS), falling through to
-		// envutil.BaseEnv's inherited HOME would silently hand the task the
-		// DAEMON's home (typically /root) — writable by the daemon, not by
-		// this task's identity, i.e. exactly the failure this rewrite exists
-		// to prevent. Fall back to the session's own working directory
-		// instead: it is always workDir-owned by cred (via SecureWorkDir,
-		// called just above by resolveCredential) and therefore always
-		// writable by the identity that needs a HOME.
+		// The resolved identity can have no home directory (NSS resolution can
+		// come back empty; see isolation.unixProvider.resolveIdentityViaNSS),
+		// and keeping envutil.BaseEnv's inherited HOME would then hand the
+		// task the daemon's home (typically /root), which this identity cannot
+		// write. Fall back to the session's working directory, which
+		// SecureWorkDir (called by resolveCredential above) made cred's own.
 		home := cred.Home
 		if home == "" {
 			home = workDir
@@ -681,9 +636,9 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		baseEnv["USERPROFILE"] = home
 
 		// APPDATA/LOCALAPPDATA are derived from the target's own profile, never
-		// inherited: minimalBase deliberately excludes them, because the
-		// daemon's values point into SYSTEM's profile and every DCC writes
-		// preferences, license caches, and crash dumps through them.
+		// inherited: minimalBase excludes them, because the daemon's values
+		// point into SYSTEM's profile and DCCs write preferences, license
+		// caches, and crash dumps through them.
 		if runtime.GOOS == "windows" {
 			baseEnv["APPDATA"] = filepath.Join(home, "AppData", "Roaming")
 			baseEnv["LOCALAPPDATA"] = filepath.Join(home, "AppData", "Local")
@@ -699,13 +654,12 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		slog.String("job_id", msg.JobID),
 	)
 
-	// Write the OpenJD path-mapping file once, here at session creation, so that
-	// BOTH environment actions (entered below) and the task action (run later by
-	// the executor) can rely on Session.PathMappingRulesFile pointing at a real
-	// file. The executor does not write it, avoiding a double-write.
-	// Write the OpenJD path-mapping file only when the translation_file delivery
-	// is enabled (or, for legacy assignments with no delivery set, fall back to
-	// "write if rules exist" to preserve prior behavior).
+	// Write the OpenJD path-mapping file once, at session creation, so that
+	// both environment actions (entered below) and the task action (run later
+	// by the executor) find a real file at Session.PathMappingRulesFile. The
+	// executor does not write it. It is written only when the
+	// translation_file delivery is enabled; an assignment with no deliveries
+	// set gets it whenever it carries rules.
 	hasPathMap := len(msg.PathMap) > 0 && translationFileEnabled(msg.PathDeliveries)
 	var pathMapFile string
 	if hasPathMap {
@@ -739,21 +693,18 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		cred:           cred,
 		baseEnv:        baseEnv,
 		commands:       m.commands,
-		// Fresh per assignment -- set here, before enterEnvironments runs
-		// below, so every environment table this session builds during
-		// entry already shares it. See the exprBudget field's own doc
-		// comment.
+		// Fresh per assignment, and set before enterEnvironments runs so
+		// every environment table built during entry shares it. See the
+		// exprBudget field.
 		exprBudget: fmtres.NewAssignmentBudget(m.exprLimits),
 	}
 
 	// Enter environments in declaration order.
 	if err := s.enterEnvironments(ctx, msg.Environments, m.logger); err != nil {
-		// enterEnvironments already ran reverse teardown on already-entered
-		// environments. Remove the working directory so the caller gets a clean
-		// nil, err return and does not need to call Cleanup on failure. The
-		// session (and its s.cred) is discarded along with it — this is the
-		// last error path in Create that already obtained a credential, so
-		// close it here before returning.
+		// enterEnvironments already tore down the entered environments in
+		// reverse. Remove the working directory so the caller gets nil, err
+		// and need not call Cleanup. The session is discarded, so close its
+		// credential here.
 		closeCredential(ctx, cred, sessionID, m.logger)
 		if rmErr := os.RemoveAll(workDir); rmErr != nil {
 			m.logger.WarnContext(
@@ -788,19 +739,17 @@ func (m *Manager) Cleanup(ctx context.Context, s *Session, failed bool) {
 		)
 	}
 
-	// The session's run-as-user credential (if any) is done being used the
-	// moment the session ends — this is the credential's normal-path lifecycle
-	// owner, mirroring the error-path closeCredential calls in Manager.Create.
-	// Closed unconditionally here (even when keepFailedSessions retains the
-	// WORKING DIRECTORY below) since retaining files on disk for inspection
-	// has nothing to do with whether the in-memory/OS credential handle is
-	// still needed.
+	// The session's run-as-user credential (if any) is not needed after the
+	// session ends; this is where the normal path closes it, as Create's
+	// error paths do. It is closed even when keepFailedSessions retains the
+	// working directory below: files kept for inspection do not need the
+	// credential handle.
 	closeCredential(ctx, s.cred, s.ID, m.logger)
 
 	// Retain the working directory on failure when the debug flag is set.
 	if failed && m.keepFailedSessions {
 		m.logger.InfoContext(
-			ctx, "session: retaining failed session directory for inspection (--keep-failed-sessions is set)",
+			ctx, "session: retaining failed session directory for inspection (worker.keep_failed_sessions is set)",
 			slog.String("session_id", s.ID),
 			slog.String("work_dir", s.WorkDir),
 		)
@@ -855,11 +804,10 @@ func (s *Session) enterEnvironments(ctx context.Context, envs []protocol.AssignE
 // On success, env is appended to s.enteredEnvs so ExitEnvironments includes it
 // in teardown.
 //
-// enterOne is only called from enterEnvironments which runs during Create,
-// before the session is returned to (and shared with) other goroutines.
-// No lock is needed on s.enteredEnvs here; the mu lock is only required for
-// activeTasks (modified during concurrent task execution) and the enteredEnvs
-// clear in ExitEnvironments (called after Create returns).
+// enterOne is called only from enterEnvironments, during Create, before the
+// session is shared with other goroutines, so it appends to s.enteredEnvs
+// without the mu lock. The lock guards activeTasks (changed during
+// concurrent task execution) and the enteredEnvs clear in ExitEnvironments.
 func (s *Session) enterOne(ctx context.Context, env protocol.AssignEnvironment, logger *slog.Logger) error {
 	resolvedEnter, resolvedVars, resolvedFiles, err := s.resolveEnvEntry(env)
 	if err != nil {
@@ -899,8 +847,8 @@ func (s *Session) enterOne(ctx context.Context, env protocol.AssignEnvironment, 
 		)
 	}
 
-	// Record as entered so ExitEnvironments will include it in reverse-order teardown.
-	// No lock needed — enterOne is only called from Create before the session is shared.
+	// Record as entered so ExitEnvironments includes it in reverse-order
+	// teardown. No lock: the session is not shared yet.
 	s.enteredEnvs = append(s.enteredEnvs, env)
 	return nil
 }
@@ -908,8 +856,8 @@ func (s *Session) enterOne(ctx context.Context, env protocol.AssignEnvironment, 
 // envScope builds the environment-action format-string scope: Param.<n> /
 // RawParam.<n> (job parameters), Session.WorkingDirectory, the path-mapping
 // variables, and Env.File.<name> for each of the given environment's embedded
-// files. Task.Param.* is deliberately NOT in scope — environments are
-// session-scoped, entered once, not per task.
+// files. Task.Param.* is not in scope: environments are session-scoped and
+// entered once, not per task.
 //
 // It returns an error naming the offending file when an embedded filename is
 // invalid.
@@ -921,57 +869,48 @@ func (s *Session) envScope(files []protocol.EmbeddedFile) (fmtstring.MapScope, e
 	return scope, nil
 }
 
-// envFileResolver resolves an environment's embedded-file DATA against the ONE
+// envFileResolver resolves an environment's embedded-file data against the
 // scope (base spec) or symbol table (EXPR) that [Session.resolveEnvParts]
-// already built for that environment's action and variable values.
+// built for that environment's action and variable values.
 //
-// It is returned as a closure rather than performed inline because only ONE of
-// resolveEnvParts' two callers wants it: entry materializes files, teardown
-// does not (see [Session.resolveEnvAction]). Handing the caller the resolution
-// — rather than a bool plus a fourth return value — is also what keeps the two
-// callers' different error wrapping ("resolve embedded file data: %w" versus
-// "resolve environment: %w") at the call sites where it belongs.
+// It is a closure because only one of resolveEnvParts' two callers wants it:
+// entry materializes files, teardown does not (see
+// [Session.resolveEnvAction]). Each caller keeps its own error wrapping
+// ("resolve embedded file data: %w" versus "resolve environment: %w").
 type envFileResolver func([]protocol.EmbeddedFile) ([]protocol.EmbeddedFile, error)
 
-// resolveEnvParts is the ONE implementation of environment resolution, shared
-// by [Session.resolveEnvEntry] (onEnter, at Create) and
+// resolveEnvParts is the single implementation of environment resolution,
+// shared by [Session.resolveEnvEntry] (onEnter, at Create) and
 // [Session.resolveEnvAction] (onExit, at teardown). It resolves the action and
-// the variable values against ONE environment-action scope/table and returns a
-// closure that resolves embedded-file data against that same scope/table.
+// the variable values against one environment-action scope or table and
+// returns a closure that resolves embedded-file data against the same one.
 //
-// THE TWO PATHS ARE ONE FUNCTION ON PURPOSE. As two, they can drift: a
-// change such as the step-template let: fold ([fmtres.EnvSymbols]) applied
-// at entry and missed at teardown makes an onExit referencing a step-template
-// binding fail as an unknown symbol — and teardown is the path whose failures
-// [Session.ExitEnvironments] logs as a warning and swallows, so the
-// divergence would be quiet. Any §3.6.2 ordering constraint lands in exactly
-// one place.
+// Entry and teardown must resolve the same way. If they differed, for example
+// by folding in the step template's let: bindings ([fmtres.EnvSymbols]) only
+// at entry, an onExit referencing a step-template binding would fail as an
+// unknown symbol, and [Session.ExitEnvironments] logs such a failure as a
+// warning and continues. Any OpenJD Template Schemas §3.6.2 ordering
+// constraint belongs here.
 //
-// s.msg.EXPR selects the resolution family: a
-// base-spec assignment (EXPR false, the zero value) takes exactly the
-// fmtres.EnvScope/ResolveAction/ResolveVars/ResolveEmbeddedFiles path this
-// package has always taken, byte for byte — mirroring
-// [resolveAssignmentBaseSpec] in internal/worker/executor's identical split.
-// Only when EXPR is true does it build the phase-3 symbol table
-// (fmtres.EnvSymbols), evaluate env's own let: block into it EXACTLY ONCE
-// (fmtres.ApplyEnvLet — see that function's own doc comment: calling it a
-// second time over the same table makes every binding fail the shadow check),
-// and then resolve the action, the Variables, and (via the returned closure)
-// the EmbeddedFiles against that ONE table via ResolveActionExpr/
-// ResolveVarsExpr/ResolveEmbeddedFilesExpr.
+// s.msg.EXPR selects the resolution family. A base-spec assignment (EXPR
+// false, the zero value) takes the
+// fmtres.EnvScope/ResolveAction/ResolveVars/ResolveEmbeddedFiles path, like
+// [resolveAssignmentBaseSpec] in internal/worker/executor. When EXPR is true
+// it builds the phase-3 symbol table (fmtres.EnvSymbols), evaluates env's own
+// let: block into it exactly once (fmtres.ApplyEnvLet: a second call over the
+// same table makes every binding fail the shadow check), and resolves the
+// action, the Variables, and (via the returned closure) the EmbeddedFiles
+// against that table via ResolveActionExpr/ResolveVarsExpr/
+// ResolveEmbeddedFilesExpr.
 //
-// budget is a FUNCTION, not a value, and that is the one difference between
-// the two callers that must survive being unified: entry passes a func
-// returning the SHARED s.exprBudget, teardown passes [Session.teardownBudget],
-// which returns a FRESH budget per call. Both are called once per fmtres call
-// below, so teardown keeps its own throwaway ledger per evaluation exactly as
-// it did when this was two functions — see resolveEnvAction and teardownBudget
-// for why sharing one across a teardown is a silently skipped onExit. It is
-// never called on the base-spec path, which meters nothing.
+// budget is a function, called once per fmtres call. Entry passes one that
+// returns the shared s.exprBudget; teardown passes [Session.teardownBudget],
+// which returns a fresh budget per call, so each teardown evaluation has its
+// own ledger (see resolveEnvAction and teardownBudget). It is never called on
+// the base-spec path, which meters nothing.
 //
-// Errors are returned UNWRAPPED (the let: block's are wrapped once, as
-// "let bindings: %w", because both callers do that identically); each caller
-// adds its own context.
+// Errors are returned unwrapped, except the let: block's, which are wrapped
+// once as "let bindings: %w"; each caller adds its own context.
 func (s *Session) resolveEnvParts(
 	env protocol.AssignEnvironment,
 	action *protocol.Action,
@@ -981,17 +920,17 @@ func (s *Session) resolveEnvParts(
 	if !s.msg.EXPR {
 		// Build the environment-action scope (Param.*, RawParam.*,
 		// Session.WorkingDirectory and Env.File.<name> for this environment's
-		// embedded files — NOT Task.Param.*).  The File paths are computed first
-		// so they are available before the action, the variable values, and the
-		// embedded-file data are resolved against the same scope.
+		// embedded files, not Task.Param.*). The File paths are computed first
+		// so the action, the variable values, and the embedded-file data can
+		// all reference them.
 		scope, err := s.envScope(env.EmbeddedFiles)
 		if err != nil {
 			return nil, nil, nil, err
 		}
 
 		// Resolve {{...}} format strings in the action and the environment
-		// variable values.  A bad reference fails the environment cleanly
-		// before any side effects.
+		// variable values. A bad reference fails the environment before any
+		// side effects.
 		resolvedAction, err := fmtres.ResolveAction(action, scope)
 		if err != nil {
 			return nil, nil, nil, err
@@ -1000,7 +939,7 @@ func (s *Session) resolveEnvParts(
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		// Embedded-file data resolves against the SAME environment scope (so
+		// Embedded-file data resolves against the same environment scope (so
 		// file data may reference Param.*, Session.*, or another Env.File.*
 		// path), for the caller that asks for it.
 		return resolvedAction, resolvedVars, func(files []protocol.EmbeddedFile) ([]protocol.EmbeddedFile, error) {
@@ -1009,27 +948,26 @@ func (s *Session) resolveEnvParts(
 	}
 
 	// EnvSymbols also folds in the enclosing step template's let-bound names
-	// for a step environment (Template Schemas §3.6.2 row 1) — see its own doc
-	// comment; this function does not apply that block itself. Without it,
-	// teardown fails the same way entry did: an onExit action referencing a
-	// step-template binding is an unknown symbol.
+	// for a step environment (Template Schemas §3.6.2 row 1); see its doc
+	// comment. This function does not apply that block itself. Without the
+	// fold, an onExit action referencing a step-template binding is an
+	// unknown symbol.
 	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap, budget())
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// Variables FIRST, before this environment's own let: block is bound —
-	// §3.6.2 row 4 grants those names to the script's children (actions,
-	// embeddedFiles), and Variables is a sibling of Script, not a descendant.
-	// Phase 2 checks Variables against the pre-let table for exactly this
-	// reason (checkEnvironmentExpressions, exprcheck.go); resolving them here
-	// is how phase 3 matches it. See fmtres.ApplyEnvLet's doc comment.
+	// Variables are resolved before this environment's own let: block is
+	// bound: §3.6.2 row 4 grants those names to the script's children
+	// (actions, embeddedFiles), and Variables is a sibling of Script, not a
+	// descendant. Phase 2 checks Variables against the pre-let table
+	// (checkEnvironmentExpressions, exprcheck.go), and this matches it at
+	// phase 3. See fmtres.ApplyEnvLet's doc comment.
 	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap, budget())
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
-	// Both resolutions below (the action, then EmbeddedFiles) reuse this same
-	// syms.
+	// Exactly one call over this table (see fmtres.ApplyEnvLet's doc comment).
+	// Both resolutions below, the action and then EmbeddedFiles, reuse syms.
 	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap, budget()); err != nil {
 		return nil, nil, nil, fmt.Errorf("let bindings: %w", err)
 	}
@@ -1043,10 +981,10 @@ func (s *Session) resolveEnvParts(
 }
 
 // resolveEnvEntry resolves everything enterOne needs for one environment
-// entry — the onEnter action, the variable values, and the embedded files'
-// own data — against ONE environment-action scope/table. The resolution
-// itself is [Session.resolveEnvParts]; this method supplies the entry-side
-// budget (the SHARED s.exprBudget, charged across every table this assignment
+// entry (the onEnter action, the variable values, and the embedded files'
+// data) against one environment-action scope or table. The resolution itself
+// is [Session.resolveEnvParts]; this method supplies the entry-side budget
+// (the shared s.exprBudget, charged across every table this assignment
 // builds) and the entry-side error wrapping.
 //
 // Returns the resolved action copy (nil when env.OnEnter is nil), the
@@ -1067,56 +1005,36 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 	return resolvedEnter, resolvedVars, resolvedFiles, nil
 }
 
-// resolveEnvAction resolves an environment's action (onEnter or onExit) and its
-// variable values against the environment-action format-string scope/table
-// built from env — see [Session.resolveEnvParts], which it shares with
-// [Session.resolveEnvEntry]. Unlike resolveEnvEntry it never resolves embedded
-// file data: its only caller, [Session.ExitEnvironments], does not
-// re-materialize files on exit, and needs the scope/table only so onExit and
-// Variables may reference an Env.File.* path (so it discards resolveEnvParts'
-// file-resolving closure rather than calling it).
+// resolveEnvAction resolves an environment's onExit action and its variable
+// values against the environment-action format-string scope or table built
+// from env; see [Session.resolveEnvParts], which it shares with
+// [Session.resolveEnvEntry]. Unlike resolveEnvEntry it never resolves
+// embedded-file data: its only caller, [Session.ExitEnvironments], does not
+// re-materialize files on exit, and needs the scope only so onExit and
+// Variables may reference an Env.File.* path. It discards resolveEnvParts'
+// file-resolving closure.
 //
 // It returns the resolved action copy (nil when action is nil) and the resolved
 // variable map (nil when vars is nil), or an error naming the offending
 // reference when any value cannot be resolved.
 //
-// This method's EXPR path deliberately does NOT pass s.exprBudget to ApplyEnvLet/ResolveVarsExpr/
-// ResolveActionExpr, even though resolveEnvEntry's (entry-side) calls do.
-// resolveEnvAction is called ONLY from [Session.ExitEnvironments] (this
-// method's own doc comment above), which builds a FRESH table here and
-// re-evaluates the SAME environment's let: block a SECOND time -- so
-// charging it against the shared assignment budget double-counts bytes that
-// were already charged once at entry, for a table that no longer exists by
-// the time this one is built (the entry-time syms went out of scope when
-// resolveEnvEntry returned). Two environments each let-binding
-// 7 MB enter successfully at 14 MB, under the 20 MB assignment cap; teardown
-// re-evaluating both blocks a second time would re-charge to ~21 MB and trip
-// the budget -- and ExitEnvironments (session.go) treats a resolve error as
-// a WARNING and continues, so an exhausted budget would not merely fail the
-// task, it would SKIP every remaining environment's onExit (license
-// check-ins, daemon shutdowns, unmounts) with only a log line. A budget that
-// cannot avert the memory it is charging for -- the allocation happens
-// whether or not the charge is accepted -- must not be allowed to block
-// cleanup it cannot prevent the cost of. Per-table (LetRetainedBytes)
-// and per-Eval (OperationLimit/MemoryLimit) bounds still apply
-// to this exit-time table unconditionally; only the cross-table
-// ASSIGNMENT-WIDE ledger is exempted. See
-// TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap
-// (session_expr_budget_test.go) for the regression test.
+// The EXPR path does not charge s.exprBudget. Teardown builds a new table
+// and evaluates the environment's let: block a second time, so charging the
+// shared assignment budget would count bytes already charged at entry, for a
+// table already discarded. ExitEnvironments treats a resolve error as a
+// warning and continues, so an exhausted budget would skip each remaining
+// environment's onExit (license check-ins, daemon shutdowns, unmounts) with
+// only a log line, while the allocation it charges for happens anyway. The
+// per-table (LetRetainedBytes) and per-Eval (OperationLimit/MemoryLimit)
+// bounds still apply to the exit-time table; only the assignment-wide ledger
+// is exempt.
 //
-// What this path passes is [Session.teardownBudget], a FRESH budget PER CALL
-// carrying the host's configured LIMITS. One budget for the whole method,
-// passed to all four calls, would recreate the same skip in a new place: the
-// four calls' POSITION charges would accumulate against a single cap, so an
-// environment with 9,000 variables and a 1,500-arg onExit enters fine
-// (9,001 positions) and then fails teardown at position 10,001 -- and
-// ExitEnvironments logs a resolve failure and CONTINUES, so the onExit is
-// skipped.
-//
-// PASSING THE METHOD VALUE [Session.teardownBudget] -- rather than one budget
-// it produced -- is what carries both of the paragraphs above through
-// resolveEnvParts: that function calls it once per evaluation, so every
-// evaluation on this path still gets its OWN fresh ledger.
+// It passes the method value [Session.teardownBudget], which resolveEnvParts
+// calls once per evaluation, so each evaluation gets its own fresh budget
+// with the host's configured limits. A single budget shared by the whole
+// teardown would accumulate the evaluations' position charges against one
+// cap, so a large environment that entered within the limit could fail at
+// exit and have its onExit skipped.
 func (s *Session) resolveEnvAction(
 	env protocol.AssignEnvironment, action *protocol.Action, vars map[string]string,
 ) (*protocol.Action, map[string]string, error) {
@@ -1127,25 +1045,17 @@ func (s *Session) resolveEnvAction(
 	return resolvedAction, resolvedVars, nil
 }
 
-// teardownBudget returns a FRESH [fmtres.AssignmentBudget] carrying this
-// host's configured expression LIMITS and an EMPTY ledger, for one
-// environment-teardown evaluation.
+// teardownBudget returns a fresh [fmtres.AssignmentBudget] carrying this
+// host's configured expression limits and an empty ledger, for one
+// environment-teardown evaluation. Call it once per evaluation:
 //
-// CALL IT ONCE PER EVALUATION, never once per method. Both halves matter:
-//
-//   - SAME LIMITS. Passing nil instead would meter teardown against the
-//     built-in defaults rather than the operator's expr: configuration --
-//     silently, and only on this path.
-//   - FRESH, PER CALL. The assignment-wide ledger must not be charged here at
-//     all (see [Session.resolveEnvAction]'s doc comment: an exhausted budget
-//     makes ExitEnvironments SKIP an onExit, turning a resource bound into a
-//     resource leak), and one shared budget across a single teardown's four
-//     evaluations re-creates that failure at a smaller scale -- their position
-//     charges accumulate against one cap, so a large-but-legal environment
-//     that entered successfully fails at exit.
-//
-// Allocating four tiny structs per environment teardown is not a cost worth
-// optimizing against a silently skipped license check-in.
+//   - Same limits: passing nil instead would meter teardown against the
+//     built-in defaults rather than the operator's expr: configuration.
+//   - Fresh per call: the assignment-wide ledger is not charged at teardown
+//     (see [Session.resolveEnvAction]), and one budget shared across a
+//     teardown's evaluations would accumulate their position charges against
+//     one cap, so an environment that entered within the limit could fail
+//     at exit.
 func (s *Session) teardownBudget() *fmtres.AssignmentBudget {
 	return fmtres.NewAssignmentBudget(s.exprBudget.Limits())
 }
@@ -1242,8 +1152,8 @@ func (s *Session) EnvUnset() map[string]bool {
 // ── Isolation ─────────────────────────────────────────────────────────────────
 
 // Credential returns the OS identity every action in this session runs
-// under, or nil when the assignment carried no run_as_user isolation — the
-// pre-isolation default, in which every action runs as the worker daemon.
+// under, or nil when the assignment carried no run_as_user isolation, in
+// which case every action runs as the worker daemon.
 func (s *Session) Credential() *isolation.Credential { return s.cred }
 
 // BaseEnv returns the daemon environment already filtered for this session by
@@ -1256,11 +1166,10 @@ func (s *Session) BaseEnv() map[string]string { return s.baseEnv }
 // buildActionEnv builds the final process environment for one action: the
 // session's filtered base (BaseEnv), staticOverrides applied on top, then the
 // session's accumulated dynamic environment (openjd_env directives) layered
-// over that, then every key in unset — merged with any dynamic unsets —
-// removed. This is the single place session actions (onEnter/onExit)
-// construct a command environment, so BaseEnv's filtering is applied exactly
-// once, at session creation, and every subsequent layer is job data that is
-// never re-filtered.
+// over that, then every key in unset (merged with any dynamic unsets)
+// removed. Session actions (onEnter/onExit) build their command environment
+// only here, so BaseEnv's filtering, applied once at session creation, is
+// never applied to the job-data layers on top.
 func (s *Session) buildActionEnv(staticOverrides map[string]string, unset map[string]bool) []string {
 	overrides, dynUnset := s.actionEnv(staticOverrides)
 	if len(dynUnset) > 0 {
@@ -1295,11 +1204,11 @@ func (s *Session) actionLineHandler(ctx context.Context, logger *slog.Logger) fu
 }
 
 // ScrubRedacted replaces any value registered via openjd_redacted_env in line
-// with the redaction placeholder. It is the exported, concurrency-safe entry
-// point the executor applies to every TASK stdout/stderr line: a step inherits
-// redacted variables in its environment, so a command that echoes one (e.g.
-// `echo $SECRET`) would otherwise publish the cleartext value to the log
-// stream. Returns line unchanged when no redacted values are registered.
+// with the redaction placeholder. The executor applies it to every task
+// stdout/stderr line: a step inherits redacted variables in its environment,
+// so a command that echoes one (e.g. `echo $SECRET`) would otherwise publish
+// the cleartext value to the log stream. Safe for concurrent use. Returns
+// line unchanged when no redacted values are registered.
 func (s *Session) ScrubRedacted(line string) string {
 	return s.scrubRedacted(line)
 }
@@ -1329,28 +1238,27 @@ func (s *Session) scrubRedacted(line string) string {
 
 // runAction starts action.Command as a child process and waits for it to exit.
 //
-// The process runs under cred (via isolation.Apply; a nil cred is the
-// pre-isolation no-op) with env as its complete process environment, already
-// built by the caller (see Session.buildActionEnv). workDir is the process
-// working directory.
+// The process runs under cred (via isolation.Apply; a nil cred applies
+// nothing) with env as its complete process environment, already built by
+// the caller (see Session.buildActionEnv). workDir is the process working
+// directory.
 //
 // If action.TimeoutSeconds > 0, a deadline is applied via a derived context.
-// When ctx is canceled or the deadline elapses, exec.CommandContext sends
-// SIGKILL to the child process. runAction then drains any remaining pipe output
-// and calls Wait; it returns only after those steps complete. Callers should
-// expect a brief delay between context cancellation and runAction returning,
-// proportional to how quickly the OS kills the process and any remaining pipe
-// data is read.
+// When ctx is canceled or the deadline elapses, exec.CommandContext kills the
+// child process. runAction then waits for the process and reads the rest of
+// its output, for at most procout.DrainDelay after the exit when a descendant
+// still holds it open, and returns only after that, so it returns shortly
+// after context cancellation rather than at once.
 //
-// stdout and stderr are captured concurrently (to avoid pipe-buffer deadlocks)
-// and forwarded to the logger at debug level so operators can diagnose
-// environment setup failures without flooding info logs.
+// stdout and stderr are read concurrently (to avoid pipe-buffer deadlocks)
+// and logged at debug level, so operators can diagnose environment setup
+// failures without flooding info logs.
 //
 // Each output line is offered to lineHandler, which processes recognized OpenJD
 // environment directives (openjd_env / openjd_redacted_env / openjd_unset_env)
-// on the "stdout" stream and returns the text to log for the line — redacting
-// secret values so they never reach the logger. lineHandler may be nil, in
-// which case lines are logged verbatim.
+// on the "stdout" stream and returns the text to log for the line, with
+// secret values redacted. lineHandler may be nil, in which case lines are
+// logged verbatim.
 //
 // A non-zero exit code is returned as an error that includes the exit code.
 func runAction(ctx context.Context, action *protocol.Action, workDir string, env []string, cred *isolation.Credential, logger *slog.Logger, lineHandler func(stream, line string) string) error {
@@ -1367,33 +1275,27 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 
 	cmd := exec.CommandContext(ctx, action.Command, action.Args...) //nolint:gosec // command comes from the server-signed assignment
 	cmd.Dir = workDir
-	// This is job-supplied code (an OpenJD environment onEnter/onExit action):
-	// it MUST run under the session's credential, not the daemon's. onEnter in
-	// particular runs before any task, so a missed credential here would run
-	// arbitrary job code privileged while every task around it looked isolated.
+	// This is job-supplied code (an OpenJD environment onEnter/onExit action)
+	// and must run under the session's credential, not the daemon's. onEnter
+	// runs before any task, so a missed credential here would run job code
+	// privileged while every task around it looked isolated.
 	if err := applyCredential(cmd, cred); err != nil {
 		return fmt.Errorf("apply run-as-user credential: %w", err)
 	}
 	cmd.Env = env
 
-	stdout, err := cmd.StdoutPipe()
+	// procout, not StdoutPipe, so the action's exit is seen while a descendant
+	// still holds its output open, such as a service an onEnter action starts
+	// in the background.
+	out, err := procout.Start(cmd)
 	if err != nil {
-		return fmt.Errorf("stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %q: %w", action.Command, err)
 	}
 
-	// Read stdout and stderr concurrently to prevent pipe-buffer deadlocks:
-	// if we read them sequentially and the process fills one buffer waiting for
-	// the other to be drained, both sides block indefinitely. Lines are scanned
-	// individually so OpenJD environment directives can be intercepted (and
-	// secrets redacted) before the captured output is logged.
+	// Read stdout and stderr concurrently: read one after the other, a
+	// process that fills one stream while the other is unread blocks both
+	// sides. Lines are scanned individually so OpenJD environment directives
+	// are intercepted, and secrets redacted, before the output is logged.
 	var (
 		stdoutText string
 		stderrText string
@@ -1404,17 +1306,22 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 	readWg.Add(2)
 	go func() {
 		defer readWg.Done()
-		stdoutText, stdoutErr = scanActionStream(stdout, "stdout", lineHandler)
+		stdoutText, stdoutErr = scanActionStream(out.Stdout, "stdout", lineHandler)
 	}()
 	go func() {
 		defer readWg.Done()
-		stderrText, stderrErr = scanActionStream(stderr, "stderr", lineHandler)
+		stderrText, stderrErr = scanActionStream(out.Stderr, "stderr", lineHandler)
 	}()
+	// No process group is tracked for an environment action, so the drain
+	// counts from its exit: a service it starts in the background outlives it
+	// and keeps running.
+	stillOpen, waitErr := out.Wait(nil)
 	readWg.Wait()
-
-	// Wait must be called after all pipe reads complete (Go docs: "it is
-	// incorrect to call Wait before all reads from the pipe have completed").
-	waitErr := cmd.Wait()
+	if stillOpen {
+		logger.WarnContext(ctx,
+			"session: an environment action exited but a process it started still holds the output; output after the drain delay is not captured",
+			slog.String("command", action.Command), slog.Duration("waited", procout.DrainDelay))
+	}
 
 	if stdoutText != "" {
 		logger.DebugContext(
@@ -1433,11 +1340,10 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 		)
 	}
 
-	// cmd.Wait() is the authoritative error signal (non-zero exit, signal
-	// kill, timeout). Pipe read errors are reported only when Wait itself
-	// succeeds, since a process kill closes the write end of the pipe and can
-	// produce a transient read error that would otherwise obscure the real
-	// cause.
+	// The wait error is the authoritative result (non-zero exit, signal kill,
+	// timeout). Read errors are reported only when the wait succeeds, since a
+	// process kill closes the write end of the pipe and can produce a read
+	// error that would obscure the real cause.
 	if waitErr != nil {
 		return fmt.Errorf("command %q: %w", action.Command, waitErr)
 	}
@@ -1459,14 +1365,13 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 // The scanner's per-token buffer is raised from the default 64 KB to 4 MB so
 // that environment-action commands that emit long log lines (e.g. compiler
 // output, base64-encoded payloads) do not trigger bufio.ErrTooLong and fail an
-// otherwise-successful action. Directives are always short, so directive
-// handling is unaffected by this limit.
+// otherwise-successful action. Directives are short, so this limit does not
+// affect them.
 //
 // If a single line still exceeds 4 MB (bufio.ErrTooLong), the remaining bytes
-// are drained via io.Discard so the child process does not receive SIGPIPE
-// (which would cause a non-zero exit code even when the task logic succeeded),
-// a truncated-line placeholder is passed to lineHandler, and nil is returned
-// so the scanner error is not treated as an action failure.
+// are read into io.Discard so the child is not left blocked writing output
+// nobody reads, a truncated-line placeholder is passed to lineHandler, and
+// nil is returned so the scanner error is not treated as an action failure.
 func scanActionStream(r io.Reader, stream string, lineHandler func(stream, line string) string) (string, error) {
 	var buf strings.Builder
 	scanner := bufio.NewScanner(r)
@@ -1483,7 +1388,7 @@ func scanActionStream(r io.Reader, stream string, lineHandler func(stream, line 
 	}
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
-			// Drain the pipe so the child process does not receive SIGPIPE.
+			// Drain the stream so the child is not blocked writing to it.
 			_, _ = io.Copy(io.Discard, r) //nolint:errcheck // drain pipe after oversized line; error is not actionable
 			// Emit a placeholder so operators can see that output was truncated.
 			truncated := "[output line exceeded 4 MB — truncated]"
@@ -1515,36 +1420,30 @@ func writeEmbeddedFiles(workDir string, files []protocol.EmbeddedFile, cred *iso
 }
 
 // writeEmbeddedFile writes a single [protocol.EmbeddedFile] to workDir.
-// The on-disk filename is computed by [fmtres.EmbeddedFileName] — the same
-// helper that builds the Task.File.* / Env.File.* path variables — so the file
-// is written exactly where those variables point. Filenames that contain path
+// The on-disk filename is computed by [fmtres.EmbeddedFileName], the same
+// helper that builds the Task.File.* / Env.File.* path variables, so the file
+// is written where those variables point. Filenames that contain path
 // separators or null bytes are rejected to prevent directory traversal.
 //
 // When cred is non-nil the file is chowned to cred's identity as part of the
-// write. Without this, an isolated task is neither the file's owner nor a
-// member of its group and there are no "other" bits (0640, or 0750 when
-// Runnable) — it can read neither a data file nor execute a runnable one, no
-// matter how the surrounding directories are secured. The permission bits
-// themselves are deliberately left narrow (never widened to world-readable):
-// these files can carry job data, and chowning to the target identity is
-// enough to make them readable/executable by exactly the one identity that
-// needs them.
+// write. The mode (0640, or 0750 when Runnable) has no "other" bits, so
+// without the chown an isolated task, being neither the owner nor in the
+// group, could neither read a data file nor execute a runnable one. The mode
+// is never
+// widened to world-readable: these files can carry job data, and the chown
+// makes them usable by the one identity that needs them.
 //
-// Step embedded files are written AFTER job code has already run as the
-// target uid (the environment onEnter action runs before any task's embedded
-// files are written), at a deterministic name — exactly the shape a
-// hardlink/symlink swap at this path could exploit between a naive write and
-// a later path-based chown. isolation.WriteFileFchown closes that: it removes
-// any existing entry (never following it) and recreates fresh with
-// O_EXCL|O_NOFOLLOW, then chowns via fchown on the open descriptor, which
-// acts on the inode rather than the path and so cannot be raced. This also
-// means a SECOND embedded file legitimately sharing the same name — two
-// environments (or an environment and the step) each declaring one named
-// "run" — overwrites the first (last-wins, matching fmtres.AddFileVars's
-// documented scope semantics) rather than hard-failing the task; only an
-// attacker-planted entry is ever defeated, never a legitimate duplicate
-// name. See WriteFileFchown's own doc for the full threat model. It is
-// itself a no-op chown when cred is nil.
+// Step embedded files are written after job code has already run as the
+// target uid (the environment onEnter action runs first), at a predictable
+// name, so a hardlink or symlink planted at the path could redirect a
+// path-based write or chown. isolation.WriteFileFchown prevents that: it
+// removes any existing entry without following it, recreates the file with
+// O_EXCL|O_NOFOLLOW, and chowns via fchown on the open descriptor, which acts
+// on the inode rather than the path. A second embedded file with the same
+// name (two environments, or an environment and the step, each declaring one
+// named "run") overwrites the first, matching fmtres.AddFileVars's last-wins
+// scope semantics. See WriteFileFchown's doc for the threat model. With a nil
+// cred it does not chown.
 func writeEmbeddedFile(workDir string, f protocol.EmbeddedFile, cred *isolation.Credential) error {
 	name, err := fmtres.EmbeddedFileName(f)
 	if err != nil {
@@ -1566,8 +1465,8 @@ func writeEmbeddedFile(workDir string, f protocol.EmbeddedFile, cred *isolation.
 }
 
 // translationFileEnabled reports whether the translation_file delivery is in the
-// set. A nil/empty set (legacy assignments predating path deliveries) is treated
-// as enabled so the OpenJD path-mapping file is still written.
+// set. A nil or empty set counts as enabled, so the OpenJD path-mapping file
+// is written.
 func translationFileEnabled(deliveries []protocol.PathDelivery) bool {
 	if len(deliveries) == 0 {
 		return true

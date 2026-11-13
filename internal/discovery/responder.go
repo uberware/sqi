@@ -5,7 +5,7 @@
 // without manual address configuration.
 //
 // The server publishes a single "_sqi._tcp" service instance whose SRV record
-// points at the HTTP API port — the canonical, externally-bound sqi endpoint.
+// points at the HTTP API port, the externally bound sqi endpoint.
 // Additional connection details, including the broker URL, are carried in TXT
 // records:
 //
@@ -75,20 +75,16 @@ type Config struct {
 	// HTTPTLS reports whether the REST/WebSocket listener is TLS-terminated,
 	// advertised as the "tls" TXT record.
 	//
-	// Consumed by internal/worker/discovery, which surfaces it as
-	// Result.HTTPTLS. Enrollment never uses a discovered URL, so a worker uses
-	// this to warn that its http:// nats.server_url points at an HTTPS server
-	// rather than to rewrite anything.
+	// internal/worker/discovery surfaces it as Result.HTTPTLS. Enrollment never
+	// uses a discovered URL, so a worker uses it only to warn that its http://
+	// nats.server_url points at an HTTPS server.
 	HTTPTLS bool
 
 	// Interfaces restricts which network interfaces the service is advertised
-	// on. Nil — the production value — advertises on every multicast-capable
-	// interface, which is the point of mDNS discovery.
+	// on. Nil advertises on every multicast-capable interface.
 	//
-	// It is set by tests, to loopback, so a test run never transmits an
-	// advertisement onto the network it happens to be running on. It has no
-	// config key: an operator who wants to limit advertisement should say so
-	// through a real setting, and none exists yet.
+	// Tests set it to loopback so a test run never transmits an advertisement
+	// onto the surrounding network. It has no config key.
 	Interfaces []net.Interface
 }
 
@@ -107,7 +103,7 @@ type Responder struct {
 // server boots.
 // An empty [Config.InstanceID] is filled with a freshly generated UUID.
 //
-// When cfg.Enabled is false, port parsing is skipped and the returned
+// When cfg.Enabled is false, validation is skipped and the returned
 // responder's Start is a no-op.
 func New(cfg Config, logger *slog.Logger) (*Responder, error) {
 	r := &Responder{cfg: cfg, logger: logger}
@@ -152,27 +148,41 @@ func validateNATSURL(raw string) error {
 	return nil
 }
 
-// Start publishes the mDNS service record on all multicast-capable interfaces.
-// It returns nil immediately when discovery is disabled. The advertisement
-// runs in background goroutines managed by the underlying responder until
-// [Responder.Shutdown] is called.
+// Start publishes the mDNS service record on every multicast-capable interface,
+// or on [Config.Interfaces] when set. It returns nil immediately when discovery
+// is disabled. The advertisement runs in background goroutines managed by the
+// underlying responder until [Responder.Shutdown] is called.
 //
-// The ctx argument is accepted for symmetry with other components and to allow
-// future cancellation support; the current zeroconf registration is
-// non-blocking and does not observe it.
+// ctx is used only for logging: zeroconf registration is non-blocking and does
+// not observe it.
 func (r *Responder) Start(ctx context.Context) error {
 	if !r.cfg.Enabled {
 		r.logger.InfoContext(ctx, "discovery: mDNS disabled by configuration")
 		return nil
 	}
 
-	txt := buildTXTRecords(r.cfg.InstanceID, r.httpPort, r.cfg.NATSURL, hostname(), version.Version, r.cfg.HTTPTLS)
+	host := hostname()
+	txt := buildTXTRecords(r.cfg.InstanceID, r.httpPort, r.cfg.NATSURL, host, version.Version, r.cfg.HTTPTLS)
 
-	server, err := zeroconf.Register(
+	// RegisterProxy is used because Register advertises os.Hostname() and,
+	// given a name already in .local, doubles the domain. Supplying the host
+	// means supplying the addresses too, the ones Register would find. Given
+	// none, RegisterProxy takes a reply's addresses from the interface the
+	// query arrived on, which the network stack does not report on Windows, so
+	// every reply would carry no address and a worker browsing after the
+	// startup announcements would find nothing. RegisterProxy has no check for
+	// an empty address list, so the one Register applies is repeated here.
+	ips := interfaceIPs(r.cfg.Interfaces)
+	if len(ips) == 0 {
+		return errors.New("discovery: register mDNS service: could not determine host IP addresses")
+	}
+	server, err := registerProxy(
 		r.cfg.InstanceName,
 		serviceType,
 		domain,
 		r.httpPort,
+		hostLabel(host),
+		ips,
 		txt,
 		r.cfg.Interfaces, // nil = every multicast-capable interface
 	)
@@ -245,13 +255,88 @@ func buildTXTRecords(instanceID string, httpPort int, natsURL, host, ver string,
 	return txt
 }
 
+// registerProxy is zeroconf.RegisterProxy, replaced in tests.
+var registerProxy = zeroconf.RegisterProxy
+
 // SRVHost returns the host the service's SRV record names: the machine's
-// hostname in the ".local" domain, which is how the underlying responder
-// forms it. The server uses it as the host of a derived broker URL, so that
-// URL names the same host as the SRV record and a discovering worker can fall
-// back to the advertised address when that name does not resolve.
+// hostname in the ".local" domain. The server uses it as the host of a derived
+// broker URL, so that URL names the same host as the SRV record and a
+// discovering worker can fall back to the advertised address when that name
+// does not resolve.
 func SRVHost() string {
-	return hostname() + "." + strings.TrimSuffix(domain, ".")
+	return srvHostFor(hostname())
+}
+
+// srvHostFor is the ".local" name advertised for a host whose reported name
+// is h. macOS reports its name already in that domain ("name.local"), and the
+// domain is not added a second time. The underlying responder's own check
+// compares against "local." with its dot, never matches, and would advertise
+// "name.local.local", which no certificate from `sqi-server tls init` covers.
+func srvHostFor(h string) string {
+	return hostLabel(h) + "." + strings.TrimSuffix(domain, ".")
+}
+
+// hostLabel is h without a trailing ".local" (any case, with or without a
+// final dot): the name the responder is given to advertise in that domain.
+func hostLabel(h string) string {
+	h = strings.TrimSuffix(h, ".")
+	suffix := "." + strings.TrimSuffix(domain, ".")
+	if len(h) > len(suffix) && strings.EqualFold(h[len(h)-len(suffix):], suffix) {
+		return h[:len(h)-len(suffix)]
+	}
+	return h
+}
+
+// interfaceIPs returns the addresses advertised on ifaces, or on every
+// multicast-capable interface that is up when ifaces is empty, as the
+// underlying responder chooses them itself when it is not given a host.
+func interfaceIPs(ifaces []net.Interface) []string {
+	if len(ifaces) == 0 {
+		all, err := net.Interfaces()
+		if err != nil {
+			return nil
+		}
+		for _, ifi := range all {
+			if ifi.Flags&net.FlagUp != 0 && ifi.Flags&net.FlagMulticast != 0 {
+				ifaces = append(ifaces, ifi)
+			}
+		}
+	}
+	var ips []string
+	for _, ifi := range ifaces {
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		ips = append(ips, advertisedIPs(addrs)...)
+	}
+	return ips
+}
+
+// advertisedIPs applies the underlying responder's rules to one interface's
+// addresses: loopback addresses are never advertised, IPv4 addresses always
+// are, and link-local IPv6 addresses only when the interface has no global
+// IPv6 address.
+func advertisedIPs(addrs []net.Addr) []string {
+	var v4, v6, v6local []string
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok || ipnet.IP.IsLoopback() {
+			continue
+		}
+		switch ip := ipnet.IP; {
+		case ip.To4() != nil:
+			v4 = append(v4, ip.String())
+		case ip.IsGlobalUnicast():
+			v6 = append(v6, ip.String())
+		case ip.IsLinkLocalUnicast():
+			v6local = append(v6local, ip.String())
+		}
+	}
+	if len(v6) == 0 {
+		v6 = v6local
+	}
+	return append(v4, v6...)
 }
 
 // hostname returns the host's reported name, or "unknown" if it cannot be

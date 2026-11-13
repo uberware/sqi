@@ -679,7 +679,7 @@ jobs:
   # alone and cannot catch a router that mounts the wrong middleware on a
   # real route.
   #
-  # Linux only, on every run: it takes under a minute.
+  # Linux only, and on every run including pull requests: it is short.
   #
   # The script needs curl, jq and python3 (for free loopback ports), all
   # preinstalled on hosted runners. SQI_*_BIN skips its internal
@@ -847,14 +847,14 @@ jobs:
           set -e
 
           if grep -q "docker unavailable" isolation-output.log; then
-            echo "::error::Docker was unavailable — the isolation suite did not run. A skip here proves nothing, so this is a hard failure."
+            echo "::error::Docker was unavailable, so the isolation suite did not run."
             exit 1
           fi
 
           pass_count=$(grep -c '^--- PASS: TestIsolation_' isolation-output.log || true)
           expected=11
           if [ "$status" -ne 0 ] || [ "$pass_count" -ne "$expected" ]; then
-            echo "::error::Expected $expected TestIsolation_ tests to pass (exit=$status, found=$pass_count). Failing so a partial or failed run cannot look green."
+            echo "::error::Expected $expected TestIsolation_ tests to pass (exit=$status, found=$pass_count)."
             exit 1
           fi
 
@@ -1138,7 +1138,7 @@ jobs:
           set -e
 
           if grep -q "docker unavailable" pg-output.log; then
-            echo "::error::Docker was unavailable; the PostgreSQL suite did not run. A skip here proves nothing, so this is a hard failure."
+            echo "::error::Docker was unavailable, so the PostgreSQL suite did not run."
             exit 1
           fi
 
@@ -1436,7 +1436,8 @@ jobs:
   # cmd/sqi-server) carry _windows.go or _windows_test.go files.
   # internal/worker/envutil and internal/worker/session branch on
   # runtime.GOOS in their tests, so only a Windows run executes the Windows
-  # branch.
+  # branch. internal/worker/procout reads a task's output through OS pipes,
+  # whose Windows behavior only a Windows run can show.
   #
   # scripts/test-isolation-windows.ps1 exits 0 with a message when the shell
   # is not elevated, so the assertion step fails on that message and requires
@@ -1461,8 +1462,8 @@ jobs:
       # The version matches the ubuntu step's pin; keep the two in step.
       # Scoped to the packages with per-GOOS code (the worker tree, both cmd
       # packages, internal/winsvc, internal/secretin, internal/log) plus
-      # internal/brokerauth and internal/tlsutil, because a full-module run
-      # would repeat the ubuntu job's findings. ./test/winservice/... is
+      # internal/brokerauth and internal/tlsutil; a full-module run would
+      # repeat the ubuntu job's findings. ./test/winservice/... is
       # behind the `winservice` build tag (set in .golangci.yml) and
       # //go:build windows, so only this step lints it.
       - name: golangci-lint (windows sources)
@@ -1481,6 +1482,7 @@ jobs:
           go test -count=1 -v \
             ./internal/worker/isolation/... \
             ./internal/worker/executor/... \
+            ./internal/worker/procout/... \
             ./internal/worker/envutil/... \
             ./internal/worker/session/... \
             ./internal/worker/staging/... \
@@ -1654,7 +1656,7 @@ jobs:
         shell: bash
         run: |
           if grep -q "not elevated" isolation-windows.log; then
-            echo "::error::The runner was not elevated — the isolation suite did not run. A skip here proves nothing, so this is a hard failure."
+            echo "::error::The runner was not elevated, so the isolation suite did not run."
             exit 1
           fi
           expected=(
@@ -1731,7 +1733,7 @@ jobs:
         shell: bash
         run: |
           if grep -q "not elevated" winservice.log; then
-            echo "::error::The runner was not elevated — the service suite did not run. A skip here proves nothing, so this is a hard failure."
+            echo "::error::The runner was not elevated, so the service suite did not run."
             exit 1
           fi
           expected=(
@@ -1768,8 +1770,8 @@ jobs:
   # tests need root (see isolation-integration) and skip here; this job
   # asserts nothing about them.
   #
-  # A green `go test` proves nothing if the suite collected no tests (a
-  # build-tag regression, a stray -run filter), so the job also requires a
+  # `go test` also passes when the suite collected no tests (a build-tag
+  # regression, a stray -run filter), so the job also requires a
   # fixed list of tests to PASS by name. A skip in the LDAP, OIDC or
   # isolation tests does not fail the job.
   integration-tests:
@@ -1819,8 +1821,9 @@ jobs:
         run: |
           set +e
           # The Makefile's INTEGRATION_TEST_FLAGS default (-timeout 30m)
-          # covers the backup/restore tests' reconcile-grace waits plus up to
-          # ~90s of LDAP and ~180s of Keycloak container readiness.
+          # covers the backup/restore tests' reconcile-grace waits, the preset
+          # outcome cases' retries, and the LDAP (90 s) and Keycloak (180 s)
+          # container readiness bounds.
           make test-integration 2>&1 | tee integration-output.log
           status=${PIPESTATUS[0]}
           set -e
@@ -1899,8 +1902,8 @@ jobs:
             TestPresetModo_ScriptDrivesModo/whole_scene_chunk/args_modo
             TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands
             TestPresetModo_EmitsStatus
-            # The Unreal host-script presets. They are Windows-only, so their
-            # Tier 3 and outcome cases skip here and run in
+            # The Unreal host-script presets. They run on Windows and macOS
+            # only, so their Tier 3 and outcome cases skip here and run in
             # preset-harness-windows; these tests need no Unreal and no OS
             # gate, so they run on every OS. ScriptDrivesUnreal skips without
             # a working Python 3, so three leaves are named too, one of them
@@ -2027,6 +2030,7 @@ jobs:
           set -e
 
           expected=(
+            TestDiscovery_FoundAfterTheAnnouncements
             TestDiscovery_TLSRecordsCrossTheWire
             TestDiscovery_AdvertisedBrokerTLSReachesWorkerConfig
             TestDiscovery_RealBinaryFindsItsServerOverMDNS
@@ -2097,11 +2101,11 @@ jobs:
   # line that parses and transcodes nothing, such as a BOM'd concat list or
   # an embedded join script with no .ps1 filename.
   #
-  # These tests skip without ffmpeg and ffprobe on PATH. The `test` job also
-  # installs ffmpeg, but its registry (presets/validation-tiers.yaml) names
-  # only one tier2 case per preset; the ceiling, zero-padding and
-  # cost-ceiling cases are required nowhere else. This job requires each PASS
-  # line by name.
+  # These tests skip without ffmpeg and ffprobe on PATH. integration-tests
+  # also installs ffmpeg, but the registry it enforces
+  # (presets/validation-tiers.yaml) names only one tier2 case per preset; the
+  # ceiling, zero-padding and cost-ceiling cases are required nowhere else.
+  # This job requires each PASS line by name.
   #
   # The bash-joined variant is required here. It has no OS gate (Git Bash
   # puts bash on Windows), so it also runs in preset-harness-windows, but is
@@ -2229,10 +2233,11 @@ jobs:
 
   # ── Preset harness, on Windows ───────────────────────────────────────────────
   # TestPresetTier1Argv, TestPresetTier3 and TestZZPresetTierRegistrySatisfied
-  # are untagged, so `make test` runs them, but only on ubuntu-latest. The
-  # Tier-1 goldens are POSIX-spelled, and the worker resolves an EXPR
-  # preset's paths in the host's flavor, so "/mnt/show/a.mov" becomes a
-  # backslash-separated path on a Windows worker. internal/presettest's
+  # are untagged, and the other jobs that run them (integration-tests,
+  # postgres-integration) are on ubuntu-latest. The Tier-1 goldens are
+  # POSIX-spelled, and the worker resolves an EXPR preset's paths in the
+  # host's flavor, so "/mnt/show/a.mov" becomes a backslash-separated path
+  # on a Windows worker. internal/presettest's
   # Render() undoes that so one golden serves every host; if it stops doing
   # so, the argv sqi sends a Windows renderer has changed and no ubuntu job
   # can see it. The registry's tier2 blocks also name windows in
@@ -2638,8 +2643,9 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
-      # A bare mypy checks src and the Cinema 4D plugin (pyproject files) at the 3.9
-      # floor; the tests are checked at a newer target where they are allowed to run.
+      # A bare mypy checks pyproject's `files` (src and the Cinema 4D plugin) at
+      # the 3.9 floor; the tests are checked at a newer target where they are
+      # allowed to run.
       - name: mypy
         run: mypy && mypy --python-version=3.13 tests
 

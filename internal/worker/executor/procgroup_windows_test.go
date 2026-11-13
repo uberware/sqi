@@ -17,25 +17,18 @@ import (
 
 // spawnDetachedGrandchild starts, via "cmd /c start /b <script.bat>", a
 // background batch file that pings for pingSeconds and then writes marker.
-// The returned *exec.Cmd is the immediate ("cmd /c start /b ...") process;
-// by the time it exits, the batch file it launched is already a distinct,
-// running process not waited on by it — an orphan-in-waiting the moment its
-// starter exits, exactly like the case "taskkill /F /T" cannot reach.
+// The returned *exec.Cmd is the immediate ("cmd /c start /b ...") process.
+// The batch file it launches is a separate process it does not wait for, so
+// it is orphaned once its starter exits: the case "taskkill /F /T" cannot
+// reach.
 //
-// The batch file (not an inline "cmd /c \"...\" & exit" one-liner) is
-// deliberate: passed through Go's os/exec on Windows, a script argument
-// containing nested double quotes is re-escaped by the standard Windows
-// argv-quoting convention (CommandLineToArgvW-style backslash-escaping) before
-// cmd.exe re-parses it — but cmd.exe's own command-line tail parsing does not
-// follow that convention, so the nested quotes arrive corrupted and the
-// intended "start /b ... & exit" chain silently never launches the
-// background process at all. That failure is invisible to a test that only
-// asserts the marker is ABSENT (an unlaunched process also never writes it),
-// which is why it surfaced only once verified independently: a probe of the
-// literal brief script showed the marker file was never created even without
-// any job-object code in the loop. Writing the script to a .bat file and
-// passing its path as a single, unquoted argument (TempDir paths carry no
-// spaces) sidesteps the quoting mismatch entirely.
+// The script is a .bat file rather than an inline "cmd /c \"...\" & exit"
+// one-liner because Go's os/exec quotes arguments by the CommandLineToArgvW
+// convention and cmd.exe does not parse its command-line tail that way:
+// nested double quotes arrive corrupted and the background process never
+// starts. A test that asserts the marker is absent cannot see that, since an
+// unlaunched process never writes it either. The .bat path is passed as one
+// unquoted argument (TempDir paths contain no spaces).
 func spawnDetachedGrandchild(t *testing.T, pingSeconds int) (cmd *exec.Cmd, marker string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -52,15 +45,15 @@ func spawnDetachedGrandchild(t *testing.T, pingSeconds int) (cmd *exec.Cmd, mark
 // TestProcessTree_KillReapsOrphanedGrandchild is the Windows counterpart of
 // kill_unix_test.go's process-group reaping test.
 //
-// "taskkill /F /T" walks the parent-PID tree AT THE MOMENT OF THE CALL, so a
-// grandchild whose parent has already exited is orphaned and survives — and
-// under run-as-user isolation that survivor runs as the target account,
-// outliving its task while holding its license and file handles. A job object
-// has no such gap.
+// "taskkill /F /T" walks the parent-PID tree at the moment of the call, so a
+// grandchild whose parent has already exited is orphaned and survives it.
+// Under run-as-user isolation that survivor runs as the target account after
+// its task ends, holding its license and file handles. A job object reaches
+// it.
 func TestProcessTree_KillReapsOrphanedGrandchild(t *testing.T) {
 	// The grandchild waits, then writes the marker. The parent starts it
 	// detached and exits immediately, so the grandchild is already orphaned
-	// by the time the kill runs — the exact case taskkill /T misses.
+	// by the time the kill runs: the case taskkill /T misses.
 	cmd, marker := spawnDetachedGrandchild(t, 30)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
@@ -85,14 +78,12 @@ func TestProcessTree_KillReapsOrphanedGrandchild(t *testing.T) {
 	}
 }
 
-// TestProcessTree_ReleaseLeavesSurvivorsAlone proves the SUCCESS path matches
-// POSIX. internal/worker/staging's TOCTOU analysis (staging.go,
-// openStageOutSource) depends on the fact that nothing kills a task's
-// process group on a successful exit, so a still-running background child is
-// expected to survive there. release() must clear
+// TestProcessTree_ReleaseLeavesSurvivorsAlone checks that release matches
+// POSIX: a background child still running after a successful exit keeps
+// running, which internal/worker/staging's stage-out checks (staging.go,
+// openStageOutSource) allow for. release() must clear
 // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE before closing the handle, or Windows
-// would silently diverge from POSIX in a way no test in that package would
-// catch.
+// would differ from POSIX in a way no test in that package would catch.
 func TestProcessTree_ReleaseLeavesSurvivorsAlone(t *testing.T) {
 	cmd, marker := spawnDetachedGrandchild(t, 3)
 	if err := cmd.Start(); err != nil {
@@ -116,13 +107,11 @@ func TestProcessTree_ReleaseLeavesSurvivorsAlone(t *testing.T) {
 	}
 }
 
-// TestProcessTree_ReleaseClosesHandleEvenIfSetKillOnCloseFails proves release()
-// does not leak the job handle when clearing KILL_ON_JOB_CLOSE fails: a
-// deliberately invalid handle makes setKillOnClose (SetInformationJobObject)
-// fail, and the pre-fix release() returned that error immediately, before
-// ever calling CloseHandle or zeroing t.job — leaking the handle value for
-// the life of the worker. The fix must close (best-effort) and zero t.job
-// regardless, so a second release() call is a true no-op.
+// TestProcessTree_ReleaseClosesHandleEvenIfSetKillOnCloseFails checks that
+// release() does not leak the job handle when clearing KILL_ON_JOB_CLOSE
+// fails. An invalid handle makes setKillOnClose (SetInformationJobObject)
+// fail; release must still close the handle (best-effort) and zero t.job, so
+// a second release() call is a no-op.
 func TestProcessTree_ReleaseClosesHandleEvenIfSetKillOnCloseFails(t *testing.T) {
 	tree := &processTree{job: windows.Handle(0xDEADBEEF)}
 
@@ -137,5 +126,42 @@ func TestProcessTree_ReleaseClosesHandleEvenIfSetKillOnCloseFails(t *testing.T) 
 	// attempt to operate on the stale handle value.
 	if err := tree.release(); err != nil {
 		t.Errorf("release: second call on an already-released tree returned %v, want nil", err)
+	}
+}
+
+// TestProcessTree_AliveCountsTheJobsProcesses: alive is what keeps the output
+// drain from starting while a task's job still holds a process, here a
+// grandchild whose parent has already exited, and what lets it start once
+// the job is empty. It reads JOBOBJECT_BASIC_ACCOUNTING_INFORMATION through a
+// struct of its own layout, so this is the only check that layout gets.
+func TestProcessTree_AliveCountsTheJobsProcesses(t *testing.T) {
+	cmd, _ := spawnDetachedGrandchild(t, 30)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	tree, err := superviseTree(cmd)
+	if err != nil {
+		t.Fatalf("superviseTree: %v", err)
+	}
+	t.Cleanup(func() {
+		tree.sendKILL() //nolint:errcheck // best-effort cleanup if an assertion fails first
+		tree.release()  //nolint:errcheck // best-effort close of the job handle
+	})
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for parent: %v", err)
+	}
+
+	if !tree.alive() {
+		t.Fatal("alive = false while the job still holds the grandchild")
+	}
+	if err := tree.sendKILL(); err != nil {
+		t.Fatalf("sendKILL: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for tree.alive() {
+		if time.Now().After(deadline) {
+			t.Fatal("alive = true 10s after the job was killed")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

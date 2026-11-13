@@ -2,7 +2,7 @@
 tag: blender
 checks:
   - exe: blender
-  - path_glob: "/Applications/Blender.app"                           # macOS
+  - path_glob: "/Applications/Blender*.app/Contents/MacOS/Blender"   # macOS (Blender.app, or renamed "Blender 5.2.app"; the executable, so "Blender Launcher.app" does not match)
   - path_glob: 'C:\Program Files\Blender Foundation\Blender *\blender.exe'   # windows (MSI, winget)
     os: windows
   - registry: 'HKLM\SOFTWARE\BlenderFoundation\Blender'              # windows (older installers)
@@ -10,9 +10,13 @@ checks:
 # The presets run a bare `blender`, and the Windows installers do not put it on
 # PATH, so the worker supplies a default from the newest install it finds, unless
 # the operator or the host already provides one. The version is read only to pick
-# the newest install: the tag stays presence only. A Linux install is wherever it
-# was unpacked, or a distro package that is already on PATH, so there is no
-# default for it.
+# the newest install; the tag is presence only. A Linux install is wherever it
+# was unpacked, or a distro package on PATH, so Linux has no default. On macOS a
+# second release kept beside Blender.app is renamed to carry its version
+# ("Blender 5.2.app"). Only the bundle name carries a version, so a versioned
+# bundle is chosen over a plain Blender.app whichever release each holds, even
+# an older "Blender 4.2.app" beside a newer Blender.app. worker.commands pins a
+# release.
 command:
   name: blender
   version:
@@ -20,5 +24,5 @@ command:
   globs:
     - path_glob: 'C:\Program Files\Blender Foundation\Blender *\blender.exe'   # windows
       os: windows
-    - path_glob: "/Applications/Blender.app/Contents/MacOS/Blender"            # macOS
+    - path_glob: "/Applications/Blender*.app/Contents/MacOS/Blender"           # macOS
       os: darwin
