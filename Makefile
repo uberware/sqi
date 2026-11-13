@@ -335,24 +335,62 @@ load-sweep: ## Sweep one parameter (SCENARIO=..., VARY='workers[0].count=100,200
 # Chaos suite (test/chaos, build tag `chaos`): the built-in chaos-* scenarios
 # run as subtests of TestChaos against real binaries. SCENARIO names one only
 # when given on the command line or in the environment; its mixed-medium
-# default above would select nothing. SQI_CHAOS_STORE=postgres runs them on
-# PostgreSQL (needs SQI_TEST_POSTGRES_DSN); SQI_LOAD_OUT keeps the runs.
+# default above would select nothing. STORE=postgres runs them on PostgreSQL,
+# through scripts/chaos-postgres.sh: a throwaway server in Docker
+# (PG_VERSION=16|18) unless SQI_TEST_POSTGRES_DSN names one, and an error
+# without Docker. SQI_LOAD_OUT keeps the runs.
 #
 # These run without -race whatever RACE says. The test process hosts the
 # harness (simulated workers, network proxies, fault controller), not the sqi
 # binaries under test, and the detector's slowdown on a shared runner only
 # adds noise to timing-sensitive scenarios; make test covers the harness's
 # packages with -race.
+STORE ?= sqlite
+ifeq ($(filter $(STORE),sqlite postgres),)
+$(error STORE must be sqlite or postgres)
+endif
+CHAOS_GO_TEST = $(if $(filter postgres,$(STORE)),PG_VERSION=$(PG_VERSION) bash scripts/chaos-postgres.sh,go test)
 CHAOS_SMOKE = chaos-server-kill-20s|chaos-worker-gone|chaos-net-blip
 CHAOS_SCENARIO = $(if $(filter command line environment environment override,$(origin SCENARIO)),$(SCENARIO),)
 
 .PHONY: chaos chaos-smoke chaos-framework
-chaos: ## Run the chaos scenarios (SCENARIO=chaos-... for one)
-	go test -tags chaos -run '$(if $(CHAOS_SCENARIO),^TestChaos$$/^$(CHAOS_SCENARIO)$$,TestChaos)' -v -timeout 3h ./test/chaos/
+chaos: ## Run the chaos scenarios (SCENARIO=chaos-... for one; STORE=postgres for PostgreSQL)
+	$(CHAOS_GO_TEST) -tags chaos -run '$(if $(CHAOS_SCENARIO),^TestChaos$$/^$(CHAOS_SCENARIO)$$,TestChaos)' -v -timeout 3h ./test/chaos/
 chaos-smoke: ## Run the three CI chaos scenarios (4 to 6 minutes each, plus the build)
-	go test -tags chaos -run '^TestChaos$$/^($(CHAOS_SMOKE))$$' -v -timeout 40m ./test/chaos/
+	$(CHAOS_GO_TEST) -tags chaos -run '^TestChaos$$/^($(CHAOS_SMOKE))$$' -v -timeout 40m ./test/chaos/
 chaos-framework: ## Run the chaos suite's own framework tests, no scenario
-	go test -tags chaos -run '^TestChaos_' -v -timeout 30m ./test/chaos/
+	$(CHAOS_GO_TEST) -tags chaos -run '^TestChaos_' -v -timeout 30m ./test/chaos/
+
+# The chaos disk scenarios in a container that gives them real size-limited
+# volumes: docker mounts /chaos/server (512 MB) and /chaos/worker (64 MB, 8192
+# inodes) as tmpfs, and the go test binary runs as root inside. The ballast
+# tests of internal/loadtest/diskfill run in the same container, because they
+# mount their own tmpfs, which needs CAP_SYS_ADMIN (added here, nothing
+# broader). Staging, the build context and `--init` follow `test-isolation`
+# below, whose comment explains each; this image's exclusion list is
+# test/chaos/container/.dockerignore. Both test commands always run, and the
+# container exits non-zero when either failed.
+#
+# Exits 0 when Docker is unavailable, so a local pass proves nothing: look for
+# the three `--- PASS: TestChaos/chaos-disk-` lines (or the verdicts the runs
+# record) and `--- PASS: TestFill_LeavesHeadroom` and `TestFill_Inodes`.
+# SQI_LOAD_OUT, when set, is mounted at /out to keep the run directories.
+.PHONY: chaos-container
+chaos-container: ## Run the chaos disk scenarios on real size-limited volumes in a container (needs Docker)
+	@if ! docker info >/dev/null 2>&1; then \
+	  echo "docker unavailable — skipping chaos container scenarios"; exit 0; fi
+	@ctx=$$(mktemp -d) && trap 'rm -rf "$$ctx"' EXIT && \
+	rsync -a --exclude-from=test/chaos/container/.dockerignore --exclude='.dockerignore' "$(CURDIR)/" "$$ctx/" && \
+	cp test/chaos/container/.dockerignore "$$ctx/.dockerignore" && \
+	docker build -q -t sqi-chaos-container -f test/chaos/container/Dockerfile "$$ctx" && \
+	docker run --rm --init --cap-add SYS_ADMIN \
+	  --tmpfs /chaos/server:rw,size=512m --tmpfs /chaos/worker:rw,size=64m,nr_inodes=8192 \
+	  -e SQI_CHAOS_CONTAINER=1 -e SQI_CHAOS_SERVER_VOLUME=/chaos/server -e SQI_CHAOS_WORKER_VOLUME=/chaos/worker \
+	  $(if $(SQI_LOAD_OUT),-v "$(SQI_LOAD_OUT):/out" -e SQI_LOAD_OUT=/out) \
+	  sqi-chaos-container sh -c 'rc=0; \
+	    go test -tags chaos -run "^TestChaos$$/^chaos-disk-" -v -timeout 90m ./test/chaos/ || rc=$$?; \
+	    go test -run TestFill_ -v ./internal/loadtest/diskfill/ || rc=$$?; \
+	    exit $$rc'
 
 # Validates the published preset library against the validator in this working
 # tree. A validator change can invalidate content already published: a change
