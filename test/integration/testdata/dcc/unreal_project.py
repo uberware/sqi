@@ -47,7 +47,12 @@ try:
 
     levels.new_level("/Game/Maps/Test")
     cube = unreal.EditorAssetLibrary.load_asset("/Engine/BasicShapes/Cube.Cube")
-    actors.spawn_actor_from_object(cube, unreal.Vector(400, 0, 0))
+    # From the class, then given its mesh: spawn_actor_from_object(cube, ...)
+    # places the asset through the level editor's placement subsystem, which a
+    # commandlet does not have, and crashed UE 5.7 on macOS (SIGSEGV in
+    # UPlacementSubsystem::FindAssetFactoryFromAssetData).
+    cube_actor = actors.spawn_actor_from_class(unreal.StaticMeshActor, unreal.Vector(400, 0, 0))
+    cube_actor.static_mesh_component.set_static_mesh(cube)
     actors.spawn_actor_from_class(unreal.DirectionalLight, unreal.Vector(0, 0, 500))
     levels.save_current_level()
 

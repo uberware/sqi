@@ -198,12 +198,13 @@ func TestNukeDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 }
 
 // TestHoudiniBinDetectors_CommandFindsHoudinisCopy checks the shipped command
-// globs of the detectors whose command is a program in Houdini 22.0.466's
-// $HFS/bin: husk, mantra, and oiiotool, which Houdini ships as hoiiotool.
-// Houdini's installer does not put $HFS/bin on PATH, so the presets reach these
-// programs through the command default. Each glob must pick its own program and
-// none of its neighbors. The Windows layout is that of a real install; the
-// Linux one is inferred from the shared $HFS/bin layout and unverified.
+// globs of the detectors whose command is a program in Houdini's $HFS/bin:
+// husk, mantra, and oiiotool, which Houdini ships as hoiiotool. Houdini's
+// installer does not put $HFS/bin on PATH, so the presets reach these programs
+// through the command default. Each glob must pick its own program and none of
+// its neighbors. The Windows layout is that of a real Houdini 22.0.466 and the
+// macOS one (macHoudiniBin) of a real Houdini 21.0.631; the Linux one is
+// inferred from the shared $HFS/bin layout and unverified.
 func TestHoudiniBinDetectors_CommandFindsHoudinisCopy(t *testing.T) {
 	const (
 		linuxBin   = "/opt/hfs22.0.466/bin/"
@@ -223,7 +224,11 @@ func TestHoudiniBinDetectors_CommandFindsHoudinisCopy(t *testing.T) {
 		if d.Command == nil || d.Command.Name != tc.command {
 			t.Fatalf("the %s detector has no command named %s: %+v", tc.command, tc.command, d.Command)
 		}
-		for _, p := range []struct{ goos, dir, ext string }{{"linux", linuxBin, ""}, {"windows", windowsBin, ".exe"}} {
+		for _, p := range []struct{ goos, dir, ext, version string }{
+			{"linux", linuxBin, "", "22.0"},
+			{"windows", windowsBin, ".exe", "22.0"},
+			{"darwin", macHoudiniBin, "", "21.0"},
+		} {
 			t.Run(tc.command+"/"+p.goos, func(t *testing.T) {
 				exe := p.dir + tc.file + p.ext
 				var not []string
@@ -232,8 +237,8 @@ func TestHoudiniBinDetectors_CommandFindsHoudinisCopy(t *testing.T) {
 				}
 				assertCommandGlobsPick(t, d, p.goos, exe, not, "Houdini's "+tc.file)
 				got, ok := d.FindCommand(envWithCommandAt(d, p.goos, exe))
-				if !ok || got.Name != tc.command || got.Path != exe || got.Version != "22.0" {
-					t.Errorf("FindCommand = %+v (found %v), want %s 22.0 at %s", got, ok, tc.command, exe)
+				if !ok || got.Name != tc.command || got.Path != exe || got.Version != p.version {
+					t.Errorf("FindCommand = %+v (found %v), want %s %s at %s", got, ok, tc.command, p.version, exe)
 				}
 			})
 		}
@@ -584,57 +589,55 @@ func TestModoDetector_CommandFindsModoClOnWindowsAndMacOS(t *testing.T) {
 	}
 }
 
-// TestUnrealDetector_CommandFindsTheNewestLauncherInstallOnWindows checks the
-// shipped command glob against the Epic Games Launcher's default layout: it
-// finds UnrealEditor-Cmd.exe and no other program in that folder, picks the
-// newest of several engine versions by number (5.10 is newer than 5.6), and
-// applies on Windows only, since the presets are Windows-only and no other OS
-// has a Launcher default here. The layout is unverified (see unreal.yaml).
-func TestUnrealDetector_CommandFindsTheNewestLauncherInstallOnWindows(t *testing.T) {
+// TestUnrealDetector_CommandFindsTheNewestLauncherInstall checks the shipped
+// command globs against the Epic Games Launcher's default layout on Windows
+// and macOS, the two platforms it installs the editor on: each finds
+// UnrealEditor-Cmd and no other program in that folder, picks the newest of
+// several engine versions by number (5.10 is newer than 5.6), and applies on
+// its own platform only. The Windows layout is unverified (see unreal.yaml);
+// the macOS one matches a real UE 5.7.4.
+func TestUnrealDetector_CommandFindsTheNewestLauncherInstall(t *testing.T) {
 	d := builtinDetector(t, "unreal")
 	if d.Command == nil || d.Command.Name != "UnrealEditor-Cmd" {
 		t.Fatalf("the unreal detector has no command named UnrealEditor-Cmd: %+v", d.Command)
 	}
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
-	matches := func(file string) bool {
-		for _, g := range d.Command.Globs {
-			if g.OS != "windows" {
-				t.Errorf("command glob %q applies on %q; only windows has a Launcher default", g.PathGlob, g.OS)
-				continue
-			}
-			ok, err := path.Match(norm(g.PathGlob), norm(file))
-			if err != nil {
-				t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-			}
-			if ok {
-				return true
-			}
-		}
-		return false
-	}
-	const ue56 = `C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`
-	const ue510 = `C:\Program Files\Epic Games\UE_5.10\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`
-	if !matches(ue56) {
-		t.Errorf("no command glob matches %s", ue56)
-	}
-	for _, other := range []string{
-		`C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe`,
-		`C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Linux\UnrealEditor-Cmd`,
-		`C:\Program Files\Epic Games\UE_4.27\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`,
+	for _, tc := range []struct {
+		goos       string
+		old, newer string
+		others     []string
+	}{
+		{
+			goos:  "windows",
+			old:   `C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`,
+			newer: `C:\Program Files\Epic Games\UE_5.10\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`,
+			others: []string{
+				`C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe`,
+				`C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Linux\UnrealEditor-Cmd`,
+				`C:\Program Files\Epic Games\UE_4.27\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`,
+			},
+		},
+		{
+			goos:  "darwin",
+			old:   "/Users/Shared/Epic Games/UE_5.6/Engine/Binaries/Mac/UnrealEditor-Cmd",
+			newer: "/Users/Shared/Epic Games/UE_5.10/Engine/Binaries/Mac/UnrealEditor-Cmd",
+			others: []string{
+				"/Users/Shared/Epic Games/UE_5.6/Engine/Binaries/Mac/UnrealEditor",
+				"/Users/Shared/Epic Games/UE_5.6/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor",
+				"/Users/Shared/Epic Games/UE_4.26/Engine/Binaries/Mac/UnrealEditor-Cmd",
+			},
+		},
 	} {
-		if matches(other) {
-			t.Errorf("a command glob matched %s, which is not a UE 5 UnrealEditor-Cmd.exe", other)
-		}
-	}
-	env := envWithCommandAt(d, "windows", ue56, ue510)
-	got, ok := d.FindCommand(env)
-	if !ok || got.Name != "UnrealEditor-Cmd" || got.Path != ue510 || got.Version != "5.10" || len(got.Args) != 0 {
-		t.Errorf("FindCommand = %+v (found %v), want UnrealEditor-Cmd 5.10 at %s with no args", got, ok, ue510)
-	}
-	for _, goos := range []string{"linux", "darwin"} {
-		if got, ok := d.FindCommand(fakeEnv{goos: goos, globs: env.globs}); ok {
-			t.Errorf("%s FindCommand = %+v, want none", goos, got)
-		}
+		t.Run(tc.goos, func(t *testing.T) {
+			assertCommandGlobsPick(t, d, tc.goos, tc.old, tc.others, "a UE 5 UnrealEditor-Cmd")
+			env := envWithCommandAt(d, tc.goos, tc.old, tc.newer)
+			got, ok := d.FindCommand(env)
+			if !ok || got.Name != "UnrealEditor-Cmd" || got.Path != tc.newer || got.Version != "5.10" || len(got.Args) != 0 {
+				t.Errorf("FindCommand = %+v (found %v), want UnrealEditor-Cmd 5.10 at %s with no args", got, ok, tc.newer)
+			}
+			if got, ok := d.FindCommand(fakeEnv{goos: "linux", globs: env.globs}); ok {
+				t.Errorf("linux FindCommand = %+v, want none", got)
+			}
+		})
 	}
 }
 

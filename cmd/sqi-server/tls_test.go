@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/discovery"
 	"github.com/uberware/sqi/internal/fsutil"
 )
 
@@ -128,6 +129,37 @@ func TestTLSInit_WritesExpectedFiles(t *testing.T) {
 	// Private keys must not be readable beyond their owner.
 	for _, name := range []string{"ca.key", "server.key"} {
 		assertSecretRestricted(t, filepath.Join(dir, name))
+	}
+}
+
+// TestTLSInit_DefaultCertCoversTheDiscoveredName: with no --host, the server
+// certificate names the host the broker URL that discovery derives names, so
+// a worker that found the server by mDNS can verify it. On Linux and Windows
+// the hostname carries no ".local", and a certificate naming only the hostname
+// failed every discovered worker's TLS verification.
+func TestTLSInit_DefaultCertCoversTheDiscoveredName(t *testing.T) {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		t.Skipf("no hostname: %v", err)
+	}
+	dir := filepath.Join(t.TempDir(), "certs")
+	if _, err := runTLSInitCmd(t, "--out", dir); err != nil {
+		t.Fatalf("tls init: %v", err)
+	}
+
+	server := parseCertFile(t, filepath.Join(dir, "server.crt"))
+	for _, want := range []string{h, discovery.SRVHost()} {
+		if !slices.Contains(server.DNSNames, want) {
+			t.Errorf("DNSNames = %v, want it to contain %s", server.DNSNames, want)
+		}
+	}
+}
+
+// An explicit --host is used as given: the discovered name is not added.
+func TestResolveTLSHosts_ExplicitHostAddsNoDiscoveredName(t *testing.T) {
+	got := resolveTLSHosts([]string{"sqi.example"})
+	if slices.Contains(got, discovery.SRVHost()) {
+		t.Errorf("resolveTLSHosts = %v, want no %s with an explicit --host", got, discovery.SRVHost())
 	}
 }
 

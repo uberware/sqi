@@ -5,9 +5,12 @@ package discovery
 import (
 	"context"
 	"log/slog"
+	"net"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/grandcat/zeroconf"
 )
 
 func discardLogger() *slog.Logger {
@@ -244,5 +247,69 @@ func TestHostname(t *testing.T) {
 
 	if h := hostname(); strings.TrimSpace(h) == "" {
 		t.Error("hostname() returned an empty string")
+	}
+}
+
+// TestSRVHostFor pins the host the SRV record and a derived broker URL name.
+// macOS reports its hostname already in the .local domain; appending .local
+// again advertised "<name>.local.local", a name no certificate from
+// `sqi-server tls init` covers.
+func TestSRVHostFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		hostname string
+		want     string
+	}{
+		{hostname: "myhost", want: "myhost.local"},
+		{hostname: "Robins-Mac-Studio.local", want: "Robins-Mac-Studio.local"},
+		{hostname: "Robins-Mac-Studio.local.", want: "Robins-Mac-Studio.local"},
+		{hostname: "Host.LOCAL", want: "Host.local"},
+		{hostname: "render01.example.com", want: "render01.example.com.local"},
+		{hostname: "mylocal", want: "mylocal.local"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.hostname, func(t *testing.T) {
+			t.Parallel()
+			if got := srvHostFor(tt.hostname); got != tt.want {
+				t.Errorf("srvHostFor(%q) = %q, want %q", tt.hostname, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStart_LeavesAddressesToTheResponder: Start names the host itself, so the
+// SRV record carries no doubled ".local", and passes no addresses, so the
+// underlying responder answers on each interface with that interface's own
+// current addresses rather than with a list taken once at startup from every
+// interface. Not parallel: it replaces registerProxy.
+func TestStart_LeavesAddressesToTheResponder(t *testing.T) {
+	var gotHost string
+	gotIPs := []string{"unset"}
+	orig := registerProxy
+	registerProxy = func(_, _, _ string, _ int, host string, ips, _ []string, _ []net.Interface) (*zeroconf.Server, error) {
+		gotHost, gotIPs = host, ips
+		return nil, nil
+	}
+	t.Cleanup(func() { registerProxy = orig })
+
+	r, err := New(Config{
+		Enabled:      true,
+		InstanceName: "test",
+		HTTPAddr:     ":8080",
+		NATSURL:      "nats://localhost:4222",
+	}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if want := hostLabel(hostname()); gotHost != want {
+		t.Errorf("host = %q, want %q", gotHost, want)
+	}
+	if gotIPs != nil {
+		t.Errorf("ips = %q, want none, so the responder picks each interface's own", gotIPs)
 	}
 }

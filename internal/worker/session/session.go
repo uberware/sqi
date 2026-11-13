@@ -72,6 +72,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/pathmap"
+	"github.com/uberware/sqi/internal/worker/procout"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -1336,11 +1337,11 @@ func (s *Session) scrubRedacted(line string) string {
 //
 // If action.TimeoutSeconds > 0, a deadline is applied via a derived context.
 // When ctx is canceled or the deadline elapses, exec.CommandContext sends
-// SIGKILL to the child process. runAction then drains any remaining pipe output
-// and calls Wait; it returns only after those steps complete. Callers should
-// expect a brief delay between context cancellation and runAction returning,
-// proportional to how quickly the OS kills the process and any remaining pipe
-// data is read.
+// SIGKILL to the child process. runAction then waits for the process and reads
+// the rest of its output, for at most procout.DrainDelay after the exit when a
+// descendant still holds it open; it returns only after those steps complete.
+// Callers should expect a brief delay between context cancellation and
+// runAction returning.
 //
 // stdout and stderr are captured concurrently (to avoid pipe-buffer deadlocks)
 // and forwarded to the logger at debug level so operators can diagnose
@@ -1376,16 +1377,11 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 	}
 	cmd.Env = env
 
-	stdout, err := cmd.StdoutPipe()
+	// procout, not StdoutPipe, so the action's exit is seen while a descendant
+	// still holds its output open, such as a service an onEnter action starts
+	// in the background.
+	out, err := procout.Start(cmd)
 	if err != nil {
-		return fmt.Errorf("stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %q: %w", action.Command, err)
 	}
 
@@ -1404,17 +1400,19 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 	readWg.Add(2)
 	go func() {
 		defer readWg.Done()
-		stdoutText, stdoutErr = scanActionStream(stdout, "stdout", lineHandler)
+		stdoutText, stdoutErr = scanActionStream(out.Stdout, "stdout", lineHandler)
 	}()
 	go func() {
 		defer readWg.Done()
-		stderrText, stderrErr = scanActionStream(stderr, "stderr", lineHandler)
+		stderrText, stderrErr = scanActionStream(out.Stderr, "stderr", lineHandler)
 	}()
+	stillOpen, waitErr := out.Wait()
 	readWg.Wait()
-
-	// Wait must be called after all pipe reads complete (Go docs: "it is
-	// incorrect to call Wait before all reads from the pipe have completed").
-	waitErr := cmd.Wait()
+	if stillOpen {
+		logger.WarnContext(ctx,
+			"session: an environment action exited but its output was still open after the drain delay; output after that is not captured",
+			slog.String("command", action.Command), slog.Duration("waited", procout.DrainDelay))
+	}
 
 	if stdoutText != "" {
 		logger.DebugContext(

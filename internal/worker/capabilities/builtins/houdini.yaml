@@ -14,8 +14,9 @@ version:
 # PATH, so the worker supplies a default from the newest install it finds, unless
 # the operator or the host already provides one. hython lives in $HFS/bin, the
 # same folder the glob checks above and the husk and mantra detectors already
-# assume. macOS has no default: its hython is deep inside the framework bundle,
-# and the layout was not checked.
+# assume. On macOS $HFS/bin is deep inside the framework bundle, at
+# Frameworks/Houdini.framework/Versions/Current/Resources/bin, checked against a
+# real Houdini 21.0.631; the version comes from the Houdini<version> folder.
 command:
   name: hython
   globs:
@@ -23,3 +24,5 @@ command:
       os: linux
     - path_glob: 'C:\Program Files\Side Effects Software\Houdini *\bin\hython.exe'   # windows
       os: windows
+    - path_glob: "/Applications/Houdini/Houdini*/Frameworks/Houdini.framework/Versions/Current/Resources/bin/hython"  # macOS
+      os: darwin

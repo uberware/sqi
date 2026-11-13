@@ -14,8 +14,8 @@ package integration
 // Untagged, like the rest of the preset harness, so `make test-cover` runs it.
 // Every test is named TestPresetUnreal_* so the preset harness's -run regex
 // (make test-preset-harness, and CI's preset-harness-windows job) selects it.
-// The presets are Windows-only, but nothing here starts Unreal or needs the
-// worker's OS gate, so these tests run on every OS: params.json's escaping and
+// The presets run on Windows and macOS, but nothing here starts Unreal or needs
+// the worker's OS gate, so these tests run on every OS: params.json's escaping and
 // the script's logic are host-independent, and only a Windows run can show a
 // backslash that was not escaped.
 

@@ -8,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/uberware/sqi/internal/certgen"
+	"github.com/uberware/sqi/internal/discovery"
 )
 
 const (
@@ -75,7 +77,7 @@ func init() {
 	tlsInitCmd.Flags().StringVar(&tlsInitOut, "out", "./certs",
 		"directory to write certificate material into")
 	tlsInitCmd.Flags().StringArrayVar(&tlsInitHosts, "host", nil,
-		"hostname or IP the server certificate must cover (repeatable; defaults to this machine's hostname plus localhost, 127.0.0.1 and ::1)")
+		"hostname or IP the server certificate must cover (repeatable; defaults to this machine's hostname and its .local mDNS name, plus localhost, 127.0.0.1 and ::1)")
 	tlsInitCmd.Flags().StringArrayVar(&tlsInitClients, "client", nil,
 		"worker ID to issue a client certificate for, used only with nats.embedded.tls.client_ca_file (repeatable)")
 	tlsCmd.AddCommand(tlsInitCmd)
@@ -176,8 +178,10 @@ func runTLSIssue(cmd *cobra.Command, _ []string) error {
 var loopbackSANs = []string{"localhost", "127.0.0.1", "::1"}
 
 // resolveTLSHosts returns the SAN list for the server certificate: whatever
-// --host supplied, plus this machine's hostname when nothing was supplied,
-// plus loopback in every case.
+// --host supplied, plus loopback in every case. When nothing was supplied it
+// adds this machine's hostname and the ".local" name mDNS discovery
+// advertises (discovery.SRVHost), which is the host of the broker URL a
+// discovering worker is given and dials.
 //
 // Loopback is appended even when --host names specific hosts. An operator who
 // names only the LAN host would otherwise get a certificate that cannot be
@@ -190,6 +194,9 @@ func resolveTLSHosts(flagHosts []string) []string {
 	if len(hosts) == 0 {
 		if h, err := os.Hostname(); err == nil && h != "" {
 			hosts = append(hosts, h)
+			if srv := discovery.SRVHost(); !strings.EqualFold(srv, h) {
+				hosts = append(hosts, srv)
+			}
 		}
 	}
 	for _, l := range loopbackSANs {

@@ -98,8 +98,8 @@ func tail(s string, n int) string {
 func TestPresetDCC_Unreal_MRQRender(t *testing.T) {
 	const caseName = "TestPresetDCC_Unreal_MRQRender"
 	trackOutcome(t, caseName)
-	if runtime.GOOS != "windows" {
-		skipOutcome(t, caseName, "the Unreal presets run on Windows workers only")
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		skipOutcome(t, caseName, "the Unreal presets run on Windows and macOS workers only")
 	}
 	editor := requireDCC(t, caseName, "Unreal Engine", "UnrealEditor-Cmd")
 

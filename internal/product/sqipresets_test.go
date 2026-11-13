@@ -279,18 +279,20 @@ func TestSQIReferencePresets(t *testing.T) {
 		// The two Unreal presets are host-script presets with one task and no
 		// frame parameters, so no TASK_CHUNKING. The job preset's target
 		// parameters are LevelSequence, Map and MovieRenderConfig; the queue
-		// preset declares none of them, so it is a whole-scene product.
+		// preset declares none of them, so it is a whole-scene product. All
+		// three run on Windows and macOS workers, the only platforms the
+		// Epic Games Launcher installs the editor on.
 		"unreal-mrq-job-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "LevelSequence", "Map", "MovieRenderConfig", "OutputDirectory"},
 			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
-			osFamily:   []string{"windows"},
+			osFamily:   []string{"windows", "macos"},
 		},
 		"unreal-mrq-queue-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "QueueAsset", "OutputDirectory"},
 			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
-			osFamily:   []string{"windows"},
+			osFamily:   []string{"windows", "macos"},
 		},
 		// The shot preset is the job preset with one task per shot: a Shots
 		// list job parameter and a Shot task parameter ranging over it.
@@ -298,7 +300,7 @@ func TestSQIReferencePresets(t *testing.T) {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "LevelSequence", "Map", "MovieRenderConfig", "Shots", "OutputDirectory"},
 			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
-			osFamily:   []string{"windows"},
+			osFamily:   []string{"windows", "macos"},
 			taskParams: []string{"Shot:STRING"},
 		},
 		"ffmpeg-transcode": {

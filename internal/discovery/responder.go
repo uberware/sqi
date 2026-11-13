@@ -166,13 +166,20 @@ func (r *Responder) Start(ctx context.Context) error {
 		return nil
 	}
 
-	txt := buildTXTRecords(r.cfg.InstanceID, r.httpPort, r.cfg.NATSURL, hostname(), version.Version, r.cfg.HTTPTLS)
+	host := hostname()
+	txt := buildTXTRecords(r.cfg.InstanceID, r.httpPort, r.cfg.NATSURL, host, version.Version, r.cfg.HTTPTLS)
 
-	server, err := zeroconf.Register(
+	// RegisterProxy rather than Register, because Register advertises
+	// os.Hostname() and, given a name already in .local, doubles the domain.
+	// It is given no addresses, so it answers on each interface with that
+	// interface's own current ones.
+	server, err := registerProxy(
 		r.cfg.InstanceName,
 		serviceType,
 		domain,
 		r.httpPort,
+		hostLabel(host),
+		nil,
 		txt,
 		r.cfg.Interfaces, // nil = every multicast-capable interface
 	)
@@ -245,13 +252,36 @@ func buildTXTRecords(instanceID string, httpPort int, natsURL, host, ver string,
 	return txt
 }
 
+// registerProxy is zeroconf.RegisterProxy, replaced in tests.
+var registerProxy = zeroconf.RegisterProxy
+
 // SRVHost returns the host the service's SRV record names: the machine's
-// hostname in the ".local" domain, which is how the underlying responder
-// forms it. The server uses it as the host of a derived broker URL, so that
-// URL names the same host as the SRV record and a discovering worker can fall
-// back to the advertised address when that name does not resolve.
+// hostname in the ".local" domain. The server uses it as the host of a derived
+// broker URL, so that URL names the same host as the SRV record and a
+// discovering worker can fall back to the advertised address when that name
+// does not resolve.
 func SRVHost() string {
-	return hostname() + "." + strings.TrimSuffix(domain, ".")
+	return srvHostFor(hostname())
+}
+
+// srvHostFor is the ".local" name advertised for a host whose reported name
+// is h. macOS reports its name already in that domain ("name.local"), and the
+// domain is not added a second time: the underlying responder's own check
+// compares against "local." with its dot, never matches, and would advertise
+// "name.local.local", which no certificate from `sqi-server tls init` covers.
+func srvHostFor(h string) string {
+	return hostLabel(h) + "." + strings.TrimSuffix(domain, ".")
+}
+
+// hostLabel is h without a trailing ".local" (any case, with or without a
+// final dot): the name the responder is given to advertise in that domain.
+func hostLabel(h string) string {
+	h = strings.TrimSuffix(h, ".")
+	suffix := "." + strings.TrimSuffix(domain, ".")
+	if len(h) > len(suffix) && strings.EqualFold(h[len(h)-len(suffix):], suffix) {
+		return h[:len(h)-len(suffix)]
+	}
+	return h
 }
 
 // hostname returns the host's reported name, or "unknown" if it cannot be

@@ -20,6 +20,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/pathmap"
+	"github.com/uberware/sqi/internal/worker/procout"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
 )
@@ -665,15 +666,6 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	}
 	cmd.Env = envutil.BuildFromBase(sess.BaseEnv(), overrides, sess.EnvUnset())
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return processResult{Err: fmt.Errorf("stdout pipe: %w", err)}
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return processResult{Err: fmt.Errorf("stderr pipe: %w", err)}
-	}
-
 	// Record start time.
 	startedAt := time.Now()
 
@@ -685,7 +677,11 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// lastProgress is nil here because the process has not yet emitted any output.
 	e.statusPub.Running(context.Background(), msg, sess.ID, nil, startedAt)
 
-	if err := cmd.Start(); err != nil {
+	// procout, not StdoutPipe, so the task's exit is seen while a descendant
+	// still holds its output open, such as Unreal Editor's detached
+	// UnrealTraceServer.
+	out, err := procout.Start(cmd)
+	if err != nil {
 		return processResult{
 			Err:       fmt.Errorf("start %q: %w", action.Command, err),
 			StartedAt: startedAt,
@@ -711,7 +707,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		if killErr := cmd.Process.Kill(); killErr != nil {
 			e.logger.WarnContext(context.Background(), "executor: kill process after supervise failure", slog.Any("error", killErr))
 		}
-		cmd.Wait() //nolint:errcheck // best-effort reap after a forced kill; the supervise error below is what the caller sees
+		out.Wait() //nolint:errcheck // best-effort reap after a forced kill; the supervise error below is what the caller sees
 		return processResult{Err: fmt.Errorf("supervise task process tree: %w", err)}
 	}
 	defer func() {
@@ -744,21 +740,25 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	readWg.Add(2)
 	go func() {
 		defer readWg.Done()
-		scanOutput(ctx, stdoutPipe, "stdout", msg.TaskID, msg.AttemptID, sess.ID, handler, sess.ScrubRedacted, e.logger)
+		scanOutput(ctx, out.Stdout, "stdout", msg.TaskID, msg.AttemptID, sess.ID, handler, sess.ScrubRedacted, e.logger)
 	}()
 	go func() {
 		defer readWg.Done()
-		scanOutput(ctx, stderrPipe, "stderr", msg.TaskID, msg.AttemptID, sess.ID, handler, sess.ScrubRedacted, e.logger)
+		scanOutput(ctx, out.Stderr, "stderr", msg.TaskID, msg.AttemptID, sess.ID, handler, sess.ScrubRedacted, e.logger)
 	}()
 
-	// Wait for the output goroutines to finish and then for cmd.Wait() to
-	// return.  cmd.Wait() must be called after all pipe reads complete (Go
-	// docs: "it is incorrect to call Wait before all reads from the pipe have
-	// completed").
+	// Wait for the process, then end the scanners and wait for them, so every
+	// line read reaches the handler before the result is reported.
 	waitDone := make(chan error, 1)
 	go func() {
+		stillOpen, waitErr := out.Wait()
 		readWg.Wait()
-		waitDone <- cmd.Wait()
+		if stillOpen {
+			e.logger.WarnContext(ctx,
+				"executor: the task exited but its output was still open after the drain delay; output after that is not captured",
+				slog.String("task_id", msg.TaskID), slog.Duration("waited", procout.DrainDelay))
+		}
+		waitDone <- waitErr
 	}()
 
 	// Compute effective timeout.

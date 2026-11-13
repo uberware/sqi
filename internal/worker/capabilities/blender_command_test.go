@@ -3,7 +3,6 @@
 package capabilities
 
 import (
-	"path"
 	"strings"
 	"testing"
 )
@@ -54,15 +53,15 @@ func TestBlenderDetector_FindsAnInstallerInstallAndDefaultsTheCommand(t *testing
 	if d.Command == nil || d.Command.Name != "blender" {
 		t.Fatalf("the blender detector has no command named blender: %+v", d.Command)
 	}
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	cases := []struct {
+		name string
 		goos string
 		exe  string
 		not  []string
 		want string // version
 	}{
 		{
-			"windows", `C:\Program Files\Blender Foundation\Blender 5.2\blender.exe`,
+			"windows", "windows", `C:\Program Files\Blender Foundation\Blender 5.2\blender.exe`,
 			[]string{
 				`C:\Program Files\Blender Foundation\Blender 5.2\blender-launcher.exe`,
 				`C:\Program Files\Blender Foundation\Blender 5.2\BlendThumb.dll`,
@@ -70,35 +69,20 @@ func TestBlenderDetector_FindsAnInstallerInstallAndDefaultsTheCommand(t *testing
 			"5.2",
 		},
 		{
-			"darwin", "/Applications/Blender.app/Contents/MacOS/Blender",
+			"darwin", "darwin", "/Applications/Blender.app/Contents/MacOS/Blender",
 			[]string{"/Applications/Blender.app/Contents/MacOS/Blender Launcher"},
 			"",
 		},
+		{
+			"darwin versioned bundle", "darwin", "/Applications/Blender 5.2.app/Contents/MacOS/Blender",
+			[]string{"/Applications/Blender 5.2.app/Contents/MacOS/Blender Launcher"},
+			"5.2",
+		},
 	}
 	for _, tc := range cases {
-		t.Run(tc.goos, func(t *testing.T) {
-			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
-			for _, g := range d.Command.Globs {
-				if g.OS != "" && g.OS != tc.goos {
-					continue
-				}
-				ok, err := path.Match(norm(g.PathGlob), norm(tc.exe))
-				if err != nil {
-					t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-				}
-				if ok {
-					env.globs[g.PathGlob] = []string{tc.exe}
-				}
-				for _, other := range tc.not {
-					matched, err := path.Match(norm(g.PathGlob), norm(other))
-					if err != nil {
-						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-					}
-					if matched {
-						t.Errorf("glob %q matched %s, which is not the Blender executable", g.PathGlob, other)
-					}
-				}
-			}
+		t.Run(tc.name, func(t *testing.T) {
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, "the Blender executable")
+			env := envWithCommandAt(d, tc.goos, tc.exe)
 			got, found := d.FindCommand(env)
 			if !found || got.Name != "blender" || got.Path != tc.exe || got.Version != tc.want {
 				t.Errorf("FindCommand = %+v (found %v), want blender %q at %s", got, found, tc.want, tc.exe)
@@ -120,5 +104,20 @@ func TestBlenderDetector_StillEmitsNoVersionTags(t *testing.T) {
 
 	if got := strings.Join(d.Evaluate(env), ","); got != "blender" {
 		t.Errorf("Evaluate = %q, want only the bare blender tag", got)
+	}
+}
+
+// TestBlenderDetector_PrefersAVersionedMacBundle covers a Mac with two Blenders
+// side by side, the second renamed to carry its version, as Blender's own
+// instructions for keeping several releases suggest. Only the bundle name
+// carries a version, so the versioned bundle is chosen over a plain
+// Blender.app, whatever release that one is.
+func TestBlenderDetector_PrefersAVersionedMacBundle(t *testing.T) {
+	d := builtinDetector(t, "blender")
+	plain := "/Applications/Blender.app/Contents/MacOS/Blender"
+	versioned := "/Applications/Blender 5.2.app/Contents/MacOS/Blender"
+	got, found := d.FindCommand(envWithCommandAt(d, "darwin", plain, versioned))
+	if !found || got.Path != versioned || got.Version != "5.2" {
+		t.Errorf("FindCommand = %+v (found %v), want blender 5.2 at %s", got, found, versioned)
 	}
 }

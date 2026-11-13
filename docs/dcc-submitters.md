@@ -1133,8 +1133,8 @@ Effects submitter does, by locking a movie target's range and frame count
 
 Each preset's `hostRequirements` gates it to workers advertising the matching
 `attr.worker.tag.<name>` capability tag. `3dsmax-render`, the After Effects
-presets and the three Unreal presets also require `attr.worker.os.family` (`windows` for `3dsmax-render`
-and the Unreal presets, `windows` or `macos` for the After Effects presets). At startup
+presets and the three Unreal presets also require `attr.worker.os.family` (`windows` for `3dsmax-render`,
+`windows` or `macos` for the After Effects and Unreal presets). At startup
 `sqi-worker` detects a standard Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds
 Max, After Effects, Mistika, Katana, Silhouette (`sfxcmd`), Fusion Render Node, VRED, KeyShot (`keyshot_headless`), Modo (`modo_cl`) or Unreal Engine 5 (`UnrealEditor-Cmd`, in the Epic Games Launcher's default folder only) install, on `PATH` or in its usual install
 location, and advertises the matching tag (`maya`, plus a version variant such

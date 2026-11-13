@@ -6,20 +6,23 @@
 # husk has its own tag rather than relying on houdini's: the houdini detector
 # keys on hython and the Houdini application, and a worker can have either
 # without husk on PATH. The globs match $HFS/bin under the default install
-# roots, /opt/hfs<version> on Linux and
-# "C:\Program Files\Side Effects Software\Houdini <version>" on Windows. macOS
-# is covered by the PATH probe only.
+# roots: /opt/hfs<version> on Linux,
+# "C:\Program Files\Side Effects Software\Houdini <version>" on Windows and
+# /Applications/Houdini/Houdini<version>/Frameworks/Houdini.framework/Versions/
+# Current/Resources on macOS.
 #
 # A default Houdini install does not put $HFS/bin on PATH, so the command block
 # supplies the newest install's husk as the `husk` command. The Windows glob
-# matches Houdini 22.0.466's layout; the Linux one is inferred from it and
-# unverified.
+# matches Houdini 22.0.466's layout and the macOS one Houdini 21.0.631's; the
+# Linux one is inferred and unverified.
 tag: husk
 checks:
   - exe: husk
   - path_glob: "/opt/hfs*/bin/husk"                                                    # linux
   - path_glob: 'C:\Program Files\Side Effects Software\Houdini *\bin\husk.exe'         # windows
     os: windows
+  - path_glob: "/Applications/Houdini/Houdini*/Frameworks/Houdini.framework/Versions/Current/Resources/bin/husk"  # macOS
+    os: darwin
 version:
   from: '(?:hfs|Houdini ?)(?P<v>[0-9]+\.[0-9]+)'
 command:
@@ -31,3 +34,5 @@ command:
       os: linux
     - path_glob: 'C:\Program Files\Side Effects Software\Houdini *\bin\husk.exe'   # windows
       os: windows
+    - path_glob: "/Applications/Houdini/Houdini*/Frameworks/Houdini.framework/Versions/Current/Resources/bin/husk"  # macOS
+      os: darwin

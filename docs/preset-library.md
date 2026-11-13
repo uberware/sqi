@@ -453,13 +453,14 @@ No Modo has executed either preset; the argument names of `scene.open` and `rend
 
 | Preset | Renders | Shape | Gate |
 |---|---|---|---|
-| `unreal-mrq-job-render` | one Movie Render Queue job: a level sequence (`LevelSequence`) on a map (`Map`) with a saved config (`MovieRenderConfig`) | one task | `unreal`, Windows |
-| `unreal-mrq-queue-render` | every job of a saved Movie Pipeline Queue asset (`QueueAsset`) | one task | `unreal`, Windows |
-| `unreal-mrq-shot-render` | the job preset's job, one shot at a time: each name in `Shots` | one task per shot | `unreal`, Windows |
+| `unreal-mrq-job-render` | one Movie Render Queue job: a level sequence (`LevelSequence`) on a map (`Map`) with a saved config (`MovieRenderConfig`) | one task | `unreal`, Windows or macOS |
+| `unreal-mrq-queue-render` | every job of a saved Movie Pipeline Queue asset (`QueueAsset`) | one task | `unreal`, Windows or macOS |
+| `unreal-mrq-shot-render` | the job preset's job, one shot at a time: each name in `Shots` | one task per shot | `unreal`, Windows or macOS |
 
-Host-script presets like VRED's, gated on the worker's OS: Windows is the one OS any vendor
-Unreal render adaptor ships, so all three require `attr.worker.os.family` = `windows` and their Tier 3 and outcome cases
-run on Windows only. Each task runs `UnrealEditor-Cmd <project> -log -unattended -stdout -allowstdoutlogverbosity
+Host-script presets like VRED's, gated on the worker's OS: the Epic Games Launcher installs the editor on Windows and
+macOS only, so all three require `attr.worker.os.family` = `windows` or `macos`, and their Tier 3 and outcome cases run on
+those two. On macOS the editor also needs Xcode's Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) to
+compile shaders; without it the editor exits at startup. Each task runs `UnrealEditor-Cmd <project> -log -unattended -stdout -allowstdoutlogverbosity
 -NoLoadingScreen -NoScreenMessages -RenderOffscreen -nohmd -windowed -execcmds=py <one line of Python>`, the command line
 of AWS's Deadline Cloud adaptor for Unreal. The line of Python adds the task's session folder to Python's path and imports
 the embedded `sqi_unreal_render.py`; it holds no comma (Unreal splits `-execcmds` at commas) and no double quote, and a
@@ -826,8 +827,8 @@ tier to stand in for. The tiers are:
     (`requires_app: renderman`) and `3delight-render` under 3Delight 2.9.213
     (`requires_app: 3delight`). `test/integration/preset_dcc_renderers_test.go`
     writes the RIB and NSI files itself.
-  - The three Unreal presets under Unreal Engine 5.8 on Windows
-    (`requires_app: unreal`). `test/integration/preset_dcc_unreal_test.go`
+  - The three Unreal presets under Unreal Engine 5.8 on Windows and 5.7.4 on
+    macOS (`requires_app: unreal`). `test/integration/preset_dcc_unreal_test.go`
     builds a project with the editor itself, then renders a sequence, a saved
     queue and a sequence's shots through the shipped presets.
 
@@ -907,12 +908,12 @@ registry check for each of them. The other 11 are gated to fewer platforms:
   `command-sequence`.
 - Windows-only (`required_on: [windows]`), gated on
   `attr.worker.os.family anyOf ["windows"]`: `script-powershell`,
-  `command-sequence-powershell`, `ffmpeg-segment-transcode-powershell`,
-  `3dsmax-render`, `unreal-mrq-job-render`, `unreal-mrq-queue-render` and
-  `unreal-mrq-shot-render`. Only the Windows job runs them.
+  `command-sequence-powershell`, `ffmpeg-segment-transcode-powershell`
+  and `3dsmax-render`. Only the Windows job runs them.
 - Windows and macOS (`required_on: [windows, darwin]`), gated on
-  `attr.worker.os.family anyOf ["windows", "macos"]`: `after-effects-render`
-  and `after-effects-queue-render`. Only the Windows job runs them; no CI job
+  `attr.worker.os.family anyOf ["windows", "macos"]`: `after-effects-render`,
+  `after-effects-queue-render`, `unreal-mrq-job-render`,
+  `unreal-mrq-queue-render` and `unreal-mrq-shot-render`. Only the Windows job runs them; no CI job
   runs the preset harness on macOS.
 
 `TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose

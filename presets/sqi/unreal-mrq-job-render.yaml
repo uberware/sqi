@@ -3,8 +3,8 @@ name: unreal-mrq-job-render
 title: Unreal Movie Render Queue Job Render
 description: >-
   Renders one level sequence on one map with one Movie Render Queue config in
-  an Unreal Engine 5 project, as a single task on a Windows worker, through
-  the preset's own Python script. Tested with Unreal Engine 5.8.
+  an Unreal Engine 5 project, as a single task on a Windows or macOS worker,
+  through the preset's own Python script. Tested on Windows and macOS.
 readme: |
   # Unreal Movie Render Queue Job Render
 
@@ -13,7 +13,7 @@ readme: |
   Render Queue's PIE executor. The whole job is one task: Unreal renders the
   sequence's frames, or the range the config sets, in one editor session. Use
   Unreal Movie Render Queue Queue Render instead to render a saved queue.
-  Windows workers only.
+  Windows and macOS workers only.
 
   ## Parameters
 
@@ -85,14 +85,18 @@ readme: |
 
   ## Requirements
 
-  - Windows workers tagged `attr.worker.tag.unreal = true`; the preset also
-    requires `attr.worker.os.family` = `windows`. The worker tags an Unreal
-    Engine 5 install it finds in the Epic Games Launcher's default folder,
-    `C:\Program Files\Epic Games\UE_5.x`.
+  - Windows or macOS workers tagged `attr.worker.tag.unreal = true`; the
+    preset also requires `attr.worker.os.family` = `windows` or `macos`. The
+    worker tags an Unreal Engine 5 install it finds in the Epic Games
+    Launcher's default folder, `C:\Program Files\Epic Games\UE_5.x` on
+    Windows and `/Users/Shared/Epic Games/UE_5.x` on macOS.
   - A resolvable `UnrealEditor-Cmd`: the worker supplies it from the newest
     install in that default folder. An install anywhere else, such as a custom
     Launcher folder or a source build, needs an `UnrealEditor-Cmd` entry in
     the worker's `worker.commands`.
+  - On macOS, Xcode's Metal Toolchain (`xcodebuild -downloadComponent
+    MetalToolchain`). Without it the editor cannot compile shaders and exits
+    at startup.
   - The Movie Render Queue and Python Editor Script plug-ins enabled in the
     project.
   - A worker session folder (`worker.session_dir`) whose path holds no comma,
@@ -115,9 +119,15 @@ readme: |
     the asset name;
   - a missing config fails the task with a reason that names it.
 
+  It has also rendered with Unreal Engine 5.7.4 on a macOS worker (Apple
+  silicon), from a project whose path holds a space: a sequence and a map
+  given as package paths rendered exactly the sequence's frames at the
+  config's size into the Output Directory.
+
   ## What has not been verified
 
-  - Unreal Engine versions before 5.8. The command line follows AWS's
+  - Unreal Engine versions before 5.8 on Windows, and any but 5.7 on macOS.
+    The command line follows AWS's
     Deadline Cloud adaptor for Unreal, and the script uses the Movie Render
     Queue's Python API as that adaptor and Epic's Python reference use it.
   - That Unreal splits `-execcmds` at commas, which is why a session folder
@@ -129,7 +139,7 @@ readme: |
   - Whether the executor reports a canceled render as a failure: Epic issue
     UE-160482 says it reported success before Unreal 5.3. Canceling the sqi
     job ends the editor either way.
-  - Rendering on Linux or macOS, which no vendor adaptor ships.
+  - Rendering on Linux, where the Epic Games Launcher installs no editor.
 category: Rendering
 version: 1.0.0
 template:
@@ -177,7 +187,7 @@ template:
       hostRequirements:
         attributes:
           - name: attr.worker.os.family
-            anyOf: ["windows"]
+            anyOf: ["windows", "macos"]
           - name: attr.worker.tag.unreal
             anyOf: ["true"]
       SQI_LOG_CHECKS:

@@ -3,8 +3,8 @@ name: unreal-mrq-shot-render
 title: Unreal Movie Render Queue Shot Render
 description: >-
   Renders one level sequence on one map with one Movie Render Queue config in
-  an Unreal Engine 5 project, one task per shot, on Windows workers, through
-  the preset's own Python script. Tested with Unreal Engine 5.8.
+  an Unreal Engine 5 project, one task per shot, on Windows or macOS workers,
+  through the preset's own Python script. Tested on Windows and macOS.
 readme: |
   # Unreal Movie Render Queue Shot Render
 
@@ -14,7 +14,7 @@ readme: |
   editor, rebuilds the job's shot list from the sequence and renders only its
   own shot, so the shots of one sequence render side by side on several
   workers. Use Unreal Movie Render Queue Job Render instead to render every
-  shot in one task. Windows workers only.
+  shot in one task. Windows and macOS workers only.
 
   ## Parameters
 
@@ -109,14 +109,10 @@ readme: |
 
   ## Requirements
 
-  - Windows workers tagged `attr.worker.tag.unreal = true`; the preset also
-    requires `attr.worker.os.family` = `windows`. The worker tags an Unreal
-    Engine 5 install it finds in the Epic Games Launcher's default folder,
-    `C:\Program Files\Epic Games\UE_5.x`.
-  - A resolvable `UnrealEditor-Cmd`: the worker supplies it from the newest
-    install in that default folder. An install anywhere else, such as a custom
-    Launcher folder or a source build, needs an `UnrealEditor-Cmd` entry in
-    the worker's `worker.commands`.
+  - Windows or macOS workers tagged `attr.worker.tag.unreal = true`, with
+    `attr.worker.os.family` = `windows` or `macos`, and a resolvable
+    `UnrealEditor-Cmd`, as Unreal Movie Render Queue Job Render's readme
+    describes (on macOS that includes Xcode's Metal Toolchain).
   - The Movie Render Queue and Python Editor Script plug-ins enabled in the
     project.
   - A worker session folder (`worker.session_dir`) whose path holds no comma,
@@ -136,9 +132,13 @@ readme: |
   It also covered everything Unreal Movie Render Queue Job Render's readme
   lists as tested.
 
+  On Unreal Engine 5.7.4 on a macOS worker (Apple silicon) a two-shot
+  sequence rendered one shot per task, and a missing shot failed its task.
+
   ## What has not been verified
 
-  - Unreal Engine versions before 5.8. The command line follows AWS's
+  - Unreal Engine versions before 5.8 on Windows, and any but 5.7 on macOS.
+    The command line follows AWS's
     Deadline Cloud adaptor for Unreal, and the script uses the Movie Render
     Queue's Python API as that adaptor and Epic's Python reference use it.
   - Several camera cuts sharing one shot name: the script enables every entry
@@ -150,7 +150,7 @@ readme: |
   - Everything else Unreal Movie Render Queue Job Render's readme lists as
     unverified: that Unreal splits `-execcmds` at commas, that the object
     path is needed, whether a canceled render reports failure (UE-160482),
-    and rendering on Linux or macOS.
+    and rendering on Linux.
 category: Rendering
 version: 1.0.0
 template:
@@ -211,7 +211,7 @@ template:
       hostRequirements:
         attributes:
           - name: attr.worker.os.family
-            anyOf: ["windows"]
+            anyOf: ["windows", "macos"]
           - name: attr.worker.tag.unreal
             anyOf: ["true"]
       SQI_LOG_CHECKS:

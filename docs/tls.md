@@ -209,6 +209,12 @@ certificate (`server.crt`, `server.key` — 2 years) covering the hosts given by
 written `0600`; certificates `0644`. On success it prints the exact configuration
 keys to set on each side.
 
+Without `--host`, the certificate covers this machine's hostname and its mDNS
+name, the hostname in the `.local` domain (`render-srv` and `render-srv.local`).
+The mDNS name is the host of the broker URL that [discovery](configuration.md#discoveryenabled)
+derives when `nats.embedded.advertise_url` is empty, so a worker that finds the
+server by mDNS can verify it.
+
 `--host` is repeatable. Loopback is always included even when `--host` names
 specific hosts: a certificate naming only the LAN host cannot be verified from the
 machine itself, which breaks local health probes and any client reaching the server

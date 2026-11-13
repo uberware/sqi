@@ -1852,8 +1852,8 @@ jobs:
             TestPresetModo_ScriptDrivesModo/whole_scene_chunk/args_modo
             TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands
             TestPresetModo_EmitsStatus
-            # The Unreal host-script presets. They are Windows-only, so their
-            # Tier 3 and outcome cases skip here and run in
+            # The Unreal host-script presets. They run on Windows and macOS
+            # only, so their Tier 3 and outcome cases skip here and run in
             # preset-harness-windows; these tests need no Unreal and no OS
             # gate, so they run on every OS. ScriptDrivesUnreal skips without
             # a working Python 3, so three leaves are named too, one of them

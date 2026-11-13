@@ -9,7 +9,8 @@
 # `--paste:mergeroi=1:all=1` assembly and oiiotool's `@` frame wildcard. The
 # Windows glob is the default install layout, as houdini.yaml uses. The Linux
 # glob is inferred from the shared $HFS/bin layout and is unverified on a Linux
-# install. There is no macOS glob, for the reason houdini.yaml gives.
+# install. The macOS glob is $HFS/bin inside the framework bundle, as
+# houdini.yaml gives it.
 #
 # The version belongs to Houdini, not to OIIO, so the detector has no top-level
 # version. The command's version only picks the newest install.
@@ -19,6 +20,8 @@ checks:
   - path_glob: "/opt/hfs*/bin/hoiiotool"                                     # linux
   - path_glob: 'C:\Program Files\Side Effects Software\Houdini *\bin\hoiiotool.exe'   # windows
     os: windows
+  - path_glob: "/Applications/Houdini/Houdini*/Frameworks/Houdini.framework/Versions/Current/Resources/bin/hoiiotool"  # macOS
+    os: darwin
 command:
   name: oiiotool
   version:
@@ -28,3 +31,5 @@ command:
       os: linux
     - path_glob: 'C:\Program Files\Side Effects Software\Houdini *\bin\hoiiotool.exe'   # windows
       os: windows
+    - path_glob: "/Applications/Houdini/Houdini*/Frameworks/Houdini.framework/Versions/Current/Resources/bin/hoiiotool"  # macOS
+      os: darwin

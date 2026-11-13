@@ -1208,8 +1208,9 @@ presets:
         log checks, never the script inside Unreal. Tier 2
         (TestPresetDCC_Unreal_MRQRender, shared by the three Unreal presets)
         runs UE 5.8's own UnrealEditor-Cmd, found by the detector at the
-        Launcher default C:\Program Files\Epic Games\UE_5.8, on a project the
-        test builds in a folder whose name has a space. It shows that the
+        Launcher default C:\Program Files\Epic Games\UE_5.8, and UE 5.7.4's
+        on macOS (Apple silicon, from a custom install folder put on PATH),
+        on a project the test builds in a folder whose name has a space. It shows that the
         -execcmds command starts the script, that the editor renders after the
         script returns and then exits, that SQI_RENDER: OK reaches the worker
         so the log checks pass, and that a sequence and a map given as
@@ -1217,7 +1218,8 @@ presets:
         sequence's three frames at the config's 64x36 into the Output
         Directory. Not shown: the descriptor-1 and unreal.log copies of the
         success line separately, a blank Output Directory, a missing config,
-        a project with code modules, any UE but 5.8, an install outside the
+        a project with code modules, any UE but 5.8 on Windows and 5.7.4 on
+        macOS, a Windows install outside the
         Launcher default (the Launcher records each one under
         HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x> as InstalledDirectory, as
         AWS's adaptor reads it, which a detector check cannot read), and a
@@ -1237,7 +1239,7 @@ presets:
       requires_app: unreal
     tier3:
       case: TestPresetTier3/unreal-mrq-job-render/default
-      required_on: [windows]
+      required_on: [darwin, windows]
 
   - name: unreal-mrq-queue-render
     source: presets/sqi
@@ -1256,7 +1258,8 @@ presets:
         quotes, a backslash and spaces in QueueAsset and both quotes in the
         output directory. Tier 3 runs a stub as UnrealEditor-Cmd: it exercises
         the worker, the embedded files and the log checks, never the script
-        inside Unreal. Tier 2 runs UE 5.8 on a saved queue of one job and shows
+        inside Unreal. Tier 2 runs UE 5.8 (Windows) and 5.7.4 (macOS) on a
+        saved queue of one job and shows
         that the queue loads, that its job renders exactly the sequence's three
         frames, and that the Output Directory replaces the job's own. Not
         shown: a queue of several jobs, a disabled job, and a blank Output
@@ -1272,7 +1275,7 @@ presets:
       requires_app: unreal
     tier3:
       case: TestPresetTier3/unreal-mrq-queue-render/default
-      required_on: [windows]
+      required_on: [darwin, windows]
 
   - name: unreal-mrq-shot-render
     source: presets/sqi
@@ -1295,8 +1298,8 @@ presets:
         the shot list runs under a fake unreal module in
         TestPresetUnreal_ScriptDrivesUnreal. Tier 3 runs a stub as
         UnrealEditor-Cmd: it exercises the worker, the embedded files and the
-        log checks, never the script inside Unreal. Tier 2 runs UE 5.8 on a
-        sequence whose shot track holds SH010 and SH020, two frames each, with
+        log checks, never the script inside Unreal. Tier 2 runs UE 5.8 (Windows)
+        and 5.7.4 (macOS) on a sequence whose shot track holds SH010 and SH020, two frames each, with
         {shot_name} in the config's file name format. It shows that
         update_job_shot_list_from_sequence names each shot by its section's
         display name, that Shots SH010 and SH020 run two tasks that together
@@ -1317,7 +1320,7 @@ presets:
       requires_app: unreal
     tier3:
       case: TestPresetTier3/unreal-mrq-shot-render/default
-      required_on: [windows]
+      required_on: [darwin, windows]
 
   - name: ffmpeg-transcode
     source: presets/sqi

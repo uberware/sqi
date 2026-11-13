@@ -48,6 +48,7 @@ var dccLayouts = []rendererLayout{
 		exe: "blender",
 		installs: []string{
 			"/Applications/Blender.app",
+			"/Applications/Blender 5.2.app", // a second release, renamed to carry its version
 			`C:\Program Files\Blender Foundation\Blender 5.2\blender.exe`,
 		},
 	},
@@ -189,12 +190,13 @@ var dccLayouts = []rendererLayout{
 	},
 	{
 		// Unreal Engine 5: only the Epic Games Launcher's default folder is
-		// looked for (see unreal.yaml), and only on Windows. The version is the
-		// UE_5.<minor> folder's.
+		// looked for (see unreal.yaml), on Windows and macOS. The version is
+		// the UE_5.<minor> folder's.
 		tag: "unreal",
 		exe: "UnrealEditor-Cmd",
 		installs: []string{
 			`C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`,
+			"/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor-Cmd",
 		},
 		versioned: `C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`,
 		version:   "5.6",
