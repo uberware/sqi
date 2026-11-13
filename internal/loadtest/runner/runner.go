@@ -27,6 +27,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sync"
 	"time"
@@ -953,6 +954,7 @@ func (r *run) storeChecks(ctx context.Context) {
 	if r.faults == nil || !r.complete {
 		return
 	}
+	in := r.storeInput()
 	sctx, cancel := r.cleanupCtx(ctx, storeCheckTimeout)
 	defer cancel()
 	r.logger.InfoContext(ctx, "stopping the server and the real workers to check the store")
@@ -960,29 +962,109 @@ func (r *run) storeChecks(ctx context.Context) {
 		// A server still running would write under the checks.
 		msg := "the server and the real workers did not stop for the store checks: " + err.Error()
 		r.unavail("rework", msg)
-		names := []string{verify.NameStoreIntegrity, verify.NameExecutionsRecorded}
-		if r.sc.Expect.MaxReclaims != nil {
-			names = append(names, verify.NameReclaims)
-		}
-		r.invariants = append(r.invariants, verify.Unmeasured(msg, names...)...)
+		r.invariants = append(r.invariants, verify.Unmeasured(msg, chaos.CheckNames(in)...)...)
 		return
 	}
 	markers, skipped, markerErr := readMarkers(r.faults.MarkerDir())
-	rep := chaos.StoreChecks(sctx, chaos.StoreInput{
-		Options:        r.faults.StoreOptions(),
-		FarmID:         r.tgt.FarmID(),
-		Ledger:         r.ledger,
-		Markers:        markers,
-		SkippedMarkers: skipped,
-		Faults:         r.faultRecords(),
-		MaxReclaims:    r.sc.Expect.MaxReclaims,
-	})
+	in.Options = r.faults.StoreOptions()
+	in.Markers, in.SkippedMarkers = markers, skipped
+	rep := chaos.StoreChecks(sctx, in)
 	r.reclaims = rep.Reclaims
 	if rep.Reclaims == nil {
 		r.unavail("reclaims", "the stopped server's store could not be read")
 	}
 	r.recordRework(rep, skipped, markerErr)
 	r.invariants = append(r.invariants, withMarkerErr(rep.Results, markerErr)...)
+}
+
+// storeInput is what the store checks read, but the stopped server's store and
+// the real tasks' markers: the farm, the ledger, the faults that fired and
+// what the revoked, skew-warning and disk-full checks need of them.
+func (r *run) storeInput() chaos.StoreInput {
+	records := r.faultRecords()
+	in := chaos.StoreInput{
+		FarmID:      r.tgt.FarmID(),
+		Ledger:      r.ledger,
+		Faults:      records,
+		MaxReclaims: r.sc.Expect.MaxReclaims,
+		Revoked:     revokedWorkers(records),
+	}
+	if r.fleet != nil {
+		in.SkewedGroups = skewedGroups(r.fleet.Specs())
+	}
+	if len(in.SkewedGroups) > 0 {
+		in.ServerLog = r.faults.ServerLog()
+	}
+	in.DiskFaults, in.DiskErr = diskWindows(r.sc.Faults, records)
+	if len(in.DiskFaults) > 0 && in.DiskErr == nil {
+		_, processes := r.sc.WorkerCounts()
+		for i := range processes {
+			id, err := r.faults.RealWorkerID(i)
+			if err != nil {
+				in.DiskErr = err
+				break
+			}
+			in.RealIDs = append(in.RealIDs, id)
+		}
+	}
+	return in
+}
+
+// revokedWorkers lists the real workers the revoke faults hit, each with the
+// time of its fault.
+func revokedWorkers(records []report.FaultRecord) []chaos.RevokedWorker {
+	var out []chaos.RevokedWorker
+	for _, rec := range records {
+		if rec.Kind != scenario.FaultRevoke {
+			continue
+		}
+		for _, id := range rec.Workers {
+			out = append(out, chaos.RevokedWorker{ID: id, At: rec.Start})
+		}
+	}
+	return out
+}
+
+// skewedGroups maps each worker group with a clock skew to the IDs of its
+// simulated workers.
+func skewedGroups(specs []simworker.WorkerSpec) map[string][]string {
+	var out map[string][]string
+	for _, sp := range specs {
+		if sp.Group.ClockSkew.Duration == 0 {
+			continue
+		}
+		if out == nil {
+			out = map[string][]string{}
+		}
+		out[sp.Group.Name] = append(out[sp.Group.Name], sp.ID)
+	}
+	return out
+}
+
+// diskWindows lists the disk_full faults on the real workers' volume that
+// fired, from the faults' records. A reason that is not a regular expression
+// is an error.
+func diskWindows(faults []scenario.Fault, records []report.FaultRecord) ([]chaos.DiskWindow, error) {
+	var out []chaos.DiskWindow
+	for _, rec := range records {
+		if rec.Kind != scenario.FaultDiskFull || rec.Index < 0 || rec.Index >= len(faults) {
+			continue
+		}
+		d := faults[rec.Index].DiskFull
+		if d == nil || d.Volume != scenario.VolumeWorkers {
+			continue
+		}
+		w := chaos.DiskWindow{Start: rec.Start, Healed: rec.Healed, MaxFailed: d.MaxFailed}
+		if d.Reason != "" {
+			re, err := regexp.Compile(d.Reason)
+			if err != nil {
+				return nil, fmt.Errorf("disk_full fault %d: reason %q: %w", rec.Index, d.Reason, err)
+			}
+			w.Reason = re
+		}
+		out = append(out, w)
+	}
+	return out, nil
 }
 
 // withMarkerErr fails executions-recorded as unmeasured when the real tasks'
