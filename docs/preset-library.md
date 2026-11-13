@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # Preset Library
 
-The **preset library** is a catalog of ready-to-use product definitions hosted at a
+The preset library is a catalog of ready-to-use product definitions hosted at a
 configurable URL. Each entry is a product definition file in the same format as a
 hand-authored custom product (`name`, `title`, `description`, `category`, `version`,
 and an inline OpenJD `template:`), which can be fetched and installed on the farm
@@ -43,13 +43,13 @@ The preset library operates at two levels:
 }
 ```
 
-`definition` is a path **relative to the index URL**. If the index is at
+`definition` is a path relative to the index URL. If the index is at
 `https://example.com/presets/index.json`, the definition above is fetched from
 `https://example.com/presets/blender/blender-render.yaml`.
 
 `sha256` is the hex-encoded SHA-256 hash of the definition file's raw content. It
-serves two purposes: **integrity** (the downloaded bytes match what the index
-promised) and **update detection** (if the hash in the index changes, the installed
+serves two purposes: integrity (the downloaded bytes match what the index
+promised) and update detection (if the hash in the index changes, the installed
 product is shown as having an update available). It does not authenticate the
 author: the trust boundary is the configured index URL.
 
@@ -87,7 +87,7 @@ entry shows the name, title, category, version, and current install status:
 
 | Status | Meaning |
 |---|---|
-| Not installed | The preset is available in the library but not yet installed. |
+| Not installed | The preset is available in the library but not installed. |
 | Installed | The installed product's SHA-256 matches the index. |
 | Update available | The index SHA-256 has changed since the preset was installed. |
 
@@ -120,12 +120,12 @@ A first install returns HTTP 201; an update or reinstall returns HTTP 200.
 All endpoints return 503 when `preset_library.url` is empty. A 503 can also
 mean that validating the definition exceeded `openjd.expr_submission_deadline`
 on this server; that is not a rejection of the preset, so retry. An unreachable
-or unparseable **index** is 502.
+or unparseable index is 502.
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/v1/presets` | List all presets with per-preset status. `?refresh=true` forces a re-fetch of the index. 502 if the index cannot be fetched. |
-| `GET` | `/api/v1/presets/{name}` | Preview a preset — metadata, template, and status. 404 if not in the index. 502 if the index cannot be fetched. 422 if the definition cannot be fetched, verified or parsed. |
+| `GET` | `/api/v1/presets/{name}` | Preview a preset: metadata, template, and status. 404 if not in the index. 502 if the index cannot be fetched. 422 if the definition cannot be fetched, verified or parsed. |
 | `POST` | `/api/v1/presets/{name}/install` | Install or update the named preset. 201 on first install, 200 on update or reinstall. 404 if not in the index. 409 if a built-in or custom product already uses that name. 422 on SHA-256 mismatch or validation failure. 502 if the index cannot be fetched. |
 
 To uninstall, use `DELETE /api/v1/products/{name}`.
@@ -267,8 +267,8 @@ Fusion GUI open on the machine holds the scripting port and stalls the node.
 
 It declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails when a line of
 standard output contains `The fusion renderer reported that the render failed`
-or `Failed to load the comp`, Deadline's two strings. **It is unverified whether
-they reach standard output with `-verbose`** rather than only a `-log` file
+or `Failed to load the comp`, Deadline's two strings. It is unverified whether
+they reach standard output with `-verbose` rather than only a `-log` file
 (Deadline drives the node through its own scripting connection), in which case
 the check never fires and a failed render is caught only by an exit status that
 is itself undocumented. A Fusion 8 report of a successful render exiting
@@ -483,8 +483,8 @@ name is the task's shot (an entry with no outer name is named after the sequence
 have fails the task with a reason listing the shots it does have, and nothing renders. The script warns, without failing,
 when the config's output file name format has no `{shot_name}`, since every shot renders with the same config; the
 readme suggests `{sequence_name}/{shot_name}/{shot_name}.{frame_number}`. Each shot pays the editor's start-up and the
-project's and map's loading. Also unverified: how that call rebuilds the shot list, several camera
-cuts sharing one shot name (all of them render), and configs built with the Movie Render Graph.
+project's and map's loading. Unverified: several camera cuts sharing one shot name (all of them
+render), and configs built with the Movie Render Graph.
 
 All three declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails unless the output contains `SQI_RENDER: OK`, and
 fails on a line containing `SQI_RENDER: FAILED:`, `LogPython: Error:` or `Render Executor: Error:`. The exit status is
@@ -493,9 +493,9 @@ project's `init_unreal.py`), so such an error fails the task even if the render 
 verdict only once the editor exits, which it does only when the executor reports back, so the readmes recommend a step timeout long enough for the first render on a worker, which compiles the
 project's shaders. The project and its content must be at the same path on every worker, or path-mapped; maps and
 queues must be saved; the project needs the Movie Render Queue and Python Editor Script plug-ins. The detector finds
-only the Epic Games Launcher's default folder, `C:\Program Files\Epic Games\UE_5.*`; an install anywhere else needs an
-`UnrealEditor-Cmd` entry in `worker.commands`. Epic's licence terms for render nodes are the studio's to check. No
-Unreal has executed any of the three presets.
+only the Epic Games Launcher's default folders, `C:\Program Files\Epic Games\UE_5.*` on Windows and
+`/Users/Shared/Epic Games/UE_5.*` on macOS; an install anywhere else needs an `UnrealEditor-Cmd` entry in
+`worker.commands`. Epic's licence terms for render nodes are the studio's to check.
 
 ### Cinema 4D, 3ds Max and After Effects
 
@@ -699,8 +699,8 @@ default. **Operations** is a list of `oiiotool` arguments, one per line, applied
 between reading and writing; leave it empty to convert by the output's file
 extension. `oiiotool` does not create missing folders, so the output folder
 must already exist. The worker finds Houdini's copy, `hoiiotool`, when
-`oiiotool` is not on `PATH`, on Windows and on Linux (the Linux path is inferred
-from Houdini's layout and unverified).
+`oiiotool` is not on `PATH`, on Windows, macOS and Linux (the Linux path is
+inferred from Houdini's layout and unverified).
 
 **Frame patterns.** `usdrecord-render` and `oiiotool-process` take a pattern
 whose file name has exactly one run of `#`, and the length of the run is the

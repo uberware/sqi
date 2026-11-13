@@ -14,8 +14,7 @@ var dccLayouts = []rendererLayout{
 	{
 		// Maya has no exe check: its command-line renderer is Render, which is
 		// too generic to probe PATH for. The Windows glob is the Autodesk
-		// installer's default location. It is unverified: the Windows rows for
-		// Maya and Houdini were added without a machine to check them on.
+		// installer's default location and is unverified.
 		tag: "maya",
 		exe: "",
 		installs: []string{
@@ -27,8 +26,8 @@ var dccLayouts = []rendererLayout{
 		version:   "2026",
 	},
 	{
-		// The Windows glob is the folder the husk and mantra detectors already
-		// assume, with the same version format.
+		// The Windows glob is $HFS/bin, the folder the husk and mantra
+		// detectors also use, with the same version format.
 		tag: "houdini",
 		exe: "hython",
 		installs: []string{
@@ -42,8 +41,8 @@ var dccLayouts = []rendererLayout{
 	{
 		// Blender carries no version tags (presence only), so there is no
 		// versioned path. The Windows glob is the folder the MSI and winget
-		// install to, checked against a real Blender 5.2; neither writes the
-		// registry key the detector looked for.
+		// install to, and matches a Blender 5.2 install; neither installer
+		// writes the registry key the registry check reads.
 		tag: "blender",
 		exe: "blender",
 		installs: []string{
@@ -127,7 +126,7 @@ var dccLayouts = []rendererLayout{
 		// Silhouette's sfxcmd runs on all three platforms. The Windows and macOS
 		// folders are the ones Boris FX's Command-Line page documents
 		// (SilhouetteFX) and the BorisFX root is a newer layout;
-		// neither is observed (see silhouette.yaml). The macOS path is the
+		// neither is verified (see silhouette.yaml). The macOS path is the
 		// sfxcmd inside the .app bundle. The version is the year in the folder.
 		tag: "silhouette",
 		exe: "sfxcmd",

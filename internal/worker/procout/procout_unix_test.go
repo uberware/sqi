@@ -107,8 +107,7 @@ func TestWait_WithoutAGroup(t *testing.T) {
 
 // TestWait_WaitsForTheGroup: a child left running in the process's own group,
 // a background job the script did not wait for, is waited for and its output
-// read, as before the drain existed. Only a holder outside the group is cut
-// off after DrainDelay.
+// read. Only a holder outside the group is cut off after DrainDelay.
 func TestWait_WaitsForTheGroup(t *testing.T) {
 	shortDrain(t, 200*time.Millisecond)
 	out := startGroup(t, "(sleep 1; echo later) & echo first; exit 0")
@@ -129,7 +128,7 @@ func TestWait_WaitsForTheGroup(t *testing.T) {
 }
 
 // TestWait_DoesNotKillTheHolder: once the drain delay has passed, the output
-// is no longer delivered but is still read, so a process holding it, such as
+// is not delivered but is still read, so a process holding it, such as
 // a service an onEnter action starts, is not killed by SIGPIPE on its next
 // write.
 func TestWait_DoesNotKillTheHolder(t *testing.T) {

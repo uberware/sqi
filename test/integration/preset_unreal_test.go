@@ -15,9 +15,9 @@ package integration
 // Every test is named TestPresetUnreal_* so the preset harness's -run regex
 // (make test-preset-harness, and CI's preset-harness-windows job) selects it.
 // The presets run on Windows and macOS, but nothing here starts Unreal or needs
-// the worker's OS gate, so these tests run on every OS: params.json's escaping and
-// the script's logic are host-independent, and only a Windows run can show a
-// backslash that was not escaped.
+// the worker's OS gate, so these tests run on every OS: params.json's escaping
+// and the script's logic are host-independent, and only a Windows run can show
+// a backslash that was not escaped.
 
 import (
 	"bytes"
@@ -824,8 +824,8 @@ func unrealObjectPath(path string) string {
 // parameters describe (or a copy of the saved queue's jobs), for the shot
 // preset the job's shot list rebuilt from the sequence with only the task's
 // shot enabled (a shot the sequence lacks fails the task, naming the shots it
-// has, before anything renders), the output
-// directory applied to every job when one is given, the PIE executor started
+// has, before anything renders), the output directory applied to every job
+// when one is given, the PIE executor started
 // with its three delegates; then, as the movie pipeline reports back, one
 // verdict, the success line only when every job succeeded and nothing fatal
 // was reported, and quit_editor. A render that never reports gets no verdict
@@ -1210,8 +1210,8 @@ func unrealCallArg(calls, name string) string {
 // file descriptor 1 as the movie pipeline reports back. The job and queue
 // presets print a status naming each finished job and the share of the queue's
 // jobs done, all before the success line; the shot preset, which renders one
-// job per task, prints one status naming its shot when it starts. Only the stub
-// editor has been run; no Unreal has.
+// job per task, prints one status naming its shot when it starts. These tests
+// run the stub editor, not a real Unreal.
 func TestPresetUnreal_EmitsJobProgress(t *testing.T) {
 	python := findPython3(t)
 	if python == "" {

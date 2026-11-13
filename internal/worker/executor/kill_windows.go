@@ -22,10 +22,9 @@
 //     graceful-shutdown notification equivalent to SIGTERM.
 //
 // sendTERM falls back to sendKILL (job-object terminate) if taskkill is
-// unavailable or returns an error, ensuring the process is always terminated.
-// sendKILL itself falls back to the old taskkill/proc.Kill() behavior if the
-// job handle is somehow absent, so a failure to create the job never leaves a
-// task unkillable.
+// unavailable or returns an error, so the process is always terminated.
+// Without a job handle, sendKILL runs "taskkill /F /T", and proc.Kill() if
+// that fails, so a task whose job could not be created can still be killed.
 
 package executor
 

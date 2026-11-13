@@ -4,9 +4,8 @@
 # presets/sqi/mantra-render.yaml invokes by bare name. It installs beside husk
 # in $HFS/bin, so its checks mirror husk.yaml's.
 #
-# mantra has its own tag rather than relying on houdini's: the houdini detector
-# keys on hython and the Houdini application, and a worker can have either
-# without mantra on PATH. The globs match $HFS/bin under the default install
+# mantra has its own tag because the houdini detector keys on hython and the
+# Houdini application, and a worker can have either without mantra on PATH. The globs match $HFS/bin under the default install
 # roots: /opt/hfs<version> on Linux,
 # "C:\Program Files\Side Effects Software\Houdini <version>" on Windows and
 # /Applications/Houdini/Houdini<version>/Frameworks/Houdini.framework/Versions/
@@ -14,8 +13,8 @@
 #
 # A default Houdini install does not put $HFS/bin on PATH, so the command block
 # supplies the newest install's mantra as the `mantra` command. The Windows glob
-# matches Houdini 22.0.466's layout and the macOS one Houdini 21.0.631's; the
-# Linux one is inferred and unverified.
+# matches a Houdini 22.0.466 install and the macOS glob a Houdini 21.0.631
+# install; the Linux glob is inferred and unverified.
 tag: mantra
 checks:
   - exe: mantra

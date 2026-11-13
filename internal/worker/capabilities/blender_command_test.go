@@ -44,11 +44,11 @@ func TestDetectorValidate_RejectsABadCommandVersionRegex(t *testing.T) {
 	}
 }
 
-// TestBlenderDetector_FindsAnInstallerInstallAndDefaultsTheCommand covers the
-// gap that left a Blender installed by its MSI or winget unseen by the worker:
-// neither writes the registry key the detector looked for, and neither puts
-// blender on PATH. The Windows executable is checked against a real Blender 5.2;
-// the macOS one follows Blender's documented bundle layout and is not.
+// TestBlenderDetector_FindsAnInstallerInstallAndDefaultsTheCommand checks that a
+// Blender installed by its MSI or winget is tagged and supplies the blender
+// command, although neither installer writes the registry key the registry check
+// reads or puts blender on PATH. The Windows path matches a Blender 5.2 install;
+// the macOS one follows Blender's documented bundle layout and is unverified.
 func TestBlenderDetector_FindsAnInstallerInstallAndDefaultsTheCommand(t *testing.T) {
 	d := builtinDetector(t, "blender")
 	if d.Command == nil || d.Command.Name != "blender" {
@@ -92,8 +92,8 @@ func TestBlenderDetector_FindsAnInstallerInstallAndDefaultsTheCommand(t *testing
 	}
 }
 
-// Blender's tag has always been presence only. Giving the command a version, to
-// pick the newest install, must not start emitting blender_<version> tags.
+// Blender's tag is presence only: the command's version, which picks the newest
+// install, must not produce blender_<version> tags.
 func TestBlenderDetector_StillEmitsNoVersionTags(t *testing.T) {
 	d := builtinDetector(t, "blender")
 	env := fakeEnv{goos: "windows", globs: map[string][]string{}}

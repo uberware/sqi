@@ -5,7 +5,7 @@
 // without manual address configuration.
 //
 // The server publishes a single "_sqi._tcp" service instance whose SRV record
-// points at the HTTP API port — the canonical, externally-bound sqi endpoint.
+// points at the HTTP API port, the externally bound sqi endpoint.
 // Additional connection details, including the broker URL, are carried in TXT
 // records:
 //
@@ -75,20 +75,16 @@ type Config struct {
 	// HTTPTLS reports whether the REST/WebSocket listener is TLS-terminated,
 	// advertised as the "tls" TXT record.
 	//
-	// Consumed by internal/worker/discovery, which surfaces it as
-	// Result.HTTPTLS. Enrollment never uses a discovered URL, so a worker uses
-	// this to warn that its http:// nats.server_url points at an HTTPS server
-	// rather than to rewrite anything.
+	// internal/worker/discovery surfaces it as Result.HTTPTLS. Enrollment never
+	// uses a discovered URL, so a worker uses it only to warn that its http://
+	// nats.server_url points at an HTTPS server.
 	HTTPTLS bool
 
 	// Interfaces restricts which network interfaces the service is advertised
-	// on. Nil — the production value — advertises on every multicast-capable
-	// interface, which is the point of mDNS discovery.
+	// on. Nil advertises on every multicast-capable interface.
 	//
-	// It is set by tests, to loopback, so a test run never transmits an
-	// advertisement onto the network it happens to be running on. It has no
-	// config key: an operator who wants to limit advertisement should say so
-	// through a real setting, and none exists yet.
+	// Tests set it to loopback so a test run never transmits an advertisement
+	// onto the surrounding network. It has no config key.
 	Interfaces []net.Interface
 }
 
@@ -107,7 +103,7 @@ type Responder struct {
 // server boots.
 // An empty [Config.InstanceID] is filled with a freshly generated UUID.
 //
-// When cfg.Enabled is false, port parsing is skipped and the returned
+// When cfg.Enabled is false, validation is skipped and the returned
 // responder's Start is a no-op.
 func New(cfg Config, logger *slog.Logger) (*Responder, error) {
 	r := &Responder{cfg: cfg, logger: logger}
@@ -152,14 +148,13 @@ func validateNATSURL(raw string) error {
 	return nil
 }
 
-// Start publishes the mDNS service record on all multicast-capable interfaces.
-// It returns nil immediately when discovery is disabled. The advertisement
-// runs in background goroutines managed by the underlying responder until
-// [Responder.Shutdown] is called.
+// Start publishes the mDNS service record on every multicast-capable interface,
+// or on [Config.Interfaces] when set. It returns nil immediately when discovery
+// is disabled. The advertisement runs in background goroutines managed by the
+// underlying responder until [Responder.Shutdown] is called.
 //
-// The ctx argument is accepted for symmetry with other components and to allow
-// future cancellation support; the current zeroconf registration is
-// non-blocking and does not observe it.
+// ctx is used only for logging: zeroconf registration is non-blocking and does
+// not observe it.
 func (r *Responder) Start(ctx context.Context) error {
 	if !r.cfg.Enabled {
 		r.logger.InfoContext(ctx, "discovery: mDNS disabled by configuration")
@@ -169,15 +164,14 @@ func (r *Responder) Start(ctx context.Context) error {
 	host := hostname()
 	txt := buildTXTRecords(r.cfg.InstanceID, r.httpPort, r.cfg.NATSURL, host, version.Version, r.cfg.HTTPTLS)
 
-	// RegisterProxy rather than Register, because Register advertises
-	// os.Hostname() and, given a name already in .local, doubles the domain.
-	// Supplying the host means supplying the addresses too, the ones Register
-	// would have found. Given none, RegisterProxy takes a reply's addresses
-	// from the interface the query arrived on, which the network stack does
-	// not report on Windows, so a reply to any query would carry none and a
-	// worker browsing after the startup announcements would find nothing.
-	// Register's refusal to advertise no address is kept, since RegisterProxy
-	// has no such check.
+	// RegisterProxy is used because Register advertises os.Hostname() and,
+	// given a name already in .local, doubles the domain. Supplying the host
+	// means supplying the addresses too, the ones Register would find. Given
+	// none, RegisterProxy takes a reply's addresses from the interface the
+	// query arrived on, which the network stack does not report on Windows, so
+	// every reply would carry no address and a worker browsing after the
+	// startup announcements would find nothing. RegisterProxy has no check for
+	// an empty address list, so the one Register applies is repeated here.
 	ips := interfaceIPs(r.cfg.Interfaces)
 	if len(ips) == 0 {
 		return errors.New("discovery: register mDNS service: could not determine host IP addresses")
@@ -275,7 +269,7 @@ func SRVHost() string {
 
 // srvHostFor is the ".local" name advertised for a host whose reported name
 // is h. macOS reports its name already in that domain ("name.local"), and the
-// domain is not added a second time: the underlying responder's own check
+// domain is not added a second time. The underlying responder's own check
 // compares against "local." with its dot, never matches, and would advertise
 // "name.local.local", which no certificate from `sqi-server tls init` covers.
 func srvHostFor(h string) string {

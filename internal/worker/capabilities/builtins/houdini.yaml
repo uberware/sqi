@@ -12,11 +12,13 @@ version:
   from: '(?:hfs|Houdini ?)(?P<v>[0-9]+\.[0-9]+)'
 # The presets run a bare `hython`, and the Windows installer does not put it on
 # PATH, so the worker supplies a default from the newest install it finds, unless
-# the operator or the host already provides one. hython lives in $HFS/bin, the
-# same folder the glob checks above and the husk and mantra detectors already
-# assume. On macOS $HFS/bin is deep inside the framework bundle, at
-# Frameworks/Houdini.framework/Versions/Current/Resources/bin, checked against a
-# real Houdini 21.0.631; the version comes from the Houdini<version> folder.
+# the operator or the host already provides one. hython is in $HFS/bin, the
+# folder the Linux and Windows checks above and the husk, mantra and oiiotool
+# detectors look in. On macOS $HFS/bin is inside the framework bundle, at
+# Frameworks/Houdini.framework/Versions/Current/Resources/bin. The Windows glob
+# matches a Houdini 22.0.466 install and the macOS glob a Houdini 21.0.631
+# install; the Linux glob is inferred and unverified. The version comes from the
+# install folder's name: hfs<version>, Houdini<version> or "Houdini <version>".
 command:
   name: hython
   globs:

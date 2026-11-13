@@ -251,8 +251,8 @@ func TestHostname(t *testing.T) {
 }
 
 // TestSRVHostFor pins the host the SRV record and a derived broker URL name.
-// macOS reports its hostname already in the .local domain; appending .local
-// again advertised "<name>.local.local", a name no certificate from
+// macOS reports its hostname already in the .local domain, and .local is not
+// appended again: "<name>.local.local" is a name no certificate from
 // `sqi-server tls init` covers.
 func TestSRVHostFor(t *testing.T) {
 	t.Parallel()
@@ -283,8 +283,8 @@ func TestSRVHostFor(t *testing.T) {
 // Given none, the underlying responder takes a reply's addresses from the
 // interface the query arrived on, which it cannot learn on Windows (the
 // network stack there reports no interface for a received packet), so every
-// reply to a query carried no address and a worker browsing after the
-// startup announcements found nothing. Not parallel: it replaces
+// reply to a query would carry no address and a worker browsing after the
+// startup announcements would find nothing. Not parallel: it replaces
 // registerProxy.
 func TestStart_AdvertisesTheHostsAddresses(t *testing.T) {
 	want := interfaceIPs(nil)

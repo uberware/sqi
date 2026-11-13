@@ -11,9 +11,9 @@ import (
 )
 
 // processTree is the POSIX counterpart of the Windows job object. Containment
-// is already established BEFORE start, by configureProcessGroup's Setpgid, so
-// there is nothing to create here — this type exists only so run.go and
-// killAndWait have one shape on both platforms.
+// is established before Start by configureProcessGroup's Setpgid, so there is
+// nothing to create here; the type gives run.go and killAndWait one shape on
+// both platforms.
 type processTree struct{ proc *exec.Cmd }
 
 // superviseTree records cmd. The process group was configured before Start.
@@ -21,9 +21,10 @@ func superviseTree(cmd *exec.Cmd) (*processTree, error) {
 	return &processTree{proc: cmd}, nil
 }
 
-// release is a no-op: nothing kills a task's process group on a successful
-// exit here, which internal/worker/staging's TOCTOU analysis depends on. The
-// Windows implementation goes out of its way to match this.
+// release is a no-op: processes still running in the task's process group
+// when the task exits successfully are left running. internal/worker/staging's
+// stage-out checks (openStageOutSource) allow for such a process, and the
+// Windows release matches this behavior.
 func (*processTree) release() error { return nil }
 
 // alive reports whether any process of the task's process group is still

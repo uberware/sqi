@@ -79,8 +79,8 @@ func browseOnce(t *testing.T) workerdiscovery.Result {
 // carries no address. The responder is given its addresses explicitly for
 // this: given none, zeroconf takes a reply's addresses from the interface the
 // query arrived on, which the network stack does not report on Windows, so
-// every reply there carried none. On Linux and macOS this pins the behavior;
-// only a Windows run can show the failure it guards against.
+// every reply there would carry none. On Linux and macOS this pins the
+// behavior; only a Windows run can show the failure it guards against.
 func TestDiscovery_FoundAfterTheAnnouncements(t *testing.T) {
 	requireMulticast(t)
 	noForeignServer(t)
@@ -95,9 +95,9 @@ func TestDiscovery_FoundAfterTheAnnouncements(t *testing.T) {
 	}
 }
 
-// TestDiscovery_TLSRecordsCrossTheWire is the join the unit tests could not
-// make: the server's own config decides the TXT records, they travel over
-// real multicast, and the worker's parser reads them back.
+// TestDiscovery_TLSRecordsCrossTheWire joins the halves the unit tests cover
+// separately: the server's own config decides the TXT records, they travel
+// over real multicast, and the worker's parser reads them back.
 func TestDiscovery_TLSRecordsCrossTheWire(t *testing.T) {
 	requireMulticast(t)
 	noForeignServer(t)
@@ -153,7 +153,7 @@ func TestDiscovery_AdvertisedBrokerTLSReachesWorkerConfig(t *testing.T) {
 		advertise(t, true, true)
 		found := browseOnce(t)
 
-		// A worker with NOTHING configured: no URL, no CA, no tls_enabled.
+		// A worker with nothing configured: no URL, no CA, no tls_enabled.
 		// Only the advertisement can turn TLS on here.
 		cfg := workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSAuto}
 		if cfg.UseTLS(false) {
@@ -179,22 +179,22 @@ func TestDiscovery_AdvertisedBrokerTLSReachesWorkerConfig(t *testing.T) {
 
 // TestDiscovery_RealBinaryFindsItsServerOverMDNS is the full stack: a real
 // sqi-server advertising over mDNS with TLS on both listeners, and a real
-// sqi-worker subprocess given NO nats.url at all, which has to discover the
+// sqi-worker subprocess given no nats.url, which has to discover the
 // server, learn from the tls:// scheme of the advertised nats_url that the
 // broker requires TLS, and register.
 func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
-	// This is the ONE test here that opens a listener beyond loopback, so it
-	// runs only when discovery testing was asked for explicitly — `make
-	// test-discovery` or the CI job — never as a side effect of `make
+	// This is the only test here that opens a listener beyond loopback, so it
+	// runs only when discovery testing is asked for explicitly (`make
+	// test-discovery` or the CI job), never as part of `make
 	// test-integration`.
 	//
 	// It cannot avoid the listener. The advertisement carries this machine's
-	// HOSTNAME (entryToResult prefers entry.HostName), so the worker dials that
+	// hostname (entryToResult prefers entry.HostName), so the worker dials that
 	// name whatever interface the announcement went out on, and a
 	// loopback-bound broker is unreachable there: bound to 127.0.0.1, the
 	// worker discovers the server and then fails with "no servers
-	// available". Changing the product to advertise a loopback literal would be
-	// bending production behavior to suit a test.
+	// available". Advertising a loopback literal instead would change
+	// production behavior to suit a test.
 	if !multicastRequired() {
 		t.Skip("binds the test broker to all interfaces; run `make test-discovery` to include it")
 	}
@@ -205,11 +205,12 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 	// what a real deployment does anyway:
 	//
 	//  1. The broker must bind all interfaces, per the note above.
-	//  2. The certificate must cover the name OR the address the worker ends up
+	//  2. The certificate must cover the name or the address the worker ends up
 	//     dialing. Advertisements here are loopback-only, so "<hostname>.local"
 	//     is answered by nothing the system resolver queries and the worker
-	//     falls back to the advertised IP (see discovery.resolveHost) — which
-	//     is why the loopback addresses below matter as much as the hostname.
+	//     falls back to the advertised IP (see discovery.resolveHost). The
+	//     certificate therefore covers the loopback addresses as well as the
+	//     hostname.
 	host, err := os.Hostname()
 	if err != nil {
 		t.Fatalf("os.Hostname: %v", err)
@@ -230,7 +231,7 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 		cfg.NATS.Auth.EnrollmentEndpointEnabled = true
 		// Reachable at the advertised hostname, per (1) above.
 		cfg.NATS.Embedded.Addr = strings.Replace(cfg.NATS.Embedded.Addr, "127.0.0.1", "0.0.0.0", 1)
-		// The point of this test: advertise, so the worker can find us.
+		// Advertise, so the worker can find the server.
 		cfg.DiscoveryEnabled = true
 		cfg.DiscoveryInstanceName = instance
 		cfg.DiscoveryInterfaces = loopbackIfaces()

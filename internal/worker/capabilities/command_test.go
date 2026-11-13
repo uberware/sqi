@@ -37,7 +37,7 @@ func TestFindCommand_PicksTheNewestVersionNumerically(t *testing.T) {
 	if !ok {
 		t.Fatal("FindCommand found nothing")
 	}
-	// 16.0 is newer than 15.5 and 9.0 — a string comparison would pick 9.0.
+	// 16.0 is newer than 15.5 and 9.0; a string comparison would pick 9.0.
 	if got.Path != "/opt/Tool16.0v2/Tool16.0" || got.Version != "16.0" || got.Name != "tool" {
 		t.Errorf("FindCommand = %+v, want tool 16.0 at /opt/Tool16.0v2/Tool16.0", got)
 	}
@@ -202,8 +202,8 @@ func TestNukeDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 // husk, mantra, and oiiotool, which Houdini ships as hoiiotool. Houdini's
 // installer does not put $HFS/bin on PATH, so the presets reach these programs
 // through the command default. Each glob must pick its own program and none of
-// its neighbors. The Windows layout is that of a real Houdini 22.0.466 and the
-// macOS one (macHoudiniBin) of a real Houdini 21.0.631; the Linux one is
+// its neighbors. The Windows layout matches a Houdini 22.0.466 install and the
+// macOS one (macHoudiniBin) a Houdini 21.0.631 install; the Linux one is
 // inferred from the shared $HFS/bin layout and unverified.
 func TestHoudiniBinDetectors_CommandFindsHoudinisCopy(t *testing.T) {
 	const (
@@ -249,8 +249,8 @@ func TestHoudiniBinDetectors_CommandFindsHoudinisCopy(t *testing.T) {
 // of the RenderMan and 3Delight detectors against their default install
 // layouts. Neither installer puts its renderer on the PATH a running worker
 // sees, so the presets reach prman and renderdl through the command default.
-// The Windows layouts are those of RenderMan 27.3 and a 3Delight install; the
-// others are unverified.
+// The Windows layouts match a RenderMan 27.3 install and a 3Delight install;
+// the others are unverified.
 func TestRendererDetectors_CommandFindsTheInstall(t *testing.T) {
 	cases := []struct {
 		detector, command, goos, exe, version string
@@ -594,8 +594,8 @@ func TestModoDetector_CommandFindsModoClOnWindowsAndMacOS(t *testing.T) {
 // and macOS, the two platforms it installs the editor on: each finds
 // UnrealEditor-Cmd and no other program in that folder, picks the newest of
 // several engine versions by number (5.10 is newer than 5.6), and applies on
-// its own platform only. The Windows layout is unverified (see unreal.yaml);
-// the macOS one matches a real UE 5.7.4.
+// its own platform only. The Windows layout matches a UE 5.8 install and the
+// macOS one a UE 5.7.4 install (see unreal.yaml).
 func TestUnrealDetector_CommandFindsTheNewestLauncherInstall(t *testing.T) {
 	d := builtinDetector(t, "unreal")
 	if d.Command == nil || d.Command.Name != "UnrealEditor-Cmd" {

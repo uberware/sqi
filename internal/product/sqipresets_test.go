@@ -32,8 +32,9 @@ type presetExpectation struct {
 	// the key is absent.
 	noExtensions bool
 	// osFamily, when set, is the attr.worker.os.family anyOf every step must
-	// require, in order. A Windows-only preset sets it so a Linux worker
-	// carrying a hand-set tag cannot lease work it cannot run.
+	// require, in order. A preset limited to some platforms sets it so a
+	// worker on another platform carrying a hand-set tag cannot lease work it
+	// cannot run.
 	osFamily []string
 	// taskParams, when set, are the task parameters every step must declare,
 	// as name:TYPE in order. The params check above reads the template's
@@ -119,13 +120,15 @@ func TestSQIReferencePresets(t *testing.T) {
 		// The three Mistika presets invoke the renderer as `-s START -e
 		// END`, so they need a chunk's bounds rather than the chunk itself
 		// and declare SQI_CHUNK_BOUNDS. So do the two Maya presets, the two
-		// Blender presets, vray-standalone-render and after-effects-render.
+		// Blender presets, vray-standalone-render, hython-script,
+		// after-effects-render, katana-render, fusion-render and the two
+		// Silhouette presets.
 		// Houdini and the two Nuke presets take a frame list
 		// directly; husk-usd-render computes its start and count with EXPR,
 		// and the two Cinema 4D presets and 3dsmax-render their start and end,
 		// because they also need EXPR to leave out a blank output path; the
 		// other standalone renderers render one file per frame and do not
-		// chunk, and neither do the whole-queue After Effects presets.
+		// chunk, and neither does the whole-queue After Effects preset.
 		"mistika-boutique-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},
@@ -276,12 +279,12 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "PassGroup", "FramesPerTask"},
 			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
-		// The two Unreal presets are host-script presets with one task and no
-		// frame parameters, so no TASK_CHUNKING. The job preset's target
-		// parameters are LevelSequence, Map and MovieRenderConfig; the queue
-		// preset declares none of them, so it is a whole-scene product. All
-		// three run on Windows and macOS workers, the only platforms the
-		// Epic Games Launcher installs the editor on.
+		// The three Unreal presets are host-script presets with no frame
+		// parameters, so no TASK_CHUNKING; the job and queue presets run one
+		// task. The job preset's target parameters are LevelSequence, Map and
+		// MovieRenderConfig; the queue preset declares none of them, so it is a
+		// whole-scene product. All three run on Windows and macOS workers, the
+		// only platforms the Epic Games Launcher installs the editor on.
 		"unreal-mrq-job-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "LevelSequence", "Map", "MovieRenderConfig", "OutputDirectory"},
@@ -306,8 +309,8 @@ func TestSQIReferencePresets(t *testing.T) {
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},
-			// No extensions on purpose: this is the one converter that runs on
-			// a worker whose expr.* caps undercut the server's.
+			// No extensions: this is the one converter that runs on a worker
+			// whose expr.* caps undercut the server's.
 			extensions:   nil,
 			noExtensions: true,
 		},

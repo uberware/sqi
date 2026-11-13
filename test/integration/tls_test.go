@@ -284,14 +284,14 @@ func TestTLSMutualAuthRefusesWorkerWithoutCertificate(t *testing.T) {
 	}
 }
 
-// TestTLSMutualAuthWithIssuedCertificate covers the DAY-TWO path: a farm is
-// already running mutual TLS, and a new worker is added with
-// `sqi-server tls issue --client <id>` against the CA that already exists.
+// TestTLSMutualAuthWithIssuedCertificate covers adding a worker to a farm
+// that already runs mutual TLS: `sqi-server tls issue --client <id>` issues
+// its certificate from the existing CA.
 //
-// `tls init` cannot do this — it refuses to overwrite the CA and fails as a
-// whole, taking --client with it — so `tls issue` is the only supported way to
-// add a worker to an existing mTLS farm. The unit tests prove the
-// certificate chains; this proves the broker actually accepts it.
+// `tls init` refuses to overwrite a CA and fails as a whole, --client
+// included, so `tls issue` is the supported way to add a worker to an
+// existing mTLS farm. The unit tests show the certificate chains; this shows
+// the broker accepts it.
 func TestTLSMutualAuthWithIssuedCertificate(t *testing.T) {
 	// A farm that already exists, with no client certificate for our worker.
 	dir := tlsMaterial(t)

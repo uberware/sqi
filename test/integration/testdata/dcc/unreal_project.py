@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Builds the content TestPresetDCC_Unreal_MRQRender renders, inside a project
-# whose .uproject enables the Movie Render Queue and Python plug-ins. Run by the
-# test as:
+# whose .uproject enables the Movie Render Queue, Python and editor scripting
+# plug-ins. Run by the test as:
 #   UnrealEditor-Cmd <project> -run=pythonscript -script=unreal_project.py
 # with SQI_BUILD_LOG naming a file this script appends its progress to; it ends
 # with "BUILD OK", or "BUILD FAILED" and the traceback. The commandlet's own
@@ -49,8 +49,8 @@ try:
     cube = unreal.EditorAssetLibrary.load_asset("/Engine/BasicShapes/Cube.Cube")
     # From the class, then given its mesh: spawn_actor_from_object(cube, ...)
     # places the asset through the level editor's placement subsystem, which a
-    # commandlet does not have, and crashed UE 5.7 on macOS (SIGSEGV in
-    # UPlacementSubsystem::FindAssetFactoryFromAssetData).
+    # commandlet does not have; on UE 5.7 on macOS it crashes with a SIGSEGV in
+    # UPlacementSubsystem::FindAssetFactoryFromAssetData.
     cube_actor = actors.spawn_actor_from_class(unreal.StaticMeshActor, unreal.Vector(400, 0, 0))
     cube_actor.static_mesh_component.set_static_mesh(cube)
     actors.spawn_actor_from_class(unreal.DirectionalLight, unreal.Vector(0, 0, 500))

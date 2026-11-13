@@ -64,12 +64,12 @@ var tlsIssueCmd = &cobra.Command{
 Use this to add a worker to a farm running mutual TLS, or to rotate the server
 certificate. It never touches the CA itself.
 
-` + "`tls init`" + ` deliberately refuses to overwrite a CA, so it cannot do either
-job: a second invocation fails as a whole, taking --client with it.
+` + "`tls init`" + ` refuses to overwrite a CA, so it cannot do either: a second
+run fails as a whole, --client included.
 
-Existing files are never replaced without --force, because a client key that is
-already deployed belongs to a running worker, and replacing it takes that worker
-offline at its next restart with nothing to indicate why.`,
+Existing files are replaced only with --force: a deployed client key belongs to
+a running worker, and replacing it takes that worker offline at its next
+restart with no indication why.`,
 	RunE: runTLSIssue,
 }
 
@@ -179,16 +179,14 @@ var loopbackSANs = []string{"localhost", "127.0.0.1", "::1"}
 
 // resolveTLSHosts returns the SAN list for the server certificate: whatever
 // --host supplied, plus loopback in every case. When nothing was supplied it
-// adds this machine's hostname and the ".local" name mDNS discovery
-// advertises (discovery.SRVHost), which is the host of the broker URL a
-// discovering worker is given and dials.
+// adds this machine's hostname and, when it differs, the ".local" name mDNS
+// discovery advertises (discovery.SRVHost), which is the host a discovering
+// worker dials.
 //
-// Loopback is appended even when --host names specific hosts. An operator who
-// names only the LAN host would otherwise get a certificate that cannot be
-// verified from the machine itself — which breaks a local `curl https://
-// localhost:8080/healthz`, any loopback health probe, and anything else that
-// reaches the server by the name it actually runs under. Duplicates are
-// dropped so an explicit --host localhost does not appear twice.
+// Loopback is appended even when --host names specific hosts, so the
+// certificate verifies from the machine itself: a local `curl https://
+// localhost:8080/healthz` or a loopback health probe. Duplicates are dropped,
+// so an explicit --host localhost appears once.
 func resolveTLSHosts(flagHosts []string) []string {
 	hosts := slices.Clone(flagHosts)
 	if len(hosts) == 0 {
@@ -242,9 +240,9 @@ func runTLSInit(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// One template rather than a run of Fprintf calls, so the rendered layout
-	// is visible in the source. TestTLSInit_PrintsConfigKeys only greps for
-	// substrings, so a lost blank line would otherwise go unnoticed.
+	// One template, so the rendered layout is visible in the source:
+	// TestTLSInit_PrintsConfigKeys checks only substrings and cannot see a
+	// lost blank line.
 	fmt.Fprintf(cmd.OutOrStdout(), `Wrote certificate material to %[1]s
   SANs: %[2]v
 
@@ -276,8 +274,9 @@ To add a worker or rotate the server certificate later, use:
 This command will not run again in the same directory: it refuses to replace a
 CA, because every certificate issued from the old one would stop verifying.
 
-Enabling TLS is a coordinated restart, not a rolling one: distribute
-ca.crt and stage worker config BEFORE flipping the server. See docs/tls.md.
+Enabling TLS takes a coordinated restart of the server and its workers:
+distribute ca.crt and stage the worker config before enabling TLS on the
+server. See docs/tls.md.
 `)
 	return nil
 }

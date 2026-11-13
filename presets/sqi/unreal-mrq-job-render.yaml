@@ -54,9 +54,9 @@ readme: |
 
   The preset uses `-execcmds` rather than `-ExecutePythonScript`, because a
   render the editor runs in the background must outlive the script that
-  starts it, and the editor is reported to quit after an
-  `-ExecutePythonScript` script before such a render completes. AWS's
-  Deadline Cloud adaptor for Unreal starts its script with `-execcmds` too.
+  starts it, and the editor can quit after an `-ExecutePythonScript`
+  script before such a render completes. AWS's Deadline Cloud adaptor for
+  Unreal starts its script with `-execcmds` too.
 
   ## How failures are detected
 
@@ -127,9 +127,9 @@ readme: |
   ## What has not been verified
 
   - Unreal Engine versions before 5.8 on Windows, and any but 5.7 on macOS.
-    The command line follows AWS's
-    Deadline Cloud adaptor for Unreal, and the script uses the Movie Render
-    Queue's Python API as that adaptor and Epic's Python reference use it.
+    The command line follows AWS's Deadline Cloud adaptor for Unreal, and
+    the script uses the Movie Render Queue's Python API as that adaptor and
+    Epic's Python reference use it.
   - That Unreal splits `-execcmds` at commas, which is why a session folder
     holding one is refused.
   - That the Movie Render Queue needs the object path
@@ -239,7 +239,8 @@ template:
 
               # What the delegates need once main() has returned: the executor
               # (Unreal holds it while it renders; this keeps a reference too),
-              # the failures reported so far, and whether a verdict was given.
+              # the failures reported so far, whether a verdict was given, and
+              # the job counts behind openjd_progress.
               STATE = dict(executor=None, failures=[], done=False, total=0, finished=0)
 
 
@@ -266,9 +267,9 @@ template:
 
               def find_params():
                   # params.json sits beside this script, in the task's session
-                  # folder. The current folder is a fallback, in case the script's
-                  # own location is unknown; that the worker's starting folder
-                  # survives Unreal's startup is unverified (Unreal may reset it).
+                  # folder. The current folder is a fallback for when the script's
+                  # own location is unknown; Unreal's startup may change it from the
+                  # worker's starting folder.
                   found = []
                   here = globals().get("__file__")
                   if here:
@@ -347,9 +348,9 @@ template:
                   # then only the entries named after the shot left enabled. An
                   # entry is named by its outer name: its section's name in the
                   # shot track, or "no shot" in a sequence without one (Unreal
-                  # 5.8). An entry with no outer name, which 5.8 never gives, is
-                  # named after the sequence. A shot the sequence lacks fails the
-                  # task, naming the shots it has, rather than render every shot.
+                  # 5.8). An entry with no outer name is named after the sequence.
+                  # A shot the sequence lacks fails the task, naming the shots it
+                  # has, rather than render every shot.
                   shot = params["shot"]
                   sequence = unreal.EditorAssetLibrary.load_asset(object_path(params["sequence"]))
                   if sequence is None:
@@ -368,7 +369,7 @@ template:
                           entry.enabled = name == shot
                       # Every shot's task renders with the same config, so without
                       # {shot_name} in the file names one shot's frames can replace
-                      # another's. A warning, not a failure: the output directory may
+                      # another's. This only warns, since the output directory may
                       # tell them apart.
                       setting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
                       if "{shot_name}" not in str(setting.file_name_format or ""):

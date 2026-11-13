@@ -15,11 +15,11 @@ import (
 // processTree owns a Windows job object containing a launched task process
 // and everything it spawns.
 //
-// It exists because "taskkill /F /T" walks the parent-PID tree at the moment
-// of the call: a grandchild whose parent has already exited is orphaned and
-// survives the kill. Under run-as-user isolation that leak is at its worst —
-// the survivor runs as the target account, outliving its task, holding its
-// license and its file handles.
+// "taskkill /F /T" walks the parent-PID tree at the moment of the call, so a
+// grandchild whose parent has already exited is orphaned and survives it. A
+// job object reaches that grandchild. Under run-as-user isolation such a
+// survivor runs as the target account after its task ends, holding its
+// license and file handles.
 type processTree struct {
 	proc *exec.Cmd
 	job  windows.Handle
@@ -27,19 +27,17 @@ type processTree struct {
 
 // superviseTree places cmd's already-started process into a fresh job object.
 //
-// KILL_ON_JOB_CLOSE means the whole tree dies if the worker process exits
-// while the task is running, which is deliberate: today those processes are
-// orphaned while the task is reclaimed and re-run elsewhere, so the current
-// behavior is duplicate work plus a runaway process. release() clears the
-// flag on the SUCCESS path — see its doc.
+// KILL_ON_JOB_CLOSE kills the whole tree if the worker process exits while
+// the task is running: the server reclaims that task and runs it elsewhere,
+// so a surviving tree would duplicate the work. release() clears the flag
+// before closing the job; see its doc.
 //
 // Assignment happens immediately after Start rather than atomically with
-// process creation, leaving a sub-millisecond window in which the child could
-// spawn something that escapes. Closing it fully would need CREATE_SUSPENDED
-// plus resuming the child's thread, which Go does not expose (you would have
-// to enumerate threads by PID). The window is accepted; nested job support
-// since Windows 8 means a child creating its own job does not break this
-// either way.
+// process creation, leaving a brief window in which the child could spawn a
+// process outside the job. Closing it would need CREATE_SUSPENDED plus
+// resuming the child's thread, which Go does not expose (it would mean
+// enumerating threads by PID). The window is accepted. Windows 8 and later
+// support nested jobs, so a child that creates its own job stays in this one.
 func superviseTree(cmd *exec.Cmd) (*processTree, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
@@ -80,23 +78,21 @@ func setKillOnClose(job windows.Handle, on bool) error {
 	return nil
 }
 
-// release closes the job WITHOUT killing whatever is still inside it.
+// release closes the job without killing whatever is still inside it.
 //
-// This is the success path, and clearing the flag first is what keeps Windows
-// behaviourally identical to POSIX. internal/worker/staging's TOCTOU analysis
-// (see staging.go, openStageOutSource) explicitly depends on the fact
-// that "nothing kills a task's process group on a SUCCESSFUL exit" — a
-// still-running background child is expected to survive there. Closing a
-// KILL_ON_JOB_CLOSE job here would kill it, making the two platforms differ
-// in a way no test in that package would catch.
+// It clears KILL_ON_JOB_CLOSE first, which closing the handle would otherwise
+// trigger, so a background child still running after a successful exit keeps
+// running, as on POSIX. internal/worker/staging's stage-out checks
+// (staging.go, openStageOutSource) allow for such a process, and no test in
+// that package would catch the two platforms differing.
 func (t *processTree) release() error {
 	if t == nil || t.job == 0 {
 		return nil
 	}
-	// Close the handle regardless of whether clearing the kill-on-close flag
-	// succeeded, so a setKillOnClose failure (unlikely on a handle we just
-	// created, but possible) can never leak the job handle for the life of
-	// the worker. t.job is zeroed either way, keeping release idempotent.
+	// Close the handle whether or not clearing the kill-on-close flag
+	// succeeded, so a setKillOnClose failure does not leak the job handle for
+	// the life of the worker. t.job is zeroed either way, keeping release
+	// idempotent.
 	killErr := setKillOnClose(t.job, false)
 	closeErr := windows.CloseHandle(t.job)
 	t.job = 0

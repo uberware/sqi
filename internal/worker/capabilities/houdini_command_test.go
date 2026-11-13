@@ -11,12 +11,11 @@ import (
 // installer lays it out ("Current" is a link to the version folder).
 const macHoudiniBin = "/Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/Current/Resources/bin/"
 
-// TestHoudiniDetector_DefaultsTheHythonCommand covers the gap that left a
-// worker with Houdini installed tagged but unable to run houdini-rop-render:
-// no installer puts hython on PATH. The Windows executable is checked against
-// a real Houdini 22.0.466 (Apprentice) and the macOS one against a real
-// Houdini 21.0.631 (Apprentice); the Linux layout is $HFS/bin under
-// /opt/hfs<version> and was not checked.
+// TestHoudiniDetector_DefaultsTheHythonCommand checks that the houdini detector
+// supplies the hython command houdini-rop-render runs, which no installer puts
+// on PATH. The Windows path matches a Houdini 22.0.466 (Apprentice) install and
+// the macOS path a Houdini 21.0.631 (Apprentice) install; the Linux path,
+// $HFS/bin under /opt/hfs<version>, is unverified.
 func TestHoudiniDetector_DefaultsTheHythonCommand(t *testing.T) {
 	d := builtinDetector(t, "houdini")
 	if d.Command == nil || d.Command.Name != "hython" {
@@ -60,8 +59,8 @@ func TestHoudiniDetector_DefaultsTheHythonCommand(t *testing.T) {
 	}
 }
 
-// The default command must not change what the tag says: the houdini tag keeps
-// its version tag.
+// The command default does not change the tags: the houdini detector emits its
+// version tag beside the bare tag.
 func TestHoudiniDetector_CommandLeavesTagsAlone(t *testing.T) {
 	d := builtinDetector(t, "houdini")
 	env := fakeEnv{goos: "windows", globs: map[string][]string{}}

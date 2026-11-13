@@ -88,13 +88,13 @@ func tail(s string, n int) string {
 }
 
 // TestPresetDCC_Unreal_MRQRender renders the three Unreal presets with a real
-// UnrealEditor-Cmd, found through the unreal detector's command default, on a
-// project the test builds in a folder whose name has a space. The frames on
-// disk show that the job preset renders a sequence named by package paths into
-// the Output Directory; that the queue preset renders a saved queue; that the
-// shot preset runs one task per shot, and that a task renders only its own
-// shot; and that a shot the sequence lacks fails its task, naming the shots the
-// sequence has.
+// UnrealEditor-Cmd, found on PATH or through the unreal detector's command
+// default, on a project the test builds in a folder whose name has a space.
+// The frames on disk show that the job preset renders a sequence named by
+// package paths into the Output Directory; that the queue preset renders a
+// saved queue; that the shot preset runs one task per shot, and that a task
+// renders only its own shot; and that a shot the sequence lacks fails its task,
+// naming the shots the sequence has.
 func TestPresetDCC_Unreal_MRQRender(t *testing.T) {
 	const caseName = "TestPresetDCC_Unreal_MRQRender"
 	trackOutcome(t, caseName)

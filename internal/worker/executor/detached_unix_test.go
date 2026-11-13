@@ -55,15 +55,12 @@ func runDetachedAction(t *testing.T, ctx context.Context, action *protocol.Actio
 	return result, out.lines, time.Since(start)
 }
 
-// TestExecProcess_FinishesWhenADescendantKeepsTheOutputOpen reproduces a task
-// that never finished: Unreal Editor forks a detached UnrealTraceServer that
-// leaves the task's process group, inherits the editor's stdout and stderr,
-// and outlives it. The worker read the task's output to EOF before it waited
-// for the process, so the editor's exit went unseen for as long as the helper
-// lived, and with no timeout that was forever. The task must end soon after
-// its own process exits, report that process's exit code, and keep the
-// output written before it exited. perl stands in for the helper: it leaves
-// the group with setpgrp, as a daemon does.
+// TestExecProcess_FinishesWhenADescendantKeepsTheOutputOpen covers a helper
+// that leaves the task's process group, inherits its stdout and stderr, and
+// outlives it, as Unreal Editor's detached UnrealTraceServer does. The task
+// must end soon after its own process exits, report that process's exit
+// code, and keep the output written before it exited. perl stands in for the
+// helper: it leaves the group with setpgrp, as a daemon does.
 func TestExecProcess_FinishesWhenADescendantKeepsTheOutputOpen(t *testing.T) {
 	if _, err := exec.LookPath("perl"); err != nil {
 		t.Skip("perl is not on PATH")
@@ -108,8 +105,8 @@ func TestExecProcess_FinishesWhenADescendantKeepsTheOutputOpen(t *testing.T) {
 
 // TestExecProcess_WaitsForABackgroundJobInTheTasksGroup: a job a task script
 // started in the background and did not wait for stays in the task's process
-// group, and the task still waits for it and captures what it writes, as it
-// did before the drain: only a holder that left the group is cut off.
+// group, so the task waits for it and captures what it writes. Only a holder
+// that left the group is cut off.
 func TestExecProcess_WaitsForABackgroundJobInTheTasksGroup(t *testing.T) {
 	orig := procout.DrainDelay
 	procout.DrainDelay = 200 * time.Millisecond
@@ -126,10 +123,10 @@ func TestExecProcess_WaitsForABackgroundJobInTheTasksGroup(t *testing.T) {
 }
 
 // TestExecProcess_StopsWhenADescendantOutsideTheGroupKeepsTheOutputOpen is the
-// cancel and timeout side of the same Unreal shape: the task is stopped while
-// a helper that left its process group holds the output. The kill empties
-// the group, so the task must end within the drain delay of that, not when
-// the helper exits.
+// cancel and timeout case of the same shape: the task is stopped while a
+// helper that left its process group holds the output. The kill empties the
+// group, so the task must end within the drain delay after that, before the
+// helper exits.
 func TestExecProcess_StopsWhenADescendantOutsideTheGroupKeepsTheOutputOpen(t *testing.T) {
 	if _, err := exec.LookPath("perl"); err != nil {
 		t.Skip("perl is not on PATH")
