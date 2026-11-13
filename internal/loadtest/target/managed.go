@@ -139,6 +139,9 @@ type managed struct {
 	// resumedGroups are the task groups resumeAll continued, which Close
 	// ends.
 	resumedGroups []int
+	// fdSaved is the server's open-file limit LimitServerFDs replaced, nil when
+	// none is applied. Stopping the server forgets it.
+	fdSaved *savedFDLimit
 
 	// volMu guards ballast and serializes filling and freeing a volume with
 	// Close. Acquire it before mu.
@@ -500,6 +503,7 @@ func (m *managed) stopServer(ctx context.Context) error {
 	m.mu.Lock()
 	p := m.server
 	m.server = nil
+	m.fdSaved = nil // the limit went with the process
 	m.mu.Unlock()
 	if p == nil {
 		return nil
@@ -859,8 +863,8 @@ func (m *managed) workerPIDs() []int {
 	return pids
 }
 
-// Close first releases a database fault, so the server can finish its writes;
-// then it continues every task group and process the harness stalled, stops the
+// Close first puts back the server's open-file limit and releases a database
+// fault, so the server can finish its writes; then it continues every task group and process the harness stalled, stops the
 // real workers (together), ends the task process groups the markers still show
 // running, and stops the server: each process gets an interrupt and the stop
 // grace (30 s by default) to exit before it is killed, and a done ctx kills at
@@ -873,7 +877,7 @@ func (m *managed) Close(ctx context.Context) error {
 		m.mu.Lock()
 		m.closing = true
 		m.mu.Unlock()
-		errs := []error{m.HealDatabase(ctx)}
+		errs := []error{m.restoreFDsIfLimited(), m.HealDatabase(ctx)}
 		m.resumeAll(ctx)
 		errs = append(errs, m.stopWorkers(ctx, true)...)
 		errs = append(errs, m.endTaskGroups(ctx), m.stopServer(ctx), m.freeVolumes(ctx))

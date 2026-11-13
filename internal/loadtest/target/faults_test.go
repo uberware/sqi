@@ -47,6 +47,8 @@ func runSignalHelper(mode string) (code int, ok bool) {
 		return 0, true
 	case "counter":
 		return helperCounter(), true
+	case "fdopen":
+		return helperFDOpen(), true
 	default:
 		return 0, false
 	}

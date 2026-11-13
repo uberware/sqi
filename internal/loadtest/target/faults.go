@@ -91,6 +91,15 @@ type Faults interface {
 	// FreeVolume removes the volume's ballast. It does nothing when the volume
 	// is not filled and is an error when the target has no such volume.
 	FreeVolume(volume string) error
+	// LimitServerFDs sets the running sqi-server's soft RLIMIT_NOFILE to the number
+	// of files it has open plus headroom, leaving the hard limit, and returns the
+	// open-file count it saw. Limiting a limited server is a no-op that returns
+	// the first count. Linux only; elsewhere it returns errFDLimitUnsupported.
+	LimitServerFDs(headroom int) (open int, err error)
+	// RestoreServerFDs puts back the soft limit LimitServerFDs replaced. It does
+	// nothing when none is applied or the server is gone. Linux only; elsewhere
+	// it returns errFDLimitUnsupported.
+	RestoreServerFDs() error
 	// ServerReady probes the server's /readyz: "ready", or the probe's error
 	// text.
 	ServerReady(ctx context.Context) (status string)
@@ -142,6 +151,18 @@ var errClosing = errors.New("target: the target is closing")
 // errNoDatabaseProxy is what a database fault returns on a PostgreSQL run whose
 // scenario declared none, so no proxy fronts the server's connections.
 var errNoDatabaseProxy = errors.New("target: the run has no database proxy; declare a database fault in the scenario")
+
+// errFDLimitUnsupported is what limiting the server's open files returns off
+// Linux, where there is no prlimit to lower another process's limit with.
+var errFDLimitUnsupported = errors.New("target: limiting the server's open files needs prlimit, which only Linux has")
+
+// savedFDLimit is the limit LimitServerFDs replaced, on the process it
+// replaced it on, and the open-file count it saw.
+type savedFDLimit struct {
+	pid  int
+	old  fdLimit
+	open int
+}
 
 // errUnsafeGroup refuses a group signal to a group id that is not safe to
 // signal, such as one read from a corrupt marker.
@@ -399,6 +420,63 @@ func (m *managed) freeVolumes(ctx context.Context) error {
 		delete(m.ballast, v)
 	}
 	return errors.Join(errs...)
+}
+
+// LimitServerFDs lowers the server's soft open-file limit to what it has open
+// plus headroom. The limit is put back by RestoreServerFDs, StopForChecks and
+// Close.
+func (m *managed) LimitServerFDs(headroom int) (int, error) {
+	if !fdLimitSupported {
+		return 0, errFDLimitUnsupported
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch {
+	case m.closing:
+		return 0, errClosing
+	case m.server == nil:
+		return 0, errors.New("target: no sqi-server has been started")
+	case m.server.exited():
+		return 0, errors.New("target: sqi-server is not running")
+	}
+	pid := m.server.pid()
+	if s := m.fdSaved; s != nil && s.pid == pid {
+		return s.open, nil
+	}
+	m.logger.InfoContext(context.Background(), "limiting the server's open files", slog.Int("pid", pid), slog.Int("headroom", headroom))
+	open, old, err := limitFDs(pid, headroom)
+	if err != nil {
+		return 0, err
+	}
+	m.fdSaved = &savedFDLimit{pid: pid, old: old, open: open}
+	return open, nil
+}
+
+// RestoreServerFDs puts back the limit LimitServerFDs replaced.
+func (m *managed) RestoreServerFDs() error {
+	if !fdLimitSupported {
+		return errFDLimitUnsupported
+	}
+	return m.restoreFDsIfLimited()
+}
+
+// restoreFDsIfLimited is RestoreServerFDs on every platform: where nothing can
+// be limited, nothing is restored and it is not an error. A server that is
+// gone has nothing to restore either. When putting the limit back fails it
+// stays saved, so the next call tries again.
+func (m *managed) restoreFDsIfLimited() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.fdSaved
+	if s == nil {
+		return nil
+	}
+	m.logger.InfoContext(context.Background(), "restoring the server's open-file limit", slog.Int("pid", s.pid))
+	if err := restoreFDs(s.pid, s.old); err != nil {
+		return err
+	}
+	m.fdSaved = nil
+	return nil
 }
 
 // readyProbeTimeout bounds one ServerReady probe.
@@ -727,12 +805,13 @@ func (m *managed) Incarnations() []Incarnation {
 	return slices.Clone(m.incarnations)
 }
 
-// StopForChecks stops the real workers together, then the server, each
-// gracefully. The data directory, the database and the lanes stay; Close
-// releases them.
+// StopForChecks puts back the server's open-file limit, then stops the real
+// workers together and the server, each gracefully. The data directory, the database and the
+// lanes stay; Close releases them.
 func (m *managed) StopForChecks(ctx context.Context) error {
+	errs := []error{m.restoreFDsIfLimited()}
 	m.resumeAll(ctx)
-	errs := m.stopWorkers(ctx, false)
+	errs = append(errs, m.stopWorkers(ctx, false)...)
 	if p, err := m.currentServer(); err == nil {
 		errs = append(errs, p.stop(ctx, m.stopTimeout))
 	}

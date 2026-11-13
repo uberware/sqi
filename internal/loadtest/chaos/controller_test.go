@@ -182,6 +182,16 @@ func (t *fakeTarget) FreeVolume(volume string) error {
 	return nil
 }
 
+func (t *fakeTarget) LimitServerFDs(int) (int, error) {
+	t.record("LimitServerFDs", -1)
+	return 0, nil
+}
+
+func (t *fakeTarget) RestoreServerFDs() error {
+	t.record("RestoreServerFDs", -1)
+	return nil
+}
+
 func (*fakeTarget) ServerReady(context.Context) string { return "ready" }
 
 func (*fakeTarget) RealLive() int { return 0 }
