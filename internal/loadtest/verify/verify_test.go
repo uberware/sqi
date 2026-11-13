@@ -22,8 +22,8 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/verify"
 )
 
-// invariantNames are the six checks, in the order Check returns them.
-var invariantNames = []string{"terminal", "outcomes", "single-attempt", "logs", "workers-converge", "caps"}
+// invariantNames are the seven checks, in the order Check returns them.
+var invariantNames = []string{"terminal", "outcomes", "single-attempt", "logs", "workers-converge", "caps", "submission-atomic"}
 
 // lineBytes is the log line size of the "shot" class.
 const lineBytes = 40
@@ -1139,9 +1139,6 @@ func TestCheck_ReportsAFailedLaterTaskPage(t *testing.T) {
 
 // ── Chaos runs ───────────────────────────────────────────────────────────────
 
-// chaosNames are the checks of a chaos run: the six, then submission-atomic.
-var chaosNames = append(slices.Clone(invariantNames), verify.NameSubmissionAtomic)
-
 func TestCheckNamesMatchVerify(t *testing.T) {
 	if got := verify.Names(); !slices.Equal(got, scenario.CheckNames) {
 		t.Errorf("verify.Names() = %v, want scenario.CheckNames %v", got, scenario.CheckNames)
@@ -1206,7 +1203,7 @@ func TestLogs_LossInsideFaultWindowIsCounted(t *testing.T) {
 		t.Run(fmt.Sprintf("groups %v", groups), func(t *testing.T) {
 			w := faultLogWorld(groups...)
 			results := verify.Check(t.Context(), w.view, w.in)
-			assertResultsNamed(t, chaosNames, results, nil)
+			assertResultsNamed(t, invariantNames, results, nil)
 			logs := resultNamed(t, results, verify.NameLogs)
 			if got := logs.Counters[verify.CounterLogsLostInFault]; got != 4 {
 				t.Errorf("Counters[%q] = %d (%v), want 4", verify.CounterLogsLostInFault, got, logs.Counters)
@@ -1254,7 +1251,7 @@ func TestLogs_LateLinesInsideFaultWindowAreNotLost(t *testing.T) {
 	w.in.LogSettle = 5 * time.Second
 	v := &lateLogs{fakeView: w.view, w: w, arriveOn: 2}
 	results := verify.Check(t.Context(), v, w.in)
-	assertResultsNamed(t, chaosNames, results, nil)
+	assertResultsNamed(t, invariantNames, results, nil)
 	if got := resultNamed(t, results, verify.NameLogs).Counters[verify.CounterLogsLostInFault]; got != 0 {
 		t.Errorf("Counters[%q] = %d, want 0: the 4 missing lines arrived on the second read", verify.CounterLogsLostInFault, got)
 	}
@@ -1269,7 +1266,7 @@ func TestLogs_LossInsideFaultWindowOutlastsTheSettle(t *testing.T) {
 	v := &lateLogs{fakeView: w.view, w: w}
 	start := time.Now()
 	results := verify.Check(t.Context(), v, w.in)
-	assertResultsNamed(t, chaosNames, results, nil)
+	assertResultsNamed(t, invariantNames, results, nil)
 	if got := resultNamed(t, results, verify.NameLogs).Counters[verify.CounterLogsLostInFault]; got != 4 {
 		t.Errorf("Counters[%q] = %d, want 4", verify.CounterLogsLostInFault, got)
 	}
@@ -1284,17 +1281,17 @@ func TestLogs_LossInsideFaultWindowOutlastsTheSettle(t *testing.T) {
 func TestLogs_LossOutsideFaultWindowFails(t *testing.T) {
 	t.Run("window on another group", func(t *testing.T) {
 		w := faultLogWorld("other")
-		assertResultsNamed(t, chaosNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": "line 11 is"})
+		assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": "line 11 is"})
 	})
 	t.Run("window after the attempt", func(t *testing.T) {
 		w := faultLogWorld("sim")
 		w.in.FaultWindows[0].Start, w.in.FaultWindows[0].End = at(w.t0, 11), at(w.t0, 12)
-		assertResultsNamed(t, chaosNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": "line 11 is"})
+		assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": "line 11 is"})
 	})
 	t.Run("no GroupOf", func(t *testing.T) {
 		w := faultLogWorld("sim")
 		w.in.GroupOf = nil
-		assertResultsNamed(t, chaosNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": "line 11 is"})
+		assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": "line 11 is"})
 	})
 }
 
@@ -1330,7 +1327,7 @@ func TestLogs_ReorderInsideFaultWindowFails(t *testing.T) {
 			w.view.attempts = map[string][]client.Attempt{}
 			w.task("j1", "t1", "succeeded", att{"a1", 0, 10, "succeeded", "succeeded", 3})
 			w.view.logs["t1"] = tc.chunks(w)
-			assertResultsNamed(t, chaosNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": tc.want})
+			assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": tc.want})
 		})
 	}
 }
@@ -1350,18 +1347,18 @@ func orphanWorld(status string, n int) *world {
 
 func TestTerminal_CoversOrphans(t *testing.T) {
 	w := orphanWorld("running", 10)
-	assertResultsNamed(t, chaosNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"terminal": "o1"})
+	assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"terminal": "o1"})
 }
 
 func TestSubmissionAtomic_CompleteOrphanPasses(t *testing.T) {
 	w := orphanWorld("completed", 10)
-	assertResultsNamed(t, chaosNames, verify.Check(t.Context(), w.view, w.in), nil)
+	assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), nil)
 }
 
 func TestSubmissionAtomic_PartialOrphanFails(t *testing.T) {
 	w := orphanWorld("completed", 7)
 	results := verify.Check(t.Context(), w.view, w.in)
-	assertResultsNamed(t, chaosNames, results, map[string]string{"submission-atomic": "7 of 10"})
+	assertResultsNamed(t, invariantNames, results, map[string]string{"submission-atomic": "7 of 10"})
 	if ev := resultNamed(t, results, verify.NameSubmissionAtomic).Evidence; !strings.Contains(strings.Join(ev, "\n"), "o1") {
 		t.Errorf("evidence %q does not name job o1", ev)
 	}
@@ -1370,25 +1367,7 @@ func TestSubmissionAtomic_PartialOrphanFails(t *testing.T) {
 func TestSubmissionAtomic_UnknownFarmJobFails(t *testing.T) {
 	w := healthyWorld()
 	w.view.jobs = append(w.view.jobs, client.Job{ID: "x9", Name: "shot-x9", Status: "completed"})
-	w.in.Orphans = []driver.SubmittedJob{}
-	assertResultsNamed(t, chaosNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"submission-atomic": "x9"})
-}
-
-func TestCheck_LoadRunKeepsSixInvariants(t *testing.T) {
-	w := healthyWorld()
-	// A job the run cannot account for: only a chaos run looks for one.
-	w.view.jobs = append(w.view.jobs, client.Job{ID: "x9", Status: "completed"})
-	results := verify.Check(t.Context(), w.view, w.in)
-	assertResults(t, results, nil)
-	if c := resultNamed(t, results, verify.NameLogs).Counters; c != nil {
-		t.Errorf("a load run's logs result carries counters %v, want none", c)
-	}
-
-	t.Run("fault windows alone add submission-atomic", func(t *testing.T) {
-		w := healthyWorld()
-		w.in.FaultWindows = []verify.FaultWindow{}
-		assertResultsNamed(t, chaosNames, verify.Check(t.Context(), w.view, w.in), nil)
-	})
+	assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"submission-atomic": "x9"})
 }
 
 func TestWaitDrained_CoversOrphans(t *testing.T) {
@@ -1450,4 +1429,24 @@ func TestCheck_ReadErrorsAreUnmeasured(t *testing.T) {
 			t.Errorf("Unmeasured field = %+v, want the tag unmeasured,omitempty so a plain run's run.json is unchanged", f)
 		}
 	})
+}
+
+func TestLeasedAttempts_LeaseOrderWithOutcome(t *testing.T) {
+	t0 := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	l := simworker.NewLedger()
+	rec := func(at int, attempt, kind, outcome string) {
+		l.Record(simworker.Event{At: t0.Add(time.Duration(at) * time.Second), WorkerID: "w0", TaskID: "t-" + attempt, AttemptID: attempt, Kind: kind, Outcome: outcome})
+	}
+	rec(2, "a2", simworker.KindLeased, "")
+	rec(1, "a1", simworker.KindLeased, "")
+	rec(3, "a1", simworker.KindTerminal, simworker.OutcomeSucceeded)
+	rec(4, "a2", simworker.KindCanceled, "")
+	rec(5, "a3", simworker.KindRunning, "") // never leased: left out
+	got := verify.LeasedAttempts(l)
+	if len(got) != 2 || got[0].ID != "a1" || got[1].ID != "a2" {
+		t.Fatalf("LeasedAttempts = %+v, want a1 then a2", got)
+	}
+	if got[0].Outcome() != simworker.OutcomeSucceeded || got[1].Outcome() != "" || got[1].End == nil {
+		t.Errorf("outcomes %q and %q (a2 end %v), want succeeded and none, a2 ended", got[0].Outcome(), got[1].Outcome(), got[1].End)
+	}
 }

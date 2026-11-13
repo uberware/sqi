@@ -9,10 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/loadtest/chaos"
+	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/target"
 	"github.com/uberware/sqi/internal/loadtest/verify"
-	"github.com/uberware/sqi/internal/store/fake"
 )
 
 // stuckFaults is a fault target that cannot stop for the store checks.
@@ -86,7 +87,7 @@ func TestExpectations_UnreadableMarkersLeaveReworkUnmeasured(t *testing.T) {
 		}},
 		tgt: &plainTarget{},
 	}
-	r.measureRework(t.Context(), fake.New(), nil, errors.New("read the real tasks' markers: boom"))
+	r.recordRework(chaos.StoreReport{Rework: &report.Rework{}}, errors.New("read the real tasks' markers: boom"))
 	r.applyExpectations()
 	var got *verify.Result
 	for i := range r.invariants {

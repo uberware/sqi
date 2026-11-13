@@ -14,9 +14,7 @@ var knownOSes = []string{"linux", "darwin", "windows"}
 
 // faultKindList names the fault kinds in the error for a fault that sets none
 // or several.
-var faultKindList = strings.Join([]string{
-	FaultKill, FaultTerm, FaultStall, FaultPartition, FaultBlackhole, FaultLatency, FaultFlap, FaultPowerCut,
-}, ", ")
+var faultKindList = strings.Join(faultKinds[:], ", ")
 
 func (v *validator) faults() {
 	if len(v.s.Faults) == 0 {
@@ -144,17 +142,15 @@ func (v *validator) faultNetwork(path string, f *Fault, groups map[string]int) {
 			v.failf(path+".duration", "must be positive for %s", f.Kind())
 		}
 	}
-	switch {
-	case f.Partition != nil:
-		v.netGroups(path+".partition.groups", f.Partition.Groups, groups)
-	case f.Blackhole != nil:
-		v.netGroups(path+".blackhole.groups", f.Blackhole.Groups, groups)
-	case f.Latency != nil:
-		l := f.Latency
-		v.netGroups(path+".latency.groups", l.Groups, groups)
-		v.latency(path+".latency", l)
-	case f.Flap != nil:
-		v.netGroups(path+".flap.groups", f.Flap.Groups, groups)
+	kind, names, ok := f.netSpec()
+	if !ok {
+		return
+	}
+	v.netGroups(path+"."+kind+".groups", names, groups)
+	switch kind {
+	case FaultLatency:
+		v.latency(path+".latency", f.Latency)
+	case FaultFlap:
 		if p := f.Flap.Period.Duration; p <= 0 || (f.Duration.Duration > 0 && p > f.Duration.Duration) {
 			v.failf(path+".flap.period", "%s must be positive and no longer than duration %s", f.Flap.Period, f.Duration)
 		}

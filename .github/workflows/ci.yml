@@ -98,8 +98,8 @@ jobs:
               - 'internal/loadtest/**'
               - 'test/load/**'
               - '.github/workflows/ci.yml'
-            # Gates chaos-smoke below, which runs over thirteen minutes of
-            # fault-injection scenarios. Scoped to the code those scenarios
+            # Gates chaos-smoke below, three jobs of four to six minutes of
+            # fault-injection scenarios each. Scoped to the code those scenarios
             # exercise (the scheduler, store, bus, worker and server) and to
             # the harness and the suite itself, not to every Go file, to
             # control runner cost.
@@ -2387,7 +2387,7 @@ jobs:
   # ── Load harness smoke ───────────────────────────────────────────────────────
   # Runs the load harness's smoke scenario end to end against a real sqi-server
   # binary with simulated workers (`make load-smoke`, SQLite). It asserts that the
-  # harness works and that the six invariants hold, never latency: shared
+  # harness works and that the seven invariants hold, never latency: shared
   # runners are too noisy for that. The nightly load run is a separate
   # workflow (load-nightly.yml).
   load-smoke:
@@ -2439,15 +2439,19 @@ jobs:
           done
 
   # ── Chaos smoke ──────────────────────────────────────────────────────────────
-  # Runs three of the chaos suite's scenarios end to end (`make chaos-smoke`,
-  # SQLite): a server SIGKILL, a real worker killed for good and a short
+  # Runs three of the chaos suite's scenarios end to end, one job each
+  # (`make chaos SCENARIO=...`, SQLite; `make chaos-smoke` runs the same three
+  # locally): a server SIGKILL, a real worker killed for good and a short
   # network cut. Each injects a fault into real sqi-server and sqi-worker
   # processes and checks that the farm converges with all invariants holding
   # and no more completed work redone than the scenario's max_rework_attempts
-  # (0 for the kill and the cut, 4 for the dead worker). They take about 4 to
-  # 6 minutes each (the server stands its liveness sweeps down for about 3m10s
-  # after a start, so the run waits for that). The whole suite runs nightly
-  # (load-nightly.yml). See docs/chaos-testing.md.
+  # (0 for the kill and the cut, 4 for the dead worker). Each takes about 4 to
+  # 6 minutes (the server stands its liveness sweeps down for about 3m10s
+  # after a start, so the run waits for that), mostly waiting, so the three
+  # run on separate runners at once rather than one after another. It needs
+  # only the path filter, not the test job: it uses nothing the test job
+  # builds. The whole suite runs nightly (load-nightly.yml). See
+  # docs/chaos-testing.md.
   #
   # ADVISORY: continue-on-error keeps a failure here from failing the run.
   # The scenarios are timing-sensitive, and none has yet passed 20 consecutive
@@ -2457,12 +2461,17 @@ jobs:
   # remove continue-on-error once all three have them, and add the scenarios
   # to the gated list in load-nightly.yml (see docs/chaos-testing.md, "CI").
   chaos-smoke:
-    name: Chaos smoke
+    name: Chaos smoke (${{ matrix.scenario }})
     runs-on: ubuntu-latest
-    needs: [changes, test]
+    needs: changes
     if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.chaos == 'true' }}
-    timeout-minutes: 45
+    timeout-minutes: 25
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in step with CHAOS_SMOKE in the Makefile.
+        scenario: [chaos-server-kill-20s, chaos-worker-gone, chaos-net-blip]
 
     steps:
       - name: Checkout
@@ -2475,18 +2484,18 @@ jobs:
 
       # SQI_LOAD_OUT makes the test write its run directories to a known path
       # so the next step can upload them.
-      - name: Run the chaos smoke scenarios
+      - name: Run the chaos smoke scenario
         env:
           SQI_LOAD_OUT: ${{ runner.temp }}/chaos-runs
         run: |
           set -o pipefail
-          make chaos-smoke 2>&1 | tee "$RUNNER_TEMP/chaos-smoke.log"
+          make chaos SCENARIO=${{ matrix.scenario }} 2>&1 | tee "$RUNNER_TEMP/chaos-smoke.log"
 
       - name: Upload the run directories
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: chaos-smoke-runs
+          name: chaos-smoke-runs-${{ matrix.scenario }}
           path: |
             ${{ runner.temp }}/chaos-runs
             ${{ runner.temp }}/chaos-smoke.log
@@ -2494,16 +2503,15 @@ jobs:
           retention-days: 7
 
       # A skipped or filtered subtest would still leave `go test` green, so the
-      # three are asserted by name. The trailing space keeps a name from
+      # scenario is asserted by name. The trailing space keeps a name from
       # matching a longer one with the same prefix.
-      - name: Assert the smoke scenarios actually ran
+      - name: Assert the smoke scenario actually ran
         run: |
-          for t in TestChaos/chaos-server-kill-20s TestChaos/chaos-worker-gone TestChaos/chaos-net-blip; do
-            if ! grep -q -- "--- PASS: $t " "$RUNNER_TEMP/chaos-smoke.log"; then
-              echo "::error::$t did not pass (or did not run)"
-              exit 1
-            fi
-          done
+          t="TestChaos/${{ matrix.scenario }}"
+          if ! grep -q -- "--- PASS: $t " "$RUNNER_TEMP/chaos-smoke.log"; then
+            echo "::error::$t did not pass (or did not run)"
+            exit 1
+          fi
 
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy follow their configured target versions (mypy checks src at

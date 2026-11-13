@@ -27,8 +27,8 @@ type wasted struct {
 	example string
 }
 
-// ComputeRework measures the work the farm did twice, from the stopped
-// server's store.
+// rework measures the work the farm did twice, from the stopped server's
+// store.
 //
 // A simulated worker's attempt is wasted when it recorded success and the
 // server's attempt is not succeeded (the server reclaimed it first). A real
@@ -38,12 +38,12 @@ type wasted struct {
 // nearest its EndedAt, and the rest are wasted. A wasted attempt costs the
 // time it ran, and is attributed to the latest fault that began before the
 // worker finished it, none when no fault had.
-func ComputeRework(ctx context.Context, st store.Store, ledger *simworker.Ledger, execs []marker.Exec, farmID string, faults []report.FaultRecord) (report.Rework, error) {
-	lost, err := simulatedRework(ctx, st, ledger)
+func (f *farmView) rework(ctx context.Context, leased []leasedAttempt, execs []marker.Exec, faults []report.FaultRecord) (report.Rework, error) {
+	lost, err := simulatedRework(leased)
 	if err != nil {
 		return report.Rework{}, err
 	}
-	realLost, err := realRework(ctx, st, execs, farmID)
+	realLost, err := f.realRework(ctx, execs)
 	if err != nil {
 		return report.Rework{}, err
 	}
@@ -84,28 +84,27 @@ func precedingFault(faults []report.FaultRecord, at time.Time) (int, bool) {
 // simulatedRework finds the ledger's succeeded attempts the server did not
 // record as succeeded. An attempt the store does not have is left to
 // executions-recorded.
-func simulatedRework(ctx context.Context, st store.Store, l *simworker.Ledger) ([]wasted, error) {
+func simulatedRework(leased []leasedAttempt) ([]wasted, error) {
 	var out []wasted
-	for _, la := range ledgerAttempts(l) {
-		if la.outcome != string(store.TaskStatusSucceeded) {
+	for _, la := range leased {
+		if la.Outcome() != simworker.OutcomeSucceeded {
 			continue
 		}
-		a, err := st.GetTaskAttempt(ctx, la.id)
 		switch {
-		case errors.Is(err, store.ErrNotFound):
+		case errors.Is(la.err, store.ErrNotFound):
 			continue
-		case err != nil:
-			return nil, fmt.Errorf("read attempt %s of task %s: %w", la.id, la.taskID, err)
+		case la.err != nil:
+			return nil, fmt.Errorf("read attempt %s of task %s: %w", la.ID, la.TaskID, la.err)
 		}
-		if a.Status == store.AttemptStatusSucceeded {
+		if la.status == store.AttemptStatusSucceeded {
 			continue
 		}
-		d := max(la.endedAt.Sub(la.leasedAt), 0)
+		d := max(la.End.At.Sub(la.Leased), 0)
 		out = append(out, wasted{
-			end:     la.endedAt,
+			end:     la.End.At,
 			seconds: d.Seconds(),
 			example: fmt.Sprintf("attempt %s of task %s: worker %s reported succeeded after %s, the server recorded %s",
-				la.id, la.taskID, la.workerID, d.Round(time.Millisecond), a.Status),
+				la.ID, la.TaskID, la.WorkerID, d.Round(time.Millisecond), la.status),
 		})
 	}
 	return out, nil
@@ -113,7 +112,7 @@ func simulatedRework(ctx context.Context, st store.Store, l *simworker.Ledger) (
 
 // realRework finds the real tasks' completed main execs the server did not
 // credit.
-func realRework(ctx context.Context, st store.Store, execs []marker.Exec, farmID string) ([]wasted, error) {
+func (f *farmView) realRework(ctx context.Context, execs []marker.Exec) ([]wasted, error) {
 	completed := map[string][]marker.Exec{}
 	for _, e := range execs {
 		if e.Role == marker.RoleMain && e.End != nil && e.ExitCode == 0 {
@@ -123,11 +122,7 @@ func realRework(ctx context.Context, st store.Store, execs []marker.Exec, farmID
 	if len(completed) == 0 {
 		return nil, nil
 	}
-	farm, err := readFarm(ctx, st, farmID)
-	if err != nil {
-		return nil, err
-	}
-	byKey := farm.tasksByKey()
+	byKey := f.tasksByKey()
 	var out []wasted
 	for _, key := range slices.Sorted(maps.Keys(completed)) {
 		tasks, ok := byKey[key]
@@ -136,7 +131,7 @@ func realRework(ctx context.Context, st store.Store, execs []marker.Exec, farmID
 		}
 		var credits []time.Time
 		for _, id := range tasks {
-			attempts, err := farm.taskAttempts(ctx, id)
+			attempts, err := f.taskAttempts(ctx, id)
 			if err != nil {
 				return nil, fmt.Errorf("list the attempts of task %s: %w", id, err)
 			}

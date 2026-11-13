@@ -112,6 +112,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make load-sweep` | Sweep one scenario parameter and find the knee (`SCENARIO=…`, `VARY='workers[0].count=100,200,400'`) |
 | `make chaos` | Run the chaos suite (fault injection against real binaries; `SCENARIO=chaos-…` for one; about two hours for all 19) |
 | `make chaos-smoke` | Run the three chaos scenarios CI runs on pull requests (about 14 minutes) |
+| `make chaos-framework` | Run the chaos suite's own framework test, no scenario |
 | `make docs-site-install` | Create `.venv-docs/` and install the pinned MkDocs dependencies |
 | `make docs-site` | Build the MkDocs documentation site with `--strict` (the CI gate) |
 | `make docs-site-serve` | Serve the documentation site locally with live reload |

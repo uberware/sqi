@@ -13,7 +13,7 @@
 // real tasks, on a target that can inject faults) also fires the scenario's
 // faults beside the submissions, waits for every one to heal before the
 // drain, waits for the jobs the server created for submissions it gave no
-// 2xx answer, and checks submission-atomic with the six invariants.
+// 2xx answer, and checks the store, the real tasks' markers and the rework.
 //
 // A run interrupted through its context still tears everything down and
 // writes its record, marked incomplete.
@@ -28,7 +28,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sync"
 	"time"
 
@@ -45,7 +44,6 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/simworker"
 	"github.com/uberware/sqi/internal/loadtest/target"
 	"github.com/uberware/sqi/internal/loadtest/verify"
-	"github.com/uberware/sqi/internal/store"
 )
 
 const (
@@ -691,16 +689,10 @@ func (r *run) runFaults(ctx, faultCtx context.Context, cancelSub context.CancelF
 	}
 }
 
-// findOrphans lists the farm's jobs, in a chaos run, and keeps each one the
-// run got no 2xx answer for as an orphan of its submission (see orphanJobs).
-// A listing that fails keeps the orphans found before, if any.
+// findOrphans lists the farm's jobs and keeps each one the run got no 2xx
+// answer for as an orphan of its submission (see orphanJobs). A listing that
+// fails keeps the orphans found before, if any.
 func (r *run) findOrphans(ctx context.Context) {
-	if r.faults == nil {
-		return
-	}
-	if r.orphans == nil {
-		r.orphans = []driver.SubmittedJob{}
-	}
 	jobs, err := listFarmJobs(ctx, r.c.RetryingReads(), r.tgt.FarmID())
 	if err != nil {
 		if ctx.Err() == nil {
@@ -821,6 +813,7 @@ func (r *run) check(ctx context.Context) {
 		ConvergeWithin:      convergeWithin(r.sc),
 		Simulated:           r.fleet.Simulates,
 		TaskSeen:            r.taskSeen,
+		Orphans:             r.orphans,
 	}
 	r.chaosInput(&in)
 	if r.o.BeforeVerify != nil {
@@ -849,38 +842,34 @@ func (r *run) markerChecks() []verify.Result {
 	dir := r.faults.MarkerDir()
 	execs, skipped, err := marker.ReadAll(dir)
 	if err != nil {
-		msg := "read the real tasks' markers: " + err.Error()
-		return []verify.Result{
-			{Name: chaos.NameNoOrphans, Evidence: []string{msg}, Unmeasured: true},
-			{Name: chaos.NameSingleWriter, Evidence: []string{msg}, Unmeasured: true},
-		}
+		return verify.Unmeasured("read the real tasks' markers: "+err.Error(), verify.NameNoOrphans, verify.NameSingleWriter)
 	}
 	outputs, outErr := marker.Outputs(dir)
 	results := chaos.MarkerChecks(execs, skipped, outputs, r.faults.Incarnations())
 	if outErr != nil {
-		results[1] = verify.Result{Name: chaos.NameSingleWriter, Evidence: []string{"read the real tasks' outputs: " + outErr.Error()}, Unmeasured: true}
+		for i := range results {
+			if results[i].Name == verify.NameSingleWriter {
+				results[i] = verify.Unmeasured("read the real tasks' outputs: "+outErr.Error(), verify.NameSingleWriter)[0]
+			}
+		}
 	}
 	return results
 }
 
-// chaosInput fills what a chaos run adds to the verifier's input: the
-// orphans (never nil, so submission-atomic runs), the fault windows, the
-// workers' groups, the real workers that are running now rather than the
-// scenario's count, and a convergence time that allows for the server's
-// liveness grace after its last start.
+// chaosInput fills what a chaos run adds to the verifier's input: the fault
+// windows, the workers' groups, the real workers that are running now rather
+// than the scenario's count, and a convergence time that allows for the
+// server's liveness grace after its last start.
 func (r *run) chaosInput(in *verify.Input) {
 	if r.faults == nil {
 		return
 	}
-	in.Orphans = append([]driver.SubmittedJob{}, r.orphans...)
 	in.GroupOf = r.fleet.GroupOf
 	in.LiveWorkers = r.fleet.Live() + r.faults.RealLive()
-	var records []report.FaultRecord
 	if r.ctl != nil {
 		in.FaultWindows = r.ctl.Windows()
-		records = r.ctl.Records()
 	}
-	in.ConvergeWithin = chaosConvergeWithin(r.sc, r.serverUp, records, time.Now())
+	in.ConvergeWithin = chaosConvergeWithin(r.sc, r.serverUp, r.faultRecords(), time.Now())
 }
 
 // taskSeen keeps what terminal_ingest needs of a task the invariant checks
@@ -968,56 +957,56 @@ func (r *run) storeChecks(ctx context.Context) {
 		// A server still running would write under the checks.
 		msg := "the server and the real workers did not stop for the store checks: " + err.Error()
 		r.unavail("rework", msg)
-		r.invariants = append(r.invariants,
-			verify.Result{Name: chaos.NameStoreIntegrity, Evidence: []string{msg}, Unmeasured: true},
-			verify.Result{Name: chaos.NameExecutionsRecorded, Evidence: []string{msg}, Unmeasured: true})
+		r.invariants = append(r.invariants, verify.Unmeasured(msg, verify.NameStoreIntegrity, verify.NameExecutionsRecorded)...)
 		return
 	}
-	markers, skipped, markerErr := mainMarkers(r.faults.MarkerDir())
-	results := chaos.StoreChecks(sctx, chaos.StoreInput{
+	markers, skipped, markerErr := readMarkers(r.faults.MarkerDir())
+	rep := chaos.StoreChecks(sctx, chaos.StoreInput{
 		Options:        r.faults.StoreOptions(),
 		FarmID:         r.tgt.FarmID(),
 		Ledger:         r.ledger,
 		Markers:        markers,
 		SkippedMarkers: skipped,
-		WithStore: func(ctx context.Context, st store.Store) {
-			r.measureRework(ctx, st, markers, markerErr)
-		},
+		Faults:         r.faultRecords(),
 	})
-	if r.rework == nil {
-		r.unavail("rework", "the stopped server's store could not be read")
+	r.recordRework(rep, markerErr)
+	r.invariants = append(r.invariants, withMarkerErr(rep.Results, markerErr)...)
+}
+
+// withMarkerErr fails executions-recorded as unmeasured when the real tasks'
+// markers could not be read: their executions are not counted, so the check
+// did not run, and no known violation may excuse it.
+func withMarkerErr(results []verify.Result, markerErr error) []verify.Result {
+	if markerErr == nil {
+		return results
 	}
 	for i := range results {
-		if markerErr != nil && results[i].Name == chaos.NameExecutionsRecorded {
+		if results[i].Name == verify.NameExecutionsRecorded {
 			results[i].OK = false
+			results[i].Unmeasured = true
 			results[i].Evidence = append(results[i].Evidence, markerErr.Error())
 		}
 	}
-	r.invariants = append(r.invariants, results...)
+	return results
 }
 
-// measureRework records what the faults cost, from the stopped server's store.
-func (r *run) measureRework(ctx context.Context, st store.Store, markers []marker.Exec, markerErr error) {
-	var faults []report.FaultRecord
-	if r.ctl != nil {
-		faults = r.ctl.Records()
-	}
-	rw, err := chaos.ComputeRework(ctx, st, r.ledger, markers, r.tgt.FarmID(), faults)
-	if err != nil {
-		r.unavail("rework", err.Error())
+// recordRework records what the faults cost, as the store checks measured it.
+func (r *run) recordRework(rep chaos.StoreReport, markerErr error) {
+	if rep.Rework == nil {
+		r.unavail("rework", rep.ReworkErr.Error())
 		return
 	}
 	if markerErr != nil {
 		msg := "the real tasks' executions are not counted: " + markerErr.Error()
 		r.unavail("rework", msg)
-		rw.Undercount = msg
+		rep.Rework.Undercount = msg
 	}
-	r.rework = &rw
+	r.rework = rep.Rework
 }
 
-// mainMarkers reads the real tasks' main executions from dir, none when dir
-// is "", and how many exec files it could not parse.
-func mainMarkers(dir string) (execs []marker.Exec, skipped int, err error) {
+// readMarkers reads the real tasks' executions from dir, none when dir is "",
+// and how many exec files it could not parse.
+func readMarkers(dir string) (execs []marker.Exec, skipped int, err error) {
 	if dir == "" {
 		return nil, 0, nil
 	}
@@ -1025,7 +1014,7 @@ func mainMarkers(dir string) (execs []marker.Exec, skipped int, err error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("read the real tasks' markers: %w", err)
 	}
-	return slices.DeleteFunc(execs, func(e marker.Exec) bool { return e.Role != marker.RoleMain }), skipped, nil
+	return execs, skipped, nil
 }
 
 // healFaults ends the fault controller's Run, if it is still running, then

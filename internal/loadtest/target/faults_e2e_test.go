@@ -17,7 +17,7 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/internal/proctest"
 	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
-	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/scheduler"
 )
 
 // assertServerBack checks the restarted server answers on the same addresses
@@ -169,20 +169,13 @@ func waitWorker(t *testing.T, m *managed, c *client.Client, want string, timeout
 
 // The lane test's timings. heartbeatTimeout is the server's, short so a cut
 // worker goes offline quickly; the server's heartbeat sweep runs every
-// sweepInterval (scheduler.DefaultConfig, not configurable).
+// sweepInterval (not configurable).
 const (
 	heartbeatTimeout  = 10 * time.Second
 	heartbeatInterval = 2 * time.Second
-	sweepInterval     = 15 * time.Second
 )
 
-// livenessGrace is how long after its broker connection comes up the server
-// marks no worker offline: internal/server's busReconnectGrace, which is not
-// configurable.
-func livenessGrace(workerTimeout time.Duration) time.Duration {
-	redial := time.Duration(float64(protocol.MaxReconnectBackoff) * (1 + protocol.ReconnectJitterFraction))
-	return workerTimeout + redial + protocol.DefaultHeartbeatInterval
-}
+var sweepInterval = scheduler.DefaultConfig().HeartbeatSweepInterval
 
 // lastHeartbeat is the server's last stored heartbeat of the farm's one
 // worker.
@@ -241,7 +234,7 @@ func startLaneTarget(t *testing.T) (m *managed, c *client.Client, lane Lane, w c
 		Partition: &scenario.NetTarget{Groups: []string{"render"}},
 	}}
 	m = startManaged(t, ManagedConfig{RunDir: t.TempDir(), ServerBin: server, WorkerBin: worker, NoopBin: noop, Scenario: sc})
-	graceEnds = time.Now().Add(livenessGrace(heartbeatTimeout))
+	graceEnds = time.Now().Add(scheduler.ReconnectGrace(heartbeatTimeout))
 	c = mustClient(t, m)
 
 	lane = m.Lane("render")

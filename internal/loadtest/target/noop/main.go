@@ -21,7 +21,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/marker"
@@ -57,7 +56,7 @@ type task struct {
 }
 
 func run(args []string) int {
-	path, ok := marker.ConfigFromArgs(args)
+	path, ok := scenario.LastArg(args, marker.ConfigArgPrefix)
 	if !ok {
 		fmt.Println(defaultLine)
 		return 0
@@ -75,27 +74,18 @@ func run(args []string) int {
 	}
 	key, _ := scenario.KeyFromArgs(args)
 	t := task{args: args, dir: cfg.MarkerDir, key: key, incarnation: os.Getenv("SQILOAD_INCARNATION"), class: class}
-	switch role, _ := lastArg(args, roleArgPrefix); role {
+	switch role, _ := scenario.LastArg(args, roleArgPrefix); role {
 	case "":
 		return t.runMain()
 	case marker.RoleChatty:
 		return t.runChatty()
 	case marker.RoleSilent:
-		id, _ := lastArg(args, execIDArgPrefix)
+		id, _ := scenario.LastArg(args, execIDArgPrefix)
 		return t.runSilent(id)
 	default:
 		fmt.Fprintf(os.Stderr, "sqi-load noop: unknown role %q\n", role)
 		return exitConfig
 	}
-}
-
-func lastArg(args []string, prefix string) (string, bool) {
-	for _, arg := range slices.Backward(args) {
-		if v, ok := strings.CutPrefix(arg, prefix); ok {
-			return v, true
-		}
-	}
-	return "", false
 }
 
 func (t task) duration() time.Duration { return time.Duration(t.class.DurationMS) * time.Millisecond }

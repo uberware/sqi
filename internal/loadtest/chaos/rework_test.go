@@ -3,6 +3,7 @@
 package chaos
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestRework_SimulatedUncreditedSuccessCounts(t *testing.T) {
 		{Index: 1, Kind: "kill", Start: t0.Add(10 * time.Second)},
 		{Index: 2, Kind: "kill", Start: t0.Add(30 * time.Second)},
 	}
-	got, err := ComputeRework(t.Context(), ts.st, l, nil, checkFarm, faults)
+	got, err := computeRework(t.Context(), ts.st, l, nil, checkFarm, faults)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +45,7 @@ func TestRework_SimulatedUncreditedSuccessCounts(t *testing.T) {
 func TestRework_SimulatedCreditedSuccessIsNotRework(t *testing.T) {
 	ts := newSQLiteStore(t)
 	a := seedRun(t, ts.st, readyJob("j1", "s1", "t1"), "t1", store.TaskStatusSucceeded)
-	got, err := ComputeRework(t.Context(), ts.st, ledgerOf(ledgerEntry{a.ID, "t1", "succeeded"}), nil, checkFarm,
+	got, err := computeRework(t.Context(), ts.st, ledgerOf(ledgerEntry{a.ID, "t1", "succeeded"}), nil, checkFarm,
 		[]report.FaultRecord{{Index: 0, Start: time.Now().Add(-time.Hour)}})
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +81,7 @@ func TestRework_RealExtraCompletionCounts(t *testing.T) {
 		{Index: 1, Start: wasted.Add(-time.Second)},
 		{Index: 2, Start: credited},
 	}
-	rw, err := ComputeRework(t.Context(), ts.st, nil, execs, checkFarm, faults)
+	rw, err := computeRework(t.Context(), ts.st, nil, execs, checkFarm, faults)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func TestRework_RealNoSucceededAttemptCountsEveryCompletion(t *testing.T) {
 	end := time.Now().UTC()
 	e := mainExec("e1", key)
 	e.Start, e.End = end.Add(-2*time.Second), &end
-	rw, err := ComputeRework(t.Context(), ts.st, nil, []marker.Exec{e}, checkFarm, nil)
+	rw, err := computeRework(t.Context(), ts.st, nil, []marker.Exec{e}, checkFarm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func TestRework_NoFaultsIsZero(t *testing.T) {
 	key := scenario.TaskKey("job-x", "step-1", "3", "")
 	e := mainExec("e1", key)
 	e.Start, e.End = got.EndedAt.Add(-time.Second), got.EndedAt
-	rw, err := ComputeRework(t.Context(), ts.st, ledgerOf(ledgerEntry{a.ID, "t1", "succeeded"}), []marker.Exec{e}, checkFarm, nil)
+	rw, err := computeRework(t.Context(), ts.st, ledgerOf(ledgerEntry{a.ID, "t1", "succeeded"}), []marker.Exec{e}, checkFarm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,11 +140,20 @@ func TestRework_ExamplesAreCapped(t *testing.T) {
 		l.Record(simworker.Event{WorkerID: "sim-1", TaskID: id, AttemptID: a.ID, Kind: simworker.KindLeased})
 		l.Record(simworker.Event{WorkerID: "sim-1", TaskID: id, AttemptID: a.ID, Kind: simworker.KindTerminal, Outcome: "succeeded"})
 	}
-	rw, err := ComputeRework(t.Context(), ts.st, l, nil, checkFarm, nil)
+	rw, err := computeRework(t.Context(), ts.st, l, nil, checkFarm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rw.Attempts != maxReworkExamples+5 || len(rw.Examples) != maxReworkExamples {
 		t.Errorf("Attempts = %d, Examples = %d, want %d and %d", rw.Attempts, len(rw.Examples), maxReworkExamples+5, maxReworkExamples)
 	}
+}
+
+// computeRework measures the rework of the farm in st, as StoreChecks does.
+func computeRework(ctx context.Context, st store.Store, l *simworker.Ledger, execs []marker.Exec, farmID string, faults []report.FaultRecord) (report.Rework, error) {
+	farm, err := readFarm(ctx, st, farmID)
+	if err != nil {
+		return report.Rework{}, err
+	}
+	return farm.rework(ctx, readLeased(ctx, st, l), execs, faults)
 }

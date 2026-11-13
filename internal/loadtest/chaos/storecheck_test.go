@@ -3,7 +3,6 @@
 package chaos
 
 import (
-	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -30,7 +29,7 @@ const (
 )
 
 func TestStoreCheckNamesMatchVerify(t *testing.T) {
-	for _, name := range []string{NameStoreIntegrity, NameExecutionsRecorded} {
+	for _, name := range []string{verify.NameStoreIntegrity, verify.NameExecutionsRecorded} {
 		if !slices.Contains(verify.Names(), name) || !slices.Contains(scenario.CheckNames, name) {
 			t.Errorf("%q is not in verify.Names() %v and scenario.CheckNames %v", name, verify.Names(), scenario.CheckNames)
 		}
@@ -143,10 +142,11 @@ func readyJob(jobID, stepID, taskID string) *storetest.JobSeed {
 // outcome is not empty, for each attempt.
 func ledgerOf(attempts ...ledgerEntry) *simworker.Ledger {
 	l := simworker.NewLedger()
+	at := time.Now()
 	for _, a := range attempts {
-		l.Record(simworker.Event{WorkerID: "sim-1", TaskID: a.task, AttemptID: a.id, Kind: simworker.KindLeased})
+		l.Record(simworker.Event{At: at, WorkerID: "sim-1", TaskID: a.task, AttemptID: a.id, Kind: simworker.KindLeased})
 		if a.outcome != "" {
-			l.Record(simworker.Event{WorkerID: "sim-1", TaskID: a.task, AttemptID: a.id, Kind: simworker.KindTerminal, Outcome: a.outcome})
+			l.Record(simworker.Event{At: at, WorkerID: "sim-1", TaskID: a.task, AttemptID: a.id, Kind: simworker.KindTerminal, Outcome: a.outcome})
 		}
 	}
 	return l
@@ -165,14 +165,14 @@ func check(t *testing.T, ts testStore, in StoreInput) map[string]verify.Result {
 	if in.FarmID == "" {
 		in.FarmID = checkFarm
 	}
-	results := StoreChecks(t.Context(), in)
+	results := StoreChecks(t.Context(), in).Results
 	var names []string
 	byName := map[string]verify.Result{}
 	for _, r := range results {
 		names = append(names, r.Name)
 		byName[r.Name] = r
 	}
-	if want := []string{NameStoreIntegrity, NameExecutionsRecorded}; !slices.Equal(names, want) {
+	if want := []string{verify.NameStoreIntegrity, verify.NameExecutionsRecorded}; !slices.Equal(names, want) {
 		t.Fatalf("StoreChecks returned %v, want %v", names, want)
 	}
 	return byName
@@ -204,8 +204,8 @@ func TestStoreIntegrity_CleanStorePasses(t *testing.T) {
 		seedSettled(t, ts.st, "j1", "s1", "t1")
 		a := seedRun(t, ts.st, readyJob("j2", "s2", "t2"), "t2", store.TaskStatusSucceeded)
 		got := check(t, ts, StoreInput{Ledger: ledgerOf(ledgerEntry{a.ID, "t2", "succeeded"})})
-		wantOK(t, got[NameStoreIntegrity])
-		wantOK(t, got[NameExecutionsRecorded])
+		wantOK(t, got[verify.NameStoreIntegrity])
+		wantOK(t, got[verify.NameExecutionsRecorded])
 	})
 }
 
@@ -219,7 +219,7 @@ func TestStoreIntegrity_OpenAttemptOnTerminalTaskFails(t *testing.T) {
 		t.Fatalf("InjectTaskAttempt: %v", err)
 	}
 	got := check(t, ts, StoreInput{})
-	wantFail(t, got[NameStoreIntegrity], "t1", "a-open")
+	wantFail(t, got[verify.NameStoreIntegrity], "t1", "a-open")
 }
 
 func TestStoreIntegrity_InconsistentStatusesFail(t *testing.T) {
@@ -240,7 +240,7 @@ func TestStoreIntegrity_InconsistentStatusesFail(t *testing.T) {
 		Task("t3", "s3", store.TaskStatusCanceled).
 		Submit(t, ts.st)
 	got := check(t, ts, StoreInput{})
-	wantFail(t, got[NameStoreIntegrity], "t1", "j2 is completed but its step s2 is failed", "j3 is canceled but its step s3 is running")
+	wantFail(t, got[verify.NameStoreIntegrity], "t1", "j2 is completed but its step s2 is failed", "j3 is canceled but its step s3 is running")
 }
 
 func TestStoreIntegrity_OtherFarmIgnored(t *testing.T) {
@@ -257,7 +257,7 @@ func TestStoreIntegrity_OtherFarmIgnored(t *testing.T) {
 		Task("t9", "s9", store.TaskStatusReady).
 		Submit(t, ts.st)
 	got := check(t, ts, StoreInput{})
-	wantOK(t, got[NameStoreIntegrity])
+	wantOK(t, got[verify.NameStoreIntegrity])
 }
 
 func TestStoreIntegrity_CorruptFileFails(t *testing.T) {
@@ -282,7 +282,7 @@ func TestStoreIntegrity_CorruptFileFails(t *testing.T) {
 	}
 	got := check(t, testStore{opts: backend.Options{Driver: backend.DriverSQLite, SQLitePath: corrupt}}, StoreInput{})
 	// The row integrity_check reports names the damaged b-tree.
-	wantFail(t, got[NameStoreIntegrity], "integrity_check: ", "Tree ")
+	wantFail(t, got[verify.NameStoreIntegrity], "integrity_check: ", "Tree ")
 }
 
 // rootPage returns the root page number of table and the database's page
@@ -310,9 +310,9 @@ func rootPage(t *testing.T, path, table string) (page, size int) {
 func TestStoreIntegrity_MissingDatabaseFails(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent.db")
 	got := check(t, testStore{opts: backend.Options{Driver: backend.DriverSQLite, SQLitePath: missing}}, StoreInput{})
-	wantFail(t, got[NameStoreIntegrity], missing)
-	wantFail(t, got[NameExecutionsRecorded], missing)
-	if !got[NameStoreIntegrity].Unmeasured || !got[NameExecutionsRecorded].Unmeasured {
+	wantFail(t, got[verify.NameStoreIntegrity], missing)
+	wantFail(t, got[verify.NameExecutionsRecorded], missing)
+	if !got[verify.NameStoreIntegrity].Unmeasured || !got[verify.NameExecutionsRecorded].Unmeasured {
 		t.Error("a store the checks could not open must be marked Unmeasured, so a known violation cannot excuse it")
 	}
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
@@ -327,12 +327,12 @@ func TestExecutionsRecorded_MissingAttemptFails(t *testing.T) {
 			ledgerEntry{a.ID, "t1", "succeeded"},
 			ledgerEntry{"a-missing", "t1", ""},
 		)})
-		r := got[NameExecutionsRecorded]
+		r := got[verify.NameExecutionsRecorded]
 		wantFail(t, r, "a-missing")
 		if strings.Contains(strings.Join(r.Evidence, "\n"), a.ID) {
 			t.Errorf("evidence %q names the recorded attempt %s", r.Evidence, a.ID)
 		}
-		wantOK(t, got[NameStoreIntegrity])
+		wantOK(t, got[verify.NameStoreIntegrity])
 	})
 }
 
@@ -340,14 +340,14 @@ func TestExecutionsRecorded_SucceededOnWorkerFailedOnServerIsAReclaim(t *testing
 	ts := newSQLiteStore(t)
 	a := seedRun(t, ts.st, readyJob("j1", "s1", "t1"), "t1", store.TaskStatusFailed)
 	got := check(t, ts, StoreInput{Ledger: ledgerOf(ledgerEntry{a.ID, "t1", "succeeded"})})
-	wantOK(t, got[NameExecutionsRecorded])
+	wantOK(t, got[verify.NameExecutionsRecorded])
 }
 
 func TestExecutionsRecorded_FailedOnWorkerSucceededOnServerFails(t *testing.T) {
 	ts := newSQLiteStore(t)
 	a := seedRun(t, ts.st, readyJob("j1", "s1", "t1"), "t1", store.TaskStatusSucceeded)
 	got := check(t, ts, StoreInput{Ledger: ledgerOf(ledgerEntry{a.ID, "t1", "failed"})})
-	wantFail(t, got[NameExecutionsRecorded], a.ID)
+	wantFail(t, got[verify.NameExecutionsRecorded], a.ID)
 }
 
 func TestExecutionsRecorded_OpenAttemptFails(t *testing.T) {
@@ -355,7 +355,7 @@ func TestExecutionsRecorded_OpenAttemptFails(t *testing.T) {
 	readyJob("j1", "s1", "t1").Submit(t, ts.st)
 	a := storetest.Running(t, ts.st, store.LeaseRequest{TaskID: "t1", WorkerID: checkWorker})
 	got := check(t, ts, StoreInput{Ledger: ledgerOf(ledgerEntry{a.ID, "t1", ""})})
-	wantFail(t, got[NameExecutionsRecorded], a.ID, "running")
+	wantFail(t, got[verify.NameExecutionsRecorded], a.ID, "running")
 }
 
 // realJob is job "job-x" whose step "step-1" has one task for frame 3.
@@ -377,7 +377,7 @@ func TestExecutionsRecorded_RealExecutionsExceedAttemptsFails(t *testing.T) {
 		mainExec("e1", key), mainExec("e2", key),
 		{ID: "c1", Key: key, Role: "chatty"},
 	}})
-	wantFail(t, got[NameExecutionsRecorded], key)
+	wantFail(t, got[verify.NameExecutionsRecorded], key)
 }
 
 func TestExecutionsRecorded_RealExecutionsWithinAttemptsPass(t *testing.T) {
@@ -388,7 +388,7 @@ func TestExecutionsRecorded_RealExecutionsWithinAttemptsPass(t *testing.T) {
 	got := check(t, ts, StoreInput{Markers: []marker.Exec{
 		mainExec("e1", key), {ID: "c1", Key: key, Role: "chatty"}, {ID: "c2", Key: key, Role: "silent"},
 	}})
-	wantOK(t, got[NameExecutionsRecorded])
+	wantOK(t, got[verify.NameExecutionsRecorded])
 }
 
 func TestExecutionsRecorded_UnknownKeyFails(t *testing.T) {
@@ -396,7 +396,7 @@ func TestExecutionsRecorded_UnknownKeyFails(t *testing.T) {
 	seedRun(t, ts.st, realJob(), "t1", store.TaskStatusSucceeded)
 	unknown := scenario.TaskKey("job-x", "step-1", "4", "")
 	got := check(t, ts, StoreInput{Markers: []marker.Exec{mainExec("e1", unknown)}})
-	wantFail(t, got[NameExecutionsRecorded], unknown)
+	wantFail(t, got[verify.NameExecutionsRecorded], unknown)
 }
 
 func TestExecutionsRecorded_SkippedMarkersAreANote(t *testing.T) {
@@ -404,25 +404,30 @@ func TestExecutionsRecorded_SkippedMarkersAreANote(t *testing.T) {
 	seedRun(t, ts.st, realJob(), "t1", store.TaskStatusSucceeded)
 	key := scenario.TaskKey("job-x", "step-1", "3", "")
 	got := check(t, ts, StoreInput{Markers: []marker.Exec{mainExec("e1", key)}, SkippedMarkers: 2})
-	r := got[NameExecutionsRecorded]
+	r := got[verify.NameExecutionsRecorded]
 	if !r.OK {
 		t.Fatalf("executions-recorded failed: %q", r.Evidence)
 	}
 	if len(r.Evidence) != 1 || !strings.Contains(r.Evidence[0], "2 marker files unreadable") {
 		t.Errorf("evidence = %q, want one note about the 2 unreadable files", r.Evidence)
 	}
-	wantOK(t, got[NameStoreIntegrity])
+	wantOK(t, got[verify.NameStoreIntegrity])
 }
 
-func TestStoreChecks_WithStoreSeesTheOpenedStore(t *testing.T) {
+func TestStoreChecks_MeasureTheRework(t *testing.T) {
 	ts := newSQLiteStore(t)
-	a := seedRun(t, ts.st, readyJob("j1", "s1", "t1"), "t1", store.TaskStatusSucceeded)
-	var got store.TaskAttempt
-	var err error
-	check(t, ts, StoreInput{WithStore: func(ctx context.Context, st store.Store) {
-		got, err = st.GetTaskAttempt(ctx, a.ID)
-	}})
-	if err != nil || got.ID != a.ID {
-		t.Errorf("GetTaskAttempt in WithStore = %+v, %v", got, err)
+	a := seedRun(t, ts.st, readyJob("j1", "s1", "t1"), "t1", store.TaskStatusFailed)
+	ts.stop(t)
+	rep := StoreChecks(t.Context(), StoreInput{Options: ts.opts, FarmID: checkFarm, Ledger: ledgerOf(ledgerEntry{a.ID, "t1", "succeeded"})})
+	if rep.ReworkErr != nil || rep.Rework == nil || rep.Rework.Attempts != 1 {
+		t.Errorf("StoreChecks rework = %+v, %v; want 1 wasted attempt", rep.Rework, rep.ReworkErr)
+	}
+}
+
+func TestStoreChecks_UnopenedStoreLeavesReworkUnmeasured(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.db")
+	rep := StoreChecks(t.Context(), StoreInput{Options: backend.Options{Driver: backend.DriverSQLite, SQLitePath: missing}})
+	if rep.Rework != nil || rep.ReworkErr == nil || !strings.Contains(rep.ReworkErr.Error(), missing) {
+		t.Errorf("StoreChecks rework = %+v, %v; want unmeasured, naming %s", rep.Rework, rep.ReworkErr, missing)
 	}
 }

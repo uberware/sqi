@@ -55,10 +55,8 @@ type Controller struct {
 	t      target.Faults
 	fleet  Fleet
 	logger *slog.Logger
-	// lanes holds a laneCtl for each group with a lane, laneNames their names
-	// in scenario order.
-	lanes     map[string]*laneCtl
-	laneNames []string
+	// lanes holds a laneCtl for each group with a lane.
+	lanes map[string]*laneCtl
 	// tokens orders the lane faults by start.
 	tokens atomic.Uint64
 
@@ -105,7 +103,6 @@ func NewController(faults []scenario.Fault, groups []scenario.WorkerGroup, t tar
 		for _, g := range c.groups {
 			if l := t.Lane(g); l != nil {
 				c.lanes[g] = newLaneCtl(l)
-				c.laneNames = append(c.laneNames, g)
 			}
 		}
 	}
@@ -141,18 +138,19 @@ func (c *Controller) check(f scenario.Fault) error {
 // netFault returns a network fault's groups as the scenario names them and
 // the state it puts their lanes in. ok is false for any other kind.
 func netFault(f scenario.Fault) (groups []string, s laneState, ok bool) {
+	groups, ok = f.NetGroups()
 	switch {
-	case f.Partition != nil:
-		return f.Partition.Groups, laneState{level: levelCut}, true
+	case !ok:
+		return nil, laneState{}, false
 	case f.Blackhole != nil:
-		return f.Blackhole.Groups, laneState{level: levelBlackhole}, true
+		s = laneState{level: levelBlackhole}
 	case f.Latency != nil:
 		l := f.Latency
-		return l.Groups, laneState{level: levelShape, delay: l.Delay.Duration, jitter: l.Jitter.Duration, bps: l.BytesPerSec}, true
-	case f.Flap != nil:
-		return f.Flap.Groups, laneState{level: levelCut}, true
+		s = laneState{level: levelShape, delay: l.Delay.Duration, jitter: l.Jitter.Duration, bps: l.BytesPerSec}
+	default: // partition, flap
+		s = laneState{level: levelCut}
 	}
-	return nil, laneState{}, false
+	return groups, s, true
 }
 
 // resolve turns a network fault's groups into the groups it hits: every group
@@ -232,6 +230,13 @@ func (c *Controller) started(ctx context.Context, i int, tgt string, windowed bo
 	c.logger.InfoContext(ctx, "fault fired", slog.Int("fault", i), slog.String("kind", c.faults[i].Kind()), slog.String("target", tgt))
 }
 
+// hitServer records that fault i stopped the server.
+func (c *Controller) hitServer(i int) {
+	c.mu.Lock()
+	c.records[i].Server = true
+	c.mu.Unlock()
+}
+
 // healed records that fault i healed.
 func (c *Controller) healed(ctx context.Context, i int) {
 	c.mu.Lock()
@@ -288,8 +293,8 @@ func (c *Controller) HealAll() {
 		keys = append(keys, k)
 	}
 	c.mu.Unlock()
-	for _, n := range c.laneNames {
-		c.lanes[n].healAll()
+	for _, l := range c.lanes {
+		l.healAll()
 	}
 	for _, k := range keys {
 		l := c.procLock(k)
@@ -340,17 +345,13 @@ func (c *Controller) workerUnits(workers []int, stop func(context.Context, int) 
 func (c *Controller) procFault(ctx context.Context, i int, p *scenario.ProcTarget, restartAfter time.Duration,
 	stopServer func(context.Context) error, stopWorker func(context.Context, int) error,
 ) error {
-	var units []unit
-	if p.Server {
-		c.started(ctx, i, "server", true, nil)
+	server, workers, err := c.procTargets(ctx, i, p)
+	if err != nil {
+		return err
+	}
+	units := c.workerUnits(workers, stopWorker)
+	if server {
 		units = []unit{c.serverUnit(stopServer)}
-	} else {
-		picked := c.pick(p.Group, p.Real)
-		c.started(ctx, i, groupTarget(p.Group, picked), false, nil)
-		if len(picked) == 0 {
-			return fmt.Errorf("worker group %s has no running real worker", p.Group)
-		}
-		units = c.workerUnits(picked, stopWorker)
 	}
 	down, errs := stopUnits(ctx, units, nil)
 	if restartAfter <= 0 {
@@ -364,6 +365,23 @@ func (c *Controller) procFault(ctx context.Context, i int, p *scenario.ProcTarge
 		c.healed(ctx, i)
 	}
 	return errors.Join(errs...)
+}
+
+// procTargets records that fault i fired at p and returns what it hits: the
+// server, or the group's running real workers it picks. A group with none
+// running is an error.
+func (c *Controller) procTargets(ctx context.Context, i int, p *scenario.ProcTarget) (server bool, workers []int, err error) {
+	if p.Server {
+		c.started(ctx, i, "server", true, nil)
+		c.hitServer(i)
+		return true, nil, nil
+	}
+	workers = c.pick(p.Group, p.Real)
+	c.started(ctx, i, groupTarget(p.Group, workers), false, nil)
+	if len(workers) == 0 {
+		return false, nil, fmt.Errorf("worker group %s has no running real worker", p.Group)
+	}
+	return false, workers, nil
 }
 
 // stopUnits stops every unit, and runs also, all at once. It returns the
@@ -459,19 +477,16 @@ func netTarget(spec []string) string {
 // stallFault stalls the server or some of a group's real workers for d, then
 // resumes them, also when ctx ends first.
 func (c *Controller) stallFault(ctx context.Context, i int, p *scenario.ProcTarget, d time.Duration) error {
+	server, workers, err := c.procTargets(ctx, i, p)
+	if err != nil {
+		return err
+	}
 	var keys []procKey
-	if p.Server {
-		c.started(ctx, i, "server", true, nil)
+	if server {
 		keys = []procKey{{server: true}}
-	} else {
-		picked := c.pick(p.Group, p.Real)
-		c.started(ctx, i, groupTarget(p.Group, picked), false, nil)
-		if len(picked) == 0 {
-			return fmt.Errorf("worker group %s has no running real worker", p.Group)
-		}
-		for _, w := range picked {
-			keys = append(keys, procKey{worker: w})
-		}
+	}
+	for _, w := range workers {
+		keys = append(keys, procKey{worker: w})
 	}
 	held := make([]bool, len(keys))
 	errs := make([]error, 2*len(keys))
@@ -487,7 +502,7 @@ func (c *Controller) stallFault(ctx context.Context, i int, p *scenario.ProcTarg
 		}
 	}
 	wg.Wait()
-	err := errors.Join(errs...)
+	err = errors.Join(errs...)
 	if err == nil {
 		c.healed(ctx, i)
 	}
@@ -628,6 +643,7 @@ func minTime(a, b time.Time) time.Time {
 // supervisor would (see [Controller.supervise]).
 func (c *Controller) powerCut(ctx context.Context, i int, pc *scenario.PowerCut) error {
 	c.started(ctx, i, "all", true, nil)
+	c.hitServer(i)
 	var workers []int
 	for _, g := range c.groups {
 		workers = append(workers, c.pick(g, 0)...)

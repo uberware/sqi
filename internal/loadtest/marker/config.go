@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"slices"
-	"strings"
 )
 
 // ConfigArgPrefix starts the no-op command's argument naming its noop.json.
@@ -17,16 +15,6 @@ const ConfigArgPrefix = "--sqi-load-config="
 
 // ConfigArg returns the argument naming the config file at path.
 func ConfigArg(path string) string { return ConfigArgPrefix + path }
-
-// ConfigFromArgs returns the path the last config argument names.
-func ConfigFromArgs(args []string) (string, bool) {
-	for _, arg := range slices.Backward(args) {
-		if path, ok := strings.CutPrefix(arg, ConfigArgPrefix); ok {
-			return path, true
-		}
-	}
-	return "", false
-}
 
 // NoopConfig is noop.json: where real tasks write their markers and how each
 // job class with real_task behaves. A class it does not list behaves as the

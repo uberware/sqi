@@ -132,7 +132,11 @@ type FaultRecord struct {
 	Kind  string `json:"kind"`
 	// Target is what the fault hit: "server", "group render (real 0,1)",
 	// "groups [rack-b]" or "all".
-	Target string    `json:"target"`
+	Target string `json:"target"`
+	// Server is set when the fault stopped the server (killed, terminated,
+	// stalled or power-cut it), so the server's broker connection came up
+	// again when it healed.
+	Server bool      `json:"server,omitempty"`
 	Start  time.Time `json:"start"`
 	// Healed is zero when the fault never healed: a worker left dead, an
 	// error, or a run interrupted before the heal.

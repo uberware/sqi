@@ -2,7 +2,10 @@
 
 package scenario
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // Fault is one disruption injected during the run. Exactly one of Kill, Term,
 // Stall, Partition, Blackhole, Latency, Flap and PowerCut is set.
@@ -140,24 +143,20 @@ func (f Fault) Kind() string {
 	return set[0]
 }
 
+// faultKinds lists the fault kinds in the order kinds reports them.
+var faultKinds = [...]string{
+	FaultKill, FaultTerm, FaultStall, FaultPartition, FaultBlackhole, FaultLatency, FaultFlap, FaultPowerCut,
+}
+
 // kinds lists every kind the fault sets.
 func (f Fault) kinds() []string {
 	var set []string
-	for _, k := range []struct {
-		name string
-		set  bool
-	}{
-		{FaultKill, f.Kill != nil},
-		{FaultTerm, f.Term != nil},
-		{FaultStall, f.Stall != nil},
-		{FaultPartition, f.Partition != nil},
-		{FaultBlackhole, f.Blackhole != nil},
-		{FaultLatency, f.Latency != nil},
-		{FaultFlap, f.Flap != nil},
-		{FaultPowerCut, f.PowerCut != nil},
+	for i, on := range [len(faultKinds)]bool{
+		f.Kill != nil, f.Term != nil, f.Stall != nil, f.Partition != nil,
+		f.Blackhole != nil, f.Latency != nil, f.Flap != nil, f.PowerCut != nil,
 	} {
-		if k.set {
-			set = append(set, k.name)
+		if on {
+			set = append(set, faultKinds[i])
 		}
 	}
 	return set
@@ -181,12 +180,38 @@ func (f Fault) hasServerFault() bool {
 		(f.Stall != nil && f.Stall.Server)
 }
 
+// NetGroups returns the worker groups a network fault (partition, blackhole,
+// latency or flap) acts on, empty for every group. ok is false for any other
+// kind.
+func (f Fault) NetGroups() (groups []string, ok bool) {
+	_, groups, ok = f.netSpec()
+	return groups, ok
+}
+
+// netSpec returns a network fault's kind and groups.
+func (f Fault) netSpec() (kind string, groups []string, ok bool) {
+	switch {
+	case f.Partition != nil:
+		return FaultPartition, f.Partition.Groups, true
+	case f.Blackhole != nil:
+		return FaultBlackhole, f.Blackhole.Groups, true
+	case f.Latency != nil:
+		return FaultLatency, f.Latency.Groups, true
+	case f.Flap != nil:
+		return FaultFlap, f.Flap.Groups, true
+	}
+	return "", nil, false
+}
+
 // HasNetworkFault reports whether any fault needs lanes.
 func (s *Scenario) HasNetworkFault() bool {
-	for _, f := range s.Faults {
-		if f.Partition != nil || f.Blackhole != nil || f.Latency != nil || f.Flap != nil {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(s.Faults, func(f Fault) bool {
+		_, ok := f.NetGroups()
+		return ok
+	})
+}
+
+// HasRealTask reports whether any job class runs a real task.
+func (s *Scenario) HasRealTask() bool {
+	return slices.ContainsFunc(s.Jobs, func(j JobClass) bool { return j.RealTask != nil })
 }

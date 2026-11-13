@@ -5,14 +5,12 @@ package server
 import (
 	"maps"
 	"slices"
-	"time"
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/capacity/script"
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/scheduler"
-	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // ExprLimitsFromConfig maps the operator's four openjd.expr_* settings onto
@@ -59,7 +57,7 @@ func schedulerConfig(cfg Config, client *bus.Client) scheduler.Config {
 		sched.BusUpSince = client.BusUpSince
 	}
 	if sched.BusReconnectGrace <= 0 {
-		sched.BusReconnectGrace = busReconnectGrace(sched.WorkerTimeout)
+		sched.BusReconnectGrace = scheduler.ReconnectGrace(sched.WorkerTimeout)
 	}
 	applyCapacityConfig(&sched, cfg.Capacity)
 	return sched
@@ -100,19 +98,4 @@ func (s *Server) schedulerConfigFor(client *bus.Client) scheduler.Config {
 	sched := schedulerConfig(s.cfg, client)
 	sched.RevokeWorker = s.disconnectWorker
 	return sched
-}
-
-// busReconnectGrace is how long after the server's bus connection returns the
-// liveness sweeps keep standing down. A live worker lost the same broker, so
-// it redials on its own backoff, which is independent of the server's: the
-// grace must cover the worker timeout, a worker's longest redial wait with its
-// jitter, and one heartbeat interval for the first heartbeat after the redial.
-// A shorter grace reclaims the running tasks of a worker that is merely still
-// waiting to reconnect.
-func busReconnectGrace(workerTimeout time.Duration) time.Duration {
-	if workerTimeout <= 0 {
-		workerTimeout = scheduler.DefaultConfig().WorkerTimeout
-	}
-	redial := time.Duration(float64(protocol.MaxReconnectBackoff) * (1 + protocol.ReconnectJitterFraction))
-	return workerTimeout + redial + protocol.DefaultHeartbeatInterval
 }

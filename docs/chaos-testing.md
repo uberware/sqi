@@ -55,10 +55,13 @@ task command from the source tree, so nothing needs a prior `make build`.
 make chaos-smoke                          # the three CI scenarios
 make chaos SCENARIO=chaos-net-blip        # one scenario
 make chaos                                # all 19, about two hours
+make chaos-framework                      # the suite's own framework test, no scenario
 ```
 
 These run the suite as a Go test (build tag `chaos`, never part of `make
-test`), in `test/chaos`. Each scenario is a subtest of `TestChaos`. The
+test`), in `test/chaos`, without the race detector whatever `RACE` says: the
+test process hosts the harness, not the binaries under test, and `make test`
+already runs the harness's packages with `-race`. Each scenario is a subtest of `TestChaos`. The
 scenarios are in the load harness's built-in library, so
 `go run ./cmd/sqi-load scenarios` lists them with the rest and `scenarios
 --show chaos-net-blip` prints one as resolved YAML.
@@ -99,16 +102,16 @@ does, an attached server does not) and the scenario has any of: a fault, a
 1. Fires each fault at its time, concurrently with the others and with the
    submissions. `at` counts from the start of submissions.
 2. Waits for every fault to heal before it starts the drain.
-3. Finds the jobs the server created for submissions it gave no 2xx answer
-   (a timeout, a dropped connection, a 5xx), called **orphans**, and waits for
-   them too.
-4. Checks the six load invariants with the changes described under
-   [Invariants](#invariants), then `submission-atomic`.
-5. Stops the real workers and then the server gracefully, keeps the database,
+3. Checks the seven load invariants with the changes described under
+   [Invariants](#invariants). A fault makes **orphans** likely: jobs the
+   server created for submissions it gave no 2xx answer (a timeout, a dropped
+   connection, a 5xx). Every run finds them, waits for them in the drain and
+   checks them.
+4. Stops the real workers and then the server gracefully, keeps the database,
    and reads it to run `store-integrity` and `executions-recorded` and to
    measure [rework](#rework).
-6. Reads the real tasks' markers to run `no-orphans` and `single-writer`.
-7. Applies the scenario's `expect` section: the rework bound and the known
+5. Reads the real tasks' markers to run `no-orphans` and `single-writer`.
+6. Applies the scenario's `expect` section: the rework bound and the known
    violations.
 
 The test passes when the record is complete and every result is OK once the
@@ -256,9 +259,8 @@ default no-op task, so they write no markers.
 
 ## Invariants
 
-A chaos run reports nine invariants. The first six are the load harness's;
-`submission-atomic`, `executions-recorded` and `store-integrity` are added by
-chaos runs. A scenario with a `real_task` adds `no-orphans` and
+A chaos run reports nine invariants. The first seven are the load harness's;
+`executions-recorded` and `store-integrity` are added by chaos runs. A scenario with a `real_task` adds `no-orphans` and
 `single-writer`, which read the real tasks' markers, and one with
 `max_rework_attempts` adds `rework`; a `must` known violation that did not
 fire adds a failed `known:<check>` (see below). A failing invariant carries
@@ -272,8 +274,8 @@ evidence naming the job, task, attempt or process, at most 20 entries.
 | `logs` | As in the load harness: on each sampled task, the lines the server returns for the latest attempt equal the lines the simulator sent, in order. **Inside a fault window** (a latency fault opens none) the lines need only be an in-order subsequence of those sent: none duplicated, reordered or corrupted, any missing. This applies when the attempt, from its lease to its end, overlaps a window that hit its worker (the worker's group is in the window's groups, or the window names none). A task still missing lines is re-read for the logs settle time, since a restarted server replays the log stream; lines still missing after that are counted in the `logs.lost_in_fault` counter, not failed. |
 | `workers-converge` | The farm's online worker count equals the number of workers the harness has running. In a chaos run the allowance runs from the last time the server's broker connection came up (its start, and the heal of each server fault or power cut): the server's liveness grace of about 3 minutes 10 seconds (the worker timeout, a worker's longest redial and one heartbeat), one sweep interval and 10 seconds, or the load harness's allowance, whichever is longer. The check is made after the last fault has healed. |
 | `caps` | As in the load harness, counting the attempts of orphans as well. |
-| `submission-atomic` | Every job in the farm is an accepted job or an orphan, and every orphan holds all of its class's tasks (`steps x tasks_per_step`). A submission is one transaction, so one the server answered with no 2xx must have created its whole job or nothing; a second job for one submission, or a partial one, fails. |
-| `executions-recorded` | Read from the stopped server's store. Every attempt a simulated worker leased is in the store and closed, and is not `succeeded` when the worker reported it failed (one the worker reported succeeded may have been reclaimed, so it may be `failed` or `canceled`). No real task ran more times than the store has attempts for it. Marker files that could not be parsed are noted and fail nothing. |
+| `submission-atomic` | As in the load harness: every job in the farm is an accepted job or an orphan, and every orphan holds all of its class's tasks. |
+| `executions-recorded` | Read from the stopped server's store. Every attempt a simulated worker leased is in the store and closed, and is not `succeeded` when the worker reported it failed (one the worker reported succeeded may have been reclaimed, so it may be `failed` or `canceled`). No real task ran more times than the store has attempts for it. Marker files that could not be parsed are noted and fail nothing; a marker directory that cannot be read at all fails the check as unmeasured, which no known violation excuses. |
 | `store-integrity` | Read from the stopped server's store. On SQLite `PRAGMA integrity_check` is `ok` and `PRAGMA foreign_key_check` finds nothing. On both backends: no active usage claim breaks the claim invariant (I3); a terminal step holds only terminal tasks; a terminal task has no running attempt; a completed job has only completed steps; a failed or canceled job has no step still open. |
 | `no-orphans` | No process of a real task was seen alive more than 10 seconds after the worker incarnation that started it ended. An incarnation still running is not judged. |
 | `single-writer` | For each task, no two process executions wrote the task's output over overlapping spans of time, the span being from a process's first line to its last. |
@@ -459,25 +461,30 @@ no known violation, on Linux with SQLite: `chaos-server-kill-20s`,
 request that touches `internal/scheduler`, `internal/store`, `internal/bus`,
 `internal/worker`, `internal/server`, `cmd/sqi-server`, `cmd/sqi-worker`,
 `internal/loadtest`, `test/chaos`, `go.mod`, `go.sum` or `ci.yml`, so most pull
-requests do not pay for it. It takes about 14 minutes with its build (the job
-allows 45). It runs `make chaos-smoke` with `SQI_LOAD_OUT` set, uploads the run
-directories and the log as `chaos-smoke-runs` (7 days), and asserts by name
-that the three subtests passed, since a skipped or filtered test would leave
-`go test` green. The job is **advisory**: it has `continue-on-error: true`, so
+requests do not pay for it. It needs only the path filter, not the `test` job.
+Each scenario runs in a job of its own, the three at once (`make chaos
+SCENARIO=...`), so the check takes about as long as the slowest scenario plus
+its build, under 10 minutes (each job allows 25). Each job sets `SQI_LOAD_OUT`,
+uploads the run directories and the log as `chaos-smoke-runs-<scenario>` (7
+days), and asserts by name that its subtest passed, since a skipped or
+filtered test would leave `go test` green. The job is **advisory**: it has `continue-on-error: true`, so
 a failing scenario marks its step failed and keeps the artifacts but does not
 fail the run.
 
 **The nightly** (`chaos` in `.github/workflows/load-nightly.yml`) runs the
-whole suite on Linux with SQLite, `make chaos`, at 03:30 UTC and on a manual
-dispatch without a `duration`. It allows 240 minutes, uploads the run
-directories as `chaos-runs-sqlite` (30 days) and writes a table of the results
-to the job page. It ignores the dispatch's `scenario` input.
+whole suite on Linux with SQLite at 03:30 UTC and on a manual dispatch without
+a `duration`, one job per scenario, all at once, plus one job for the
+framework test (`make chaos-framework`). A `chaos-plan` job lists the
+scenarios from the library, so a new `chaos-*.yaml` joins without a workflow
+edit. Each job allows 40 minutes, uploads its run directories as
+`chaos-runs-sqlite-<scenario>` (30 days) and writes its result to its job
+page. It ignores the dispatch's `scenario` input.
 
 The only test that fails the nightly job is
 `TestChaos_MustViolationThatDoesNotFireFails`, which checks the framework (a
 `must` known violation that stops firing fails the run), not a scenario.
-**All 19 scenarios are advisory.** The job does not fail on one, but raises a
-warning annotation naming each that did not pass.
+**All 19 scenarios are advisory.** A scenario's job does not fail, but raises a
+warning annotation when its scenario did not pass.
 
 **Promotion.** When a scenario has passed 20 consecutive runs on GitHub-hosted
 runners, add `TestChaos/<name>` to the `gated` list in `load-nightly.yml`. That
@@ -508,7 +515,7 @@ The defects above are tracked outside this page; promoting a scenario out of
 ## See also
 
 - [Load and soak testing](load-testing.md): the harness the suite is built on,
-  the scenario format, the six load invariants and the known server defects.
+  the scenario format, the seven load invariants and the known server defects.
 - [Operations](operations.md): the shutdown, restart and recovery behavior the
   scenarios exercise.
 - [Development](development.md): the Makefile targets and the test suites.

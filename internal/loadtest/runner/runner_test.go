@@ -105,8 +105,8 @@ func TestRunner_Smoke(t *testing.T) {
 	if !rec.Complete || !rec.Valid {
 		t.Errorf("record complete=%v valid=%v (%s), want both", rec.Complete, rec.Valid, rec.InvalidReason)
 	}
-	if len(rec.Invariants) != 6 {
-		t.Fatalf("%d invariants, want 6: %+v", len(rec.Invariants), rec.Invariants)
+	if len(rec.Invariants) != 7 {
+		t.Fatalf("%d invariants, want 7: %+v", len(rec.Invariants), rec.Invariants)
 	}
 	for _, inv := range rec.Invariants {
 		if !inv.OK {

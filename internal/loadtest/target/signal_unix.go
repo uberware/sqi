@@ -7,13 +7,8 @@ package target
 import (
 	"errors"
 	"fmt"
-	"os"
 	"syscall"
 )
-
-// killOne sends SIGKILL to the process alone. Unlike killTree it leaves the
-// rest of the process group, such as the tasks a worker started, running.
-func killOne(p *os.Process) error { return p.Signal(syscall.SIGKILL) }
 
 // stopProcess sends SIGSTOP to the process alone.
 func stopProcess(pid int) error { return syscall.Kill(pid, syscall.SIGSTOP) }

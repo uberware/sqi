@@ -206,7 +206,7 @@ func TestRun_DrainWaitsForFaultsToHeal(t *testing.T) {
 	want := []string{
 		verify.NameTerminal, verify.NameOutcomes, verify.NameSingleAttempt, verify.NameLogs,
 		verify.NameWorkersConverge, verify.NameCaps, verify.NameSubmissionAtomic,
-		chaos.NameStoreIntegrity, chaos.NameExecutionsRecorded,
+		verify.NameStoreIntegrity, verify.NameExecutionsRecorded,
 	}
 	if !slices.Equal(names, want) {
 		t.Errorf("invariants %v, want %v", names, want)
@@ -244,7 +244,7 @@ func TestOrphanJobs(t *testing.T) {
 func TestChaosConvergeWithin(t *testing.T) {
 	sc := smokeScenario(t, "20s")
 	base := convergeWithin(sc)
-	grace := livenessGrace(heartbeatTimeout(sc)) + serverSweepInterval + convergeMargin
+	grace := serverQuietTime(sc) + convergeMargin
 	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
 	cases := []struct {
 		name     string
@@ -257,14 +257,14 @@ func TestChaosConvergeWithin(t *testing.T) {
 		{
 			name: "server restarted by a fault", serverUp: now.Add(-time.Hour),
 			faults: []report.FaultRecord{
-				{Kind: scenario.FaultKill, Target: "server", Start: now.Add(-40 * time.Second), Healed: now.Add(-30 * time.Second)},
+				{Kind: scenario.FaultKill, Target: "server", Server: true, Start: now.Add(-40 * time.Second), Healed: now.Add(-30 * time.Second)},
 				{Kind: scenario.FaultKill, Target: "group sim (real 0)", Start: now.Add(-5 * time.Second), Healed: now},
 			},
 			want: grace - 30*time.Second,
 		},
 		{
 			name: "power cut never healed", serverUp: now.Add(-time.Hour),
-			faults: []report.FaultRecord{{Kind: scenario.FaultPowerCut, Target: "all", Start: now.Add(-time.Minute)}},
+			faults: []report.FaultRecord{{Kind: scenario.FaultPowerCut, Target: "all", Server: true, Start: now.Add(-time.Minute)}},
 			want:   grace,
 		},
 	}

@@ -26,7 +26,7 @@ volume, UI clients, failure and churn rates, and run length. It reports:
   and REST read latency per endpoint;
 - **server resource use**: CPU, RSS, goroutines, open files, GC pauses,
   database, WAL and NATS data size, and JetStream bytes per stream;
-- **correctness under load**: six invariants checked at the end of every run
+- **correctness under load**: seven invariants checked at the end of every run
   (see [Reading a report](#reading-a-report));
 - **growth over time**: least-squares slopes, and findings for the ones that
   look like leaks.
@@ -623,9 +623,16 @@ p50, p95, p99 and max:
 
 ### Invariants
 
-Six invariants are checked at the end of every run, after the drain, with the
-fleet still up. Any failure fails the run (exit 1), with evidence naming the
-job, task, attempt, queue or pool, and at most 20 entries shown. The checks
+Seven invariants are checked at the end of every run, after the drain, with
+the fleet still up. Any failure fails the run (exit 1), with evidence naming
+the job, task, attempt, queue or pool, and at most 20 entries shown.
+
+A submission the server gave no 2xx answer (a timeout, a dropped connection, a
+5xx) may still have created its job. Before the drain, and again before the
+checks, the run lists the farm's jobs and keeps each such job as an **orphan**
+of its submission: the drain waits for orphans as for accepted jobs,
+`terminal` covers them, `caps` counts their attempts, and `submission-atomic`
+checks they are whole. The checks
 that read tasks one by one (single-attempt and logs) cover every task up to
 about 2,000 and a seeded random sample of that size beyond.
 
@@ -637,6 +644,7 @@ about 2,000 and a seeded random sample of that size beyond.
 | `logs` | On each sampled task, the lines the server returns for the task's latest attempt equal the lines the simulator sent for it, in order. When the scenario overflows the broker's store on purpose, losing the attempt's oldest whole chunks is allowed and nothing else is. A chunk lost on an unplanned connection drop fails the check: workers publish log chunks with a core-NATS publish, which delivers at most once. |
 | `workers-converge` | Within the server's heartbeat timeout plus the slowest worker heartbeat plus 10 s, the farm's online worker count equals the number of workers the harness has running. |
 | `caps` | The most attempts the simulator held at once on a queue never exceeded `max_concurrent_tasks` (0 is unlimited), and on a usage pool never exceeded its `limit` (each task claims one unit). A canceled attempt counts as released when the cancel action started, since the server frees the slot when it commits the cancel. |
+| `submission-atomic` | Every job in the farm is an accepted job or an orphan, and every orphan holds all of its class's tasks (`steps x tasks_per_step`). A submission is one transaction, so one the server answered with no 2xx must have created its whole job or nothing; a second job for one submission, or a partial one, fails. |
 
 A late cancel (see [Known server defects](#known-server-defects)) can fail
 `caps`: the server's own claim count stays at the limit while concurrent

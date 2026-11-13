@@ -14,7 +14,7 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/target"
-	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/scheduler"
 )
 
 const (
@@ -111,18 +111,12 @@ func heartbeatTimeout(sc *scenario.Scenario) time.Duration {
 	return hb
 }
 
-// serverSweepInterval is how often the server's heartbeat sweep marks silent
-// workers offline (the scheduler's HeartbeatSweepInterval, which the server
-// does not make configurable).
-const serverSweepInterval = 15 * time.Second
-
-// livenessGrace is how long after its broker connection comes up the server
-// marks no worker offline, so that a live worker redialing on its own backoff
-// keeps its tasks: internal/server's busReconnectGrace, which is not
-// configurable.
-func livenessGrace(workerTimeout time.Duration) time.Duration {
-	redial := time.Duration(float64(protocol.MaxReconnectBackoff) * (1 + protocol.ReconnectJitterFraction))
-	return workerTimeout + redial + protocol.DefaultHeartbeatInterval
+// serverQuietTime is how long after its broker connection last came up the
+// server may still hold a dead worker online: its liveness grace (which the
+// server derives from the heartbeat timeout) and one heartbeat sweep (whose
+// interval the server does not make configurable).
+func serverQuietTime(sc *scenario.Scenario) time.Duration {
+	return scheduler.ReconnectGrace(heartbeatTimeout(sc)) + scheduler.DefaultConfig().HeartbeatSweepInterval
 }
 
 // chaosConvergeWithin is convergeWithin for a chaos run, measured from now:
@@ -134,7 +128,7 @@ func livenessGrace(workerTimeout time.Duration) time.Duration {
 func chaosConvergeWithin(sc *scenario.Scenario, serverUp time.Time, faults []report.FaultRecord, now time.Time) time.Duration {
 	last := serverUp
 	for _, f := range faults {
-		if f.Target != "server" && f.Kind != scenario.FaultPowerCut {
+		if !f.Server {
 			continue
 		}
 		at := f.Healed
@@ -145,7 +139,7 @@ func chaosConvergeWithin(sc *scenario.Scenario, serverUp time.Time, faults []rep
 			last = at
 		}
 	}
-	quiet := last.Add(livenessGrace(heartbeatTimeout(sc)) + serverSweepInterval + convergeMargin)
+	quiet := last.Add(serverQuietTime(sc) + convergeMargin)
 	return max(convergeWithin(sc), quiet.Sub(now))
 }
 
@@ -153,10 +147,7 @@ func chaosConvergeWithin(sc *scenario.Scenario, serverUp time.Time, faults []rep
 // can inject faults: it has faults, a rework budget, known violations or a
 // job class with a real task.
 func chaosScenario(sc *scenario.Scenario) bool {
-	if len(sc.Faults) > 0 || sc.Expect.MaxReworkAttempts != nil || len(sc.Expect.KnownViolations) > 0 {
-		return true
-	}
-	return slices.ContainsFunc(sc.Jobs, func(j scenario.JobClass) bool { return j.RealTask != nil })
+	return len(sc.Faults) > 0 || sc.Expect.MaxReworkAttempts != nil || len(sc.Expect.KnownViolations) > 0 || sc.HasRealTask()
 }
 
 // orphanJobs returns the farm's jobs that are not accepted submissions but

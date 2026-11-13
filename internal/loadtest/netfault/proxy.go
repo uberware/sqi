@@ -13,6 +13,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
 )
 
 const (
@@ -194,11 +196,11 @@ func (p *Proxy) unregister(l *link) {
 	delete(p.links, l)
 }
 
-// snapshot is the state a chunk is handled under.
-func (p *Proxy) snapshot() (mode, shaping) {
+// currentShape is the shaping a chunk is handled under.
+func (p *Proxy) currentShape() shaping {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.mode, p.shape
+	return p.shape
 }
 
 // jittered is delay plus a uniform draw from [-jitter, +jitter], never below zero.
@@ -240,22 +242,6 @@ func (l *link) waitPass() bool {
 		case <-l.ctx.Done():
 			return false
 		}
-	}
-}
-
-// sleepUntil waits for t, reporting false when the link was closed first.
-func (l *link) sleepUntil(t time.Time) bool {
-	d := time.Until(t)
-	if d <= 0 {
-		return l.ctx.Err() == nil
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return true
-	case <-l.ctx.Done():
-		return false
 	}
 }
 
@@ -317,8 +303,7 @@ func (l *link) readLoop(src net.Conn, q chan<- chunk, end *sourceEnd) {
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
-			_, s := l.p.snapshot()
-			at := time.Now().Add(l.p.jittered(s))
+			at := time.Now().Add(l.p.jittered(l.p.currentShape()))
 			if at.Before(prev) {
 				at = prev
 			}
@@ -347,15 +332,15 @@ func (l *link) readLoop(src net.Conn, q chan<- chunk, end *sourceEnd) {
 // half-closes the peer, once the blackhole lifts.
 func (l *link) writeLoop(dst net.Conn, q <-chan chunk, end *sourceEnd) bool {
 	for c := range q {
-		if !l.sleepUntil(c.deliverAt) || !l.waitPass() {
+		if !sleep.Until(l.ctx, c.deliverAt) || !l.waitPass() {
 			return false
 		}
 		if _, err := dst.Write(c.data); err != nil {
 			return false
 		}
-		if _, s := l.p.snapshot(); s.bytesPerSec > 0 {
+		if s := l.p.currentShape(); s.bytesPerSec > 0 {
 			pause := time.Duration(int64(len(c.data)) * int64(time.Second) / int64(s.bytesPerSec))
-			if !l.sleepUntil(time.Now().Add(pause)) {
+			if !sleep.For(l.ctx, pause) {
 				return false
 			}
 		}

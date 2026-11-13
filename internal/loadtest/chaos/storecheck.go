@@ -11,21 +11,15 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/marker"
+	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
 	"github.com/uberware/sqi/internal/loadtest/verify"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/backend"
 	"github.com/uberware/sqi/internal/store/sqlite"
-)
-
-// The store checks' names, as verify.Names and scenario.CheckNames list them.
-const (
-	NameStoreIntegrity     = "store-integrity"
-	NameExecutionsRecorded = "executions-recorded"
 )
 
 // StoreInput is what the store checks read and compare.
@@ -44,10 +38,18 @@ type StoreInput struct {
 	// so a real task's execution count may be low. It is a note on
 	// executions-recorded, never a failure.
 	SkippedMarkers int
-	// WithStore, when set, is called with the opened store after the checks and
-	// before it closes, so a measurement can read the same stopped store. It is
-	// not called when the store could not be opened.
-	WithStore func(ctx context.Context, st store.Store)
+	// Faults are the faults the run fired, to which the rework is attributed.
+	Faults []report.FaultRecord
+}
+
+// StoreReport is what StoreChecks found.
+type StoreReport struct {
+	// Results are [store-integrity, executions-recorded].
+	Results []verify.Result
+	// Rework is what the faults cost; nil when it could not be measured, and
+	// ReworkErr then says why.
+	Rework    *report.Rework
+	ReworkErr error
 }
 
 // StoreChecks opens the stopped server's store and returns
@@ -66,47 +68,53 @@ type StoreInput struct {
 // for it.
 //
 // A store the checks cannot open or read fails both, with the error as
-// evidence.
-func StoreChecks(ctx context.Context, in StoreInput) []verify.Result {
+// evidence, and leaves the rework unmeasured.
+//
+// The rework (see [farmView.rework]) is measured from the same store, farm
+// and attempt reads.
+func StoreChecks(ctx context.Context, in StoreInput) StoreReport {
 	opts := in.Options
 	opts.AutoMigrate, opts.ServerLock = false, false
-	integrity, executions := &evidence{}, &evidence{}
-	fail := func(s string) []verify.Result {
-		integrity.add(s)
-		executions.add(s)
-		out := []verify.Result{integrity.result(NameStoreIntegrity), executions.result(NameExecutionsRecorded)}
-		for i := range out {
-			out[i].Unmeasured = true
+	var integrity, executions verify.Evidence
+	fail := func(s string) StoreReport {
+		integrity.AddUnmeasured(s)
+		executions.AddUnmeasured(s)
+		return StoreReport{
+			Results:   []verify.Result{integrity.Result(verify.NameStoreIntegrity), executions.Result(verify.NameExecutionsRecorded)},
+			ReworkErr: errors.New(s),
 		}
-		return out
 	}
 	if sqliteDriver(opts.Driver) {
 		if _, err := os.Stat(opts.SQLitePath); err != nil {
 			// sqlite.Open would create a database where there is none.
 			return fail(fmt.Sprintf("no SQLite database at %s: %v", opts.SQLitePath, err))
 		}
-		integrity.addAll(sqliteIntegrity(ctx, opts.SQLitePath))
+		integrity.AddAll(sqliteIntegrity(ctx, opts.SQLitePath))
 	}
 	st, err := backend.Open(ctx, opts)
 	if err != nil {
 		return fail("open the store: " + err.Error())
 	}
 	defer st.Close()
-	integrity.addAll(claimViolations(ctx, st))
+	integrity.AddAll(claimViolations(ctx, st))
 	farm, err := readFarm(ctx, st, in.FarmID)
 	if err != nil {
 		return fail(err.Error())
 	}
-	integrity.addAll(farm.statusViolations(ctx))
-	executions.addAll(leasedAttempts(ctx, st, in.Ledger))
-	executions.addAll(farm.realExecutions(ctx, in.Markers))
+	integrity.AddAll(farm.statusViolations(ctx))
+	leased := readLeased(ctx, st, in.Ledger)
+	executions.AddAll(leasedViolations(leased))
+	executions.AddAll(farm.realExecutions(ctx, in.Markers))
 	if in.SkippedMarkers > 0 {
-		executions.note(fmt.Sprintf("%d marker files unreadable, so a real task's execution count may be low", in.SkippedMarkers))
+		executions.Note(fmt.Sprintf("%d marker files unreadable, so a real task's execution count may be low", in.SkippedMarkers))
 	}
-	if in.WithStore != nil {
-		in.WithStore(ctx, st)
+	out := StoreReport{Results: []verify.Result{integrity.Result(verify.NameStoreIntegrity), executions.Result(verify.NameExecutionsRecorded)}}
+	if rw, err := farm.rework(ctx, leased, in.Markers, in.Faults); err != nil {
+		out.ReworkErr = err
+	} else {
+		out.Rework = &rw
 	}
-	return []verify.Result{integrity.result(NameStoreIntegrity), executions.result(NameExecutionsRecorded)}
+	return out
 }
 
 func sqliteDriver(driver string) bool { return driver == "" || driver == backend.DriverSQLite }
@@ -258,10 +266,6 @@ func (f *farmView) taskAttempts(ctx context.Context, taskID string) ([]store.Tas
 	return a, nil
 }
 
-func terminalTask(s store.TaskStatus) bool {
-	return s == store.TaskStatusSucceeded || s == store.TaskStatusFailed || s == store.TaskStatusCanceled
-}
-
 // statusViolations checks that each job's, step's, task's and attempt's
 // statuses agree.
 func (f *farmView) statusViolations(ctx context.Context) []string {
@@ -275,10 +279,10 @@ func (f *farmView) statusViolations(ctx context.Context) []string {
 			}
 		}
 		for _, t := range f.tasks[j.ID] {
-			if ss, ok := terminalSteps[t.StepID]; ok && !terminalTask(t.Status) {
+			if ss, ok := terminalSteps[t.StepID]; ok && !t.Status.IsTerminal() {
 				out = append(out, fmt.Sprintf("job %s step %s is %s but its task %s is %s", j.ID, t.StepID, ss, t.ID, t.Status))
 			}
-			if terminalTask(t.Status) {
+			if t.Status.IsTerminal() {
 				out = append(out, f.openAttempts(ctx, j.ID, t)...)
 			}
 		}
@@ -320,56 +324,48 @@ func (f *farmView) openAttempts(ctx context.Context, jobID string, t store.Task)
 	return out
 }
 
-// ledgerAttempt is what the ledger says of one attempt.
-type ledgerAttempt struct {
-	id, taskID, workerID string
-	// outcome is the last terminal event's, "" when there is none.
-	outcome string
-	// leasedAt is when the worker received the assignment, endedAt when it
-	// recorded the terminal event (zero when there is none).
-	leasedAt, endedAt time.Time
+// leasedAttempt is one attempt a simulated worker leased, with the store's
+// read of it.
+type leasedAttempt struct {
+	verify.LeasedAttempt
+
+	// status is the store's; err is the read's error, store.ErrNotFound when
+	// the store has no such attempt.
+	status store.AttemptStatus
+	err    error
 }
 
-// ledgerAttempts returns every attempt the ledger has a leased event for, in
-// lease order, with its terminal outcome.
-func ledgerAttempts(l *simworker.Ledger) []ledgerAttempt {
+// readLeased reads every attempt the ledger has a leased event for from the
+// store, once, for executions-recorded and the rework both.
+func readLeased(ctx context.Context, st store.Store, l *simworker.Ledger) []leasedAttempt {
 	if l == nil {
 		return nil
 	}
-	var out []ledgerAttempt
-	index := map[string]int{}
-	for _, e := range l.Events() {
-		switch e.Kind {
-		case simworker.KindLeased:
-			if _, ok := index[e.AttemptID]; !ok {
-				index[e.AttemptID] = len(out)
-				out = append(out, ledgerAttempt{id: e.AttemptID, taskID: e.TaskID, workerID: e.WorkerID, leasedAt: e.At})
-			}
-		case simworker.KindTerminal:
-			if i, ok := index[e.AttemptID]; ok {
-				out[i].outcome, out[i].endedAt = e.Outcome, e.At
-			}
+	las := verify.LeasedAttempts(l)
+	out := make([]leasedAttempt, len(las))
+	for i, la := range las {
+		out[i].LeasedAttempt = la
+		a, err := st.GetTaskAttempt(ctx, la.ID)
+		out[i].err = err
+		if err == nil {
+			out[i].status = a.Status
 		}
 	}
 	return out
 }
 
-// leasedAttempts checks every attempt the simulated workers leased against
+// leasedViolations checks every attempt the simulated workers leased against
 // the store.
-func leasedAttempts(ctx context.Context, st store.Store, l *simworker.Ledger) []string {
+func leasedViolations(leased []leasedAttempt) []string {
 	var out []string
-	for _, la := range ledgerAttempts(l) {
-		a, err := st.GetTaskAttempt(ctx, la.id)
+	for _, la := range leased {
 		switch {
-		case errors.Is(err, store.ErrNotFound):
-			out = append(out, fmt.Sprintf("attempt %s of task %s, leased by worker %s, is not in the store", la.id, la.taskID, la.workerID))
-			continue
-		case err != nil:
-			out = append(out, fmt.Sprintf("read attempt %s of task %s: %v", la.id, la.taskID, err))
-			continue
-		}
-		if s := attemptViolation(la, a.Status); s != "" {
-			out = append(out, s)
+		case errors.Is(la.err, store.ErrNotFound):
+			out = append(out, fmt.Sprintf("attempt %s of task %s, leased by worker %s, is not in the store", la.ID, la.TaskID, la.WorkerID))
+		case la.err != nil:
+			out = append(out, fmt.Sprintf("read attempt %s of task %s: %v", la.ID, la.TaskID, la.err))
+		default:
+			out = append(out, attemptViolation(la.LeasedAttempt, la.status))
 		}
 	}
 	return out
@@ -377,14 +373,14 @@ func leasedAttempts(ctx context.Context, st store.Store, l *simworker.Ledger) []
 
 // attemptViolation compares the store's status of an attempt with the
 // worker's outcome.
-func attemptViolation(la ledgerAttempt, status store.AttemptStatus) string {
+func attemptViolation(la verify.LeasedAttempt, status store.AttemptStatus) string {
 	switch {
 	case status == store.AttemptStatusRunning:
-		return fmt.Sprintf("attempt %s of task %s is still running in the stopped server's store", la.id, la.taskID)
-	case la.outcome == string(store.TaskStatusSucceeded) && !terminalTask(store.TaskStatus(status)):
-		return fmt.Sprintf("attempt %s of task %s: the worker reported succeeded, the store holds %q", la.id, la.taskID, status)
-	case la.outcome == string(store.TaskStatusFailed) && status == store.AttemptStatusSucceeded:
-		return fmt.Sprintf("attempt %s of task %s: the worker reported failed, the store recorded succeeded", la.id, la.taskID)
+		return fmt.Sprintf("attempt %s of task %s is still running in the stopped server's store", la.ID, la.TaskID)
+	case la.Outcome() == simworker.OutcomeSucceeded && !store.TaskStatus(status).IsTerminal():
+		return fmt.Sprintf("attempt %s of task %s: the worker reported succeeded, the store holds %q", la.ID, la.TaskID, status)
+	case la.Outcome() == simworker.OutcomeFailed && status == store.AttemptStatusSucceeded:
+		return fmt.Sprintf("attempt %s of task %s: the worker reported failed, the store recorded succeeded", la.ID, la.TaskID)
 	}
 	return ""
 }
@@ -441,36 +437,4 @@ func (f *farmView) tasksByKey() map[string][]string {
 		}
 	}
 	return out
-}
-
-// evidence collects violations, keeping the first verify.MaxEvidence, as the
-// verify package's checks do.
-type evidence struct {
-	lines []string
-	n     int
-	// notes are shown after the violations and fail nothing.
-	notes []string
-}
-
-func (e *evidence) note(s string) { e.notes = append(e.notes, s) }
-
-func (e *evidence) add(s string) {
-	e.n++
-	if len(e.lines) < verify.MaxEvidence {
-		e.lines = append(e.lines, s)
-	}
-}
-
-func (e *evidence) addAll(ss []string) {
-	for _, s := range ss {
-		e.add(s)
-	}
-}
-
-func (e *evidence) result(name string) verify.Result {
-	lines := e.lines
-	if e.n > verify.MaxEvidence {
-		lines = append(lines[:verify.MaxEvidence-1:verify.MaxEvidence-1], fmt.Sprintf("... and %d more", e.n-(verify.MaxEvidence-1)))
-	}
-	return verify.Result{Name: name, OK: e.n == 0, Evidence: append(slices.Clip(lines), e.notes...)}
 }

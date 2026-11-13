@@ -2,14 +2,14 @@
 
 // Package verify decides whether a load run passed. It compares what the
 // driver submitted and what the simulated workers did (the [simworker.Ledger])
-// with what the server reports, through the six run invariants of the load
+// with what the server reports, through the seven run invariants of the load
 // harness: every job terminal, every task's status the one the simulator
 // decided, one live attempt per task at a time, the logs the simulator sent,
-// the online worker count, and the queue and usage-pool caps. A chaos run
-// adds a seventh, submission-atomic: every job the server holds is one the
-// run submitted, and a submission that got no 2xx answer created all of its
-// job or none of it. The logs invariant allows lines lost inside a fault
-// window, and counts them.
+// the online worker count, the queue and usage-pool caps, and
+// submission-atomic: every job the server holds is one the run submitted, and
+// a submission that got no 2xx answer created all of its job or none of it.
+// The logs invariant allows lines lost inside a fault window, and counts
+// them.
 //
 // Facts about the server the checks rely on:
 //
@@ -49,14 +49,20 @@ import (
 
 // Invariant names, in the order [Check] returns them.
 const (
-	NameTerminal        = "terminal"
-	NameOutcomes        = "outcomes"
-	NameSingleAttempt   = "single-attempt"
-	NameLogs            = "logs"
-	NameWorkersConverge = "workers-converge"
-	NameCaps            = "caps"
-	// NameSubmissionAtomic follows caps in a chaos run's results.
+	NameTerminal         = "terminal"
+	NameOutcomes         = "outcomes"
+	NameSingleAttempt    = "single-attempt"
+	NameLogs             = "logs"
+	NameWorkersConverge  = "workers-converge"
+	NameCaps             = "caps"
 	NameSubmissionAtomic = "submission-atomic"
+
+	// Package chaos reports these four, from the stopped server's store and
+	// the real tasks' markers.
+	NameStoreIntegrity     = "store-integrity"
+	NameExecutionsRecorded = "executions-recorded"
+	NameNoOrphans          = "no-orphans"
+	NameSingleWriter       = "single-writer"
 )
 
 // CounterLogsLostInFault is the logs result's counter of the lines the
@@ -64,14 +70,12 @@ const (
 const CounterLogsLostInFault = "logs.lost_in_fault"
 
 // Names returns every invariant name the harness can report, in the order
-// scenario.CheckNames lists them (the chaos checks included). The last four
-// are reported by package chaos, from the stopped server's store and the real
-// tasks' markers.
+// scenario.CheckNames lists them (the chaos checks included).
 func Names() []string {
 	return []string{
 		NameTerminal, NameOutcomes, NameSingleAttempt, NameLogs, NameWorkersConverge, NameCaps,
 		NameSubmissionAtomic,
-		"executions-recorded", "store-integrity", "no-orphans", "single-writer",
+		NameExecutionsRecorded, NameStoreIntegrity, NameNoOrphans, NameSingleWriter,
 	}
 }
 
@@ -198,10 +202,6 @@ type Input struct {
 	GroupOf func(workerID string) string
 }
 
-// chaos reports whether the input is a chaos run's, which adds
-// submission-atomic to the results: Orphans or FaultWindows non-nil.
-func (in Input) chaos() bool { return in.Orphans != nil || in.FaultWindows != nil }
-
 // Result is one invariant's verdict. Evidence names the job, task, attempt,
 // queue or pool of each violation with the observed and expected values; it
 // is empty when OK. Counters are what the check measured besides its verdict,
@@ -231,7 +231,6 @@ type FaultWindow struct {
 
 // Check evaluates the run invariants and returns their results in a fixed
 // order: terminal, outcomes, single-attempt, logs, workers-converge, caps,
-// and for a chaos run (Input.Orphans or Input.FaultWindows non-nil)
 // submission-atomic. Call it once [WaitDrained] has returned nil and the
 // fleet's churn has stopped, with the fleet still running.
 //
@@ -256,9 +255,7 @@ func Check(ctx context.Context, v ServerView, in Input) []Result {
 		c.logs(ctx, sweep.logs),
 		<-workers,
 		c.caps(),
-	}
-	if in.chaos() {
-		results = append(results, c.submissionAtomic(ctx))
+		c.submissionAtomic(ctx),
 	}
 	return results
 }
@@ -278,11 +275,6 @@ type checker struct {
 	// logSettle is the logs check's settle time.
 	logSettle time.Duration
 	ledger    *ledgerIndex
-
-	mu sync.Mutex
-	// lost is the log lines each sampled task lost inside a fault window, by
-	// task ID, as its latest logs read found.
-	lost map[string]int
 }
 
 func newChecker(v ServerView, in Input) *checker {
@@ -294,7 +286,6 @@ func newChecker(v ServerView, in Input) *checker {
 		classes:   map[string]scenario.JobClass{},
 		settle:    cmp.Or(in.Settle, DefaultSettle),
 		logSettle: cmp.Or(in.LogSettle, DefaultLogSettle),
-		lost:      map[string]int{},
 	}
 	c.order = acceptedIDs(in.Jobs)
 	for _, j := range in.Jobs {
@@ -498,41 +489,64 @@ func listFarmJobs(ctx context.Context, v ServerView, farmID string, fn func(clie
 	return nil
 }
 
-// evidence collects violations, keeping the first MaxEvidence.
-type evidence struct {
+// Evidence collects a check's violations, keeping the first MaxEvidence. The
+// zero value is ready to use.
+type Evidence struct {
 	lines []string
 	n     int
+	// notes are shown after the violations and fail nothing.
+	notes []string
 	// unmeasured is set when a read failed, so the result is no finding.
 	unmeasured bool
 }
 
-// addUnmeasured adds a line saying the check could not read what it judges.
-func (e *evidence) addUnmeasured(s string) {
+// AddUnmeasured adds a line saying the check could not read what it judges.
+func (e *Evidence) AddUnmeasured(s string) {
 	e.unmeasured = true
-	e.add(s)
+	e.Add(s)
 }
 
-func (e *evidence) add(s string) {
+// Add adds one violation.
+func (e *Evidence) Add(s string) {
 	e.n++
 	if len(e.lines) < MaxEvidence {
 		e.lines = append(e.lines, s)
 	}
 }
 
-func (e *evidence) addAll(ss []string) {
+// AddAll adds each non-empty violation of ss.
+func (e *Evidence) AddAll(ss []string) {
 	for _, s := range ss {
 		if s != "" {
-			e.add(s)
+			e.Add(s)
 		}
 	}
 }
 
-func (e *evidence) result(name string) Result {
+// Note adds a line shown after the violations that fails nothing.
+func (e *Evidence) Note(s string) { e.notes = append(e.notes, s) }
+
+// Result is the verdict named name: OK when nothing was added, the last
+// evidence entry counting what MaxEvidence left out.
+func (e *Evidence) Result(name string) Result {
 	lines := e.lines
 	if e.n > MaxEvidence {
 		lines = append(lines[:MaxEvidence-1:MaxEvidence-1], fmt.Sprintf("... and %d more", e.n-(MaxEvidence-1)))
 	}
+	if len(e.notes) > 0 {
+		lines = append(slices.Clip(lines), e.notes...)
+	}
 	return Result{Name: name, OK: e.n == 0, Evidence: lines, Unmeasured: e.unmeasured}
+}
+
+// Unmeasured returns a Result for each name, failed and unmeasured with msg
+// as its evidence: the checks could not run.
+func Unmeasured(msg string, names ...string) []Result {
+	out := make([]Result, len(names))
+	for i, n := range names {
+		out[i] = Result{Name: n, Evidence: []string{msg}, Unmeasured: true}
+	}
+	return out
 }
 
 // sampled reports whether the task id is in the sample of share frac for
@@ -583,32 +597,46 @@ func pollInterval(d time.Duration) time.Duration {
 	return min(max(d/20, 10*time.Millisecond), time.Second)
 }
 
-// settleLoop calls check on items and keeps re-checking the ones it reports
-// (a non-empty message) until none is left or d has elapsed since the first
-// pass ended, then returns the messages still reported, in the order of
-// items. Whatever the first pass reports is re-checked at least once, so a
-// first pass slower than d cannot use up the settle time.
-func settleLoop[T any](ctx context.Context, d time.Duration, items []T, check func([]T) []string) []string {
-	msgs := check(items)
+// verdict is what one read of an item found while settling.
+type verdict struct {
+	// msg is the violation, "" for none.
+	msg string
+	// pending asks for another read while the settle time lasts, though the
+	// item violates nothing: a task inside a fault window still missing
+	// lines, which may only be late.
+	pending bool
+	// lost is how many log lines the read found lost inside a fault window.
+	lost int
+}
+
+func (v verdict) settled() bool { return v.msg == "" && !v.pending }
+
+// settleLoop calls check on items and keeps re-checking the ones it does not
+// find settled until none is left or d has elapsed since the first pass
+// ended, then returns the verdicts of the ones left, in the order of items.
+// Whatever the first pass reports is re-checked at least once, so a first
+// pass slower than d cannot use up the settle time.
+func settleLoop[T any](ctx context.Context, d time.Duration, items []T, check func([]T) []verdict) []verdict {
+	vs := check(items)
 	deadline := time.Now().Add(d)
 	wait := settlePoll
 	rechecked := false
 	for {
 		var keepItems []T
-		var keepMsgs []string
-		for i, m := range msgs {
-			if m != "" {
+		var keepVs []verdict
+		for i, v := range vs {
+			if !v.settled() {
 				keepItems = append(keepItems, items[i])
-				keepMsgs = append(keepMsgs, m)
+				keepVs = append(keepVs, v)
 			}
 		}
-		items, msgs = keepItems, keepMsgs
+		items, vs = keepItems, keepVs
 		if len(items) == 0 || ctx.Err() != nil || (rechecked && !time.Now().Before(deadline)) {
-			return msgs
+			return vs
 		}
 		sleep.For(ctx, min(wait, time.Until(deadline)))
 		wait = min(2*wait, settlePollMax)
-		msgs = check(items)
+		vs = check(items)
 		rechecked = true
 	}
 }

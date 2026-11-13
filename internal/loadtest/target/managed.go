@@ -174,7 +174,7 @@ func newManaged(cfg ManagedConfig) (*managed, error) {
 	if m.runID == "" {
 		m.runID = filepath.Base(runDir)
 	}
-	if slices.ContainsFunc(cfg.Scenario.Jobs, func(j scenario.JobClass) bool { return j.RealTask != nil }) {
+	if cfg.Scenario.HasRealTask() {
 		m.markerDir = filepath.Join(runDir, "markers")
 	}
 	return m, nil

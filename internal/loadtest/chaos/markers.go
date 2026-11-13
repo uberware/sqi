@@ -14,12 +14,6 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/verify"
 )
 
-// The marker checks' names, as verify.Names and scenario.CheckNames list them.
-const (
-	NameNoOrphans    = "no-orphans"
-	NameSingleWriter = "single-writer"
-)
-
 // OrphanGrace is how long a process may outlive the worker that started it
 // before no-orphans counts it: the worker's own shutdown and the operating
 // system's cleanup take a moment.
@@ -57,21 +51,21 @@ func noOrphans(execs []marker.Exec, skipped int, incs []target.Incarnation) veri
 		}
 		return cmp.Compare(a.ID, b.ID)
 	})
-	ev := &evidence{}
+	var ev verify.Evidence
 	for _, e := range ordered {
 		end, ok := ended[e.Incarnation]
 		if !ok {
 			continue
 		}
 		if late := e.LastSeen.Sub(end); late > OrphanGrace {
-			ev.add(fmt.Sprintf("exec %s (%s, task %s, pid %d) of incarnation %s was last seen %s after its worker ended (grace %s)",
+			ev.Add(fmt.Sprintf("exec %s (%s, task %s, pid %d) of incarnation %s was last seen %s after its worker ended (grace %s)",
 				e.ID, e.Role, e.Key, e.PID, e.Incarnation, late.Round(time.Millisecond), OrphanGrace))
 		}
 	}
 	if skipped > 0 {
-		ev.note(fmt.Sprintf("%d marker files unreadable", skipped))
+		ev.Note(fmt.Sprintf("%d marker files unreadable", skipped))
 	}
-	return ev.result(NameNoOrphans)
+	return ev.Result(verify.NameNoOrphans)
 }
 
 // span is the interval from one exec's first line of a key's output to its
@@ -82,13 +76,13 @@ type span struct {
 }
 
 func singleWriter(outputs map[string][]marker.OutputLine) verify.Result {
-	ev := &evidence{}
+	var ev verify.Evidence
 	for _, key := range slices.Sorted(maps.Keys(outputs)) {
 		spans := writerSpans(outputs[key])
 		var open span // the span reaching furthest so far
 		for i, s := range spans {
 			if i > 0 && !s.first.After(open.last) {
-				ev.add(fmt.Sprintf("task %s: execs %s [%s, %s] and %s [%s, %s] wrote its output at the same time",
+				ev.Add(fmt.Sprintf("task %s: execs %s [%s, %s] and %s [%s, %s] wrote its output at the same time",
 					key, open.execID, stamp(open.first), stamp(open.last), s.execID, stamp(s.first), stamp(s.last)))
 			}
 			if i == 0 || s.last.After(open.last) {
@@ -96,7 +90,7 @@ func singleWriter(outputs map[string][]marker.OutputLine) verify.Result {
 			}
 		}
 	}
-	return ev.result(NameSingleWriter)
+	return ev.Result(verify.NameSingleWriter)
 }
 
 // writerSpans groups lines by exec and returns each exec's span, earliest

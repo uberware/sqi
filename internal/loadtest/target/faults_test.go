@@ -150,8 +150,8 @@ func TestSignals_KillOneLeavesSiblings(t *testing.T) {
 		t.Fatalf("child %d is not running before the kill", child)
 	}
 
-	if err := killOne(p.cmd.Process); err != nil {
-		t.Fatalf("killOne: %v", err)
+	if err := p.cmd.Process.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
 	}
 	select {
 	case <-p.done:

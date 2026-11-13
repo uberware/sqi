@@ -20,7 +20,7 @@ import (
 func constDist(v float64) scenario.Dist { return scenario.Dist{Kind: scenario.DistConstant, Value: v} }
 
 // TestCheck_AgainstARealServer runs a small real run, simulated workers on an
-// in-process sqi-server, and requires all six invariants to pass, which shows
+// in-process sqi-server, and requires all seven invariants to pass, which shows
 // the checks read the server's attempts, retries, cascade cancels and log
 // chunks the way the server writes them. Half of all attempts fail, so
 // tasks are retried, some fail for good and cancel the step after them, and

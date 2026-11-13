@@ -32,6 +32,16 @@ const (
 	TaskStatusCanceled TaskStatus = "canceled"
 )
 
+// IsTerminal reports whether s is a terminal task state (succeeded, failed,
+// canceled).
+func (s TaskStatus) IsTerminal() bool {
+	switch s {
+	case TaskStatusSucceeded, TaskStatusFailed, TaskStatusCanceled:
+		return true
+	}
+	return false
+}
+
 // Server-originated failure/termination reasons. [TaskStore.FailureReasonSummary]
 // groups by exact string, so every producer of these annotations (scheduler,
 // SQL stores, fake store) must share these values; differing wording would
