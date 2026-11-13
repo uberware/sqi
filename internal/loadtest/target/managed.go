@@ -23,6 +23,7 @@ import (
 
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/dbfault"
+	"github.com/uberware/sqi/internal/loadtest/diskfill"
 	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/netfault"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
@@ -76,6 +77,14 @@ type ManagedConfig struct {
 	// Seed is the run seed, mixed into each broker lane's jitter; 0 seeds a
 	// lane with its group's index alone.
 	Seed uint64
+	// ServerVolume, when set, is a directory on a size-limited file system
+	// that holds the server's data: its data directory is
+	// ServerVolume/<RunID>. A disk_full fault fills that volume.
+	ServerVolume string
+	// WorkerVolume, when set, is the same for the real workers' session
+	// directories: each is WorkerVolume/<RunID>/<n>-sessions, so a task's
+	// working directory is on it.
+	WorkerVolume string
 
 	readyTimeout time.Duration // how long to wait for /readyz; 0 is defaultReadyTimeout
 	stopTimeout  time.Duration // grace between interrupt and kill; 0 is defaultStopTimeout
@@ -91,6 +100,8 @@ type managed struct {
 
 	settings   serverSettings
 	configPath string
+	// workerVolume is the absolute WorkerVolume, "" when none.
+	workerVolume string
 
 	pgDSN      string // the run's DSN, which the harness's own connections use
 	pgAdminDSN string // set when the harness created pgDB
@@ -128,6 +139,14 @@ type managed struct {
 	// resumedGroups are the task groups resumeAll continued, which Close
 	// ends.
 	resumedGroups []int
+
+	// volMu guards ballast and serializes filling and freeing a volume with
+	// Close. Acquire it before mu.
+	volMu sync.Mutex
+	// ballast is what FillVolume wrote, by volume name.
+	ballast map[string]*diskfill.Ballast
+	// fill writes a volume's ballast; diskfill.Fill, except in tests.
+	fill func(dir string, headroom int64, inodes bool) (*diskfill.Ballast, error)
 
 	closeOnce sync.Once
 	closeErr  error
@@ -181,9 +200,25 @@ func newManaged(cfg ManagedConfig) (*managed, error) {
 		settings:     serverSettings{RunDir: runDir, Spec: cfg.Scenario.Server, BootstrapUser: bootstrapUser},
 		configPath:   filepath.Join(runDir, "server.yaml"),
 		creds:        simworker.NoCredentials{},
+		ballast:      map[string]*diskfill.Ballast{},
+		fill:         diskfill.Fill,
 	}
 	if m.runID == "" {
 		m.runID = filepath.Base(runDir)
+	}
+	if cfg.ServerVolume != "" {
+		vol, err := filepath.Abs(cfg.ServerVolume)
+		if err != nil {
+			return nil, fmt.Errorf("target: server volume: %w", err)
+		}
+		m.settings.Volume, m.settings.RunID = vol, m.runID
+	}
+	if cfg.WorkerVolume != "" {
+		vol, err := filepath.Abs(cfg.WorkerVolume)
+		if err != nil {
+			return nil, fmt.Errorf("target: worker volume: %w", err)
+		}
+		m.workerVolume = vol
 	}
 	if cfg.Scenario.HasRealTask() {
 		m.markerDir = filepath.Join(runDir, "markers")
@@ -621,7 +656,7 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int, inc string) ([]string
 		"SQI_WORKER_FARM_ID=" + m.farm.id,
 		"SQI_WORKER_NAME=" + name + "-" + strconv.Itoa(n),
 		"SQI_WORKER_DATA_DIR=" + dir,
-		"SQI_WORKER_SESSION_DIR=" + dir + "-sessions",
+		"SQI_WORKER_SESSION_DIR=" + m.sessionDir(n),
 		"SQI_WORKER_ALLOW_ROOT=true",
 		"SQI_WORKER_LOG_FORMAT=text",
 		"SQI_WORKER_LOG_LEVEL=info",
@@ -664,6 +699,16 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int, inc string) ([]string
 		)
 	}
 	return childEnv(os.Environ(), env...), nil
+}
+
+// sessionDir is real worker n's session directory: under the worker volume
+// when there is one, else beside the worker's data directory.
+func (m *managed) sessionDir(n int) string {
+	name := strconv.Itoa(n) + "-sessions"
+	if m.workerVolume != "" {
+		return filepath.Join(m.workerVolume, m.runID, name)
+	}
+	return filepath.Join(m.settings.RunDir, "workers", name)
 }
 
 // capabilityTags renders tags as sqi-worker's comma-separated key=value
@@ -759,10 +804,11 @@ func (m *managed) writeNoopConfig() error {
 	for _, j := range m.cfg.Scenario.Jobs {
 		if rt := j.RealTask; rt != nil {
 			cfg.Classes[j.Name] = marker.NoopClass{
-				DurationMS:  int(rt.Duration.Milliseconds()),
-				LogEveryMS:  int(rt.LogEvery.Milliseconds()),
-				ChattyChild: rt.ChattyChild,
-				SilentChild: rt.SilentChild,
+				DurationMS:   int(rt.Duration.Milliseconds()),
+				LogEveryMS:   int(rt.LogEvery.Milliseconds()),
+				ChattyChild:  rt.ChattyChild,
+				SilentChild:  rt.SilentChild,
+				ScratchBytes: rt.ScratchBytes,
 			}
 		}
 	}
@@ -818,9 +864,10 @@ func (m *managed) workerPIDs() []int {
 // real workers (together), ends the task process groups the markers still show
 // running, and stops the server: each process gets an interrupt and the stop
 // grace (30 s by default) to exit before it is killed, and a done ctx kills at
-// once. It then drops a database the harness created and closes the broker
-// lanes and the database proxy. Every process is reaped before Close returns,
-// whatever the error, and nothing is started once it has begun.
+// once. It then frees the volumes' ballast, drops a database the harness
+// created and closes the broker lanes and the database proxy. Every process is
+// reaped before Close returns, whatever the error, and nothing is started once
+// it has begun.
 func (m *managed) Close(ctx context.Context) error {
 	m.closeOnce.Do(func() {
 		m.mu.Lock()
@@ -829,7 +876,7 @@ func (m *managed) Close(ctx context.Context) error {
 		errs := []error{m.HealDatabase(ctx)}
 		m.resumeAll(ctx)
 		errs = append(errs, m.stopWorkers(ctx, true)...)
-		errs = append(errs, m.endTaskGroups(ctx), m.stopServer(ctx))
+		errs = append(errs, m.endTaskGroups(ctx), m.stopServer(ctx), m.freeVolumes(ctx))
 		if m.pgDB != "" {
 			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cliTimeout)
 			if err := dropDatabase(dctx, m.pgAdminDSN, m.pgDB); err != nil {

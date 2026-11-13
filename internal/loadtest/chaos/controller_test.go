@@ -172,6 +172,18 @@ func (t *fakeTarget) DropDatabase(context.Context) error { t.record("DropDatabas
 
 func (t *fakeTarget) HealDatabase(context.Context) error { t.record("HealDatabase", -1); return nil }
 
+func (t *fakeTarget) FillVolume(volume string, _ int64, _ bool) error {
+	t.record("FillVolume:"+volume, -1)
+	return nil
+}
+
+func (t *fakeTarget) FreeVolume(volume string) error {
+	t.record("FreeVolume:"+volume, -1)
+	return nil
+}
+
+func (*fakeTarget) ServerReady(context.Context) string { return "ready" }
+
 func (*fakeTarget) RealLive() int { return 0 }
 
 func (t *fakeTarget) Incarnations() []target.Incarnation {

@@ -30,6 +30,9 @@ type NoopClass struct {
 	LogEveryMS  int  `json:"log_every_ms"`
 	ChattyChild bool `json:"chatty_child"`
 	SilentChild bool `json:"silent_child"`
+	// ScratchBytes is how many bytes the main process writes to scratch.bin
+	// in its working directory over the duration.
+	ScratchBytes int64 `json:"scratch_bytes"`
 }
 
 // WriteConfig writes cfg to path.

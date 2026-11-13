@@ -10,7 +10,9 @@
 // class asks for, a chatty one printing to the task's stdout and a silent one
 // with no stdio of the task's, which writes the task's output file. The
 // children re-execute this command with a --sqi-load-role argument and stay in
-// the task's process group.
+// the task's process group. A class with scratch_bytes also has the main
+// process write that many bytes to scratch.bin in its working directory, one
+// chunk per print interval, and exit 1 when a write fails.
 package main
 
 import (
@@ -111,8 +113,13 @@ func (t task) runMain() int {
 		fmt.Fprintln(os.Stderr, "sqi-load noop:", err)
 		return finish(w, exitChildren)
 	}
-	if !t.printFor(defaultLine, time.Duration(t.class.LogEveryMS)*time.Millisecond) {
+	switch t.loop() {
+	case loopBrokenStdout:
 		return exitBrokenStdout
+	case loopScratchFailed:
+		killAll(children) //nolint:errcheck // the task has failed; its children only need to stop
+		return finish(w, exitScratch)
+	case loopDone:
 	}
 	for _, c := range children {
 		// A child that died, of a broken pipe say, shows in its own record;

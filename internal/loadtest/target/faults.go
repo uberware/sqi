@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -82,7 +84,23 @@ type Faults interface {
 	// HealDatabase releases the lock or heals the proxy. It does nothing when
 	// no database fault is applied.
 	HealDatabase(ctx context.Context) error
+	// FillVolume fills the volume "server" or "workers" with ballast, leaving
+	// headroom bytes free and, with inodes, no inodes. It is an error when the
+	// target has no such volume. Filling a filled volume is a no-op.
+	FillVolume(volume string, headroom int64, inodes bool) error
+	// FreeVolume removes the volume's ballast. It does nothing when the volume
+	// is not filled and is an error when the target has no such volume.
+	FreeVolume(volume string) error
+	// ServerReady probes the server's /readyz: "ready", or the probe's error
+	// text.
+	ServerReady(ctx context.Context) (status string)
 }
+
+// The volumes a disk_full fault can fill.
+const (
+	VolumeServer  = "server"
+	VolumeWorkers = "workers"
+)
 
 // Lane is a worker group's connection to the broker, which a fault can cut,
 // blackhole or shape. *netfault.Proxy implements it.
@@ -301,6 +319,106 @@ func (m *managed) HealDatabase(ctx context.Context) error {
 		return fmt.Errorf("target: heal the database: %w", err)
 	}
 	return nil
+}
+
+// volumeDir is the directory FillVolume fills: the one the volume's data lives
+// in. It is an error when the target has no such volume.
+func (m *managed) volumeDir(volume string) (string, error) {
+	switch {
+	case volume == VolumeServer && m.settings.Volume != "":
+		return m.settings.dataDir(), nil
+	case volume == VolumeWorkers && m.workerVolume != "":
+		return filepath.Join(m.workerVolume, m.runID), nil
+	case volume == VolumeServer:
+		return "", errors.New("target: the run has no server volume; set ManagedConfig.ServerVolume")
+	case volume == VolumeWorkers:
+		return "", errors.New("target: the run has no workers volume; set ManagedConfig.WorkerVolume")
+	}
+	return "", fmt.Errorf("target: unknown volume %q; want %q or %q", volume, VolumeServer, VolumeWorkers)
+}
+
+// FillVolume writes the ballast. A failed fill leaves nothing behind (Fill
+// removes what it wrote), so no fault stays applied after an error.
+func (m *managed) FillVolume(volume string, headroom int64, inodes bool) error {
+	dir, err := m.volumeDir(volume)
+	if err != nil {
+		return err
+	}
+	m.volMu.Lock()
+	defer m.volMu.Unlock()
+	if m.isClosing() {
+		return errClosing
+	}
+	if _, ok := m.ballast[volume]; ok {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("target: fill the %s volume: %w", volume, err)
+	}
+	m.logger.InfoContext(context.Background(), "filling a volume", slog.String("volume", volume), slog.String("dir", dir), slog.Int64("headroom", headroom), slog.Bool("inodes", inodes))
+	b, err := m.fill(dir, headroom, inodes)
+	if err != nil {
+		return fmt.Errorf("target: fill the %s volume: %w", volume, err)
+	}
+	m.ballast[volume] = b
+	return nil
+}
+
+// FreeVolume removes the volume's ballast. When removing fails the ballast is
+// kept, so Close tries again.
+func (m *managed) FreeVolume(volume string) error {
+	if _, err := m.volumeDir(volume); err != nil {
+		return err
+	}
+	m.volMu.Lock()
+	defer m.volMu.Unlock()
+	b, ok := m.ballast[volume]
+	if !ok {
+		return nil
+	}
+	m.logger.InfoContext(context.Background(), "freeing a volume", slog.String("volume", volume))
+	if err := b.Free(); err != nil {
+		return fmt.Errorf("target: free the %s volume: %w", volume, err)
+	}
+	delete(m.ballast, volume)
+	return nil
+}
+
+// freeVolumes frees every volume still filled; Close calls it once the server
+// and the workers are stopped.
+func (m *managed) freeVolumes(ctx context.Context) error {
+	m.volMu.Lock()
+	defer m.volMu.Unlock()
+	var errs []error
+	for _, v := range slices.Sorted(maps.Keys(m.ballast)) {
+		m.logger.InfoContext(ctx, "freeing a volume", slog.String("volume", v))
+		if err := m.ballast[v].Free(); err != nil {
+			errs = append(errs, fmt.Errorf("target: free the %s volume: %w", v, err))
+			continue
+		}
+		delete(m.ballast, v)
+	}
+	return errors.Join(errs...)
+}
+
+// readyProbeTimeout bounds one ServerReady probe.
+const readyProbeTimeout = 2 * time.Second
+
+// ServerReady asks the server's /readyz once.
+func (m *managed) ServerReady(ctx context.Context) string {
+	if m.httpURL == "" {
+		return "no sqi-server has been started"
+	}
+	probe, err := newClient(m.httpURL, "", m.tlsFiles)
+	if err != nil {
+		return err.Error()
+	}
+	ctx, cancel := context.WithTimeout(ctx, readyProbeTimeout)
+	defer cancel()
+	if err := probe.Ready(ctx); err != nil {
+		return err.Error()
+	}
+	return "ready"
 }
 
 func (m *managed) isClosing() bool {
