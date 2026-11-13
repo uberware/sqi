@@ -348,7 +348,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --health-cmd "pg_isready -U postgres -h 127.0.0.1"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -458,6 +458,15 @@ jobs:
         run: |
           mkdir -p "$SQI_LOAD_OUT"
           make chaos-container 2>&1 | tee "$CHAOS_LOG" || echo "make exited non-zero; the next step decides what fails the job"
+
+      # The container runs as root and the harness writes 0600 files in 0700
+      # directories, so the run directories are root-owned and unreadable to
+      # the runner user; without this the upload fails and takes the job (and
+      # the run directories) with it.
+      - name: Make the run directories readable
+        if: ${{ always() }}
+        shell: bash
+        run: sudo chown -R "$(id -u):$(id -g)" "$CHAOS_OUT"
 
       - name: Upload the run directories
         if: ${{ always() }}
