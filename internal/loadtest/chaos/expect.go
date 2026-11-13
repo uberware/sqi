@@ -23,8 +23,9 @@ import (
 //   - A known violation on "rework" excuses the rework only up to its
 //     MaxAttempts. Rework over every such ceiling stays failed, and its
 //     evidence says the known ceiling was exceeded; an entry with no ceiling
-//     excuses nothing.
-//   - Max_rework_attempts adds a "rework" result after the invariants: OK
+//     excuses nothing, and neither does any entry when the count is short
+//     (Undercount), since the true count may be over the ceiling.
+//   - A max_rework_attempts bound adds a "rework" result after results: OK
 //     when rw.Attempts is within the bound, failed when it is over, and failed
 //     and Unmeasured with "rework could not be measured" when rw is nil, or
 //     when rw says its count is short (Undercount) and is within the bound:
@@ -123,6 +124,11 @@ func excuse(res *verify.Result, rw *report.Rework, entries []scenario.KnownViola
 		fired[j] = true
 		if k.Check == scenario.ReworkCheck && rw != nil && !reworkCovered(k, rw) {
 			over = append(over, fmt.Sprintf("%d attempts is over the known ceiling of %s for %s", rw.Attempts, ceilingText(k), k.Tracker))
+			continue
+		}
+		if k.Check == scenario.ReworkCheck && rw != nil && rw.Undercount != "" {
+			over = append(over, fmt.Sprintf("%d attempts counted, but the count is short (%s), so it cannot be shown within the known ceiling of %s for %s",
+				rw.Attempts, rw.Undercount, ceilingText(k), k.Tracker))
 			continue
 		}
 		if !slices.Contains(trackers, k.Tracker) {

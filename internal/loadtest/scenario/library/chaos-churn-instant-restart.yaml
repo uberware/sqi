@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-churn-instant-restart
-description: chaos W4 - 100 simulated workers each crashing about 30 times an hour and restarting at once, a regression guard for the stranded-attempt shape, under steady load (about 2.5 tasks/s), 3 min
+description: chaos - 100 simulated workers each crashing about 30 times an hour and restarting at once, re-registering over their own open attempts, under steady load (about 2.5 tasks/s), 3 min
 # No faults: the churn is the simulated fleet's own. A worker that comes back
 # before the server notices it left re-registers over its own open attempts.
 # The rework bound puts the run in chaos mode, so the store and rework checks
 # run too. A crashed attempt never completes, so a crash itself costs no
 # rework; only a completed report the churn loses does. The run restarts
-# about 160 workers (55 of them over attempts the server reclaimed from
-# them) and Linux saw 0 rework and no stranded attempt; 5 leaves headroom,
-# and a defect losing a report per restart would still exceed it many times
-# over.
+# about 150 workers, some of them over attempts the server has reclaimed
+# from them. The bound of 5 allows for a few lost reports; a defect losing a
+# report per restart would exceed it many times over.
 duration: 3m
 warmup: 10s
 drain_timeout: 5m

@@ -144,11 +144,11 @@ func (p *proc) isStalled() bool {
 }
 
 // killOne kills the process alone, not its group (os.Process.Kill: SIGKILL
-// to its pid, or TerminateProcess on Windows): what it started keeps
-// running. It returns once the process is reaped, or an error when it was not
-// reaped within killWait or ctx ended first. It does not release the process's
-// supervision, so what it started (in its job on Windows, its process group
-// elsewhere) keeps running until stopCtx or release.
+// to its pid, or TerminateProcess on Windows). It leaves the process's
+// supervision in place, so what it started (in its job on Windows, its
+// process group elsewhere) keeps running until stopCtx or release. It returns
+// once the process is reaped, or an error when it was not reaped within
+// killWait or ctx ended first.
 func (p *proc) killOne(ctx context.Context) error {
 	if p.exited() {
 		return nil

@@ -192,15 +192,23 @@ func (v *validator) powerCut(path string, p *PowerCut) {
 	}
 }
 
-func (v *validator) expect() {
-	e := v.s.Expect
-	if v.target == TargetAttach && (e.MaxReworkAttempts != nil || len(e.KnownViolations) > 0) {
-		v.failf("expect", "needs a managed target")
-		return
-	}
+// expectBounds checks the expect section's bounds.
+func (v *validator) expectBounds(e Expect) {
 	if e.MaxReworkAttempts != nil && *e.MaxReworkAttempts < 0 {
 		v.failf("expect.max_rework_attempts", "must not be negative")
 	}
+	if e.MaxReclaims != nil && *e.MaxReclaims < 0 {
+		v.failf("expect.max_reclaims", "must not be negative")
+	}
+}
+
+func (v *validator) expect() {
+	e := v.s.Expect
+	if v.target == TargetAttach && (e.MaxReworkAttempts != nil || e.MaxReclaims != nil || len(e.KnownViolations) > 0) {
+		v.failf("expect", "needs a managed target")
+		return
+	}
+	v.expectBounds(e)
 	for i, k := range e.KnownViolations {
 		path := fmt.Sprintf("expect.known_violations[%d]", i)
 		if k.Check != ReworkCheck && !slices.Contains(CheckNames, k.Check) {

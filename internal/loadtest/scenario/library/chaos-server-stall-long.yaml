@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-server-stall-long
-description: chaos S3 - SIGSTOP the server (and its embedded broker) for 60s, about twice heartbeat_timeout, then SIGCONT, under steady load (100 workers); records reclaims, 4.5 min
-# The stall starts at 3m15s, not earlier: the server stands its liveness
-# sweeps down for about 3m10s after it starts, and a stall inside that window
-# cannot show whether a sweep runs before the heartbeat backlog is consumed.
+description: chaos - SIGSTOP the server (and its embedded broker) for 60s, about twice heartbeat_timeout, then SIGCONT, under steady load (100 workers); records reclaims, 4.5 min
+# The stall starts at 3m15s, after the server's startup liveness grace: the
+# server runs no liveness sweep for about 3m10s after it starts, so a stall
+# inside that window cannot show whether a sweep runs before the heartbeat
+# backlog is consumed.
 # POSIX only (SIGSTOP); the chaos test skips it on Windows.
-# The rework known violation (H13f2) carries a ceiling of 60 attempts: runs
-# measured 12 to 20 attempts of rework, and the sweep can reclaim the work of
-# up to 45 workers, so 60 leaves headroom. Rework past it is a different
-# defect and fails the run.
+# The rework known violation (H13f2) carries a ceiling of 60 attempts, above
+# the work of the up to 45 workers the sweep can reclaim. Rework past it is a
+# different defect and fails the run.
 duration: 4m30s
 warmup: 10s
 drain_timeout: 5m

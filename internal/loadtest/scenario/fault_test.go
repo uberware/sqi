@@ -262,6 +262,9 @@ func TestValidate_Expect(t *testing.T) {
 		{name: "rework budget zero", extra: "expect: {max_rework_attempts: 0}\n"},
 		{name: "negative rework budget", extra: "expect: {max_rework_attempts: -1}\n", want: "expect.max_rework_attempts"},
 		{name: "attach rejects rework budget", target: TargetAttach, extra: "expect: {max_rework_attempts: 3}\n", want: "expect: needs a managed target"},
+		{name: "reclaims bound zero", extra: "expect: {max_reclaims: 0}\n"},
+		{name: "negative reclaims bound", extra: "expect: {max_reclaims: -1}\n", want: "expect.max_reclaims"},
+		{name: "attach rejects reclaims bound", target: TargetAttach, extra: "expect: {max_reclaims: 0}\n", want: "expect: needs a managed target"},
 		{name: "attach rejects known violations", target: TargetAttach, extra: "expect:\n  known_violations:\n    - " + good + "\n", want: "expect: needs a managed target"},
 	}
 	for _, tt := range tests {

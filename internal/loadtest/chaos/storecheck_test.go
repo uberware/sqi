@@ -4,6 +4,7 @@ package chaos
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -269,9 +270,8 @@ func TestStoreIntegrity_CorruptFileFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Overwrite the tasks table's root page, in the middle of the file, past
-	// its 8-byte header: its cells are now garbage. (The middle page of the
-	// file is a free page, which no check reads.)
+	// Overwrite the tasks table's root page past its 8-byte header, so its
+	// cells are garbage. A page in use is needed: no check reads a free page.
 	off := (page - 1) * pageSize
 	for i := off + 8; i < off+pageSize; i++ {
 		data[i] = 0xA5
@@ -429,5 +429,67 @@ func TestStoreChecks_UnopenedStoreLeavesReworkUnmeasured(t *testing.T) {
 	rep := StoreChecks(t.Context(), StoreInput{Options: backend.Options{Driver: backend.DriverSQLite, SQLitePath: missing}})
 	if rep.Rework != nil || rep.ReworkErr == nil || !strings.Contains(rep.ReworkErr.Error(), missing) {
 		t.Errorf("StoreChecks rework = %+v, %v; want unmeasured, naming %s", rep.Rework, rep.ReworkErr, missing)
+	}
+}
+
+// seedReclaimed submits a completed job whose one task has a failed attempt
+// for each message, then a succeeded one.
+func seedReclaimed(t *testing.T, st store.Store, messages ...string) {
+	t.Helper()
+	seedSettled(t, st, "j1", "s1", "t1")
+	inj := storetest.InjectorFor(t, st)
+	now := time.Now().UTC()
+	for i, msg := range append(messages, "") {
+		status := store.AttemptStatusFailed
+		if msg == "" {
+			status = store.AttemptStatusSucceeded
+		}
+		if _, err := inj.InjectTaskAttempt(t.Context(), store.TaskAttempt{
+			ID: fmt.Sprintf("a%d", i+1), TaskID: "t1", WorkerID: checkWorker, AttemptNumber: i + 1,
+			Status: status, Message: msg, StartedAt: now, EndedAt: &now,
+		}); err != nil {
+			t.Fatalf("InjectTaskAttempt: %v", err)
+		}
+	}
+}
+
+func TestReclaims_CountsTheServersReclaims(t *testing.T) {
+	ts := newSQLiteStore(t)
+	seedReclaimed(t, ts.st, store.FailureReasonWorkerOffline, "exit code 1", store.FailureReasonWorkerRestarted)
+	ts.stop(t)
+	in := StoreInput{Options: ts.opts, FarmID: checkFarm}
+	rep := StoreChecks(t.Context(), in)
+	if rep.Reclaims == nil || rep.Reclaims.Attempts != 2 ||
+		rep.Reclaims.ByReason[store.FailureReasonWorkerOffline] != 1 || rep.Reclaims.ByReason[store.FailureReasonWorkerRestarted] != 1 {
+		t.Fatalf("Reclaims = %+v, want one offline and one restart reclaim", rep.Reclaims)
+	}
+	if len(rep.Results) != 2 {
+		t.Errorf("results %+v, want no reclaims check without a bound", rep.Results)
+	}
+
+	for _, tc := range []struct {
+		bound  int
+		wantOK bool
+	}{{0, false}, {1, false}, {2, true}} {
+		in.MaxReclaims = &tc.bound
+		results := StoreChecks(t.Context(), in).Results
+		if len(results) != 3 || results[2].Name != verify.NameReclaims {
+			t.Fatalf("bound %d: results %+v, want reclaims last", tc.bound, results)
+		}
+		if r := results[2]; r.OK != tc.wantOK || r.Unmeasured {
+			t.Errorf("bound %d: reclaims = %+v, want OK %v", tc.bound, r, tc.wantOK)
+		}
+		if !tc.wantOK {
+			wantFail(t, results[2], "2 attempts", "a1", "a3")
+		}
+	}
+}
+
+func TestReclaims_UnopenedStoreIsUnmeasured(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.db")
+	bound := 0
+	rep := StoreChecks(t.Context(), StoreInput{Options: backend.Options{Driver: backend.DriverSQLite, SQLitePath: missing}, MaxReclaims: &bound})
+	if rep.Reclaims != nil || len(rep.Results) != 3 || rep.Results[2].Name != verify.NameReclaims || !rep.Results[2].Unmeasured {
+		t.Errorf("StoreChecks = %+v, want reclaims unmeasured and uncounted", rep)
 	}
 }

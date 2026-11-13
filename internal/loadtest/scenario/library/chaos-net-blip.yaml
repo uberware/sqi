@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-net-blip
-description: chaos N1 - cut every worker (120) from the broker for 5s, then for 15s (half of heartbeat_timeout), under steady load; no reclaims, no rework, 4.25 min
-# The cuts come at 3m15s and 3m40s, not earlier: the server stands its
-# liveness sweeps down for about 3m10s after it starts, and a cut inside that
-# window cannot be mistaken for a dead worker however long it lasts.
+description: chaos - cut every worker (120) from the broker for 5s, then for 15s (half of heartbeat_timeout), under steady load; no reclaims, no rework, 4.25 min
+# The cuts come at 3m15s and 3m40s, after the server's startup liveness
+# grace: the server runs no liveness sweep for about 3m10s after it starts,
+# so a cut inside that window cannot be mistaken for a dead worker however
+# long it lasts.
 duration: 4m15s
 warmup: 10s
 drain_timeout: 5m
@@ -38,5 +39,8 @@ faults:
     partition: {}
     duration: 15s
 
+# Neither cut outlasts heartbeat_timeout, so no worker goes offline and the
+# server reclaims nothing.
 expect:
   max_rework_attempts: 0
+  max_reclaims: 0

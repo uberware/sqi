@@ -35,9 +35,9 @@ func (s laneState) same(o laneState) bool {
 }
 
 // laneCtl is the controller's bookkeeping for one lane. The proxy keeps one
-// state at a time, and Heal clears all of it, so a fault cannot simply undo
-// itself: the faults active on the lane are kept, and after each start or end
-// the lane is set to the state they add up to.
+// state at a time, and Heal clears all of it, so a fault cannot undo only its
+// own change: the faults active on the lane are kept, and after each start or
+// end the lane is set to the state they add up to.
 type laneCtl struct {
 	lane target.Lane
 

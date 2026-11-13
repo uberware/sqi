@@ -135,6 +135,19 @@ func TestApply_ReworkBound(t *testing.T) {
 	}
 }
 
+func TestApply_ShortReworkOverTheBoundIsNotExcused(t *testing.T) {
+	exp := scenario.Expect{MaxReworkAttempts: new(2), KnownViolations: []scenario.KnownViolation{reworkViolation(scenario.KnownMust, 10)}}
+	rw := &report.Rework{Attempts: 5, Undercount: "markers unreadable"}
+	got := Apply([]verify.Result{okResult("terminal")}, rw, exp, "linux")
+	r := resultByName(t, got, "rework")
+	if r.OK || r.Known != "" || r.Unmeasured || !strings.Contains(strings.Join(r.Evidence, "\n"), "count is short") {
+		t.Errorf("rework = %+v, want failed, not known, saying the count is short", r)
+	}
+	if slices.Contains(resultNames(got), "known:rework") {
+		t.Errorf("results = %v: the must entry fired, so no known:rework", resultNames(got))
+	}
+}
+
 func TestApply_ReworkKnownCeiling(t *testing.T) {
 	tests := []struct {
 		name     string

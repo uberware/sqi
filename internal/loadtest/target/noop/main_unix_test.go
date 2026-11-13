@@ -74,7 +74,8 @@ func TestNoop_ChattyChildDiesOnBrokenPipe(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	r.Close() // the dead worker's end of the task's stdout
 
-	// Within 2s the chatty child has died of SIGPIPE: its LastSeen stops.
+	// Within a second the chatty child has died of SIGPIPE, so its LastSeen
+	// stops advancing.
 	time.Sleep(time.Second)
 	before, _ := execByRole(t, markers, marker.RoleChatty)
 	time.Sleep(600 * time.Millisecond)

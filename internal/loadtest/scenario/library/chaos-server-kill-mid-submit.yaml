@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-server-kill-mid-submit
-description: chaos S4 - submit one job of 100,000 tasks and SIGKILL the server 2s in, during the write, restarting it 10s later; every job listed must hold all its tasks, 3 min
+description: chaos - submit one job of 100,000 tasks and SIGKILL the server 2s in, during the write, restarting it 10s later; every job listed must hold all its tasks, 3 min
 # Writing 100,000 tasks takes several seconds, so the kill lands inside the
 # submission's transaction. If the server created the job without answering,
 # the job must still run to the end: 200 workers x 8 cores run its 1 s tasks,

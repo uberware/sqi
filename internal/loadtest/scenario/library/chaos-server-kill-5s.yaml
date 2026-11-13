@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-server-kill-5s
-description: chaos S1 - SIGKILL the server at 1m and restart it 5s later under steady load (100 workers, about 2.5 tasks/s); no completed work may be redone, 3 min
+description: chaos - SIGKILL the server at 1m and restart it 5s later under steady load (100 workers, about 2.5 tasks/s); no completed work may be redone, 3 min
 # The workers stay up through the outage. The server stands its liveness
 # sweeps down for about 3m10s after the restart (heartbeat_timeout 30s plus a
 # worker's longest redial and one heartbeat), so anything the restart strands

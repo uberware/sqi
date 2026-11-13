@@ -87,11 +87,15 @@ func Listen(target string, seed uint64) (*Proxy, error) {
 func (p *Proxy) Addr() string { return p.ln.Addr().String() }
 
 // Cut closes every connection the proxy carries and refuses new ones until
-// Heal.
+// Heal. Data a blackhole was holding is dropped: each link is canceled before
+// the mode changes, so nothing parked on the blackhole wakes to forward it.
 func (p *Proxy) Cut() {
 	p.mu.Lock()
-	p.setModeLocked(modeCut)
 	links := p.takeLinksLocked()
+	for _, l := range links {
+		l.cancel()
+	}
+	p.setModeLocked(modeCut)
 	p.mu.Unlock()
 	for _, l := range links {
 		l.close()
@@ -227,14 +231,18 @@ func (l *link) close() {
 }
 
 // waitPass parks until the proxy is not blackholed. It reports false when the
-// link was closed first.
+// link was closed first, or the proxy is cut.
 func (l *link) waitPass() bool {
 	for {
 		l.p.mu.Lock()
-		blackholed := l.p.mode == modeBlackhole
+		m := l.p.mode
 		changed := l.p.changed
 		l.p.mu.Unlock()
-		if !blackholed {
+		switch m {
+		case modeCut:
+			return false
+		case modeBlackhole:
+		default:
 			return l.ctx.Err() == nil
 		}
 		select {

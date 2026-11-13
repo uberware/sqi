@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-server-kill-90s
-description: chaos S1 - SIGKILL the server at 1m and restart it 90s later under steady load (100 workers, about 2.5 tasks/s); no completed work may be redone, 3.5 min
+description: chaos - SIGKILL the server at 1m and restart it 90s later under steady load (100 workers, about 2.5 tasks/s); no completed work may be redone, 3.5 min
 # A 90 s outage outlasts a worker's reconnect buffer for some of what it
 # publishes. The server is back at 2m30s and stands its liveness sweeps down
 # for about 3m10s after that, so anything the restart strands is reclaimed

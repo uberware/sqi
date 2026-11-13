@@ -68,8 +68,11 @@ const (
 
 // Expect declares what a chaos run is allowed to find.
 type Expect struct {
-	MaxReworkAttempts *int             `yaml:"max_rework_attempts,omitempty"` // nil: report only
-	KnownViolations   []KnownViolation `yaml:"known_violations,omitempty"`
+	MaxReworkAttempts *int `yaml:"max_rework_attempts,omitempty"` // nil: report only
+	// MaxReclaims bounds the attempts the server took back from a worker (the
+	// reclaims check); nil: report only.
+	MaxReclaims     *int             `yaml:"max_reclaims,omitempty"`
+	KnownViolations []KnownViolation `yaml:"known_violations,omitempty"`
 }
 
 // The kinds of known violation.
@@ -110,10 +113,11 @@ var CheckNames = []string{
 	"store-integrity",
 	"no-orphans",
 	"single-writer",
+	"reclaims",
 }
 
 // RealTask is how the no-op command behaves for this class on a real worker.
-// Nil keeps today's no-op (print one line, exit 0).
+// Nil keeps the default no-op (print one line, exit 0).
 type RealTask struct {
 	Duration    Duration `yaml:"duration"`     // how long the main process runs
 	LogEvery    Duration `yaml:"log_every"`    // main process prints a line this often; 0 = once

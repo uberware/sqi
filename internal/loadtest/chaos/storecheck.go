@@ -40,20 +40,28 @@ type StoreInput struct {
 	SkippedMarkers int
 	// Faults are the faults the run fired, to which the rework is attributed.
 	Faults []report.FaultRecord
+	// MaxReclaims, when set, adds the reclaims check: the server took back no
+	// more than this many attempts.
+	MaxReclaims *int
 }
 
 // StoreReport is what StoreChecks found.
 type StoreReport struct {
-	// Results are [store-integrity, executions-recorded].
+	// Results are [store-integrity, executions-recorded], then reclaims when
+	// StoreInput.MaxReclaims is set.
 	Results []verify.Result
 	// Rework is what the faults cost; nil when it could not be measured, and
 	// ReworkErr then says why.
 	Rework    *report.Rework
 	ReworkErr error
+	// Reclaims are the attempts the server took back; nil when they could not
+	// be counted.
+	Reclaims *report.Reclaims
 }
 
-// StoreChecks opens the stopped server's store and returns
-// [store-integrity, executions-recorded].
+// StoreChecks opens the stopped server's store, runs store-integrity and
+// executions-recorded (and reclaims when StoreInput.MaxReclaims is set), and
+// measures the rework and the reclaims.
 //
 // store-integrity: on SQLite, PRAGMA integrity_check is "ok" and PRAGMA
 // foreign_key_check finds nothing; on both backends, no active usage claim
@@ -67,8 +75,9 @@ type StoreReport struct {
 // or canceled); and no real task ran more times than the store has attempts
 // for it.
 //
-// A store the checks cannot open or read fails both, with the error as
-// evidence, and leaves the rework unmeasured.
+// A store the checks cannot open, or whose farm's jobs they cannot list,
+// fails every check as unmeasured, with the error as evidence, and leaves the
+// rework and the reclaims unmeasured.
 //
 // The rework (see [farmView.rework]) is measured from the same store, farm
 // and attempt reads.
@@ -79,10 +88,11 @@ func StoreChecks(ctx context.Context, in StoreInput) StoreReport {
 	fail := func(s string) StoreReport {
 		integrity.AddUnmeasured(s)
 		executions.AddUnmeasured(s)
-		return StoreReport{
-			Results:   []verify.Result{integrity.Result(verify.NameStoreIntegrity), executions.Result(verify.NameExecutionsRecorded)},
-			ReworkErr: errors.New(s),
+		results := []verify.Result{integrity.Result(verify.NameStoreIntegrity), executions.Result(verify.NameExecutionsRecorded)}
+		if in.MaxReclaims != nil {
+			results = append(results, verify.Unmeasured(s, verify.NameReclaims)...)
 		}
+		return StoreReport{Results: results, ReworkErr: errors.New(s)}
 	}
 	if sqliteDriver(opts.Driver) {
 		if _, err := os.Stat(opts.SQLitePath); err != nil {
@@ -114,15 +124,22 @@ func StoreChecks(ctx context.Context, in StoreInput) StoreReport {
 	} else {
 		out.Rework = &rw
 	}
+	rc, rcErr := farm.reclaims(ctx)
+	if rcErr == nil {
+		out.Reclaims = &rc
+	}
+	if in.MaxReclaims != nil {
+		out.Results = append(out.Results, reclaimsResult(out.Reclaims, rcErr, *in.MaxReclaims))
+	}
 	return out
 }
 
 func sqliteDriver(driver string) bool { return driver == "" || driver == backend.DriverSQLite }
 
 // sqliteIntegrity runs SQLite's own checks on the database at path, opened
-// read-only, through the "sqlite" driver package sqlite registers. The name
-// is sqlite.FileURI's read-only form: sqlite.DSN has none, and FileURI is how
-// DSN escapes a path the driver would misread.
+// read-only, through the "sqlite" driver package sqlite registers. It opens
+// the read-only URI sqlite.FileURI builds, which escapes a path the driver
+// would misread; sqlite.DSN has no read-only form.
 func sqliteIntegrity(ctx context.Context, path string) []string {
 	dsn, err := sqlite.FileURI(path, true)
 	if err != nil {
@@ -377,7 +394,7 @@ func attemptViolation(la verify.LeasedAttempt, status store.AttemptStatus) strin
 	switch {
 	case status == store.AttemptStatusRunning:
 		return fmt.Sprintf("attempt %s of task %s is still running in the stopped server's store", la.ID, la.TaskID)
-	case la.Outcome() == simworker.OutcomeSucceeded && !store.TaskStatus(status).IsTerminal():
+	case la.Outcome() == simworker.OutcomeSucceeded && !status.IsTerminal():
 		return fmt.Sprintf("attempt %s of task %s: the worker reported succeeded, the store holds %q", la.ID, la.TaskID, status)
 	case la.Outcome() == simworker.OutcomeFailed && status == store.AttemptStatusSucceeded:
 		return fmt.Sprintf("attempt %s of task %s: the worker reported failed, the store recorded succeeded", la.ID, la.TaskID)
@@ -437,4 +454,48 @@ func (f *farmView) tasksByKey() map[string][]string {
 		}
 	}
 	return out
+}
+
+// reclaimReasons are the messages the server records on an attempt it closes
+// to take its task back from a worker.
+var reclaimReasons = []string{store.FailureReasonWorkerOffline, store.FailureReasonWorkerShutdown, store.FailureReasonWorkerRestarted}
+
+// reclaims counts the farm's attempts the server took back from a worker.
+func (f *farmView) reclaims(ctx context.Context) (report.Reclaims, error) {
+	var out report.Reclaims
+	for _, j := range f.jobs {
+		for _, t := range f.tasks[j.ID] {
+			attempts, err := f.taskAttempts(ctx, t.ID)
+			if err != nil {
+				return report.Reclaims{}, fmt.Errorf("list the attempts of task %s: %w", t.ID, err)
+			}
+			for _, a := range attempts {
+				if a.Status != store.AttemptStatusFailed || !slices.Contains(reclaimReasons, a.Message) {
+					continue
+				}
+				out.Attempts++
+				if out.ByReason == nil {
+					out.ByReason = map[string]int{}
+				}
+				out.ByReason[a.Message]++
+				if len(out.Examples) < maxReworkExamples {
+					out.Examples = append(out.Examples, fmt.Sprintf("attempt %s of task %s (job %s) on worker %s: %s", a.ID, t.ID, j.ID, a.WorkerID, a.Message))
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// reclaimsResult judges the reclaims against the scenario's bound.
+func reclaimsResult(rc *report.Reclaims, err error, bound int) verify.Result {
+	var ev verify.Evidence
+	switch {
+	case rc == nil:
+		ev.AddUnmeasured("reclaims could not be counted: " + err.Error())
+	case rc.Attempts > bound:
+		ev.Add(fmt.Sprintf("the server took back %d attempts from their workers, over the bound of %d", rc.Attempts, bound))
+		ev.AddAll(rc.Examples)
+	}
+	return ev.Result(verify.NameReclaims)
 }

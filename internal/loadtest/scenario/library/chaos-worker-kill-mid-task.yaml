@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-worker-kill-mid-task
-description: chaos W1 - kill one of 2 real workers at 1m while it runs 60s process trees (a chatty and a silent child) and restart it 10s later; no orphans, no second writer, 3 min
+description: chaos - kill one of 2 real workers at 1m while it runs 60s process trees (a chatty and a silent child) and restart it 10s later; no orphans, no second writer, 3 min
 # The real workers serve their own queue, so every tree task runs on a real
 # worker; 60 simulated workers carry the background load on render. Tree
 # tasks arrive one every 10 s, so both real workers hold some when the kill
-# lands. The killed worker's attempt is reclaimed only once the server's
-# startup liveness grace (about 3m10s) has passed; the drain covers it.
+# lands. The killed worker's attempts are reclaimed when it re-registers from
+# its new process, about 10 s after the kill (registration reclaims a
+# restarted worker's tasks at once; the startup liveness grace gates only the
+# heartbeat sweep), so its tree tasks re-run while the orphaned children of
+# the first run may still be alive.
 duration: 3m
 warmup: 10s
 drain_timeout: 5m
@@ -50,17 +53,16 @@ faults:
 
 # Rework is the killed worker's tree tasks, which run to completion as
 # orphans while they are re-run: at 6 tree tasks a minute of 60s, about 6 are
-# in flight across the 2 real workers, so the killed one cannot hold more
-# (1 and 0 seen in two Linux runs). The bound allows 8, so it fails only on
+# in flight across the 2 real workers, so the killed one cannot hold more.
+# The bound allows 8, so it fails only on
 # rework the kill cannot explain.
 expect:
   max_rework_attempts: 8
   # The orphaned silent child lives only for what remains of its 60 s real
   # task when the worker is killed, so it outlives the 10 s orphan grace in
-  # most runs but not all (a closing Linux run saw it last seen 10.012 s after
-  # its worker ended, and that run's re-run did not overlap it). A double write
-  # needs the reclaimed re-run to start while the orphan is still writing, so
-  # both entries are `may`.
+  # most runs but not all. A double write needs the re-run, about 10 s after
+  # the kill, to write while the orphan still is, so both entries are `may`.
+  # no-orphans would fire every run (`must`) only with a longer real task.
   known_violations:
     - check: no-orphans
       kind: may

@@ -206,9 +206,11 @@ func TestSummary_RendersFaultsReworkAndKnown(t *testing.T) {
 		{Index: 1, Kind: "stall", Target: "group render (real 0,1)", Start: t0.Add(5 * time.Minute), Error: "pause failed"},
 	}
 	r.Rework = &Rework{Attempts: 3, Seconds: 12.5, ByFault: map[int]int{1: 1, 0: 2}}
+	r.Reclaims = &Reclaims{Attempts: 2, ByReason: map[string]int{"worker restarted": 1, "worker went offline": 1}, Examples: []string{"attempt a1 of task t1"}}
 	r.Invariants = []verify.Result{
 		okResult("terminal"),
 		{Name: "caps", OK: true, Known: "H13f1", Evidence: []string{"pool over its cap"}},
+		{Name: "store-integrity", Evidence: []string{"open the store: boom"}, Unmeasured: true},
 	}
 	var b strings.Builder
 	if err := writeSummary(&b, r); err != nil {
@@ -223,6 +225,10 @@ func TestSummary_RendersFaultsReworkAndKnown(t *testing.T) {
 		"## Rework\n",
 		"3 attempts, 12.5s of work; by fault: #0 2, #1 1",
 		"- known (H13f1) caps\n  - pool over its cap\n",
+		"## Reclaims\n",
+		"2 attempts; by reason: worker restarted 1, worker went offline 1",
+		"- attempt a1 of task t1\n",
+		"- UNMEASURED store-integrity\n  - open the store: boom\n",
 		"- PASS terminal\n",
 	} {
 		if !strings.Contains(got, want) {
@@ -237,7 +243,7 @@ func TestSummary_RendersFaultsReworkAndKnown(t *testing.T) {
 	if err := writeSummary(&b, baseRecord()); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(b.String(), "## Faults") || strings.Contains(b.String(), "## Rework") {
+	if strings.Contains(b.String(), "## Faults") || strings.Contains(b.String(), "## Rework") || strings.Contains(b.String(), "## Reclaims") {
 		t.Errorf("a plain run rendered chaos sections:\n%s", b.String())
 	}
 }

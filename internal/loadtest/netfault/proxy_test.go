@@ -477,3 +477,79 @@ func TestProxy_BlackholeHoldsTeardown(t *testing.T) {
 		})
 	}
 }
+
+// recorder is a target that keeps every byte it receives.
+type recorder struct {
+	ln  net.Listener
+	mu  sync.Mutex
+	got []byte
+	wg  sync.WaitGroup
+}
+
+func listenRecorder(t *testing.T) *recorder {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("recorder listen: %v", err)
+	}
+	r := &recorder{ln: ln}
+	r.wg.Go(func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			r.wg.Go(func() {
+				defer c.Close()
+				buf := make([]byte, 64)
+				for {
+					n, err := c.Read(buf)
+					r.mu.Lock()
+					r.got = append(r.got, buf[:n]...)
+					r.mu.Unlock()
+					if err != nil {
+						return
+					}
+				}
+			})
+		}
+	})
+	t.Cleanup(func() {
+		_ = ln.Close()
+		r.wg.Wait()
+	})
+	return r
+}
+
+func (r *recorder) received() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return string(r.got)
+}
+
+func TestProxy_CutDropsWhatABlackholeHeld(t *testing.T) {
+	r := listenRecorder(t)
+	p := newProxy(t, r.ln.Addr().String())
+	c := dial(t, p.Addr())
+	if _, err := c.Write([]byte("warm")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for r.received() != "warm" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := r.received(); got != "warm" {
+		t.Fatalf("target received %q, want warm", got)
+	}
+
+	p.Blackhole()
+	if _, err := c.Write([]byte("held")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond) // the held chunk reaches the parked writer
+	p.Cut()
+	time.Sleep(200 * time.Millisecond)
+	if got := r.received(); got != "warm" {
+		t.Errorf("target received %q after the cut, want only warm: the blackholed data leaked", got)
+	}
+}

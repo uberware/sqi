@@ -133,11 +133,12 @@ type FaultRecord struct {
 	// Target is what the fault hit: "server", "group render (real 0,1)",
 	// "groups [rack-b]" or "all".
 	Target string `json:"target"`
-	// Server is set when the fault stopped the server (killed, terminated,
-	// stalled or power-cut it), so the server's broker connection came up
-	// again when it healed.
-	Server bool      `json:"server,omitempty"`
-	Start  time.Time `json:"start"`
+	// ServerRestart is set when the fault stopped the server's process and
+	// started it again (a kill, a term or a power cut), so the server's broker
+	// connection came up again when it healed. A stall leaves the process,
+	// and its connection, in place.
+	ServerRestart bool      `json:"server_restart,omitempty"`
+	Start         time.Time `json:"start"`
 	// Healed is zero when the fault never healed: a worker left dead, an
 	// error, or a run interrupted before the heal.
 	Healed time.Time `json:"healed"`
@@ -198,6 +199,9 @@ type Record struct {
 	// Rework is the work faults made the farm do twice; nil when the run did
 	// not measure it (a run without chaos checks, or a store it could not read).
 	Rework *Rework `json:"rework,omitempty"`
+	// Reclaims are the attempts the server took back from a worker; nil when
+	// the run did not measure them (as for Rework).
+	Reclaims *Reclaims `json:"reclaims,omitempty"`
 }
 
 // Rework is the attempts that ran to completion on a worker and still did not
@@ -212,8 +216,20 @@ type Rework struct {
 	// Examples are the first few, at most 20.
 	Examples []string `json:"examples,omitempty"`
 	// Undercount, when set, says why Attempts leaves out some real tasks'
-	// executions: the count is a lower bound, not a measurement.
+	// executions, so the count is a lower bound.
 	Undercount string `json:"undercount,omitempty"`
+}
+
+// Reclaims are the attempts the server closed as failed to take their tasks
+// back from a worker, as the stopped server's store records them: a worker the
+// heartbeat sweep marked offline, one that shut down or stopped reporting the
+// attempt, or one that re-registered from a new process.
+type Reclaims struct {
+	Attempts int `json:"attempts"`
+	// ByReason counts them by the message the server recorded.
+	ByReason map[string]int `json:"by_reason,omitempty"`
+	// Examples are the first few, at most 20.
+	Examples []string `json:"examples,omitempty"`
 }
 
 // warmup returns the scenario's warmup, or zero when there is no scenario.

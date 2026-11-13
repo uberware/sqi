@@ -332,7 +332,7 @@ func TestController_KillServerAndRestart(t *testing.T) {
 		t.Fatalf("records = %d, want 1", len(recs))
 	}
 	r := recs[0]
-	if r.Index != 0 || r.Kind != scenario.FaultKill || r.Target != "server" || !r.Server || r.Error != "" {
+	if r.Index != 0 || r.Kind != scenario.FaultKill || r.Target != "server" || !r.ServerRestart || r.Error != "" {
 		t.Errorf("record = %+v", r)
 	}
 	if r.Healed.IsZero() || r.Healed.Before(r.Start) {
@@ -359,7 +359,7 @@ func TestController_KillWorkerNotRestarted(t *testing.T) {
 		t.Errorf("RestartWorker called %d times, want none", n)
 	}
 	r := c.Records()
-	if len(r) != 1 || !r[0].Healed.IsZero() || r[0].Error != "" || r[0].Target != "group render (real 0)" || r[0].Server {
+	if len(r) != 1 || !r[0].Healed.IsZero() || r[0].Error != "" || r[0].Target != "group render (real 0)" || r[0].ServerRestart {
 		t.Errorf("records = %+v, want one unhealed, error-free kill of group render (real 0)", r)
 	}
 	if ws := c.Windows(); len(ws) != 0 {
@@ -465,7 +465,7 @@ func TestController_EmptyGroupsMeansEveryLane(t *testing.T) {
 			t.Errorf("lane %s calls = %v, want [Blackhole Heal]", g, got)
 		}
 	}
-	if r := c.Records(); len(r) != 1 || r[0].Target != "all" || r[0].Server {
+	if r := c.Records(); len(r) != 1 || r[0].Target != "all" || r[0].ServerRestart {
 		t.Errorf("records = %+v, want target all", r)
 	}
 	if ws := c.Windows(); len(ws) != 1 || !slices.Equal(ws[0].Groups, []string{"render", "rack-b"}) {
@@ -545,7 +545,7 @@ func TestController_PowerCutOrder(t *testing.T) {
 				t.Errorf("RestartServer at %s, RestartAll at %s: wrong order for %s", rs.at.Sub(start), ra.at.Sub(start), order)
 			}
 			r := c.Records()
-			if len(r) != 1 || r[0].Target != "all" || !r[0].Server || r[0].Healed.IsZero() {
+			if len(r) != 1 || r[0].Target != "all" || !r[0].ServerRestart || r[0].Healed.IsZero() {
 				t.Errorf("records = %+v", r)
 			}
 			if ws := c.Windows(); len(ws) != 1 || len(ws[0].Groups) != 0 {
@@ -901,7 +901,13 @@ func TestController_HealAllWhileRunning(t *testing.T) {
 	if ft.count("StallServer") != 1 || ft.count("ResumeServer") != 1 {
 		t.Errorf("server stalled %d and resumed %d times, want once each", ft.count("StallServer"), ft.count("ResumeServer"))
 	}
-	if r := c.Records(); len(r) != 2 {
+	r := c.Records()
+	if len(r) != 2 {
 		t.Errorf("records = %+v, want the two faults fired before the heal", r)
+	}
+	for _, rec := range r {
+		if rec.ServerRestart {
+			t.Errorf("record %+v marks a server restart; a stall keeps the server's process", rec)
+		}
 	}
 }

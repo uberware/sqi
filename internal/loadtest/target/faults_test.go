@@ -23,8 +23,8 @@ import (
 )
 
 // The signal helpers' environment. "parent" starts a "child" and writes its
-// pid to helperChildPIDEnv; "counter" writes a rising count to
-// helperCounterEnv every 50ms and exits on an interrupt.
+// pid to the file helperChildPIDEnv names; "counter" writes a rising count to
+// the file helperCounterEnv names every 50ms and exits on an interrupt.
 const (
 	helperChildPIDEnv = "LOADTARGET_TEST_CHILDPID"
 	helperCounterEnv  = "LOADTARGET_TEST_COUNTER"
@@ -165,8 +165,8 @@ func TestSignals_KillOneLeavesSiblings(t *testing.T) {
 }
 
 // TestManaged_CloseEndsWhatAKilledWorkerLeft gives a real worker slot a
-// process that started a child, kills the worker: the child lives on, for
-// the checks to find, through StopForChecks too; Close then ends it.
+// process that starts a child and kills that process: the child survives the
+// kill and StopForChecks, for the checks to find, and Close ends it.
 func TestManaged_CloseEndsWhatAKilledWorkerLeft(t *testing.T) {
 	m := newTestManaged(t, laneScenario(false))
 	m.addWorkerSlots()

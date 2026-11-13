@@ -537,7 +537,7 @@ Sizing of `ci-medium`, on WSL pinned to 4 CPUs of an Intel Core i7-10750H:
 
 - At its rates (about 5.5 tasks/s offered, about 3.8 in the steady state), a
   5 minute run peaks at 0.27 generator cores and 2.3 server cores, VALID, with
-  all six invariants holding.
+  its invariants holding.
 - At 0.16 and 0.10 jobs/s (about 7.4 tasks/s) the server is near its knee.
 - At 1 and 0.5 jobs/s the server needs about 3.4 cores, leaves a 4,584-task
   backlog, and 228 of 452 jobs are unfinished after the drain.
@@ -1057,14 +1057,14 @@ attempt's usage-pool claim, so in that window concurrent execution can exceed
 a cap while the server's claim count stays at the limit, and `caps` can
 fail.
 
-### An instant restart once stranded an attempt
+### An instant restart can leave an attempt running
 
-A lease request still in flight from a worker's old process could be served
-after a restart's reclaim, leaving the re-leased attempt stranded as running.
-Attempt reconciliation now repairs it: the server reclaims an attempt a live
+A lease request still in flight from a worker's old process can be served
+after a restart's reclaim, leaving the re-leased attempt open as running.
+Attempt reconciliation closes it: the server reclaims an attempt a live
 worker's heartbeats stop reporting, after `scheduler.reconcile_grace` (default
 2 minutes). `chaos-churn-instant-restart`, whose churn restarts a worker at
-once, no longer strands one; it stays in the library as a regression guard.
+once, is a regression guard for it.
 
 ### A graceful server stop can lose a terminal status (H13f1)
 
@@ -1072,8 +1072,8 @@ A task's terminal status is a core NATS publish with no acknowledgment, and
 the embedded broker stops JetStream before it closes client connections. A
 status in flight when the server stops gracefully is stored by no stream, and
 the worker, whose publish returned no error, does not retry. The attempt is
-reclaimed after the restart and the finished task re-runs. Found by
-`chaos-server-term`, where it is a known violation of the rework bound.
+reclaimed after the restart and the finished task re-runs.
+`chaos-server-term` records it as a known violation of the rework bound.
 
 ### A server stall longer than the heartbeat timeout takes every worker offline (H13f2)
 
@@ -1082,30 +1082,29 @@ runs before the stall's backlog of heartbeats is consumed, marks every live
 worker offline and reclaims their attempts. Work that finished during the stall
 is rejected when its report lands and runs again, and an attempt reclaimed
 while its lease reply is still in flight can run beside the task's next
-attempt until the stale-running cancel stops it. Found by
-`chaos-server-stall-long`.
+attempt until the stale-running cancel stops it. `chaos-server-stall-long`
+records it.
 
 ### A worker the sweep marks offline stays offline (H13f3)
 
 A live worker the heartbeat sweep marks offline stays offline while its
 connection stays up: heartbeats never bring a worker back online, and it
-re-registers only on a reconnect. Found by `chaos-server-stall-long` and
-`chaos-worker-sleep`, where `workers-converge` fails.
+re-registers only on a reconnect. `chaos-server-stall-long` and
+`chaos-worker-sleep` record it, where `workers-converge` fails.
 
 ### Killing sqi-worker on Linux leaves its task's processes running (H13f4)
 
 On a bare-process Linux worker, killing `sqi-worker` leaves the process tree of
 its task running. A child with no stdout never gets SIGPIPE, outlives the
 worker's restart and keeps writing the task's output while the reclaimed task
-re-runs on a live worker. Found by `chaos-worker-kill-mid-task`, where
-`no-orphans` and `single-writer` fail on Linux.
+re-runs on a live worker. `chaos-worker-kill-mid-task` records it, where
+`no-orphans` and `single-writer` can fail on Linux.
 
 ### A data race at shutdown in the scheduler (H13f5)
 
 `Scheduler.Stop` reads the scheduler's `cancel` function while
 `Scheduler.Run` is still setting it, when the server shuts down right after it
-launches the scheduler. The race detector reports it. Found while building the
-chaos harness and present on `main`; no scenario depends on it.
+launches the scheduler. The race detector reports it. No scenario records it.
 
 ---
 

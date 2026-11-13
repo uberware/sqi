@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-worker-sleep
-description: chaos W3 - SIGSTOP one of 2 real workers for 75s, over twice heartbeat_timeout, while it runs 90s tasks, then SIGCONT; stale attempts are canceled, nothing is credited twice, 4.75 min
-# The stall starts at 3m15s, not earlier: the server stands its liveness
-# sweeps down for about 3m10s after it starts, and a worker that sleeps inside
-# that window is never marked offline. The real workers serve their own queue;
+description: chaos - SIGSTOP one of 2 real workers for 75s, over twice heartbeat_timeout, while it runs 90s tasks, then SIGCONT; stale attempts are canceled, nothing is credited twice, 4.75 min
+# The stall starts at 3m15s, after the server's startup liveness grace: the
+# server runs no liveness sweep for about 3m10s after it starts, so a worker
+# that sleeps inside that window is never marked offline. The real workers
+# serve their own queue;
 # 60 simulated workers carry the background load on render. POSIX only
 # (SIGSTOP); the chaos test skips it on Windows.
 duration: 4m45s
@@ -52,8 +53,8 @@ faults:
 # heartbeat_timeout and re-run elsewhere, and their own processes, stalled
 # with the worker, reach their end the moment they resume, before the
 # server's cancel lands. At 4 long tasks a minute of 90s, about 6 are in
-# flight across the 2 real workers, so the stalled one cannot hold more (3
-# and 4 seen in two Linux runs). The bound allows 8, so it fails only on
+# flight across the 2 real workers, so the stalled one cannot hold more.
+# The bound allows 8, so it fails only on
 # rework the stall cannot explain.
 expect:
   max_rework_attempts: 8

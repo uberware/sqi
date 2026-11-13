@@ -11,10 +11,6 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-func terminalTask(s store.TaskStatus) bool {
-	return s == store.TaskStatusSucceeded || s == store.TaskStatusFailed || s == store.TaskStatusCanceled
-}
-
 // inFlightTask reports whether a task is assigned or running: held by a worker.
 func inFlightTask(s store.TaskStatus) bool {
 	return s == store.TaskStatusAssigned || s == store.TaskStatusRunning
@@ -39,7 +35,7 @@ func (s *Store) stepOutcomeLocked(stepID string) store.StepStatus {
 			continue
 		}
 		switch {
-		case !terminalTask(t.Status):
+		case !t.Status.IsTerminal():
 			return ""
 		case t.Status == store.TaskStatusFailed:
 			failed = true

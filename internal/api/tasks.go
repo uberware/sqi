@@ -443,18 +443,10 @@ func (h *taskHandler) streamTaskLogs(w http.ResponseWriter, r *http.Request, tas
 			return
 		}
 
-		if isTerminalTask(task.Status) && len(logs) == 0 {
+		if task.Status.IsTerminal() && len(logs) == 0 {
 			return
 		}
 	}
-}
-
-// isTerminalTask reports whether a task in the given status can no longer
-// produce new log output.
-func isTerminalTask(s store.TaskStatus) bool {
-	return s == store.TaskStatusSucceeded ||
-		s == store.TaskStatusFailed ||
-		s == store.TaskStatusCanceled
 }
 
 // ── POST /api/v1/tasks/{id}/retry ─────────────────────────────────────────────
@@ -603,7 +595,7 @@ func (h *taskHandler) cancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if isTerminalTask(task.Status) {
+	if task.Status.IsTerminal() {
 		writeProblem(w, r, http.StatusConflict,
 			fmt.Sprintf("task cannot be canceled in status %q; only non-terminal tasks are eligible", task.Status))
 		return

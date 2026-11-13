@@ -87,7 +87,7 @@ func TestExpectations_UnreadableMarkersLeaveReworkUnmeasured(t *testing.T) {
 		}},
 		tgt: &plainTarget{},
 	}
-	r.recordRework(chaos.StoreReport{Rework: &report.Rework{}}, errors.New("read the real tasks' markers: boom"))
+	r.recordRework(chaos.StoreReport{Rework: &report.Rework{}}, 0, errors.New("read the real tasks' markers: boom"))
 	r.applyExpectations()
 	var got *verify.Result
 	for i := range r.invariants {
@@ -103,5 +103,18 @@ func TestExpectations_UnreadableMarkersLeaveReworkUnmeasured(t *testing.T) {
 	}
 	if !slices.ContainsFunc(r.unavailable, func(u string) bool { return strings.Contains(u, "boom") }) {
 		t.Errorf("unavailable = %q, want the marker error", r.unavailable)
+	}
+}
+
+func TestRecordRework_SkippedMarkersMakeTheCountShort(t *testing.T) {
+	r := &run{logger: testLogger(t)}
+	r.recordRework(chaos.StoreReport{Rework: &report.Rework{Attempts: 1}}, 2, nil)
+	if r.rework == nil || !strings.Contains(r.rework.Undercount, "2 marker files") {
+		t.Errorf("rework = %+v, want a short count naming the 2 skipped files", r.rework)
+	}
+	r = &run{logger: testLogger(t)}
+	r.recordRework(chaos.StoreReport{Rework: &report.Rework{Attempts: 1}}, 0, nil)
+	if r.rework == nil || r.rework.Undercount != "" {
+		t.Errorf("rework = %+v, want a full count", r.rework)
 	}
 }

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-logs-during-restart
-description: chaos N5 - a verbose renderer (5,000 lines x 200 bytes per 20-40s task) on 40 workers across a SIGKILL of the server at 1m and a restart 20s later; every terminal status arrives, 3 min
+description: chaos - a verbose renderer (5,000 lines x 200 bytes per 20-40s task) on 40 workers across a SIGKILL of the server at 1m and a restart 20s later; every terminal status arrives, 3 min
 # About 18 tasks are in flight at a time, each streaming about 33 KB/s, so
 # the outage fills the workers' shared reconnect buffer with log chunks
 # ahead of their terminal statuses.

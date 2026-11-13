@@ -326,6 +326,9 @@ type run struct {
 	// rework is what the stopped server's store says the faults cost, nil
 	// until measured.
 	rework *report.Rework
+	// reclaims are the attempts the stopped server's store says it took back
+	// from a worker, nil until counted.
+	reclaims *report.Reclaims
 
 	uiCancel, obsCancel context.CancelFunc
 	uiDone, obsDone     chan struct{}
@@ -957,7 +960,11 @@ func (r *run) storeChecks(ctx context.Context) {
 		// A server still running would write under the checks.
 		msg := "the server and the real workers did not stop for the store checks: " + err.Error()
 		r.unavail("rework", msg)
-		r.invariants = append(r.invariants, verify.Unmeasured(msg, verify.NameStoreIntegrity, verify.NameExecutionsRecorded)...)
+		names := []string{verify.NameStoreIntegrity, verify.NameExecutionsRecorded}
+		if r.sc.Expect.MaxReclaims != nil {
+			names = append(names, verify.NameReclaims)
+		}
+		r.invariants = append(r.invariants, verify.Unmeasured(msg, names...)...)
 		return
 	}
 	markers, skipped, markerErr := readMarkers(r.faults.MarkerDir())
@@ -968,8 +975,13 @@ func (r *run) storeChecks(ctx context.Context) {
 		Markers:        markers,
 		SkippedMarkers: skipped,
 		Faults:         r.faultRecords(),
+		MaxReclaims:    r.sc.Expect.MaxReclaims,
 	})
-	r.recordRework(rep, markerErr)
+	r.reclaims = rep.Reclaims
+	if rep.Reclaims == nil {
+		r.unavail("reclaims", "the stopped server's store could not be read")
+	}
+	r.recordRework(rep, skipped, markerErr)
 	r.invariants = append(r.invariants, withMarkerErr(rep.Results, markerErr)...)
 }
 
@@ -991,15 +1003,20 @@ func withMarkerErr(results []verify.Result, markerErr error) []verify.Result {
 }
 
 // recordRework records what the faults cost, as the store checks measured it.
-func (r *run) recordRework(rep chaos.StoreReport, markerErr error) {
+// Markers that could not be read, or skipped exec files that could not be
+// parsed, make the count short.
+func (r *run) recordRework(rep chaos.StoreReport, skipped int, markerErr error) {
 	if rep.Rework == nil {
 		r.unavail("rework", rep.ReworkErr.Error())
 		return
 	}
-	if markerErr != nil {
+	switch {
+	case markerErr != nil:
 		msg := "the real tasks' executions are not counted: " + markerErr.Error()
 		r.unavail("rework", msg)
 		rep.Rework.Undercount = msg
+	case skipped > 0:
+		rep.Rework.Undercount = fmt.Sprintf("%d marker files could not be parsed, so a real task's completed executions may be missing", skipped)
 	}
 	r.rework = rep.Rework
 }

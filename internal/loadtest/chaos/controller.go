@@ -42,7 +42,7 @@ type procKey struct {
 	worker int
 }
 
-// window is what Windows needs of a fired fault.
+// window is what [Controller.Windows] needs of a fired fault.
 type window struct {
 	on     bool
 	groups []string
@@ -230,10 +230,11 @@ func (c *Controller) started(ctx context.Context, i int, tgt string, windowed bo
 	c.logger.InfoContext(ctx, "fault fired", slog.Int("fault", i), slog.String("kind", c.faults[i].Kind()), slog.String("target", tgt))
 }
 
-// hitServer records that fault i stopped the server.
-func (c *Controller) hitServer(i int) {
+// restartsServer records that fault i stops the server's process and starts
+// it again.
+func (c *Controller) restartsServer(i int) {
 	c.mu.Lock()
-	c.records[i].Server = true
+	c.records[i].ServerRestart = true
 	c.mu.Unlock()
 }
 
@@ -259,8 +260,9 @@ func (c *Controller) Records() []report.FaultRecord {
 }
 
 // Windows returns each fired fault that can lose data (a partition, blackhole
-// or flap, a server fault or a power cut; not latency, a worker fault or a
-// stall) as a verify.FaultWindow, in fault order. One that has not healed ends now.
+// or flap, a kill, term or stall of the server, or a power cut; not latency or
+// a kill, term or stall of workers) as a verify.FaultWindow, in fault order.
+// One that has not healed ends now.
 func (c *Controller) Windows() []verify.FaultWindow {
 	now := time.Now()
 	c.mu.Lock()
@@ -312,7 +314,7 @@ func (c *Controller) HealAll() {
 	}
 }
 
-// interrupted is the error of a fault whose heal ctx's end prevented.
+// interrupted is the error of a fault that ctx ended before it healed.
 func interrupted(ctx context.Context) error {
 	return fmt.Errorf("interrupted before it healed: %w", context.Cause(ctx))
 }
@@ -351,6 +353,7 @@ func (c *Controller) procFault(ctx context.Context, i int, p *scenario.ProcTarge
 	}
 	units := c.workerUnits(workers, stopWorker)
 	if server {
+		c.restartsServer(i)
 		units = []unit{c.serverUnit(stopServer)}
 	}
 	down, errs := stopUnits(ctx, units, nil)
@@ -373,7 +376,6 @@ func (c *Controller) procFault(ctx context.Context, i int, p *scenario.ProcTarge
 func (c *Controller) procTargets(ctx context.Context, i int, p *scenario.ProcTarget) (server bool, workers []int, err error) {
 	if p.Server {
 		c.started(ctx, i, "server", true, nil)
-		c.hitServer(i)
 		return true, nil, nil
 	}
 	workers = c.pick(p.Group, p.Real)
@@ -571,7 +573,7 @@ func (c *Controller) resumeCall(k procKey) error {
 // laneFault holds the lanes of the groups in state s for d, also healing them
 // when ctx ends first. Only a fault that can lose bytes opens a fault window:
 // shaping delays and rate-limits what a lane carries and drops none of it, so
-// it leaves the exact checks exact.
+// the exact checks stay exact under it.
 func (c *Controller) laneFault(ctx context.Context, i int, spec []string, s laneState, d time.Duration) error {
 	names := c.resolve(spec)
 	c.started(ctx, i, netTarget(spec), s.level != levelShape, names)
@@ -643,7 +645,7 @@ func minTime(a, b time.Time) time.Time {
 // supervisor would (see [Controller.supervise]).
 func (c *Controller) powerCut(ctx context.Context, i int, pc *scenario.PowerCut) error {
 	c.started(ctx, i, "all", true, nil)
-	c.hitServer(i)
+	c.restartsServer(i)
 	var workers []int
 	for _, g := range c.groups {
 		workers = append(workers, c.pick(g, 0)...)
@@ -670,8 +672,8 @@ func (c *Controller) powerCut(ctx context.Context, i int, pc *scenario.PowerCut)
 		// The workers boot with no server to reach. sqi-worker exits when
 		// it cannot reach the broker at boot, and its supervisor starts it
 		// again (the shipped systemd unit: Restart=on-failure,
-		// RestartSec=5s), so these failures are expected, and the
-		// supervisor's retries below bring the workers up.
+		// RestartSec=5s), so these failures are expected; the supervisor
+		// retries below bring the workers up.
 		if boot := restartUnits(ctx, realWorkers, restartFleet); len(boot) > 0 {
 			c.logger.InfoContext(ctx, "workers failed to boot with the server down, as expected; retrying them once it is back",
 				slog.Int("fault", i), slog.Any("error", errors.Join(boot...)))

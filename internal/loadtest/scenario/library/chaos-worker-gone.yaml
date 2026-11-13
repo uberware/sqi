@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-worker-gone
-description: chaos W2 - kill one of 2 real workers at 30s while it runs 30s tasks and never bring it back; its work is reclaimed and it is shown offline, 3 min
+description: chaos - kill one of 2 real workers at 30s while it runs 30s tasks and never bring it back; its work is reclaimed and it is shown offline, 3 min
 # The real workers serve their own queue, so every hold task runs on a real
 # worker; 60 simulated workers carry the background load on render. The
 # server marks the dead worker offline, and reclaims its attempts, only once
@@ -47,7 +47,7 @@ faults:
     kill: {group: render, real: 1}
 
 # The dead worker's tasks are reclaimed and re-run; none of them completes on
-# it, so no work is redone (0 seen on Linux). At 6 hold tasks a minute of 30s
+# it, so no work is redone. At 6 hold tasks a minute of 30s
 # over 2 workers it holds about 2 when it dies; the bound allows twice that,
 # for a task process that outlives the kill and completes.
 expect:

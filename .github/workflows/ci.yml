@@ -2453,12 +2453,11 @@ jobs:
   # builds. The whole suite runs nightly (load-nightly.yml). See
   # docs/chaos-testing.md.
   #
-  # ADVISORY: continue-on-error keeps a failure here from failing the run.
-  # The scenarios are timing-sensitive, and none has yet passed 20 consecutive
-  # runs on GitHub-hosted runners, which design section 8.2 requires before
-  # one gates. Until then the failing step, the log and the uploaded run
-  # directories are the signal. To promote a scenario after its 20 passes,
-  # remove continue-on-error once all three have them, and add the scenarios
+  # Advisory: continue-on-error keeps a failure here from failing the run.
+  # The scenarios are timing-sensitive, and a scenario gates only after 20
+  # consecutive passing runs on GitHub-hosted runners. Until then the failing
+  # step, the log and the uploaded run directories are the signal. Once all
+  # three have their 20 passes, remove continue-on-error and add the scenarios
   # to the gated list in load-nightly.yml (see docs/chaos-testing.md, "CI").
   chaos-smoke:
     name: Chaos smoke (${{ matrix.scenario }})

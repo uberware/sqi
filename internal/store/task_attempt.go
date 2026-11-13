@@ -22,6 +22,16 @@ const (
 	AttemptStatusCanceled AttemptStatus = "canceled"
 )
 
+// IsTerminal reports whether s is a closed attempt state (succeeded, failed,
+// canceled).
+func (s AttemptStatus) IsTerminal() bool {
+	switch s {
+	case AttemptStatusSucceeded, AttemptStatusFailed, AttemptStatusCanceled:
+		return true
+	}
+	return false
+}
+
 // TaskAttempt records a single execution of a [Task] on a specific worker.
 // A task may have multiple attempts if it is retried after failure.
 //

@@ -128,7 +128,7 @@ func serverQuietTime(sc *scenario.Scenario) time.Duration {
 func chaosConvergeWithin(sc *scenario.Scenario, serverUp time.Time, faults []report.FaultRecord, now time.Time) time.Duration {
 	last := serverUp
 	for _, f := range faults {
-		if !f.Server {
+		if !f.ServerRestart {
 			continue
 		}
 		at := f.Healed
@@ -147,7 +147,7 @@ func chaosConvergeWithin(sc *scenario.Scenario, serverUp time.Time, faults []rep
 // can inject faults: it has faults, a rework budget, known violations or a
 // job class with a real task.
 func chaosScenario(sc *scenario.Scenario) bool {
-	return len(sc.Faults) > 0 || sc.Expect.MaxReworkAttempts != nil || len(sc.Expect.KnownViolations) > 0 || sc.HasRealTask()
+	return len(sc.Faults) > 0 || sc.Expect.MaxReworkAttempts != nil || sc.Expect.MaxReclaims != nil || len(sc.Expect.KnownViolations) > 0 || sc.HasRealTask()
 }
 
 // orphanJobs returns the farm's jobs that are not accepted submissions but

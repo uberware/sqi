@@ -1,17 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-server-term
-description: chaos S2 - stop the server gracefully at 1m and start it 10s later, the upgrade path, under steady load (100 workers, about 2.5 tasks/s); no completed work may be redone, 3 min
+description: chaos - stop the server gracefully at 1m and start it 10s later, the upgrade path, under steady load (100 workers, about 2.5 tasks/s); no completed work may be redone, 3 min
 # A terminal status a worker publishes around the server's stop can be lost
 # (H13f1): the status is a core NATS publish with no stream acknowledgment, so
 # one still in flight when the embedded broker shuts down is stored by no
 # stream, and the worker, whose publish returned no error, does not retry.
 # The attempt is reclaimed after the restart and the task re-run. How many
-# land in that window varies from run to run, so the known violation is
-# "may": it fired in 3 of 3 runs at this load (1, 2 and 1 attempts) and in 1
-# of 2 at six times this load (0, then 6).
-# The entry carries a ceiling of 10 attempts, above anything seen (0 to 6): a
-# graceful restart that redid more work than that is a different defect and
-# fails the run.
+# land in that window varies from run to run and can be none, so the known
+# violation is "may". The entry carries a ceiling of 10 attempts: a graceful
+# restart that redoes more work than that is a different defect and fails the
+# run.
 duration: 3m
 warmup: 10s
 drain_timeout: 5m

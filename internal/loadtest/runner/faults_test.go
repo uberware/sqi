@@ -86,8 +86,8 @@ func TestRun_FaultsRejectedWithoutFaultTarget(t *testing.T) {
 	}
 }
 
-// slowHeal is a fault controller whose Run returns heal after the end of
-// submissions.
+// slowHeal is a fault controller whose Run returns the heal duration after the
+// end of submissions.
 type slowHeal struct {
 	duration, heal time.Duration
 
@@ -257,14 +257,14 @@ func TestChaosConvergeWithin(t *testing.T) {
 		{
 			name: "server restarted by a fault", serverUp: now.Add(-time.Hour),
 			faults: []report.FaultRecord{
-				{Kind: scenario.FaultKill, Target: "server", Server: true, Start: now.Add(-40 * time.Second), Healed: now.Add(-30 * time.Second)},
+				{Kind: scenario.FaultKill, Target: "server", ServerRestart: true, Start: now.Add(-40 * time.Second), Healed: now.Add(-30 * time.Second)},
 				{Kind: scenario.FaultKill, Target: "group sim (real 0)", Start: now.Add(-5 * time.Second), Healed: now},
 			},
 			want: grace - 30*time.Second,
 		},
 		{
 			name: "power cut never healed", serverUp: now.Add(-time.Hour),
-			faults: []report.FaultRecord{{Kind: scenario.FaultPowerCut, Target: "all", Server: true, Start: now.Add(-time.Minute)}},
+			faults: []report.FaultRecord{{Kind: scenario.FaultPowerCut, Target: "all", ServerRestart: true, Start: now.Add(-time.Minute)}},
 			want:   grace,
 		},
 	}

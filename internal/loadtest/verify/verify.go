@@ -57,12 +57,13 @@ const (
 	NameCaps             = "caps"
 	NameSubmissionAtomic = "submission-atomic"
 
-	// Package chaos reports these four, from the stopped server's store and
+	// Package chaos reports these five, from the stopped server's store and
 	// the real tasks' markers.
 	NameStoreIntegrity     = "store-integrity"
 	NameExecutionsRecorded = "executions-recorded"
 	NameNoOrphans          = "no-orphans"
 	NameSingleWriter       = "single-writer"
+	NameReclaims           = "reclaims"
 )
 
 // CounterLogsLostInFault is the logs result's counter of the lines the
@@ -75,7 +76,7 @@ func Names() []string {
 	return []string{
 		NameTerminal, NameOutcomes, NameSingleAttempt, NameLogs, NameWorkersConverge, NameCaps,
 		NameSubmissionAtomic,
-		NameExecutionsRecorded, NameStoreIntegrity, NameNoOrphans, NameSingleWriter,
+		NameExecutionsRecorded, NameStoreIntegrity, NameNoOrphans, NameSingleWriter, NameReclaims,
 	}
 }
 
@@ -211,8 +212,9 @@ type Result struct {
 	OK       bool
 	Evidence []string
 	Counters map[string]int64 `json:"counters,omitempty"`
-	// Known is the tracker ID of the known violation that excused a failure:
-	// OK is then true and Evidence says what was found.
+	// Known is the tracker of the known violation that excused a failure
+	// (several joined with ", "): OK is then true and Evidence says what was
+	// found.
 	Known string `json:"known,omitempty"`
 	// Unmeasured marks a failure that is no finding: the check could not read
 	// what it judges, or did not run. A known violation never excuses it.
@@ -238,8 +240,8 @@ type FaultWindow struct {
 // to 20 jobs, otherwise the farm's job list, 1000 a page), every accepted
 // job's task list (1000 a page), one attempt list for each task sampled at
 // AttemptSample, one log read for each task sampled at LogSample (more for a
-// task over 1000 chunks), and the farm's worker list once per poll; in a
-// chaos run also the farm's job list and every orphan's task list.
+// task over 1000 chunks), the farm's worker list once per poll, and, for
+// submission-atomic, the farm's job list and every orphan's task list.
 func Check(ctx context.Context, v ServerView, in Input) []Result {
 	c := newChecker(v, in)
 	c.ledger = indexLedger(in.Ledger)

@@ -437,7 +437,7 @@ func (m *managed) spawnServer(ctx context.Context) error {
 		m.server = p
 	}
 	m.mu.Unlock()
-	if closing { // a restart raced Close, which no longer sees this process
+	if closing { // a restart raced Close, which does not see this process
 		return errors.Join(errClosing, p.stopCtx(ctx, m.stopTimeout))
 	}
 	m.logger.InfoContext(ctx, "started sqi-server", slog.Int("pid", p.pid()), slog.String("http", m.httpURL), slog.String("nats", m.natsURL))
@@ -616,8 +616,8 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int, inc string) ([]string
 		"SQI_WORKER_SHUTDOWN_GRACE_PERIOD=" + workerGrace,
 		"SQI_WORKER_METRICS_ADDR=127.0.0.1:" + strconv.Itoa(ports[0]),
 		// The harness's own variables are not SQI_-prefixed: they configure
-		// nothing in the worker, and childEnv would strip them from a child
-		// of the harness.
+		// nothing in the worker, which passes them on to its tasks, where the
+		// no-op task reads them.
 		"SQILOAD_INCARNATION=" + inc,
 	}
 	if m.markerDir != "" {

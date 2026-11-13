@@ -125,8 +125,8 @@ func DefaultConfig() Config {
 // is independent of the server's: the grace must cover the worker timeout, a
 // worker's longest redial wait with its jitter, and one heartbeat interval
 // for the first heartbeat after the redial. A shorter grace reclaims the
-// running tasks of a worker that is merely still waiting to reconnect. A
-// workerTimeout <= 0 is the default WorkerTimeout.
+// running tasks of a worker that is still waiting to reconnect. A
+// workerTimeout <= 0 means the default WorkerTimeout.
 func ReconnectGrace(workerTimeout time.Duration) time.Duration {
 	if workerTimeout <= 0 {
 		workerTimeout = DefaultConfig().WorkerTimeout

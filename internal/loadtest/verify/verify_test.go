@@ -1426,7 +1426,7 @@ func TestCheck_ReadErrorsAreUnmeasured(t *testing.T) {
 	t.Run("a result that holds omits the field", func(t *testing.T) {
 		f, ok := reflect.TypeFor[verify.Result]().FieldByName("Unmeasured")
 		if !ok || f.Tag.Get("json") != "unmeasured,omitempty" {
-			t.Errorf("Unmeasured field = %+v, want the tag unmeasured,omitempty so a plain run's run.json is unchanged", f)
+			t.Errorf("Unmeasured field = %+v, want the tag unmeasured,omitempty so a run with every check measured writes no unmeasured key", f)
 		}
 	})
 }

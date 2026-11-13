@@ -89,8 +89,9 @@ type Incarnation struct {
 	ID      string
 	Worker  int
 	Started time.Time
-	// Ended is zero while the process runs, and set when the harness killed or
-	// stopped it.
+	// Ended is set when the harness kills or stops the process, or starts the
+	// worker's next incarnation; until then it is zero, also for a process
+	// that exited on its own.
 	Ended time.Time
 }
 

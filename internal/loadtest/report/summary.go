@@ -54,6 +54,7 @@ func writeSummary(w io.Writer, r *Record) error {
 	summaryGrowth(&b, r)
 	summaryFaults(&b, r)
 	summaryRework(&b, r)
+	summaryReclaims(&b, r)
 	summaryInvariants(&b, r)
 	summaryFindings(&b, r)
 	summaryUnavailable(&b, r)
@@ -283,6 +284,30 @@ func summaryRework(b *strings.Builder, r *Record) {
 	}
 }
 
+// summaryReclaims reports the attempts the server took back from a worker. It
+// writes nothing for a run that did not measure them.
+func summaryReclaims(b *strings.Builder, r *Record) {
+	if r.Reclaims == nil {
+		return
+	}
+	b.WriteString("## Reclaims\n\n")
+	fmt.Fprintf(b, "%d attempts", r.Reclaims.Attempts)
+	if len(r.Reclaims.ByReason) > 0 {
+		var parts []string
+		for _, why := range slices.Sorted(maps.Keys(r.Reclaims.ByReason)) {
+			parts = append(parts, fmt.Sprintf("%s %d", why, r.Reclaims.ByReason[why]))
+		}
+		fmt.Fprintf(b, "; by reason: %s", strings.Join(parts, ", "))
+	}
+	b.WriteString("\n\n")
+	for _, e := range r.Reclaims.Examples {
+		fmt.Fprintf(b, "- %s\n", e)
+	}
+	if len(r.Reclaims.Examples) > 0 {
+		b.WriteString("\n")
+	}
+}
+
 func summaryInvariants(b *strings.Builder, r *Record) {
 	b.WriteString("## Invariants\n\n")
 	if len(r.Invariants) == 0 {
@@ -298,6 +323,8 @@ func summaryInvariants(b *strings.Builder, r *Record) {
 		switch {
 		case inv.Known != "":
 			status = "known (" + inv.Known + ")"
+		case inv.Unmeasured:
+			status = "UNMEASURED"
 		case !inv.OK:
 			status = "FAIL"
 		}
