@@ -6,7 +6,10 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -44,4 +47,39 @@ func helperFDOpen() int {
 		fmt.Println("ok")
 	}
 	return 0
+}
+
+// helperLimitFileEnv names the file the "limitrec" helper records its
+// open-file limit in; the helper writes its pid to <file>.ready once it handles
+// signals.
+const helperLimitFileEnv = "LOADTARGET_TEST_LIMITFILE"
+
+// helperLimitRec is a fake server that, on an interrupt or a terminate, writes
+// the soft and hard open-file limit it has at that moment ("<soft> <hard>"),
+// and exits. It shows what limit a process had when the harness stopped it.
+func helperLimitRec() int {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	path := os.Getenv(helperLimitFileEnv)
+	if err := os.WriteFile(path+".ready", []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		return 3
+	}
+	select {
+	case <-sigs:
+	case <-time.After(helperLifetime):
+		return 0
+	}
+	raw, err := os.ReadFile("/proc/self/limits")
+	if err != nil {
+		return 3
+	}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if f := strings.Fields(line); strings.HasPrefix(line, "Max open files") && len(f) >= 5 {
+			if err := os.WriteFile(path, []byte(f[3]+" "+f[4]), 0o600); err != nil {
+				return 3
+			}
+			return 0
+		}
+	}
+	return 3
 }

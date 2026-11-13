@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -216,21 +217,75 @@ func TestManaged_LimitServerFDsErrors(t *testing.T) {
 	}
 }
 
+// limitRecServer starts a fake server that records its open-file limit when it
+// is stopped, and waits until it handles signals. recorded reads what it wrote.
+func limitRecServer(t *testing.T) (p *proc, recorded func() string) {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "limit")
+	p = startHelper(t, "limitrec", helperLimitFileEnv+"="+file)
+	readPID(t, file+".ready")
+	return p, func() string {
+		t.Helper()
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("the server recorded no limit: %v", err)
+		}
+		return string(raw)
+	}
+}
+
+func limitString(l unix.Rlimit) string {
+	return strconv.FormatUint(l.Cur, 10) + " " + strconv.FormatUint(l.Max, 10)
+}
+
+// The server records the limit it has when the harness stops it, so these show
+// the limit was back to the original before the stop, not just that the target
+// forgot it.
 func TestManaged_CloseRestoresServerFDs(t *testing.T) {
-	m, _ := managedWithServer(t)
+	m := newTestManaged(t, laneScenario(false))
+	p, recorded := limitRecServer(t)
+	m.server = p
+	original := limitString(nofile(t, p.pid()))
 	if _, err := m.LimitServerFDs(10); err != nil {
 		t.Fatal(err)
+	}
+	if limitString(nofile(t, p.pid())) == original {
+		t.Fatal("LimitServerFDs did not lower the limit")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	if err := m.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if m.fdSaved != nil {
-		t.Error("Close left the server's open-file limit saved")
+	if got := recorded(); got != original {
+		t.Errorf("the server's limit when Close stopped it = %q, want the original %q", got, original)
 	}
 }
 
+func TestManaged_StopForChecksRestoresServerFDs(t *testing.T) {
+	m := newTestManaged(t, laneScenario(false))
+	p, recorded := limitRecServer(t)
+	m.server = p
+	original := limitString(nofile(t, p.pid()))
+	if _, err := m.LimitServerFDs(10); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := m.StopForChecks(ctx); err != nil {
+		t.Fatalf("StopForChecks: %v", err)
+	}
+	if got := recorded(); got != original {
+		t.Errorf("the server's limit when StopForChecks stopped it = %q, want the original %q", got, original)
+	}
+	if m.fdSaved != nil {
+		t.Error("StopForChecks left the server's open-file limit saved")
+	}
+}
+
+// A restarted server is a new process that starts with the harness's limit:
+// the limit saved for the old one is neither restored onto it nor mistaken for
+// its own, and limiting it saves its limit afresh.
 func TestManaged_ServerRestartForgetsSavedFDLimit(t *testing.T) {
 	m, _ := managedWithServer(t)
 	if _, err := m.LimitServerFDs(10); err != nil {
@@ -243,5 +298,31 @@ func TestManaged_ServerRestartForgetsSavedFDLimit(t *testing.T) {
 	}
 	if m.fdSaved != nil {
 		t.Error("the saved limit survived stopping the server")
+	}
+
+	p2, recorded := limitRecServer(t)
+	m.server = p2
+	original := limitString(nofile(t, p2.pid()))
+	if err := m.RestoreServerFDs(); err != nil {
+		t.Fatalf("RestoreServerFDs on the restarted server: %v", err)
+	}
+	if got := limitString(nofile(t, p2.pid())); got != original {
+		t.Errorf("the restarted server's limit = %q, want it untouched at %q", got, original)
+	}
+	open, err := m.LimitServerFDs(7)
+	if err != nil {
+		t.Fatalf("LimitServerFDs on the restarted server: %v", err)
+	}
+	if got := nofile(t, p2.pid()).Cur; got != uint64(open+7) {
+		t.Errorf("the restarted server's soft limit = %d, want %d", got, open+7)
+	}
+	if err := m.RestoreServerFDs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := recorded(); got != original {
+		t.Errorf("the restarted server's limit at its stop = %q, want %q", got, original)
 	}
 }
