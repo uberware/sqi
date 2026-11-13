@@ -5,9 +5,12 @@ package discovery
 import (
 	"context"
 	"log/slog"
+	"net"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/grandcat/zeroconf"
 )
 
 func discardLogger() *slog.Logger {
@@ -244,5 +247,127 @@ func TestHostname(t *testing.T) {
 
 	if h := hostname(); strings.TrimSpace(h) == "" {
 		t.Error("hostname() returned an empty string")
+	}
+}
+
+// TestSRVHostFor pins the host the SRV record and a derived broker URL name.
+// macOS reports its hostname already in the .local domain, and .local is not
+// appended again: "<name>.local.local" is a name no certificate from
+// `sqi-server tls init` covers.
+func TestSRVHostFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		hostname string
+		want     string
+	}{
+		{hostname: "myhost", want: "myhost.local"},
+		{hostname: "Robins-Mac-Studio.local", want: "Robins-Mac-Studio.local"},
+		{hostname: "Robins-Mac-Studio.local.", want: "Robins-Mac-Studio.local"},
+		{hostname: "Host.LOCAL", want: "Host.local"},
+		{hostname: "render01.example.com", want: "render01.example.com.local"},
+		{hostname: "mylocal", want: "mylocal.local"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.hostname, func(t *testing.T) {
+			t.Parallel()
+			if got := srvHostFor(tt.hostname); got != tt.want {
+				t.Errorf("srvHostFor(%q) = %q, want %q", tt.hostname, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStart_AdvertisesTheHostsAddresses: Start names the host itself, so the
+// SRV record carries no doubled ".local", and passes the addresses explicitly.
+// Given none, the underlying responder takes a reply's addresses from the
+// interface the query arrived on, which it cannot learn on Windows (the
+// network stack there reports no interface for a received packet), so every
+// reply to a query would carry no address and a worker browsing after the
+// startup announcements would find nothing. Not parallel: it replaces
+// registerProxy.
+func TestStart_AdvertisesTheHostsAddresses(t *testing.T) {
+	want := interfaceIPs(nil)
+	if len(want) == 0 {
+		t.Skip("this host has no advertisable address")
+	}
+	var gotHost string
+	var gotIPs []string
+	orig := registerProxy
+	registerProxy = func(_, _, _ string, _ int, host string, ips, _ []string, _ []net.Interface) (*zeroconf.Server, error) {
+		gotHost, gotIPs = host, ips
+		return nil, nil
+	}
+	t.Cleanup(func() { registerProxy = orig })
+
+	r, err := New(Config{
+		Enabled:      true,
+		InstanceName: "test",
+		HTTPAddr:     ":8080",
+		NATSURL:      "nats://localhost:4222",
+	}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if want := hostLabel(hostname()); gotHost != want {
+		t.Errorf("host = %q, want %q", gotHost, want)
+	}
+	if !slices.Equal(gotIPs, want) {
+		t.Errorf("ips = %q, want this host's advertisable addresses %q", gotIPs, want)
+	}
+}
+
+// TestAdvertisedIPs pins the address rules the responder applies to each
+// interface, which are the underlying responder's own: loopback addresses
+// are never advertised, IPv4 always is, and an interface's link-local IPv6
+// addresses are advertised only when it has no global one.
+func TestAdvertisedIPs(t *testing.T) {
+	t.Parallel()
+
+	cidr := func(s string) net.Addr {
+		ip, n, err := net.ParseCIDR(s)
+		if err != nil {
+			t.Fatalf("ParseCIDR(%q): %v", s, err)
+		}
+		n.IP = ip
+		return n
+	}
+	tests := []struct {
+		name  string
+		addrs []net.Addr
+		want  []string
+	}{
+		{
+			name:  "loopback excluded",
+			addrs: []net.Addr{cidr("127.0.0.1/8"), cidr("::1/128")},
+			want:  nil,
+		},
+		{
+			name:  "global IPv6 preferred over link-local",
+			addrs: []net.Addr{cidr("192.168.1.5/24"), cidr("fe80::1/64"), cidr("2001:db8::5/64")},
+			want:  []string{"192.168.1.5", "2001:db8::5"},
+		},
+		{
+			name:  "link-local IPv6 when there is no global one",
+			addrs: []net.Addr{cidr("127.0.0.1/8"), cidr("fe80::1/64")},
+			want:  []string{"fe80::1"},
+		},
+		{
+			name:  "non-IPNet addresses ignored",
+			addrs: []net.Addr{&net.IPAddr{IP: net.ParseIP("10.0.0.1")}, cidr("10.0.0.2/8")},
+			want:  []string{"10.0.0.2"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := advertisedIPs(tt.addrs); !slices.Equal(got, tt.want) {
+				t.Errorf("advertisedIPs = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

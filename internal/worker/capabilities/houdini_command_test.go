@@ -3,23 +3,25 @@
 package capabilities
 
 import (
-	"path"
 	"strings"
 	"testing"
 )
 
-// TestHoudiniDetector_DefaultsTheHythonCommand covers the gap that left a
-// worker with Houdini installed tagged but unable to run houdini-rop-render:
-// the Windows installer does not put hython on PATH. The Windows executable is
-// checked against a real Houdini 22.0.466 (Apprentice); the Linux layout is
-// $HFS/bin under /opt/hfs<version> and was not checked.
+// macHoudiniBin is $HFS/bin of a macOS Houdini install, as Houdini 21.0.631's
+// installer lays it out ("Current" is a link to the version folder).
+const macHoudiniBin = "/Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/Current/Resources/bin/"
+
+// TestHoudiniDetector_DefaultsTheHythonCommand checks that the houdini detector
+// supplies the hython command houdini-rop-render runs, which no installer puts
+// on PATH. The Windows path matches a Houdini 22.0.466 (Apprentice) install and
+// the macOS path a Houdini 21.0.631 (Apprentice) install; the Linux path,
+// $HFS/bin under /opt/hfs<version>, is unverified.
 func TestHoudiniDetector_DefaultsTheHythonCommand(t *testing.T) {
 	d := builtinDetector(t, "houdini")
 	if d.Command == nil || d.Command.Name != "hython" {
 		t.Fatalf("the houdini detector has no command named hython: %+v", d.Command)
 	}
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
-	cases := []struct {
+	for _, tc := range []struct {
 		goos string
 		exe  string
 		not  []string
@@ -38,32 +40,18 @@ func TestHoudiniDetector_DefaultsTheHythonCommand(t *testing.T) {
 			[]string{"/opt/hfs21.0.440/bin/houdini"},
 			"21.0",
 		},
-	}
-	for _, tc := range cases {
+		{
+			"darwin", macHoudiniBin + "hython",
+			[]string{
+				macHoudiniBin + "hython3.11",
+				"/Applications/Houdini/Current/Frameworks/Houdini.framework/Versions/Current/Resources/bin/hython",
+			},
+			"21.0",
+		},
+	} {
 		t.Run(tc.goos, func(t *testing.T) {
-			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
-			for _, g := range d.Command.Globs {
-				if g.OS != "" && g.OS != tc.goos {
-					continue
-				}
-				ok, err := path.Match(norm(g.PathGlob), norm(tc.exe))
-				if err != nil {
-					t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-				}
-				if ok {
-					env.globs[g.PathGlob] = []string{tc.exe}
-				}
-				for _, other := range tc.not {
-					matched, err := path.Match(norm(g.PathGlob), norm(other))
-					if err != nil {
-						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-					}
-					if matched {
-						t.Errorf("glob %q matched %s, which is not the hython executable", g.PathGlob, other)
-					}
-				}
-			}
-			got, found := d.FindCommand(env)
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, "the hython executable")
+			got, found := d.FindCommand(envWithCommandAt(d, tc.goos, tc.exe))
 			if !found || got.Name != "hython" || got.Path != tc.exe || got.Version != tc.want {
 				t.Errorf("FindCommand = %+v (found %v), want hython %q at %s", got, found, tc.want, tc.exe)
 			}
@@ -71,8 +59,8 @@ func TestHoudiniDetector_DefaultsTheHythonCommand(t *testing.T) {
 	}
 }
 
-// The default command must not change what the tag says: the houdini tag keeps
-// its version tag.
+// The command default does not change the tags: the houdini detector emits its
+// version tag beside the bare tag.
 func TestHoudiniDetector_CommandLeavesTagsAlone(t *testing.T) {
 	d := builtinDetector(t, "houdini")
 	env := fakeEnv{goos: "windows", globs: map[string][]string{}}
