@@ -14,9 +14,20 @@
 # TestPostgres_BackupRestoreRoundTrip restores a dump into the server, and a
 # newer client's dump carries settings (e.g. SET transaction_timeout) that an
 # older server rejects. CI installs the matching client for each leg.
+#
+# PG_PHASE selects what runs: "all" (the default) runs the three phases below
+# in order; "packages", "retry" or "integration" runs just that one. CI runs
+# the three as separate jobs so they overlap.
 set -euo pipefail
 
 PG_VERSION="${PG_VERSION:-18}"
+PG_PHASE="${PG_PHASE:-all}"
+case "$PG_PHASE" in
+  all|packages|retry|integration) ;;
+  *) echo "PG_PHASE must be all, packages, retry or integration" >&2; exit 2 ;;
+esac
+# runs_phase NAME: true when PG_PHASE selects the phase NAME.
+runs_phase() { [ "$PG_PHASE" = all ] || [ "$PG_PHASE" = "$1" ]; }
 # Pinned patch tags, used when SQI_TEST_POSTGRES_IMAGE is unset. Keep in step
 # with the matrix images of the postgres-integration job in
 # .github/workflows/ci.yml.
@@ -54,19 +65,29 @@ if [ -z "${SQI_TEST_POSTGRES_DSN:-}" ]; then
 fi
 export SQI_TEST_REQUIRE_POSTGRES=1
 
-echo "== PostgreSQL ${PG_VERSION}: store, scheduler, api, server, restore and cmd packages"
-go test $RACE_FLAG -count=1 -v -timeout 30m \
-  ./internal/store/... ./internal/scheduler/... ./internal/api/... ./internal/server/... ./internal/restore/... ./cmd/...
+if runs_phase packages; then
+  echo "== PostgreSQL ${PG_VERSION}: store, scheduler, api, server, restore and cmd packages"
+  go test $RACE_FLAG -count=1 -v -timeout 30m \
+    ./internal/store/... ./internal/scheduler/... ./internal/api/... ./internal/server/... ./internal/restore/... ./cmd/...
+fi
 
 # -v, and the BEGIN/END lines around it, let CI find this phase's own PASS and
 # SKIP lines and check that its /postgres subtests really ran.
-echo "== PostgreSQL ${PG_VERSION}: store packages with every transaction rehearsed once"
-echo "== BEGIN FORCED-RETRY PHASE"
-SQI_TEST_PG_FORCE_TX_RETRY=1 go test $RACE_FLAG -count=1 -v -timeout 30m ./internal/store/...
-echo "== END FORCED-RETRY PHASE"
+if runs_phase retry; then
+  echo "== PostgreSQL ${PG_VERSION}: store packages with every transaction rehearsed once"
+  echo "== BEGIN FORCED-RETRY PHASE"
+  SQI_TEST_PG_FORCE_TX_RETRY=1 go test $RACE_FLAG -count=1 -v -timeout 30m ./internal/store/...
+  echo "== END FORCED-RETRY PHASE"
+fi
 
-echo "== PostgreSQL ${PG_VERSION}: integration suite with the server on PostgreSQL"
-SQI_TEST_STORE_DRIVER=postgres go test $RACE_FLAG -count=1 -v -tags integration -timeout 30m \
-  -skip 'TestLDAP_|TestOIDC_|TestIsolation_' ./test/integration/
+if runs_phase integration; then
+  echo "== PostgreSQL ${PG_VERSION}: integration suite with the server on PostgreSQL"
+  SQI_TEST_STORE_DRIVER=postgres go test $RACE_FLAG -count=1 -v -tags integration -timeout 30m \
+    -skip 'TestLDAP_|TestOIDC_|TestIsolation_' ./test/integration/
+fi
 
-echo "POSTGRES TESTS PASSED (PG_VERSION=${PG_VERSION})"
+if [ "$PG_PHASE" = all ]; then
+  echo "POSTGRES TESTS PASSED (PG_VERSION=${PG_VERSION})"
+else
+  echo "POSTGRES TESTS PASSED (PG_VERSION=${PG_VERSION} PHASE=${PG_PHASE})"
+fi

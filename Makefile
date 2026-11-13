@@ -82,6 +82,9 @@ endif
 
 # PostgreSQL major version for `make test-postgres` (16 or 18; CI runs both).
 PG_VERSION ?= 18
+# Which phase of `make test-postgres` to run: all (the default), packages,
+# retry or integration. CI runs the three as separate jobs.
+PG_PHASE ?= all
 
 COVERAGE_OUT := coverage.out
 # Raise in 5-point increments as new test suites land.
@@ -377,7 +380,7 @@ test-ldap: ## Run the LDAP tests against a real directory in a container (needs 
 
 .PHONY: test-postgres
 test-postgres: ## Run the PostgreSQL-backed tests against a throwaway server in Docker (PG_VERSION=16|18)
-	TEST_FLAGS="$(TEST_FLAGS)" PG_VERSION=$(PG_VERSION) bash scripts/test-postgres.sh
+	TEST_FLAGS="$(TEST_FLAGS)" PG_VERSION=$(PG_VERSION) PG_PHASE=$(PG_PHASE) bash scripts/test-postgres.sh
 
 .PHONY: test-oidc
 test-oidc: ## Run the SSO tests against a real Keycloak in a container (needs Docker)
