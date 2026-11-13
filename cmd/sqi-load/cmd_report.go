@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -137,6 +138,9 @@ suite can run in the environment --os, --store and --container describe, sorted.
 func (a *app) printChaosMatrix(m chaosMatrixFlags) error {
 	if m.store != "sqlite" && m.store != "postgres" {
 		return fmt.Errorf("--store %q: want sqlite or postgres", m.store)
+	}
+	if !slices.Contains([]string{"linux", "windows", "darwin"}, m.os) {
+		return fmt.Errorf("--os %q: want linux, windows or darwin", m.os)
 	}
 	env := scenario.ChaosEnv{GOOS: m.os, Store: m.store, Container: m.container}
 	names := []string{}

@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-disk-server-full
+description: chaos - fill the server's data volume at 1m for 60s under a verbose renderer (5,000 lines x 200 bytes per 20-40s task) on 40 workers; the server recovers when space returns, 3 min
+# The data volume is size-limited (make chaos-container) and the fault leaves it
+# no free space at all for 60s, so every write the server makes to its
+# database or its broker's data fails with ENOSPC; the verbose renderer keeps
+# the log and status streams writing throughout. About 18 tasks are in flight
+# at a time, each streaming about 33 KB/s. The space returns at 2m.
+#
+# The fault comes at 1m, inside the server's startup liveness grace (about
+# 3m10s), so no liveness sweep runs while the volume is full. No rework or
+# reclaim bound is set yet: what the run measures first is whether the server
+# survives the full volume and finishes every task once the space returns.
+duration: 3m
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 40
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: verbose
+    rate: 0.1/s
+    queue: render
+    steps: 1
+    tasks_per_step: 6
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 20s, max: 40s}
+      log_lines: 5000
+      log_line_bytes: 200
+
+faults:
+  - at: 1m
+    disk_full: {volume: server, headroom_bytes: 0}
+    duration: 60s

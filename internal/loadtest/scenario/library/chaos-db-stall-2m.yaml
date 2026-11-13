@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-db-stall-2m
+description: chaos - stall the server's database for 2m at 3m15s under steady load (100 workers, about 2.5 tasks/s), four heartbeat_timeouts; the run finishes with its store intact, 5.5 min
+# The stall comes at 3m15s, after the server's startup liveness grace (about
+# 3m10s), and lasts 2m, four times heartbeat_timeout: a long outage the server
+# may handle by reclaiming work from workers it can no longer hear from, so
+# this scenario sets no rework or reclaim bound. Both are reported; what it
+# holds the server to is the base invariants and store-integrity (no lost
+# update, no double write) once the store is back at 5m15s.
+duration: 5m30s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 100
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 3m15s
+    database: {mode: stall}
+    duration: 2m

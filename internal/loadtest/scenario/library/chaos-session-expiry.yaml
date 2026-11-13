@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-session-expiry
+description: chaos - 100 workers under broker auth with a 1m session lifetime, so each reconnects about four times mid-run, running 30-90s tasks at about 2.5 tasks/s; no work is redone or reclaimed, 4 min
+# No fault: the workers' broker credentials (nats.auth.user_ttl) expire every
+# minute, the shortest lifetime the server accepts, so over the 4m run each
+# worker's session expires and it must authenticate again about four times. The
+# tasks run 30-90s, longer than a session lives, so most of them are in flight
+# across an expiry and must come through it. Without a fault, the scenario is a
+# chaos run because expect sets bounds.
+duration: 4m
+warmup: 10s
+drain_timeout: 5m
+
+server:
+  broker_auth: true
+  config:
+    nats:
+      auth:
+        user_ttl: 1m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 100
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 30s, max: 90s}
+      log_lines: 20
+      log_line_bytes: 120
+
+# A worker that reconnects after its credential expires keeps its work, so no
+# attempt is redone and the server reclaims nothing.
+expect:
+  max_rework_attempts: 0
+  max_reclaims: 0

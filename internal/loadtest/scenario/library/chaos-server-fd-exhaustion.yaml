@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-server-fd-exhaustion
+description: chaos - lower the server's file descriptor limit to 10 above its open files for 60s while a rack of 30 of 120 workers reconnects after a 40s cut; the server recovers when the limit lifts, 5 min
+# Linux only (RLIMIT_NOFILE, set on the server with prlimit); it needs no
+# privilege and no container.
+#
+# The design asks for a server started with a low limit and more workers than
+# it can hold. The simulated fleet fails the whole run when a worker cannot
+# connect at start, so that shape cannot run. Instead the limit is applied to
+# the running server while a partitioned rack reconnects, which exercises the
+# same paths: EMFILE in the HTTP and broker accept loops, and every file the
+# server opens meanwhile (SQLite, JetStream blocks, logs). "Recovers when
+# workers leave" becomes "recovers when descriptors are free again".
+#
+# Timeline, all after the server's startup liveness grace (about 3m10s):
+#   3m15s  rack-b is cut from the broker for 40s
+#   3m20s  the limit drops to the server's open files plus 10
+#   3m55s  rack-b heals and its 30 workers redial into 10 free descriptors
+#   4m20s  the limit lifts, 60s after it dropped
+# The cut outlasts heartbeat_timeout (30s) so rack-b's work is reclaimed, and
+# its redial then meets the exhausted limit.
+duration: 5m
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: rack-a
+    count: 90
+    ramp: 50/s
+    cpu: 8
+    os: linux
+  - name: rack-b
+    count: 30
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 3m15s
+    partition: {groups: [rack-b]}
+    duration: 40s
+  - at: 3m20s
+    fd_limit: {headroom: 10}
+    duration: 60s
+
+# As in chaos-net-rack-partition: rack-b's work in flight when it is cut is
+# reclaimed and re-run while the cut workers finish it, about 12 tasks on
+# rack-b's quarter of the fleet and up to about 25 with the backlog; the
+# bound of 30 covers that.
+expect:
+  max_rework_attempts: 30

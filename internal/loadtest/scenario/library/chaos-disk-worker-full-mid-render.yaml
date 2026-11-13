@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-disk-worker-full-mid-render
+description: chaos - leave the 2 real workers' session volume 8 MiB free at 1m for 60s while their tasks write 32 MiB each; the tasks fail with their cause, are retried, and the workers go on, 3 min
+# The real workers' session directories are on a size-limited volume (make
+# chaos-container). The hold tasks each write 32 MiB into their working
+# directory over their 30s, and the fault leaves the volume only 8 MiB free, so
+# a task that is running when the fault starts fills the volume partway through
+# its render and its process exits with an error. 60 simulated workers carry
+# the background load on render. The space returns at 2m.
+#
+# The attempts that fail on a real worker inside the window must each name
+# their cause (reason matches the worker's "process exited with code"), and
+# no more than 12 may fail: 6 hold tasks a minute of 30s start about 6 in
+# the 60s window, 2 workers take the 8 MiB bound at once, and each failed
+# task is retried at most once inside the window, so about 12 is the ceiling
+# with room for a retry that fails again.
+duration: 3m
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}, {name: render-real, max_concurrent_tasks: 8}]
+
+workers:
+  - name: sim
+    count: 60
+    ramp: 50/s
+    cpu: 8
+    os: linux
+    queues: [render]
+  - name: render
+    real: 2
+    queues: [render-real]
+
+jobs:
+  - name: frames
+    rate: 0.15/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+  - name: hold
+    rate: 6/m
+    queue: render-real
+    steps: 1
+    tasks_per_step: 1
+    cores: 1
+    real_task: {duration: 30s, log_every: 1s, scratch_bytes: 33554432}
+
+faults:
+  - at: 1m
+    disk_full:
+      volume: workers
+      headroom_bytes: 8388608
+      reason: 'process exited with code'
+      max_failed: 12
+    duration: 60s
+
+# A task that fails on the full volume is retried and completes once the space
+# returns; none completes twice, so the redone work is a retry of a failed
+# attempt, about 2 hold tasks in flight when the fault starts, and the bound
+# allows twice that.
+expect:
+  max_rework_attempts: 4

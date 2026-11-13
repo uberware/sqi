@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-clock-skew
+description: chaos - 60 of 120 simulated workers run their clocks 10m ahead, 10m behind and a day ahead of the server's under steady load; none is marked offline or reclaimed, and the server warns about each skewed group, 4 min
+# No fault: the skew is a standing condition of 60 of the 120 workers, each
+# group's wire clock offset from the server's: ahead-10m by +10m, behind-10m by
+# -10m, ahead-1d by +24h; on-time is correct.
+#
+# The scheduler judges liveness on its own clock (the broker's stamp of each
+# heartbeat), never the worker's, so a skewed worker must stay online and keep
+# its work. What the server does notice is a heartbeat whose worker timestamp is
+# more than heartbeat_timeout (30s) from its receipt, in either direction: all
+# three skews (10m = 20x, 24h = 2,880x) exceed it, so the server logs a skew
+# warning for each skewed group, and the skew-warning check requires that. It
+# also stops reconciling a skewed worker's attempts, which is why its work is
+# never reclaimed. Without a fault, the scenario is a chaos run because expect
+# sets bounds.
+duration: 4m
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: on-time
+    count: 60
+    ramp: 50/s
+    cpu: 8
+    os: linux
+  - name: ahead-10m
+    count: 20
+    ramp: 50/s
+    cpu: 8
+    os: linux
+    clock_skew: 10m
+  - name: behind-10m
+    count: 20
+    ramp: 50/s
+    cpu: 8
+    os: linux
+    clock_skew: -10m
+  - name: ahead-1d
+    count: 20
+    ramp: 50/s
+    cpu: 8
+    os: linux
+    clock_skew: 24h
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+expect:
+  max_rework_attempts: 0
+  max_reclaims: 0
