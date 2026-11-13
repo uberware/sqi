@@ -74,6 +74,9 @@ type Config struct {
 	// being flushed regardless of chunk thresholds.  Keeps the web UI log
 	// viewer feeling live.  Default: 500 ms.
 	FlushInterval time.Duration
+
+	// Now stamps each chunk's At; nil is time.Now.
+	Now func() time.Time
 }
 
 // DefaultConfig returns a [Config] populated with production-sensible defaults.
@@ -272,6 +275,14 @@ func (p *Publisher) FlushLogs(_ context.Context, taskID, attemptID string) error
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+// now is the wire clock: cfg.Now, or time.Now when unset.
+func (p *Publisher) now() time.Time {
+	if p.cfg.Now != nil {
+		return p.cfg.Now()
+	}
+	return time.Now()
+}
+
 // getOrCreate returns the existing [attemptBuf] for attemptID, or creates and
 // registers a new one and starts its background flush goroutine.
 func (p *Publisher) getOrCreate(taskID, attemptID string) *attemptBuf {
@@ -351,7 +362,7 @@ func (p *Publisher) publishChunk(ctx context.Context, buf *attemptBuf, stream st
 		TaskID:    buf.taskID,
 		AttemptID: buf.attemptID,
 		SeqNum:    seq,
-		At:        time.Now(),
+		At:        p.now(),
 		Stream:    stream,
 		Data:      strings.Join(lines, "\n"),
 	}

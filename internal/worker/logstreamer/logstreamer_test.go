@@ -497,3 +497,36 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("FlushInterval = %v, want > 0", cfg.FlushInterval)
 	}
 }
+
+// TestPublisher_NowStampsLogChunk verifies that Config.Now stamps each chunk and
+// that nil is time.Now.
+func TestPublisher_NowStampsLogChunk(t *testing.T) {
+	t0 := time.Date(2031, 2, 3, 4, 5, 6, 0, time.UTC)
+	tests := []struct {
+		name string
+		now  func() time.Time
+		want func(time.Time) bool
+	}{
+		{"injected", func() time.Time { return t0 }, func(at time.Time) bool { return at.Equal(t0) }},
+		{"nil is time.Now", nil, func(at time.Time) bool { d := time.Since(at); return d > -time.Second && d < time.Second }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nc := &mockNATS{}
+			cfg := slowFlushCfg(50, 16384)
+			cfg.Now = tt.now
+			p := logstreamer.New(nc, testWorkerID, cfg, discard())
+			p.HandleLine(context.Background(), "task-1", "attempt-1", "", "stdout", "hello")
+			if err := p.FlushLogs(context.Background(), "task-1", "attempt-1"); err != nil {
+				t.Fatalf("FlushLogs: %v", err)
+			}
+			chunks := decodeAll(t, nc.snapshot())
+			if len(chunks) != 1 {
+				t.Fatalf("got %d chunks, want 1", len(chunks))
+			}
+			if !tt.want(chunks[0].At) {
+				t.Errorf("At = %v", chunks[0].At)
+			}
+		})
+	}
+}
