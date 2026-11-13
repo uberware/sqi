@@ -151,7 +151,7 @@ application under
 | `maya` | Linux `path_glob /usr/autodesk/maya*/bin/maya`; macOS `path_glob /Applications/Autodesk/maya*/Maya.app`; Windows `path_glob C:\Program Files\Autodesk\Maya*\bin\maya.exe` and `registry HKLM\SOFTWARE\Autodesk\Maya` | `(?i)maya(?P<v>[0-9]+)` against the matched path (case-insensitive: the Windows folder is `Maya2026`) |
 | `houdini` | `exe hython` (any OS, if on `PATH`); Linux `path_glob /opt/hfs*/bin/houdini`; macOS `path_glob /Applications/Houdini/Houdini*/Frameworks/Houdini.framework`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\houdini.exe` and `registry HKLM\SOFTWARE\Side Effects Software\Houdini` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `nuke` | `exe nuke` (any OS, if on `PATH`); Linux `path_glob /usr/local/Nuke*/Nuke*`; macOS `path_glob /Applications/Nuke*/Nuke*.app`; Windows `path_glob C:\Program Files\Nuke*\Nuke[0-9]*.exe` and `registry HKLM\SOFTWARE\The Foundry\Nuke` (older installers; the 17.x MSI writes `HKLM\SOFTWARE\Foundry\Nuke 17.1v2` instead, so it is found by the glob) | `Nuke([0-9]+\.[0-9]+)` against the matched path (none when only `exe nuke` matched) |
-| `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender*.app`; Windows `path_glob C:\Program Files\Blender Foundation\Blender *\blender.exe` and `registry HKLM\SOFTWARE\BlenderFoundation\Blender` (older installers; the MSI and winget write neither the key nor a `PATH` entry, so the glob is what finds them) | none (presence only, no `_<version>` tags) |
+| `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender*.app/Contents/MacOS/Blender` (the executable, so an unrelated bundle such as `Blender Launcher.app` is not taken for Blender); Windows `path_glob C:\Program Files\Blender Foundation\Blender *\blender.exe` and `registry HKLM\SOFTWARE\BlenderFoundation\Blender` (older installers; the MSI and winget write neither the key nor a `PATH` entry, so the glob is what finds them) | none (presence only, no `_<version>` tags) |
 | `cinema4d` | Linux `path_glob /opt/maxon/cinema4dr*/bin/Commandline`; macOS `path_glob /Applications/Maxon Cinema 4D */Commandline.app`; Windows `path_glob C:\Program Files\Maxon Cinema 4D *\Commandline.exe` | `Maxon Cinema 4D (?P<v>[0-9]{4})` against the matched path (a Linux match carries no year, so no version) |
 | `threedsmax` | `exe 3dsmaxcmd` (any OS, if on `PATH`); Windows `registry HKLM\SOFTWARE\Autodesk\3dsMax`; Windows `path_glob C:\Program Files\Autodesk\3ds Max *\3dsmaxcmd.exe` | `3ds Max (?P<v>[0-9]{4})` against the matched path |
 | `aftereffects` | `exe aerender` (any OS, if on `PATH`); macOS `path_glob /Applications/Adobe After Effects */aerender`; Windows `path_glob C:\Program Files\Adobe\Adobe After Effects *\Support Files\aerender.exe`. Also supplies a default `aerender` command on Windows and macOS | `After Effects (?P<v>[0-9]{4})` against the matched path |
@@ -382,9 +382,12 @@ The `nuke`, `blender`, `houdini` (`hython`), `aftereffects` (`aerender`), `katan
 (`sfxcmd`), `vred` (`VREDCore`), `keyshot` (`keyshot_headless`), `modo` (`modo_cl`), `unreal` (`UnrealEditor-Cmd`), `husk`, `mantra`, `renderman` (`prman`), `threedelight` (`renderdl`) and `oiiotool` (Houdini's `hoiiotool`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
 only: a Linux install is wherever it was unpacked, or a distro package already on
 `PATH`. On macOS Blender's glob matches `/Applications/Blender.app` and a
-release renamed to carry its version, such as `/Applications/Blender 5.2.app`;
-only the bundle name carries a version, so a versioned bundle is chosen over a
-plain `Blender.app`. Houdini's, and the `husk`, `mantra` and `oiiotool` ones,
+release renamed to carry its version, such as `/Applications/Blender 5.2.app`.
+Only the bundle name carries a version, so a versioned bundle is chosen over a
+plain `Blender.app` whichever release each holds: keep an older release beside
+a newer one as `Blender 4.2.app` and the worker runs 4.2. Rename the newer one
+to carry its version too, or pin the release with a `blender` entry in
+[`worker.commands`](worker-configuration.md#workercommands). Houdini's, and the `husk`, `mantra` and `oiiotool` ones,
 have Windows, Linux and macOS globs, the macOS one being `$HFS/bin` inside the
 framework bundle
 (`/Applications/Houdini/Houdini<version>/Frameworks/Houdini.framework/Versions/Current/Resources/bin`). For

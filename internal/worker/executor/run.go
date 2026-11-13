@@ -707,7 +707,10 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		if killErr := cmd.Process.Kill(); killErr != nil {
 			e.logger.WarnContext(context.Background(), "executor: kill process after supervise failure", slog.Any("error", killErr))
 		}
-		out.Wait() //nolint:errcheck // best-effort reap after a forced kill; the supervise error below is what the caller sees
+		// Nothing reads the output yet, so drop it rather than leave Wait to
+		// the drain delay.
+		out.Discard()
+		out.Wait(nil) //nolint:errcheck // best-effort reap after a forced kill; the supervise error below is what the caller sees
 		return processResult{Err: fmt.Errorf("supervise task process tree: %w", err)}
 	}
 	defer func() {
@@ -751,11 +754,11 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// line read reaches the handler before the result is reported.
 	waitDone := make(chan error, 1)
 	go func() {
-		stillOpen, waitErr := out.Wait()
+		stillOpen, waitErr := out.Wait(tree.alive)
 		readWg.Wait()
 		if stillOpen {
 			e.logger.WarnContext(ctx,
-				"executor: the task exited but its output was still open after the drain delay; output after that is not captured",
+				"executor: the task and its process group exited but a process outside the group still holds the output; output after the drain delay is not captured",
 				slog.String("task_id", msg.TaskID), slog.Duration("waited", procout.DrainDelay))
 		}
 		waitDone <- waitErr

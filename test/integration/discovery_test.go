@@ -73,6 +73,28 @@ func browseOnce(t *testing.T) workerdiscovery.Result {
 	return found
 }
 
+// TestDiscovery_FoundAfterTheAnnouncements: a worker that starts browsing
+// once the server's startup announcements are over is answered by the
+// responder's reply to its query, and zeroconf's browser drops a reply that
+// carries no address. The responder is given its addresses explicitly for
+// this: given none, zeroconf takes a reply's addresses from the interface the
+// query arrived on, which the network stack does not report on Windows, so
+// every reply there carried none. On Linux and macOS this pins the behavior;
+// only a Windows run can show the failure it guards against.
+func TestDiscovery_FoundAfterTheAnnouncements(t *testing.T) {
+	requireMulticast(t)
+	noForeignServer(t)
+
+	instance := advertise(t, false, false)
+	// zeroconf announces twice, about 1 s and then 2 s apart, after a probe
+	// of up to 0.75 s: by 5 s every announcement has gone out.
+	time.Sleep(5 * time.Second)
+
+	if found := browseOnce(t); found.InstanceName != instance {
+		t.Errorf("found %q, want %q", found.InstanceName, instance)
+	}
+}
+
 // TestDiscovery_TLSRecordsCrossTheWire is the join the unit tests could not
 // make: the server's own config decides the TXT records, they travel over
 // real multicast, and the worker's parser reads them back.

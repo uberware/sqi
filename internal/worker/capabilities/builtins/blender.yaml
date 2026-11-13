@@ -2,7 +2,7 @@
 tag: blender
 checks:
   - exe: blender
-  - path_glob: "/Applications/Blender*.app"                          # macOS (Blender.app, or renamed "Blender 5.2.app")
+  - path_glob: "/Applications/Blender*.app/Contents/MacOS/Blender"   # macOS (Blender.app, or renamed "Blender 5.2.app"; the executable, so "Blender Launcher.app" does not match)
   - path_glob: 'C:\Program Files\Blender Foundation\Blender *\blender.exe'   # windows (MSI, winget)
     os: windows
   - registry: 'HKLM\SOFTWARE\BlenderFoundation\Blender'              # windows (older installers)
@@ -14,7 +14,9 @@ checks:
 # was unpacked, or a distro package that is already on PATH, so there is no
 # default for it. On macOS a second release kept beside Blender.app is renamed
 # to carry its version ("Blender 5.2.app"); only the bundle name carries one, so
-# a versioned bundle is chosen over a plain Blender.app.
+# a versioned bundle is chosen over a plain Blender.app whichever release each
+# holds. An older release kept as "Blender 4.2.app" beside a newer Blender.app
+# is therefore chosen; worker.commands pins a release.
 command:
   name: blender
   version:

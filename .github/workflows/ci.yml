@@ -1393,7 +1393,8 @@ jobs:
   # cmd/sqi-server) carry _windows.go or _windows_test.go files.
   # internal/worker/envutil and internal/worker/session branch on
   # runtime.GOOS in their tests, so only a Windows run executes the Windows
-  # branch.
+  # branch. internal/worker/procout reads a task's output through OS pipes,
+  # whose Windows behavior only a Windows run can show.
   #
   # scripts/test-isolation-windows.ps1 exits 0 with a message when the shell
   # is not elevated, so the assertion step fails on that message and requires
@@ -1438,6 +1439,7 @@ jobs:
           go test -count=1 -v \
             ./internal/worker/isolation/... \
             ./internal/worker/executor/... \
+            ./internal/worker/procout/... \
             ./internal/worker/envutil/... \
             ./internal/worker/session/... \
             ./internal/worker/staging/... \
@@ -1980,6 +1982,7 @@ jobs:
           set -e
 
           expected=(
+            TestDiscovery_FoundAfterTheAnnouncements
             TestDiscovery_TLSRecordsCrossTheWire
             TestDiscovery_AdvertisedBrokerTLSReachesWorkerConfig
             TestDiscovery_RealBinaryFindsItsServerOverMDNS

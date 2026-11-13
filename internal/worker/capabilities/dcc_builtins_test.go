@@ -47,8 +47,8 @@ var dccLayouts = []rendererLayout{
 		tag: "blender",
 		exe: "blender",
 		installs: []string{
-			"/Applications/Blender.app",
-			"/Applications/Blender 5.2.app", // a second release, renamed to carry its version
+			"/Applications/Blender.app/Contents/MacOS/Blender",
+			"/Applications/Blender 5.2.app/Contents/MacOS/Blender", // a second release, renamed to carry its version
 			`C:\Program Files\Blender Foundation\Blender 5.2\blender.exe`,
 		},
 	},

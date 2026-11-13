@@ -213,7 +213,9 @@ Without `--host`, the certificate covers this machine's hostname and its mDNS
 name, the hostname in the `.local` domain (`render-srv` and `render-srv.local`).
 The mDNS name is the host of the broker URL that [discovery](configuration.md#discoveryenabled)
 derives when `nats.embedded.advertise_url` is empty, so a worker that finds the
-server by mDNS can verify it.
+server by mDNS can verify it. An explicit `--host` is used as given: when workers
+find the server by mDNS, add its `.local` name as another `--host`, or set
+`nats.embedded.advertise_url` to a name the certificate covers.
 
 `--host` is repeatable. Loopback is always included even when `--host` names
 specific hosts: a certificate naming only the LAN host cannot be verified from the

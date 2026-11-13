@@ -3,6 +3,7 @@
 package capabilities
 
 import (
+	"path"
 	"strings"
 	"testing"
 )
@@ -119,5 +120,32 @@ func TestBlenderDetector_PrefersAVersionedMacBundle(t *testing.T) {
 	got, found := d.FindCommand(envWithCommandAt(d, "darwin", plain, versioned))
 	if !found || got.Path != versioned || got.Version != "5.2" {
 		t.Errorf("FindCommand = %+v (found %v), want blender 5.2 at %s", got, found, versioned)
+	}
+}
+
+// TestBlenderDetector_IgnoresOtherBundles: the macOS check matches a bundle
+// that holds Blender's executable, not any bundle whose name starts with
+// "Blender". A tag set for a bundle with no Blender in it would send Blender
+// jobs to a worker whose command default finds nothing to run.
+func TestBlenderDetector_IgnoresOtherBundles(t *testing.T) {
+	d := builtinDetector(t, "blender")
+	files := []string{
+		"/Applications/Blender Launcher.app",
+		"/Applications/Blender Launcher.app/Contents/MacOS/Blender Launcher",
+	}
+	env := fakeEnv{goos: "darwin", globs: map[string][]string{}}
+	for _, c := range d.Checks {
+		if c.PathGlob == "" || (c.OS != "" && c.OS != "darwin") {
+			continue
+		}
+		for _, f := range files {
+			if ok, err := path.Match(c.PathGlob, f); err == nil && ok {
+				env.globs[c.PathGlob] = append(env.globs[c.PathGlob], f)
+			}
+		}
+	}
+
+	if got := d.Evaluate(env); len(got) != 0 {
+		t.Errorf("Evaluate = %q, want no tag for a bundle that holds no Blender", got)
 	}
 }

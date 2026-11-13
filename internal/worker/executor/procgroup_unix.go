@@ -4,7 +4,11 @@
 
 package executor
 
-import "os/exec"
+import (
+	"errors"
+	"os/exec"
+	"syscall"
+)
 
 // processTree is the POSIX counterpart of the Windows job object. Containment
 // is already established BEFORE start, by configureProcessGroup's Setpgid, so
@@ -21,3 +25,11 @@ func superviseTree(cmd *exec.Cmd) (*processTree, error) {
 // exit here, which internal/worker/staging's TOCTOU analysis depends on. The
 // Windows implementation goes out of its way to match this.
 func (*processTree) release() error { return nil }
+
+// alive reports whether any process of the task's process group is still
+// running. A group whose processes belong to another account (run-as-user)
+// answers EPERM, which still means it has members.
+func (t *processTree) alive() bool {
+	err := syscall.Kill(-t.proc.Process.Pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}

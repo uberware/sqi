@@ -171,15 +171,24 @@ func (r *Responder) Start(ctx context.Context) error {
 
 	// RegisterProxy rather than Register, because Register advertises
 	// os.Hostname() and, given a name already in .local, doubles the domain.
-	// It is given no addresses, so it answers on each interface with that
-	// interface's own current ones.
+	// Supplying the host means supplying the addresses too, the ones Register
+	// would have found. Given none, RegisterProxy takes a reply's addresses
+	// from the interface the query arrived on, which the network stack does
+	// not report on Windows, so a reply to any query would carry none and a
+	// worker browsing after the startup announcements would find nothing.
+	// Register's refusal to advertise no address is kept, since RegisterProxy
+	// has no such check.
+	ips := interfaceIPs(r.cfg.Interfaces)
+	if len(ips) == 0 {
+		return errors.New("discovery: register mDNS service: could not determine host IP addresses")
+	}
 	server, err := registerProxy(
 		r.cfg.InstanceName,
 		serviceType,
 		domain,
 		r.httpPort,
 		hostLabel(host),
-		nil,
+		ips,
 		txt,
 		r.cfg.Interfaces, // nil = every multicast-capable interface
 	)
@@ -282,6 +291,58 @@ func hostLabel(h string) string {
 		return h[:len(h)-len(suffix)]
 	}
 	return h
+}
+
+// interfaceIPs returns the addresses advertised on ifaces, or on every
+// multicast-capable interface that is up when ifaces is empty, as the
+// underlying responder chooses them itself when it is not given a host.
+func interfaceIPs(ifaces []net.Interface) []string {
+	if len(ifaces) == 0 {
+		all, err := net.Interfaces()
+		if err != nil {
+			return nil
+		}
+		for _, ifi := range all {
+			if ifi.Flags&net.FlagUp != 0 && ifi.Flags&net.FlagMulticast != 0 {
+				ifaces = append(ifaces, ifi)
+			}
+		}
+	}
+	var ips []string
+	for _, ifi := range ifaces {
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		ips = append(ips, advertisedIPs(addrs)...)
+	}
+	return ips
+}
+
+// advertisedIPs applies the underlying responder's rules to one interface's
+// addresses: loopback addresses are never advertised, IPv4 addresses always
+// are, and link-local IPv6 addresses only when the interface has no global
+// IPv6 address.
+func advertisedIPs(addrs []net.Addr) []string {
+	var v4, v6, v6local []string
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok || ipnet.IP.IsLoopback() {
+			continue
+		}
+		switch ip := ipnet.IP; {
+		case ip.To4() != nil:
+			v4 = append(v4, ip.String())
+		case ip.IsGlobalUnicast():
+			v6 = append(v6, ip.String())
+		case ip.IsLinkLocalUnicast():
+			v6local = append(v6local, ip.String())
+		}
+	}
+	if len(v6) == 0 {
+		v6 = v6local
+	}
+	return append(v4, v6...)
 }
 
 // hostname returns the host's reported name, or "unknown" if it cannot be

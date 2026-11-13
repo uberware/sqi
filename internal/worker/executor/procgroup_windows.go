@@ -105,3 +105,34 @@ func (t *processTree) release() error {
 	}
 	return closeErr
 }
+
+// jobBasicAccounting is JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, which
+// golang.org/x/sys/windows does not define.
+type jobBasicAccounting struct {
+	TotalUserTime             int64
+	TotalKernelTime           int64
+	ThisPeriodTotalUserTime   int64
+	ThisPeriodTotalKernelTime int64
+	TotalPageFaultCount       uint32
+	TotalProcesses            uint32
+	ActiveProcesses           uint32
+	TotalTerminatedProcesses  uint32
+}
+
+// alive reports whether any process of the task's job object is still
+// running. A job that cannot be queried counts as empty, so the output drain
+// starts rather than waiting on a question that has no answer.
+func (t *processTree) alive() bool {
+	if t == nil || t.job == 0 {
+		return false
+	}
+	var info jobBasicAccounting
+	err := windows.QueryInformationJobObject(
+		t.job,
+		windows.JobObjectBasicAccountingInformation,
+		uintptr(unsafe.Pointer(&info)),
+		uint32(unsafe.Sizeof(info)),
+		nil,
+	)
+	return err == nil && info.ActiveProcesses > 0
+}

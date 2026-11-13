@@ -1406,11 +1406,14 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 		defer readWg.Done()
 		stderrText, stderrErr = scanActionStream(out.Stderr, "stderr", lineHandler)
 	}()
-	stillOpen, waitErr := out.Wait()
+	// No process group of its own is tracked for an environment action, so the
+	// drain counts from its exit: a service it starts in the background
+	// outlives it by design, and keeps running.
+	stillOpen, waitErr := out.Wait(nil)
 	readWg.Wait()
 	if stillOpen {
 		logger.WarnContext(ctx,
-			"session: an environment action exited but its output was still open after the drain delay; output after that is not captured",
+			"session: an environment action exited but a process it started still holds the output; output after the drain delay is not captured",
 			slog.String("command", action.Command), slog.Duration("waited", procout.DrainDelay))
 	}
 

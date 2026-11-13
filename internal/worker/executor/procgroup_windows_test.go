@@ -139,3 +139,40 @@ func TestProcessTree_ReleaseClosesHandleEvenIfSetKillOnCloseFails(t *testing.T) 
 		t.Errorf("release: second call on an already-released tree returned %v, want nil", err)
 	}
 }
+
+// TestProcessTree_AliveCountsTheJobsProcesses: alive is what keeps the output
+// drain from starting while a task's job still holds a process, here a
+// grandchild whose parent has already exited, and what lets it start once
+// the job is empty. It reads JOBOBJECT_BASIC_ACCOUNTING_INFORMATION through a
+// struct of its own layout, so this is the only check that layout gets.
+func TestProcessTree_AliveCountsTheJobsProcesses(t *testing.T) {
+	cmd, _ := spawnDetachedGrandchild(t, 30)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	tree, err := superviseTree(cmd)
+	if err != nil {
+		t.Fatalf("superviseTree: %v", err)
+	}
+	t.Cleanup(func() {
+		tree.sendKILL() //nolint:errcheck // best-effort cleanup if an assertion fails first
+		tree.release()  //nolint:errcheck // best-effort close of the job handle
+	})
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for parent: %v", err)
+	}
+
+	if !tree.alive() {
+		t.Fatal("alive = false while the job still holds the grandchild")
+	}
+	if err := tree.sendKILL(); err != nil {
+		t.Fatalf("sendKILL: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for tree.alive() {
+		if time.Now().After(deadline) {
+			t.Fatal("alive = true 10s after the job was killed")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

@@ -29,6 +29,18 @@ through a `logstreamer` and publishes them in chunks to the JetStream subject
 fans it out over WebSocket so the task log page updates live. Because JetStream
 retains messages, you can reload the log page and still see all output.
 
+A task ends when its process has exited and its output has closed. A job the
+task's script started in the background stays in the task's process group (on
+Windows, its job object), so the task waits for it and its output is
+captured, as for any process the task waits for. A process that left the
+group can keep the output open after the task exits, such as a daemon that
+called `setsid`, or Unreal Editor's UnrealTraceServer. The task then ends 5
+seconds after its process group has exited, and the worker logs a warning.
+That process is not killed, but later output is not captured. An OpenJD
+environment's `onEnter` or `onExit` action has no process group of its own,
+so its 5 seconds count from its exit: a service it starts in the background
+keeps running, and its later output is dropped.
+
 ### Task progress
 
 A task reports progress by printing directives on stdout:
