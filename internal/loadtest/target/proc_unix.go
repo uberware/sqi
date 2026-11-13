@@ -11,10 +11,24 @@ import (
 	"syscall"
 )
 
-// platformProc holds nothing on Unix: the process group is the process's id.
-type platformProc struct{}
+// platformProc holds the child's process group, whose id is the child's pid.
+type platformProc struct {
+	pgid int
+}
 
-func (platformProc) release() {}
+// release kills whatever is left in the child's process group, as closing
+// the job does on Windows: after a stop, or a kill of the child alone, that
+// can only be something the child started and left behind. A group that is
+// already empty is not an error.
+//
+// Once the group is empty its id can be reused by an unrelated process, which
+// a later release would then signal; the harness calls release once, when it
+// is done with the process.
+func (p platformProc) release() {
+	if p.pgid > 0 {
+		syscall.Kill(-p.pgid, syscall.SIGKILL) //nolint:errcheck // ESRCH (nothing left) is the usual answer; nothing to do on any other
+	}
+}
 
 // setProcAttrs puts the child in its own process group, so a Ctrl-C at the
 // terminal reaches only the harness, which then stops its children in order,
@@ -25,7 +39,7 @@ func setProcAttrs(cmd *exec.Cmd) {
 	setParentDeathSignal(cmd.SysProcAttr)
 }
 
-func supervise(*os.Process) (platformProc, error) { return platformProc{}, nil }
+func supervise(p *os.Process) (platformProc, error) { return platformProc{pgid: p.Pid}, nil }
 
 // interrupt sends SIGINT, which sqi-server and sqi-worker treat as a request
 // to shut down cleanly.

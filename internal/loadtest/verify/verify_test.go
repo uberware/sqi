@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,8 +22,8 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/verify"
 )
 
-// invariantNames are the six checks, in the order Check returns them.
-var invariantNames = []string{"terminal", "outcomes", "single-attempt", "logs", "workers-converge", "caps"}
+// invariantNames are the seven checks, in the order Check returns them.
+var invariantNames = []string{"terminal", "outcomes", "single-attempt", "logs", "workers-converge", "caps", "submission-atomic"}
 
 // lineBytes is the log line size of the "shot" class.
 const lineBytes = 40
@@ -37,6 +38,7 @@ type fakeView struct {
 	workers     func(poll int) []client.Worker
 	polls       int
 	failAttempt map[string]bool
+	failWorkers bool
 	failTasksAt int                 // a ListTasks at this offset fails; 0 means none
 	calls       map[string][]string // method -> arguments, in call order
 }
@@ -132,6 +134,9 @@ func (f *fakeView) ListWorkers(_ context.Context, farmID string, limit, offset i
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.called("ListWorkers", farmID)
+	if f.failWorkers {
+		return client.Page[client.Worker]{}, &client.APIError{Status: 503, Method: "GET", Path: "/farms/" + farmID + "/workers", Detail: "boom"}
+	}
 	if offset == 0 {
 		f.polls++
 	}
@@ -626,12 +631,19 @@ func attempt(t0 time.Time, n int, status string, from, to int) client.Attempt {
 
 func assertResults(t *testing.T, results []verify.Result, fail map[string]string) {
 	t.Helper()
+	assertResultsNamed(t, invariantNames, results, fail)
+}
+
+// assertResultsNamed is assertResults for a run that reports the invariants
+// want.
+func assertResultsNamed(t *testing.T, want []string, results []verify.Result, fail map[string]string) {
+	t.Helper()
 	var names []string
 	for _, r := range results {
 		names = append(names, r.Name)
 	}
-	if !slices.Equal(names, invariantNames) {
-		t.Fatalf("Check returned %v, want %v", names, invariantNames)
+	if !slices.Equal(names, want) {
+		t.Fatalf("Check returned %v, want %v", names, want)
 	}
 	for _, r := range results {
 		if len(r.Evidence) > 20 {
@@ -1123,4 +1135,318 @@ func TestCheck_ReportsAFailedLaterTaskPage(t *testing.T) {
 	w.in.AttemptSample, w.in.LogSample = 0, 0
 	w.view.failTasksAt = 2000
 	assertResults(t, verify.Check(t.Context(), w.view, w.in), map[string]string{"outcomes": "job j1: listing tasks"})
+}
+
+// ── Chaos runs ───────────────────────────────────────────────────────────────
+
+func TestCheckNamesMatchVerify(t *testing.T) {
+	if got := verify.Names(); !slices.Equal(got, scenario.CheckNames) {
+		t.Errorf("verify.Names() = %v, want scenario.CheckNames %v", got, scenario.CheckNames)
+	}
+}
+
+// logChunk is one chunk holding the given lines of a task's attempt.
+func logChunk(w *world, taskID, attemptID string, seq int64, lines ...int) client.LogLine {
+	parts := make([]string, len(lines))
+	for i, n := range lines {
+		parts[i] = simworker.LogLine(taskID, n, lineBytes)
+	}
+	w.natsSeq++
+	return client.LogLine{
+		ID: fmt.Sprintf("%s-%d-%d", taskID, seq, w.natsSeq), AttemptID: attemptID, SeqNum: seq, NatsSeq: w.natsSeq,
+		Stream: "stdout", Data: strings.Join(parts, "\n"),
+	}
+}
+
+func span(from, to int) []int {
+	var out []int
+	for n := from; n <= to; n++ {
+		out = append(out, n)
+	}
+	return out
+}
+
+// faultLogWorld is a run of one task whose attempt (leased at t0, ended at
+// t0+10 s on worker w0 of group "sim", 20 lines) the server kept lines 1-10
+// and 15-20 of, with a fault window from t0+2 s to t0+4 s on groups.
+func faultLogWorld(groups ...string) *world {
+	w := newWorld()
+	w.job("j1", "completed", false)
+	w.task("j1", "t1", "succeeded", att{"a1", 0, 10, "succeeded", "succeeded", 20})
+	w.view.logs["t1"] = []client.LogLine{
+		logChunk(w, "t1", "a1", 1, span(1, 10)...),
+		logChunk(w, "t1", "a1", 3, span(15, 20)...),
+	}
+	w.in.FaultWindows = []verify.FaultWindow{{Start: at(w.t0, 2), End: at(w.t0, 4), Groups: groups}}
+	w.in.GroupOf = func(id string) string {
+		if id == "w0" {
+			return "sim"
+		}
+		return ""
+	}
+	return w
+}
+
+func resultNamed(t *testing.T, results []verify.Result, name string) verify.Result {
+	t.Helper()
+	for _, r := range results {
+		if r.Name == name {
+			return r
+		}
+	}
+	t.Fatalf("no %s result in %+v", name, results)
+	return verify.Result{}
+}
+
+func TestLogs_LossInsideFaultWindowIsCounted(t *testing.T) {
+	for _, groups := range [][]string{{"sim"}, nil} {
+		t.Run(fmt.Sprintf("groups %v", groups), func(t *testing.T) {
+			w := faultLogWorld(groups...)
+			results := verify.Check(t.Context(), w.view, w.in)
+			assertResultsNamed(t, invariantNames, results, nil)
+			logs := resultNamed(t, results, verify.NameLogs)
+			if got := logs.Counters[verify.CounterLogsLostInFault]; got != 4 {
+				t.Errorf("Counters[%q] = %d (%v), want 4", verify.CounterLogsLostInFault, got, logs.Counters)
+			}
+		})
+	}
+	if verify.CounterLogsLostInFault != "logs.lost_in_fault" {
+		t.Errorf("CounterLogsLostInFault = %q", verify.CounterLogsLostInFault)
+	}
+}
+
+// lateLogs is a server whose missing chunk of t1 (lines 11-14) is ingested
+// just before the read number arriveOn; 0 never.
+type lateLogs struct {
+	*fakeView
+
+	w        *world
+	arriveOn int
+	mu       sync.Mutex
+	reads    int
+}
+
+func (l *lateLogs) TaskLogs(ctx context.Context, taskID string, after int64, limit int) ([]client.LogLine, int64, error) {
+	if taskID == "t1" && after == 0 {
+		l.mu.Lock()
+		l.reads++
+		if l.reads == l.arriveOn {
+			l.fakeView.mu.Lock()
+			l.logs["t1"] = append(l.logs["t1"], logChunk(l.w, "t1", "a1", 2, span(11, 14)...))
+			l.fakeView.mu.Unlock()
+		}
+		l.mu.Unlock()
+	}
+	return l.fakeView.TaskLogs(ctx, taskID, after, limit)
+}
+
+func (l *lateLogs) readCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.reads
+}
+
+func TestLogs_LateLinesInsideFaultWindowAreNotLost(t *testing.T) {
+	w := faultLogWorld("sim")
+	w.in.LogSettle = 5 * time.Second
+	v := &lateLogs{fakeView: w.view, w: w, arriveOn: 2}
+	results := verify.Check(t.Context(), v, w.in)
+	assertResultsNamed(t, invariantNames, results, nil)
+	if got := resultNamed(t, results, verify.NameLogs).Counters[verify.CounterLogsLostInFault]; got != 0 {
+		t.Errorf("Counters[%q] = %d, want 0: the 4 missing lines arrived on the second read", verify.CounterLogsLostInFault, got)
+	}
+	if n := v.readCount(); n != 2 {
+		t.Errorf("t1's logs were read %d times, want 2 (re-read until complete)", n)
+	}
+}
+
+func TestLogs_LossInsideFaultWindowOutlastsTheSettle(t *testing.T) {
+	w := faultLogWorld("sim")
+	w.in.LogSettle = 300 * time.Millisecond
+	v := &lateLogs{fakeView: w.view, w: w}
+	start := time.Now()
+	results := verify.Check(t.Context(), v, w.in)
+	assertResultsNamed(t, invariantNames, results, nil)
+	if got := resultNamed(t, results, verify.NameLogs).Counters[verify.CounterLogsLostInFault]; got != 4 {
+		t.Errorf("Counters[%q] = %d, want 4", verify.CounterLogsLostInFault, got)
+	}
+	if n := v.readCount(); n < 2 {
+		t.Errorf("t1's logs were read %d times, want re-reads while the settle time lasted", n)
+	}
+	if took := time.Since(start); took < 300*time.Millisecond {
+		t.Errorf("Check took %s, less than the 300ms logs settle time", took)
+	}
+}
+
+func TestLogs_LossOutsideFaultWindowFails(t *testing.T) {
+	t.Run("window on another group", func(t *testing.T) {
+		w := faultLogWorld("other")
+		assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": "line 11 is"})
+	})
+	t.Run("window after the attempt", func(t *testing.T) {
+		w := faultLogWorld("sim")
+		w.in.FaultWindows[0].Start, w.in.FaultWindows[0].End = at(w.t0, 11), at(w.t0, 12)
+		assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": "line 11 is"})
+	})
+	t.Run("no GroupOf", func(t *testing.T) {
+		w := faultLogWorld("sim")
+		w.in.GroupOf = nil
+		assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": "line 11 is"})
+	})
+}
+
+func TestLogs_ReorderInsideFaultWindowFails(t *testing.T) {
+	const inWindow = "job j1 task t1 attempt a1 (inside a fault window)"
+	cases := []struct {
+		name   string
+		chunks func(w *world) []client.LogLine
+		want   string
+	}{
+		{"reordered", func(w *world) []client.LogLine {
+			return []client.LogLine{logChunk(w, "t1", "a1", 1, 1, 3, 2)}
+		}, inWindow},
+		{"duplicated", func(w *world) []client.LogLine {
+			return []client.LogLine{logChunk(w, "t1", "a1", 1, 1, 2, 2, 3)}
+		}, inWindow},
+		{"corrupted", func(w *world) []client.LogLine {
+			c := logChunk(w, "t1", "a1", 1, 1, 2, 3)
+			c.Data += "x"
+			return []client.LogLine{c}
+		}, inWindow},
+		// Checked before the window is: the chunks themselves are wrong.
+		{"a chunk stored twice", func(w *world) []client.LogLine {
+			return []client.LogLine{logChunk(w, "t1", "a1", 1, 1), logChunk(w, "t1", "a1", 1, 1)}
+		}, "chunk seq_num 1 stored twice"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := faultLogWorld("sim")
+			w.ledger = simworker.NewLedger()
+			w.in.Ledger = w.ledger
+			w.view.tasks = map[string][]client.Task{}
+			w.view.attempts = map[string][]client.Attempt{}
+			w.task("j1", "t1", "succeeded", att{"a1", 0, 10, "succeeded", "succeeded", 3})
+			w.view.logs["t1"] = tc.chunks(w)
+			assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"logs": tc.want})
+		})
+	}
+}
+
+// orphanWorld is a healthy run plus orphan o1 of class "big" (2 steps x 5
+// tasks) in status, with n tasks on the server.
+func orphanWorld(status string, n int) *world {
+	w := healthyWorld()
+	w.in.Scenario.Jobs = append(w.in.Scenario.Jobs, scenario.JobClass{Name: "big", Queue: "render", Steps: 2, TasksPerStep: 5})
+	w.view.jobs = append(w.view.jobs, client.Job{ID: "o1", Name: "big-7", Status: status})
+	for i := range n {
+		w.view.tasks["o1"] = append(w.view.tasks["o1"], client.Task{ID: fmt.Sprintf("o1t%d", i), Status: "succeeded"})
+	}
+	w.in.Orphans = []driver.SubmittedJob{{ID: "o1", Name: "big-7", Class: "big"}}
+	return w
+}
+
+func TestTerminal_CoversOrphans(t *testing.T) {
+	w := orphanWorld("running", 10)
+	assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"terminal": "o1"})
+}
+
+func TestSubmissionAtomic_CompleteOrphanPasses(t *testing.T) {
+	w := orphanWorld("completed", 10)
+	assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), nil)
+}
+
+func TestSubmissionAtomic_PartialOrphanFails(t *testing.T) {
+	w := orphanWorld("completed", 7)
+	results := verify.Check(t.Context(), w.view, w.in)
+	assertResultsNamed(t, invariantNames, results, map[string]string{"submission-atomic": "7 of 10"})
+	if ev := resultNamed(t, results, verify.NameSubmissionAtomic).Evidence; !strings.Contains(strings.Join(ev, "\n"), "o1") {
+		t.Errorf("evidence %q does not name job o1", ev)
+	}
+}
+
+func TestSubmissionAtomic_UnknownFarmJobFails(t *testing.T) {
+	w := healthyWorld()
+	w.view.jobs = append(w.view.jobs, client.Job{ID: "x9", Name: "shot-x9", Status: "completed"})
+	assertResultsNamed(t, invariantNames, verify.Check(t.Context(), w.view, w.in), map[string]string{"submission-atomic": "x9"})
+}
+
+func TestWaitDrained_CoversOrphans(t *testing.T) {
+	v := newFakeView()
+	v.jobs = []client.Job{{ID: "j1", Status: "completed"}, {ID: "o1", Status: "running"}}
+	jobs := []driver.SubmittedJob{{ID: "j1", Status: 201}, {ID: "o1", Name: "shot-2", Status: 0}}
+	err := verify.WaitDrained(t.Context(), v, "farm", jobs, 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "o1 (running)") {
+		t.Fatalf("WaitDrained = %v, want it to wait for orphan o1", err)
+	}
+	v.setJob("o1", "canceled")
+	if err := verify.WaitDrained(t.Context(), v, "farm", jobs, time.Second); err != nil {
+		t.Fatalf("WaitDrained: %v", err)
+	}
+}
+
+// TestCheck_ReadErrorsAreUnmeasured: a check that could not read the server
+// fails as Unmeasured, which no known violation may excuse, while a real
+// violation stays an ordinary failure.
+func TestCheck_ReadErrorsAreUnmeasured(t *testing.T) {
+	byName := func(rs []verify.Result, name string) verify.Result {
+		for _, r := range rs {
+			if r.Name == name {
+				return r
+			}
+		}
+		t.Fatalf("no result %q in %v", name, rs)
+		return verify.Result{}
+	}
+	t.Run("single-attempt", func(t *testing.T) {
+		w := newWorld()
+		w.job("j1", "completed", false)
+		w.task("j1", "t1", "succeeded", att{"a1", 0, 1, "succeeded", "succeeded", 0})
+		w.view.failAttempt["t1"] = true
+		r := byName(verify.Check(t.Context(), w.view, w.in), "single-attempt")
+		if r.OK || !r.Unmeasured {
+			t.Errorf("single-attempt = %+v, want failed and unmeasured", r)
+		}
+	})
+	t.Run("workers-converge", func(t *testing.T) {
+		w := newWorld()
+		w.view.failWorkers = true
+		r := byName(verify.Check(t.Context(), w.view, w.in), "workers-converge")
+		if r.OK || !r.Unmeasured {
+			t.Errorf("workers-converge = %+v, want failed and unmeasured", r)
+		}
+	})
+	t.Run("a finding is not unmeasured", func(t *testing.T) {
+		w := newWorld()
+		w.view.workers = func(int) []client.Worker { return workersOf(4, 0) }
+		r := byName(verify.Check(t.Context(), w.view, w.in), "workers-converge")
+		if r.OK || r.Unmeasured {
+			t.Errorf("workers-converge = %+v, want an ordinary failure", r)
+		}
+	})
+	t.Run("a result that holds omits the field", func(t *testing.T) {
+		f, ok := reflect.TypeFor[verify.Result]().FieldByName("Unmeasured")
+		if !ok || f.Tag.Get("json") != "unmeasured,omitempty" {
+			t.Errorf("Unmeasured field = %+v, want the tag unmeasured,omitempty so a run with every check measured writes no unmeasured key", f)
+		}
+	})
+}
+
+func TestLeasedAttempts_LeaseOrderWithOutcome(t *testing.T) {
+	t0 := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	l := simworker.NewLedger()
+	rec := func(at int, attempt, kind, outcome string) {
+		l.Record(simworker.Event{At: t0.Add(time.Duration(at) * time.Second), WorkerID: "w0", TaskID: "t-" + attempt, AttemptID: attempt, Kind: kind, Outcome: outcome})
+	}
+	rec(2, "a2", simworker.KindLeased, "")
+	rec(1, "a1", simworker.KindLeased, "")
+	rec(3, "a1", simworker.KindTerminal, simworker.OutcomeSucceeded)
+	rec(4, "a2", simworker.KindCanceled, "")
+	rec(5, "a3", simworker.KindRunning, "") // never leased: left out
+	got := verify.LeasedAttempts(l)
+	if len(got) != 2 || got[0].ID != "a1" || got[1].ID != "a2" {
+		t.Fatalf("LeasedAttempts = %+v, want a1 then a2", got)
+	}
+	if got[0].Outcome() != simworker.OutcomeSucceeded || got[1].Outcome() != "" || got[1].End == nil {
+		t.Errorf("outcomes %q and %q (a2 end %v), want succeeded and none, a2 ended", got[0].Outcome(), got[1].Outcome(), got[1].End)
+	}
 }

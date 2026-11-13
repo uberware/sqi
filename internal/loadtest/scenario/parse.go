@@ -55,6 +55,11 @@ func (s *Scenario) ApplyDefaults() {
 			s.Workers[i].Heartbeat.Duration = defaultHeartbeat
 		}
 	}
+	for i := range s.Expect.KnownViolations {
+		if s.Expect.KnownViolations[i].Kind == "" {
+			s.Expect.KnownViolations[i].Kind = KnownMust
+		}
+	}
 	for i := range s.Jobs {
 		j := &s.Jobs[i]
 		if j.Steps == 0 {

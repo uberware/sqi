@@ -28,7 +28,7 @@ import (
 const outDirEnv = "SQI_LOAD_OUT"
 
 // invariantCount is how many invariants the verifier checks.
-const invariantCount = 6
+const invariantCount = 7
 
 var (
 	binOnce                     sync.Once

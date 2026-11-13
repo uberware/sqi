@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-power-cut-server-first
+description: chaos - at 1m kill the server and every worker (100 simulated, 2 real) at once, bring the server back 20s later and the workers 10s after it; converges, 3 min
+# No churn: a churn event in progress would hold back the power cut's crash
+# of that worker.
+duration: 3m
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 100
+    real: 2
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 1m
+    power_cut: {order: server-first, down: 20s, gap: 10s}
+
+# Everything goes down at once, so an attempt either completed and reported
+# before the cut or never completed: rework can only come from a report
+# lost in flight at the instant of the cut. The bound of 5 allows for a few.
+expect:
+  max_rework_attempts: 5

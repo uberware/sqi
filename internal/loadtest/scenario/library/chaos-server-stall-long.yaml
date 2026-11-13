@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-server-stall-long
+description: chaos - SIGSTOP the server (and its embedded broker) for 60s, about twice heartbeat_timeout, then SIGCONT, under steady load (100 workers); records reclaims, 4.5 min
+# The stall starts at 3m15s, after the server's startup liveness grace: the
+# server runs no liveness sweep for about 3m10s after it starts, so a stall
+# inside that window cannot show whether a sweep runs before the heartbeat
+# backlog is consumed.
+# POSIX only (SIGSTOP); the chaos test skips it on Windows.
+# The rework known violation (H13f2) carries a ceiling of 60 attempts, above
+# the work of the up to 45 workers the sweep can reclaim. Rework past it is a
+# different defect and fails the run.
+duration: 4m30s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 100
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 3m15s
+    stall: {server: true}
+    duration: 60s
+
+expect:
+  max_rework_attempts: 0
+  known_violations:
+    - check: rework
+      kind: must
+      max_attempts: 60
+      reason: on SIGCONT the heartbeat sweep runs before the stall's heartbeat backlog is consumed, marks every live worker offline and reclaims its attempts, so work that finished during the stall is rejected when its report lands and re-run
+      tracker: H13f2
+    - check: single-attempt
+      kind: must
+      reason: an attempt the resume sweep reclaims while its lease reply is still in flight reaches its worker after the task was leased again, and runs alongside the new attempt until the stale-running cancel stops it
+      tracker: H13f2
+    - check: workers-converge
+      kind: must
+      reason: a live worker the sweep marks offline stays offline while its connection stays up, since heartbeats never bring a worker back online and it re-registers only on a reconnect
+      tracker: H13f3

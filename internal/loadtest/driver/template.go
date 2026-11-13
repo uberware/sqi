@@ -79,8 +79,9 @@ type tmplRun struct {
 }
 
 // BuildTemplate returns the OpenJD YAML for one job of class jc. Step i+1
-// depends on step i, every step's onRun ends with [scenario.ClassArg] naming
-// jc, and each step expands to exactly jc.TasksPerStep tasks:
+// depends on step i, every step's onRun ends with [scenario.KeyArg] naming the
+// task and [scenario.ClassArg] naming jc, and each step expands to exactly
+// jc.TasksPerStep tasks:
 // sqi caps a task parameter at 1024 values, so a large step splits into a
 // Frame range and a Block range whose product is the task count.
 func BuildTemplate(jc scenario.JobClass, jobName string, cmd scenario.Command) ([]byte, error) {
@@ -103,7 +104,7 @@ func BuildTemplate(jc scenario.JobClass, jobName string, cmd scenario.Command) (
 		Name:        jobName,
 	}
 	for i := 1; i <= jc.Steps; i++ {
-		doc.Steps = append(doc.Steps, buildStep(jc, cmd, i, frames, blocks, chunk))
+		doc.Steps = append(doc.Steps, buildStep(jc, jobName, cmd, i, frames, blocks, chunk))
 	}
 	return yaml.Marshal(doc)
 }
@@ -119,9 +120,9 @@ func templateExtensions(jc scenario.JobClass, chunk int) []string {
 	return ext
 }
 
-func buildStep(jc scenario.JobClass, cmd scenario.Command, n, frames, blocks, chunk int) tmplStep {
+func buildStep(jc scenario.JobClass, jobName string, cmd scenario.Command, n, frames, blocks, chunk int) tmplStep {
 	st := tmplStep{
-		Name:     "step-" + strconv.Itoa(n),
+		Name:     stepName(n),
 		HostReqs: hostRequirements(jc),
 		Space:    tmplSpace{Params: []tmplParam{frameParam(frames, chunk)}},
 		Script: tmplScript{Actions: tmplActions{OnRun: tmplRun{
@@ -135,7 +136,7 @@ func buildStep(jc scenario.JobClass, cmd scenario.Command, n, frames, blocks, ch
 		})
 	}
 	if n > 1 {
-		st.Dependencies = []tmplDep{{DependsOn: "step-" + strconv.Itoa(n-1)}}
+		st.Dependencies = []tmplDep{{DependsOn: stepName(n - 1)}}
 	}
 	if jc.EXPR {
 		st.Script.Let = []string{"tag = '" + exprLetTag + "'"}
@@ -144,10 +145,19 @@ func buildStep(jc scenario.JobClass, cmd scenario.Command, n, frames, blocks, ch
 	if jc.Task.HangRate > 0 {
 		st.Script.Actions.OnRun.Timeout = hangTimeoutSeconds(jc.Task.Duration)
 	}
-	// Last, so a simulated worker finds the class whatever came before it.
-	st.Script.Actions.OnRun.Args = append(st.Script.Actions.OnRun.Args, scenario.ClassArg(jc.Name))
+	block := ""
+	if blocks > 1 {
+		block = "{{Task.Param.Block}}"
+	}
+	// The class argument goes last, so a simulated worker finds the class
+	// whatever came before it; the task key just before it.
+	st.Script.Actions.OnRun.Args = append(st.Script.Actions.OnRun.Args,
+		scenario.KeyArg(scenario.TaskKey(jobName, st.Name, "{{Task.Param.Frame}}", block)),
+		scenario.ClassArg(jc.Name))
 	return st
 }
+
+func stepName(n int) string { return "step-" + strconv.Itoa(n) }
 
 // Bounds on the onRun timeout given to a class whose tasks may hang: a hung
 // task would otherwise never end and its job never settle.

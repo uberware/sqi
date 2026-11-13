@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-logs-during-restart
+description: chaos - a verbose renderer (5,000 lines x 200 bytes per 20-40s task) on 40 workers across a SIGKILL of the server at 1m and a restart 20s later; every terminal status arrives, 3 min
+# About 18 tasks are in flight at a time, each streaming about 33 KB/s, so
+# the outage fills the workers' shared reconnect buffer with log chunks
+# ahead of their terminal statuses.
+duration: 3m
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 40
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: verbose
+    rate: 0.1/s
+    queue: render
+    steps: 1
+    tasks_per_step: 6
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 20s, max: 40s}
+      log_lines: 5000
+      log_line_bytes: 200
+
+faults:
+  - at: 1m
+    kill: {server: true}
+    restart_after: 20s
+
+expect:
+  max_rework_attempts: 0

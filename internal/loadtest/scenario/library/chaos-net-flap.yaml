@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-net-flap
+description: chaos - cut and restore a quarter of the workers (rack-b, 30 of 120) every 3s for a minute; converges with nothing stranded, 4.5 min
+# The flapping starts at 3m15s, after the server's startup liveness grace:
+# the server runs no liveness sweep for about 3m10s after it starts, so
+# inside that window no flapping worker can be taken offline by mistake.
+duration: 4m30s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: rack-a
+    count: 90
+    ramp: 50/s
+    cpu: 8
+    os: linux
+  - name: rack-b
+    count: 30
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 3m15s
+    flap: {groups: [rack-b], period: 6s}
+    duration: 60s
+
+# Each cut lasts 3s, well inside heartbeat_timeout, so nothing is reclaimed:
+# rework could only come from a terminal report lost on a cut connection.
+# The bound of 3 allows for that rare case.
+expect:
+  max_rework_attempts: 3

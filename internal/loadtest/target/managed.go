@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
+	"github.com/uberware/sqi/internal/loadtest/marker"
+	"github.com/uberware/sqi/internal/loadtest/netfault"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
 	"github.com/uberware/sqi/internal/pgdsn"
@@ -70,6 +72,9 @@ type ManagedConfig struct {
 	PostgresDSN string
 	// Logger receives the target's own progress; nil discards it.
 	Logger *slog.Logger
+	// Seed is the run seed, mixed into each broker lane's jitter; 0 seeds a
+	// lane with its group's index alone.
+	Seed uint64
 
 	readyTimeout time.Duration // how long to wait for /readyz; 0 is defaultReadyTimeout
 	stopTimeout  time.Duration // grace between interrupt and kill; 0 is defaultStopTimeout
@@ -99,9 +104,19 @@ type managed struct {
 	farm              farm
 	creds             simworker.Credentials
 
-	mu      sync.Mutex // guards server and workers against Close during start
-	server  *proc
-	workers []*proc
+	// lanes are the broker proxies per worker group, set before any worker
+	// starts and never changed after; nil without a network fault.
+	lanes     map[string]*netfault.Proxy
+	markerDir string
+
+	mu           sync.Mutex // guards what follows against Close and the fault controller
+	server       *proc
+	workers      []*realWorker
+	incarnations []Incarnation
+	closing      bool // Close has begun: nothing more is started
+	// resumedGroups are the task groups resumeAll continued, which Close
+	// ends.
+	resumedGroups []int
 
 	closeOnce sync.Once
 	closeErr  error
@@ -159,6 +174,9 @@ func newManaged(cfg ManagedConfig) (*managed, error) {
 	if m.runID == "" {
 		m.runID = filepath.Base(runDir)
 	}
+	if cfg.Scenario.HasRealTask() {
+		m.markerDir = filepath.Join(runDir, "markers")
+	}
 	return m, nil
 }
 
@@ -190,10 +208,16 @@ func (c *ManagedConfig) ResolveBinaries(ctx context.Context, dir string, workers
 }
 
 func (m *managed) start(ctx context.Context) error {
-	for _, dir := range []string{m.settings.dataDir(), filepath.Join(m.settings.RunDir, "workers")} {
+	for _, dir := range []string{m.settings.dataDir(), filepath.Join(m.settings.RunDir, "workers"), m.markerDir} {
+		if dir == "" {
+			continue
+		}
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return fmt.Errorf("target: create %s: %w", dir, err)
 		}
+	}
+	if err := m.writeNoopConfig(); err != nil {
+		return err
 	}
 	steps := []func(context.Context) error{
 		m.checkBinaries,
@@ -202,6 +226,7 @@ func (m *managed) start(ctx context.Context) error {
 		m.startServer,
 		m.authenticate,
 		m.createFarm,
+		m.startLanes,
 		m.startWorkers,
 	}
 	for _, step := range steps {
@@ -407,8 +432,14 @@ func (m *managed) spawnServer(ctx context.Context) error {
 		return err
 	}
 	m.mu.Lock()
-	m.server = p
+	closing := m.closing
+	if !closing {
+		m.server = p
+	}
 	m.mu.Unlock()
+	if closing { // a restart raced Close, which does not see this process
+		return errors.Join(errClosing, p.stopCtx(ctx, m.stopTimeout))
+	}
 	m.logger.InfoContext(ctx, "started sqi-server", slog.Int("pid", p.pid()), slog.String("http", m.httpURL), slog.String("nats", m.natsURL))
 
 	probe, err := newClient(m.httpURL, "", m.tlsFiles)
@@ -493,45 +524,76 @@ func (m *managed) createFarm(ctx context.Context) error {
 
 // startWorkers starts the real workers and waits until all are online.
 func (m *managed) startWorkers(ctx context.Context) error {
-	n := 0
-	for _, g := range m.cfg.Scenario.Workers {
-		for range g.Real {
-			n++
-			if err := m.startWorker(ctx, g, n); err != nil {
-				return err
-			}
+	m.addWorkerSlots()
+	m.mu.Lock()
+	workers := slices.Clone(m.workers)
+	m.mu.Unlock()
+	for _, w := range workers {
+		if err := m.spawnWorker(ctx, w); err != nil {
+			return err
 		}
 	}
-	if n == 0 {
+	if len(workers) == 0 {
 		return nil
 	}
-	return m.waitWorkersOnline(ctx, n)
+	return m.waitWorkersOnline(ctx, len(workers))
 }
 
-func (m *managed) startWorker(ctx context.Context, g scenario.WorkerGroup, n int) error {
-	env, err := m.workerEnv(g, n)
+// spawnWorker starts w's next incarnation. Its data directory, and so its
+// worker ID, is the slot's; its log is appended to the slot's.
+func (m *managed) spawnWorker(ctx context.Context, w *realWorker) error {
+	m.mu.Lock()
+	restarts := w.started
+	m.mu.Unlock()
+	n := w.index + 1 // the directory and log names count from 1
+	id := incarnationID(w.index, restarts)
+	env, err := m.workerEnv(w.group, n, id)
 	if err != nil {
 		return err
 	}
+	// Held across the start, so Close sees the process or it never starts.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch {
+	case m.closing:
+		return errClosing
+	case w.proc != nil && !w.proc.exited():
+		return fmt.Errorf("%w: worker %d; kill or term it before restarting it", ErrWorkerRunning, w.index)
+	case w.started != restarts:
+		return fmt.Errorf("target: real worker %d was restarted concurrently", w.index)
+	}
 	p, err := startProc(ctx, procSpec{
-		name:    "sqi-worker " + strconv.Itoa(n),
+		name:    "sqi-worker " + strconv.Itoa(n) + " (" + id + ")",
 		bin:     m.cfg.WorkerBin,
 		args:    []string{"start"},
 		env:     env,
-		logPath: filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(n)+".log"),
+		logPath: m.workerLog(w.index),
 	}, m.logger)
 	if err != nil {
 		return err
 	}
-	m.mu.Lock()
-	m.workers = append(m.workers, p)
-	m.mu.Unlock()
+	if w.proc != nil {
+		// A process that exited on its own has no end yet; it is not running.
+		if inc := &m.incarnations[w.inc]; inc.Ended.IsZero() {
+			inc.Ended = time.Now()
+		}
+		w.retired = append(w.retired, w.proc)
+	}
+	w.proc = p
+	w.started++
+	m.incarnations = append(m.incarnations, Incarnation{ID: id, Worker: w.index, Started: time.Now()})
+	w.inc = len(m.incarnations) - 1
 	return nil
 }
 
+// workerLog is real worker i's log, which every incarnation appends to.
+func (m *managed) workerLog(i int) string {
+	return filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(i+1)+".log")
+}
+
 // workerEnv is real worker n's environment, as the integration suite
-// configures a real worker.
-func (m *managed) workerEnv(g scenario.WorkerGroup, n int) ([]string, error) {
+// configures a real worker, for incarnation inc.
+func (m *managed) workerEnv(g scenario.WorkerGroup, n int, inc string) ([]string, error) {
 	ports, err := freePorts(1)
 	if err != nil {
 		return nil, err
@@ -542,7 +604,7 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int) ([]string, error) {
 		name = "real"
 	}
 	env := []string{
-		"SQI_WORKER_NATS_URL=" + m.natsURL,
+		"SQI_WORKER_NATS_URL=" + m.NATSURLFor(g.Name),
 		"SQI_WORKER_DISCOVERY_ENABLE_MDNS=false",
 		"SQI_WORKER_FARM_ID=" + m.farm.id,
 		"SQI_WORKER_NAME=" + name + "-" + strconv.Itoa(n),
@@ -553,6 +615,13 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int) ([]string, error) {
 		"SQI_WORKER_LOG_LEVEL=info",
 		"SQI_WORKER_SHUTDOWN_GRACE_PERIOD=" + workerGrace,
 		"SQI_WORKER_METRICS_ADDR=127.0.0.1:" + strconv.Itoa(ports[0]),
+		// The harness's own variables are not SQI_-prefixed: they configure
+		// nothing in the worker, which passes them on to its tasks, where the
+		// no-op task reads them.
+		"SQILOAD_INCARNATION=" + inc,
+	}
+	if m.markerDir != "" {
+		env = append(env, "SQILOAD_MARKER_DIR="+m.markerDir)
 	}
 	if len(g.Queues) > 0 {
 		ids := make([]string, len(g.Queues))
@@ -603,8 +672,8 @@ func (m *managed) waitWorkersOnline(ctx context.Context, n int) error {
 	online := 0
 	for {
 		for i, p := range m.workerProcs() {
-			if p.exited() {
-				log := filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(i+1)+".log")
+			if p != nil && p.exited() {
+				log := m.workerLog(i)
 				return fmt.Errorf("target: real worker: %w; last lines of %s:\n%s", p.exitError(), log, tailLines(log, logTail))
 			}
 		}
@@ -631,10 +700,16 @@ func (m *managed) waitWorkersOnline(ctx context.Context, n int) error {
 	}
 }
 
+// workerProcs returns each real worker's current process, in start order; an
+// entry is nil for a worker not started yet.
 func (m *managed) workerProcs() []*proc {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return slices.Clone(m.workers)
+	procs := make([]*proc, len(m.workers))
+	for i, w := range m.workers {
+		procs[i] = w.proc
+	}
+	return procs
 }
 
 func (m *managed) HTTPURL() string                    { return m.httpURL }
@@ -647,12 +722,42 @@ func (m *managed) Credentials() simworker.Credentials { return m.creds }
 func (m *managed) TLS() simworker.TLSFiles            { return m.tlsFiles }
 
 // NoopCommand is the no-op binary, or a placeholder when the run has no real
-// workers and was given no no-op binary.
+// workers and was given no no-op binary. When a job class has real_task its
+// first argument names noop.json.
 func (m *managed) NoopCommand() scenario.Command {
 	if m.cfg.NoopBin == "" {
 		return scenario.Command{Path: placeholderCommand}
 	}
-	return scenario.Command{Path: m.cfg.NoopBin}
+	cmd := scenario.Command{Path: m.cfg.NoopBin}
+	if m.markerDir != "" {
+		cmd.Args = []string{marker.ConfigArg(m.noopConfigPath())}
+	}
+	return cmd
+}
+
+func (m *managed) noopConfigPath() string { return filepath.Join(m.settings.RunDir, "noop.json") }
+
+// writeNoopConfig writes noop.json, which tells the no-op command where the
+// markers go and how each class with real_task behaves, when there is one.
+func (m *managed) writeNoopConfig() error {
+	if m.markerDir == "" {
+		return nil
+	}
+	cfg := marker.NoopConfig{MarkerDir: m.markerDir, Classes: map[string]marker.NoopClass{}}
+	for _, j := range m.cfg.Scenario.Jobs {
+		if rt := j.RealTask; rt != nil {
+			cfg.Classes[j.Name] = marker.NoopClass{
+				DurationMS:  int(rt.Duration.Milliseconds()),
+				LogEveryMS:  int(rt.LogEvery.Milliseconds()),
+				ChattyChild: rt.ChattyChild,
+				SilentChild: rt.SilentChild,
+			}
+		}
+	}
+	if err := marker.WriteConfig(m.noopConfigPath(), cfg); err != nil {
+		return fmt.Errorf("target: %w", err)
+	}
+	return nil
 }
 
 // PoolName is name itself: the server is the run's own, so its usage pools
@@ -685,31 +790,32 @@ func (m *managed) serverPID() int {
 	return m.server.pid()
 }
 
+// workerPIDs returns the current process IDs of the real workers started.
 func (m *managed) workerPIDs() []int {
-	procs := m.workerProcs()
-	pids := make([]int, len(procs))
-	for i, p := range procs {
-		pids[i] = p.pid()
+	var pids []int
+	for _, p := range m.workerProcs() {
+		if p != nil {
+			pids = append(pids, p.pid())
+		}
 	}
 	return pids
 }
 
-// Close stops the real workers (together), then the server: each gets an
-// interrupt and the stop grace (30 s by default) to exit before it is killed, and a
-// done ctx kills at once. It then drops a database the harness created.
-// Every process is reaped before Close returns, whatever the error.
+// Close first continues every task group and process the harness stalled,
+// then stops the real workers (together), then ends the task process groups
+// the markers still show running, then stops the server: each process gets
+// an interrupt and the stop grace (30 s by default) to exit before it is
+// killed, and a done ctx kills at once. It then drops a database the harness
+// created and closes the broker lanes. Every process is reaped before Close
+// returns, whatever the error, and nothing is started once it has begun.
 func (m *managed) Close(ctx context.Context) error {
 	m.closeOnce.Do(func() {
-		var errs []error
-		procs := m.workerProcs()
-		werrs := make([]error, len(procs))
-		var wg sync.WaitGroup
-		for i, p := range procs {
-			wg.Go(func() { werrs[i] = p.stopCtx(ctx, m.stopTimeout) })
-		}
-		wg.Wait()
-		errs = append(errs, werrs...)
-		errs = append(errs, m.stopServer(ctx))
+		m.mu.Lock()
+		m.closing = true
+		m.mu.Unlock()
+		m.resumeAll(ctx)
+		errs := m.stopWorkers(ctx, true)
+		errs = append(errs, m.endTaskGroups(ctx), m.stopServer(ctx))
 		if m.pgDB != "" {
 			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cliTimeout)
 			if err := dropDatabase(dctx, m.pgAdminDSN, m.pgDB); err != nil {
@@ -717,6 +823,7 @@ func (m *managed) Close(ctx context.Context) error {
 			}
 			cancel()
 		}
+		errs = append(errs, m.closeLanes())
 		m.closeErr = errors.Join(errs...)
 	})
 	return m.closeErr

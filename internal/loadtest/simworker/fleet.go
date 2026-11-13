@@ -46,10 +46,13 @@ const (
 
 // FleetConfig describes a fleet of simulated workers.
 type FleetConfig struct {
-	RunID    string
-	FarmID   string
-	NATSURL  string
-	IDPrefix string
+	RunID   string
+	FarmID  string
+	NATSURL string
+	// NATSURLFor, when set, gives each group's broker URL (its lane); nil means
+	// NATSURL for every group.
+	NATSURLFor func(group string) string
+	IDPrefix   string
 	// Groups are the worker groups. Each group's Count simulated workers start;
 	// its Real count belongs to the managed target and is ignored here.
 	Groups []scenario.WorkerGroup
@@ -76,13 +79,13 @@ type Fleet struct {
 
 	members []*member
 	groups  []groupRange
-	ids     map[string]bool // every member's worker ID
+	ids     map[string]string // every member's worker ID, to its group name
 
 	started  atomic.Bool
 	stopOnce sync.Once
 	stopCh   chan struct{} // closed when Stop begins
 
-	crashes, disconnects, skipped, failures atomic.Int64
+	crashes, restarts, disconnects, skipped, failures atomic.Int64
 
 	// stopHook, when set, replaces Worker.Stop in Fleet.Stop. A test hook.
 	stopHook func(ctx context.Context, w *Worker) error
@@ -126,24 +129,34 @@ func NewFleet(cfg FleetConfig, b Behavior, l *Ledger, logger *slog.Logger) *Flee
 			f.members = append(f.members, &member{group: gi, spec: f.specFor(g, n, idx)})
 		}
 	}
-	f.ids = make(map[string]bool, len(f.members))
+	f.ids = make(map[string]string, len(f.members))
 	for _, m := range f.members {
-		f.ids[m.spec.ID] = true
+		f.ids[m.spec.ID] = m.spec.Group.Name
 	}
 	return f
 }
 
 // Simulates reports whether workerID is one of the fleet's workers.
-func (f *Fleet) Simulates(workerID string) bool { return f.ids[workerID] }
+func (f *Fleet) Simulates(workerID string) bool {
+	_, ok := f.ids[workerID]
+	return ok
+}
+
+// GroupOf returns the group name of one of the fleet's workers, "" otherwise.
+func (f *Fleet) GroupOf(workerID string) string { return f.ids[workerID] }
 
 func (f *Fleet) specFor(g scenario.WorkerGroup, n, global int) WorkerSpec {
 	g.Queues = f.resolveQueues(g.Queues)
+	natsURL := f.cfg.NATSURL
+	if f.cfg.NATSURLFor != nil {
+		natsURL = f.cfg.NATSURLFor(g.Name)
+	}
 	return WorkerSpec{
 		ID:       f.cfg.IDPrefix + "-" + g.Name + "-" + strconv.Itoa(n),
 		Hostname: "sim-" + f.cfg.RunID + "-" + g.Name + "-" + strconv.Itoa(n),
 		FarmID:   f.cfg.FarmID,
 		Group:    g,
-		NATSURL:  f.cfg.NATSURL,
+		NATSURL:  natsURL,
 		TLS:      f.cfg.TLS,
 		RandSeed: workerSeed(f.cfg.Seed, global),
 	}
@@ -327,10 +340,8 @@ func (f *Fleet) Stop(ctx context.Context) error {
 	defer cancel()
 
 	var (
-		mu    sync.Mutex
-		errs  []error
-		total int
-		wg    sync.WaitGroup
+		errs errList
+		wg   sync.WaitGroup
 	)
 	// Every worker stops at once, with no concurrency bound: a worker waiting
 	// its turn would keep leasing work that then ends "worker_shutdown", and
@@ -342,20 +353,41 @@ func (f *Fleet) Stop(ctx context.Context) error {
 		}
 		wg.Go(func() {
 			if err := f.stopWorker(sctx, w); err != nil {
-				mu.Lock()
-				total++
-				if len(errs) < stopErrorsShown {
-					errs = append(errs, fmt.Errorf("stop worker %s: %w", m.spec.ID, err))
-				}
-				mu.Unlock()
+				errs.add(fmt.Errorf("stop worker %s: %w", m.spec.ID, err))
 			}
 		})
 	}
 	wg.Wait()
 
 	f.sweepCrash()
-	if total > len(errs) {
-		errs = append(errs, fmt.Errorf("simworker: %d more workers failed to stop", total-len(errs)))
+	return errs.join("failed to stop")
+}
+
+// errList collects errors from concurrent goroutines, keeping the first
+// [stopErrorsShown] and counting the rest.
+type errList struct {
+	mu    sync.Mutex
+	errs  []error
+	total int
+}
+
+func (e *errList) add(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.total++
+	if len(e.errs) < stopErrorsShown {
+		e.errs = append(e.errs, err)
+	}
+}
+
+// join returns the kept errors, joined, with a line counting the ones left out
+// ("N more workers <what>").
+func (e *errList) join(what string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	errs := e.errs
+	if e.total > len(errs) {
+		errs = append(slices.Clip(errs), fmt.Errorf("simworker: %d more workers %s", e.total-len(errs), what))
 	}
 	return errors.Join(errs...)
 }
@@ -390,6 +422,85 @@ func (f *Fleet) stopping() bool {
 	default:
 		return false
 	}
+}
+
+// ── Power cuts ───────────────────────────────────────────────────────────────
+
+// CrashAll crashes every running worker at once, with no deregistration (see
+// [Worker.Crash]); it returns when they are all down. Each worker's crash
+// waits for that worker's churn event in progress, if any, so it never splits
+// one. Nothing is restarted: [Fleet.RestartAll] brings them back. Workers
+// crashed here count in [ChurnCounts].Crashes.
+func (f *Fleet) CrashAll() {
+	var wg sync.WaitGroup
+	for _, m := range f.members {
+		wg.Go(func() { f.crashMember(m) })
+	}
+	wg.Wait()
+}
+
+func (f *Fleet) crashMember(m *member) {
+	m.evMu.Lock()
+	defer m.evMu.Unlock()
+	w := m.worker.Load()
+	if f.stopping() || w == nil || !w.alive() {
+		return
+	}
+	w.Crash()
+	if f.stopping() {
+		return // Stop may have ended the worker first, making the crash a no-op
+	}
+	f.crashes.Add(1)
+}
+
+// RestartAll restarts every crashed worker as a new process on its worker ID
+// (a new instance ID, see [Worker.Restart]), at most [startConcurrency] at a
+// time, and returns the joined errors of those that failed. A worker that is
+// running, or was never started, is left alone, and nothing restarts once Stop
+// has begun. ctx bounds the whole call; each restart is also bounded by
+// [restartTimeout]. Workers restarted here count in [ChurnCounts].Restarts.
+func (f *Fleet) RestartAll(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("simworker: restart all: %w", err)
+	}
+	var (
+		errs errList
+		wg   sync.WaitGroup
+		sem  = make(chan struct{}, startConcurrency)
+	)
+launch:
+	for _, m := range f.members {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			errs.add(fmt.Errorf("simworker: restart all: %w", ctx.Err()))
+			break launch
+		}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			if err := f.restartMember(ctx, m); err != nil {
+				errs.add(fmt.Errorf("restart worker %s: %w", m.spec.ID, err))
+			}
+		})
+	}
+	wg.Wait()
+	return errs.join("failed to restart")
+}
+
+func (f *Fleet) restartMember(ctx context.Context, m *member) error {
+	m.evMu.Lock()
+	defer m.evMu.Unlock()
+	w := m.worker.Load()
+	if f.stopping() || w == nil || w.alive() {
+		return nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, restartTimeout)
+	defer cancel()
+	if err := w.Restart(rctx); err != nil {
+		return err
+	}
+	f.restarts.Add(1)
+	return nil
 }
 
 // ── Churn ────────────────────────────────────────────────────────────────────
@@ -457,8 +568,12 @@ func (f *Fleet) groupSeed(gi int) int64 {
 
 // ChurnCounts is what RunChurn has done so far.
 type ChurnCounts struct {
-	// Crashes and Disconnects are events carried out.
+	// Crashes and Disconnects are events carried out; Crashes include those of
+	// [Fleet.CrashAll].
 	Crashes, Disconnects int64
+	// Restarts are workers brought back after a crash, by churn or by
+	// [Fleet.RestartAll].
+	Restarts int64
 	// Skipped are events due for a worker that was not running.
 	Skipped int64
 	// Failures are events whose restart, or reconnect and re-registration,
@@ -469,7 +584,7 @@ type ChurnCounts struct {
 // ChurnCounts returns the churn events carried out so far.
 func (f *Fleet) ChurnCounts() ChurnCounts {
 	return ChurnCounts{
-		Crashes: f.crashes.Load(), Disconnects: f.disconnects.Load(),
+		Crashes: f.crashes.Load(), Restarts: f.restarts.Load(), Disconnects: f.disconnects.Load(),
 		Skipped: f.skipped.Load(), Failures: f.failures.Load(),
 	}
 }
@@ -582,7 +697,9 @@ func (f *Fleet) crashAndRestart(ctx context.Context, m *member, w *Worker) {
 	if err := w.Restart(rctx); err != nil {
 		f.failures.Add(1)
 		f.logger.WarnContext(ctx, "fleet: restart failed", slog.String("worker_id", m.spec.ID), slog.Any("error", err))
+		return
 	}
+	f.restarts.Add(1)
 }
 
 func (f *Fleet) disconnect(ctx context.Context, m *member, w *Worker) {

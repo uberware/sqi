@@ -61,6 +61,22 @@ func (l *JobLedger) Accepted() []SubmittedJob {
 	return out
 }
 
+// Rejected returns the attempts the server did not accept (an error status,
+// a timeout, a dropped connection) in the order they were recorded. Each
+// keeps its Name and Class, so a job the server created anyway can be matched
+// to it by name.
+func (l *JobLedger) Rejected() []SubmittedJob {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []SubmittedJob
+	for _, j := range l.all {
+		if !j.Accepted() {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
 // AcceptedCount returns how many jobs the server accepted.
 func (l *JobLedger) AcceptedCount() int {
 	l.mu.Lock()

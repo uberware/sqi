@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-net-slow-site
+description: chaos - 200ms +/- 50ms latency and a 256 KiB/s cap on a third of the workers (remote, 40 of 120) from 30s for 4m; no false offline, no reclaims, no lost logs, 4.75 min
+# The slow link lasts until 4m30s so it spans well over a minute of the time
+# after the server's startup liveness grace (about 3m10s), when a heartbeat
+# the latency delays could be mistaken for a dead worker.
+duration: 4m45s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: local
+    count: 80
+    ramp: 50/s
+    cpu: 8
+    os: linux
+  - name: remote
+    count: 40
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 30s
+    latency: {groups: [remote], delay: 200ms, jitter: 50ms, bytes_per_sec: 262144}
+    duration: 4m
+
+# The delay stays far under heartbeat_timeout, so no worker is marked
+# offline and the server reclaims nothing.
+expect:
+  max_rework_attempts: 0
+  max_reclaims: 0

@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
+	"github.com/uberware/sqi/internal/loadtest/driver"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
 )
 
@@ -25,6 +27,8 @@ type ledgerAttempt struct {
 	// that was; zero and "" when the ledger has no leased event for it.
 	leased   time.Time
 	workerID string
+	// assigned is the server's time for the assignment, zero when unknown.
+	assigned time.Time
 	// end is the attempt's first terminal, canceled or crashed event; nil
 	// while the simulator has not ended it.
 	end *simworker.Event
@@ -36,9 +40,14 @@ type ledgerAttempt struct {
 type ledgerIndex struct {
 	l    *simworker.Ledger
 	seen int // events folded in so far
-	// byTask lists each task's attempts in the order they were leased. The
-	// server leases a task's next attempt only after closing the previous
-	// one, so the last is the attempt the server holds as the task's latest.
+	// byTask lists each task's attempts in the order the server assigned
+	// them. The server leases a task's next attempt only after closing the
+	// previous one, so the last is the attempt the server holds as the task's
+	// latest. The order the leases reached the workers can differ: a reply
+	// held up in flight (after a server stall, say) can land after the next
+	// attempt's, so an attempt's place comes from its assignment time when
+	// the message carried one, and from when the ledger first saw it
+	// otherwise.
 	byTask map[string][]*ledgerAttempt
 	byID   map[string]*ledgerAttempt
 	// byJob lists each job's leased tasks, in the order first leased.
@@ -67,12 +76,12 @@ func (x *ledgerIndex) refresh() {
 func (x *ledgerIndex) add(e simworker.Event) {
 	a := x.byID[e.AttemptID]
 	if a == nil {
-		a = &ledgerAttempt{id: e.AttemptID, taskID: e.TaskID, jobID: e.JobID}
+		a = &ledgerAttempt{id: e.AttemptID, taskID: e.TaskID, jobID: e.JobID, assigned: e.AssignedAt}
 		x.byID[e.AttemptID] = a
 		if len(x.byTask[e.TaskID]) == 0 {
 			x.byJob[e.JobID] = append(x.byJob[e.JobID], e.TaskID)
 		}
-		x.byTask[e.TaskID] = append(x.byTask[e.TaskID], a)
+		x.byTask[e.TaskID] = insertByAssignment(x.byTask[e.TaskID], a)
 	}
 	switch e.Kind {
 	case simworker.KindLeased:
@@ -84,6 +93,58 @@ func (x *ledgerIndex) add(e simworker.Event) {
 			a.end = &e
 		}
 	}
+}
+
+// LeasedAttempt is an attempt a simulated worker leased, as the invariant
+// checks read it from the ledger.
+type LeasedAttempt struct {
+	ID, TaskID, WorkerID string
+	// Leased is when the lease reached the worker.
+	Leased time.Time
+	// End is the attempt's terminal, canceled or crashed event; nil while the
+	// worker has not ended it. A worker records one per attempt.
+	End *simworker.Event
+}
+
+// Outcome is the outcome of the attempt's terminal event, "" when it ended
+// otherwise or has not ended.
+func (a LeasedAttempt) Outcome() string {
+	if a.End == nil || a.End.Kind != simworker.KindTerminal {
+		return ""
+	}
+	return a.End.Outcome
+}
+
+// LeasedAttempts returns every attempt l has a leased event for, in lease
+// order.
+func LeasedAttempts(l *simworker.Ledger) []LeasedAttempt {
+	x := indexLedger(l)
+	out := make([]LeasedAttempt, 0, len(x.byID))
+	for _, a := range x.byID {
+		if !a.leased.IsZero() {
+			out = append(out, LeasedAttempt{ID: a.id, TaskID: a.taskID, WorkerID: a.workerID, Leased: a.leased, End: a.end})
+		}
+	}
+	slices.SortFunc(out, func(a, b LeasedAttempt) int {
+		if c := a.Leased.Compare(b.Leased); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+	return out
+}
+
+// insertByAssignment adds a to atts, a task's attempts in assignment order: it
+// goes after the last attempt assigned no later than it. An attempt with no
+// assignment time, or after one with none, goes at the end.
+func insertByAssignment(atts []*ledgerAttempt, a *ledgerAttempt) []*ledgerAttempt {
+	i := len(atts)
+	if !a.assigned.IsZero() {
+		for i > 0 && !atts[i-1].assigned.IsZero() && atts[i-1].assigned.After(a.assigned) {
+			i--
+		}
+	}
+	return slices.Insert(atts, i, a)
 }
 
 // decision is what the simulator decided for a task: the outcome of its
@@ -140,19 +201,24 @@ func (d decision) why() string {
 
 // ── terminal ─────────────────────────────────────────────────────────────────
 
-// terminal: every accepted job is completed, failed or canceled.
+// terminal: every accepted job and every orphan is completed, failed or
+// canceled.
 func (c *checker) terminal(statuses map[string]string, errs map[string]error) Result {
-	var ev evidence
-	for _, id := range c.order {
+	var ev Evidence
+	for _, id := range append(slices.Clone(c.order), c.orphanIDs...) {
+		what := "job " + id
+		if o, ok := c.orphans[id]; ok {
+			what = fmt.Sprintf("job %s (orphan of submission %s)", id, o.Name)
+		}
 		if err := errs[id]; err != nil {
-			ev.add(fmt.Sprintf("job %s: reading its status: %v", id, err))
+			ev.Add(fmt.Sprintf("%s: reading its status: %v", what, err))
 			continue
 		}
 		if s := statuses[id]; !terminalJob(s) {
-			ev.add(fmt.Sprintf("job %s is %s, want completed, failed or canceled", id, s))
+			ev.Add(fmt.Sprintf("%s is %s, want completed, failed or canceled", what, s))
 		}
 	}
-	return ev.result(NameTerminal)
+	return ev.Result(NameTerminal)
 }
 
 // ── The task sweep ───────────────────────────────────────────────────────────
@@ -292,18 +358,20 @@ func (c *checker) listTasks(ctx context.Context, jobID string) (tasks []client.T
 // outcomes: every task's server status is the one the simulator decided, and
 // a completed job has only succeeded tasks.
 func (c *checker) outcomes(ctx context.Context, s sweep) Result {
-	var ev evidence
-	ev.addAll(s.evidence)
-	ev.addAll(settleLoop(ctx, c.settle, s.suspects, func(sus []suspect) []string {
+	var ev Evidence
+	ev.AddAll(s.evidence)
+	for _, v := range settleLoop(ctx, c.settle, s.suspects, func(sus []suspect) []verdict {
 		x := c.ledger
 		x.refresh()
-		msgs := make([]string, len(sus))
+		vs := make([]verdict, len(sus))
 		for i, t := range sus {
-			msgs[i] = c.outcomeMsg(t.taskRef, t.server, x)
+			vs[i] = verdict{msg: c.outcomeMsg(t.taskRef, t.server, x)}
 		}
-		return msgs
-	}))
-	return ev.result(NameOutcomes)
+		return vs
+	}) {
+		ev.Add(v.msg)
+	}
+	return ev.Result(NameOutcomes)
 }
 
 // outcomeMsg returns why the task's server status is wrong, or "".
@@ -342,18 +410,23 @@ func (c *checker) outcomeMsg(ref taskRef, server string, x *ledgerIndex) string 
 // attempt. On every task, the simulator never ran two attempts at once (see
 // [ledgerOverlaps]).
 func (c *checker) singleAttempt(ctx context.Context, refs []taskRef) Result {
+	var unread atomic.Bool
 	msgs := parallelMap(len(refs), func(i int) string {
 		ref := refs[i]
 		atts, err := c.v.ListAttempts(ctx, ref.taskID)
 		if err != nil {
+			unread.Store(true)
 			return fmt.Sprintf("job %s task %s: listing attempts: %v", ref.jobID, ref.taskID, err)
 		}
 		return attemptsMsg(ref, atts)
 	})
-	var ev evidence
-	ev.addAll(c.ledgerOverlaps())
-	ev.addAll(msgs)
-	return ev.result(NameSingleAttempt)
+	var ev Evidence
+	ev.AddAll(c.ledgerOverlaps())
+	ev.AddAll(msgs)
+	// A task whose attempts could not be listed was not judged: the result
+	// says so, and no known violation may excuse it.
+	ev.unmeasured = unread.Load()
+	return ev.Result(NameSingleAttempt)
 }
 
 // ledgerOverlaps returns, for every task of an accepted job, each attempt the
@@ -461,52 +534,102 @@ func stamp(t time.Time) string { return t.UTC().Format("15:04:05.000000") }
 // least the newest chunk must be there. A chunk lost on a connection drop
 // counts as a violation: the worker publishes log chunks with a core NATS
 // publish, which has no acknowledgement and no retry.
+//
+// Inside a fault window it does not: when the attempt's ledger interval, from
+// its lease to its end, overlaps a window that hit the attempt's worker (its
+// group is in the window's Groups, or Groups is empty), the server's lines
+// need only be an in-order subsequence of the lines sent: none duplicated,
+// reordered or corrupted, any missing. A line still missing may only be late,
+// in the log consumer's backlog (a restarted server replays the log stream),
+// so such a task is re-read like a disagreeing one, for the logs settle time;
+// what its last read still misses is counted in [CounterLogsLostInFault],
+// which the result carries.
 func (c *checker) logs(ctx context.Context, refs []taskRef) Result {
-	var ev evidence
-	ev.addAll(settleLoop(ctx, c.logSettle, refs, func(rs []taskRef) []string {
+	var ev Evidence
+	vs := settleLoop(ctx, c.logSettle, refs, func(rs []taskRef) []verdict {
 		x := c.ledger
 		x.refresh()
-		return parallelMap(len(rs), func(i int) string { return c.logMsg(ctx, rs[i], x) })
-	}))
-	return ev.result(NameLogs)
+		return parallelMap(len(rs), func(i int) verdict { return c.logVerdict(ctx, rs[i], x) })
+	})
+	// A task still missing lines inside a fault window once the settle time
+	// is up passes, with its loss counted. A settled task lost none.
+	var lost int64
+	for _, v := range vs {
+		if v.msg != "" {
+			ev.Add(v.msg)
+		}
+		lost += int64(v.lost)
+	}
+	r := ev.Result(NameLogs)
+	r.Counters = map[string]int64{CounterLogsLostInFault: lost}
+	return r
 }
 
-func (c *checker) logMsg(ctx context.Context, ref taskRef, x *ledgerIndex) string {
+// inFaultWindow reports whether a fault window overlapping the attempt's
+// interval, from its lease to its end, hit the attempt's worker.
+func (c *checker) inFaultWindow(a *ledgerAttempt) bool {
+	if len(c.in.FaultWindows) == 0 || a.end == nil {
+		return false
+	}
+	lo, hi := a.leased, a.end.At
+	if lo.IsZero() {
+		lo = hi
+	}
+	worker := cmp.Or(a.workerID, a.end.WorkerID)
+	group := ""
+	if c.in.GroupOf != nil && worker != "" {
+		group = c.in.GroupOf(worker)
+	}
+	for _, w := range c.in.FaultWindows {
+		if w.Start.After(hi) || w.End.Before(lo) {
+			continue
+		}
+		if len(w.Groups) == 0 || (group != "" && slices.Contains(w.Groups, group)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *checker) logVerdict(ctx context.Context, ref taskRef, x *ledgerIndex) verdict {
 	chunks, err := c.readLogs(ctx, ref.taskID)
 	if err != nil {
-		return fmt.Sprintf("job %s task %s: reading logs: %v", ref.jobID, ref.taskID, err)
+		return verdict{msg: fmt.Sprintf("job %s task %s: reading logs: %v", ref.jobID, ref.taskID, err)}
 	}
 	if len(chunks) > 0 && x.byID[chunks[0].AttemptID] == nil && c.latestOnRealWorker(ctx, ref.taskID) {
-		return ""
+		return verdict{}
 	}
 	where := fmt.Sprintf("job %s task %s", ref.jobID, ref.taskID)
 	a, msg := logAttempt(where, ref.taskID, chunks, x)
 	if msg != "" {
-		return msg
+		return verdict{msg: msg}
 	}
 	// No ledger attempt and no chunks: nothing was sent. A crashed attempt's
 	// lines die with its connection, and an attempt not yet ended has no
 	// final count, so neither can be compared.
 	if a == nil || a.end == nil || a.end.Kind == simworker.KindCrashed {
-		return ""
+		return verdict{}
 	}
 	jc, ok := c.classOf(ref.jobID)
 	if !ok {
-		return ""
+		return verdict{}
 	}
 	where += " attempt " + a.id
 	slices.SortStableFunc(chunks, func(p, q client.LogLine) int { return cmp.Compare(p.SeqNum, q.SeqNum) })
 	for i := 1; i < len(chunks); i++ {
 		if chunks[i].SeqNum == chunks[i-1].SeqNum {
-			return fmt.Sprintf("%s: chunk seq_num %d stored twice", where, chunks[i].SeqNum)
+			return verdict{msg: fmt.Sprintf("%s: chunk seq_num %d stored twice", where, chunks[i].SeqNum)}
 		}
 	}
 	lines := chunkLines(chunks)
 	want := func(n int) string { return simworker.LogLine(ref.taskID, n, jc.Task.LogLineBytes) }
-	if c.in.LogOverflowExpected {
-		return overflowDiff(where, chunks, lines, a.end.LogLines, want)
+	if c.inFaultWindow(a) {
+		return windowDiff(where, lines, a.end.LogLines, want)
 	}
-	return exactDiff(where, lines, 1, a.end.LogLines, want)
+	if c.in.LogOverflowExpected {
+		return verdict{msg: overflowDiff(where, chunks, lines, a.end.LogLines, want)}
+	}
+	return verdict{msg: exactDiff(where, lines, 1, a.end.LogLines, want)}
 }
 
 // latestOnRealWorker reports whether the task's latest attempt, whose chunks
@@ -591,6 +714,32 @@ func exactDiff(where string, got []string, first, last int, want func(int) strin
 	return ""
 }
 
+// windowDiff compares a task's lines inside a fault window (see
+// subsequenceDiff), counts the ones missing, and keeps the task pending while
+// any are, so it is read again.
+func windowDiff(where string, got []string, n int, want func(int) string) verdict {
+	lost, msg := subsequenceDiff(where+" (inside a fault window)", got, n, want)
+	return verdict{msg: msg, pending: lost > 0, lost: lost}
+}
+
+// subsequenceDiff checks that got is lines 1..n of want in order with any
+// missing, and returns how many are, or why it is not: a line duplicated,
+// out of order, or matching no line sent.
+func subsequenceDiff(where string, got []string, n int, want func(int) string) (lost int, violation string) {
+	next := 1
+	for i, line := range got {
+		for next <= n && want(next) != line {
+			next++
+		}
+		if next > n {
+			return 0, fmt.Sprintf("%s: server line %d of %d, %q, is not one of the %d lines sent after the lines before it: a duplicated, reordered or corrupted line",
+				where, i+1, len(got), clip(line), n)
+		}
+		next++
+	}
+	return n - len(got), ""
+}
+
 // overflowDiff allows the oldest whole chunks to be missing: the chunks the
 // server kept are not none (unless nothing was sent), run on from one another,
 // and their lines are the last ones the simulator sent, so the newest chunk is
@@ -625,14 +774,14 @@ func (c *checker) workersConverge(ctx context.Context) Result {
 			return Result{Name: NameWorkersConverge, OK: true}
 		}
 		if !time.Now().Before(deadline) || ctx.Err() != nil {
-			var ev evidence
+			var ev Evidence
 			if err != nil {
-				ev.add(fmt.Sprintf("farm %s: listing workers: %v", c.in.FarmID, err))
+				ev.AddUnmeasured(fmt.Sprintf("farm %s: listing workers: %v", c.in.FarmID, err))
 			} else {
-				ev.add(fmt.Sprintf("farm %s: %d workers online and %d disabled, want %d online (the live fleet) after %s",
+				ev.Add(fmt.Sprintf("farm %s: %d workers online and %d disabled, want %d online (the live fleet) after %s",
 					c.in.FarmID, online, disabled, c.in.LiveWorkers, c.in.ConvergeWithin))
 			}
-			return ev.result(NameWorkersConverge)
+			return ev.Result(NameWorkersConverge)
 		}
 		sleep.For(ctx, min(poll, time.Until(deadline)))
 	}
@@ -679,14 +828,14 @@ func (c *checker) countWorkers(ctx context.Context) (online, disabled int, err e
 // canceled, of a job a cancel action targeted, is therefore held no later than
 // that action's start (CanceledAt).
 func (c *checker) caps() Result {
-	var ev evidence
+	var ev Evidence
 	if c.in.Ledger == nil || c.in.Scenario == nil {
-		return ev.result(NameCaps)
+		return ev.Result(NameCaps)
 	}
 	queues, pools := c.peaks()
 	for _, q := range c.in.Scenario.Farm.Queues {
 		if q.MaxConcurrentTasks > 0 && queues[q.Name] > q.MaxConcurrentTasks {
-			ev.add(fmt.Sprintf("queue %s: %d tasks in flight at once, max_concurrent_tasks %d", q.Name, queues[q.Name], q.MaxConcurrentTasks))
+			ev.Add(fmt.Sprintf("queue %s: %d tasks in flight at once, max_concurrent_tasks %d", q.Name, queues[q.Name], q.MaxConcurrentTasks))
 		}
 	}
 	for _, p := range c.in.Scenario.Farm.UsagePools {
@@ -695,10 +844,10 @@ func (c *checker) caps() Result {
 			if server := c.in.PoolNames[p.Name]; server != "" && server != p.Name {
 				name += " (" + server + " on the server)"
 			}
-			ev.add(fmt.Sprintf("usage pool %s: %d tasks in flight at once, limit %d", name, pools[p.Name], p.Limit))
+			ev.Add(fmt.Sprintf("usage pool %s: %d tasks in flight at once, limit %d", name, pools[p.Name], p.Limit))
 		}
 	}
-	return ev.result(NameCaps)
+	return ev.Result(NameCaps)
 }
 
 // edge is an attempt starting (+1) or ending (-1) on a queue and usage pool.
@@ -757,4 +906,49 @@ func (c *checker) heldUntil(e simworker.Event, start time.Time) time.Time {
 		return start
 	}
 	return at
+}
+
+// ── submission-atomic ────────────────────────────────────────────────────────
+
+// submissionAtomic: every job of the farm is an accepted job or an orphan, and
+// every orphan has all of its class's tasks (steps x tasks_per_step). A
+// submission is one transaction on the server, so one the server answered
+// with no 2xx (a timeout, a dropped connection, a 5xx) must have created its
+// whole job or nothing. A farm job matching neither, such as a second job
+// created for one submission, is one the run cannot account for.
+func (c *checker) submissionAtomic(ctx context.Context) Result {
+	var ev Evidence
+	err := listFarmJobs(ctx, c.v, c.in.FarmID, func(j client.Job) {
+		if _, ok := c.jobs[j.ID]; ok {
+			return
+		}
+		if _, ok := c.orphans[j.ID]; ok {
+			return
+		}
+		ev.Add(fmt.Sprintf("farm %s holds job %s (%q), which matches no accepted submission and no orphan of a rejected one", c.in.FarmID, j.ID, j.Name))
+	})
+	if err != nil {
+		ev.Add(err.Error())
+	}
+	ev.AddAll(parallelMap(len(c.orphanIDs), func(i int) string { return c.orphanMsg(ctx, c.orphans[c.orphanIDs[i]]) }))
+	return ev.Result(NameSubmissionAtomic)
+}
+
+// orphanMsg returns why an orphan is not a whole job, or "".
+func (c *checker) orphanMsg(ctx context.Context, o driver.SubmittedJob) string {
+	jc, ok := c.classes[o.Class]
+	if !ok || jc.TasksPerStep <= 0 {
+		return ""
+	}
+	steps := max(jc.Steps, 1)
+	want := steps * jc.TasksPerStep
+	tasks, total, err := c.listTasks(ctx, o.ID)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("orphan job %s (submission %s): listing tasks: %v", o.ID, o.Name, err)
+	case total != want || len(tasks) != want:
+		return fmt.Sprintf("orphan job %s (submission %s, HTTP status %d) has %d of %d tasks (%d listed; %d steps x %d tasks): a submission with no 2xx answer created part of its job",
+			o.ID, o.Name, o.Status, total, want, len(tasks), steps, jc.TasksPerStep)
+	}
+	return ""
 }

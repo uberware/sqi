@@ -166,7 +166,9 @@ type Page[T any] struct {
 
 // Job is a job summary or detail.
 type Job struct {
-	ID         string         `json:"id"`
+	ID string `json:"id"`
+	// Name is the name in the job's template.
+	Name       string         `json:"name"`
 	Status     string         `json:"status"`
 	TaskCounts map[string]int `json:"task_counts"`
 	CreatedAt  time.Time      `json:"created_at"`
@@ -233,6 +235,8 @@ type Worker struct {
 	Name     string `json:"name"`
 	Hostname string `json:"hostname"`
 	Status   string `json:"status"`
+	// LastHeartbeatAt is when the server last stored a heartbeat from it.
+	LastHeartbeatAt time.Time `json:"last_heartbeat_at"`
 }
 
 // SubmitRequest describes a job submission. A zero Priority leaves the server

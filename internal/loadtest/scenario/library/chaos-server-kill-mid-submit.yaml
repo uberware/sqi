@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-server-kill-mid-submit
+description: chaos - submit one job of 100,000 tasks and SIGKILL the server 2s in, during the write, restarting it 10s later; every job listed must hold all its tasks, 3 min
+# Writing 100,000 tasks takes several seconds, so the kill lands inside the
+# submission's transaction. If the server created the job without answering,
+# the job must still run to the end: 200 workers x 8 cores run its 1 s tasks,
+# and the long drain is for that case (it ends as soon as the work is done).
+duration: 3m
+warmup: 10s
+drain_timeout: 20m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 200
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: wide
+    total: 1
+    queue: render
+    steps: 1
+    tasks_per_step: 100000
+    cores: 1
+    task:
+      duration: 1s
+      log_lines: 1
+
+faults:
+  - at: 2s
+    kill: {server: true}
+    restart_after: 10s
+
+# The kill lands inside the submission's transaction, so the job is rolled
+# back and the run has no work (the record is marked invalid for that, and
+# submission-atomic shows no partial job was left). A job committed without
+# an answer would run once after the restart: no work can be redone.
+expect:
+  max_rework_attempts: 0

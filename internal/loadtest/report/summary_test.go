@@ -180,3 +180,70 @@ func TestSummary_InvariantsNotRun(t *testing.T) {
 		})
 	}
 }
+
+// TestSummary_FaultsTableEscapesCells proves an error with a pipe or a line
+// break, as errors.Join produces, stays inside its table row.
+func TestSummary_FaultsTableEscapesCells(t *testing.T) {
+	r := baseRecord()
+	r.Faults = []FaultRecord{{
+		Index: 0, Kind: "kill", Target: "group a|b", Start: t0.Add(time.Second),
+		Error: "kill worker 0: refused\r\nkill worker 1: a | b\nthird",
+	}}
+	var b strings.Builder
+	if err := writeSummary(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	want := "| 0 | kill | group a\\|b | +1s | never | kill worker 0: refused kill worker 1: a \\| b third |\n"
+	if !strings.Contains(b.String(), want) {
+		t.Errorf("summary lacks %q:\n%s", want, b.String())
+	}
+}
+
+func TestSummary_RendersFaultsReworkAndKnown(t *testing.T) {
+	r := baseRecord()
+	r.Faults = []FaultRecord{
+		{Index: 0, Kind: "kill", Target: "server", Start: t0.Add(90 * time.Second), Healed: t0.Add(2 * time.Minute)},
+		{Index: 1, Kind: "stall", Target: "group render (real 0,1)", Start: t0.Add(5 * time.Minute), Error: "pause failed"},
+	}
+	r.Rework = &Rework{Attempts: 3, Seconds: 12.5, ByFault: map[int]int{1: 1, 0: 2}}
+	r.Reclaims = &Reclaims{Attempts: 2, ByReason: map[string]int{"worker restarted": 1, "worker went offline": 1}, Examples: []string{"attempt a1 of task t1"}}
+	r.Invariants = []verify.Result{
+		okResult("terminal"),
+		{Name: "caps", OK: true, Known: "H13f1", Evidence: []string{"pool over its cap"}},
+		{Name: "store-integrity", Evidence: []string{"open the store: boom"}, Unmeasured: true},
+	}
+	var b strings.Builder
+	if err := writeSummary(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	got := b.String()
+	for _, want := range []string{
+		"## Faults\n",
+		"| # | Kind | Target | Start | Healed | Error |",
+		"| 0 | kill | server | +1m30s | +2m0s | - |",
+		"| 1 | stall | group render (real 0,1) | +5m0s | never | pause failed |",
+		"## Rework\n",
+		"3 attempts, 12.5s of work; by fault: #0 2, #1 1",
+		"- known (H13f1) caps\n  - pool over its cap\n",
+		"## Reclaims\n",
+		"2 attempts; by reason: worker restarted 1, worker went offline 1",
+		"- attempt a1 of task t1\n",
+		"- UNMEASURED store-integrity\n  - open the store: boom\n",
+		"- PASS terminal\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "## Faults") > strings.Index(got, "## Invariants") {
+		t.Error("Faults should come before Invariants")
+	}
+	// A run without faults or rework has neither section.
+	b.Reset()
+	if err := writeSummary(&b, baseRecord()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "## Faults") || strings.Contains(b.String(), "## Rework") || strings.Contains(b.String(), "## Reclaims") {
+		t.Errorf("a plain run rendered chaos sections:\n%s", b.String())
+	}
+}

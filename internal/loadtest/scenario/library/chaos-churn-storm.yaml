@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-churn-storm
+description: chaos - 100 simulated workers each crashing about 30 times an hour and restarting 10s later, under steady load (about 2.5 tasks/s), 3 min
+# No faults: the churn is the simulated fleet's own. The rework bound puts
+# the run in chaos mode, so the store and rework checks run too. A crashed
+# attempt never completes, so a crash itself costs no rework; only a
+# completed report the churn loses does. The run crashes about 150 workers.
+# The bound of 5 allows for a few lost reports; a defect losing a report per
+# crash would exceed it many times over.
+duration: 3m
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 100
+    ramp: 50/s
+    cpu: 8
+    os: linux
+    churn: {crash_per_hour: 30, restart_after: 10s}
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+expect:
+  max_rework_attempts: 5

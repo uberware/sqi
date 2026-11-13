@@ -13,6 +13,10 @@ name: Load nightly
 # thresholds are only reported in the summary. Shared runners are too noisy
 # to gate on timings. Compare runs with `sqi-load compare` on the uploaded
 # directories.
+#
+# The `chaos` jobs run the whole chaos suite (docs/chaos-testing.md) on SQLite,
+# one job per scenario. They ignore `scenario` and run on a dispatch only when
+# `duration` is empty, so a soak dispatch runs the soak alone.
 on:
   schedule:
     - cron: "30 3 * * *"
@@ -164,3 +168,129 @@ jobs:
           path: ${{ env.OUT_DIR }}
           if-no-files-found: warn
           retention-days: 30
+
+  # The chaos suite: every built-in chaos-* scenario, each a fault injected
+  # into real sqi-server and sqi-worker processes (`make chaos SCENARIO=...`,
+  # SQLite), plus the suite's framework test (`make chaos-framework`). Each
+  # runs in a job of its own, all at once: a scenario spends most of its time
+  # waiting, and a runner to itself keeps a timing-sensitive one from sharing
+  # a CPU. chaos-plan lists the scenarios from the library, so a new one joins
+  # without an edit here.
+  #
+  # Only the tests listed under `gated` below fail their job. The list is
+  # empty: every test is advisory and raises a warning annotation when it does
+  # not pass, the framework test included, since it runs a real scenario
+  # (chaos-server-term). A test moves to the gated list after 20 consecutive
+  # passing runs on GitHub-hosted runners; add its name (TestChaos/<scenario>,
+  # or TestChaos_<name>) to that one list to promote it.
+  chaos-plan:
+    name: Chaos suite plan
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || inputs.duration == '' }}
+    outputs:
+      scenarios: ${{ steps.list.outputs.scenarios }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: List the chaos scenarios
+        id: list
+        shell: bash
+        run: |
+          names=(framework)
+          for f in internal/loadtest/scenario/library/chaos-*.yaml; do
+            names+=("$(basename "$f" .yaml)")
+          done
+          json=$(printf '%s\n' "${names[@]}" | jq -R . | jq -cs .)
+          echo "scenarios=$json" >> "$GITHUB_OUTPUT"
+
+  chaos:
+    name: Chaos suite (sqlite, ${{ matrix.scenario }})
+    runs-on: ubuntu-latest
+    needs: chaos-plan
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(needs.chaos-plan.outputs.scenarios) }}
+
+    env:
+      CHAOS_OUT: ${{ github.workspace }}/chaos-runs
+      CHAOS_LOG: ${{ github.workspace }}/chaos.log
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # `make chaos` exits non-zero when its scenario fails, an advisory one
+      # included, so its status is not what fails the job: the next step reads
+      # the log and decides.
+      - name: Run the chaos test
+        shell: bash
+        env:
+          SQI_LOAD_OUT: ${{ env.CHAOS_OUT }}
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          if [ "$SCENARIO" = framework ]; then
+            target=(chaos-framework)
+          else
+            target=(chaos "SCENARIO=$SCENARIO")
+          fi
+          make "${target[@]}" 2>&1 | tee "$CHAOS_LOG" || echo "make exited non-zero; the next step decides what fails the job"
+
+      - name: Upload the run directories
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: chaos-runs-sqlite-${{ matrix.scenario }}
+          path: |
+            ${{ env.CHAOS_OUT }}
+            ${{ env.CHAOS_LOG }}
+          if-no-files-found: warn
+          retention-days: 30
+
+      # A skipped or filtered test would still leave `go test` green, so each
+      # is asserted by name. The trailing space keeps a name from matching a
+      # longer one with the same prefix.
+      - name: Assert the gated tests passed
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          gated=(
+          )
+          if [ "$SCENARIO" = framework ]; then
+            mapfile -t tests < <(grep -ho '^func TestChaos_[A-Za-z0-9_]*' test/chaos/*_test.go | sed 's/^func //')
+          else
+            tests=("TestChaos/$SCENARIO")
+          fi
+          fail=0
+          {
+            echo "| Test | Gating | Result |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for t in "${tests[@]}"; do
+            if printf '%s\n' "${gated[@]}" | grep -qxF "$t"; then
+              gating=gated
+            else
+              gating=advisory
+            fi
+            if grep -q -- "--- PASS: $t " "$CHAOS_LOG"; then
+              result=PASS
+            elif [ "$gating" = gated ]; then
+              echo "::error::$t did not pass (or did not run)"
+              result=FAIL
+              fail=1
+            else
+              echo "::warning::advisory test $t did not pass (or did not run)"
+              result="not passed"
+            fi
+            echo "| $t | $gating | $result |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$fail"

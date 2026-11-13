@@ -124,6 +124,27 @@ type Finding struct {
 	Message  string `json:"message"`
 }
 
+// FaultRecord is one fault the run injected: when it fired and when it
+// healed.
+type FaultRecord struct {
+	// Index is the fault's position in the scenario's faults.
+	Index int    `json:"index"`
+	Kind  string `json:"kind"`
+	// Target is what the fault hit: "server", "group render (real 0,1)",
+	// "groups [rack-b]" or "all".
+	Target string `json:"target"`
+	// ServerRestart is set when the fault stopped the server's process and
+	// started it again (a kill, a term or a power cut), so the server's broker
+	// connection came up again when it healed. A stall leaves the process,
+	// and its connection, in place.
+	ServerRestart bool      `json:"server_restart,omitempty"`
+	Start         time.Time `json:"start"`
+	// Healed is zero when the fault never healed: a worker left dead, an
+	// error, or a run interrupted before the heal.
+	Healed time.Time `json:"healed"`
+	Error  string    `json:"error,omitempty"`
+}
+
 // Record is everything one run measured. It is what run.json holds.
 type Record struct {
 	RunID string `json:"run_id"`
@@ -172,6 +193,43 @@ type Record struct {
 	Invariants  []verify.Result  `json:"invariants"`
 	Unavailable []string         `json:"unavailable"`
 	Findings    []Finding        `json:"findings"`
+	// Faults are the faults the run injected, in scenario order; empty for a
+	// run without faults.
+	Faults []FaultRecord `json:"faults,omitempty"`
+	// Rework is the work faults made the farm do twice; nil when the run did
+	// not measure it (a run without chaos checks, or a store it could not read).
+	Rework *Rework `json:"rework,omitempty"`
+	// Reclaims are the attempts the server took back from a worker; nil when
+	// the run did not measure them (as for Rework).
+	Reclaims *Reclaims `json:"reclaims,omitempty"`
+}
+
+// Rework is the attempts that ran to completion on a worker and still did not
+// count: the server recorded another outcome for a simulated worker's, or a
+// real task's process finished more times than the server credited.
+type Rework struct {
+	Attempts int     `json:"attempts"`
+	Seconds  float64 `json:"seconds"`
+	// ByFault maps a fault's index to the attempts attributed to it: the latest
+	// fault that began before the attempt's worker-side end.
+	ByFault map[int]int `json:"by_fault,omitempty"`
+	// Examples are the first few, at most 20.
+	Examples []string `json:"examples,omitempty"`
+	// Undercount, when set, says why Attempts leaves out some real tasks'
+	// executions, so the count is a lower bound.
+	Undercount string `json:"undercount,omitempty"`
+}
+
+// Reclaims are the attempts the server closed as failed to take their tasks
+// back from a worker, as the stopped server's store records them: a worker the
+// heartbeat sweep marked offline, one that shut down or stopped reporting the
+// attempt, or one that re-registered from a new process.
+type Reclaims struct {
+	Attempts int `json:"attempts"`
+	// ByReason counts them by the message the server recorded.
+	ByReason map[string]int `json:"by_reason,omitempty"`
+	// Examples are the first few, at most 20.
+	Examples []string `json:"examples,omitempty"`
 }
 
 // warmup returns the scenario's warmup, or zero when there is no scenario.

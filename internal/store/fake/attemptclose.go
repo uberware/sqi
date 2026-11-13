@@ -138,7 +138,7 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 	now = now.UTC() // SQLite stores and returns these times in UTC
 	var active []store.Task
 	for id, t := range s.tasks {
-		if t.JobID != jobID || terminalTask(t.Status) {
+		if t.JobID != jobID || t.Status.IsTerminal() {
 			continue
 		}
 		if inFlightTask(t.Status) {
@@ -209,7 +209,7 @@ func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, 
 		return store.Task{}, false, store.ErrNotFound
 	}
 	prior.Parameters = copyMap(prior.Parameters) // a copy, as GetTask returns
-	if terminalTask(prior.Status) {
+	if prior.Status.IsTerminal() {
 		return prior, false, nil
 	}
 	// Same order as the job cancel: the task, then its attempt, then the claims.

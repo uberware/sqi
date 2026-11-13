@@ -26,7 +26,7 @@ volume, UI clients, failure and churn rates, and run length. It reports:
   and REST read latency per endpoint;
 - **server resource use**: CPU, RSS, goroutines, open files, GC pauses,
   database, WAL and NATS data size, and JetStream bytes per stream;
-- **correctness under load**: six invariants checked at the end of every run
+- **correctness under load**: seven invariants checked at the end of every run
   (see [Reading a report](#reading-a-report));
 - **growth over time**: least-squares slopes, and findings for the ones that
   look like leaks.
@@ -39,8 +39,10 @@ It is not:
 - **A fix for what it finds.** The harness measures and records. Known
   defects are listed under [Known server defects](#known-server-defects).
 - **A fault-injection tool.** It simulates worker churn (crashes,
-  disconnects, restarts) because that is a normal condition on a real farm. It
-  does not kill the server, partition the broker or fill disks.
+  disconnects, restarts) because that is a normal condition on a real farm.
+  Killing the server, partitioning the broker and the rest of fault injection
+  belong to the [chaos suite](chaos-testing.md), which is built on this
+  harness.
 - **A test of the web UI's rendering.** UI load is modelled as WebSocket
   subscribers and REST pollers, which is what the server sees.
 - **A release artifact.** `sqi-load` lives in this repository
@@ -535,7 +537,7 @@ Sizing of `ci-medium`, on WSL pinned to 4 CPUs of an Intel Core i7-10750H:
 
 - At its rates (about 5.5 tasks/s offered, about 3.8 in the steady state), a
   5 minute run peaks at 0.27 generator cores and 2.3 server cores, VALID, with
-  all six invariants holding.
+  its invariants holding.
 - At 0.16 and 0.10 jobs/s (about 7.4 tasks/s) the server is near its knee.
 - At 1 and 0.5 jobs/s the server needs about 3.4 cores, leaves a 4,584-task
   backlog, and 228 of 452 jobs are unfinished after the drain.
@@ -621,9 +623,16 @@ p50, p95, p99 and max:
 
 ### Invariants
 
-Six invariants are checked at the end of every run, after the drain, with the
-fleet still up. Any failure fails the run (exit 1), with evidence naming the
-job, task, attempt, queue or pool, and at most 20 entries shown. The checks
+Seven invariants are checked at the end of every run, after the drain, with
+the fleet still up. Any failure fails the run (exit 1), with evidence naming
+the job, task, attempt, queue or pool, and at most 20 entries shown.
+
+A submission the server gave no 2xx answer (a timeout, a dropped connection, a
+5xx) may still have created its job. Before the drain, and again before the
+checks, the run lists the farm's jobs and keeps each such job as an **orphan**
+of its submission: the drain waits for orphans as for accepted jobs,
+`terminal` covers them, `caps` counts their attempts, and `submission-atomic`
+checks they are whole. The checks
 that read tasks one by one (single-attempt and logs) cover every task up to
 about 2,000 and a seeded random sample of that size beyond.
 
@@ -635,6 +644,7 @@ about 2,000 and a seeded random sample of that size beyond.
 | `logs` | On each sampled task, the lines the server returns for the task's latest attempt equal the lines the simulator sent for it, in order. When the scenario overflows the broker's store on purpose, losing the attempt's oldest whole chunks is allowed and nothing else is. A chunk lost on an unplanned connection drop fails the check: workers publish log chunks with a core-NATS publish, which delivers at most once. |
 | `workers-converge` | Within the server's heartbeat timeout plus the slowest worker heartbeat plus 10 s, the farm's online worker count equals the number of workers the harness has running. |
 | `caps` | The most attempts the simulator held at once on a queue never exceeded `max_concurrent_tasks` (0 is unlimited), and on a usage pool never exceeded its `limit` (each task claims one unit). A canceled attempt counts as released when the cancel action started, since the server frees the slot when it commits the cancel. |
+| `submission-atomic` | Every job in the farm is an accepted job or an orphan, and every orphan holds all of its class's tasks (`steps x tasks_per_step`). A submission is one transaction, so one the server answered with no 2xx must have created its whole job or nothing; a second job for one submission, or a partial one, fails. |
 
 A late cancel (see [Known server defects](#known-server-defects)) can fail
 `caps`: the server's own claim count stays at the limit while concurrent
@@ -868,6 +878,9 @@ to 5 hours 30 minutes, so the job (six hour cap) has room for the build and
 the artifact upload. A longer or malformed duration fails the job before
 anything builds.
 
+The chaos suite has CI jobs of its own, `chaos-smoke` and a nightly `chaos` job
+in the same workflow file; see [Chaos testing](chaos-testing.md#ci).
+
 Every CI job is GitHub-hosted at about 4 vCPU, with no larger or self-hosted
 runner, so `ci-medium` is sized to stay valid on one. `mixed-medium` and the
 large scenarios are local or self-hosted runs.
@@ -1044,15 +1057,54 @@ attempt's usage-pool claim, so in that window concurrent execution can exceed
 a cap while the server's claim count stays at the limit, and `caps` can
 fail.
 
-### An instant restart can strand an attempt
+### An instant restart can leave an attempt running
 
 A lease request still in flight from a worker's old process can be served
-after a restart's reclaim (the stale worker row is used; the instance is not
-re-checked under the per-worker lock), leaving the re-leased attempt stranded
-as running until `scheduler.reconcile_grace` (default 2 minutes) expires. A
-real restart takes seconds, so real workers are unlikely to hit it. The
-harness's churn crashes a worker, waits `restart_after`, then restarts it;
-keep `restart_after` realistic in your own scenarios.
+after a restart's reclaim, leaving the re-leased attempt open as running.
+Attempt reconciliation closes it: the server reclaims an attempt a live
+worker's heartbeats stop reporting, after `scheduler.reconcile_grace` (default
+2 minutes). `chaos-churn-instant-restart`, whose churn restarts a worker at
+once, is a regression guard for it.
+
+### A graceful server stop can lose a terminal status (H13f1)
+
+A task's terminal status is a core NATS publish with no acknowledgment, and
+the embedded broker stops JetStream before it closes client connections. A
+status in flight when the server stops gracefully is stored by no stream, and
+the worker, whose publish returned no error, does not retry. The attempt is
+reclaimed after the restart and the finished task re-runs.
+`chaos-server-term` records it as a known violation of the rework bound.
+
+### A server stall longer than the heartbeat timeout takes every worker offline (H13f2)
+
+On SIGCONT after a stall longer than `heartbeat_timeout`, the heartbeat sweep
+runs before the stall's backlog of heartbeats is consumed, marks every live
+worker offline and reclaims their attempts. Work that finished during the stall
+is rejected when its report lands and runs again, and an attempt reclaimed
+while its lease reply is still in flight can run beside the task's next
+attempt until the stale-running cancel stops it. `chaos-server-stall-long`
+records it.
+
+### A worker the sweep marks offline stays offline (H13f3)
+
+A live worker the heartbeat sweep marks offline stays offline while its
+connection stays up: heartbeats never bring a worker back online, and it
+re-registers only on a reconnect. `chaos-server-stall-long` and
+`chaos-worker-sleep` record it, where `workers-converge` fails.
+
+### Killing sqi-worker on Linux leaves its task's processes running (H13f4)
+
+On a bare-process Linux worker, killing `sqi-worker` leaves the process tree of
+its task running. A child with no stdout never gets SIGPIPE, outlives the
+worker's restart and keeps writing the task's output while the reclaimed task
+re-runs on a live worker. `chaos-worker-kill-mid-task` records it, where
+`no-orphans` and `single-writer` can fail on Linux.
+
+### A data race at shutdown in the scheduler (H13f5)
+
+`Scheduler.Stop` reads the scheduler's `cancel` function while
+`Scheduler.Run` is still setting it, when the server shuts down right after it
+launches the scheduler. The race detector reports it. No scenario records it.
 
 ---
 
@@ -1085,6 +1137,8 @@ design target), and the knee of each sweep.
 - [Observability](observability.md): server metrics, including the five metric
   families declared but not recorded that the harness measures from the
   client side instead.
+- [Chaos testing](chaos-testing.md): the fault-injection suite built on this
+  harness.
 - [Operations](operations.md): running and sizing `sqi-server`.
 - [Configuration](configuration.md): the keys `server.config` accepts,
   including `http.rate_limit.enabled`.
