@@ -4,6 +4,7 @@ package scenario
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -63,6 +64,7 @@ func (v *validator) fault(path string, f *Fault, groups map[string]int) {
 	}
 	v.faultRestart(path, f)
 	v.faultNetwork(path, f, groups)
+	v.newKinds(path, f, groups)
 	if f.PowerCut != nil {
 		v.powerCut(path+".power_cut", f.PowerCut)
 	}
@@ -154,6 +156,85 @@ func (v *validator) faultNetwork(path string, f *Fault, groups map[string]int) {
 		if p := f.Flap.Period.Duration; p <= 0 || (f.Duration.Duration > 0 && p > f.Duration.Duration) {
 			v.failf(path+".flap.period", "%s must be positive and no longer than duration %s", f.Flap.Period, f.Duration)
 		}
+	}
+}
+
+// maxClockSkew is the largest offset a simulated worker's clock may carry.
+const maxClockSkew = 48 * time.Hour
+
+// newKinds checks the database, disk_full, fd_limit and revoke kinds.
+func (v *validator) newKinds(path string, f *Fault, groups map[string]int) {
+	if f.Database != nil || f.DiskFull != nil || f.FDLimit != nil || f.Revoke != nil {
+		if f.Duration.Duration <= 0 {
+			v.failf(path+".duration", "must be positive for %s", f.Kind())
+		}
+	}
+	if f.Database != nil {
+		if m := f.Database.Mode; m != DatabaseStall && m != DatabaseDrop {
+			v.failf(path+".database.mode", "%q is not one of %s, %s", m, DatabaseStall, DatabaseDrop)
+		}
+	}
+	if f.DiskFull != nil {
+		v.diskFull(path+".disk_full", f.DiskFull)
+	}
+	if f.FDLimit != nil && f.FDLimit.Headroom <= 0 {
+		v.failf(path+".fd_limit.headroom", "must be positive")
+	}
+	if f.Revoke != nil {
+		v.revoke(path+".revoke", f.Revoke, groups)
+	}
+}
+
+func (v *validator) diskFull(path string, d *DiskFull) {
+	switch d.Volume {
+	case VolumeServer, VolumeWorkers:
+	default:
+		v.failf(path+".volume", "%q is not one of %s, %s", d.Volume, VolumeServer, VolumeWorkers)
+	}
+	if d.HeadroomBytes < 0 {
+		v.failf(path+".headroom_bytes", "must not be negative")
+	}
+	if d.Reason != "" {
+		if _, err := regexp.Compile(d.Reason); err != nil {
+			v.failf(path+".reason", "does not compile: %v", err)
+		}
+	}
+	if d.MaxFailed != nil && *d.MaxFailed < 0 {
+		v.failf(path+".max_failed", "must not be negative")
+	}
+	if d.Volume != VolumeWorkers {
+		if d.Reason != "" {
+			v.failf(path+".reason", "applies to a workers volume only")
+		}
+		if d.MaxFailed != nil {
+			v.failf(path+".max_failed", "applies to a workers volume only")
+		}
+		return
+	}
+	if !slices.ContainsFunc(v.s.Workers, func(g WorkerGroup) bool { return g.Real > 0 }) {
+		v.failf(path+".volume", "a workers volume needs a group with real workers")
+	}
+}
+
+func (v *validator) revoke(path string, p *ProcTarget, groups map[string]int) {
+	if p.Server {
+		v.failf(path, "revoke applies to a group's real workers")
+	} else {
+		v.procTarget(path, p, groups)
+	}
+	if !v.s.Server.BrokerAuth {
+		v.failf(path, "revoke needs server.broker_auth: with broker auth off there is no credential to revoke")
+	}
+}
+
+// clockSkew checks a group's clock_skew.
+func (v *validator) clockSkew(path string, w *WorkerGroup) {
+	skew := w.ClockSkew.Duration
+	if skew > maxClockSkew || skew < -maxClockSkew {
+		v.failf(path+".clock_skew", "%s is more than %s from the server's clock", w.ClockSkew, maxClockSkew)
+	}
+	if skew != 0 && w.Real > 0 {
+		v.failf(path+".clock_skew", "applies to simulated workers only; group %q has real workers", w.Name)
 	}
 }
 
@@ -250,6 +331,9 @@ func (v *validator) realTasks() {
 		}
 		if rt.LogEvery.Duration < 0 {
 			v.failf(path+".log_every", "must not be negative")
+		}
+		if rt.ScratchBytes < 0 {
+			v.failf(path+".scratch_bytes", "must not be negative")
 		}
 	}
 }
