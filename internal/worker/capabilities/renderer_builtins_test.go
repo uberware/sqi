@@ -53,6 +53,7 @@ var rendererLayouts = []rendererLayout{
 		exe: "husk",
 		installs: []string{
 			"/opt/hfs21.0.440/bin/husk",
+			"/Applications/Houdini/Houdini21.0.440/Frameworks/Houdini.framework/Versions/Current/Resources/bin/husk",
 			`C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\husk.exe`,
 		},
 		versioned: "/opt/hfs21.0.440/bin/husk",
@@ -93,6 +94,7 @@ var rendererLayouts = []rendererLayout{
 		exe: "mantra",
 		installs: []string{
 			"/opt/hfs21.0.440/bin/mantra",
+			"/Applications/Houdini/Houdini21.0.440/Frameworks/Houdini.framework/Versions/Current/Resources/bin/mantra",
 			`C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\mantra.exe`,
 		},
 		versioned: "/opt/hfs21.0.440/bin/mantra",
@@ -224,7 +226,7 @@ func TestRendererDetectors_EvaluateOnEveryPlatform(t *testing.T) {
 		switch {
 		case strings.Contains(install, `\`):
 			return "windows"
-		case strings.HasPrefix(install, "/Applications/"):
+		case strings.HasPrefix(install, "/Applications/"), strings.HasPrefix(install, "/Users/"):
 			return "darwin"
 		default:
 			return "linux"

@@ -1,6 +1,6 @@
 # sqi Observability Guide
 
-This document covers the two distinct log channels in sqi, the in-UI diagnostic
+This document covers the two log channels in sqi, the in-UI diagnostic
 panels, the REST and WebSocket APIs for consuming diagnostic logs, how to wire
 diagnostic output to external systems (journald, Docker, Loki, ELK), and the
 full configuration reference.
@@ -9,8 +9,7 @@ full configuration reference.
 
 ## Two log channels
 
-sqi produces two distinct kinds of log output; they serve different purposes
-and follow different flows.
+sqi produces two kinds of log output, with different purposes and flows.
 
 | | Task logs | Diagnostic logs |
 |---|---|---|
@@ -28,6 +27,18 @@ through a `logstreamer` and publishes them in chunks to the JetStream subject
 `task.logs.<workerID>.<taskID>`. The server's consumer writes each chunk to SQLite and
 fans it out over WebSocket so the task log page updates live. Because JetStream
 retains messages, you can reload the log page and still see all output.
+
+A task ends when its process has exited and its output has closed. A job the
+task's script started in the background stays in the task's process group (on
+Windows, its job object), so the task waits for it and its output is
+captured, as for any process the task waits for. A process that left the
+group can keep the output open after the task exits, such as a daemon that
+called `setsid`, or Unreal Editor's UnrealTraceServer. The task then ends 5
+seconds after its process group has exited, and the worker logs a warning.
+That process is not killed, but later output is not captured. An OpenJD
+environment's `onEnter` or `onExit` action has no process group of its own,
+so its 5 seconds count from its exit: a service it starts in the background
+keeps running, and its later output is dropped.
 
 ### Task progress
 
@@ -66,11 +77,6 @@ progress.
 Status text is cleaned before it is stored: control characters are removed
 (tabs and line breaks become spaces) and the text is cut to 1024 bytes, both on
 the worker and again on the server.
-
-Upgrade servers before workers. A server that predates progress treats each
-snapshot from a newer worker as a repeat `running` report, which is correct but
-costs an anchored write about every 2 s per running task. A newer server with an
-older worker records one unthrottled snapshot per `openjd_status` line.
 
 ### Remaining time and ETA
 
@@ -131,21 +137,20 @@ Both binaries write their own operational output (scheduler decisions, worker
 registration, errors, etc.) using Go's structured `slog`. This output is
 written to stderr in JSON format by default (see
 [Log format](#log-format-and-level)); set `log.file` to write it to a rotating
-file instead. A Windows service has no stderr, so it always writes a file — by
+file instead. A Windows service has no stderr, so it always writes a file, by
 default `C:\ProgramData\sqi\logs\<service-name>.log` (see
 [Log destination](#log-destination)). When diagnostics are enabled (the
 default), the logs are also forwarded to the server's in-memory ring buffer and
-surfaced in the web UI — so operators can see why a worker is misbehaving
-without shelling into the host.
+shown in the web UI, so operators can see why a worker is misbehaving without
+logging in to the host.
 
 Each worker runs a fan-out sink that publishes every log
 record as a JSON `DiagLogMsg` to the core-NATS subject
 `worker.diag.<workerID>`. The server subscribes to `worker.diag.>` and stores
 arriving records in its buffer. The server's own slog records bypass NATS and
-feed the same buffer in-process via a fan-out handler. Core NATS is used (not
-JetStream) because diagnostic records are best-effort — a brief network blip
-means some lines are missing from the UI, which is acceptable for
-operational logs.
+feed the same buffer in-process via a fan-out handler. Diagnostic records go
+over core NATS, not JetStream, because they are best-effort: a brief network
+outage leaves some lines missing from the UI.
 
 ---
 
@@ -155,7 +160,7 @@ operational logs.
 
 Under the lease model, `assigned` is a brief handoff window: the worker that
 just requested work is expected to transition the task to `running` within
-seconds. A task that lingers in `assigned` is an anomaly — the worker
+seconds. A task that lingers in `assigned` is an anomaly: the worker
 leased it but never reported `running`.
 
 The scheduler's **stale-assigned reaper** runs on every heartbeat-sweep tick
@@ -165,8 +170,8 @@ timeout (30 s, `AssignedTaskTimeout`; not a config key) to the
 If the task's job is now idle (no other tasks in flight), the job is demoted
 from `running` back to `pending` so it does not appear stuck.
 
-Frequent reaper activity on a particular worker is a sign that the worker is
-taking leases but failing to start them — look for WARN-level lines in the
+Frequent reaper activity on a particular worker means the worker is taking
+leases but failing to start them; look for WARN-level lines in the
 worker's diagnostic panel (see [Worker diagnostics panel](#worker-diagnostics-panel)).
 
 ### Per-worker health from heartbeat + running state
@@ -181,25 +186,24 @@ The server infers worker health from two signals:
 
 2. **Missing `running` within the tight window.** A task in `assigned` that
    does not transition to `running` within the fixed 30 s reaper window is
-   reclaimed by the stale-assigned reaper. No worker self-report is needed — the
-   server's ledger is authoritative. The only possible divergence is a
-   server-side phantom (the server assigned the task but the reply was lost),
-   which the tight reaper window already catches.
+   reclaimed by the stale-assigned reaper. No worker self-report is needed: the
+   server's ledger is authoritative. The one possible divergence, a task the
+   server assigned whose reply was lost, is caught by the same reaper window.
 
 ### Why isn't my job running? — Unschedulable tasks
 
 Unlike `assigned` lingering (an anomaly on an otherwise-progressing task),
 "unschedulable" answers the more common operator question: a `ready` task
-never gets picked up. It means no currently-online worker can satisfy
-that task's requirements — a farm/queue/compute-location mismatch, an unmet
-hardware amount or capability-attribute requirement, or a usage pool at
-capacity — and it has been waiting long enough that this isn't just a
-worker-hasn't-polled-yet timing gap.
+never gets picked up. It means no online worker can satisfy that task's
+requirements (a farm, queue or compute-location mismatch, an unmet hardware
+amount or capability-attribute requirement, or a usage pool at capacity), and
+the task has waited longer than the grace period below, which rules out a
+worker that has not polled since the task became ready.
 
 The scheduler's **unschedulable sweep** runs on every heartbeat-sweep tick
 (the same tick as the stale-assigned reaper above) and reuses the same
-worker-eligibility check the assignment path uses to hand out leases — it is
-read-only and never changes scheduling, only the annotation described below.
+worker-eligibility check the assignment path uses to hand out leases. It is
+read-only and changes only the annotation described below, never scheduling.
 A `ready` task is flagged once it has waited longer than
 `scheduler.unschedulable_grace` (default 30 s) with no eligible online
 worker; setting the grace period to `0` disables the sweep entirely. See
@@ -209,7 +213,7 @@ for the config knob.
 Where it surfaces:
 
 - **Task**: the `unschedulable_reason` field on `GET /api/v1/tasks/{id}` (and
-  in task list/detail responses) — a human-readable string such as
+  in task list/detail responses), a human-readable string such as
   `no online workers` or `no eligible online worker: <reason>`, where
   `<reason>` is one of `farm mismatch`, `queue affinity`,
   `compute location mismatch`, `amount requirement not met`,
@@ -220,16 +224,15 @@ Where it surfaces:
   `waiting for capacity group <name> to wake a machine` (a named group) or
   `… to launch a machine` (a sized group) instead; see
   [Waiting tasks](capacity.md#waiting-tasks). Empty/absent means schedulable.
-- **Job**: `task_counts.unschedulable` — the number of `ready` tasks currently
-  flagged, a subset of `ready`, not an additional task status.
+- **Job**: `task_counts.unschedulable`, the number of `ready` tasks currently
+  flagged. It is a subset of `ready`, not a separate task status.
 - **Web UI**: an "Unschedulable" badge on the job detail page (per affected
   task) and a matching count on the job's row in the job list.
 
-It is a continuous, self-clearing signal rather than a one-shot alert: every
-sweep tick re-evaluates already-flagged tasks, so the reason string clears the
-moment a matching worker comes online, or the task leaves `ready` (assigned to
-a worker or canceled) — no manual acknowledgement is needed. If a job's badge
-won't clear, check the [Worker diagnostics panel](#worker-diagnostics-panel)
+The signal clears itself: every sweep tick re-evaluates flagged tasks, so the
+reason string clears once a matching worker comes online or the task leaves
+`ready` (assigned to a worker or canceled), with no acknowledgement needed. If a
+job's badge won't clear, check the [Worker diagnostics panel](#worker-diagnostics-panel)
 and the task's reason string together: a `queue affinity` or
 `compute location mismatch` reason usually points at a worker configuration
 mismatch rather than a capacity shortfall.
@@ -237,7 +240,7 @@ mismatch rather than a capacity shortfall.
 The `worker EXPR limits are tighter…` reason is a configuration mismatch,
 not a capacity one. The scheduler withholds EXPR work from any worker whose
 advertised `expr.*` caps undercut the limits this server accepts templates
-under, and it names both numbers and both config keys. Before chasing it:
+under, and it names both numbers and both config keys. Two cases:
 
 - A job with a recorded extension list gets an exact answer. The gate reads
   the extension list recorded on the job row at submission, so a job flagged
@@ -253,8 +256,8 @@ under, and it names both numbers and both config keys. Before chasing it:
   flagged with this reason. The fix is the same either way.
 - With the sweep disabled (`scheduler.unschedulable_grace` ≤ `0`) this
   reason is never written. A withheld task sits `ready` with nothing on it,
-  and the one-off `WARN` the server logs when the short worker registers, which
-  may predate the job, is the only signal. Look for it under
+  and the only signal is the one `WARN` the server logs when the short worker
+  registers, which may predate the job. Look for it under
   [Admin → Server log](#admin--server-log) (component `server`), not in that
   worker's diagnostics panel: the record is the scheduler's,
   so it never travels on `worker.diag.<id>`.
@@ -267,21 +270,20 @@ serve different questions:
 | | Durable failure reason | Diagnostics ring buffer |
 |---|---|---|
 | **What** | A short, human-readable string on the task itself (`failure_reason`) explaining the *last* terminal failure/cancel | Deep operational log lines (scheduler decisions, worker executor errors, NATS/DB issues) |
-| **Survives a restart?** | Yes — stored in SQLite on the task row | No — in-memory ring buffer, lost on server restart |
+| **Survives a restart?** | Yes: stored in SQLite on the task row | No: in-memory ring buffer, lost on server restart |
 | **Where** | `GET /api/v1/tasks/{id}` `failure_reason` field, the job detail's `failure_summary`, and the web UI (per-task reason string + job-level failure banner on `JobDetail`) | Worker diagnostics panel, Admin → Server log, `GET /api/v1/diagnostics/logs` |
-| **Look here first** | Yes — for "which reason, how many tasks" | Only when the reason string isn't enough context |
+| **Look here first** | Yes, for "which reason, how many tasks" | Only when the reason string isn't enough context |
 
 Start with `failure_reason`. Every task that reaches terminal `failed` or
 `canceled` carries one: the worker's own reported message when it sent one
 (e.g. an OpenJD validation failure, a timeout, a non-zero exit), a scheduler
 fallback like `"failed (exit 1)"` when the worker didn't, or a
-scheduler-synthesized reason for cancellations — `"canceled: upstream step
+scheduler-synthesized reason for cancellations: `"canceled: upstream step
 failed"` for a cascade-cancel, `"canceled by user"` for an operator-initiated
-one. It is cleared automatically on retry, so a task that's currently `ready`
-or `running` again never shows a stale reason from a previous attempt.
-(Reclaiming a task because its worker went offline is *not* a failure — the
-reclaim reason lands only on the closed attempt, never on the task's durable
-`failure_reason`.) See
+one. It is cleared on retry, so a task that is `ready` or `running` again never
+shows a reason from a previous attempt. (Reclaiming a task because its worker
+went offline is not a failure: the reclaim reason lands only on the closed
+attempt, never on the task's durable `failure_reason`.) See
 [the task state machine's durable-failure-reason table](architecture.md#5-status-ingestion)
 for the full list of reasons and which code path sets each one.
 
@@ -294,18 +296,17 @@ shown alongside each failed row.
 
 Reach for the diagnostics ring buffer when the reason string isn't enough.
 `failure_reason` answers *what* happened to the task; the diagnostic logs
-answer *why the worker process behaved that way* — e.g. the executor line
-that shows exactly which path it tried and failed to find, or a scheduler WARN
-explaining a redelivery. See [Failed-task fallback](#failed-task-fallback-the-process-not-found-case),
-which surfaces exactly this pairing on the task detail page when the task log
-itself is empty.
+answer why the worker process behaved that way: for example the executor line
+naming the command it failed to start, or a scheduler WARN explaining a
+redelivery. The [failed-task fallback](#failed-task-fallback-the-process-not-found-case)
+shows that pairing on the task log page when the task log is empty.
 
 ---
 
 ## Retry and auto-park metrics
 
 `sqi-server` exposes two Prometheus counters (subsystem `scheduler`, served at
-`GET /metrics`) for the auto-retry + failure-limit feature — see
+`GET /metrics`) for automatic retry and the failure limit. See
 [`scheduler.default_max_attempts` / `retry_delay` / `default_failure_limit`
 and the Server → Farm → Queue → Job precedence](configuration.md#retry--failure-limits)
 for the policy that drives them, and
@@ -314,7 +315,7 @@ retry, exhaustion, and auto-park interact.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `sqi_scheduler_task_retries_total` | counter | `queue` | Total tasks re-queued to `ready` by automatic retry after a worker-reported failure. Does not include lost/reclaimed work (worker offline, stale-`assigned` reaper) — those never go through the retry decision. |
+| `sqi_scheduler_task_retries_total` | counter | `queue` | Total tasks re-queued to `ready` by automatic retry after a worker-reported failure. Does not include lost or reclaimed work (worker offline, stale-`assigned` reaper), which never goes through the retry decision. |
 | `sqi_scheduler_jobs_autoparked_total` | counter | `queue` | Total jobs auto-parked (`status=paused`) because their cumulative genuine task failures reached the job's resolved `failure_limit`. Does not include jobs paused manually via the API. |
 
 Both counters increment inside `internal/scheduler/failure.go`'s
@@ -325,8 +326,8 @@ Both counters increment inside `internal/scheduler/failure.go`'s
 - An auto-park logs at `WARN`: `"scheduler: job auto-parked at failure
   limit"` with `job_id` and `failure_limit` attributes.
 
-The retry line carries `task_id`; the auto-park line carries `job_id` — both
-are [diagnostic log correlation keys](#correlation-keys), so these decisions
+The retry line carries `task_id` and the auto-park line `job_id`, both
+[diagnostic log correlation keys](#correlation-keys), so these decisions
 are visible (component `server`) in Admin → Server log and
 `GET /api/v1/diagnostics/logs`, in addition to the server's own log (stderr;
 `log.file` when set; or, for a Windows service with no `log.file`,
@@ -385,7 +386,7 @@ it started has no series.
 
 ---
 
-## Known gap: server metrics declared but not recorded
+## Server metrics declared but not recorded
 
 `GET /metrics` on `sqi-server` registers five metric families that nothing in
 the server records, so they never carry a sample and should not be graphed or
@@ -409,7 +410,7 @@ metrics that are recorded. See [Load testing](load-testing.md).
 
 ### Worker diagnostics panel
 
-Navigate to **Workers** → click any worker → the **Worker diagnostics** panel
+Open **Workers** and click a worker: the **Worker diagnostics** panel
 appears below the task list. It shows the most recent log records emitted by
 that worker process, newest last. Use this to diagnose connection issues, task
 assignment problems, or executor errors without leaving the UI.
@@ -424,20 +425,18 @@ startup warnings.
 
 ### Failed-task fallback (the "process not found" case)
 
-When a task finishes in the `failed` state but produced no task output — for
-example because the worker could not find the configured executable — the task
-detail page shows a fallback panel labelled **Worker diagnostics for this
-task**. This panel queries the diagnostic buffer filtered by the task's ID
+When a task finishes in the `failed` state with no task output, for example
+because the worker could not find the configured executable, the task log page
+says "No task output was produced" and shows a **Worker diagnostics** panel
+below it. The panel queries the diagnostic buffer filtered by the task's ID
 (`task_id` correlation key) and shows the worker log lines that accompanied the
-failure, typically something like:
+failure, such as:
 
 ```
-WARN  executor: process not found  path=/usr/local/bin/houdini-20.5
+ERROR  executor: task process error  error="exec: \"houdini-20.5\": executable file not found in $PATH"
 ```
 
-Without this fallback, an empty task log gives no indication of what went
-wrong. The fallback only appears when the task is failed and the task log is
-empty.
+The fallback appears only when the task is failed and the task log is empty.
 
 ### Disabling in-UI diagnostics
 
@@ -461,19 +460,19 @@ publish `worker.diag` messages (workers publish rather than buffer, so there is
 no size to configure there).
 
 In this mode, operational logs are available only out-of-band (journald, Docker,
-log files — see [Out-of-band wiring](#out-of-band-wiring)).
+log files; see [Out-of-band wiring](#out-of-band-wiring)).
 
 > **Buffer lifetime:** the ring buffer is in-memory only and is lost on
-> server restart. If you need durable operational logs beyond `buffer_size`
-> records per component, ship them out-of-band as well.
+> server restart. For durable operational logs beyond `buffer_size` records
+> per component, ship them out-of-band as well.
 >
 > **Component ceiling:** the buffer also caps the number of distinct component
-> rings it retains — 512 by default (`internal/diag`'s
-> `defaultMaxComponents`, not currently an operator setting). When the ceiling
-> is exceeded the component whose most-recent record is oldest is evicted
-> wholesale (LRU by latest activity); the `server` component is never evicted.
-> Worst-case buffer memory is therefore `512 × buffer_size` records, and a farm
-> with more than 512 workers will see the quietest workers' panels go empty.
+> rings it retains at 512 (`internal/diag`'s `defaultMaxComponents`, not an
+> operator setting). When the ceiling is exceeded, the component whose
+> most-recent record is oldest is evicted whole (LRU by latest activity); the
+> `server` component is never evicted. Buffer memory is therefore at most
+> `512 × buffer_size` records, and on a farm with more than 512 workers the
+> quietest workers' panels go empty.
 
 ---
 
@@ -501,10 +500,10 @@ Returns records from the in-memory diagnostic log buffer.
     {
       "ts":        "2026-01-15T10:23:45.000000001Z",
       "component": "worker:a1b2c3d4",
-      "level":     "WARN",
-      "msg":       "executor: process not found",
+      "level":     "ERROR",
+      "msg":       "executor: task process error",
       "attrs": {
-        "path":      "/usr/local/bin/houdini-20.5",
+        "error":     "exec: \"houdini-20.5\": executable file not found in $PATH",
         "task_id":   "tsk_abc123",
         "worker_id": "a1b2c3d4"
       }
@@ -516,7 +515,7 @@ Returns records from the in-memory diagnostic log buffer.
 When diagnostics are disabled the endpoint returns 503 with a problem-detail
 body instead.
 
-**Example — tail recent WARN and above from a specific worker:**
+**Example: tail recent WARN and above from a specific worker:**
 
 ```sh
 WORKER_ID="a1b2c3d4"
@@ -524,14 +523,14 @@ curl -s "http://localhost:8080/api/v1/diagnostics/logs?component=worker:${WORKER
   | jq '.records[] | "\(.ts) [\(.level)] \(.msg)"'
 ```
 
-**Example — fetch all records for a failed task:**
+**Example: fetch all records for a failed task:**
 
 ```sh
 curl -s "http://localhost:8080/api/v1/diagnostics/logs?task_id=tsk_abc123" \
   | jq '.records'
 ```
 
-**Example — poll for new records since a known timestamp:**
+**Example: poll for new records since a known timestamp:**
 
 ```sh
 SINCE="2026-01-15T10:23:45.000000001Z"
@@ -573,8 +572,8 @@ Each push frame carries a `DiagnosticsPush` payload:
 > The WebSocket payload uses the key `at` for the timestamp; the REST
 > response uses `ts`. Both carry the same RFC3339Nano value.
 
-Clients filter by component or level client-side — the server broadcasts all
-enabled records to all `diagnostics` subscribers.
+Clients filter by component or level themselves: the server broadcasts every
+record to every `diagnostics` subscriber.
 
 ---
 
@@ -594,10 +593,10 @@ enabled records to all `diagnostics` subscribers.
 
 | Level | Use |
 |---|---|
-| `DEBUG` | Verbose internals — scheduler tick details, NATS message counts. Not emitted at the default `info` level. |
-| `INFO` | Normal operational events — worker registration, task assignment, startup. |
-| `WARN` | Recoverable problems — missed heartbeat, executor warning, retried operation. |
-| `ERROR` | Failures that require operator attention — database errors, NATS disconnection. |
+| `DEBUG` | Verbose internals, such as scheduler tick details and NATS message counts. Not emitted at the default `info` level. |
+| `INFO` | Normal operational events: worker registration, task assignment, startup. |
+| `WARN` | Recoverable problems: missed heartbeat, executor warning, retried operation. |
+| `ERROR` | Failures that need operator attention: database errors, NATS disconnection. |
 
 ### Correlation keys
 
@@ -676,13 +675,13 @@ applies to that file too. See
 By default both binaries write structured JSON to stderr; with `log.file` set,
 or under a Windows service, they write it to a file instead (see
 [Log destination](#log-destination)). The in-UI buffer complements out-of-band
-log forwarding — it does not replace it. Ship the log to your log platform for
+log forwarding and does not replace it. Ship the log to your log platform for
 durable, searchable operational history beyond what the ring buffer retains.
 
 ### journald (systemd)
 
 The systemd unit files in [`docs/operations.md`](operations.md) and
-[`docs/worker-deployment.md`](worker-deployment.md) already route stderr to
+[`docs/worker-deployment.md`](worker-deployment.md) route stderr to
 journald via `StandardError=journal`. No additional configuration is needed.
 
 Tail live:
@@ -700,8 +699,8 @@ journalctl -u sqi-server --since "1 hour ago" -o json \
   | jq 'select(.PRIORITY <= "4") | .MESSAGE | fromjson?'
 ```
 
-Filter by a correlation key — journald stores the slog JSON inside the
-`MESSAGE` field, so pipe through `jq`:
+Filter by a correlation key. journald stores the slog JSON inside the
+`MESSAGE` field, so pipe it through `jq`:
 
 ```sh
 # Find all log lines for a specific task
@@ -831,14 +830,14 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
 
 Point a file-based shipper (the Filebeat `log` input above, for example) at
 `C:\ProgramData\sqi\logs\*.log`, which matches the live files and not their
-rotated copies (`.log.1`, `.log.2`, ...). The default log directory is protected
-when sqi creates it — full control for SYSTEM, Administrators and the service's
-own account, and nothing inherited — so the shipper must run as SYSTEM or an
+rotated copies (`.log.1`, `.log.2`, ...). sqi creates the default log directory
+with full control for SYSTEM, Administrators and the service's own account, and
+nothing inherited, so the shipper must run as SYSTEM or an
 administrator, or be granted read access to it. The process rotates by renaming, so a
 reader that holds the file open without allowing it to be renamed (`Get-Content -Wait`
-is one) blocks that rotation, and some shippers may too. Nothing is lost: the
+is one) blocks that rotation, and some shippers can too. No output is lost: the
 process keeps appending and retries after another `log.max_size_mb` of output,
-and the file grows past its limit until the reader lets go.
+so the file grows past its limit until the reader lets go.
 
 ---
 
@@ -922,7 +921,7 @@ diagnostics:
 
 The `SQI_LOG_FORMAT` and `SQI_LOG_LEVEL` env vars (and their `log.format` /
 `log.level` YAML equivalents) apply to both binaries and control what reaches
-stderr — or `log.file`, when set — regardless of whether diagnostics are
+stderr (or `log.file`, when set) whether or not diagnostics are
 enabled. See [`docs/configuration.md`](configuration.md) for the full log config
 reference, including `log.file`, `log.max_size_mb` and `log.max_backups`
 (worker: [`docs/worker-configuration.md`](worker-configuration.md)).
@@ -939,25 +938,25 @@ secrets out of the task's structured log output.
 
 Operators should still follow standard practices:
 
-- Do not set `SQI_LOG_LEVEL=debug` in production unless actively diagnosing a
+- Do not set `SQI_LOG_LEVEL=debug` in production unless diagnosing a
   problem. Debug output is more verbose and may log additional internal state.
 - `GET /api/v1/diagnostics/logs` requires the dedicated `diagnostics.read`
   permission (`internal/auth/policy`), not the generic read grant, and the
   WebSocket `diagnostics` subject is gated by the same permission at
   subscribe time. When auth is disabled both are open to any caller that can
   reach the port, so restrict network access to the sqi-server port accordingly.
-- If you forward diagnostic logs to a third-party log aggregator, ensure that
-  aggregator's access controls are appropriate for operational metadata.
+- If you forward diagnostic logs to a third-party log aggregator, give that
+  aggregator access controls suited to operational metadata.
 
 ---
 
 ## See also
 
-- [`docs/operations.md`](operations.md) — Server install, upgrade, and log
+- [`docs/operations.md`](operations.md): server install, upgrade, and log
   routing under systemd.
-- [`docs/worker-deployment.md`](worker-deployment.md) — Worker install and
+- [`docs/worker-deployment.md`](worker-deployment.md): worker install and
   log routing.
-- [`docs/configuration.md`](configuration.md) — Full configuration reference
+- [`docs/configuration.md`](configuration.md): full configuration reference
   including `log.level` and `log.format`.
-- [`docs/architecture.md`](architecture.md) — NATS subject layout and the
+- [`docs/architecture.md`](architecture.md): NATS subject layout and the
   task log pipeline.

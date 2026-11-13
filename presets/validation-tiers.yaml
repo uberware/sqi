@@ -219,10 +219,10 @@ presets:
         least two values above 0 on a listed four-frame chunk (1,2,7,8, two
         render calls) under a real 21.0.631 worker, with the ROP's pre-frame
         script sleeping so a frame outlasts the worker's 2 s progress throttle.
-        The 100 printed just before the process exits is published when the
-        task ends, ahead of its terminal status. Not confirmed: PostFrame on a render ROP (Mantra,
-        Karma, an OpenGL ROP), or the progress path under any Houdini but
-        21.0.631.
+        The 100 printed immediately before the process exits is published when
+        the task ends, ahead of its terminal status. Not confirmed: PostFrame
+        on a render ROP (Mantra, Karma, an OpenGL ROP), or the progress path
+        under any Houdini but 21.0.631.
     tier2:
       case: TestPresetDCC_Houdini_ROPRender
       requires_app: houdini
@@ -258,10 +258,10 @@ presets:
         prints "Frame N (i of n)" once a frame is written, so the bar moves as
         each frame finishes, never within one. Tier 2 shows the task's progress
         taking at least two values above 0 through a four-frame chunk under a
-        real 17.1v2 worker, with each
-        Write node made to sleep before each frame so a frame outlasts the
-        worker's 2 s progress throttle. Not confirmed for progress: other Nuke
-        versions, a commercial license, or Nuke on Linux or Windows.
+        real 17.1v2 worker, with each Write node made to sleep before each
+        frame so a frame outlasts the worker's 2 s progress throttle. Not
+        confirmed for progress: other Nuke versions, a commercial license, or
+        Nuke on Linux or Windows.
     tier2:
       case: TestPresetDCC_Nuke_WriteRender
       requires_app: nuke
@@ -294,9 +294,8 @@ presets:
         matches only that, so the bar moves once per frame whatever the number
         of Write nodes. Tier 2 shows the task's progress taking at least two
         values above 0 through a four-frame chunk of both Write nodes under a
-        real 17.1v2 worker. Not confirmed
-        for progress: other Nuke versions, a commercial license, or Nuke on
-        Linux or Windows.
+        real 17.1v2 worker. Not confirmed for progress: other Nuke versions, a
+        commercial license, or Nuke on Linux or Windows.
     tier2:
       case: TestPresetDCC_Nuke_ScriptRender
       requires_app: nuke
@@ -305,9 +304,9 @@ presets:
       required_on: [linux, darwin, windows]
 
   # Standalone renderers: each renders an exported scene description without
-  # the application that wrote it. Every argv below is derived from vendor
-  # documentation and has not run against a real renderer; Tier 3 drives a
-  # stub through the real worker path.
+  # the application that wrote it. Each argv below is derived from vendor
+  # documentation; the tier-2 entries also run against the real renderer, and
+  # Tier 3 drives a stub through the real worker path.
   - name: arnold-kick-render
     source: presets/sqi
     tier: 1
@@ -379,7 +378,7 @@ presets:
         comes from SQI_LOG_PROGRESS on husk's own output: the "a" in -V 2a prints
         ALF_PROGRESS N%, the percent through the whole run (the task's chunk),
         several times within each frame; with -V 2 and no "a" husk 21.0.631
-        printed no such line, and with no -V nothing at all. The status pattern
+        prints no such line, and with no -V nothing at all. The status pattern
         takes the image name and count from ">>> Render <image> (i of n) -
         WxH". TestPresetProgress_Fixtures checks both against husk 21.0.631
         captures (Apprentice, macOS arm64; one frame, and the chunk patched to
@@ -472,10 +471,9 @@ presets:
         TestPresetProgress_Fixtures checks it against Houdini 21.0.631
         captures (Storm and Karma CPU, macOS arm64), and Tier 2 shows a task's
         progress taking at least two values above 0 on a four-frame chunk under
-        a real 21.0.631 worker, rendering
-        with Karma CPU at 2560 wide so a frame outlasts the worker's 2 s
-        progress throttle. Not confirmed: the line
-        under any Houdini but 21.0.631.
+        a real 21.0.631 worker, rendering with Karma CPU at 2560 wide so a
+        frame outlasts the worker's 2 s progress throttle. Not confirmed: the
+        line under any Houdini but 21.0.631.
     tier2:
       case: TestPresetDCC_Houdini_USDRecord
       requires_app: houdini
@@ -502,8 +500,8 @@ presets:
         A printf-style %d in a pattern is not rejected; oiiotool expands it.
         The default case shows an empty Operations list leaving no empty
         argument. Tier 2 runs the preset with Houdini 22.0.466's hoiiotool (OIIO
-        2.5.18), found through the detector's command default, on the Windows
-        development host and, in CI, with Ubuntu's openimageio-tools (2.5.19.1
+        2.5.18), found through the detector's command default, on Windows and,
+        in CI, with Ubuntu's openimageio-tools (2.5.19.1
         on Ubuntu 26.04; the runner image decides the version). It shows that
         --frames 1-12 at 10 per task writes exactly conv.0001.jpg to
         conv.0012.jpg from an input folder whose name has a space, and that
@@ -524,11 +522,12 @@ presets:
         captures from oiiotool 3.1.15.0 (Homebrew, macOS arm64) and Houdini
         21.0.631's hoiiotool (OIIO 2.5.18.0), and Tier 2 shows a task's
         progress taking at least two values above 0 on a four-frame chunk under
-        a real worker with oiiotool 3.1.15.0, a --blur 81x81 over 1024x1024 frames making a frame outlast
-        the worker's 2 s throttle; the convert
-        and operations cases write exactly their files with the echo. An --evaloff among the operations leaves {FRAME_NUMBER}
-        unexpanded and the bar still. Not confirmed: the echo under Ubuntu's
-        openimageio-tools, which CI's Tier 2 run would exercise.
+        a real worker with oiiotool 3.1.15.0, a --blur 81x81 over 1024x1024
+        frames making a frame outlast the worker's 2 s throttle; the convert
+        and operations cases write exactly their files with the echo. An
+        --evaloff among the operations leaves {FRAME_NUMBER} unexpanded and
+        the bar still. Unconfirmed: the echo under Ubuntu's
+        openimageio-tools, which only CI's Tier 2 run exercises.
     tier2:
       case: TestPresetOIIOTool_ProcessesASequence
       required_on: [linux]
@@ -577,8 +576,8 @@ presets:
         that frame -1 reads shot.-001.rib; that a missing RIB file fails the
         job with prman's "Can't open RIB file"; and that an output folder that
         does not exist fails it with "Can't open display image", since prman
-        does not create the folder. prman needs RMANTREE in
-        its environment: without it prman 27.3 exits 13 with "License location
+        does not create the folder. prman needs RMANTREE in its environment:
+        without it prman 27.3 exits 13 with "License location
         is not set in rendermn.ini", which fails the task. Not shown: RIB
         files exported by a DCC, XPU, any RenderMan but 27.3, Linux and macOS,
         and a commercial license.
@@ -690,8 +689,9 @@ presets:
         -frame 5 5 and -frame 9 9, and a blank OutputPath leaving -oimage out
         (an EXPR conditional, so the scene's own save path applies). The frame
         bounds are the chunk's min() and max() under EXPR. No Cinema 4D has
-        executed it. Unverified: whether the -frame end is inclusive (documented by example only); the exit status on failure,
-        which Maxon does not document; the macOS Commandline path. Every node
+        executed it. Unverified: whether the -frame end is inclusive
+        (documented by example only); the exit status on failure, which Maxon
+        does not document; the macOS Commandline path. Every node
         also needs licensing before it can render.
     tier3:
       case: TestPresetTier3/cinema4d-render/default
@@ -823,8 +823,8 @@ presets:
         scene path and Render node name that each contain a space as one
         argument. The failOn pattern (ERROR +\|) is Deadline's Katana plugin's,
         so what Katana prints and which exit status it returns on failure are
-        unverified. Tier 3 runs the
-        stub through a real worker, and the logged-error case proves a task
+        unverified. Tier 3 runs the stub through a real worker, and the
+        logged-error case proves a task
         whose process exited 0 still fails on a matching line. The Foundry-
         documented batch render that hangs on a missing ImageRead file is not
         tested, and the preset sets no timeout for it. The detector's Linux and
@@ -922,8 +922,8 @@ presets:
         one argument. No failure signal is documented for sfxcmd: no line it
         prints on failure is known, so the preset declares no SQI_LOG_CHECKS and
         a render that exits 0 without writing frames is reported as a success.
-        Its exit codes are also undocumented. Tier 3 runs a stub through a real worker and
-        proves only argv delivery. The detector's install folders (SilhouetteFX
+        Its exit codes are also undocumented. Tier 3 runs a stub through a
+        real worker and proves only argv delivery. The detector's install folders (SilhouetteFX
         and BorisFX roots) are unverified, and the Linux -nogui is supplied by
         the detector, not the preset.
     tier3:
@@ -1014,7 +1014,7 @@ presets:
       case: TestPresetTier3/vred-viewpoint-render/default
       required_on: [linux, darwin, windows]
 
-  # KeyShot is the second host-script preset family: keyshot_headless runs an
+  # KeyShot is a host-script preset family: keyshot_headless runs an
   # embedded render.py with -script, which loops over the task's frames, and the
   # per-task values travel in an EXPR-built params.json. Non-contiguous chunks,
   # no SQI_CHUNK_BOUNDS. No os.family gate (Windows and macOS are the KeyShot
@@ -1086,7 +1086,7 @@ presets:
       case: TestPresetTier3/keyshot-studio-render/default
       required_on: [linux, darwin, windows]
 
-  # Modo is the third host-script preset family. modo_cl reads commands from
+  # Modo is a host-script preset family. modo_cl reads commands from
   # stdin, which the worker leaves as the null device, so the preset runs an
   # embedded render.py through the documented -cmd: startup command and the
   # per-task values travel in an EXPR-built params.json. Contiguous chunks,
@@ -1163,22 +1163,24 @@ presets:
       case: TestPresetTier3/modo-pass-group-render/default
       required_on: [linux, darwin, windows]
 
-  # Unreal is a host-script preset family with an OS gate: both presets
-  # require attr.worker.os.family = windows, so their Tier-3 claims are
-  # required_on [windows] alone, as for 3dsmax-render. On a Linux or macOS
-  # host Tier 3 and the outcome cases skip as unsatisfiable;
+  # Unreal is a host-script preset family with an OS gate: all three presets
+  # require attr.worker.os.family anyOf ["windows", "macos"], so their Tier-3
+  # claims are required_on [darwin, windows]. On a Linux host Tier 3 and the
+  # outcome cases skip as unsatisfiable;
   # TestPresetTier3RequiredOnMatchesOSGate pins the required_on the gate
-  # implies. One task per job: no frame or chunk parameters, so the EXPR cost
-  # of params.json is fixed.
+  # implies. No frame or chunk parameters: the job and queue presets run one
+  # task per job, so the EXPR cost of params.json is fixed, and the shot
+  # preset runs one task per shot.
   - name: unreal-mrq-job-render
     source: presets/sqi
     tier: 2
     tier1:
       cases: [default, blank-output, target-with-space, quoting, logged-error, python-error, executor-error, no-success-line]
       caveat: >-
-        argv from AWS's Deadline Cloud adaptor for Unreal: UnrealEditor-Cmd <project> -log -unattended
-        -stdout -allowstdoutlogverbosity -NoLoadingScreen -NoScreenMessages
-        -RenderOffscreen -nohmd -windowed and one -execcmds command, which AWS
+        argv from AWS's Deadline Cloud adaptor for Unreal: UnrealEditor-Cmd
+        <project> -log -unattended -stdout -allowstdoutlogverbosity
+        -NoLoadingScreen -NoScreenMessages -RenderOffscreen -nohmd -windowed
+        and one -execcmds command, which AWS
         writes as -execcmds=r.HLOD 0,py <script with forward slashes>. AWS's
         script registers a Slate tick callback and returns, the editor keeps
         running, and the script calls quit_editor() when it is done; this
@@ -1208,17 +1210,19 @@ presets:
         log checks, never the script inside Unreal. Tier 2
         (TestPresetDCC_Unreal_MRQRender, shared by the three Unreal presets)
         runs UE 5.8's own UnrealEditor-Cmd, found by the detector at the
-        Launcher default C:\Program Files\Epic Games\UE_5.8, on a project the
-        test builds in a folder whose name has a space. It shows that the
-        -execcmds command starts the script, that the editor renders after the
+        Launcher default C:\Program Files\Epic Games\UE_5.8, and UE 5.7.4's
+        on macOS (Apple silicon, from a custom install folder put on PATH), on
+        a project the test builds in a folder whose name has a space. It shows
+        that the -execcmds command starts the script, that the editor renders after the
         script returns and then exits, that SQI_RENDER: OK reaches the worker
         so the log checks pass, and that a sequence and a map given as
         package paths (/Game/Maps/Test, no .Test) render exactly the
         sequence's three frames at the config's 64x36 into the Output
         Directory. Not shown: the descriptor-1 and unreal.log copies of the
         success line separately, a blank Output Directory, a missing config,
-        a project with code modules, any UE but 5.8, an install outside the
-        Launcher default (the Launcher records each one under
+        a project with code modules, any UE but 5.8 on Windows and 5.7.4 on
+        macOS, a Windows install outside the Launcher default (the Launcher
+        records each one under
         HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x> as InstalledDirectory, as
         AWS's adaptor reads it, which a detector check cannot read), and a
         cold shader cache.
@@ -1227,17 +1231,17 @@ presets:
         done / jobs x 100) as each job's
         on_individual_job_work_finished_delegate fires, all before SQI_RENDER:
         OK; a job that failed reports none. Within-job progress
-        (MoviePipelineLibrary.get_completion_percentage) is not used: no Unreal
-        was available to confirm it. TestPresetUnreal_EmitsJobProgress checks
-        those lines against the stub unreal module only; no Unreal has run them,
-        so what Unreal does with a write to file descriptor 1 from its script is
+        (MoviePipelineLibrary.get_completion_percentage) is not used.
+        TestPresetUnreal_EmitsJobProgress checks those lines against the stub
+        unreal module only; Tier 2 asserts nothing about them, so what Unreal
+        does with a write to file descriptor 1 from its script is
         unconfirmed.
     tier2:
       case: TestPresetDCC_Unreal_MRQRender
       requires_app: unreal
     tier3:
       case: TestPresetTier3/unreal-mrq-job-render/default
-      required_on: [windows]
+      required_on: [darwin, windows]
 
   - name: unreal-mrq-queue-render
     source: presets/sqi
@@ -1256,23 +1260,23 @@ presets:
         quotes, a backslash and spaces in QueueAsset and both quotes in the
         output directory. Tier 3 runs a stub as UnrealEditor-Cmd: it exercises
         the worker, the embedded files and the log checks, never the script
-        inside Unreal. Tier 2 runs UE 5.8 on a saved queue of one job and shows
-        that the queue loads, that its job renders exactly the sequence's three
-        frames, and that the Output Directory replaces the job's own. Not
-        shown: a queue of several jobs, a disabled job, and a blank Output
-        Directory.
+        inside Unreal. Tier 2 runs UE 5.8 (Windows) and 5.7.4 (macOS) on a
+        saved queue of one job and shows that the queue loads, that its job
+        renders exactly the sequence's three frames, and that the Output
+        Directory replaces the job's own. Not shown: a queue of several jobs, a
+        disabled job, and a blank Output Directory.
         Progress: the script prints openjd_status and openjd_progress per
         finished job as unreal-mrq-job-render does, counting only enabled jobs.
         TestPresetUnreal_EmitsJobProgress checks those lines, a disabled job
-        included, against the stub unreal module only; no Unreal has run them,
-        so what Unreal does with a write to file descriptor 1 from its script
-        is unconfirmed.
+        included, against the stub unreal module only; Tier 2 asserts nothing
+        about them, so what Unreal does with a write to file descriptor 1 from
+        its script is unconfirmed.
     tier2:
       case: TestPresetDCC_Unreal_MRQRender
       requires_app: unreal
     tier3:
       case: TestPresetTier3/unreal-mrq-queue-render/default
-      required_on: [windows]
+      required_on: [darwin, windows]
 
   - name: unreal-mrq-shot-render
     source: presets/sqi
@@ -1295,9 +1299,10 @@ presets:
         the shot list runs under a fake unreal module in
         TestPresetUnreal_ScriptDrivesUnreal. Tier 3 runs a stub as
         UnrealEditor-Cmd: it exercises the worker, the embedded files and the
-        log checks, never the script inside Unreal. Tier 2 runs UE 5.8 on a
-        sequence whose shot track holds SH010 and SH020, two frames each, with
-        {shot_name} in the config's file name format. It shows that
+        log checks, never the script inside Unreal. Tier 2 runs UE 5.8
+        (Windows) and 5.7.4 (macOS) on a sequence whose shot track holds SH010
+        and SH020, two frames each, with {shot_name} in the config's file name
+        format. It shows that
         update_job_shot_list_from_sequence names each shot by its section's
         display name, that Shots SH010 and SH020 run two tasks that together
         write exactly the four frames, that Shots SH020 alone writes only
@@ -1309,15 +1314,15 @@ presets:
         Progress: through its emit helper, to file descriptor 1, the script
         writes one openjd_status ("rendering SHOT") when the task's render
         starts and no openjd_progress. TestPresetUnreal_EmitsJobProgress checks
-        those lines against the stub unreal module only; no Unreal has run them,
-        so what Unreal does with a write to file descriptor 1 from its script is
-        unconfirmed.
+        those lines against the stub unreal module only; Tier 2 asserts nothing
+        about them, so what Unreal does with a write to file descriptor 1 from
+        its script is unconfirmed.
     tier2:
       case: TestPresetDCC_Unreal_MRQRender
       requires_app: unreal
     tier3:
       case: TestPresetTier3/unreal-mrq-shot-render/default
-      required_on: [windows]
+      required_on: [darwin, windows]
 
   - name: ffmpeg-transcode
     source: presets/sqi

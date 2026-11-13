@@ -2,9 +2,9 @@
 name: unreal-mrq-queue-render
 title: Unreal Movie Render Queue Queue Render
 description: >-
-  Renders every job of a saved Movie Pipeline Queue asset in an Unreal Engine 5
-  project, as a single task on a Windows worker, through the preset's own
-  Python script. Tested with Unreal Engine 5.8.
+  Renders every job of a saved Movie Pipeline Queue asset in an Unreal Engine
+  5 project, as a single task on a Windows or macOS worker, through the
+  preset's own Python script. Tested on Windows and macOS.
 readme: |
   # Unreal Movie Render Queue Queue Render
 
@@ -13,7 +13,7 @@ readme: |
   renders its own sequence on its own saved map with its own settings, as
   Epic describes for a queue, and the whole queue is one task in one editor
   session. Use Unreal Movie Render Queue Job Render instead to render one
-  sequence with a config. Windows workers only.
+  sequence with a config. Windows and macOS workers only.
 
   ## Parameters
 
@@ -53,9 +53,9 @@ readme: |
 
   The preset uses `-execcmds` rather than `-ExecutePythonScript`, because a
   render the editor runs in the background must outlive the script that
-  starts it, and the editor is reported to quit after an
-  `-ExecutePythonScript` script before such a render completes. AWS's
-  Deadline Cloud adaptor for Unreal starts its script with `-execcmds` too.
+  starts it, and the editor can quit after an `-ExecutePythonScript`
+  script before such a render completes. AWS's Deadline Cloud adaptor for
+  Unreal starts its script with `-execcmds` too.
 
   ## How failures are detected
 
@@ -84,14 +84,18 @@ readme: |
 
   ## Requirements
 
-  - Windows workers tagged `attr.worker.tag.unreal = true`; the preset also
-    requires `attr.worker.os.family` = `windows`. The worker tags an Unreal
-    Engine 5 install it finds in the Epic Games Launcher's default folder,
-    `C:\Program Files\Epic Games\UE_5.x`.
+  - Windows or macOS workers tagged `attr.worker.tag.unreal = true`; the
+    preset also requires `attr.worker.os.family` = `windows` or `macos`. The
+    worker tags an Unreal Engine 5 install it finds in the Epic Games
+    Launcher's default folder, `C:\Program Files\Epic Games\UE_5.x` on
+    Windows and `/Users/Shared/Epic Games/UE_5.x` on macOS.
   - A resolvable `UnrealEditor-Cmd`: the worker supplies it from the newest
     install in that default folder. An install anywhere else, such as a custom
     Launcher folder or a source build, needs an `UnrealEditor-Cmd` entry in
     the worker's `worker.commands`.
+  - On macOS, Xcode's Metal Toolchain (`xcodebuild -downloadComponent
+    MetalToolchain`). Without it the editor cannot compile shaders and exits
+    at startup.
   - The Movie Render Queue and Python Editor Script plug-ins enabled in the
     project.
   - A worker session folder (`worker.session_dir`) whose path holds no comma,
@@ -113,17 +117,21 @@ readme: |
   - every job renders its own sequence, and an Output Directory reaches jobs
     linked to a config asset.
 
+  It has also rendered a saved one-job queue with Unreal Engine 5.7.4 on a
+  macOS worker (Apple silicon).
+
   ## What has not been verified
 
-  - Unreal Engine versions before 5.8. The command line follows AWS's
-    Deadline Cloud adaptor for Unreal, and the script uses the Movie Render
-    Queue's Python API as that adaptor and Epic's Python reference use it.
+  - Unreal Engine versions before 5.8 on Windows, and any but 5.7 on macOS.
+    The command line follows AWS's Deadline Cloud adaptor for Unreal, and
+    the script uses the Movie Render Queue's Python API as that adaptor and
+    Epic's Python reference use it.
   - That Unreal splits `-execcmds` at commas, which is why a session folder
     holding one is refused.
   - Whether the executor reports a canceled render as a failure: Epic issue
     UE-160482 says it reported success before Unreal 5.3. Canceling the sqi
     job ends the editor either way.
-  - Rendering on Linux or macOS, which no vendor adaptor ships.
+  - Rendering on Linux, where the Epic Games Launcher installs no editor.
 category: Rendering
 version: 1.0.0
 template:
@@ -161,7 +169,7 @@ template:
       hostRequirements:
         attributes:
           - name: attr.worker.os.family
-            anyOf: ["windows"]
+            anyOf: ["windows", "macos"]
           - name: attr.worker.tag.unreal
             anyOf: ["true"]
       SQI_LOG_CHECKS:
@@ -213,7 +221,8 @@ template:
 
               # What the delegates need once main() has returned: the executor
               # (Unreal holds it while it renders; this keeps a reference too),
-              # the failures reported so far, and whether a verdict was given.
+              # the failures reported so far, whether a verdict was given, and
+              # the job counts behind openjd_progress.
               STATE = dict(executor=None, failures=[], done=False, total=0, finished=0)
 
 
@@ -240,9 +249,9 @@ template:
 
               def find_params():
                   # params.json sits beside this script, in the task's session
-                  # folder. The current folder is a fallback, in case the script's
-                  # own location is unknown; that the worker's starting folder
-                  # survives Unreal's startup is unverified (Unreal may reset it).
+                  # folder. The current folder is a fallback for when the script's
+                  # own location is unknown; Unreal's startup may change it from the
+                  # worker's starting folder.
                   found = []
                   here = globals().get("__file__")
                   if here:
@@ -321,9 +330,9 @@ template:
                   # then only the entries named after the shot left enabled. An
                   # entry is named by its outer name: its section's name in the
                   # shot track, or "no shot" in a sequence without one (Unreal
-                  # 5.8). An entry with no outer name, which 5.8 never gives, is
-                  # named after the sequence. A shot the sequence lacks fails the
-                  # task, naming the shots it has, rather than render every shot.
+                  # 5.8). An entry with no outer name is named after the sequence.
+                  # A shot the sequence lacks fails the task, naming the shots it
+                  # has, rather than render every shot.
                   shot = params["shot"]
                   sequence = unreal.EditorAssetLibrary.load_asset(object_path(params["sequence"]))
                   if sequence is None:
@@ -342,7 +351,7 @@ template:
                           entry.enabled = name == shot
                       # Every shot's task renders with the same config, so without
                       # {shot_name} in the file names one shot's frames can replace
-                      # another's. A warning, not a failure: the output directory may
+                      # another's. This only warns, since the output directory may
                       # tell them apart.
                       setting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
                       if "{shot_name}" not in str(setting.file_name_format or ""):

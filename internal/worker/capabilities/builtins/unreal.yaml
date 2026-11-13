@@ -2,23 +2,28 @@
 #
 # Epic's Unreal Engine 5, whose UnrealEditor-Cmd the presets
 # unreal-mrq-job-render, unreal-mrq-queue-render and unreal-mrq-shot-render
-# run through the bare command `UnrealEditor-Cmd`. The presets are
-# Windows-only.
+# run through the bare command `UnrealEditor-Cmd`. The presets run on Windows
+# and macOS, the two platforms the Epic Games Launcher installs the editor on.
 #
-# Windows: the Epic Games Launcher installs each engine version to
-# C:\Program Files\Epic Games\UE_5.<minor>\ by default, with the editor's
-# command-line program at Engine\Binaries\Win64\UnrealEditor-Cmd.exe below it.
-# That is the only location looked for. A Launcher install of Unreal Engine
-# 5.8 is found there, tagged with version 5.8.
+# The Launcher installs each engine version to UE_5.<minor> in its default
+# folder, with the editor's command-line program below it:
 #
-# Not found: an install in a custom Launcher folder, or a source build. Give
-# the worker an `UnrealEditor-Cmd` entry in worker.commands (and the tag
-# unreal=true under worker.capability_tags) for those. The Launcher records
-# each install in the registry, under
+#   Windows: C:\Program Files\Epic Games\UE_5.<minor>\Engine\Binaries\Win64\UnrealEditor-Cmd.exe
+#   macOS:   /Users/Shared/Epic Games/UE_5.<minor>/Engine/Binaries/Mac/UnrealEditor-Cmd
+#
+# Those are the only locations looked for. The Windows layout matches an Unreal
+# Engine 5.8 Launcher install, tagged with version 5.8, and the macOS layout an
+# Unreal Engine 5.7.4 install, whose UnrealEditor-Cmd is a universal (arm64 and
+# x86_64) executable beside UnrealEditor.app.
+#
+# Not found: an install in a custom Launcher folder, or a source build. For
+# those, give the worker an `UnrealEditor-Cmd` entry in worker.commands (and the
+# tag unreal=true under worker.capability_tags). The Launcher records each
+# Windows install in the registry under
 # HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x> as the value InstalledDirectory
-# (as AWS's adaptor reads it), but a detector `registry:` check can only test
-# that a fixed key exists. It reads neither the value nor the version subkeys,
-# so the detector cannot use that layout.
+# (where AWS's adaptor reads it), but a detector `registry:` check only tests
+# that a fixed key exists: it reads neither the value nor the version subkeys,
+# so the detector cannot use that record.
 #
 # The version is the engine's 5.<minor> from the UE_5.<minor> folder name. An
 # UnrealEditor-Cmd found only on PATH carries a version only when it sits in
@@ -28,6 +33,8 @@ checks:
   - exe: UnrealEditor-Cmd                                        # an UnrealEditor-Cmd the operator provides
   - path_glob: 'C:\Program Files\Epic Games\UE_5.*\Engine\Binaries\Win64\UnrealEditor-Cmd.exe'  # windows (Launcher default)
     os: windows
+  - path_glob: "/Users/Shared/Epic Games/UE_5.*/Engine/Binaries/Mac/UnrealEditor-Cmd"  # macOS (Launcher default)
+    os: darwin
 version:
   from: 'UE_(5\.[0-9]+)'
 # The presets run a bare `UnrealEditor-Cmd`, which no installer puts on PATH,
@@ -38,3 +45,5 @@ command:
   globs:
     - path_glob: 'C:\Program Files\Epic Games\UE_5.*\Engine\Binaries\Win64\UnrealEditor-Cmd.exe'  # windows
       os: windows
+    - path_glob: "/Users/Shared/Epic Games/UE_5.*/Engine/Binaries/Mac/UnrealEditor-Cmd"  # macOS
+      os: darwin
