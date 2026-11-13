@@ -282,3 +282,26 @@ func TestManaged_ServerReady(t *testing.T) {
 		t.Errorf("ServerReady with the server gone = %q, want the probe's error", got)
 	}
 }
+
+// TestManaged_ServerReadyReusesItsClient proves the probes share one HTTP
+// client: the controller polls readiness every second, and a client per probe
+// would leave an idle connection behind for each.
+func TestManaged_ServerReadyReusesItsClient(t *testing.T) {
+	m := newTestManaged(t, laneScenario(false))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	t.Cleanup(srv.Close)
+	m.httpURL = srv.URL
+	if got := m.ServerReady(t.Context()); got != "ready" {
+		t.Fatalf("ServerReady = %q, want ready", got)
+	}
+	first := m.readyProbe
+	if first == nil {
+		t.Fatal("ServerReady kept no probe client")
+	}
+	if got := m.ServerReady(t.Context()); got != "ready" {
+		t.Fatalf("second ServerReady = %q, want ready", got)
+	}
+	if m.readyProbe != first {
+		t.Error("ServerReady built a new client for its second probe")
+	}
+}

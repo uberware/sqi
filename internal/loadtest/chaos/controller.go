@@ -71,6 +71,22 @@ type Controller struct {
 	// procLocks serialize the stalls and resumes of one process, so HealAll
 	// cannot resume a process before a stall in progress has stopped it.
 	procLocks map[procKey]*sync.Mutex
+
+	// appMu serializes applying and undoing the database, volume and file-limit
+	// faults, so HealAll cannot undo one before the call that applies it has
+	// returned. Take it before mu.
+	appMu sync.Mutex
+	// applied are the faults of those kinds in force, in the order they were
+	// applied; HealAll undoes each.
+	applied []*appliedFault
+}
+
+// appliedFault is a database, volume or file-limit fault in force: n faults
+// hold it, and undo puts it back.
+type appliedFault struct {
+	key  string
+	n    int
+	undo func() error
 }
 
 // NewController checks the faults against the target and the operating
@@ -123,6 +139,16 @@ func (c *Controller) check(f scenario.Fault) error {
 	case scenario.FaultStall:
 		if goos == "windows" {
 			return errors.New("stall needs SIGSTOP, which Windows does not have")
+		}
+	case scenario.FaultFDLimit:
+		// The scenario's own rule words the refusal.
+		sc := scenario.Scenario{Faults: []scenario.Fault{f}}
+		if why := sc.ChaosSkipReason(scenario.ChaosEnv{GOOS: goos, Container: true}); why != "" {
+			return errors.New(why)
+		}
+	case scenario.FaultDiskFull:
+		if goos != "linux" {
+			return fmt.Errorf("a disk_full fault needs linux, not %s", goos)
 		}
 	}
 	if spec, _, ok := netFault(f); ok {
@@ -209,6 +235,14 @@ func (c *Controller) fire(ctx context.Context, i int) error {
 		return c.flapFault(ctx, i, f.Flap, f.Duration.Duration)
 	case f.PowerCut != nil:
 		return c.powerCut(ctx, i, f.PowerCut)
+	case f.Database != nil:
+		return c.dbFault(ctx, i, f.Database, f.Duration.Duration)
+	case f.DiskFull != nil:
+		return c.diskFault(ctx, i, f.DiskFull, f.Duration.Duration)
+	case f.FDLimit != nil:
+		return c.fdFault(ctx, i, f.FDLimit, f.Duration.Duration)
+	case f.Revoke != nil:
+		return c.revokeFault(ctx, i, f.Revoke, f.Duration.Duration)
 	}
 	spec, s, _ := netFault(f)
 	return c.laneFault(ctx, i, spec, s, f.Duration.Duration)
@@ -253,6 +287,7 @@ func (c *Controller) Records() []report.FaultRecord {
 	var out []report.FaultRecord
 	for _, r := range c.records {
 		if !r.Start.IsZero() {
+			r.Workers, r.Notes = slices.Clone(r.Workers), slices.Clone(r.Notes)
 			out = append(out, r)
 		}
 	}
@@ -281,7 +316,9 @@ func (c *Controller) Windows() []verify.FaultWindow {
 	return out
 }
 
-// HealAll heals every lane and resumes every stalled process. Run calls it
+// HealAll heals every lane, resumes every stalled process and undoes every
+// database stall, filled volume and lowered file limit still in force. An undo
+// that fails is logged and the rest still run. Run calls it
 // on return; the runner calls it again on an interrupt before teardown. It is
 // safe to call at any time, more than once, and while Run is running: no
 // fault fires after it, and a fault still running cuts and stalls nothing
@@ -312,6 +349,7 @@ func (c *Controller) HealAll() {
 		}
 		l.Unlock()
 	}
+	c.undoAll(ctx)
 }
 
 // interrupted is the error of a fault that ctx ended before it healed.
@@ -725,4 +763,209 @@ func (c *Controller) supervise(ctx context.Context, workers []unit, fleet func(c
 		}
 	}
 	return errs
+}
+
+// readyEvery is how often a disk_full fault on the server's volume probes the
+// server's readiness.
+var readyEvery = time.Second
+
+// apply puts a database, volume or file-limit fault in force by calling do, and
+// registers undo to put it back, which HealAll calls if the fault has not. It
+// registers the fault even when do fails part way, so a failed fault is undone
+// too. applied is false, and do is not called, once HealAll has run. Faults
+// with the same key share one undo: it runs when the last of them releases.
+func (c *Controller) apply(key string, do, undo func() error) (applied bool, err error) {
+	c.appMu.Lock()
+	defer c.appMu.Unlock()
+	if c.isClosed() {
+		return false, nil
+	}
+	if a := c.appliedFault(key); a != nil {
+		a.n++
+	} else {
+		c.applied = append(c.applied, &appliedFault{key: key, n: 1, undo: undo})
+	}
+	return true, do()
+}
+
+func (c *Controller) appliedFault(key string) *appliedFault {
+	for _, a := range c.applied {
+		if a.key == key {
+			return a
+		}
+	}
+	return nil
+}
+
+// release ends one fault's hold on key and undoes it when none is left. A
+// failed undo keeps the fault applied, so HealAll tries again.
+func (c *Controller) release(key string) error {
+	c.appMu.Lock()
+	defer c.appMu.Unlock()
+	a := c.appliedFault(key)
+	if a == nil {
+		return nil
+	}
+	a.n--
+	if a.n > 0 {
+		return nil
+	}
+	if err := a.undo(); err != nil {
+		return err
+	}
+	c.drop(a)
+	return nil
+}
+
+func (c *Controller) drop(a *appliedFault) {
+	c.applied = slices.DeleteFunc(c.applied, func(x *appliedFault) bool { return x == a })
+}
+
+// undoAll undoes every fault still in force, the last applied first, whatever
+// holds it. A failure is logged, and the fault stays applied for the next call.
+func (c *Controller) undoAll(ctx context.Context) {
+	c.appMu.Lock()
+	defer c.appMu.Unlock()
+	for _, a := range slices.Backward(slices.Clone(c.applied)) {
+		if err := a.undo(); err != nil {
+			c.logger.WarnContext(ctx, "could not undo a fault", slog.String("fault", a.key), slog.Any("error", err))
+			continue
+		}
+		c.drop(a)
+	}
+}
+
+// hold applies the fault key with do, runs during while it is in force, and
+// undoes it, also when ctx ends first. It records fault i healed when every
+// step succeeded.
+func (c *Controller) hold(ctx context.Context, i int, key string, do, undo func() error, during func()) error {
+	applied, err := c.apply(key, do, undo)
+	if !applied {
+		return nil
+	}
+	if err == nil {
+		during()
+	}
+	err = errors.Join(err, c.release(key))
+	if err == nil {
+		c.healed(ctx, i)
+	}
+	return err
+}
+
+// notef records what the controller observed during fault i.
+func (c *Controller) notef(i int, format string, args ...any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records[i].Notes = append(c.records[i].Notes, fmt.Sprintf(format, args...))
+}
+
+// dbFault stalls or drops the store for d. It opens no fault window: the log
+// stream is durable, so the logs check stays exact and a loss is a finding.
+func (c *Controller) dbFault(ctx context.Context, i int, f *scenario.DatabaseFault, d time.Duration) error {
+	c.started(ctx, i, "database ("+f.Mode+")", false, nil)
+	fire := c.t.StallDatabase
+	if f.Mode == scenario.DatabaseDrop {
+		fire = c.t.DropDatabase
+	}
+	return c.hold(ctx, i, "database",
+		func() error { return fire(ctx) },
+		func() error { return c.t.HealDatabase(context.Background()) },
+		func() { sleep.For(ctx, d) })
+}
+
+// diskFault fills a volume for d. A full server volume opens a fault window
+// over every group, since the broker cannot store what the workers publish, and
+// polls the server's readiness meanwhile; a full workers volume opens none,
+// since real workers are outside the logs check.
+func (c *Controller) diskFault(ctx context.Context, i int, f *scenario.DiskFull, d time.Duration) error {
+	server := f.Volume == scenario.VolumeServer
+	c.started(ctx, i, f.Volume+" volume", server, nil)
+	during := func() { sleep.For(ctx, d) }
+	if server {
+		during = func() { c.watchReady(ctx, i, d) }
+	}
+	return c.hold(ctx, i, "volume:"+f.Volume,
+		func() error { return c.t.FillVolume(f.Volume, f.HeadroomBytes, f.Inodes) },
+		func() error { return c.t.FreeVolume(f.Volume) },
+		during)
+}
+
+// watchReady probes the server's readiness for d, every readyEvery, and notes
+// each change of answer with its offset from the start. The server is ready
+// when the fault starts, so the first answer is a note only when it differs.
+func (c *Controller) watchReady(ctx context.Context, i int, d time.Duration) {
+	begin := time.Now()
+	deadline := begin.Add(d)
+	last := "ready"
+	for {
+		status := c.t.ServerReady(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if status != last {
+			c.notef(i, "+%s: %s", time.Since(begin).Round(time.Second), status)
+			last = status
+		}
+		next := time.Now().Add(readyEvery)
+		if next.After(deadline) {
+			sleep.Until(ctx, deadline)
+			return
+		}
+		if !sleep.Until(ctx, next) {
+			return
+		}
+	}
+}
+
+// fdFault lowers the server's soft open-file limit for d. The server refuses
+// connections meanwhile, so it opens a fault window over every group.
+func (c *Controller) fdFault(ctx context.Context, i int, f *scenario.FDLimit, d time.Duration) error {
+	c.started(ctx, i, "server", true, nil)
+	return c.hold(ctx, i, "fd-limit",
+		func() error {
+			open, err := c.t.LimitServerFDs(f.Headroom)
+			if err == nil {
+				c.notef(i, "open files %d, soft limit %d", open, open+f.Headroom)
+			}
+			return err
+		},
+		c.t.RestoreServerFDs,
+		func() { sleep.For(ctx, d) })
+}
+
+// revokeFault revokes the credential of some of a group's real workers, and d
+// later stops each of them: the operator decommissions the node, so it is not
+// restarted. It opens no fault window. A run interrupted before the stop leaves
+// the workers running; the target stops them when it closes.
+func (c *Controller) revokeFault(ctx context.Context, i int, p *scenario.ProcTarget, d time.Duration) error {
+	workers := c.pick(p.Group, p.Real)
+	c.started(ctx, i, groupTarget(p.Group, workers), false, nil)
+	if len(workers) == 0 {
+		return fmt.Errorf("worker group %s has no running real worker", p.Group)
+	}
+	var errs []error
+	for _, w := range workers {
+		id, err := c.t.RevokeWorker(ctx, w)
+		if id != "" {
+			c.mu.Lock()
+			c.records[i].Workers = append(c.records[i].Workers, id)
+			c.mu.Unlock()
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if !sleep.For(ctx, d) {
+		return errors.Join(append(errs, interrupted(ctx))...)
+	}
+	for _, w := range workers {
+		if err := c.t.TermWorker(ctx, w); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) == 0 {
+		c.healed(ctx, i)
+	}
+	return errors.Join(errs...)
 }

@@ -244,6 +244,29 @@ func summaryFaults(b *strings.Builder, r *Record) {
 			f.Index, f.Kind, tableCell(f.Target), fmtOffset(f.Start.Sub(r.Started)), healed, orDash(tableCell(f.Error)))
 	}
 	b.WriteString("\n")
+	summaryFaultDetails(b, r.Faults)
+}
+
+// lineReplacer keeps free text on one list line.
+var lineReplacer = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
+
+// summaryFaultDetails lists, under the faults table, the workers a revoke hit
+// and what the controller observed, for each fault that has either.
+func summaryFaultDetails(b *strings.Builder, faults []FaultRecord) {
+	wrote := false
+	for _, f := range faults {
+		if len(f.Workers) > 0 {
+			fmt.Fprintf(b, "- Fault #%d workers: %s\n", f.Index, lineReplacer.Replace(strings.Join(f.Workers, ", ")))
+			wrote = true
+		}
+		if len(f.Notes) > 0 {
+			fmt.Fprintf(b, "- Fault #%d notes: %s\n", f.Index, lineReplacer.Replace(strings.Join(f.Notes, "; ")))
+			wrote = true
+		}
+	}
+	if wrote {
+		b.WriteString("\n")
+	}
 }
 
 // cellReplacer keeps free text inside one markdown table cell: a pipe would

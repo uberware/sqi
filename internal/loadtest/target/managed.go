@@ -151,6 +151,12 @@ type managed struct {
 	// fill writes a volume's ballast; diskfill.Fill, except in tests.
 	fill func(dir string, headroom int64, inodes bool) (*diskfill.Ballast, error)
 
+	// probeMu guards readyProbe, the client ServerReady probes /readyz with,
+	// built on the first probe and kept: a probe each second would otherwise
+	// leave an idle connection behind per probe.
+	probeMu    sync.Mutex
+	readyProbe *client.Client
+
 	closeOnce sync.Once
 	closeErr  error
 }

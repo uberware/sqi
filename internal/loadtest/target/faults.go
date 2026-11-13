@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/dbfault"
 	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/netfault"
@@ -500,7 +501,7 @@ func (m *managed) ServerReady(ctx context.Context) string {
 	if m.httpURL == "" {
 		return "no sqi-server has been started"
 	}
-	probe, err := newClient(m.httpURL, "", m.tlsFiles)
+	probe, err := m.probeClient()
 	if err != nil {
 		return err.Error()
 	}
@@ -510,6 +511,20 @@ func (m *managed) ServerReady(ctx context.Context) string {
 		return err.Error()
 	}
 	return "ready"
+}
+
+// probeClient is the client ServerReady probes with, built once.
+func (m *managed) probeClient() (*client.Client, error) {
+	m.probeMu.Lock()
+	defer m.probeMu.Unlock()
+	if m.readyProbe == nil {
+		c, err := newClient(m.httpURL, "", m.tlsFiles)
+		if err != nil {
+			return nil, err
+		}
+		m.readyProbe = c
+	}
+	return m.readyProbe, nil
 }
 
 // ServerLog is the path of server.log.
