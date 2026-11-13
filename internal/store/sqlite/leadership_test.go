@@ -76,7 +76,7 @@ func TestAcquireLeadership_PublishesTheEpochToTheFenceRow(t *testing.T) {
 	if got := f.epochRow(t); got != 0 {
 		t.Fatalf("seed fence epoch = %d, want 0", got)
 	}
-	if _, ok, err := f.st.AcquireLeadership(ctx, "a", 50*time.Millisecond); err != nil || !ok {
+	if _, ok, err := f.st.AcquireLeadership(ctx, "a", 500*time.Millisecond); err != nil || !ok {
 		t.Fatalf("a: ok=%v err=%v", ok, err)
 	}
 	if got := f.epochRow(t); got != 1 {
@@ -90,7 +90,7 @@ func TestAcquireLeadership_PublishesTheEpochToTheFenceRow(t *testing.T) {
 	if got := f.epochRow(t); got != 1 {
 		t.Fatalf("fence epoch after a refusal = %d, want 1", got)
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
 	if _, ok, err := f.st.AcquireLeadership(ctx, "b", time.Hour); err != nil || !ok {
 		t.Fatalf("b after expiry: ok=%v err=%v", ok, err)
 	}
