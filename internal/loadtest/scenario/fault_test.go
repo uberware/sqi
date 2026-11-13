@@ -641,3 +641,43 @@ func TestChaosSkipReason(t *testing.T) {
 		t.Errorf("a scenario with no faults skips with %q", got)
 	}
 }
+
+func TestChaosSkipReason_DiskFullNeedsLinux(t *testing.T) {
+	s := &Scenario{Faults: []Fault{{DiskFull: &DiskFull{Volume: VolumeServer}}}}
+	got := s.ChaosSkipReason(ChaosEnv{GOOS: "windows", Container: true})
+	if want := "a disk_full fault needs linux"; !strings.Contains(got, want) {
+		t.Errorf("ChaosSkipReason = %q, want it to contain %q", got, want)
+	}
+	if got := s.ChaosSkipReason(ChaosEnv{GOOS: "linux", Container: true}); got != "" {
+		t.Errorf("ChaosSkipReason on linux in a container = %q, want none", got)
+	}
+}
+
+// TestChaosSkipReason_RuleOrderAcrossFaults pins that the rules apply in their
+// documented order over every fault, not fault by fault.
+func TestChaosSkipReason_RuleOrderAcrossFaults(t *testing.T) {
+	disk := Fault{DiskFull: &DiskFull{Volume: VolumeServer}}
+	fd := Fault{FDLimit: &FDLimit{Headroom: 5}}
+	stall := Fault{Stall: &ProcTarget{Server: true}}
+	drop := Fault{Database: &DatabaseFault{Mode: DatabaseDrop}}
+	cases := []struct {
+		name   string
+		faults []Fault
+		env    ChaosEnv
+		want   string
+	}{
+		{"fd_limit before disk_full", []Fault{disk, fd}, ChaosEnv{GOOS: "darwin", Store: "sqlite"}, "fd_limit"},
+		{"stall before disk_full", []Fault{disk, stall}, ChaosEnv{GOOS: "windows", Store: "sqlite"}, "stall"},
+		{"stall before fd_limit", []Fault{fd, stall}, ChaosEnv{GOOS: "windows", Store: "sqlite"}, "stall"},
+		{"disk_full before drop", []Fault{drop, disk}, ChaosEnv{GOOS: "linux", Store: "sqlite"}, "chaos-container"},
+		{"disk_full linux before container", []Fault{disk, disk}, ChaosEnv{GOOS: "darwin", Store: "sqlite"}, "needs linux"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Scenario{Faults: tt.faults}
+			if got := s.ChaosSkipReason(tt.env); !strings.Contains(got, tt.want) {
+				t.Errorf("ChaosSkipReason = %q, want it to contain %q", got, tt.want)
+			}
+		})
+	}
+}

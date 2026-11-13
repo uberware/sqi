@@ -281,21 +281,51 @@ type ChaosEnv struct {
 	Container bool   // size-limited volumes are mounted (make chaos-container)
 }
 
-// ChaosSkipReason says why s cannot run in env, "" when it can. Rules, first
-// match wins: a stall fault on windows; an fd_limit fault off linux; a
-// disk_full fault without env.Container; a database drop without
-// env.Store == "postgres".
-func (s *Scenario) ChaosSkipReason(env ChaosEnv) string {
-	for _, f := range s.Faults {
-		switch {
-		case f.Stall != nil && env.GOOS == "windows":
+// chaosSkipRules are ChaosSkipReason's rules in the order they apply.
+var chaosSkipRules = [...]func(f Fault, env ChaosEnv) string{
+	func(f Fault, env ChaosEnv) string {
+		if f.Stall != nil && env.GOOS == "windows" {
 			return "a stall fault cannot suspend a process on windows"
-		case f.FDLimit != nil && env.GOOS != "linux":
+		}
+		return ""
+	},
+	func(f Fault, env ChaosEnv) string {
+		if f.FDLimit != nil && env.GOOS != "linux" {
 			return "an fd_limit fault needs linux (RLIMIT_NOFILE), not " + env.GOOS
-		case f.DiskFull != nil && !env.Container:
+		}
+		return ""
+	},
+	func(f Fault, env ChaosEnv) string {
+		if f.DiskFull != nil && env.GOOS != "linux" {
+			return "a disk_full fault needs linux (a Linux container volume), not " + env.GOOS
+		}
+		return ""
+	},
+	func(f Fault, env ChaosEnv) string {
+		if f.DiskFull != nil && !env.Container {
 			return "a disk_full fault needs the size-limited volumes of make chaos-container"
-		case f.Database != nil && f.Database.Mode == DatabaseDrop && env.Store != "postgres":
+		}
+		return ""
+	},
+	func(f Fault, env ChaosEnv) string {
+		if f.Database != nil && f.Database.Mode == DatabaseDrop && env.Store != "postgres" {
 			return "a database drop fault needs the postgres store, not " + env.Store
+		}
+		return ""
+	},
+}
+
+// ChaosSkipReason says why s cannot run in env, "" when it can. The rules apply
+// in this order, each over every fault, and the first to match gives the
+// reason: a stall fault on windows; an fd_limit fault off linux; a disk_full
+// fault off linux; a disk_full fault without env.Container; a database drop
+// without env.Store == "postgres".
+func (s *Scenario) ChaosSkipReason(env ChaosEnv) string {
+	for _, rule := range chaosSkipRules {
+		for _, f := range s.Faults {
+			if why := rule(f, env); why != "" {
+				return why
+			}
 		}
 	}
 	return ""

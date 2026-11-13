@@ -140,15 +140,11 @@ func (c *Controller) check(f scenario.Fault) error {
 		if goos == "windows" {
 			return errors.New("stall needs SIGSTOP, which Windows does not have")
 		}
-	case scenario.FaultFDLimit:
-		// The scenario's own rule words the refusal.
+	case scenario.FaultFDLimit, scenario.FaultDiskFull:
+		// The scenario's own rules word the refusal.
 		sc := scenario.Scenario{Faults: []scenario.Fault{f}}
 		if why := sc.ChaosSkipReason(scenario.ChaosEnv{GOOS: goos, Container: true}); why != "" {
 			return errors.New(why)
-		}
-	case scenario.FaultDiskFull:
-		if goos != "linux" {
-			return fmt.Errorf("a disk_full fault needs linux, not %s", goos)
 		}
 	}
 	if spec, _, ok := netFault(f); ok {

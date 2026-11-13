@@ -5,8 +5,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -231,6 +234,55 @@ func TestCLI_Scenarios(t *testing.T) {
 	code, _, stderr := runCLI(t, &fakeRunner{}, "scenarios", "--show", "nope")
 	if code != exitUsage || !strings.Contains(stderr, "smoke") {
 		t.Errorf("--show nope: exit %d, stderr %q", code, stderr)
+	}
+}
+
+// chaosMatrix runs scenarios --chaos-matrix and returns the names it printed.
+func chaosMatrix(t *testing.T, args ...string) []string {
+	t.Helper()
+	code, stdout, stderr := runCLI(t, &fakeRunner{}, append([]string{"scenarios", "--chaos-matrix"}, args...)...)
+	if code != exitOK {
+		t.Fatalf("scenarios --chaos-matrix %v: exit %d, stderr %q", args, code, stderr)
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(stdout), &names); err != nil {
+		t.Fatalf("output is not a JSON array of names: %v\n%s", err, stdout)
+	}
+	if !sort.StringsAreSorted(names) {
+		t.Errorf("names are not sorted: %v", names)
+	}
+	return names
+}
+
+func TestScenariosChaosMatrix(t *testing.T) {
+	windows := chaosMatrix(t, "--os", "windows", "--store", "sqlite")
+	linux := chaosMatrix(t, "--os", "linux", "--store", "sqlite")
+	for _, names := range [][]string{windows, linux} {
+		for _, n := range names {
+			if !strings.HasPrefix(n, "chaos-") {
+				t.Errorf("%q is not a chaos scenario", n)
+			}
+		}
+	}
+	if !slices.Contains(windows, "chaos-net-blip") {
+		t.Errorf("windows/sqlite does not list chaos-net-blip: %v", windows)
+	}
+	for _, n := range []string{"chaos-server-stall-long", "chaos-server-stall-short", "chaos-worker-sleep"} {
+		if slices.Contains(windows, n) {
+			t.Errorf("windows/sqlite lists %s, which stalls a process", n)
+		}
+		if !slices.Contains(linux, n) {
+			t.Errorf("linux/sqlite does not list %s", n)
+		}
+	}
+
+	if got := chaosMatrix(t, "--os", "linux", "--store", "sqlite", "--container"); len(got) < len(linux) {
+		t.Errorf("--container drops scenarios: %v, without it %v", got, linux)
+	}
+
+	code, _, stderr := runCLI(t, &fakeRunner{}, "scenarios", "--chaos-matrix", "--store", "mysql")
+	if code != exitUsage || !strings.Contains(stderr, "mysql") {
+		t.Errorf("--store mysql: exit %d, stderr %q", code, stderr)
 	}
 }
 

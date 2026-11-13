@@ -3,8 +3,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -74,14 +77,31 @@ merged record.`,
 	}
 }
 
+// chaosMatrixFlags are the flags of scenarios --chaos-matrix.
+type chaosMatrixFlags struct {
+	on        bool
+	os        string
+	store     string
+	container bool
+}
+
 func (a *app) scenariosCmd() *cobra.Command {
 	var show string
+	var matrix chaosMatrixFlags
 	cmd := &cobra.Command{
-		Use:   "scenarios [--show <name>]",
+		Use:   "scenarios [--show <name>] [--chaos-matrix --os <goos> --store <sqlite|postgres> [--container]]",
 		Short: "List the built-in scenarios, or print one as resolved YAML",
-		Args:  cobra.NoArgs,
+		Long: `List the built-in scenarios, or with --show print one as YAML.
+
+--chaos-matrix prints, as a JSON array, the built-in chaos-* scenarios the chaos
+suite can run in the environment --os, --store and --container describe, sorted.
+--os defaults to this machine's, --store to sqlite.`,
+		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if show != "" {
+			switch {
+			case matrix.on:
+				return a.printChaosMatrix(matrix)
+			case show != "":
 				sc, err := scenario.Builtin(show)
 				if err != nil {
 					return err
@@ -105,5 +125,37 @@ func (a *app) scenariosCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&show, "show", "", "print this built-in scenario as YAML, with its defaults filled in")
+	cmd.Flags().BoolVar(&matrix.on, "chaos-matrix", false, "print the chaos-* scenarios that can run in the environment --os/--store/--container describe, as a JSON array")
+	cmd.Flags().StringVar(&matrix.os, "os", runtime.GOOS, "with --chaos-matrix: the GOOS of the machine running the suite")
+	cmd.Flags().StringVar(&matrix.store, "store", "sqlite", "with --chaos-matrix: the store, sqlite or postgres")
+	cmd.Flags().BoolVar(&matrix.container, "container", false, "with --chaos-matrix: the size-limited volumes of make chaos-container are mounted")
 	return cmd
+}
+
+// printChaosMatrix writes the built-in chaos-* scenarios that m's environment
+// can run as a JSON array of names.
+func (a *app) printChaosMatrix(m chaosMatrixFlags) error {
+	if m.store != "sqlite" && m.store != "postgres" {
+		return fmt.Errorf("--store %q: want sqlite or postgres", m.store)
+	}
+	env := scenario.ChaosEnv{GOOS: m.os, Store: m.store, Container: m.container}
+	names := []string{}
+	for _, name := range scenario.BuiltinNames() {
+		if !strings.HasPrefix(name, "chaos-") {
+			continue
+		}
+		sc, err := scenario.Builtin(name)
+		if err != nil {
+			return err
+		}
+		if sc.ChaosSkipReason(env) == "" {
+			names = append(names, name)
+		}
+	}
+	out, err := json.Marshal(names)
+	if err != nil {
+		return fmt.Errorf("encode chaos matrix: %w", err)
+	}
+	_, err = fmt.Fprintf(a.stdout, "%s\n", out)
+	return err
 }
