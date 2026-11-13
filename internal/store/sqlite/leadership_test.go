@@ -76,13 +76,14 @@ func TestAcquireLeadership_PublishesTheEpochToTheFenceRow(t *testing.T) {
 	if got := f.epochRow(t); got != 0 {
 		t.Fatalf("seed fence epoch = %d, want 0", got)
 	}
-	if _, ok, err := f.st.AcquireLeadership(ctx, "a", 50*time.Millisecond); err != nil || !ok {
+	if _, ok, err := f.st.AcquireLeadership(ctx, "a", time.Second); err != nil || !ok {
 		t.Fatalf("a: ok=%v err=%v", ok, err)
 	}
 	if got := f.epochRow(t); got != 1 {
 		t.Fatalf("fence epoch after a = %d, want 1", got)
 	}
-	// A refused acquire changes neither row.
+	// A refused acquire changes neither row. The lease is long enough that a
+	// slow CI runner cannot let it lapse before b asks.
 	time.Sleep(10 * time.Millisecond)
 	if _, ok, err := f.st.AcquireLeadership(ctx, "b", time.Hour); err != nil || ok {
 		t.Fatalf("b while held: ok=%v err=%v", ok, err)
@@ -90,7 +91,7 @@ func TestAcquireLeadership_PublishesTheEpochToTheFenceRow(t *testing.T) {
 	if got := f.epochRow(t); got != 1 {
 		t.Fatalf("fence epoch after a refusal = %d, want 1", got)
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond)
 	if _, ok, err := f.st.AcquireLeadership(ctx, "b", time.Hour); err != nil || !ok {
 		t.Fatalf("b after expiry: ok=%v err=%v", ok, err)
 	}

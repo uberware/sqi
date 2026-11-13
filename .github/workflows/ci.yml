@@ -3,11 +3,15 @@
 
 name: CI
 
-# Runs on every push to main, on every pull request, and on manual dispatch.
+# Runs on every push to main, on every pull request, on manual dispatch, and
+# for a merge queue's temporary branch (merge_group). The queue runs this
+# workflow once on the queued change merged onto the current main, so a merge
+# does not make the other queued changes stale and re-run.
 on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch: # allows manual triggering from the GitHub Actions UI
 
 # A new push to the same ref cancels the run still in progress for it.
@@ -32,21 +36,38 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # paths-filter reads the PR diff via the API
+    # A merge_group run has no pull request to diff against, so the filter does
+    # not run and every output reads true: everything runs on the queue's
+    # merged state.
     outputs:
-      python: ${{ steps.filter.outputs.python }}
-      submitter: ${{ steps.filter.outputs.submitter }}
-      presets: ${{ steps.filter.outputs.presets }}
-      workflows: ${{ steps.filter.outputs.workflows }}
-      go: ${{ steps.filter.outputs.go }}
+      python: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.python }}
+      submitter: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.submitter }}
+      presets: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.presets }}
+      workflows: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.workflows }}
+      go: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.go }}
+      backend: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.backend }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Filter paths
+        if: github.event_name != 'merge_group'
         uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
+            # Gates the Go build and every job that runs the server, the
+            # worker or the store, on pull requests. It is false only when
+            # every changed file is under web/ (other than web/embed.go, which
+            # is Go): the web jobs (web-check, web-e2e, which builds the
+            # binaries and drives the embedded UI) cover such a change. The
+            # filter is the complement of that, not a list of backend paths,
+            # because docs/, presets/, scripts/ and the root files are all read
+            # by Go tests, so a new top-level path must run them by default.
+            # Pushes to main always run everything.
+            backend:
+              - '!web/**'
+              - 'web/embed.go'
             python:
               - 'clients/python/**'
               - '.github/workflows/ci.yml'
@@ -124,6 +145,10 @@ jobs:
   test:
     name: Build, lint, and test
     runs-on: ubuntu-latest
+    needs: changes
+    # Skipped, which a required check counts as passing, on a pull request that
+    # changes only web/; the jobs that need it are skipped with it.
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true' }}
 
     steps:
       - name: Checkout
@@ -931,7 +956,11 @@ jobs:
   ha-integration:
     name: High-availability integration
     runs-on: ubuntu-latest
-    needs: test
+    needs: changes
+    # Does not wait for the build, lint and unit-test job: it is the longest
+    # job after it, so waiting put the two in series. A failure there no longer
+    # stops this job early.
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true' }}
 
     steps:
       - name: Checkout
@@ -999,12 +1028,19 @@ jobs:
   #
   # Runs on 16 (the oldest supported major) and 18 (the newest tested):
   # pg_dump must be at least the server's major version, and lock and planner
-  # behavior differ between majors. Only the 18 leg runs the smoke test
-  # (below), which does not depend on the major.
+  # behavior differ between majors. Pull requests and merge queues run only 18;
+  # pushes to main and manual dispatch run both, so a 16-only break is caught
+  # after the merge. Only the 18 leg runs the smoke test (below), which does
+  # not depend on the major.
   #
-  # scripts/test-postgres.sh starts its own container from the image the
-  # matrix pulls (SQI_TEST_POSTGRES_IMAGE). The script's local-run defaults
-  # carry the same pins; change both.
+  # Each major runs scripts/test-postgres.sh's three phases (packages, retry,
+  # integration) as three jobs, so they overlap instead of running in series.
+  # The assertions below are split the same way: a job asserts the tests of its
+  # own phase.
+  #
+  # scripts/test-postgres.sh starts its own container from the image the job
+  # pulls (SQI_TEST_POSTGRES_IMAGE). The script's local-run defaults carry the
+  # same pins; change both.
   #
   # `make test-postgres` exits 0 without Docker, and every PostgreSQL test
   # skips without a DSN, so the job does not trust the exit code: it fails
@@ -1012,18 +1048,21 @@ jobs:
   # PostgreSQL subtest was skipped. It asserts by name because a count stays
   # green when a test is renamed or stops running.
   postgres-integration:
-    name: PostgreSQL integration (${{ matrix.pg }})
+    name: PostgreSQL integration (${{ matrix.pg }}, ${{ matrix.phase }})
     runs-on: ubuntu-latest
-    needs: test
+    needs: changes
+    # Does not wait for the build, lint and unit-test job; see ha-integration.
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true' }}
+
+    env:
+      # Keep in step with scripts/test-postgres.sh's default for each major.
+      PG_IMAGE: ${{ matrix.pg == '16' && 'postgres:16.15' || 'postgres:18.6' }}
 
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - pg: '16'
-            image: postgres:16.15 # keep in step with scripts/test-postgres.sh's default
-          - pg: '18'
-            image: postgres:18.6 # keep in step with scripts/test-postgres.sh's default
+        pg: ${{ contains(fromJSON('["push","workflow_dispatch"]'), github.event_name) && fromJSON('["16","18"]') || fromJSON('["18"]') }}
+        phase: [packages, retry, integration]
 
     steps:
       - name: Checkout
@@ -1037,14 +1076,14 @@ jobs:
       # Pulled explicitly so a registry problem fails here with a clear
       # message, not inside the test run as a skip.
       - name: Pull PostgreSQL image
-        run: docker pull ${{ matrix.image }}
+        run: docker pull "$PG_IMAGE"
 
       # The backup test restores a pg_dump archive into the server, so the
       # client must match the server's major version. The runner's own client
       # may not, so the matrix major is installed from PGDG and put first on
       # PATH.
       #
-      # ffmpeg: test-postgres.sh's last phase runs the whole
+      # ffmpeg, installed for the integration phase only: that phase runs the whole
       # ./test/integration/ package (all but the LDAP, OIDC and isolation
       # tests), and presets/validation-tiers.yaml requires the ffmpeg presets'
       # and oiiotool-process's tier-2 cases on linux, so
@@ -1058,14 +1097,17 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
           sudo apt-get install -y postgresql-client-${{ matrix.pg }}
-          sudo apt-get install -y --no-install-recommends ffmpeg openimageio-tools
           echo "/usr/lib/postgresql/${{ matrix.pg }}/bin" >> "$GITHUB_PATH"
-          ffmpeg -version | head -1
-          oiiotool --help | head -2
+          if [ "${{ matrix.phase }}" = integration ]; then
+            sudo apt-get install -y --no-install-recommends ffmpeg openimageio-tools
+            ffmpeg -version | head -1
+            oiiotool --help | head -2
+          fi
 
-      # Asserts the suite ran to its last line, each named test passed, at
-      # least one `/postgres` subtest passed and none was skipped, over the
-      # whole run and again within the forced-retry phase.
+      # Asserts the phase ran to its last line and each of its named tests
+      # passed. The packages and retry phases also require at least one
+      # `/postgres` subtest to pass, and every phase requires that none was
+      # skipped.
       #
       # The trailing space in the PASS pattern keeps a name from matching a
       # longer one with the same prefix. A parent test's PASS line means no
@@ -1084,10 +1126,14 @@ jobs:
       # TestPostgres_OpenRefusesANewerSchema is named apart from the SQLite
       # package's TestOpen_RefusesANewerSchema, whose PASS line would
       # otherwise satisfy the check.
-      - name: Run PostgreSQL tests
+      #
+      # The retry phase (store packages only, every transaction retried once)
+      # has no named tests: its race tests skip, and are top-level tests that
+      # match neither pattern.
+      - name: Run PostgreSQL tests (${{ matrix.phase }})
         run: |
           set +e
-          SQI_TEST_POSTGRES_IMAGE=${{ matrix.image }} make test-postgres PG_VERSION=${{ matrix.pg }} 2>&1 | tee pg-output.log
+          SQI_TEST_POSTGRES_IMAGE="$PG_IMAGE" make test-postgres PG_VERSION=${{ matrix.pg }} PG_PHASE=${{ matrix.phase }} 2>&1 | tee pg-output.log
           status=${PIPESTATUS[0]}
           set -e
 
@@ -1096,7 +1142,7 @@ jobs:
             exit 1
           fi
 
-          expected=(
+          packages_expected=(
             TestPGRace_G1_AReportedTaskIsNeverReaped
             TestPGRace_G2_PoolCapHoldsUnderConcurrentLeases
             TestPGRace_G3_ReaperReturnsExactlyWhatItReset
@@ -1120,7 +1166,6 @@ jobs:
             TestPostgres_PingWhileLargeSubmission
             TestPostgres_BackupRestoreRoundTrip
             TestConcurrentStress_Postgres
-            TestEXPRJobEndToEnd
             TestPostgres_RestoreRoundTrip
             TestPostgres_RestoreOfACorruptArchiveLeavesTheDatabaseEmpty
             TestPostgres_SchemaVersionDSN
@@ -1229,10 +1274,20 @@ jobs:
             TestStoreCopy_RefusesANonBooleanInABooleanColumn
             TestStoreCopy_NamesTheRowAndColumnPostgreSQLRefuses
             TestStoreCopyCmd_CopiesIntoPostgres
+          )
+          integration_expected=(
+            TestEXPRJobEndToEnd
             TestStoreCopy_SQLiteToPostgres
             TestBackupRestore_FarmResumes
             TestUpgrade_OlderBinaryRefused
           )
+
+          phase="${{ matrix.phase }}"
+          case "$phase" in
+            packages) expected=("${packages_expected[@]}") ;;
+            integration) expected=("${integration_expected[@]}") ;;
+            *) expected=() ;;
+          esac
           missing=0
           for name in "${expected[@]}"; do
             if ! grep -q -- "--- PASS: $name " pg-output.log; then
@@ -1245,46 +1300,34 @@ jobs:
             missing=1
           fi
           # No skips does not mean the backend ran: a run that collected no
-          # /postgres subtests has none to skip.
+          # /postgres subtests has none to skip. The integration phase has no
+          # such subtests to count; its named tests are its proof.
           pg_passes=$(grep -c -E -- '--- PASS: .*/postgres' pg-output.log || true)
-          if [ "$pg_passes" -lt 1 ]; then
+          if [ "$phase" != integration ] && [ "$pg_passes" -lt 1 ]; then
             echo "::error::no /postgres subtest passed; the PostgreSQL backend was not exercised"
             missing=1
           fi
-          # The forced-retry phase (store packages only, every transaction
-          # retried once) is checked on its own. The race tests skip in it but
-          # are top-level tests, so they match neither pattern.
-          sed -n '/^== BEGIN FORCED-RETRY PHASE$/,/^== END FORCED-RETRY PHASE$/p' pg-output.log > pg-retry.log
-          if ! grep -q '^== END FORCED-RETRY PHASE$' pg-retry.log; then
+          if [ "$phase" = retry ] && ! grep -q '^== END FORCED-RETRY PHASE$' pg-output.log; then
             echo "::error::the forced-retry phase did not run to its end"
             missing=1
           fi
-          retry_passes=$(grep -c -E -- '--- PASS: .*/postgres' pg-retry.log || true)
-          if [ "$retry_passes" -lt 1 ]; then
-            echo "::error::no /postgres subtest passed in the forced-retry phase"
-            missing=1
-          fi
-          if grep -E -- '--- SKIP: .*/postgres' pg-retry.log; then
-            echo "::error::a PostgreSQL subtest was skipped in the forced-retry phase"
-            missing=1
-          fi
-          if ! grep -q "POSTGRES TESTS PASSED (PG_VERSION=${{ matrix.pg }})" pg-output.log; then
-            echo "::error::the PostgreSQL suite did not reach its final line"
+          if ! grep -q "POSTGRES TESTS PASSED (PG_VERSION=${{ matrix.pg }} PHASE=${phase})" pg-output.log; then
+            echo "::error::the PostgreSQL ${phase} phase did not reach its final line"
             missing=1
           fi
           if [ "$status" -ne 0 ] || [ "$missing" -ne 0 ]; then
-            echo "::error::the PostgreSQL suite did not all pass (exit=$status)."
+            echo "::error::the PostgreSQL ${phase} phase did not all pass (exit=$status)."
             exit 1
           fi
 
-          echo "Confirmed the PostgreSQL ${{ matrix.pg }} suite passed, including ${#expected[@]} named tests and ${retry_passes} /postgres subtests under forced retry."
+          echo "Confirmed the PostgreSQL ${{ matrix.pg }} ${phase} phase passed: ${#expected[@]} named tests and ${pg_passes} /postgres subtests."
 
-      # ── Smoke test with the server on PostgreSQL (18 only) ─────────────────
+      # ── Smoke test with the server on PostgreSQL (18, integration phase) ───
       # `make smoke` builds both binaries and the web UI, so it needs the same
       # Node and Python setup as cross-platform-runtime. The next three steps
       # are copied from that job; keep them in step.
       - name: Set up Node.js
-        if: ${{ matrix.pg == '18' }}
+        if: ${{ matrix.pg == '18' && matrix.phase == 'integration' }}
         uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
@@ -1294,13 +1337,13 @@ jobs:
       # Provides a python with `websockets` so the smoke script's WebSocket
       # assertion runs for real (it otherwise degrades to a logged SKIP).
       - name: Set up Python
-        if: ${{ matrix.pg == '18' }}
+        if: ${{ matrix.pg == '18' && matrix.phase == 'integration' }}
         uses: actions/setup-python@v7
         with:
           python-version: "3.x"
 
       - name: Install websockets for the WS smoke check
-        if: ${{ matrix.pg == '18' }}
+        if: ${{ matrix.pg == '18' && matrix.phase == 'integration' }}
         run: python -m pip install --upgrade pip websockets
 
       # A fresh container, because the smoke run creates a farm named "smoke
@@ -1313,11 +1356,11 @@ jobs:
       # would mistake for the real one. Docker picks the host port, read back
       # with `docker port`.
       - name: End-to-end smoke with the server on PostgreSQL
-        if: ${{ matrix.pg == '18' }}
+        if: ${{ matrix.pg == '18' && matrix.phase == 'integration' }}
         run: |
           name=sqi-smoke-pg
           docker run -d --rm --name "$name" --tmpfs /var/lib/postgresql \
-            -e POSTGRES_PASSWORD=sqi -p 127.0.0.1::5432 ${{ matrix.image }}
+            -e POSTGRES_PASSWORD=sqi -p 127.0.0.1::5432 "$PG_IMAGE"
           trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
 
           ready=0
@@ -1734,7 +1777,11 @@ jobs:
   integration-tests:
     name: Integration suite
     runs-on: ubuntu-latest
-    needs: test
+    needs: changes
+    # Does not wait for the build, lint and unit-test job: it is the longest
+    # job after it, so waiting put the two in series. A failure there no longer
+    # stops this job early.
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true' }}
 
     steps:
       - name: Checkout

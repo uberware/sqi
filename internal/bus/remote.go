@@ -1061,12 +1061,15 @@ func retryUntil(ctx context.Context, deadline time.Time, op func(context.Context
 }
 
 // transientJetStreamError reports whether a JetStream request failed because
-// the cluster is not ready yet: no meta leader or peers yet, or nobody
+// the cluster is not ready yet: no meta leader or peers yet, a stream that
+// has not elected a leader (a publish to it, such as a key-value write
+// straight after the bucket was created, gets no response), or nobody
 // answering. Anything else, such as an invalid stream configuration or an
 // account without JetStream, is definite.
 func transientJetStreamError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) ||
-		errors.Is(err, nats.ErrNoResponders) || errors.Is(err, jetstream.ErrJetStreamNotEnabled) {
+		errors.Is(err, nats.ErrNoResponders) || errors.Is(err, jetstream.ErrJetStreamNotEnabled) ||
+		errors.Is(err, jetstream.ErrNoStreamResponse) {
 		return true
 	}
 	var apiErr *jetstream.APIError
