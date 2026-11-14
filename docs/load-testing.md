@@ -1138,7 +1138,7 @@ arrives. The task goes to the disconnected worker and waits until the heartbeat
 sweep takes the worker offline and reclaims it. `chaos-worker-revoke` records
 it, where `revoked` can fail.
 
-### A full server volume stops the farm until a restart (H13f9)
+### A full volume or descriptor limit stops the farm until a restart (H13f9)
 
 When the server's data volume fills, the embedded broker's first stream write
 that fails with ENOSPC leaves that stream failing every later write, also
@@ -1147,6 +1147,22 @@ after the space returns. No task status, heartbeat or log is stored, while
 heartbeat sweep runs, every worker is marked offline and none returns.
 `chaos-disk-server-full` records it, where `terminal`, `outcomes`,
 `single-attempt`, `workers-converge` and `executions-recorded` fail.
+
+Running out of file descriptors has the same effect. The task status and
+heartbeat streams create a new block file many times a minute, and in every
+run of `chaos-server-fd-exhaustion` the status stream's newest block was
+written for the last time while the server was at its descriptor limit, and
+never again after the limit lifted. Leased tasks then never reach running: the
+stale-assigned reap takes each one back and leases it again about every 30
+seconds, and the finished work never counts. In one run of six the heartbeat
+stream stopped as well, and every worker was marked offline. The scenario
+records `terminal`, `outcomes` and `rework`, and on the runs where the
+heartbeat stream stops, `single-attempt`, `workers-converge` and
+`executions-recorded`. The broker's error is not logged (H13f10); an embedded
+nats-server outside sqi, run out of descriptors the same way, logs a critical
+write error when an ack empties a stream's last block and the new block file
+cannot be opened, and refuses every later store on that stream after the
+limit lifts.
 
 ### The embedded broker's errors are not logged (H13f10)
 
