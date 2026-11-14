@@ -94,9 +94,11 @@ and nothing broader. The container exits non-zero when either set of tests
 failed, and the target exits 0 with a message when Docker is not available:
 look for `--- PASS: TestChaos/chaos-disk-` lines. Set `SQI_LOAD_OUT` to keep
 the run directories; the container writes them as root. A Docker host that
-applies its default AppArmor profile may refuse the tmpfs mounts the ballast
-tests make; adding `--security-opt apparmor=unconfined` to the `docker run`
-line in the Makefile may be needed there. That has not been verified.
+applies its default AppArmor profile refuses the tmpfs mounts the ballast
+tests make, so the `docker run` line passes `--security-opt
+apparmor=unconfined`. Whether that is enough on GitHub's runners is unverified
+until the first nightly run. The container scenarios run on SQLite only:
+`make chaos-container STORE=postgres` stops with an error.
 
 The test logs each run's directory, and on a failure its `summary.md`. A
 skipped test verifies nothing: look for `--- PASS: TestChaos/chaos-...` lines
@@ -128,8 +130,9 @@ Which scenarios a given machine runs is a function of the library, and
 as a JSON array (`--os` is `linux`, `windows` or `darwin`, `--store` is
 `sqlite` or `postgres`, and `--container` adds the size-limited volumes).
 Linux with SQLite runs 26 of the 30 scenarios, Linux with PostgreSQL 27, the
-container 29 with SQLite and all 30 with PostgreSQL, and Windows with SQLite
-22.
+container 29 with SQLite, and Windows with SQLite 22. `--container --store
+postgres` would print all 30, but `make chaos-container` runs SQLite only, so
+no target runs that combination.
 
 ---
 
@@ -364,7 +367,7 @@ evidence naming the job, task, attempt or process, at most 20 entries.
 | `attempt-order` | Read from the stopped server's store, on every attempt of every job in the farm: `started_at` is not more than 1 second before `created_at`, and `ended_at` is not more than 1 second before `started_at`. The server stamps `created_at` and `started_at` with its own clock and takes `ended_at` from the worker's status report, so a worker whose clock is wrong can break the order. |
 | `revoked` | Read from the stopped server's store, only with a `revoke` fault: for each revoked worker, no heartbeat was recorded and no attempt was created for it more than 5 seconds after its credential was revoked. The 5 seconds cover the revoke reaching the broker and the server's own bookkeeping. |
 | `skew-warning` | Read from the server's log, only when a group has a `clock_skew`: for every skewed group, the server logged `scheduler: worker heartbeat delayed or skewed` for at least one of its workers. A log that cannot be read leaves the check unmeasured. |
-| `disk-full` | Read from the stopped server's store, only with a `disk_full` fault on a `workers` volume. For each fault that fired and healed, over the attempts of the real workers: every attempt that failed and ended from the fault's start to 10 seconds after it healed names a cause matching the fault's `reason`, when it sets one; no more than `max_failed` of them failed, when it sets one; and every real worker succeeded at least one attempt that started after the fault healed. A fault that never healed fails the check, and a run with no real worker to judge leaves it unmeasured. The check has no minimum: a run in which no attempt failed in the window passes it. |
+| `disk-full` | Read from the stopped server's store, only with a `disk_full` fault on a `workers` volume. For each fault that fired and healed, over the attempts of the real workers: every attempt that failed and ended from the fault's start to 10 seconds after it healed names a cause matching the fault's `reason`, when it sets one; no more than `max_failed` of them failed, when it sets one; and every real worker succeeded at least one attempt that started after the fault healed. A fault that never healed fails the check, and a run with no real worker to judge leaves it unmeasured. The check has no minimum: a run in which no attempt failed in the window passes it. Its summary notes, for each fault, how many attempts failed in the window, so a pass shows whether the fault made a task fail. |
 
 A store the checks cannot open or read fails `store-integrity` and
 `executions-recorded` with the error as evidence.
@@ -493,7 +496,7 @@ server defects](load-testing.md#known-server-defects).
 | H13f6 | The server records an attempt's `ended_at` from the worker's clock and its `started_at` from its own, so a worker whose clock runs behind records attempts that end before they start. | `chaos-clock-skew`, `attempt-order`, `must` |
 | H13f7 | When a stalled database answers again, the heartbeat sweep, the stale-assigned reap and the attempt reconciler act on the state the stall kept from being written, before the queued heartbeats and status reports land: live workers go offline, running tasks are taken back and run twice, finished work is rejected. | `chaos-db-stall-30s`, `rework` (up to 60), `reclaims` and `single-attempt`, `may`; `chaos-db-stall-2m`, `single-attempt`, `may` |
 | H13f8 | A lease request a worker parked before its credential was revoked is still served after the revoke, so the disconnected worker is given a task that waits until the sweep reclaims it. | `chaos-worker-revoke`, `revoked`, `may` |
-| H13f9 | After a write to a broker stream fails because the data volume is full or the server is out of file descriptors, the stream may store nothing more for the rest of the run; whether a restart clears it was not tested. With a full volume the server stays ready and answers REST (readiness was not probed in the descriptor runs). Every worker is then reclaimed. | `chaos-disk-server-full`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded`, `must`; `chaos-server-fd-exhaustion`, the same checks and `rework` (up to 2500), `may` |
+| H13f9 | After a write to a broker stream fails because the data volume is full or the server is out of file descriptors, the stream may store nothing more for the rest of the run; whether a restart clears it was not tested. With a full volume the server stayed ready and answered REST while the volume was full (readiness was not probed in the descriptor runs). Every worker is then reclaimed. | `chaos-disk-server-full`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded`, `must`; `chaos-server-fd-exhaustion`, the same checks and `rework` (up to 2500), `may` |
 | H13f10 | `sqi-server` drops the embedded broker's notices, warnings and errors, so a broker failure never reaches the server log. | Not tied to a check. |
 
 ---
@@ -667,7 +670,8 @@ It also has these limits:
   `chaos-server-fd-exhaustion` and `chaos-db-stall-30s`, a regression in the
   same check is hidden until the defect it records is fixed.
 - The `disk-full` check has no minimum number of failed attempts, so a run in
-  which the fault never made a task fail passes it.
+  which the fault never made a task fail passes it. The summary records the
+  count for each fault window; read it to see whether the fault bit.
 - Both of `chaos-worker-kill-mid-task`'s H13f4 entries are `may`: its real
   task is too short for the orphaned child to outlive the 10 s grace in every
   run.

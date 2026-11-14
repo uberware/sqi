@@ -887,8 +887,8 @@ func (m *managed) Incarnations() []Incarnation {
 }
 
 // StopForChecks puts back the server's open-file limit, then stops the real
-// workers together and the server, each gracefully. The data directory, the database and the
-// lanes stay; Close releases them.
+// workers together and the server, each gracefully. The data directory, the
+// database and the lanes stay; Close releases them.
 func (m *managed) StopForChecks(ctx context.Context) error {
 	errs := []error{m.restoreFDsIfLimited()}
 	m.resumeAll(ctx)

@@ -2426,7 +2426,7 @@ throughout.
 | Stall | Result |
 |---|---|
 | 5 seconds | Ridden out. No attempt was reclaimed and no completed work was redone, in 3 of 3 runs on SQLite, 3 of 3 on PostgreSQL and in the Windows run. |
-| 30 seconds (`heartbeat_timeout`) | Recovery broke in every SQLite run on Linux and in some PostgreSQL and Windows runs. On SQLite on Linux every one of 7 runs redid work: in the first three the server reclaimed 18, 40 and 97 attempts, 8, 16 and 24 attempts that had run to completion were redone, tasks ran twice at once, and 85, 62 and 6 of 100 workers were online when the check was made, 55 seconds after the stall ended; later runs redid 7, 2 and 19 attempts. On PostgreSQL one of the first three runs redid 1 attempt and one ran tasks twice at once, and three later runs redid none. On Windows, two of four runs redid none, and the other two redid 14 and 23 attempts. |
+| 30 seconds (`heartbeat_timeout`) | Recovery broke in every SQLite run on Linux and in some PostgreSQL and Windows runs. On SQLite on Linux every one of 7 runs redid work: in the first three the server reclaimed 18, 40 and 97 attempts, 8, 16 and 24 attempts that had run to completion were redone, tasks ran twice at once, and 85, 62 and 6 of 100 workers were online when the check was made, 55 seconds after the stall ended; later runs redid 7, 2, 19 and 1 attempts. On PostgreSQL one of the first three runs redid 1 attempt and one ran tasks twice at once, and three later runs redid none. On Windows, two of four runs redid none, and the other two redid 14 and 23 attempts. |
 | 2 minutes | Recovery broke in every run, on every store. On SQLite on Linux no worker was online after the 55 seconds, in 3 of 3 runs, nor on Windows. On PostgreSQL 63, 49 and 76 of 100 were. On PostgreSQL 31 to 49 attempts were reclaimed and 29 to 47 completed attempts were redone. |
 
 Both longer stalls fail the same way (H13f7). The queued heartbeats and status
@@ -2504,8 +2504,9 @@ seconds, in a container with a 64 MB volume.
 - With no free space or inodes at task setup, the check passed in 3 of 3 runs:
   every attempt that failed in the window named "no space left on device", at
   most 12 failed, and both workers ran tasks to success after the space
-  returned. The check has no minimum and no run recorded how many attempts
-  failed.
+  returned. The check has no minimum, and these runs did not record how many
+  attempts failed; the check's summary now records the count for each fault
+  window.
 - With 1 MiB left while each task writes 8 MiB, the render fails partway with
   the process's non-zero exit. 8, 8 and 10 attempts failed in the window in 3
   runs, under the bound of 15. Both workers succeeded work after the space

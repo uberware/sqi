@@ -113,7 +113,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make chaos` | Run the chaos suite (fault injection against real binaries; `SCENARIO=chaos-…` for one, `STORE=postgres` for PostgreSQL through a throwaway Docker server; about two hours for the scenarios that apply on one platform and store) |
 | `make chaos-smoke` | Run the three chaos scenarios CI runs on pull requests (about 14 minutes) |
 | `make chaos-framework` | Run the chaos suite's own framework test, no scenario |
-| `make chaos-container` | Run the chaos disk scenarios on real size-limited volumes in a container (needs Docker; exits 0 without it, so look for the `--- PASS` lines) |
+| `make chaos-container` | Run the chaos disk scenarios on real size-limited volumes in a container (needs Docker, SQLite only; exits 0 without Docker, so look for the `--- PASS` lines) |
 | `make docs-site-install` | Create `.venv-docs/` and install the pinned MkDocs dependencies |
 | `make docs-site` | Build the MkDocs documentation site with `--strict` (the CI gate) |
 | `make docs-site-serve` | Serve the documentation site locally with live reload |

@@ -912,14 +912,14 @@ func (m *managed) workerPIDs() []int {
 }
 
 // Close first puts back the server's open-file limit and releases a database
-// fault, so the server can finish its writes; then it continues every task group and process the harness stalled, stops the
-// real workers (together), ends the task process groups the markers still show
-// running, and stops the server: each process gets an interrupt and the stop
-// grace (30 s by default) to exit before it is killed, and a done ctx kills at
-// once. It then frees the volumes' ballast, drops a database the harness
-// created and closes the broker lanes and the database proxy. Every process is
-// reaped before Close returns, whatever the error, and nothing is started once
-// it has begun.
+// fault, so the server can finish its writes; then it continues every task
+// group and process the harness stalled, stops the real workers (together),
+// ends the task process groups the markers still show running, and stops the
+// server: each process gets an interrupt and the stop grace (30 s by default)
+// to exit before it is killed, and a done ctx kills at once. It then frees the
+// volumes' ballast, drops a database the harness created and closes the broker
+// lanes and the database proxy. Every process is reaped before Close returns,
+// whatever the error, and nothing is started once it has begun.
 func (m *managed) Close(ctx context.Context) error {
 	m.closeOnce.Do(func() {
 		m.mu.Lock()

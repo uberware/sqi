@@ -4,13 +4,14 @@ description: chaos - lower the server's file descriptor limit to 10 above its op
 # Linux only (RLIMIT_NOFILE, set on the server with prlimit); it needs no
 # privilege and no container.
 #
-# The design asks for a server started with a low limit and more workers than
-# it can hold. The simulated fleet fails the whole run when a worker cannot
-# connect at start, so that shape cannot run. Instead the limit is applied to
-# the running server while a partitioned rack redials, which exercises the
-# same paths: EMFILE in the HTTP and broker accept loops, and every file the
-# server opens meanwhile (SQLite, JetStream blocks, logs). "Recovers when
-# workers leave" becomes "recovers when descriptors are free again".
+# A server started with a low limit and more workers than it can hold would
+# exercise this, but the simulated fleet fails the whole run when a worker
+# cannot connect at start, so that shape cannot run. Instead the limit is
+# applied to the running server while a partitioned rack redials, which
+# exercises the same paths: EMFILE in the HTTP and broker accept loops, and
+# every file the server opens meanwhile (SQLite, JetStream blocks, logs).
+# "Recovers when workers leave" becomes "recovers when descriptors are free
+# again".
 #
 # A cut worker redials on the real worker's backoff: nats.go waits before each
 # attempt, 4s, 8s, 16s, 32s, 64s, each +-20%, so the attempts come about 4s,
@@ -107,7 +108,7 @@ expect:
   known_violations:
     - check: terminal
       kind: may
-      reason: the task status stream stopped storing for the rest of the run after the descriptor limit lifted (consistent with a block file the broker could not create while the limit held, unconfirmed in sqi's logs), so no task status is stored after it and no job finishes; the status stream broke in ten runs of sixteen
+      reason: the task status stream stopped storing inside the descriptor-limit window and stored nothing more for the rest of the run (consistent with a block file the broker could not create while the limit held, unconfirmed in sqi's logs), so no task status is stored after it and no job finishes; the status stream broke in ten runs of sixteen
       tracker: H13f9
     - check: outcomes
       kind: may

@@ -1144,10 +1144,11 @@ it, where `revoked` can fail.
 
 When the server's data volume fills, the embedded broker's first stream write
 that fails with ENOSPC leaves that stream failing every later write, also
-after the space returns, for the rest of the run; whether a restart clears it was
-not tested. No task status, heartbeat or log is stored, while
-`/readyz` stays ready, REST requests succeed and nothing is logged. When the
-heartbeat sweep runs, every worker is marked offline and none returns.
+after the space returns, for the rest of the run; whether a restart clears it
+was not tested. No task status, heartbeat or log is stored, while `/readyz`
+stayed ready while the volume was full, REST requests succeeded and nothing is
+logged. When the heartbeat sweep runs, every worker is marked offline and none
+returns.
 `chaos-disk-server-full` records it, where `terminal`, `outcomes`,
 `single-attempt`, `workers-converge` and `executions-recorded` fail.
 

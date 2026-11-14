@@ -15,11 +15,12 @@ description: chaos - fill the server's data volume at 1m for 60s under a verbose
 # It does not (H13f9). The embedded broker's first stream write that hits
 # ENOSPC leaves that stream with a write error that outlasts the full volume,
 # so from the fill on no task status, heartbeat or log chunk is stored for the
-# rest of the run (a restart was not tried). The server stays up, answers REST and stays ready, and
-# logs nothing (it drops the broker's error output, H13f10). When the startup
-# grace ends, about 73s after the space returns, the sweep marks every worker
-# offline and reclaims its attempts; none comes back. Every check that needs
-# a status or a heartbeat fails, every run.
+# rest of the run (a restart was not tried). The server stayed up, answered
+# REST and stayed ready while the volume was full (readiness was probed only
+# during the fill), and logs nothing (it drops the broker's error output,
+# H13f10). When the startup grace ends, about 73s after the space returns, the
+# sweep marks every worker offline and reclaims its attempts; none comes back.
+# Every check that needs a status or a heartbeat fails, every run.
 duration: 3m
 warmup: 10s
 drain_timeout: 5m
