@@ -253,7 +253,9 @@ func (t *fakeTarget) Lane(group string) target.Lane {
 
 func (*fakeTarget) MarkerDir() string                   { return "" }
 func (*fakeTarget) StopForChecks(context.Context) error { return nil }
-func (*fakeTarget) StoreOptions() backend.Options       { return backend.Options{} }
+func (*fakeTarget) StoreOptions() backend.Options {
+	return backend.Options{Driver: backend.DriverPostgres}
+}
 func (t *fakeTarget) laneCalls(group string) []laneCall { return t.lanes[group].snapshot() }
 func (t *fakeTarget) laneOps(group string) []string     { return ops(t.laneCalls(group)) }
 func (t *fakeTarget) laneState(group string) string     { return t.lanes[group].state() }
@@ -828,7 +830,7 @@ func TestController_StallRejectedOnWindows(t *testing.T) {
 		{Duration: d(time.Second), Kill: &scenario.ProcTarget{Server: true}, RestartAfter: d(time.Second)},
 		{Duration: d(time.Second), Stall: &scenario.ProcTarget{Group: "render"}},
 	}, groups("render"), ft, nil, quiet())
-	const want = "chaos: faults[1]: stall needs SIGSTOP, which Windows does not have"
+	const want = "chaos: faults[1]: a stall fault cannot suspend a process on windows"
 	if err == nil || err.Error() != want {
 		t.Fatalf("NewController error = %v, want %q", err, want)
 	}
@@ -1266,6 +1268,21 @@ func TestController_HealAllToleratesFailingUndo(t *testing.T) {
 		if !slices.Contains(got, name) {
 			t.Errorf("%s not called by HealAll; one failing undo must not stop the rest (calls %v)", name, got)
 		}
+	}
+}
+
+// sqliteTarget is a fakeTarget whose store is SQLite.
+type sqliteTarget struct{ *fakeTarget }
+
+func (sqliteTarget) StoreOptions() backend.Options { return backend.Options{} }
+
+func TestController_DatabaseDropRefusedOnSQLite(t *testing.T) {
+	_, err := NewController([]scenario.Fault{
+		{Duration: d(time.Second), Database: &scenario.DatabaseFault{Mode: scenario.DatabaseDrop}},
+	}, groups("render"), sqliteTarget{newFakeTarget(nil)}, nil, quiet())
+	const want = "chaos: faults[0]: a database drop fault needs the postgres store, not sqlite"
+	if err == nil || err.Error() != want {
+		t.Fatalf("NewController error = %v, want %q", err, want)
 	}
 }
 

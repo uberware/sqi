@@ -321,13 +321,11 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	id, g := w.spec.ID, w.spec.Group
 	// A skewed worker offsets only the timestamps it puts on the wire; the
 	// ledger and the harness's timers read the real clock.
-	var wire func() time.Time
-	if skew := g.ClockSkew.Duration; skew != 0 {
-		wire = func() time.Time { return time.Now().Add(skew) }
-	}
+	skew := g.ClockSkew.Duration
+	wire := func() time.Time { return time.Now().Add(skew) }
 	logCfg := logstreamer.DefaultConfig()
 	logCfg.Now = wire
-	st := status.New(nc, status.Config{WorkerID: id, Now: wire}, w.logger)
+	st := status.New(nc, status.Config{WorkerID: id}, w.logger)
 	logs := logstreamer.New(nc, id, logCfg, w.logger)
 	d := NewDispatcher(id, st, logs, w.behavior, w.ledger, w.rng)
 	d.wireNow = wire

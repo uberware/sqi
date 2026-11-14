@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
 // The names Fill writes under the directory it is given.
@@ -18,15 +17,12 @@ const (
 	InodesName = ".sqiload-inodes"
 )
 
-// ErrUnsupported is what Fill returns off unix.
-var ErrUnsupported = errors.New("diskfill: needs statfs, which this OS does not have")
+// ErrUnsupported is what Fill returns off Linux.
+var ErrUnsupported = errors.New("diskfill: filling a volume is supported only on Linux")
 
 // Ballast is what Fill wrote on one volume.
 type Ballast struct {
 	dir string
-
-	mu    sync.Mutex
-	freed bool
 }
 
 // Free removes everything Fill wrote. It is safe on a nil Ballast and more
@@ -35,16 +31,7 @@ func (b *Ballast) Free() error {
 	if b == nil {
 		return nil
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.freed {
-		return nil
-	}
-	if err := removeFilled(b.dir); err != nil {
-		return err
-	}
-	b.freed = true
-	return nil
+	return removeFilled(b.dir)
 }
 
 // removeFilled removes the ballast file and the inode files under dir. A

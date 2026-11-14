@@ -1488,7 +1488,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 			slog.String("worker_id", m.WorkerID), slog.Int("attempts", len(m.ActiveAttemptIDs)),
 			slog.Int("limit", maxReportedAttempts))
 	case s.reconciler.record(m.WorkerID, at, received, m.ActiveAttemptIDs):
-		s.logger.WarnContext(ctx, "scheduler: worker heartbeat delayed or skewed: more than heartbeat_timeout "+
+		s.logger.WarnContext(ctx, LogHeartbeatSkewed+": more than heartbeat_timeout "+
 			"between the worker's timestamp and its receipt; its tasks are not reconciled until its "+
 			"heartbeats arrive in time again",
 			slog.String("worker_id", m.WorkerID), slog.Time("worker_at", at))

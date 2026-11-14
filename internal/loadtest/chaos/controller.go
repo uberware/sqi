@@ -23,9 +23,11 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/target"
 	"github.com/uberware/sqi/internal/loadtest/verify"
+	"github.com/uberware/sqi/internal/store/backend"
 )
 
-// goos is the operating system the stall check is made for; tests change it.
+// goos is the operating system the platform rules are checked for; tests
+// change it.
 var goos = runtime.GOOS
 
 // Fleet is the simulated fleet a power cut takes down with the real processes.
@@ -133,19 +135,18 @@ func NewController(faults []scenario.Fault, groups []scenario.WorkerGroup, t tar
 
 // check reports why the controller cannot inject f.
 func (c *Controller) check(f scenario.Fault) error {
-	switch f.Kind() {
-	case "":
+	if f.Kind() == "" {
 		return errors.New("sets no fault kind, or several")
-	case scenario.FaultStall:
-		if goos == "windows" {
-			return errors.New("stall needs SIGSTOP, which Windows does not have")
-		}
-	case scenario.FaultFDLimit, scenario.FaultDiskFull:
-		// The scenario's own rules word the refusal.
-		sc := scenario.Scenario{Faults: []scenario.Fault{f}}
-		if why := sc.ChaosSkipReason(scenario.ChaosEnv{GOOS: goos, Container: true}); why != "" {
-			return errors.New(why)
-		}
+	}
+	// The scenario's own rules word the platform and store refusals. A volume
+	// the target lacks is refused when the fault fills it.
+	store := c.t.StoreOptions().Driver
+	if sqliteDriver(store) {
+		store = backend.DriverSQLite
+	}
+	sc := scenario.Scenario{Faults: []scenario.Fault{f}}
+	if why := sc.ChaosSkipReason(scenario.ChaosEnv{GOOS: goos, Store: store, Container: true}); why != "" {
+		return errors.New(why)
 	}
 	if spec, _, ok := netFault(f); ok {
 		for _, g := range c.resolve(spec) {

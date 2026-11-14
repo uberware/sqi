@@ -72,10 +72,6 @@ type Config struct {
 	// Each subsequent retry doubles the delay (exponential backoff).
 	// Default: 100 ms.
 	RetryDelay time.Duration
-
-	// Now stamps each message's At that the publisher times itself; nil is
-	// time.Now.
-	Now func() time.Time
 }
 
 // ── Publisher ─────────────────────────────────────────────────────────────────
@@ -203,7 +199,7 @@ func (p *Publisher) ShutdownFailed(ctx context.Context, tasks []ShutdownTask) {
 			Status:    "failed",
 			SessionID: t.SessionID,
 			WorkerID:  p.cfg.WorkerID,
-			At:        p.now(),
+			At:        time.Now(),
 			Message:   protocol.MessageWorkerShutdown,
 		}
 		p.publishWithRetry(ctx, sm)
@@ -211,14 +207,6 @@ func (p *Publisher) ShutdownFailed(ctx context.Context, tasks []ShutdownTask) {
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
-
-// now is the wire clock: cfg.Now, or time.Now when unset.
-func (p *Publisher) now() time.Time {
-	if p.cfg.Now != nil {
-		return p.cfg.Now()
-	}
-	return time.Now()
-}
 
 // publishWithRetry marshals msg and publishes it to task.status.<workerID>.<job> with up
 // to cfg.MaxRetries retries on failure, using exponential backoff.

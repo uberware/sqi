@@ -59,21 +59,38 @@ func databaseName(runID string) string {
 // path; a keyword/value DSN gets a trailing dbname, which wins over an
 // earlier one.
 func withDatabase(dsn, name string) (string, error) {
-	out := dsn + " dbname=" + name
-	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
-		u, err := url.Parse(dsn)
-		if err != nil {
-			return "", fmt.Errorf("target: PostgreSQL DSN %s: %w", pgdsn.Redact(dsn), err)
-		}
+	out, cfg, err := rewriteDSN(dsn, "dbname="+name, func(u *url.URL) {
 		u.Path = "/" + name
 		u.RawPath = ""
-		out = u.String()
+	})
+	if err != nil {
+		return "", err
 	}
-	cfg, err := pgconn.ParseConfig(out)
-	if err != nil || cfg.Database != name {
+	if cfg == nil || cfg.Database != name {
 		return "", fmt.Errorf("target: cannot point PostgreSQL DSN %s at database %s", pgdsn.Redact(dsn), name)
 	}
 	return out, nil
+}
+
+// rewriteDSN changes dsn one of two ways: a URL DSN (postgres://,
+// postgresql://) through editURL, a keyword/value DSN by appending kv, which
+// pgx reads over an earlier setting. It returns the new DSN and pgx's parse of
+// it, nil when pgx cannot parse it, for the caller to check.
+func rewriteDSN(dsn, kv string, editURL func(*url.URL)) (string, *pgconn.Config, error) {
+	out := dsn + " " + kv
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", nil, fmt.Errorf("target: PostgreSQL DSN %s: %w", pgdsn.Redact(dsn), err)
+		}
+		editURL(u)
+		out = u.String()
+	}
+	cfg, err := pgconn.ParseConfig(out)
+	if err != nil {
+		return out, nil, nil //nolint:nilerr // the caller reports a DSN it cannot use
+	}
+	return out, cfg, nil
 }
 
 // publicTables counts the tables in the public schema of the database dsn

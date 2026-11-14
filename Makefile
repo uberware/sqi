@@ -387,10 +387,7 @@ chaos-container: ## Run the chaos disk scenarios on real size-limited volumes in
 	  echo "chaos-container runs the disk scenarios on SQLite only; STORE=$(STORE) is not supported"; exit 1; fi
 	@if ! docker info >/dev/null 2>&1; then \
 	  echo "docker unavailable — skipping chaos container scenarios"; exit 0; fi; \
-	ctx=$$(mktemp -d) && trap 'rm -rf "$$ctx"' EXIT && \
-	rsync -a --exclude-from=test/chaos/container/.dockerignore --exclude='.dockerignore' "$(CURDIR)/" "$$ctx/" && \
-	cp test/chaos/container/.dockerignore "$$ctx/.dockerignore" && \
-	docker build -q -t sqi-chaos-container -f test/chaos/container/Dockerfile "$$ctx" && \
+	$(call docker_build_staged,test/chaos/container/.dockerignore,sqi-chaos-container,test/chaos/container/Dockerfile) && \
 	docker run --rm --init --cap-add SYS_ADMIN --security-opt apparmor=unconfined \
 	  --tmpfs /chaos/server:rw,size=512m --tmpfs /chaos/worker:rw,size=64m,nr_inodes=8192 \
 	  -e SQI_CHAOS_CONTAINER=1 -e SQI_CHAOS_SERVER_VOLUME=/chaos/server -e SQI_CHAOS_WORKER_VOLUME=/chaos/worker \
@@ -484,7 +481,7 @@ test-oidc: ## Run the SSO tests against a real Keycloak in a container (needs Do
 # below excludes every .dockerignore from the rsync and then places
 # test/integration/isolation/.dockerignore at the staged root explicitly, so
 # Docker's context-root ignore-file discovery sees only this image's exclusion
-# list.
+# list (docker_build_staged, below).
 #
 # --init runs a real init (tini) as container PID 1: without it, the `go
 # test` process itself is PID 1, which never reaps re-parented grandchildren
@@ -495,12 +492,17 @@ test-oidc: ## Run the SSO tests against a real Keycloak in a container (needs Do
 test-isolation: ## Run run-as-user isolation tests as root against real OS accounts in a container (needs Docker)
 	@if ! docker info >/dev/null 2>&1; then \
 	  echo "docker unavailable — skipping isolation integration tests"; exit 0; fi
-	@ctx=$$(mktemp -d) && trap 'rm -rf "$$ctx"' EXIT && \
-	rsync -a --exclude-from=test/integration/isolation/.dockerignore --exclude='.dockerignore' "$(CURDIR)/" "$$ctx/" && \
-	cp test/integration/isolation/.dockerignore "$$ctx/.dockerignore" && \
-	docker build -q -t sqi-isolation-test -f test/integration/isolation/Dockerfile "$$ctx" && \
+	@$(call docker_build_staged,test/integration/isolation/.dockerignore,sqi-isolation-test,test/integration/isolation/Dockerfile) && \
 	docker run --rm --init sqi-isolation-test \
 	  go test $(TEST_FLAGS) -tags integration -run 'TestIsolation_' -v -timeout 15m ./test/integration/
+
+# docker_build_staged builds image $(2) from Dockerfile $(3) on a staged copy of
+# the repo filtered by the ignore file $(1), as test-isolation's comment above
+# explains. chaos-container uses it too.
+docker_build_staged = ctx=$$(mktemp -d) && trap 'rm -rf "$$ctx"' EXIT && \
+	rsync -a --exclude-from=$(1) --exclude='.dockerignore' "$(CURDIR)/" "$$ctx/" && \
+	cp $(1) "$$ctx/.dockerignore" && \
+	docker build -q -t $(2) -f $(3) "$$ctx"
 
 # The external broker mode against a real three-node nats-server cluster in
 # Docker (deploy/docker-compose.nats-cluster.yml), configured from the output

@@ -13,10 +13,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// fdLimitSupported says whether the harness can lower another process's
-// open-file limit here.
-const fdLimitSupported = true
-
 // fdLimit is a process's RLIMIT_NOFILE.
 type fdLimit struct {
 	soft, hard uint64

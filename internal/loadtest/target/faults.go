@@ -97,11 +97,11 @@ type Faults interface {
 	// LimitServerFDs sets the running sqi-server's soft RLIMIT_NOFILE to the number
 	// of files it has open plus headroom, leaving the hard limit, and returns the
 	// open-file count it saw. Limiting a limited server is a no-op that returns
-	// the first count. Linux only; elsewhere it returns errFDLimitUnsupported.
+	// the first count. Linux only; elsewhere, with a server running, it returns
+	// errFDLimitUnsupported.
 	LimitServerFDs(headroom int) (open int, err error)
 	// RestoreServerFDs puts back the soft limit LimitServerFDs replaced. It does
-	// nothing when none is applied or the server is gone. Linux only; elsewhere
-	// it returns errFDLimitUnsupported.
+	// nothing when none is applied or the server is gone.
 	RestoreServerFDs() error
 	// ServerReady probes the server's /readyz: "ready", or the probe's error
 	// text.
@@ -118,12 +118,6 @@ type Faults interface {
 	// appends to.
 	ServerLog() string
 }
-
-// The volumes a disk_full fault can fill.
-const (
-	VolumeServer  = "server"
-	VolumeWorkers = "workers"
-)
 
 // Lane is a worker group's connection to the broker, which a fault can cut,
 // blackhole or shape. *netfault.Proxy implements it.
@@ -165,10 +159,6 @@ var errClosing = errors.New("target: the target is closing")
 // errNoDatabaseProxy is what a database fault returns on a PostgreSQL run whose
 // scenario declared none, so no proxy fronts the server's connections.
 var errNoDatabaseProxy = errors.New("target: the run has no database proxy; declare a database fault in the scenario")
-
-// errFDLimitUnsupported is what limiting the server's open files returns off
-// Linux, where there is no prlimit to lower another process's limit with.
-var errFDLimitUnsupported = errors.New("target: limiting the server's open files needs prlimit, which only Linux has")
 
 // savedFDLimit is the limit LimitServerFDs replaced, on the process it
 // replaced it on, and the open-file count it saw.
@@ -360,16 +350,16 @@ func (m *managed) HealDatabase(ctx context.Context) error {
 // in. It is an error when the target has no such volume.
 func (m *managed) volumeDir(volume string) (string, error) {
 	switch {
-	case volume == VolumeServer && m.settings.Volume != "":
+	case volume == scenario.VolumeServer && m.settings.Volume != "":
 		return m.settings.dataDir(), nil
-	case volume == VolumeWorkers && m.workerVolume != "":
+	case volume == scenario.VolumeWorkers && m.workerVolume != "":
 		return filepath.Join(m.workerVolume, m.runID), nil
-	case volume == VolumeServer:
+	case volume == scenario.VolumeServer:
 		return "", errors.New("target: the run has no server volume; set ManagedConfig.ServerVolume")
-	case volume == VolumeWorkers:
+	case volume == scenario.VolumeWorkers:
 		return "", errors.New("target: the run has no workers volume; set ManagedConfig.WorkerVolume")
 	}
-	return "", fmt.Errorf("target: unknown volume %q; want %q or %q", volume, VolumeServer, VolumeWorkers)
+	return "", fmt.Errorf("target: unknown volume %q; want %q or %q", volume, scenario.VolumeServer, scenario.VolumeWorkers)
 }
 
 // FillVolume writes the ballast. A failed fill leaves nothing behind (Fill
@@ -440,9 +430,6 @@ func (m *managed) freeVolumes(ctx context.Context) error {
 // plus headroom. The limit is put back by RestoreServerFDs, StopForChecks and
 // Close.
 func (m *managed) LimitServerFDs(headroom int) (int, error) {
-	if !fdLimitSupported {
-		return 0, errFDLimitUnsupported
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	switch {
@@ -466,19 +453,11 @@ func (m *managed) LimitServerFDs(headroom int) (int, error) {
 	return open, nil
 }
 
-// RestoreServerFDs puts back the limit LimitServerFDs replaced.
-func (m *managed) RestoreServerFDs() error {
-	if !fdLimitSupported {
-		return errFDLimitUnsupported
-	}
-	return m.restoreFDsIfLimited()
-}
-
-// restoreFDsIfLimited is RestoreServerFDs on every platform: where nothing can
-// be limited, nothing is restored and it is not an error. A server that is
+// RestoreServerFDs puts back the limit LimitServerFDs replaced. With nothing
+// limited, which is always so off Linux, it does nothing. A server that is
 // gone has nothing to restore either. When putting the limit back fails it
 // stays saved, so the next call tries again.
-func (m *managed) restoreFDsIfLimited() error {
+func (m *managed) RestoreServerFDs() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.fdSaved
@@ -890,7 +869,7 @@ func (m *managed) Incarnations() []Incarnation {
 // workers together and the server, each gracefully. The data directory, the
 // database and the lanes stay; Close releases them.
 func (m *managed) StopForChecks(ctx context.Context) error {
-	errs := []error{m.restoreFDsIfLimited()}
+	errs := []error{m.RestoreServerFDs()}
 	m.resumeAll(ctx)
 	errs = append(errs, m.stopWorkers(ctx, false)...)
 	if p, err := m.currentServer(); err == nil {

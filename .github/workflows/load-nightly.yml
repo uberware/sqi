@@ -179,19 +179,19 @@ jobs:
   # a CPU. chaos-plan lists the scenarios from the library, so a new one joins
   # without an edit here.
   #
-  # Only the tests listed under `gated` below fail their job. The list is
+  # Only the tests listed in a job's GATED fail it. Every GATED is
   # empty: every test is advisory and raises a warning annotation when it does
   # not pass, the framework test included, since it runs a real scenario
-  # (chaos-server-term). A test moves to the gated list after 20 consecutive
+  # (chaos-server-term). A test moves to a GATED after 20 consecutive
   # passing runs on GitHub-hosted runners; add its name (TestChaos/<scenario>,
-  # or TestChaos_<name>) to that one list to promote it.
+  # or TestChaos_<name>) to that job's GATED to promote it.
   #
   # Three more jobs cover what `chaos` does not. `chaos-postgres` runs the
   # scenarios that apply on PostgreSQL (the database ones included) against a
   # service container; `chaos-windows` runs those that apply on Windows;
   # `chaos-container` runs the chaos-disk-* scenarios on real size-limited
   # volumes in Docker. All are advisory in the same way, each with its own
-  # `gated` list, promoted by the same rule (docs/chaos-testing.md, "CI").
+  # GATED, promoted by the same rule (docs/chaos-testing.md, "CI").
   chaos-plan:
     name: Chaos suite plan
     runs-on: ubuntu-latest
@@ -211,17 +211,15 @@ jobs:
 
       # The library says which scenarios apply to each OS and store (the
       # POSIX-only stalls are not run on Windows, the database faults need
-      # PostgreSQL). The chaos-disk-* scenarios run in the container job, so
-      # they are left out of all three lists. The framework test runs on
-      # Linux with SQLite only.
+      # PostgreSQL). Without --container the chaos-disk-* scenarios, which run
+      # in the container job, are left out of all three lists. The framework
+      # test runs on Linux with SQLite only.
       - name: List the chaos scenarios
         id: list
         shell: bash
         run: |
-          list() {
-            go run ./cmd/sqi-load scenarios --chaos-matrix --os "$1" --store "$2" |
-              jq -c 'map(select(startswith("chaos-disk-") | not))'
-          }
+          go build -o "$RUNNER_TEMP/sqi-load" ./cmd/sqi-load
+          list() { "$RUNNER_TEMP/sqi-load" scenarios --chaos-matrix --os "$1" --store "$2"; }
           linux_sqlite=$(list linux sqlite | jq -c '["framework"] + .')
           linux_postgres=$(list linux postgres)
           windows=$(list windows sqlite)
@@ -282,45 +280,21 @@ jobs:
           retention-days: 30
 
       # A skipped or filtered test would still leave `go test` green, so each
-      # is asserted by name. The trailing space keeps a name from matching a
-      # longer one with the same prefix.
+      # is asserted by name. GATED lists the tests that fail the job; the rest
+      # are advisory.
       - name: Assert the gated tests passed
         if: ${{ always() }}
         shell: bash
         env:
+          GATED: ""
           SCENARIO: ${{ matrix.scenario }}
         run: |
-          gated=(
-          )
           if [ "$SCENARIO" = framework ]; then
             mapfile -t tests < <(grep -ho '^func TestChaos_[A-Za-z0-9_]*' test/chaos/*_test.go | sed 's/^func //')
           else
             tests=("TestChaos/$SCENARIO")
           fi
-          fail=0
-          {
-            echo "| Test | Gating | Result |"
-            echo "|---|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
-          for t in "${tests[@]}"; do
-            if printf '%s\n' "${gated[@]}" | grep -qxF "$t"; then
-              gating=gated
-            else
-              gating=advisory
-            fi
-            if grep -q -- "--- PASS: $t " "$CHAOS_LOG"; then
-              result=PASS
-            elif [ "$gating" = gated ]; then
-              echo "::error::$t did not pass (or did not run)"
-              result=FAIL
-              fail=1
-            else
-              echo "::warning::advisory test $t did not pass (or did not run)"
-              result="not passed"
-            fi
-            echo "| $t | $gating | $result |" >> "$GITHUB_STEP_SUMMARY"
-          done
-          exit "$fail"
+          bash scripts/assert-gated-tests.sh "$CHAOS_LOG" "${tests[@]}"
 
   # The same scenarios on PostgreSQL: the ones that apply there, the database
   # faults (chaos-db-*) among them. The service container is one server per
@@ -390,41 +364,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # Advisory, as in `chaos`: add a name to `gated` to promote it
+      # Advisory, as in `chaos`: add a name to GATED to promote it
       # (docs/chaos-testing.md, "CI").
       - name: Assert the gated tests passed
         if: ${{ always() }}
         shell: bash
         env:
+          GATED: ""
           SCENARIO: ${{ matrix.scenario }}
         run: |
-          gated=(
-          )
-          tests=("TestChaos/$SCENARIO")
-          fail=0
-          {
-            echo "| Test | Gating | Result |"
-            echo "|---|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
-          for t in "${tests[@]}"; do
-            if printf '%s\n' "${gated[@]}" | grep -qxF "$t"; then
-              gating=gated
-            else
-              gating=advisory
-            fi
-            if grep -q -- "--- PASS: $t " "$CHAOS_LOG"; then
-              result=PASS
-            elif [ "$gating" = gated ]; then
-              echo "::error::$t did not pass (or did not run)"
-              result=FAIL
-              fail=1
-            else
-              echo "::warning::advisory test $t did not pass (or did not run)"
-              result="not passed"
-            fi
-            echo "| $t | $gating | $result |" >> "$GITHUB_STEP_SUMMARY"
-          done
-          exit "$fail"
+          bash scripts/assert-gated-tests.sh "$CHAOS_LOG" "TestChaos/$SCENARIO"
 
   # The chaos-disk-* scenarios and the diskfill ballast tests, in a container
   # that gives them real size-limited volumes (`make chaos-container`). The
@@ -437,7 +386,8 @@ jobs:
   chaos-container:
     name: Chaos suite (container, disk)
     runs-on: ubuntu-latest
-    needs: chaos-plan
+    # Uses none of chaos-plan's lists, so it does not wait for them.
+    if: ${{ github.event_name == 'schedule' || inputs.duration == '' }}
     timeout-minutes: 120
 
     env:
@@ -481,43 +431,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # Advisory, as in `chaos`: add a name to `gated` to promote it
+      # Advisory, as in `chaos`: add a name to GATED to promote it
       # (docs/chaos-testing.md, "CI").
       - name: Assert the gated tests passed
         if: ${{ always() }}
         shell: bash
+        env:
+          GATED: ""
         run: |
-          gated=(
-          )
           tests=()
           for f in internal/loadtest/scenario/library/chaos-disk-*.yaml; do
             tests+=("TestChaos/$(basename "$f" .yaml)")
           done
           tests+=(TestFill_LeavesHeadroom TestFill_Inodes)
-          fail=0
-          {
-            echo "| Test | Gating | Result |"
-            echo "|---|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
-          for t in "${tests[@]}"; do
-            if printf '%s\n' "${gated[@]}" | grep -qxF "$t"; then
-              gating=gated
-            else
-              gating=advisory
-            fi
-            if grep -q -- "--- PASS: $t " "$CHAOS_LOG"; then
-              result=PASS
-            elif [ "$gating" = gated ]; then
-              echo "::error::$t did not pass (or did not run)"
-              result=FAIL
-              fail=1
-            else
-              echo "::warning::advisory test $t did not pass (or did not run)"
-              result="not passed"
-            fi
-            echo "| $t | $gating | $result |" >> "$GITHUB_STEP_SUMMARY"
-          done
-          exit "$fail"
+          bash scripts/assert-gated-tests.sh "$CHAOS_LOG" "${tests[@]}"
 
   # The scenarios that apply on Windows, with SQLite, on a Windows runner.
   chaos-windows:
@@ -569,38 +496,13 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # Advisory, as in `chaos`: add a name to `gated` to promote it
+      # Advisory, as in `chaos`: add a name to GATED to promote it
       # (docs/chaos-testing.md, "CI").
       - name: Assert the gated tests passed
         if: ${{ always() }}
         shell: bash
         env:
+          GATED: ""
           SCENARIO: ${{ matrix.scenario }}
         run: |
-          gated=(
-          )
-          tests=("TestChaos/$SCENARIO")
-          fail=0
-          {
-            echo "| Test | Gating | Result |"
-            echo "|---|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
-          for t in "${tests[@]}"; do
-            if printf '%s\n' "${gated[@]}" | grep -qxF "$t"; then
-              gating=gated
-            else
-              gating=advisory
-            fi
-            if grep -q -- "--- PASS: $t " "$CHAOS_LOG"; then
-              result=PASS
-            elif [ "$gating" = gated ]; then
-              echo "::error::$t did not pass (or did not run)"
-              result=FAIL
-              fail=1
-            else
-              echo "::warning::advisory test $t did not pass (or did not run)"
-              result="not passed"
-            fi
-            echo "| $t | $gating | $result |" >> "$GITHUB_STEP_SUMMARY"
-          done
-          exit "$fail"
+          bash scripts/assert-gated-tests.sh "$CHAOS_LOG" "TestChaos/$SCENARIO"

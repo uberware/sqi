@@ -41,6 +41,11 @@ type reconciler struct {
 // off a report reads as no longer held, and would be reclaimed.
 const maxReportedAttempts = 4096
 
+// LogHeartbeatSkewed begins the warning the scheduler logs for a heartbeat whose
+// worker timestamp is more than heartbeat_timeout from its receipt. The chaos
+// checks look for it in the server's log.
+const LogHeartbeatSkewed = "scheduler: worker heartbeat delayed or skewed"
+
 type workerReport struct {
 	workerAt   time.Time // the worker's own timestamp, for ordering its reports
 	receivedAt time.Time

@@ -49,6 +49,32 @@ func TestBuiltins_AllValidate(t *testing.T) {
 	}
 }
 
+// TestBuiltins_DiskScenariosNeedTheContainer pins what load-nightly.yml's chaos
+// plan relies on: every chaos-disk-* scenario needs the container's volumes,
+// so --chaos-matrix without --container leaves it to the container job.
+func TestBuiltins_DiskScenariosNeedTheContainer(t *testing.T) {
+	var n int
+	for _, name := range BuiltinNames() {
+		if !strings.HasPrefix(name, "chaos-disk-") {
+			continue
+		}
+		n++
+		s, err := Builtin(name)
+		if err != nil {
+			t.Fatalf("Builtin(%q): %v", name, err)
+		}
+		if why := s.ChaosSkipReason(ChaosEnv{GOOS: "linux", Store: "sqlite"}); why == "" {
+			t.Errorf("%s runs without --container; give it a disk_full fault or rename it", name)
+		}
+		if why := s.ChaosSkipReason(ChaosEnv{GOOS: "linux", Store: "sqlite", Container: true}); why != "" {
+			t.Errorf("%s does not run in the container: %s", name, why)
+		}
+	}
+	if n == 0 {
+		t.Fatal("the library has no chaos-disk-* scenario")
+	}
+}
+
 func TestBuiltin_Unknown(t *testing.T) {
 	_, err := Builtin("nope")
 	if err == nil {

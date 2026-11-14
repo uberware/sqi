@@ -2510,7 +2510,7 @@ jobs:
   # consecutive passing runs on GitHub-hosted runners. Until then the failing
   # step, the log and the uploaded run directories are the signal. Once all
   # three have their 20 passes, remove continue-on-error and add the scenarios
-  # to the gated list in load-nightly.yml (see docs/chaos-testing.md, "CI").
+  # to the chaos job's GATED in load-nightly.yml (see docs/chaos-testing.md, "CI").
   chaos-smoke:
     name: Chaos smoke (${{ matrix.scenario }})
     runs-on: ubuntu-latest

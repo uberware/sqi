@@ -10,14 +10,11 @@ import (
 )
 
 func TestLimitServerFDs_Unsupported(t *testing.T) {
+	if _, _, err := limitFDs(1, 5); !errors.Is(err, errFDLimitUnsupported) {
+		t.Errorf("limitFDs = %v, want errFDLimitUnsupported", err)
+	}
 	m := newTestManaged(t, laneScenario(false))
-	if _, err := m.LimitServerFDs(5); !errors.Is(err, errFDLimitUnsupported) {
-		t.Errorf("LimitServerFDs = %v, want errFDLimitUnsupported", err)
-	}
-	if err := m.RestoreServerFDs(); !errors.Is(err, errFDLimitUnsupported) {
-		t.Errorf("RestoreServerFDs = %v, want errFDLimitUnsupported", err)
-	}
-	if err := m.restoreFDsIfLimited(); err != nil {
-		t.Errorf("restoreFDsIfLimited = %v, want nil: Close calls it on every platform", err)
+	if err := m.RestoreServerFDs(); err != nil {
+		t.Errorf("RestoreServerFDs = %v, want nil: Close calls it on every platform", err)
 	}
 }

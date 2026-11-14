@@ -12,7 +12,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/pg-throwaway.sh
 . "$SCRIPT_DIR/lib/pg-throwaway.sh"
 
-PG_VERSION="${PG_VERSION:-18}"
 pg_throwaway_image || exit $?
 rc=0
 pg_throwaway_start || rc=$?

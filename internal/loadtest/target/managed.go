@@ -925,7 +925,7 @@ func (m *managed) Close(ctx context.Context) error {
 		m.mu.Lock()
 		m.closing = true
 		m.mu.Unlock()
-		errs := []error{m.restoreFDsIfLimited(), m.HealDatabase(ctx)}
+		errs := []error{m.RestoreServerFDs(), m.HealDatabase(ctx)}
 		m.resumeAll(ctx)
 		errs = append(errs, m.stopWorkers(ctx, true)...)
 		errs = append(errs, m.endTaskGroups(ctx), m.stopServer(ctx), m.freeVolumes(ctx))

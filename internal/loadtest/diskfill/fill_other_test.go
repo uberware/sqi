@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//go:build !unix
+//go:build !linux
 
 package diskfill
 
@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestFill_UnsupportedOffUnix(t *testing.T) {
+func TestFill_UnsupportedOffLinux(t *testing.T) {
 	b, err := Fill(t.TempDir(), 0, false)
 	if !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("Fill = %v, want ErrUnsupported", err)

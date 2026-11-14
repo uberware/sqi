@@ -644,9 +644,10 @@ warning annotation.
 
 **Promotion.** When a test has passed 20 consecutive runs on GitHub-hosted
 runners, add its name (`TestChaos/<scenario>`, or
-`TestChaos_MustViolationThatDoesNotFireFails`) to the `gated` list of the job
-that runs it in `load-nightly.yml`. Each of the four jobs has one such list, in
-the step that asserts its gated scenarios. A scenario that runs in several
+`TestChaos_MustViolationThatDoesNotFireFails`) to the `GATED` variable of the
+job that runs it in `load-nightly.yml` (whitespace-separated). Each of the four
+jobs sets one, on the step that asserts its gated scenarios, which runs
+`scripts/assert-gated-tests.sh`. A scenario that runs in several
 jobs is promoted per job. Once all three smoke
 scenarios have their 20, also remove `continue-on-error` from the `chaos-smoke`
 job in `ci.yml`, so a failing pull request is blocked. A scenario that cannot

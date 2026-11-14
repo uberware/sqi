@@ -10,8 +10,9 @@ import (
 	"time"
 )
 
-// knownOSes are the GOOS values a known violation may be limited to.
-var knownOSes = []string{"linux", "darwin", "windows"}
+// KnownOSes are the GOOS values a known violation may be limited to, and the
+// ones a chaos matrix is listed for.
+var KnownOSes = []string{"linux", "darwin", "windows"}
 
 // faultKindList names the fault kinds in the error for a fault that sets none
 // or several.
@@ -100,10 +101,13 @@ func (v *validator) faultRestart(path string, f *Fault) {
 	case f.RestartAfter.Duration > 0 && !killOrTerm:
 		v.failf(path+".restart_after", "applies to kill and term only")
 	}
-	if killOrTerm || f.PowerCut != nil {
+	switch {
+	case killOrTerm || f.PowerCut != nil:
 		if f.Duration.Duration != 0 {
 			v.failf(path+".duration", "does not apply to %s; use restart_after or the power cut's down", f.Kind())
 		}
+	case f.Duration.Duration <= 0 && f.Kind() != "":
+		v.failf(path+".duration", "must be positive for %s", f.Kind())
 	}
 	for _, p := range []*ProcTarget{f.Kill, f.Term} {
 		if p != nil && p.Server && f.RestartAfter.Duration <= 0 {
@@ -138,12 +142,6 @@ func (v *validator) procTarget(path string, p *ProcTarget, groups map[string]int
 
 // faultNetwork checks the kinds that act on the connections.
 func (v *validator) faultNetwork(path string, f *Fault, groups map[string]int) {
-	switch {
-	case f.Stall != nil, f.Partition != nil, f.Blackhole != nil, f.Latency != nil, f.Flap != nil:
-		if f.Duration.Duration <= 0 {
-			v.failf(path+".duration", "must be positive for %s", f.Kind())
-		}
-	}
 	kind, names, ok := f.netSpec()
 	if !ok {
 		return
@@ -164,11 +162,6 @@ const maxClockSkew = 48 * time.Hour
 
 // newKinds checks the database, disk_full, fd_limit and revoke kinds.
 func (v *validator) newKinds(path string, f *Fault, groups map[string]int) {
-	if f.Database != nil || f.DiskFull != nil || f.FDLimit != nil || f.Revoke != nil {
-		if f.Duration.Duration <= 0 {
-			v.failf(path+".duration", "must be positive for %s", f.Kind())
-		}
-	}
 	if f.Database != nil {
 		if m := f.Database.Mode; m != DatabaseStall && m != DatabaseDrop {
 			v.failf(path+".database.mode", "%q is not one of %s, %s", m, DatabaseStall, DatabaseDrop)
@@ -308,8 +301,8 @@ func (v *validator) expect() {
 			v.failf(path+".tracker", "is required")
 		}
 		for j, os := range k.OS {
-			if !slices.Contains(knownOSes, os) {
-				v.failf(fmt.Sprintf("%s.os[%d]", path, j), "%q is not one of %s", os, strings.Join(knownOSes, ", "))
+			if !slices.Contains(KnownOSes, os) {
+				v.failf(fmt.Sprintf("%s.os[%d]", path, j), "%q is not one of %s", os, strings.Join(KnownOSes, ", "))
 			}
 		}
 	}

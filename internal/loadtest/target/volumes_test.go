@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/uberware/sqi/internal/loadtest/diskfill"
+	"github.com/uberware/sqi/internal/loadtest/scenario"
 )
 
 // fakeFiller records what the target fills, so the tests need no real volume.
@@ -134,7 +135,7 @@ func TestManaged_FillVolumeWithoutVolumeIsAnError(t *testing.T) {
 	m := newTestManaged(t, laneScenario(false))
 	ff := &fakeFiller{}
 	m.fill = ff.fill
-	for _, v := range []string{VolumeServer, VolumeWorkers, "nope"} {
+	for _, v := range []string{scenario.VolumeServer, scenario.VolumeWorkers, "nope"} {
 		if err := m.FillVolume(v, 1<<20, false); err == nil {
 			t.Errorf("FillVolume(%q) succeeded on a target with no volumes", v)
 		}
@@ -151,10 +152,10 @@ func TestManaged_FillAndFreeVolume(t *testing.T) {
 	m, server, workers := volumeManaged(t)
 	ff := &fakeFiller{}
 	m.fill = ff.fill
-	if err := m.FillVolume(VolumeServer, 5, true); err != nil {
+	if err := m.FillVolume(scenario.VolumeServer, 5, true); err != nil {
 		t.Fatalf("FillVolume(server): %v", err)
 	}
-	if err := m.FillVolume(VolumeWorkers, 7, false); err != nil {
+	if err := m.FillVolume(scenario.VolumeWorkers, 7, false); err != nil {
 		t.Fatalf("FillVolume(workers): %v", err)
 	}
 	want := []fillCall{
@@ -164,7 +165,7 @@ func TestManaged_FillAndFreeVolume(t *testing.T) {
 	if got := ff.calls(); !slices.Equal(got, want) {
 		t.Errorf("fill calls = %v, want %v", got, want)
 	}
-	if err := m.FillVolume(VolumeServer, 5, true); err != nil {
+	if err := m.FillVolume(scenario.VolumeServer, 5, true); err != nil {
 		t.Errorf("filling a filled volume = %v, want a no-op", err)
 	}
 	if n := len(ff.calls()); n != 2 {
@@ -172,7 +173,7 @@ func TestManaged_FillAndFreeVolume(t *testing.T) {
 	}
 	serverBallast := filepath.Join(server, "run1", diskfill.BallastName)
 	for range 2 {
-		if err := m.FreeVolume(VolumeServer); err != nil {
+		if err := m.FreeVolume(scenario.VolumeServer); err != nil {
 			t.Errorf("FreeVolume(server): %v", err)
 		}
 	}
@@ -182,7 +183,7 @@ func TestManaged_FillAndFreeVolume(t *testing.T) {
 	if !exists(filepath.Join(workers, "run1", diskfill.BallastName)) {
 		t.Error("freeing the server volume removed the workers' ballast")
 	}
-	if err := m.FillVolume(VolumeServer, 5, true); err != nil {
+	if err := m.FillVolume(scenario.VolumeServer, 5, true); err != nil {
 		t.Fatalf("filling again after a free: %v", err)
 	}
 	if !exists(serverBallast) {
@@ -194,7 +195,7 @@ func TestManaged_FillVolumeErrorLeavesNothingApplied(t *testing.T) {
 	m, _, _ := volumeManaged(t)
 	boom := errors.New("boom")
 	m.fill = (&fakeFiller{err: boom}).fill
-	if err := m.FillVolume(VolumeServer, 0, false); !errors.Is(err, boom) {
+	if err := m.FillVolume(scenario.VolumeServer, 0, false); !errors.Is(err, boom) {
 		t.Fatalf("FillVolume = %v, want the filler's error", err)
 	}
 	m.volMu.Lock()
@@ -212,7 +213,7 @@ func TestManaged_FillVolumeAfterCloseIsRefused(t *testing.T) {
 	if err := m.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := m.FillVolume(VolumeServer, 0, false); !errors.Is(err, errClosing) {
+	if err := m.FillVolume(scenario.VolumeServer, 0, false); !errors.Is(err, errClosing) {
 		t.Errorf("FillVolume after Close = %v, want errClosing", err)
 	}
 	if n := len(ff.calls()); n != 0 {
@@ -223,7 +224,7 @@ func TestManaged_FillVolumeAfterCloseIsRefused(t *testing.T) {
 func TestManaged_CloseRemovesBallast(t *testing.T) {
 	m, server, workers := volumeManaged(t)
 	m.fill = (&fakeFiller{}).fill
-	for _, v := range []string{VolumeServer, VolumeWorkers} {
+	for _, v := range []string{scenario.VolumeServer, scenario.VolumeWorkers} {
 		if err := m.FillVolume(v, 0, false); err != nil {
 			t.Fatalf("FillVolume(%s): %v", v, err)
 		}

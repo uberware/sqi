@@ -82,8 +82,8 @@ type Dispatcher struct {
 	ledger     *Ledger
 	logger     *slog.Logger // the worker sets its own; discard otherwise
 
-	// wireNow stamps the timestamps the dispatcher puts on status messages; nil
-	// is time.Now. The ledger and every timer keep the real clock.
+	// wireNow stamps the timestamps the dispatcher puts on status messages.
+	// The ledger and every timer keep the real clock.
 	wireNow func() time.Time
 
 	// progress, when set, sits between a progress-writing task's lines and logs,
@@ -126,6 +126,7 @@ func NewDispatcher(
 		ledger:   l,
 		rng:      r,
 		logger:   slog.New(slog.DiscardHandler),
+		wireNow:  time.Now,
 		held:     map[string]struct{}{},
 		active:   map[string]*simTask{},
 	}
@@ -233,7 +234,7 @@ func (d *Dispatcher) run(t *simTask) {
 		d.progress.RegisterTask(m.AttemptID, m.TaskID, m.JobID, "", func() {})
 		defer d.progress.Deregister(m.AttemptID)
 	}
-	d.st.Running(context.Background(), m, "", nil, d.wireTime())
+	d.st.Running(context.Background(), m, "", nil, d.wireNow())
 	d.record(m, KindRunning, "", 0, time.Time{})
 	if timeout := timeoutOf(m); timeout > 0 {
 		timer := time.AfterFunc(timeout, func() { d.expire(t) })
@@ -407,7 +408,7 @@ func (d *Dispatcher) finish(t *simTask, reason endReason, lines int) {
 	// The end event is stamped before the publish: once the server has the
 	// status it may lease the freed slot to another worker, whose leased event
 	// must not sort before this attempt's end.
-	now, wire := time.Now(), d.wireTime()
+	now, wire := time.Now(), d.wireNow()
 	switch reason {
 	case endDone:
 		outcome, code, msg := OutcomeSucceeded, 0, ""
@@ -431,14 +432,6 @@ func (d *Dispatcher) finish(t *simTask, reason endReason, lines int) {
 		d.record(m, KindCrashed, "", lines, now)
 	}
 	d.release(t)
-}
-
-// wireTime is the clock behind the timestamps a status message carries.
-func (d *Dispatcher) wireTime() time.Time {
-	if d.wireNow != nil {
-		return d.wireNow()
-	}
-	return time.Now()
 }
 
 // release drops t's attempt from the held set and t from the active set.

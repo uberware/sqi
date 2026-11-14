@@ -16,6 +16,7 @@ import (
 
 	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
+	"github.com/uberware/sqi/internal/store/backend"
 )
 
 func (a *app) compareCmd() *cobra.Command {
@@ -137,11 +138,11 @@ or postgres and defaults to sqlite.`,
 // printChaosMatrix writes the built-in chaos-* scenarios that m's environment
 // can run as a JSON array of names.
 func (a *app) printChaosMatrix(m chaosMatrixFlags) error {
-	if m.store != "sqlite" && m.store != "postgres" {
-		return fmt.Errorf("--store %q: want sqlite or postgres", m.store)
+	if m.store != backend.DriverSQLite && m.store != backend.DriverPostgres {
+		return fmt.Errorf("--store %q: want %s or %s", m.store, backend.DriverSQLite, backend.DriverPostgres)
 	}
-	if !slices.Contains([]string{"linux", "windows", "darwin"}, m.os) {
-		return fmt.Errorf("--os %q: want linux, windows or darwin", m.os)
+	if !slices.Contains(scenario.KnownOSes, m.os) {
+		return fmt.Errorf("--os %q: want one of %s", m.os, strings.Join(scenario.KnownOSes, ", "))
 	}
 	env := scenario.ChaosEnv{GOOS: m.os, Store: m.store, Container: m.container}
 	names := []string{}

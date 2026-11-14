@@ -49,7 +49,15 @@ func TestFault_Kind(t *testing.T) {
 		{"latency", `{latency: {delay: 1s}}`, "latency"},
 		{"flap", `{flap: {period: 2s}}`, "flap"},
 		{"power cut", `{power_cut: {order: server-first}}`, "power_cut"},
+		{"database", `{database: {mode: stall}}`, "database"},
+		{"disk_full", `{disk_full: {volume: server}}`, "disk_full"},
+		{"fd_limit", `{fd_limit: {headroom: 5}}`, "fd_limit"},
+		{"revoke", `{revoke: {group: render}}`, "revoke"},
 		{"two kinds", `{kill: {server: true}, partition: {}}`, ""},
+		{"database with kill", `{database: {mode: stall}, kill: {server: true}}`, ""},
+		{"disk_full with kill", `{disk_full: {volume: server}, kill: {server: true}}`, ""},
+		{"fd_limit with kill", `{fd_limit: {headroom: 5}, kill: {server: true}}`, ""},
+		{"revoke with kill", `{revoke: {group: render}, kill: {server: true}}`, ""},
 		{"none", `{at: 5s}`, ""},
 	}
 	for _, tt := range tests {
@@ -390,34 +398,6 @@ func TestClone_CopiesFaults(t *testing.T) {
 	}
 }
 
-func TestFault_KindNewKinds(t *testing.T) {
-	tests := []struct {
-		name string
-		yaml string
-		want string
-	}{
-		{"database", `{database: {mode: stall}}`, "database"},
-		{"disk_full", `{disk_full: {volume: server}}`, "disk_full"},
-		{"fd_limit", `{fd_limit: {headroom: 5}}`, "fd_limit"},
-		{"revoke", `{revoke: {group: render}}`, "revoke"},
-		{"database with kill", `{database: {mode: stall}, kill: {server: true}}`, ""},
-		{"disk_full with kill", `{disk_full: {volume: server}, kill: {server: true}}`, ""},
-		{"fd_limit with kill", `{fd_limit: {headroom: 5}, kill: {server: true}}`, ""},
-		{"revoke with kill", `{revoke: {group: render}, kill: {server: true}}`, ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var f Fault
-			if err := yaml.Unmarshal([]byte(tt.yaml), &f); err != nil {
-				t.Fatal(err)
-			}
-			if got := f.Kind(); got != tt.want {
-				t.Errorf("Kind() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestFault_HasServerFaultNewKinds(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -617,6 +597,7 @@ func TestChaosSkipReason(t *testing.T) {
 		{"fd on linux", Fault{FDLimit: &FDLimit{Headroom: 5}}, ChaosEnv{GOOS: "linux"}, ""},
 		{"disk outside container", Fault{DiskFull: &DiskFull{Volume: "server"}}, ChaosEnv{GOOS: "linux"}, "container"},
 		{"disk in container", Fault{DiskFull: &DiskFull{Volume: "server"}}, ChaosEnv{GOOS: "linux", Container: true}, ""},
+		{"disk off linux", Fault{DiskFull: &DiskFull{Volume: "server"}}, ChaosEnv{GOOS: "windows", Container: true}, "a disk_full fault needs linux"},
 		{"drop on sqlite", Fault{Database: &DatabaseFault{Mode: "drop"}}, ChaosEnv{GOOS: "linux", Store: "sqlite"}, "postgres"},
 		{"drop on postgres", Fault{Database: &DatabaseFault{Mode: "drop"}}, ChaosEnv{GOOS: "linux", Store: "postgres"}, ""},
 		{"stall db on sqlite", Fault{Database: &DatabaseFault{Mode: "stall"}}, ChaosEnv{GOOS: "windows", Store: "sqlite"}, ""},
@@ -639,17 +620,6 @@ func TestChaosSkipReason(t *testing.T) {
 	}
 	if got := (&Scenario{}).ChaosSkipReason(ChaosEnv{GOOS: "windows"}); got != "" {
 		t.Errorf("a scenario with no faults skips with %q", got)
-	}
-}
-
-func TestChaosSkipReason_DiskFullNeedsLinux(t *testing.T) {
-	s := &Scenario{Faults: []Fault{{DiskFull: &DiskFull{Volume: VolumeServer}}}}
-	got := s.ChaosSkipReason(ChaosEnv{GOOS: "windows", Container: true})
-	if want := "a disk_full fault needs linux"; !strings.Contains(got, want) {
-		t.Errorf("ChaosSkipReason = %q, want it to contain %q", got, want)
-	}
-	if got := s.ChaosSkipReason(ChaosEnv{GOOS: "linux", Container: true}); got != "" {
-		t.Errorf("ChaosSkipReason on linux in a container = %q, want none", got)
 	}
 }
 

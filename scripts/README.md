@@ -6,6 +6,7 @@ Developer and CI scripts that are easier to express as a script than as a Makefi
 - `auth-demo.sh` — drives the auth surface against a live local farm; run it via `make auth-demo` (`KEEP=1` leaves the farm running)
 - `macos-sign.sh` — Developer ID codesigning hook invoked by goreleaser's post-build hooks; a no-op for non-darwin targets and for snapshot builds
 - `expr-oracle.py` — feeds `test/oracle/corpus.txt` to the pinned OpenJD reference implementation over JSON lines for `make test-expr-oracle`
+- `assert-gated-tests.sh` — checks that named tests passed in a `go test -v` log, failing only for those listed in `GATED`; used by the chaos jobs of `load-nightly.yml`
 - `test-isolation-windows.ps1` — runs the Windows run-as-user isolation suite (tier 1 as the elevated admin, tier 2 re-launched as SYSTEM via a scheduled task); run it via `make test-isolation-windows` from an **elevated** shell
 
 Shell scripts here should be POSIX-portable where reasonable

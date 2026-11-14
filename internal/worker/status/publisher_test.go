@@ -353,24 +353,3 @@ func TestRetry_ExactlyMaxRetries(t *testing.T) {
 		t.Errorf("expected 1 published message (succeeded on 4th attempt), got %d", nc.count())
 	}
 }
-
-// TestPublisher_NowStampsStatus verifies that Config.Now stamps the messages
-// the publisher times itself, and that nil is time.Now.
-func TestPublisher_NowStampsStatus(t *testing.T) {
-	t0 := time.Date(2031, 2, 3, 4, 5, 6, 0, time.UTC)
-	tasks := []status.ShutdownTask{{TaskID: "task-1", AttemptID: "attempt-1", JobID: "job-1"}}
-
-	nc := &stubNC{}
-	pub := status.New(nc, status.Config{WorkerID: "w", Now: func() time.Time { return t0 }}, slog.New(slog.DiscardHandler))
-	pub.ShutdownFailed(context.Background(), tasks)
-	if got := nc.last().At; !got.Equal(t0) {
-		t.Errorf("At = %v, want %v", got, t0)
-	}
-
-	nc = &stubNC{}
-	pub = status.New(nc, status.Config{WorkerID: "w"}, slog.New(slog.DiscardHandler))
-	pub.ShutdownFailed(context.Background(), tasks)
-	if d := time.Since(nc.last().At); d < -time.Second || d > time.Second {
-		t.Errorf("At = %v with a nil Now, want within 1s of now", nc.last().At)
-	}
-}

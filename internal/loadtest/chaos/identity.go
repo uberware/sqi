@@ -4,6 +4,7 @@ package chaos
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,10 +12,10 @@ import (
 	"os"
 	"regexp"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/verify"
+	"github.com/uberware/sqi/internal/scheduler"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -27,9 +28,6 @@ const (
 	// given an attempt before the check names it: the revoke reaches the broker
 	// and the server's own bookkeeping asynchronously.
 	revokeGrace = 5 * time.Second
-	// skewWarning is the scheduler's message for a heartbeat whose worker
-	// timestamp is more than heartbeat_timeout from its receipt.
-	skewWarning = "scheduler: worker heartbeat delayed or skewed"
 	// maxLogLine is the longest server log line the skew-warning check reads.
 	maxLogLine = 16 << 20
 )
@@ -41,9 +39,11 @@ type RevokedWorker struct {
 	At time.Time
 }
 
-// identityChecks runs attempt-order, then the revoked, skew-warning and
-// disk-full checks the input asks for, over the farm's attempts.
-func (f *farmView) identityChecks(ctx context.Context, in StoreInput) []verify.Result {
+// attemptChecks runs attempt-order, then whichever of the revoked,
+// skew-warning and disk-full checks CheckNames lists for in, over the farm's
+// attempts.
+func (f *farmView) attemptChecks(ctx context.Context, in StoreInput) []verify.Result {
+	want := CheckNames(in)
 	var order, revoked, skew, disk verify.Evidence
 	attempts, err := f.allAttempts(ctx)
 	if err != nil {
@@ -60,10 +60,10 @@ func (f *farmView) identityChecks(ctx context.Context, in StoreInput) []verify.R
 		diskCheck(&disk, in, attempts)
 	}
 	out := []verify.Result{order.Result(verify.NameAttemptOrder)}
-	if len(in.Revoked) > 0 {
+	if slices.Contains(want, verify.NameRevoked) {
 		out = append(out, revoked.Result(verify.NameRevoked))
 	}
-	if len(in.SkewedGroups) > 0 {
+	if slices.Contains(want, verify.NameSkewWarning) {
 		v, u := skewViolations(in.SkewedGroups, in.ServerLog)
 		skew.AddAll(v)
 		if u != "" {
@@ -71,7 +71,7 @@ func (f *farmView) identityChecks(ctx context.Context, in StoreInput) []verify.R
 		}
 		out = append(out, skew.Result(verify.NameSkewWarning))
 	}
-	if len(in.DiskFaults) > 0 || in.DiskErr != nil {
+	if slices.Contains(want, verify.NameDiskFull) {
 		out = append(out, disk.Result(verify.NameDiskFull))
 	}
 	return out
@@ -153,6 +153,9 @@ func revokedViolations(ctx context.Context, st store.Store, revoked []RevokedWor
 	return violations, unmeasured
 }
 
+// skewWarning is the scheduler's warning for a delayed or skewed heartbeat.
+var skewWarning = []byte(scheduler.LogHeartbeatSkewed)
+
 // logWorkerID extracts the worker_id attribute of a server log line, in the
 // text form (worker_id=x) or the JSON form ("worker_id":"x").
 var logWorkerID = regexp.MustCompile(`worker_id(?:=|"\s*:\s*")"?([^\s",}]+)`)
@@ -172,12 +175,12 @@ func skewWarned(path string) (map[string]bool, error) {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(nil, maxLogLine)
 	for sc.Scan() {
-		line := sc.Text()
-		if !strings.Contains(line, skewWarning) {
+		line := sc.Bytes()
+		if !bytes.Contains(line, skewWarning) {
 			continue
 		}
-		if m := logWorkerID.FindStringSubmatch(line); m != nil {
-			out[m[1]] = true
+		if m := logWorkerID.FindSubmatch(line); m != nil {
+			out[string(m[1])] = true
 		}
 	}
 	return out, sc.Err()

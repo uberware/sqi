@@ -147,7 +147,7 @@ func StoreChecks(ctx context.Context, in StoreInput) StoreReport {
 		executions.Note(fmt.Sprintf("%d marker files unreadable, so a real task's execution count may be low", in.SkippedMarkers))
 	}
 	out := StoreReport{Results: []verify.Result{integrity.Result(verify.NameStoreIntegrity), executions.Result(verify.NameExecutionsRecorded)}}
-	out.Results = append(out.Results, farm.identityChecks(ctx, in)...)
+	out.Results = append(out.Results, farm.attemptChecks(ctx, in)...)
 	if rw, err := farm.rework(ctx, leased, in.Markers, in.Faults); err != nil {
 		out.ReworkErr = err
 	} else {
@@ -157,7 +157,7 @@ func StoreChecks(ctx context.Context, in StoreInput) StoreReport {
 	if rcErr == nil {
 		out.Reclaims = &rc
 	}
-	if in.MaxReclaims != nil {
+	if in.MaxReclaims != nil { // as CheckNames lists reclaims
 		out.Results = append(out.Results, reclaimsResult(out.Reclaims, rcErr, *in.MaxReclaims))
 	}
 	return out
