@@ -107,7 +107,7 @@ expect:
   known_violations:
     - check: terminal
       kind: may
-      reason: a block file the broker cannot create while the descriptor limit holds leaves the task status stream failing every write until the server restarts, so no task status is stored after it and no job finishes; the status stream broke in ten runs of sixteen
+      reason: the task status stream stopped storing for the rest of the run after the descriptor limit lifted (consistent with a block file the broker could not create while the limit held, unconfirmed in sqi's logs), so no task status is stored after it and no job finishes; the status stream broke in ten runs of sixteen
       tracker: H13f9
     - check: outcomes
       kind: may

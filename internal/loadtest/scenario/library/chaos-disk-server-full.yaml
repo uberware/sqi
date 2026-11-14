@@ -14,8 +14,8 @@ description: chaos - fill the server's data volume at 1m for 60s under a verbose
 #
 # It does not (H13f9). The embedded broker's first stream write that hits
 # ENOSPC leaves that stream with a write error that outlasts the full volume,
-# so from the fill on no task status, heartbeat or log chunk is stored, until
-# the server restarts. The server stays up, answers REST and stays ready, and
+# so from the fill on no task status, heartbeat or log chunk is stored for the
+# rest of the run (a restart was not tried). The server stays up, answers REST and stays ready, and
 # logs nothing (it drops the broker's error output, H13f10). When the startup
 # grace ends, about 73s after the space returns, the sweep marks every worker
 # offline and reclaims its attempts; none comes back. Every check that needs
@@ -55,7 +55,7 @@ expect:
   known_violations:
     - check: terminal
       kind: must
-      reason: a stream write that hits ENOSPC leaves the broker's streams failing every write until the server restarts, so no task status is stored after the fill and no job finishes
+      reason: a stream write that hits ENOSPC leaves the broker's streams failing every write for the rest of the run, so no task status is stored after the fill and no job finishes
       tracker: H13f9
     - check: outcomes
       kind: must
