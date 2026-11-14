@@ -1135,6 +1135,25 @@ arrives. The task goes to the disconnected worker and waits until the heartbeat
 sweep takes the worker offline and reclaims it. `chaos-worker-revoke` records
 it, where `revoked` can fail.
 
+### A full server volume stops the farm until a restart (H13f9)
+
+When the server's data volume fills, the embedded broker's first stream write
+that fails with ENOSPC leaves that stream failing every later write, also
+after the space returns. No task status, heartbeat or log is stored, while
+`/readyz` stays ready, REST requests succeed and nothing is logged. When the
+heartbeat sweep runs, every worker is marked offline and none returns.
+`chaos-disk-server-full` records it, where `terminal`, `outcomes`,
+`single-attempt`, `workers-converge` and `executions-recorded` fail.
+
+### The embedded broker's errors are not logged (H13f10)
+
+`sqi-server` logs only the embedded nats-server's fatal errors and drops its
+notices, warnings and errors, so a stream's write error or a refused connection
+in the broker never reaches the server log. No check fails on it; it is why
+`chaos-disk-server-full` logs nothing about the full volume and why
+`chaos-server-fd-exhaustion` shows the broker's refused connections only in the
+server's open-file count.
+
 ---
 
 ## Open questions
