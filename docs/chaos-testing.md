@@ -493,7 +493,7 @@ server defects](load-testing.md#known-server-defects).
 | H13f6 | The server records an attempt's `ended_at` from the worker's clock and its `started_at` from its own, so a worker whose clock runs behind records attempts that end before they start. | `chaos-clock-skew`, `attempt-order`, `must` |
 | H13f7 | When a stalled database answers again, the heartbeat sweep, the stale-assigned reap and the attempt reconciler act on the state the stall kept from being written, before the queued heartbeats and status reports land: live workers go offline, running tasks are taken back and run twice, finished work is rejected. | `chaos-db-stall-30s`, `rework` (up to 60), `reclaims` and `single-attempt`, `may`; `chaos-db-stall-2m`, `single-attempt`, `may` |
 | H13f8 | A lease request a worker parked before its credential was revoked is still served after the revoke, so the disconnected worker is given a task that waits until the sweep reclaims it. | `chaos-worker-revoke`, `revoked`, `may` |
-| H13f9 | After a write to a broker stream fails because the data volume is full or the server is out of file descriptors, the stream may store nothing more until the server restarts, while the server stays ready and answers REST. Every worker is then reclaimed. | `chaos-disk-server-full`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded`, `must`; `chaos-server-fd-exhaustion`, the same checks and `rework` (up to 2500), `may` |
+| H13f9 | After a write to a broker stream fails because the data volume is full or the server is out of file descriptors, the stream may store nothing more for the rest of the run; whether a restart clears it was not tested. With a full volume the server stays ready and answers REST (readiness was not probed in the descriptor runs). Every worker is then reclaimed. | `chaos-disk-server-full`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded`, `must`; `chaos-server-fd-exhaustion`, the same checks and `rework` (up to 2500), `may` |
 | H13f10 | `sqi-server` drops the embedded broker's notices, warnings and errors, so a broker failure never reaches the server log. | Not tied to a check. |
 
 ---
@@ -539,12 +539,12 @@ chaos-container`.
 | `chaos-clock-skew` | No fault: 20 each of 120 workers run their clocks 10m ahead, 10m behind and a day ahead of the server's. | rework 0, reclaims 0; H13f6 `must` on `attempt-order` | 4m |
 | `chaos-session-expiry` | No fault: broker auth with a 1m session lifetime (`nats.auth.user_ttl`), so each of 100 workers reconnects about four times in a run, with 30 to 90s tasks. | rework 0, reclaims 0 | 4m |
 
-`chaos-server-fd-exhaustion` applies the limit to the running server while a
-rack redials, where the design asked for a server started with a low limit and
-more workers than it can hold: the simulated fleet fails the whole run when a
-worker cannot connect at start, so that shape cannot run. The limit comes 5
-seconds after the cut and lasts 40, so the rack's redial, whose backoff puts
-its first attempt after the heal 22 to 34 seconds after the cut, meets it.
+`chaos-server-fd-exhaustion` lowers the limit on the running server while a
+rack redials, rather than starting a server with a low limit and more workers
+than it can hold: the simulated fleet fails the whole run when a worker cannot
+connect at start, so that shape cannot run. The limit comes 5 seconds after the
+cut and lasts 40, so the rack's redial, whose backoff puts its first attempt
+after the heal 22 to 34 seconds after the cut, meets it.
 
 The scenarios that depend on the server having marked a worker offline fire at
 3m15s, after the server's liveness grace of about 3m10s from its start: before

@@ -1140,11 +1140,12 @@ arrives. The task goes to the disconnected worker and waits until the heartbeat
 sweep takes the worker offline and reclaims it. `chaos-worker-revoke` records
 it, where `revoked` can fail.
 
-### A full volume or descriptor limit stops the farm until a restart (H13f9)
+### A full volume or descriptor limit can stop a broker stream for the rest of the run (H13f9)
 
 When the server's data volume fills, the embedded broker's first stream write
 that fails with ENOSPC leaves that stream failing every later write, also
-after the space returns. No task status, heartbeat or log is stored, while
+after the space returns, for the rest of the run; whether a restart clears it was
+not tested. No task status, heartbeat or log is stored, while
 `/readyz` stays ready, REST requests succeed and nothing is logged. When the
 heartbeat sweep runs, every worker is marked offline and none returns.
 `chaos-disk-server-full` records it, where `terminal`, `outcomes`,

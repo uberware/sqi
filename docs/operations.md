@@ -2402,14 +2402,16 @@ after the lease is released is refused by the leader fence.
 ## What the chaos suite establishes
 
 The [chaos suite](chaos-testing.md) injects faults into a running farm of real
-`sqi-server` and `sqi-worker` processes with a simulated fleet of 100 workers
-(40 for the full-volume run) at about 2.5 tasks per second, and checks that it
-converges. This section lists what its runs measured, on a default
-configuration (`scheduler.heartbeat_timeout` 30 s, `scheduler.reconcile_grace`
-2 minutes). The runs were on Linux with SQLite, Linux with PostgreSQL 18,
-Linux in a container with size-limited volumes, and Windows 11 with SQLite,
-three runs of a scenario on a store where the counts below say so. They show
-what happened in those runs, not a guarantee. A defect they found is named by
+`sqi-server` and `sqi-worker` processes and a simulated fleet, and checks that
+it converges. The fleet is 100 workers in the database scenarios, 40 in the
+full-volume scenario, 120 in the descriptor and clock scenarios, and 60
+simulated plus 2 real in the worker-volume and revoke scenarios, at about 2.5
+tasks per second or less. This section lists what its runs measured, on a
+default configuration (`scheduler.heartbeat_timeout` 30 s,
+`scheduler.reconcile_grace` 2 minutes). The runs were on Linux with SQLite,
+Linux with PostgreSQL 18, Linux in a container with size-limited volumes, and
+Windows 11 with SQLite; each count below says how many runs it is from. They
+show what happened in those runs, not a guarantee. A defect they found is named by
 its row in [Known server defects](load-testing.md#known-server-defects);
 nothing here has been fixed. What the runs did not measure is not listed.
 
@@ -2424,7 +2426,7 @@ throughout.
 | Stall | Result |
 |---|---|
 | 5 seconds | Ridden out. No attempt was reclaimed and no completed work was redone, in 3 of 3 runs on SQLite, 3 of 3 on PostgreSQL and in the Windows run. |
-| 30 seconds (`heartbeat_timeout`) | Whether recovery breaks varies by run. On SQLite on Linux it did in 3 of 3 first runs: the server reclaimed 18, 40 and 97 attempts, 8, 16 and 24 attempts that had run to completion were redone, tasks ran twice at once, and 85, 62 and 6 of 100 workers were online when the check was made, 55 seconds after the stall ended. On PostgreSQL one of the first three runs redid 1 attempt and one ran tasks twice at once, and three later runs redid none. On Windows, two of four runs redid none, and the other two redid 14 and 23 attempts. |
+| 30 seconds (`heartbeat_timeout`) | Recovery broke in every SQLite run on Linux and in some PostgreSQL and Windows runs. On SQLite on Linux every one of 7 runs redid work: in the first three the server reclaimed 18, 40 and 97 attempts, 8, 16 and 24 attempts that had run to completion were redone, tasks ran twice at once, and 85, 62 and 6 of 100 workers were online when the check was made, 55 seconds after the stall ended; later runs redid 7, 2 and 19 attempts. On PostgreSQL one of the first three runs redid 1 attempt and one ran tasks twice at once, and three later runs redid none. On Windows, two of four runs redid none, and the other two redid 14 and 23 attempts. |
 | 2 minutes | Recovery broke in every run, on every store. On SQLite on Linux no worker was online after the 55 seconds, in 3 of 3 runs, nor on Windows. On PostgreSQL 63, 49 and 76 of 100 were. On PostgreSQL 31 to 49 attempts were reclaimed and 29 to 47 completed attempts were redone. |
 
 Both longer stalls fail the same way (H13f7). The queued heartbeats and status
@@ -2439,9 +2441,10 @@ equals the fixed 30 second timeout after which a task still `assigned` is
 taken back, and the 2 minute stall equals `scheduler.reconcile_grace`'s
 default, so each of those two reaches a sweep that acts on the stalled rows.
 
-Submissions made during a stall are refused with HTTP 500, not 503. On SQLite
-that happens after the 5 second busy timeout: 3 to 4 of 64 submissions in the
-30 second runs and 16 to 18 of 83 in the 2 minute runs. In `chaos-db-drop`
+On SQLite, a stall longer than the 5 second busy timeout makes submissions
+fail with HTTP 500, not 503: 3 to 4 of 64 submissions in the 30 second runs and
+16 to 18 of 83 in the 2 minute runs. The 5 second stall refused none, and no
+PostgreSQL stall run recorded a refused submission. In `chaos-db-drop`
 (PostgreSQL only, its connections dropped and new ones refused for 30
 seconds), 3 of 3 runs finished with no completed work redone, and 8 of 64
 submissions were refused with 500.
@@ -2454,8 +2457,9 @@ workers run tasks that log 5,000 lines each. The result was the same in 3 of
 3 runs, in a container:
 
 - The server process stayed up and did not restart.
-- `GET /readyz` answered 200 on all 61 probes in each run, during the fill
-  as well, and `POST /api/v1/jobs` kept returning 201.
+- `GET /readyz` answered 200 on all 61 probes in each run, taken about once a
+  second during the 60 second fill, and `POST /api/v1/jobs` kept returning
+  201.
 - Task and status processing stopped within 0.5 to 5 seconds of the fill. No
   task reached a terminal status afterwards.
 - `sqi-server` logged nothing about the full volume, during the fill or after
@@ -2477,15 +2481,16 @@ directly.
 `chaos-server-fd-exhaustion` (Linux) lowers the running server's descriptor
 limit to 10 above its open files for 40 seconds while 30 of 120 workers
 redial after a short network cut. The example unit above sets
-`LimitNOFILE=65536`. In 13 of 16 runs a broker stream stopped storing, and stored nothing more
-until the run ended, after the limit lifted: task status alone in 6 runs, heartbeats alone in 3, both
-in 4. In the other 3 the farm was unharmed. When the task status stream stops,
+`LimitNOFILE=65536`. In 13 of 16 runs a broker stream stopped storing, and
+stored nothing more until the run ended, after the limit lifted: task status
+alone in 6 runs, heartbeats alone in 3, both in 4. In the other 3 the farm was
+unharmed. When the task status stream stops,
 tasks lease but never reach running, and each is taken back and leased again
 about every 30 seconds, so finished work never counts; up to 1,572 completed
 attempts were redone in a run. When the heartbeat stream stops, every worker is
 marked offline and its attempts are reclaimed while it still runs them. The
-server stays ready and logs nothing about the broker (H13f9, H13f10). In
-each run where a stream stopped, its newest block file was last written inside
+server logs nothing about the broker (H13f10); readiness was not probed in these
+runs. In each run where a stream stopped, its newest block file was last written inside
 the limit window and never again. That the broker fails here as a standalone
 nats-server does when it runs out of descriptors is consistent with the runs
 but is not confirmed in sqi's own logs, which drop the broker's errors.
@@ -2496,9 +2501,11 @@ but is not confirmed in sqi's own logs, which drop the broker's errors.
 the volume the two real workers keep their session directories on, for 60
 seconds, in a container with a 64 MB volume.
 
-- With no free space or inodes at task setup, every attempt that failed in the
-  window named "no space left on device" and at most 12 failed. Both workers
-  ran tasks to success after the space returned, in 3 of 3 runs.
+- With no free space or inodes at task setup, the check passed in 3 of 3 runs:
+  every attempt that failed in the window named "no space left on device", at
+  most 12 failed, and both workers ran tasks to success after the space
+  returned. The check has no minimum and no run recorded how many attempts
+  failed.
 - With 1 MiB left while each task writes 8 MiB, the render fails partway with
   the process's non-zero exit. 8, 8 and 10 attempts failed in the window in 3
   runs, under the bound of 15. Both workers succeeded work after the space
@@ -2519,9 +2526,7 @@ it runs 30 second tasks, then stops it 60 seconds later.
 - A lease request the worker had parked before the revoke can still be served
   after it (H13f8). In one run the worker was given a task 5 seconds after
   the revoke, and that task waited 37 seconds for the sweep before it ran
-  elsewhere. Whether this happens depends on whether the revoked worker's or
-  the other worker's parked request takes the next task: it fired in some runs
-  and not in others.
+  elsewhere. It fired in some runs and not in others.
 
 ### Workers with the wrong clock
 
