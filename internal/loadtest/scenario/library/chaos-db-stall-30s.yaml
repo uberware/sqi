@@ -40,7 +40,37 @@ faults:
     duration: 30s
 
 # The workers never lose the broker, only the store stalls, so no worker goes
-# offline and the server reclaims nothing.
+# offline and the server reclaims nothing. The server breaks both (H13f7): when
+# the store answers again, the heartbeat sweep and the stale-assigned reap act
+# on what the stall kept it from writing, before the queued heartbeats and
+# running reports land. The sweep takes live workers offline and reclaims
+# their attempts (which then run beside the re-lease, and whose finished work
+# is rejected), and the reap returns tasks leased just before the stall to the
+# queue while they run. Which of them wins the race varies: on SQLite the sweep
+# took 15, 38 and 94 workers offline in three runs and none in one Windows run;
+# on PostgreSQL the reap fired in two runs of three and the sweep in none, so
+# every entry is "may". A worker taken offline stays offline (H13f3). About
+# 50 attempts are open when the stall starts (2.5 tasks/s of 10-30s tasks) and
+# none is leased during it, so the rework ceiling of 60 is above everything the
+# heal can take back.
 expect:
   max_rework_attempts: 0
   max_reclaims: 0
+  known_violations:
+    - check: rework
+      kind: may
+      max_attempts: 60
+      reason: when the store answers again the heartbeat sweep reclaims attempts from live workers whose queued heartbeats it has not yet written, and the stale-assigned reap takes back tasks whose running report it has not written, so their finished work is rejected; whether either wins the race varies by run and backend
+      tracker: H13f7
+    - check: reclaims
+      kind: may
+      reason: when the store answers again the heartbeat sweep takes live workers offline on the heartbeat the stall kept it from writing and reclaims their attempts; on PostgreSQL the queued heartbeats have won that race in every run
+      tracker: H13f7
+    - check: single-attempt
+      kind: may
+      reason: a task the heal sweep or the stale-assigned reap took back is leased again while its first attempt still runs, until the stale-running cancel stops the first
+      tracker: H13f7
+    - check: workers-converge
+      kind: may
+      reason: a live worker the heal sweep marked offline stays offline while its connection stays up, since heartbeats never bring a worker back online and it re-registers only on a reconnect; how many the sweep marks varies, none on PostgreSQL so far
+      tracker: H13f3

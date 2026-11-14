@@ -1089,8 +1089,9 @@ records it.
 
 A live worker the heartbeat sweep marks offline stays offline while its
 connection stays up: heartbeats never bring a worker back online, and it
-re-registers only on a reconnect. `chaos-server-stall-long` and
-`chaos-worker-sleep` record it, where `workers-converge` fails.
+re-registers only on a reconnect. `chaos-server-stall-long`,
+`chaos-worker-sleep`, `chaos-server-stall-short` and the two longer database
+stalls record it, where `workers-converge` fails.
 
 ### Killing sqi-worker on Linux leaves its task's processes running (H13f4)
 
@@ -1113,6 +1114,18 @@ its end from the time the worker puts on its terminal status. A worker whose
 clock runs behind by more than a task's run time records attempts that end
 before they start, and one that runs ahead inflates run times.
 `chaos-clock-skew` records it, where `attempt-order` fails.
+
+### Recovery from a database stall acts on unwritten state (H13f7)
+
+While the database stalls, heartbeats and task status reports wait in the
+broker, but none is written. When the database answers again, the heartbeat
+sweep, the stale-assigned reap and the attempt reconciler judge the rows the
+stall left behind before the queued messages land: live workers are taken
+offline and their attempts reclaimed, tasks still running are taken back and
+run twice at once, and work that finished during the stall is rejected.
+Which of them fires varies with the backend and the timing.
+`chaos-db-stall-30s` and `chaos-db-stall-2m` record it, where `rework`,
+`reclaims`, `single-attempt` and (with H13f3) `workers-converge` can fail.
 
 ---
 
