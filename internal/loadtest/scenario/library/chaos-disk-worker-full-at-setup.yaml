@@ -60,9 +60,9 @@ faults:
       max_failed: 12
     duration: 60s
 
-# A task that fails at setup is retried and completes once the space returns;
-# none completes twice, so the redone work is a retry of a failed attempt,
-# about 2 hold tasks in flight when the fault starts, and the bound allows
-# twice that.
+# A task that fails at setup is retried and completes once the space returns.
+# Rework counts only attempts that exited 0 and were not credited; a failed
+# attempt is not rework, and nothing here finishes uncredited, so the bound is
+# 0.
 expect:
-  max_rework_attempts: 4
+  max_rework_attempts: 0
