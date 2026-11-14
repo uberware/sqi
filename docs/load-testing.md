@@ -1156,7 +1156,7 @@ task status stream stops, leased tasks never reach running: the
 stale-assigned reap takes each one back and leases it again about every 30
 seconds, and the finished work never counts. When the heartbeat stream stops,
 every worker is marked offline and its attempts are reclaimed while it still
-runs them. In one run of thirteen no stream needed a block file during the
+runs them. In three runs of sixteen no stream needed a block file during the
 limit and the farm was unharmed. `chaos-server-fd-exhaustion` records
 `rework`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and
 `executions-recorded`, each as one that can fail. The broker's error is not
