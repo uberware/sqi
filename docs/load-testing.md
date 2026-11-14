@@ -1083,7 +1083,10 @@ worker offline and reclaims their attempts. Work that finished during the stall
 is rejected when its report lands and runs again, and an attempt reclaimed
 while its lease reply is still in flight can run beside the task's next
 attempt until the stale-running cancel stops it. `chaos-server-stall-long`
-records it.
+records it. A stall shorter than `heartbeat_timeout` can hit it too: a worker
+whose last heartbeat was one heartbeat interval old when the stall began is
+stale at SIGCONT once the stall lasts the rest of the timeout, which
+`chaos-server-stall-short` (15 s) records on `workers-converge`.
 
 ### A worker the sweep marks offline stays offline (H13f3)
 
