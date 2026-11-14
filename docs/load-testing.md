@@ -377,6 +377,7 @@ An empty `queues` list becomes one queue named `default`.
 | `tags` | none | Capability tags, for example `{arnold: "true"}`. |
 | `queues` | empty | Queues the group leases from. Empty means every queue. |
 | `heartbeat` | `15s` | Heartbeat interval. |
+| `clock_skew` | `0` | Offsets the clock of every simulated worker in the group, positive or negative, at most 48 hours. It moves the timestamps on heartbeats, task status reports and log chunks only. Not allowed on a group with real workers. See [Chaos testing](chaos-testing.md#skewed-worker-clocks). |
 | `churn` | none | See below. |
 
 **Churn** applies per worker, as independent random events over the run:
@@ -878,8 +879,9 @@ to 5 hours 30 minutes, so the job (six hour cap) has room for the build and
 the artifact upload. A longer or malformed duration fails the job before
 anything builds.
 
-The chaos suite has CI jobs of its own, `chaos-smoke` and a nightly `chaos` job
-in the same workflow file; see [Chaos testing](chaos-testing.md#ci).
+The chaos suite has CI jobs of its own, `chaos-smoke` and four nightly jobs
+(`chaos`, `chaos-postgres`, `chaos-container` and `chaos-windows`) in the same
+workflow file; see [Chaos testing](chaos-testing.md#ci).
 
 Every CI job is GitHub-hosted at about 4 vCPU, with no larger or self-hosted
 runner, so `ci-medium` is sized to stay valid on one. `mixed-medium` and the
@@ -1148,22 +1150,28 @@ heartbeat sweep runs, every worker is marked offline and none returns.
 `chaos-disk-server-full` records it, where `terminal`, `outcomes`,
 `single-attempt`, `workers-converge` and `executions-recorded` fail.
 
-Running out of file descriptors has the same effect. The task status and
-heartbeat streams create a new block file many times a minute, and a stream
-that needs one while the server is at its descriptor limit stops storing for
-good, also after the limit lifts. Which stream stops varies by run. When the
-task status stream stops, leased tasks never reach running: the
-stale-assigned reap takes each one back and leases it again about every 30
-seconds, and the finished work never counts. When the heartbeat stream stops,
-every worker is marked offline and its attempts are reclaimed while it still
-runs them. In three runs of sixteen no stream needed a block file during the
-limit and the farm was unharmed. `chaos-server-fd-exhaustion` records
-`rework`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and
-`executions-recorded`, each as one that can fail. The broker's error is not
-logged (H13f10); an embedded nats-server outside sqi, run out of descriptors
-the same way, logs a critical write error when an ack empties a stream's last
-block and the new block file cannot be opened, and refuses every later store
-on that stream after the limit lifts.
+Running out of file descriptors ends the same way in most runs. What the runs
+establish: in every run where a stream stopped storing, its newest block file
+was last written inside the descriptor-limit window and never again, also
+after the limit lifted, and nothing more was stored on it until the run ended.
+Which stream stops varies by run. When the task status stream stops, leased
+tasks never reach running: the stale-assigned reap takes each one back and
+leases it again about every 30 seconds, and the finished work never counts.
+When the heartbeat stream stops, every worker is marked offline and its
+attempts are reclaimed while it still runs them. In three runs of sixteen
+neither stream stopped and the farm was unharmed. `chaos-server-fd-exhaustion`
+records `rework`, `terminal`, `outcomes`, `single-attempt`, `workers-converge`
+and `executions-recorded`, each as one that can fail.
+
+The cause inside the broker is consistent with these runs but not confirmed in
+sqi's own logs, which do not show it because the broker's errors are dropped
+(H13f10). The streams that stopped, task status and heartbeats, create a new
+block file many times a minute: block numbers reached the hundreds and
+thousands in a 10 minute run, because nats-server 2.15.2 starts a new last
+block whenever an ack empties the current one. A standalone nats-server 2.15.2
+outside sqi, run out of descriptors while a work-queue stream needs a new
+block file, logs a critical write error and refuses every later store on that
+stream after the limit lifts.
 
 ### The embedded broker's errors are not logged (H13f10)
 
