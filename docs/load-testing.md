@@ -1149,16 +1149,16 @@ heartbeat sweep runs, every worker is marked offline and none returns.
 `single-attempt`, `workers-converge` and `executions-recorded` fail.
 
 Running out of file descriptors has the same effect. The task status and
-heartbeat streams create a new block file many times a minute, and in every
-run of `chaos-server-fd-exhaustion` the status stream's newest block was
-written for the last time while the server was at its descriptor limit, and
-never again after the limit lifted. Leased tasks then never reach running: the
+heartbeat streams create a new block file many times a minute, and a stream
+that needs one while the server is at its descriptor limit stops storing for
+good, also after the limit lifts. Which stream stops varies by run. When the
+task status stream stops, leased tasks never reach running: the
 stale-assigned reap takes each one back and leases it again about every 30
-seconds, and the finished work never counts. In one run of six the heartbeat
-stream stopped as well, and every worker was marked offline. The scenario
-records `terminal`, `outcomes` and `rework`, and on the runs where the
-heartbeat stream stops, `single-attempt`, `workers-converge` and
-`executions-recorded`. The broker's error is not logged (H13f10); an embedded
+seconds, and the finished work never counts. When the heartbeat stream stops,
+every worker is marked offline and its attempts are reclaimed while it still
+runs them. `chaos-server-fd-exhaustion` records `rework`, which fails either
+way, and `terminal`, `outcomes`, `single-attempt`, `workers-converge` and
+`executions-recorded` as possible. The broker's error is not logged (H13f10); an embedded
 nats-server outside sqi, run out of descriptors the same way, logs a critical
 write error when an ack empties a stream's last block and the new block file
 cannot be opened, and refuses every later store on that stream after the

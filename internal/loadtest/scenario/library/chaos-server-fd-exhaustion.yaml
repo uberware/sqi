@@ -31,14 +31,18 @@ description: chaos - lower the server's file descriptor limit to 10 above its op
 # files held at the limit while rack-b workers are still out, not as a log line.
 #
 # The server does not recover (H13f9). The redialing workers take the free
-# descriptors, and about 25-30s into the limit the task status stream's newest
-# block file is written for the last time: in every run so far it was never
-# written again, also after the limit lifted. From then on no task reaches
-# running or a terminal status. The stale-assigned reap takes each task back
-# 30-45s after its lease and leases it again, so every open task re-runs about
-# every 30s until the run ends, about 370s after the break, and its work never
-# counts. In one run in six the heartbeat stream broke the same way, and the
-# sweep then took every worker offline for good.
+# descriptors, and a work-queue stream that needs a new block file while none
+# is free fails that write and every later one, also after the limit lifts;
+# the broker creates such files many times a minute. Which stream breaks
+# depends on whose block create falls in the window. In seven runs the task
+# status stream broke alone in five, the heartbeat stream alone in one and
+# both in one; the log stream never did.
+#   - Status stream: no task reaches running or a terminal status. The
+#     stale-assigned reap takes each task back 30-45s after its lease and
+#     leases it again, so every open task re-runs about every 30s until the
+#     run ends, about 370s after the break, and its work never counts.
+#   - Heartbeat stream: the sweep marks every worker offline for good and
+#     reclaims the attempts they are still running.
 duration: 5m
 warmup: 10s
 drain_timeout: 5m
@@ -84,38 +88,38 @@ faults:
 # quarter of the fleet and up to about 25 with the backlog; the bound of 30
 # covers that.
 #
-# The H13f9 loop's rework is open tasks times re-runs, about 12 re-runs a task
-# in the 370s left after the break (no task showed more than 12 attempts), on
-# every task open when the status stream breaks or submitted after it. Six
-# runs counted 1,050 to 1,572, the most in the run whose heartbeats broke too,
-# where the sweep's reclaims re-lease tasks sooner than the reap. The ceiling
-# of 2,500 leaves 60% over the most counted; a count over it is still a
-# failure.
+# The H13f9 status-stream loop's rework is open tasks times re-runs, about
+# 12 re-runs a task in the 370s left after the break (no task showed more than
+# 12 attempts), on every task open when the stream breaks or submitted after
+# it. Six such runs counted 1,050 to 1,572, the most in the run whose
+# heartbeats broke too, where the sweep's reclaims re-lease tasks sooner than
+# the reap; the heartbeat-only run counted 75. The ceiling of 2,500 leaves 60%
+# over the most counted; a count over it is still a failure.
 expect:
   max_rework_attempts: 30
   known_violations:
     - check: terminal
-      kind: must
-      reason: a block file the broker cannot create while the descriptor limit holds leaves the task status stream failing every write until the server restarts, so no task status is stored after it and no job finishes
+      kind: may
+      reason: a block file the broker cannot create while the descriptor limit holds leaves the task status stream failing every write until the server restarts, so no task status is stored after it and no job finishes; the status stream broke in six runs of seven
       tracker: H13f9
     - check: outcomes
-      kind: must
-      reason: no task status is stored after the status stream breaks, so the open tasks stay assigned and never reach the status the simulator decided
+      kind: may
+      reason: when the status stream breaks no task status is stored after it, so the open tasks stay assigned and never reach the status the simulator decided; six runs of seven
       tracker: H13f9
     - check: rework
       kind: must
       max_attempts: 2500
-      reason: with no running report stored, the stale-assigned reap takes every leased task back and leases it again about every 30s until the run ends, and each finished attempt is rejected
+      reason: whichever stream breaks, finished work is rejected - with the status stream broken the stale-assigned reap takes every leased task back and leases it again about every 30s, and with the heartbeat stream broken the sweep reclaims the attempts of workers still running them
       tracker: H13f9
     - check: single-attempt
       kind: may
-      reason: when the heartbeat stream breaks too, the sweep reclaims the attempts of workers still running them and leases the tasks again; it broke in one run of six, when its block create also fell inside the limit
+      reason: when the heartbeat stream breaks, the sweep reclaims the attempts of workers still running them and leases the tasks again; it broke in two runs of seven
       tracker: H13f9
     - check: workers-converge
       kind: may
-      reason: when the heartbeat stream breaks too, no heartbeat is stored, the sweep marks every worker offline and none comes back; one run of six
+      reason: when the heartbeat stream breaks no heartbeat is stored, the sweep marks every worker offline and none comes back; two runs of seven
       tracker: H13f9
     - check: executions-recorded
       kind: may
-      reason: when the heartbeat stream breaks too, the attempts the swept workers were running are still open in the stopped server's store; one run of six
+      reason: when the heartbeat stream breaks, the attempts the swept workers were running can stay open in the stopped server's store; one run of the two where it broke
       tracker: H13f9
