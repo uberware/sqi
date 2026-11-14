@@ -1106,6 +1106,14 @@ re-runs on a live worker. `chaos-worker-kill-mid-task` records it, where
 `Scheduler.Run` is still setting it, when the server shuts down right after it
 launches the scheduler. The race detector reports it. No scenario records it.
 
+### A worker's clock sets an attempt's end time (H13f6)
+
+The server stamps an attempt's start with its own clock at the lease but takes
+its end from the time the worker puts on its terminal status. A worker whose
+clock runs behind by more than a task's run time records attempts that end
+before they start, and one that runs ahead inflates run times.
+`chaos-clock-skew` records it, where `attempt-order` fails.
+
 ---
 
 ## Open questions
