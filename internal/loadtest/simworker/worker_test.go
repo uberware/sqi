@@ -439,15 +439,18 @@ func TestWorker_ClockSkewMovesOnlyWireTimestamps(t *testing.T) {
 	}{
 		{"worker.heartbeat." + id, &hbAt, func(b []byte) (time.Time, bool) {
 			var m protocol.HeartbeatMsg
-			return m.At, json.Unmarshal(b, &m) == nil
+			err := json.Unmarshal(b, &m)
+			return m.At, err == nil
 		}},
 		{"task.status.>", &statusAt, func(b []byte) (time.Time, bool) {
 			var m protocol.TaskStatusMsg
-			return m.At, json.Unmarshal(b, &m) == nil
+			err := json.Unmarshal(b, &m)
+			return m.At, err == nil
 		}},
 		{"task.logs.>", &logAt, func(b []byte) (time.Time, bool) {
 			var m protocol.LogChunkMsg
-			return m.At, json.Unmarshal(b, &m) == nil
+			err := json.Unmarshal(b, &m)
+			return m.At, err == nil
 		}},
 	} {
 		if _, err := nc.Subscribe(s.subj, collect(s.dst, s.at)); err != nil {

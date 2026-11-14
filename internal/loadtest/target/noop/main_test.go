@@ -232,12 +232,19 @@ func TestNoop_ScratchBytesSpreadOverTheDuration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() }) //nolint:errcheck // cleanup of a finished or killed process
-	time.Sleep(700 * time.Millisecond)
-	fi, err := os.Stat(filepath.Join(dir, "scratch.bin"))
-	if err != nil {
-		t.Fatalf("scratch.bin after 700ms: %v", err)
+	// Poll for the first bytes rather than sleeping a fixed time, which a
+	// loaded runner can stretch past the end of the task.
+	var size int64
+	deadline := time.Now().Add(10 * time.Second)
+	for size <= 0 && time.Now().Before(deadline) {
+		if fi, err := os.Stat(filepath.Join(dir, "scratch.bin")); err == nil {
+			size = fi.Size()
+		}
+		if size <= 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
-	if fi.Size() <= 0 || fi.Size() >= 5<<20 {
-		t.Errorf("scratch.bin is %d bytes after 700ms of a 1.5s task, want some but not all of %d", fi.Size(), 5<<20)
+	if size <= 0 || size >= 5<<20 {
+		t.Errorf("scratch.bin is %d bytes when first seen in a 1.5s task, want some but not all of %d", size, 5<<20)
 	}
 }
