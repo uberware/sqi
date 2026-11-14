@@ -41,6 +41,9 @@ faults:
     duration: 30s
 
 # A write the dropped connections fail is retried, so no completed work is
-# redone. Reclaims are reported, not bounded.
+# redone. Reclaims are reported, not bounded. A job submitted while the
+# connections are refused fails with a 500 and is not retried (8 of 64 in each
+# of three runs); that is the submissions-rejected finding, which reports the
+# lighter load and fails nothing.
 expect:
   max_rework_attempts: 0
