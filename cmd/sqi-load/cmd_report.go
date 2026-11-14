@@ -96,7 +96,8 @@ func (a *app) scenariosCmd() *cobra.Command {
 
 --chaos-matrix prints, as a JSON array, the built-in chaos-* scenarios the chaos
 suite can run in the environment --os, --store and --container describe, sorted.
---os defaults to this machine's, --store to sqlite.`,
+--os is linux, windows or darwin and defaults to this machine's; --store is sqlite
+or postgres and defaults to sqlite.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			switch {
@@ -127,7 +128,7 @@ suite can run in the environment --os, --store and --container describe, sorted.
 	}
 	cmd.Flags().StringVar(&show, "show", "", "print this built-in scenario as YAML, with its defaults filled in")
 	cmd.Flags().BoolVar(&matrix.on, "chaos-matrix", false, "print the chaos-* scenarios that can run in the environment --os/--store/--container describe, as a JSON array")
-	cmd.Flags().StringVar(&matrix.os, "os", runtime.GOOS, "with --chaos-matrix: the GOOS of the machine running the suite")
+	cmd.Flags().StringVar(&matrix.os, "os", runtime.GOOS, "with --chaos-matrix: the GOOS of the machine running the suite: linux, windows or darwin")
 	cmd.Flags().StringVar(&matrix.store, "store", "sqlite", "with --chaos-matrix: the store, sqlite or postgres")
 	cmd.Flags().BoolVar(&matrix.container, "container", false, "with --chaos-matrix: the size-limited volumes of make chaos-container are mounted")
 	return cmd
