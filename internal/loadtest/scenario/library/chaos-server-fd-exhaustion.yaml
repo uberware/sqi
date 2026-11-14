@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-server-fd-exhaustion
-description: chaos - lower the server's file descriptor limit to 10 above its open files for 40s while a rack of 30 of 120 workers redials after a 20s cut; the server recovers when the limit lifts, 5 min
+description: chaos - lower the server's file descriptor limit to 10 above its open files for 40s while a rack of 30 of 120 workers redials after a 20s cut; records whether the farm converges once the limit lifts, 5 min
 # Linux only (RLIMIT_NOFILE, set on the server with prlimit); it needs no
 # privilege and no container.
 #
@@ -30,14 +30,20 @@ description: chaos - lower the server's file descriptor limit to 10 above its op
 # nats-server's error output (H13f10), so the fault shows as the server's open
 # files held at the limit while rack-b workers are still out, not as a log line.
 #
-# The server does not recover (H13f9). The redialing workers take the free
-# descriptors, and a work-queue stream that needs a new block file while none
-# is free fails that write and every later one, also after the limit lifts;
-# the broker creates such files many times a minute. Which stream breaks
-# depends on whose block create falls in the window. In sixteen runs the task
-# status stream broke alone in six, the heartbeat stream alone in three, both
-# in four, and neither in three, which then passed every check; the log stream
-# never did. So every entry below is "may".
+# The farm does not converge in most runs (H13f9). The redialing workers take
+# the free descriptors. In every run where a stream stopped storing, its newest
+# block file was last written inside the window and never again, also after
+# the limit lifted, and the stream stored nothing more until the run ended. A
+# standalone nats-server 2.15.2 reproduces that end state without sqi: out of
+# descriptors while a work-queue stream needs a new block file, its writes fail
+# for good. That sqi's broker fails the same way is consistent with those runs
+# but not confirmed here: sqi drops the broker's errors (H13f10), so the failed
+# write is not in the server log. The broker creates block files many times a
+# minute, and which stream stops depends on whose block create falls in the
+# window. In sixteen runs the task status stream stopped alone in six, the
+# heartbeat stream alone in three, both in four, and neither in three, which
+# then passed every check; the log stream never did. So every entry below is
+# "may".
 #   - Status stream: no task reaches running or a terminal status. The
 #     stale-assigned reap takes each task back 30-45s after its lease and
 #     leases it again, so every open task re-runs about every 30s until the
