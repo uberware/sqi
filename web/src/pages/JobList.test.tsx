@@ -741,6 +741,34 @@ describe('JobList', () => {
       )
     })
 
+    it('ignores a JobEvent older than the row it would patch', async () => {
+      // A fresh subscriber is replayed buffered events, which can include a
+      // job's "running" event without the "completed" one that followed it.
+      const done = makeJob({
+        id: 'job-stale',
+        status: 'completed',
+        name: 'Done Job',
+        updated_at: '2024-01-01T10:05:00Z',
+      })
+      fetchMock.mockImplementation(() => Promise.resolve(okJson(makeListResponse([done]))))
+
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Completed'))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs',
+          payload: { job_id: 'job-stale', status: 'running', updated_at: '2024-01-01T10:01:00Z' },
+          seq: 1,
+        })
+      })
+
+      expect(screen.getAllByLabelText('Status: Completed').length).toBeGreaterThan(0)
+      expect(screen.queryByLabelText('Status: Running')).not.toBeInTheDocument()
+    })
+
     it('refetches on an estimate event instead of applying its status', async () => {
       const done = makeJob({ id: 'job-est', status: 'completed', name: 'Est Job' })
       fetchMock.mockImplementation(() => Promise.resolve(okJson(makeListResponse([done]))))

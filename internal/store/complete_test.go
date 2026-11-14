@@ -436,6 +436,41 @@ func TestRecordTaskFailure_ReleasesClaims(t *testing.T) {
 	}
 }
 
+// TestRecordTaskFailure_StampsRowsWithServerTime pins that the worker's
+// reported time stamps only the attempt it describes. A worker clock running
+// ahead must not date the task and job rows after the server-stamped writes
+// and WebSocket events that follow them.
+func TestRecordTaskFailure_StampsRowsWithServerTime(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			task, a, _ := seedRunningTask(t, st, store.TaskStatusRunning)
+			workerAt := time.Now().UTC().Add(time.Hour)
+			if _, _, _, err := st.RecordTaskFailure(t.Context(), a.ID, task.ID, nil, "", "boom", workerAt); err != nil {
+				t.Fatalf("RecordTaskFailure: %v", err)
+			}
+			after := time.Now().UTC()
+
+			gotTask, err := st.GetTask(t.Context(), task.ID)
+			if err != nil {
+				t.Fatalf("GetTask: %v", err)
+			}
+			if gotTask.UpdatedAt.After(after) {
+				t.Fatalf("task updated_at = %v, want server time (<= %v), not the worker's %v", gotTask.UpdatedAt, after, workerAt)
+			}
+			gotJob, err := st.GetJob(t.Context(), task.JobID)
+			if err != nil {
+				t.Fatalf("GetJob: %v", err)
+			}
+			if gotJob.UpdatedAt.After(after) {
+				t.Fatalf("job updated_at = %v, want server time (<= %v), not the worker's %v", gotJob.UpdatedAt, after, workerAt)
+			}
+			if got := mustAttempt(t, st, a.ID); got.EndedAt == nil || !got.EndedAt.Equal(workerAt) {
+				t.Fatalf("attempt ended_at = %v, want the worker's reported %v", got.EndedAt, workerAt)
+			}
+		})
+	}
+}
+
 func TestRecordTaskFailure_UnknownTask(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

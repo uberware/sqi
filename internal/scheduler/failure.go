@@ -97,11 +97,11 @@ func (s *Scheduler) handleTaskFailed(ctx context.Context, attempt store.TaskAtte
 	parked := policy.FailureLimit > 0 && jobFailed >= policy.FailureLimit
 
 	if !parked && taskFailed < policy.MaxAttempts {
-		return s.retryTaskAfterFailure(ctx, task, job, m, policy, taskFailed, at)
+		return s.retryTaskAfterFailure(ctx, task, job, m, policy, taskFailed)
 	}
 
 	if parked {
-		if err := s.parkJobAtFailureLimit(ctx, task.JobID, job.QueueID, policy.FailureLimit, at); err != nil {
+		if err := s.parkJobAtFailureLimit(ctx, task.JobID, job.QueueID, policy.FailureLimit); err != nil {
 			return err
 		}
 	}
@@ -163,13 +163,15 @@ func (s *Scheduler) retryTaskAfterFailure(
 	m protocol.TaskStatusMsg,
 	policy RetryPolicy,
 	taskFailed int,
-	at time.Time,
 ) error {
 	// RETRY: the attempt was already closed as failed, and its usage claims
 	// released, inside RecordTaskFailure's transaction; here we only re-queue
-	// with backoff.
-	retryAfter := at.Add(policy.RetryDelay)
-	requeued, err := s.store.RequeueTaskForRetry(ctx, m.TaskID, m.AttemptID, retryAfter, at)
+	// with backoff. The row, its event and the backoff use server time, the
+	// clock the lease filter and scheduleRetryWake run on, not the time the
+	// worker reported.
+	now := time.Now().UTC()
+	retryAfter := now.Add(policy.RetryDelay)
+	requeued, err := s.store.RequeueTaskForRetry(ctx, m.TaskID, m.AttemptID, retryAfter, now)
 	if err != nil {
 		return err
 	}
@@ -191,24 +193,26 @@ func (s *Scheduler) retryTaskAfterFailure(
 		slog.Duration("retry_delay", policy.RetryDelay))
 	s.notifier.NotifyTask(ws.TaskEvent{
 		JobID: task.JobID, TaskID: task.ID, Name: task.Name,
-		Status: string(store.TaskStatusReady), UpdatedAt: at,
+		Status: string(store.TaskStatusReady), UpdatedAt: now,
 	})
 	s.scheduleRetryWake(job.QueueID, policy.RetryDelay)
 	return nil
 }
 
 // parkJobAtFailureLimit transitions job to paused because its cumulative
-// failure count reached its resolved FailureLimit.
-func (s *Scheduler) parkJobAtFailureLimit(ctx context.Context, jobID, queueID string, failureLimit int, at time.Time) error {
+// failure count reached its resolved FailureLimit. The row and its event use
+// server time, not the failing worker's reported time.
+func (s *Scheduler) parkJobAtFailureLimit(ctx context.Context, jobID, queueID string, failureLimit int) error {
 	reason := fmt.Sprintf("failure limit reached (%d)", failureLimit)
-	if err := s.store.ParkJob(ctx, jobID, reason, at); err != nil {
+	now := time.Now().UTC()
+	if err := s.store.ParkJob(ctx, jobID, reason, now); err != nil {
 		return err
 	}
 	s.metrics.JobsAutoParkedTotal.WithLabelValues(queueID).Inc()
 	s.logger.WarnContext(ctx, "scheduler: job auto-parked at failure limit",
 		slog.String("job_id", jobID), slog.Int("failure_limit", failureLimit))
 	s.notifier.NotifyJob(ws.JobEvent{
-		JobID: jobID, Status: string(store.JobStatusPaused), UpdatedAt: at,
+		JobID: jobID, Status: string(store.JobStatusPaused), UpdatedAt: now,
 	})
 	return nil
 }
