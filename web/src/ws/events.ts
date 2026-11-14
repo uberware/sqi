@@ -81,6 +81,28 @@ export function isJobEvent(payload: unknown): payload is WsJobEvent {
   )
 }
 
+/**
+ * Returns true when a WebSocket event is older than the job or task state
+ * already held, so applying it would move that row backwards. A new subscriber
+ * is replayed the server's buffered events, and that buffer can hold a row's
+ * "running" event without the terminal one that followed it.
+ *
+ * The server stamps each event no earlier than the row write it reports, so an
+ * event at the same instant as the held state still applies. That orders an
+ * event against its own write only: when another write to the same row commits
+ * first with a later stamp, a genuine event can be judged stale, and the row
+ * then waits for the next refetch. An unparseable timestamp never counts as
+ * stale.
+ */
+export function isStaleEvent(
+  event: { updated_at: string },
+  current: { updated_at: string },
+): boolean {
+  const eventAt = Date.parse(event.updated_at)
+  const currentAt = Date.parse(current.updated_at)
+  return !Number.isNaN(eventAt) && !Number.isNaN(currentAt) && eventAt < currentAt
+}
+
 /** Returns true when payload is a WsTaskEvent (has both job_id and task_id). */
 export function isTaskEvent(payload: unknown): payload is WsTaskEvent {
   return (

@@ -27,7 +27,13 @@ import TaskRunProgress from '@/components/TaskRunProgress'
 import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
 import { matchesSearch } from '@/utils/filterBySearch'
-import { isJobEvent, isTaskEvent, JOB_CHANGE_ESTIMATE, JOB_REMOVED_STATUS } from '@/ws/events'
+import {
+  isJobEvent,
+  isStaleEvent,
+  isTaskEvent,
+  JOB_CHANGE_ESTIMATE,
+  JOB_REMOVED_STATUS,
+} from '@/ws/events'
 import { patchTaskFromEvent, isProgressOnly } from '@/ws/taskPatch'
 import type {
   JobDetail as JobDetailType,
@@ -837,7 +843,7 @@ export default function JobDetail() {
         const idx = old.items.findIndex((t) => t.id === payload.task_id)
         if (idx === -1) return old
         const prev = old.items[idx]
-        if (!prev) return old
+        if (!prev || isStaleEvent(payload, prev)) return old
         prevTask ??= prev
         const newItems = [...old.items]
         newItems[idx] = patchTaskFromEvent(prev, payload)
@@ -874,7 +880,7 @@ export default function JobDetail() {
     queryClient.setQueriesData<JobDetailType>(
       { queryKey: queryKeys.jobs.detail(jobId), exact: true },
       (old) => {
-        if (!old) return old
+        if (!old || isStaleEvent(payload, old)) return old
         return { ...old, status, updated_at }
       },
     )

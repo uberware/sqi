@@ -1431,13 +1431,16 @@ The server treats reports, registrations and cancels as follows.
   re-checking under the job row's lock that it is still stalled. A sweep that
   fails part-way keeps, and announces, the jobs it already demoted.
 
-A released claim's `released_at` is always server time. A terminal report
-applied through `CompleteTaskAttempt` stamps the task row's `updated_at` with
-server time and the attempt's `ended_at` with the worker's reported time. The
-failure path uses the worker's reported time: `RecordTaskFailure` stamps
-the attempt's `ended_at` and the task's and job's `updated_at` with it, an
-auto-retry requeue stamps the task's `updated_at` with it and computes
-`retry_after` from it, and an auto-park stamps the job's `updated_at` with it.
+A worker's reported time stamps only the attempt it describes: the attempt's
+`ended_at`, on both the terminal path (`CompleteTaskAttempt`) and the failure
+path (`RecordTaskFailure`). A released claim's `released_at` and every task and
+job row's `updated_at` are server time, including the auto-retry requeue and
+the auto-park, and so is the `updated_at` on the WebSocket event announcing
+each change. The web UI relies on this: it ignores a job or task event older
+than the row it already holds, so a row dated by a fast worker clock would hide
+the transitions after it. The auto-retry requeue's `retry_after` is likewise
+server time plus the retry delay, matching the server-side wake that re-offers
+the task.
 
 **Stored timestamp form.** SQLite stores every timestamp as 30-character text
 with nine fractional digits (`2026-10-10T12:00:05.500000000Z`), so text order
