@@ -1127,6 +1127,14 @@ Which of them fires varies with the backend and the timing.
 `chaos-db-stall-30s` and `chaos-db-stall-2m` record it, where `rework`,
 `reclaims`, `single-attempt` and (with H13f3) `workers-converge` can fail.
 
+### A revoked worker can still be given a task (H13f8)
+
+Revoking a worker's credential disconnects it from the broker at once, but a
+lease request it parked before the revoke is still served when the next task
+arrives. The task goes to the disconnected worker and waits until the heartbeat
+sweep takes the worker offline and reclaims it. `chaos-worker-revoke` records
+it, where `revoked` can fail.
+
 ---
 
 ## Open questions

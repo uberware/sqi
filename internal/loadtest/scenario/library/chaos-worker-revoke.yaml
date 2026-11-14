@@ -1,15 +1,28 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-worker-revoke
-description: chaos - revoke one of 2 real workers' credentials at 3m15s for 60s under broker auth; it must not heartbeat or take work after the revoke, and its work is reclaimed, 4.75 min
+description: chaos - revoke one of 2 real workers' credentials at 3m21s under broker auth and stop it 60s later; it must not heartbeat or take work after the revoke, and its work is reclaimed, 4.75 min
 # Broker auth is on, so each real worker holds a credential the server can
 # revoke. The real workers serve their own queue, so every hold task runs on a
 # real worker; 60 simulated workers carry the background load on render.
 #
-# The revoke comes at 3m15s: a revoked worker's row stays online until the
-# server's startup liveness grace (about 3m10s) has passed and the heartbeat
-# sweep runs, so a revoke earlier than that would show nothing. The credential
-# is restored at 4m15s. The revoked check holds the worker to at most 5s of
-# heartbeats or new attempts after the revoke.
+# The revoke comes after the server's startup liveness grace (about 3m10s): a
+# revoked worker's row stays online until the heartbeat sweep runs, so a
+# revoke earlier than that would show nothing. The broker drops the revoked
+# worker at once and refuses its reconnects, but the worker process keeps
+# running, finishes the tasks it holds and cannot report them; 60s later
+# (4m21s) the operator stops it, and it is not restarted. Its attempts are
+# reclaimed when the sweep takes it offline, about heartbeat_timeout after its
+# last heartbeat.
+#
+# The revoked check holds the worker to at most 5s of heartbeats or new
+# attempts after the revoke. Hold jobs arrive every 10s from the start of
+# submissions, so the revoke comes 1s after one (3m21s) and the next one 9s
+# after it: a hold task leased to the revoked worker always lands past the
+# grace, never on it. The server can lease it one (H13f8): a lease request the
+# worker parked before the revoke is still served when the next hold job
+# arrives, and the task waits for the reclaim. Whether the revoked worker's
+# request or the other worker's takes that job varies from run to run, so the
+# entry is "may".
 duration: 4m45s
 warmup: 10s
 drain_timeout: 5m
@@ -51,13 +64,18 @@ jobs:
     real_task: {duration: 30s, log_every: 1s}
 
 faults:
-  - at: 3m15s
+  - at: 3m21s
     revoke: {group: real, real: 1}
     duration: 60s
 
-# The revoked worker's tasks are reclaimed and re-run; none of them completes
-# on it, so no work is redone. At 6 hold tasks a minute of 30s over 2 workers it
-# holds about 2 when it is revoked; the bound allows twice that, for a task
-# process that outlives the revoke and completes.
+# The revoked worker's tasks are reclaimed and re-run, while the worker, still
+# up, finishes them uncredited: that is the rework. At 6 hold tasks a minute of
+# 30s over 2 workers it holds about 2 when it is revoked; the bound allows twice
+# that.
 expect:
   max_rework_attempts: 4
+  known_violations:
+    - check: revoked
+      kind: may
+      reason: a lease request the revoked worker parked before the revoke is still served after it, so the disconnected worker is given the next hold task, which waits until the sweep reclaims it; it fires when that worker's request, not the other's, takes the task
+      tracker: H13f8
