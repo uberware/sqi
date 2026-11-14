@@ -1156,13 +1156,14 @@ task status stream stops, leased tasks never reach running: the
 stale-assigned reap takes each one back and leases it again about every 30
 seconds, and the finished work never counts. When the heartbeat stream stops,
 every worker is marked offline and its attempts are reclaimed while it still
-runs them. `chaos-server-fd-exhaustion` records `rework`, which fails either
-way, and `terminal`, `outcomes`, `single-attempt`, `workers-converge` and
-`executions-recorded` as possible. The broker's error is not logged (H13f10); an embedded
-nats-server outside sqi, run out of descriptors the same way, logs a critical
-write error when an ack empties a stream's last block and the new block file
-cannot be opened, and refuses every later store on that stream after the
-limit lifts.
+runs them. In one run of thirteen no stream needed a block file during the
+limit and the farm was unharmed. `chaos-server-fd-exhaustion` records
+`rework`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and
+`executions-recorded`, each as one that can fail. The broker's error is not
+logged (H13f10); an embedded nats-server outside sqi, run out of descriptors
+the same way, logs a critical write error when an ack empties a stream's last
+block and the new block file cannot be opened, and refuses every later store
+on that stream after the limit lifts.
 
 ### The embedded broker's errors are not logged (H13f10)
 
