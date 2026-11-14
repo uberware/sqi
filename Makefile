@@ -346,8 +346,10 @@ load-sweep: ## Sweep one parameter (SCENARIO=..., VARY='workers[0].count=100,200
 # adds noise to timing-sensitive scenarios; make test covers the harness's
 # packages with -race.
 STORE ?= sqlite
+ifneq ($(filter chaos chaos-smoke chaos-framework chaos-container,$(MAKECMDGOALS)),)
 ifeq ($(filter $(STORE),sqlite postgres),)
 $(error STORE must be sqlite or postgres)
+endif
 endif
 CHAOS_GO_TEST = $(if $(filter postgres,$(STORE)),PG_VERSION=$(PG_VERSION) bash scripts/chaos-postgres.sh,go test)
 CHAOS_SMOKE = chaos-server-kill-20s|chaos-worker-gone|chaos-net-blip
@@ -366,24 +368,30 @@ chaos-framework: ## Run the chaos suite's own framework tests, no scenario
 # inodes) as tmpfs, and the go test binary runs as root inside. The ballast
 # tests of internal/loadtest/diskfill run in the same container, because they
 # mount their own tmpfs, which needs CAP_SYS_ADMIN (added here, nothing
-# broader). Staging, the build context and `--init` follow `test-isolation`
-# below, whose comment explains each; this image's exclusion list is
-# test/chaos/container/.dockerignore. Both test commands always run, and the
-# container exits non-zero when either failed.
+# broader) and an AppArmor profile that allows `mount`: Docker's default
+# profile denies it where AppArmor is enforced (GitHub's ubuntu runners), so
+# the run passes `--security-opt apparmor=unconfined`. The scenarios are
+# SQLite only; STORE=postgres is an error here. Staging, the build context
+# and `--init` follow `test-isolation` below, whose comment explains each;
+# this image's exclusion list is test/chaos/container/.dockerignore. Both
+# test commands always run, and the container exits non-zero when either
+# failed.
 #
 # Exits 0 when Docker is unavailable, so a local pass proves nothing: look for
 # the three `--- PASS: TestChaos/chaos-disk-` lines (or the verdicts the runs
 # record) and `--- PASS: TestFill_LeavesHeadroom` and `TestFill_Inodes`.
 # SQI_LOAD_OUT, when set, is mounted at /out to keep the run directories.
 .PHONY: chaos-container
-chaos-container: ## Run the chaos disk scenarios on real size-limited volumes in a container (needs Docker)
+chaos-container: ## Run the chaos disk scenarios on real size-limited volumes in a container (needs Docker; SQLite only)
+	@if [ '$(STORE)' != sqlite ]; then \
+	  echo "chaos-container runs the disk scenarios on SQLite only; STORE=$(STORE) is not supported"; exit 1; fi
 	@if ! docker info >/dev/null 2>&1; then \
-	  echo "docker unavailable — skipping chaos container scenarios"; exit 0; fi
-	@ctx=$$(mktemp -d) && trap 'rm -rf "$$ctx"' EXIT && \
+	  echo "docker unavailable — skipping chaos container scenarios"; exit 0; fi; \
+	ctx=$$(mktemp -d) && trap 'rm -rf "$$ctx"' EXIT && \
 	rsync -a --exclude-from=test/chaos/container/.dockerignore --exclude='.dockerignore' "$(CURDIR)/" "$$ctx/" && \
 	cp test/chaos/container/.dockerignore "$$ctx/.dockerignore" && \
 	docker build -q -t sqi-chaos-container -f test/chaos/container/Dockerfile "$$ctx" && \
-	docker run --rm --init --cap-add SYS_ADMIN \
+	docker run --rm --init --cap-add SYS_ADMIN --security-opt apparmor=unconfined \
 	  --tmpfs /chaos/server:rw,size=512m --tmpfs /chaos/worker:rw,size=64m,nr_inodes=8192 \
 	  -e SQI_CHAOS_CONTAINER=1 -e SQI_CHAOS_SERVER_VOLUME=/chaos/server -e SQI_CHAOS_WORKER_VOLUME=/chaos/worker \
 	  $(if $(SQI_LOAD_OUT),-v "$(SQI_LOAD_OUT):/out" -e SQI_LOAD_OUT=/out) \
