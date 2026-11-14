@@ -4,7 +4,9 @@ package chaos
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +38,7 @@ func TestDiskFullCheck(t *testing.T) {
 		attempts []injected
 		real     []string // the real workers; w1 alone when empty
 		wants    []string // evidence the result must name; none passes
+		failed   int      // attempts the note must count as failed in the window
 	}{
 		{
 			name: "clean",
@@ -44,6 +47,15 @@ func TestDiskFullCheck(t *testing.T) {
 				failedInWindow("a-f1", "w1", "write failed: no space left on device"),
 				recovered("a-ok", "w1"),
 			},
+			failed: 1,
+		},
+		{
+			name: "no failure in the window passes and says so",
+			win:  DiskWindow{Start: start, Healed: healed, Reason: noSpace, MaxFailed: &two},
+			attempts: []injected{
+				recovered("a-ok", "w1"),
+			},
+			failed: 0,
 		},
 		{
 			name: "reason mismatch",
@@ -64,6 +76,7 @@ func TestDiskFullCheck(t *testing.T) {
 				},
 				recovered("a-ok", "w1"),
 			},
+			failed: 0,
 		},
 		{
 			name: "failure just after the heal is in the window",
@@ -93,6 +106,7 @@ func TestDiskFullCheck(t *testing.T) {
 				failedInWindow("a-f1", "w1", "anything"), failedInWindow("a-f2", "w1", "anything"), failedInWindow("a-f3", "w1", "anything"),
 				recovered("a-ok", "w1"),
 			},
+			failed: 3,
 		},
 		{
 			name: "a worker that succeeded nothing after the heal",
@@ -122,7 +136,7 @@ func TestDiskFullCheck(t *testing.T) {
 			results := checkResults(t, ts, StoreInput{RealIDs: workers, DiskFaults: []DiskWindow{tc.win}})
 			r := resultOf(t, results, verify.NameDiskFull)
 			if len(tc.wants) == 0 {
-				wantOK(t, r)
+				wantDiskOK(t, r, tc.failed)
 				return
 			}
 			wantFail(t, r, tc.wants...)
@@ -149,7 +163,17 @@ func TestDiskFullCheck_OnlyRealWorkersAreJudged(t *testing.T) {
 		RealIDs:    []string{"w2"},
 		DiskFaults: []DiskWindow{{Start: start, Healed: healed, Reason: regexp.MustCompile(`space`), MaxFailed: &bound}},
 	})
-	wantOK(t, resultOf(t, results, verify.NameDiskFull))
+	wantDiskOK(t, resultOf(t, results, verify.NameDiskFull), 0)
+}
+
+// wantDiskOK requires r to pass with exactly one note, which counts failed
+// attempts in the window.
+func wantDiskOK(t *testing.T, r verify.Result, failed int) {
+	t.Helper()
+	want := fmt.Sprintf("%d attempts failed in the window [", failed)
+	if !r.OK || len(r.Evidence) != 1 || !strings.HasPrefix(r.Evidence[0], want) {
+		t.Errorf("%s = OK %v, evidence %q; want a pass with the note %q...", r.Name, r.OK, r.Evidence, want)
+	}
 }
 
 func TestDiskFullCheck_Unmeasured(t *testing.T) {

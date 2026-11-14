@@ -86,7 +86,11 @@ func diskCheck(ev *verify.Evidence, in StoreInput, attempts []store.TaskAttempt)
 		ev.AddUnmeasured("the run has no real worker to judge")
 	default:
 		for _, w := range in.DiskFaults {
-			ev.AddAll(diskViolations(w, in.RealIDs, attempts))
+			v, note := diskViolations(w, in.RealIDs, attempts)
+			ev.AddAll(v)
+			if note != "" {
+				ev.Note(note)
+			}
 		}
 	}
 }

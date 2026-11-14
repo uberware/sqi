@@ -30,9 +30,11 @@ type DiskWindow struct {
 // diskViolations checks one disk_full window over the attempts of the real
 // workers: each failure inside it matches the reason and they are no more
 // than the bound, and every real worker succeeded something after the heal.
-func diskViolations(w DiskWindow, realIDs []string, attempts []store.TaskAttempt) []string {
+// The note says how many attempts failed inside the window, so a pass shows
+// whether the fault bit; it is empty when the window was not judged.
+func diskViolations(w DiskWindow, realIDs []string, attempts []store.TaskAttempt) (violations []string, note string) {
 	if w.Healed.IsZero() {
-		return []string{fmt.Sprintf("the disk_full fault at %s never healed, so the workers' recovery was not judged", isoStamp(w.Start))}
+		return []string{fmt.Sprintf("the disk_full fault at %s never healed, so the workers' recovery was not judged", isoStamp(w.Start))}, ""
 	}
 	var out []string
 	end := w.Healed.Add(diskTail)
@@ -61,7 +63,8 @@ func diskViolations(w DiskWindow, realIDs []string, attempts []store.TaskAttempt
 			out = append(out, fmt.Sprintf("worker %s succeeded nothing after the disk was freed", id))
 		}
 	}
-	return out
+	note = fmt.Sprintf("%d attempts failed in the window [%s, %s]", failed, isoStamp(w.Start), isoStamp(end))
+	return out, note
 }
 
 // failedIn reports whether a failed attempt ended in [start, end].
