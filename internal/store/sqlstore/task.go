@@ -837,7 +837,12 @@ func (s *Store) RecordTaskFailure(
 	sessionID, message string,
 	now time.Time,
 ) (taskFailed, jobFailed int, firstClose bool, err error) {
-	nowText := TimeText(now.UTC())
+	// now is the worker's reported time and stamps only the attempt. The
+	// claims' released_at and the task and job rows' updated_at take server
+	// time: a skewed worker clock could otherwise put a release before its
+	// claim, or date a row after the server-stamped writes that follow it.
+	endedText := TimeText(now.UTC())
+	serverText := TimeText(time.Now().UTC())
 
 	type result struct {
 		taskFailed, jobFailed int
@@ -849,7 +854,7 @@ func (s *Store) RecordTaskFailure(
 			return result{}, txRollback, err // no such task => ErrNotFound
 		}
 
-		res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, nullInt(exitCode), sessionID, message, attemptID)
+		res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, endedText, nullInt(exitCode), sessionID, message, attemptID)
 		if err != nil {
 			return result{}, txRollback, mapErr(err)
 		}
@@ -859,8 +864,7 @@ func (s *Store) RecordTaskFailure(
 		}
 		// Invariant I3: a closed attempt holds no claims. Released unconditionally,
 		// so a redelivery is also safe; the UPDATE is a no-op when nothing is active.
-		// released_at is server time, not the caller's now (a worker-reported time).
-		if _, err = tx.ExecContext(ctx, sqlReleaseAttemptClaims, TimeText(time.Now().UTC()), attemptID); err != nil {
+		if _, err = tx.ExecContext(ctx, sqlReleaseAttemptClaims, serverText, attemptID); err != nil {
 			return result{}, txRollback, mapErr(err)
 		}
 
@@ -876,10 +880,10 @@ func (s *Store) RecordTaskFailure(
 
 		// First close of this attempt: count the failure exactly once.
 		var jobID string
-		if err = tx.QueryRowContext(ctx, sqlRecordTaskFailure, nowText, taskID).Scan(&out.taskFailed, &jobID); err != nil {
+		if err = tx.QueryRowContext(ctx, sqlRecordTaskFailure, serverText, taskID).Scan(&out.taskFailed, &jobID); err != nil {
 			return result{}, txRollback, mapErr(err)
 		}
-		if err = tx.QueryRowContext(ctx, sqlIncrementJobFailure, nowText, jobID).Scan(&out.jobFailed); err != nil {
+		if err = tx.QueryRowContext(ctx, sqlIncrementJobFailure, serverText, jobID).Scan(&out.jobFailed); err != nil {
 			return result{}, txRollback, mapErr(err)
 		}
 		out.firstClose = true

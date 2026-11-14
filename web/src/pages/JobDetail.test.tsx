@@ -1370,6 +1370,45 @@ describe('JobDetail', () => {
       expect(bar).toHaveAttribute('aria-valuenow', '43')
     })
 
+    it('ignores a TaskEvent older than the loaded task', async () => {
+      // A fresh subscriber is replayed buffered events, which can include a
+      // task's "running" event without the "succeeded" one that followed it.
+      const task = makeTask({
+        id: 'task-ws-stale',
+        status: 'succeeded',
+        name: 'task.0',
+        job_id: 'job-aabbccdd-eeff',
+        step_id: 'step-1',
+        updated_at: '2024-01-15T10:05:00Z',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Succeeded'))
+      const succeededBefore = screen.getAllByLabelText('Status: Succeeded').length
+      const runningBefore = screen.queryAllByLabelText('Status: Running').length
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs/job-aabbccdd-eeff/tasks',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            task_id: 'task-ws-stale',
+            status: 'running',
+            updated_at: '2024-01-15T10:01:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      expect(screen.getAllByLabelText('Status: Succeeded')).toHaveLength(succeededBefore)
+      expect(screen.queryAllByLabelText('Status: Running')).toHaveLength(runningBefore)
+    })
+
     it('updates task status badge in place when a TaskEvent arrives', async () => {
       const task = makeTask({
         id: 'task-ws-update',
@@ -1469,6 +1508,38 @@ describe('JobDetail', () => {
       await waitFor(() =>
         expect(screen.getAllByLabelText('Status: Completed').length).toBeGreaterThan(0),
       )
+    })
+
+    it('ignores a JobEvent older than the loaded job', async () => {
+      // A fresh subscriber is replayed buffered events, which can include a
+      // job's "running" event without the "completed" one that followed it.
+      fetchMock.mockResolvedValueOnce(
+        okJson(makeJob({ status: 'completed', updated_at: '2024-01-15T10:05:00Z' })),
+      )
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Completed'))
+      const completedBefore = screen.getAllByLabelText('Status: Completed').length
+      const runningBefore = screen.queryAllByLabelText('Status: Running').length
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            status: 'running',
+            updated_at: '2024-01-15T10:01:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      expect(screen.getAllByLabelText('Status: Completed')).toHaveLength(completedBefore)
+      expect(screen.queryAllByLabelText('Status: Running')).toHaveLength(runningBefore)
     })
 
     it('patches assigned_worker_id when a TaskEvent includes worker_id', async () => {

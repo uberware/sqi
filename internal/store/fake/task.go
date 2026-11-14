@@ -580,6 +580,10 @@ func (s *Store) RecordTaskFailure(
 		return 0, 0, false, store.ErrNotFound
 	}
 
+	// now is the worker's reported time and stamps only the attempt; the rows'
+	// updated_at and the claims' released_at take server time, as SQLite's.
+	serverNow := time.Now().UTC()
+
 	// Gate the increment on the attempt's running→failed transition. Only the
 	// first close of a still-running attempt counts; redeliveries no-op.
 	attempt, ok := s.taskAttempts[attemptID]
@@ -601,18 +605,17 @@ func (s *Store) RecordTaskFailure(
 		s.taskAttempts[attemptID] = attempt
 
 		t.FailedAttempts++
-		t.UpdatedAt = now
+		t.UpdatedAt = serverNow
 		s.tasks[taskID] = t
 
 		j.FailedAttempts++
-		j.UpdatedAt = now
+		j.UpdatedAt = serverNow
 		s.jobs[t.JobID] = j
 	}
 
 	// Invariant I3: a closed attempt holds no claims. Released unconditionally,
-	// like SQLite's, so a redelivery is also safe. released_at is server time,
-	// not the caller's now (a worker-reported time).
-	s.releaseAttemptClaimsLocked(attemptID, time.Now().UTC())
+	// like SQLite's, so a redelivery is also safe.
+	s.releaseAttemptClaimsLocked(attemptID, serverNow)
 
 	return t.FailedAttempts, j.FailedAttempts, firstClose, nil
 }

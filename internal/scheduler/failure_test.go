@@ -15,6 +15,7 @@ package scheduler
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -137,9 +138,17 @@ func (h *failureHarness) reportFailed(taskID string) {
 // CompleteTaskAttempt's FailureReason).
 func (h *failureHarness) reportFailedWithMessage(taskID, message string) {
 	h.t.Helper()
+	h.reportFailedAt(taskID, message, time.Now().UTC())
+}
+
+// reportFailedAt is like reportFailedWithMessage with the worker-reported
+// time set to at, for exercising a worker whose clock disagrees with the
+// server's.
+func (h *failureHarness) reportFailedAt(taskID, message string, at time.Time) {
+	h.t.Helper()
 	attempt, ok := h.current[taskID]
 	if !ok {
-		h.t.Fatalf("reportFailedWithMessage: no attempt recorded for task %s", taskID)
+		h.t.Fatalf("reportFailedAt: no attempt recorded for task %s", taskID)
 	}
 	exitCode := 1
 	msg := protocol.TaskStatusMsg{
@@ -149,7 +158,7 @@ func (h *failureHarness) reportFailedWithMessage(taskID, message string) {
 		Status:    "failed",
 		ExitCode:  &exitCode,
 		Message:   message,
-		At:        time.Now().UTC(),
+		At:        at,
 	}
 	if err := h.s.processTaskStatus(h.t.Context(), attempt.WorkerID, msg); err != nil {
 		h.t.Fatalf("processTaskStatus(failed): %v", err)
@@ -404,6 +413,115 @@ func TestHandleTaskFailed_ParksJobAtFailureLimit(t *testing.T) {
 	if reason := h.parkReason("j1"); !strings.Contains(reason, "failure limit") {
 		t.Fatalf("park_reason should record the failure limit, got %q", reason)
 	}
+}
+
+// TestHandleTaskFailed_SkewedWorkerClock_StampsServerTime pins that a failure
+// report from a worker whose clock runs ahead stamps the task and job rows, the
+// WebSocket events announcing them, and a retry's backoff with server time. The
+// web UI ignores an event older than the row it holds, so a row dated by a fast
+// worker clock would hide every later server-stamped transition of that job.
+func TestHandleTaskFailed_SkewedWorkerClock_StampsServerTime(t *testing.T) {
+	tests := []struct {
+		name      string
+		policy    RetryPolicy
+		siblings  []string
+		wantJob   store.JobStatus
+		wantTask  store.TaskStatus
+		jobEvent  bool // a job event announces the transition (park)
+		taskEvent bool // a task event announces the transition (retry)
+	}{
+		{
+			name:      "retry",
+			policy:    RetryPolicy{MaxAttempts: 5, RetryDelay: time.Minute},
+			wantJob:   store.JobStatusRunning,
+			wantTask:  store.TaskStatusReady,
+			taskEvent: true,
+		},
+		{
+			name:     "park",
+			policy:   RetryPolicy{MaxAttempts: 5, RetryDelay: 0, FailureLimit: 1},
+			siblings: []string{"t2"},
+			wantJob:  store.JobStatusPaused,
+			wantTask: store.TaskStatusFailed,
+			jobEvent: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newFailureHarness(t, tt.policy)
+			events := &reconcileEvents{}
+			h.s.notifier = events
+			h.seedRunningTask("j1", "t1", "w1", tt.siblings...)
+
+			workerAt := time.Now().UTC().Add(time.Hour)
+			h.reportFailedAt("t1", "", workerAt)
+			after := time.Now().UTC()
+
+			task, err := h.st.GetTask(t.Context(), "t1")
+			if err != nil {
+				t.Fatalf("GetTask: %v", err)
+			}
+			job, err := h.st.GetJob(t.Context(), "j1")
+			if err != nil {
+				t.Fatalf("GetJob: %v", err)
+			}
+			if task.Status != tt.wantTask || job.Status != tt.wantJob {
+				t.Fatalf("task %s, job %s; want task %s, job %s", task.Status, job.Status, tt.wantTask, tt.wantJob)
+			}
+			if task.UpdatedAt.After(after) {
+				t.Fatalf("task updated_at = %v, want server time (<= %v)", task.UpdatedAt, after)
+			}
+			if job.UpdatedAt.After(after) {
+				t.Fatalf("job updated_at = %v, want server time (<= %v)", job.UpdatedAt, after)
+			}
+			if tt.wantTask == store.TaskStatusReady {
+				// The backoff runs on the server's clock, which both the lease
+				// filter and the retry wake use.
+				latest := after.Add(tt.policy.RetryDelay)
+				if task.RetryAfter == nil || task.RetryAfter.After(latest) {
+					t.Fatalf("retry_after = %v, want server time plus the delay (<= %v)", task.RetryAfter, latest)
+				}
+			}
+
+			jobs, tasks := events.snapshot()
+			if tt.jobEvent {
+				ev := lastJobEvent(t, jobs, "j1", tt.wantJob)
+				if ev.UpdatedAt.After(after) || ev.UpdatedAt.Before(job.UpdatedAt) {
+					t.Fatalf("%s job event at %v, want within [%v, %v]", tt.wantJob, ev.UpdatedAt, job.UpdatedAt, after)
+				}
+			}
+			if tt.taskEvent {
+				ev := lastTaskEvent(t, tasks, "t1", tt.wantTask)
+				if ev.UpdatedAt.After(after) || ev.UpdatedAt.Before(task.UpdatedAt) {
+					t.Fatalf("%s task event at %v, want within [%v, %v]", tt.wantTask, ev.UpdatedAt, task.UpdatedAt, after)
+				}
+			}
+		})
+	}
+}
+
+// lastJobEvent returns the last recorded event moving jobID to status.
+func lastJobEvent(t *testing.T, events []ws.JobEvent, jobID string, status store.JobStatus) ws.JobEvent {
+	t.Helper()
+	for _, e := range slices.Backward(events) {
+		if e.JobID == jobID && e.Status == string(status) {
+			return e
+		}
+	}
+	t.Fatalf("no %s job event for %s in %+v", status, jobID, events)
+	return ws.JobEvent{}
+}
+
+// lastTaskEvent returns the last recorded event moving taskID to status.
+func lastTaskEvent(t *testing.T, events []ws.TaskEvent, taskID string, status store.TaskStatus) ws.TaskEvent {
+	t.Helper()
+	for _, e := range slices.Backward(events) {
+		if e.TaskID == taskID && e.Status == string(status) {
+			return e
+		}
+	}
+	t.Fatalf("no %s task event for %s in %+v", status, taskID, events)
+	return ws.TaskEvent{}
 }
 
 func TestHandleTaskFailed_LostWorkDoesNotCount(t *testing.T) {

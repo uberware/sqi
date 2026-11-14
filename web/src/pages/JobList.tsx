@@ -22,7 +22,13 @@ import type { SortDirection } from '@/hooks/useListFilters'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { countDownSeconds, formatTimespan } from '@/lib/time'
 import { useWebSocket } from '@/ws/context'
-import { isJobEvent, isTaskEvent, JOB_CHANGE_ESTIMATE, JOB_REMOVED_STATUS } from '@/ws/events'
+import {
+  isJobEvent,
+  isStaleEvent,
+  isTaskEvent,
+  JOB_CHANGE_ESTIMATE,
+  JOB_REMOVED_STATUS,
+} from '@/ws/events'
 import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import type { Job, JobStatus, TaskCounts, TaskStatus, ListResponse } from '@/api/types'
@@ -280,7 +286,7 @@ export default function JobList() {
         if (idx === -1) return old
         const newItems = [...old.items]
         const prev = newItems[idx]
-        if (!prev) return old
+        if (!prev || isStaleEvent(payload, prev)) return old
         newItems[idx] = { ...prev, status, updated_at }
         return { ...old, items: newItems }
       })

@@ -551,11 +551,12 @@ type TaskStore interface {
 	// actions are authorized; a redelivery must first check that the attempt is
 	// still relevant before re-driving them). The same transaction releases
 	// every active usage claim the attempt holds (invariant I3), on a
-	// redelivery too. now stamps the attempt's ended_at and the task's and
-	// job's updated_at; the released claims' released_at is server time, never
-	// now, because now is the worker's reported time and a skewed worker clock
-	// could otherwise put a release before its claim. Returns [ErrNotFound] if
-	// the task does not exist.
+	// redelivery too. now stamps only the attempt's ended_at. The task's and
+	// job's updated_at and the released claims' released_at are server time,
+	// never now, because now is the worker's reported time: a skewed worker
+	// clock could otherwise put a release before its claim, or date the rows
+	// after the server-stamped writes and WebSocket events that follow them.
+	// Returns [ErrNotFound] if the task does not exist.
 	RecordTaskFailure(ctx context.Context, attemptID, taskID string, exitCode *int, sessionID, message string, now time.Time) (taskFailed, jobFailed int, firstClose bool, err error)
 
 	// RequeueTaskForRetry transitions a task back to [TaskStatusReady],
