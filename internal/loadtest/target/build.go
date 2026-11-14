@@ -173,7 +173,8 @@ func removeOld(outDir string) {
 		return
 	}
 	for _, f := range old {
-		os.Remove(f) // still running somewhere when it fails; a later build retries
+		// A failure means it is still running somewhere; a later build retries.
+		os.Remove(f) //nolint:gosec // G703: f comes from filepath.Glob over the harness's own build output directory
 	}
 }
 
