@@ -1,24 +1,34 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-server-fd-exhaustion
-description: chaos - lower the server's file descriptor limit to 10 above its open files for 60s while a rack of 30 of 120 workers reconnects after a 40s cut; the server recovers when the limit lifts, 5 min
+description: chaos - lower the server's file descriptor limit to 10 above its open files for 40s while a rack of 30 of 120 workers redials after a 20s cut; the server recovers when the limit lifts, 5 min
 # Linux only (RLIMIT_NOFILE, set on the server with prlimit); it needs no
 # privilege and no container.
 #
 # The design asks for a server started with a low limit and more workers than
 # it can hold. The simulated fleet fails the whole run when a worker cannot
 # connect at start, so that shape cannot run. Instead the limit is applied to
-# the running server while a partitioned rack reconnects, which exercises the
+# the running server while a partitioned rack redials, which exercises the
 # same paths: EMFILE in the HTTP and broker accept loops, and every file the
 # server opens meanwhile (SQLite, JetStream blocks, logs). "Recovers when
 # workers leave" becomes "recovers when descriptors are free again".
 #
-# Timeline, all after the server's startup liveness grace (about 3m10s):
-#   3m15s  rack-b is cut from the broker for 40s
+# A cut worker redials on the real worker's backoff: nats.go waits before each
+# attempt, 4s, 8s, 16s, 32s, 64s, each +-20%, so the attempts come about 4s,
+# 12s, 28s and 60s after the cut (the third between 22.4s and 33.6s, the fourth
+# between 48s and 72s). The timeline puts the third attempt, the first after
+# the heal, inside the limit, and the next one after it:
+#   3m15s  rack-b is cut from the broker for 20s (its 12s attempt, at most
+#          14.4s, still fails on the cut)
 #   3m20s  the limit drops to the server's open files plus 10
-#   3m55s  rack-b heals and its 30 workers redial into 10 free descriptors
-#   4m20s  the limit lifts, 60s after it dropped
-# The cut outlasts heartbeat_timeout (30s) so rack-b's work is reclaimed, and
-# its redial then meets the exhausted limit.
+#   3m35s  rack-b heals; its 30 workers redial 22.4s to 33.6s after the cut,
+#          into 10 free descriptors
+#   4m00s  the limit lifts, 40s after it dropped and 45s after the cut, before
+#          any refused worker's next attempt (48s at the earliest, plus its
+#          connect timeout), so every refused worker is back by 74s after the
+#          cut, well inside the 55s workers-converge allows after the last heal.
+# The broker's own accept errors never reach the server log: sqi-server drops
+# nats-server's error output (H13f10), so the fault shows as the server's open
+# files held at the limit while rack-b workers are still out, not as a log line.
 duration: 5m
 warmup: 10s
 drain_timeout: 5m
@@ -53,14 +63,15 @@ jobs:
 faults:
   - at: 3m15s
     partition: {groups: [rack-b]}
-    duration: 40s
+    duration: 20s
   - at: 3m20s
     fd_limit: {headroom: 10}
-    duration: 60s
+    duration: 40s
 
-# As in chaos-net-rack-partition: rack-b's work in flight when it is cut is
-# reclaimed and re-run while the cut workers finish it, about 12 tasks on
-# rack-b's quarter of the fleet and up to about 25 with the backlog; the
-# bound of 30 covers that.
+# As in chaos-net-rack-partition: rack-b's work in flight when it is cut can be
+# reclaimed and re-run while the cut workers finish it (a refused worker is out
+# for about a minute, past heartbeat_timeout), about 12 tasks on rack-b's
+# quarter of the fleet and up to about 25 with the backlog; the bound of 30
+# covers that.
 expect:
   max_rework_attempts: 30
