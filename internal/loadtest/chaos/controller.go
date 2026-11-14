@@ -890,14 +890,26 @@ func (c *Controller) diskFault(ctx context.Context, i int, f *scenario.DiskFull,
 // watchReady probes the server's readiness for d, every readyEvery, and notes
 // each change of answer with its offset from the start. The server is ready
 // when the fault starts, so the first answer is a note only when it differs.
+// It ends with a note of how many probes ran and how many were not ready, so a
+// server that stayed ready throughout still leaves a record of being probed.
 func (c *Controller) watchReady(ctx context.Context, i int, d time.Duration) {
 	begin := time.Now()
 	deadline := begin.Add(d)
 	last := "ready"
+	probes, notReady := 0, 0
+	defer func() {
+		if probes > 0 {
+			c.notef(i, "%d readiness probes, %d not ready", probes, notReady)
+		}
+	}()
 	for {
 		status := c.t.ServerReady(ctx)
 		if ctx.Err() != nil {
 			return
+		}
+		probes++
+		if status != "ready" {
+			notReady++
 		}
 		if status != last {
 			c.notef(i, "+%s: %s", time.Since(begin).Round(time.Second), status)

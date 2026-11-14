@@ -5,6 +5,7 @@ package chaos
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -217,6 +218,13 @@ func (t *fakeTarget) ServerReady(context.Context) string {
 		return t.ready[n]
 	}
 	return "ready"
+}
+
+// polls is how many times ServerReady was called.
+func (t *fakeTarget) polls() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.nPoll
 }
 
 func (*fakeTarget) RealWorkerID(i int) (string, error) { return "worker-" + strconv.Itoa(i), nil }
@@ -1038,13 +1046,35 @@ func TestController_DiskFullServerRecordsReadiness(t *testing.T) {
 	if len(recs) != 1 || recs[0].Healed.IsZero() {
 		t.Fatalf("records = %+v, want one healed fault", recs)
 	}
-	want := []string{"+0s: 503 degraded", "+0s: ready"}
+	want := []string{"+0s: 503 degraded", "+0s: ready", fmt.Sprintf("%d readiness probes, 2 not ready", ft.polls())}
 	if !slices.Equal(recs[0].Notes, want) {
 		t.Errorf("notes = %v, want %v", recs[0].Notes, want)
 	}
 	ws := c.Windows()
 	if len(ws) != 1 || len(ws[0].Groups) != 0 {
 		t.Errorf("windows = %+v, want one over every group", ws)
+	}
+}
+
+// A server that stays ready through a full volume still leaves a note, so the
+// record tells "probed, always ready" apart from "never probed".
+func TestController_DiskFullServerAlwaysReadyNotesTheProbes(t *testing.T) {
+	asPOSIX(t)
+	fastReady(t)
+	ft := newFakeTarget(nil)
+	c := newController(t, []scenario.Fault{{
+		Duration: d(200 * time.Millisecond), DiskFull: &scenario.DiskFull{Volume: scenario.VolumeServer},
+	}}, groups("render"), ft)
+	if _, err := run(t, c); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	n := ft.polls()
+	if n < 2 {
+		t.Fatalf("readiness probed %d times in 200ms at 20ms, want several", n)
+	}
+	want := []string{fmt.Sprintf("%d readiness probes, 0 not ready", n)}
+	if recs := c.Records(); len(recs) != 1 || !slices.Equal(recs[0].Notes, want) {
+		t.Errorf("records = %+v, want one with notes %v", recs, want)
 	}
 }
 
