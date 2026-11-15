@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-server-fd-exhaustion
-description: chaos - lower the server's file descriptor limit to 10 above its open files for 40s while a rack of 30 of 120 workers redials after a 20s cut; records whether the farm converges once the limit lifts, 5 min
+description: chaos - lower the server's file descriptor limit to 10 free descriptors for 40s while a rack of 30 of 120 workers redials after a 20s cut; records whether the farm converges once the limit lifts, 5 min
 # Linux only (RLIMIT_NOFILE, set on the server with prlimit); it needs no
 # privilege and no container.
 #
@@ -20,7 +20,7 @@ description: chaos - lower the server's file descriptor limit to 10 above its op
 # the heal, inside the limit, and the next one after it:
 #   3m15s  rack-b is cut from the broker for 20s (its 12s attempt, at most
 #          14.4s, still fails on the cut)
-#   3m20s  the limit drops to the server's open files plus 10
+#   3m20s  the limit drops to leave the server 10 free descriptors
 #   3m35s  rack-b heals; its 30 workers redial 22.4s to 33.6s after the cut,
 #          into 10 free descriptors
 #   4m00s  the limit lifts, 40s after it dropped and 45s after the cut, before

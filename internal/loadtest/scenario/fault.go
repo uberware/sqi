@@ -85,8 +85,8 @@ type DiskFull struct {
 	MaxFailed *int `yaml:"max_failed,omitempty"`
 }
 
-// FDLimit lowers sqi-server's soft RLIMIT_NOFILE to its open files plus
-// Headroom for Duration, then restores it. Linux only.
+// FDLimit lowers sqi-server's soft RLIMIT_NOFILE for Duration so that it can
+// open Headroom more files, then restores it. Linux only.
 type FDLimit struct {
 	Headroom int `yaml:"headroom"`
 }

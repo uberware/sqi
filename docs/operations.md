@@ -2473,7 +2473,7 @@ directly.
 ### Running out of file descriptors
 
 `chaos-server-fd-exhaustion` (Linux) lowers the running server's descriptor
-limit to 10 above its open files for 40 seconds while 30 of 120 workers
+limit so it can open only 10 more files for 40 seconds while 30 of 120 workers
 redial after a short network cut. The example unit above sets
 `LimitNOFILE=65536`. In most runs a broker stream stops storing and stores
 nothing more for the rest of the run, also after the limit lifts: the task

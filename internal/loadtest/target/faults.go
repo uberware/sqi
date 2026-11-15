@@ -94,8 +94,8 @@ type Faults interface {
 	// FreeVolume removes the volume's ballast. It does nothing when the volume
 	// is not filled and is an error when the target has no such volume.
 	FreeVolume(volume string) error
-	// LimitServerFDs sets the running sqi-server's soft RLIMIT_NOFILE to the number
-	// of files it has open plus headroom, leaving the hard limit, and returns the
+	// LimitServerFDs lowers the running sqi-server's soft RLIMIT_NOFILE so that it
+	// can open headroom more files, leaving the hard limit, and returns the
 	// open-file count it saw. Limiting a limited server is a no-op that returns
 	// the first count. Linux only; elsewhere, with a server running, it returns
 	// errFDLimitUnsupported.
@@ -426,8 +426,8 @@ func (m *managed) freeVolumes(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// LimitServerFDs lowers the server's soft open-file limit to what it has open
-// plus headroom. The limit is put back by RestoreServerFDs, StopForChecks and
+// LimitServerFDs lowers the server's soft open-file limit so that it can open
+// headroom more files. The limit is put back by RestoreServerFDs, StopForChecks and
 // Close.
 func (m *managed) LimitServerFDs(headroom int) (int, error) {
 	m.mu.Lock()

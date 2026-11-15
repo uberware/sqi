@@ -97,8 +97,8 @@ func TestLimitServerFDs_RefusesNewFiles(t *testing.T) {
 		t.Errorf("open = %d, want at least stdin, stdout and stderr", open)
 	}
 	after := nofile(t, c.pid())
-	if want := uint64(open + headroom); after.Cur != want {
-		t.Errorf("soft limit = %d, want %d", after.Cur, want)
+	if after.Cur >= before.Cur {
+		t.Errorf("soft limit = %d, want it lowered from %d", after.Cur, before.Cur)
 	}
 	if after.Max != before.Max {
 		t.Errorf("hard limit = %d, want it left at %d", after.Max, before.Max)
@@ -123,11 +123,41 @@ func TestLimitServerFDs_RefusesNewFiles(t *testing.T) {
 	}
 }
 
+func TestSoftLimitFor(t *testing.T) {
+	set := func(fds ...int) map[int]bool {
+		m := map[int]bool{}
+		for _, fd := range fds {
+			m[fd] = true
+		}
+		return m
+	}
+	tests := []struct {
+		name     string
+		used     map[int]bool
+		headroom int
+		want     uint64
+	}{
+		{"contiguous", set(0, 1, 2), 5, 8},
+		{"contiguous, no headroom", set(0, 1, 2), 0, 3},
+		{"a high descriptor above the limit", set(0, 1, 2, 25), 5, 8},
+		{"a gap below the limit", set(0, 1, 2, 4), 5, 9},
+		{"a gap filled by the headroom", set(0, 2), 1, 3},
+		{"nothing open", set(), 2, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := softLimitFor(tt.used, tt.headroom); got != tt.want {
+				t.Errorf("softLimitFor = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLimitFDs_NoHeadroomOverHardLimit(t *testing.T) {
 	c := startFDChild(t)
 	hard := nofile(t, c.pid()).Max
 	if _, _, err := limitFDs(c.pid(), int(hard)); err == nil {
-		t.Error("limitFDs with open+headroom over the hard limit succeeded")
+		t.Error("limitFDs with a headroom over the hard limit succeeded")
 	}
 	if _, _, err := limitFDs(c.pid(), -1); err == nil {
 		t.Error("limitFDs with a negative headroom succeeded")
@@ -169,8 +199,8 @@ func TestManaged_LimitAndRestoreServerFDs(t *testing.T) {
 		t.Errorf("open = %d", open)
 	}
 	limited := nofile(t, p.pid())
-	if limited.Cur != uint64(open+10) {
-		t.Errorf("soft limit = %d, want %d", limited.Cur, open+10)
+	if limited.Cur >= before.Cur || limited.Cur < uint64(10) {
+		t.Errorf("soft limit = %d, want it lowered from %d and at least the headroom", limited.Cur, before.Cur)
 	}
 
 	// Limiting a limited server keeps the first saved limit.
@@ -309,12 +339,12 @@ func TestManaged_ServerRestartForgetsSavedFDLimit(t *testing.T) {
 	if got := limitString(nofile(t, p2.pid())); got != original {
 		t.Errorf("the restarted server's limit = %q, want it untouched at %q", got, original)
 	}
-	open, err := m.LimitServerFDs(7)
-	if err != nil {
+	unlimited := nofile(t, p2.pid()).Cur
+	if _, err := m.LimitServerFDs(7); err != nil {
 		t.Fatalf("LimitServerFDs on the restarted server: %v", err)
 	}
-	if got := nofile(t, p2.pid()).Cur; got != uint64(open+7) {
-		t.Errorf("the restarted server's soft limit = %d, want %d", got, open+7)
+	if got := nofile(t, p2.pid()).Cur; got >= unlimited {
+		t.Errorf("the restarted server's soft limit = %d, want it lowered from %d", got, unlimited)
 	}
 	if err := m.RestoreServerFDs(); err != nil {
 		t.Fatal(err)
