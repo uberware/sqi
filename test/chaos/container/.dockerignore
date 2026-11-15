@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Exclusions for the `make chaos-container` build context. Not the repo-root
+# .dockerignore, which excludes test/ and scripts/ and so cannot serve an image
+# that needs test/chaos/**; the Makefile stages a filtered copy of the repo with
+# these patterns and places this file at the staged root (see the comment above
+# the `test-isolation` target, which this mirrors).
+#
+# Patterns follow rsync --exclude-from syntax (used by the Makefile target), not
+# Docker's own .dockerignore dialect. Anchored (leading /) entries match only at
+# the repo root; web/dist/ must stay, since //go:embed dist (web/embed.go) needs
+# its tracked placeholder to compile.
+.git/
+web/node_modules/
+bin/
+/runs/
+.superpowers/
+.venv-docs/
+.venv/
+.venv-oracle/
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+coverage/
+/clients/python/dist/
+/clients/submitter/dist/

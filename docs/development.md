@@ -110,9 +110,10 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make load` | Run one load scenario with `sqi-load` (`SCENARIO=mixed-medium`) |
 | `make soak` | Run a scenario as a soak (`SCENARIO=soak-steady`, `DURATION=8h`) |
 | `make load-sweep` | Sweep one scenario parameter and find the knee (`SCENARIO=…`, `VARY='workers[0].count=100,200,400'`) |
-| `make chaos` | Run the chaos suite (fault injection against real binaries; `SCENARIO=chaos-…` for one; about two hours for all 19) |
+| `make chaos` | Run the chaos suite (fault injection against real binaries; `SCENARIO=chaos-…` for one, `STORE=postgres` for PostgreSQL through a throwaway Docker server; about two hours for the scenarios that apply on one platform and store) |
 | `make chaos-smoke` | Run the three chaos scenarios CI runs on pull requests (about 14 minutes) |
 | `make chaos-framework` | Run the chaos suite's own framework test, no scenario |
+| `make chaos-container` | Run the chaos disk scenarios on real size-limited volumes in a container (needs Docker, SQLite only; exits 0 without Docker, so look for the `--- PASS` lines) |
 | `make docs-site-install` | Create `.venv-docs/` and install the pinned MkDocs dependencies |
 | `make docs-site` | Build the MkDocs documentation site with `--strict` (the CI gate) |
 | `make docs-site-serve` | Serve the documentation site locally with live reload |
@@ -583,11 +584,16 @@ built-in library, reading a report and baselines are in
 [Load testing](load-testing.md).
 
 `make chaos` and `make chaos-smoke` run the chaos suite (`test/chaos`, build
-tag `chaos`, not part of `make test`; CI runs the smoke set as `chaos-smoke`):
-real binaries, with faults injected at fixed times. As with the other
+tag `chaos`, not part of `make test`; CI runs the smoke set as `chaos-smoke`
+and the whole suite nightly): real binaries, with faults injected at fixed
+times. `make chaos STORE=postgres` runs it on PostgreSQL, against a throwaway
+Docker server (`PG_VERSION=16` or `18`) or the one `SQI_TEST_POSTGRES_DSN`
+names. `make chaos-container` runs the disk scenarios in a container with
+size-limited volumes, which the other targets skip. As with the other
 real-server suites, a skip verifies nothing: look for `--- PASS: TestChaos/`.
-The fault schema, the invariants and the known-violation rule are in
-[Chaos testing](chaos-testing.md).
+`sqi-load scenarios --chaos-matrix` prints the scenarios that apply on a
+given OS and store. The fault schema, the invariants and the known-violation
+rule are in [Chaos testing](chaos-testing.md).
 
 ### Differential-testing EXPR against the reference implementation
 

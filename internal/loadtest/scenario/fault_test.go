@@ -49,7 +49,15 @@ func TestFault_Kind(t *testing.T) {
 		{"latency", `{latency: {delay: 1s}}`, "latency"},
 		{"flap", `{flap: {period: 2s}}`, "flap"},
 		{"power cut", `{power_cut: {order: server-first}}`, "power_cut"},
+		{"database", `{database: {mode: stall}}`, "database"},
+		{"disk_full", `{disk_full: {volume: server}}`, "disk_full"},
+		{"fd_limit", `{fd_limit: {headroom: 5}}`, "fd_limit"},
+		{"revoke", `{revoke: {group: render}}`, "revoke"},
 		{"two kinds", `{kill: {server: true}, partition: {}}`, ""},
+		{"database with kill", `{database: {mode: stall}, kill: {server: true}}`, ""},
+		{"disk_full with kill", `{disk_full: {volume: server}, kill: {server: true}}`, ""},
+		{"fd_limit with kill", `{fd_limit: {headroom: 5}, kill: {server: true}}`, ""},
+		{"revoke with kill", `{revoke: {group: render}, kill: {server: true}}`, ""},
 		{"none", `{at: 5s}`, ""},
 	}
 	for _, tt := range tests {
@@ -387,5 +395,259 @@ func TestClone_CopiesFaults(t *testing.T) {
 	*c.Expect.MaxReworkAttempts = 9
 	if s.Faults[0].Kill.Group != "render" || *s.Expect.MaxReworkAttempts != 2 {
 		t.Error("changing the clone changed the original")
+	}
+}
+
+func TestFault_HasServerFaultNewKinds(t *testing.T) {
+	tests := []struct {
+		name  string
+		fault string
+		want  bool
+	}{
+		{"disk full on the server", `{at: 5s, disk_full: {volume: server}, duration: 5s}`, true},
+		{"disk full on workers", `{at: 5s, disk_full: {volume: workers}, duration: 5s}`, false},
+		{"fd limit", `{at: 5s, fd_limit: {headroom: 5}, duration: 5s}`, true},
+		{"database", `{at: 5s, database: {mode: stall}, duration: 5s}`, false},
+		{"revoke", `{at: 5s, revoke: {group: render}, duration: 5s}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var f Fault
+			if err := yaml.Unmarshal([]byte(tt.fault), &f); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.hasServerFault(); got != tt.want {
+				t.Errorf("hasServerFault() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// validateCase is one scenario built from faultBase plus extra YAML and an
+// optional mutation; want is a substring of the error, empty for valid.
+type validateCase struct {
+	name   string
+	extra  string
+	mutate func(*Scenario)
+	want   string
+}
+
+func runValidateCases(t *testing.T, tests []validateCase) {
+	t.Helper()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := parseWith(t, tt.extra)
+			if tt.mutate != nil {
+				tt.mutate(s)
+			}
+			err := s.Validate(TargetManaged)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("want valid, got %v", err)
+			case tt.want != "" && err == nil:
+				t.Errorf("want an error containing %q, got none", tt.want)
+			case tt.want != "" && !strings.Contains(err.Error(), tt.want):
+				t.Errorf("error %q does not contain %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidate_DatabaseFault(t *testing.T) {
+	runValidateCases(t, []validateCase{
+		{name: "stall", extra: "faults:\n  - {at: 5s, database: {mode: stall}, duration: 10s}\n"},
+		{name: "drop", extra: "faults:\n  - {at: 5s, database: {mode: drop}, duration: 10s}\n"},
+		{name: "no mode", extra: "faults:\n  - {at: 5s, database: {}, duration: 10s}\n", want: `faults[0].database.mode: "" is not one of stall, drop`},
+		{name: "bad mode", extra: "faults:\n  - {at: 5s, database: {mode: slow}, duration: 10s}\n", want: `faults[0].database.mode: "slow" is not one of stall, drop`},
+		{name: "no duration", extra: "faults:\n  - {at: 5s, database: {mode: stall}}\n", want: "faults[0].duration: must be positive for database"},
+		{
+			name: "restart_after", extra: "faults:\n  - {at: 5s, database: {mode: stall}, duration: 5s, restart_after: 5s}\n",
+			want: "faults[0].restart_after: applies to kill and term only",
+		},
+	})
+}
+
+func TestValidate_DiskFull(t *testing.T) {
+	runValidateCases(t, []validateCase{
+		{name: "server", extra: "faults:\n  - {at: 5s, disk_full: {volume: server, headroom_bytes: 4096, inodes: true}, duration: 10s}\n"},
+		{
+			name:  "workers",
+			extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, reason: 'no space', max_failed: 3}, duration: 10s}\n",
+		},
+		{name: "bad volume", extra: "faults:\n  - {at: 5s, disk_full: {volume: both}, duration: 10s}\n", want: `faults[0].disk_full.volume: "both" is not one of server, workers`},
+		{name: "no volume", extra: "faults:\n  - {at: 5s, disk_full: {}, duration: 10s}\n", want: "faults[0].disk_full.volume"},
+		{name: "no duration", extra: "faults:\n  - {at: 5s, disk_full: {volume: server}}\n", want: "faults[0].duration: must be positive for disk_full"},
+		{
+			name: "negative headroom", extra: "faults:\n  - {at: 5s, disk_full: {volume: server, headroom_bytes: -1}, duration: 5s}\n",
+			want: "faults[0].disk_full.headroom_bytes: must not be negative",
+		},
+		{
+			name: "reason does not compile", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, reason: '('}, duration: 5s}\n",
+			want: "faults[0].disk_full.reason",
+		},
+		{
+			name: "reason on server", extra: "faults:\n  - {at: 5s, disk_full: {volume: server, reason: x}, duration: 5s}\n",
+			want: "faults[0].disk_full.reason: applies to a workers volume only",
+		},
+		{
+			name: "max_failed on server", extra: "faults:\n  - {at: 5s, disk_full: {volume: server, max_failed: 1}, duration: 5s}\n",
+			want: "faults[0].disk_full.max_failed: applies to a workers volume only",
+		},
+		{
+			name: "negative max_failed", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, max_failed: -1}, duration: 5s}\n",
+			want: "faults[0].disk_full.max_failed: must not be negative",
+		},
+		{name: "max_failed zero", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, max_failed: 0}, duration: 5s}\n"},
+		{
+			name: "workers volume without real workers", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers}, duration: 5s}\n",
+			mutate: func(s *Scenario) { s.Workers[0].Real = 0 },
+			want:   "faults[0].disk_full.volume: a workers volume needs a group with real workers",
+		},
+		{
+			name: "server volume ignores real workers", extra: "faults:\n  - {at: 5s, disk_full: {volume: server}, duration: 5s}\n",
+			mutate: func(s *Scenario) { s.Workers[0].Real = 0 },
+		},
+		{
+			name: "server volume with websocket clients", extra: "faults:\n  - {at: 5s, disk_full: {volume: server}, duration: 5s}\nclients: {websocket: {count: 2}}\n",
+			want: "clients.websocket.count",
+		},
+		{
+			name: "workers volume with websocket clients", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers}, duration: 5s}\nclients: {websocket: {count: 2}}\n",
+		},
+	})
+}
+
+func TestValidate_FDLimit(t *testing.T) {
+	runValidateCases(t, []validateCase{
+		{name: "valid", extra: "faults:\n  - {at: 5s, fd_limit: {headroom: 10}, duration: 10s}\n"},
+		{name: "zero headroom", extra: "faults:\n  - {at: 5s, fd_limit: {}, duration: 10s}\n", want: "faults[0].fd_limit.headroom: must be positive"},
+		{name: "negative headroom", extra: "faults:\n  - {at: 5s, fd_limit: {headroom: -2}, duration: 10s}\n", want: "faults[0].fd_limit.headroom: must be positive"},
+		{name: "no duration", extra: "faults:\n  - {at: 5s, fd_limit: {headroom: 10}}\n", want: "faults[0].duration: must be positive for fd_limit"},
+		{
+			name: "with pollers", extra: "faults:\n  - {at: 5s, fd_limit: {headroom: 10}, duration: 5s}\nclients: {rest_pollers: {count: 1, interval: 1s}}\n",
+			want: "clients.rest_pollers.count",
+		},
+	})
+}
+
+func TestValidate_Revoke(t *testing.T) {
+	const auth = "server: {broker_auth: true}\n"
+	runValidateCases(t, []validateCase{
+		{name: "group", extra: auth + "faults:\n  - {at: 5s, revoke: {group: render}, duration: 10s}\n"},
+		{name: "some of a group", extra: auth + "faults:\n  - {at: 5s, revoke: {group: render, real: 1}, duration: 10s}\n"},
+		{
+			name: "server", extra: auth + "faults:\n  - {at: 5s, revoke: {server: true}, duration: 10s}\n",
+			want: "faults[0].revoke: revoke applies to a group's real workers",
+		},
+		{name: "neither", extra: auth + "faults:\n  - {at: 5s, revoke: {}, duration: 10s}\n", want: "faults[0].revoke: exactly one of server and group"},
+		{name: "unknown group", extra: auth + "faults:\n  - {at: 5s, revoke: {group: nope}, duration: 10s}\n", want: "faults[0].revoke.group"},
+		{name: "too many real", extra: auth + "faults:\n  - {at: 5s, revoke: {group: render, real: 3}, duration: 10s}\n", want: "faults[0].revoke.real"},
+		{name: "no duration", extra: auth + "faults:\n  - {at: 5s, revoke: {group: render}}\n", want: "faults[0].duration: must be positive for revoke"},
+		{
+			name: "broker auth off", extra: "faults:\n  - {at: 5s, revoke: {group: render}, duration: 10s}\n",
+			want: "faults[0].revoke: revoke needs server.broker_auth: with broker auth off there is no credential to revoke",
+		},
+	})
+}
+
+func TestValidate_ClockSkew(t *testing.T) {
+	skew := func(d time.Duration, nReal int) func(*Scenario) {
+		return func(s *Scenario) {
+			s.Workers[0].Real = nReal
+			s.Workers[0].ClockSkew = Duration{d}
+		}
+	}
+	runValidateCases(t, []validateCase{
+		{name: "none"},
+		{name: "positive", mutate: skew(time.Hour, 0)},
+		{name: "negative", mutate: skew(-time.Hour, 0)},
+		{name: "exactly 48h", mutate: skew(48*time.Hour, 0)},
+		{name: "above 48h", mutate: skew(48*time.Hour+time.Second, 0), want: "workers[0].clock_skew"},
+		{name: "below -48h", mutate: skew(-49*time.Hour, 0), want: "workers[0].clock_skew"},
+		{
+			name: "with real workers", mutate: skew(time.Minute, 2),
+			want: `workers[0].clock_skew: applies to simulated workers only; group "render" has real workers`,
+		},
+	})
+}
+
+func TestValidate_ScratchBytes(t *testing.T) {
+	task := func(n int64) func(*Scenario) {
+		return func(s *Scenario) {
+			s.Jobs[0].RealTask = &RealTask{Duration: Duration{time.Second}, ScratchBytes: n}
+		}
+	}
+	runValidateCases(t, []validateCase{
+		{name: "zero", mutate: task(0)},
+		{name: "positive", mutate: task(1 << 20)},
+		{name: "negative", mutate: task(-1), want: "jobs[0].real_task.scratch_bytes: must not be negative"},
+	})
+}
+
+func TestChaosSkipReason(t *testing.T) {
+	cases := []struct {
+		name string
+		f    Fault
+		env  ChaosEnv
+		want string
+	}{
+		{"stall on windows", Fault{Stall: &ProcTarget{Server: true}}, ChaosEnv{GOOS: "windows", Store: "sqlite"}, "stall"},
+		{"stall on linux", Fault{Stall: &ProcTarget{Server: true}}, ChaosEnv{GOOS: "linux", Store: "sqlite"}, ""},
+		{"fd on darwin", Fault{FDLimit: &FDLimit{Headroom: 5}}, ChaosEnv{GOOS: "darwin"}, "fd_limit"},
+		{"fd on linux", Fault{FDLimit: &FDLimit{Headroom: 5}}, ChaosEnv{GOOS: "linux"}, ""},
+		{"disk outside container", Fault{DiskFull: &DiskFull{Volume: "server"}}, ChaosEnv{GOOS: "linux"}, "container"},
+		{"disk in container", Fault{DiskFull: &DiskFull{Volume: "server"}}, ChaosEnv{GOOS: "linux", Container: true}, ""},
+		{"disk off linux", Fault{DiskFull: &DiskFull{Volume: "server"}}, ChaosEnv{GOOS: "windows", Container: true}, "a disk_full fault needs linux"},
+		{"drop on sqlite", Fault{Database: &DatabaseFault{Mode: "drop"}}, ChaosEnv{GOOS: "linux", Store: "sqlite"}, "postgres"},
+		{"drop on postgres", Fault{Database: &DatabaseFault{Mode: "drop"}}, ChaosEnv{GOOS: "linux", Store: "postgres"}, ""},
+		{"stall db on sqlite", Fault{Database: &DatabaseFault{Mode: "stall"}}, ChaosEnv{GOOS: "windows", Store: "sqlite"}, ""},
+		{"kill on windows", Fault{Kill: &ProcTarget{Server: true}}, ChaosEnv{GOOS: "windows"}, ""},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Scenario{Faults: []Fault{tt.f}}
+			got := s.ChaosSkipReason(tt.env)
+			if tt.want == "" {
+				if got != "" {
+					t.Errorf("ChaosSkipReason = %q, want none", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("ChaosSkipReason = %q, want it to contain %q", got, tt.want)
+			}
+		})
+	}
+	if got := (&Scenario{}).ChaosSkipReason(ChaosEnv{GOOS: "windows"}); got != "" {
+		t.Errorf("a scenario with no faults skips with %q", got)
+	}
+}
+
+// TestChaosSkipReason_RuleOrderAcrossFaults pins that the rules apply in their
+// documented order over every fault, not fault by fault.
+func TestChaosSkipReason_RuleOrderAcrossFaults(t *testing.T) {
+	disk := Fault{DiskFull: &DiskFull{Volume: VolumeServer}}
+	fd := Fault{FDLimit: &FDLimit{Headroom: 5}}
+	stall := Fault{Stall: &ProcTarget{Server: true}}
+	drop := Fault{Database: &DatabaseFault{Mode: DatabaseDrop}}
+	cases := []struct {
+		name   string
+		faults []Fault
+		env    ChaosEnv
+		want   string
+	}{
+		{"fd_limit before disk_full", []Fault{disk, fd}, ChaosEnv{GOOS: "darwin", Store: "sqlite"}, "fd_limit"},
+		{"stall before disk_full", []Fault{disk, stall}, ChaosEnv{GOOS: "windows", Store: "sqlite"}, "stall"},
+		{"stall before fd_limit", []Fault{fd, stall}, ChaosEnv{GOOS: "windows", Store: "sqlite"}, "stall"},
+		{"disk_full before drop", []Fault{drop, disk}, ChaosEnv{GOOS: "linux", Store: "sqlite"}, "chaos-container"},
+		{"disk_full linux before container", []Fault{disk, disk}, ChaosEnv{GOOS: "darwin", Store: "sqlite"}, "needs linux"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Scenario{Faults: tt.faults}
+			if got := s.ChaosSkipReason(tt.env); !strings.Contains(got, tt.want) {
+				t.Errorf("ChaosSkipReason = %q, want it to contain %q", got, tt.want)
+			}
+		})
 	}
 }

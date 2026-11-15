@@ -64,6 +64,13 @@ const (
 	NameNoOrphans          = "no-orphans"
 	NameSingleWriter       = "single-writer"
 	NameReclaims           = "reclaims"
+
+	// Package chaos also reports these, from the stopped server's store and
+	// the server's log.
+	NameRevoked      = "revoked"
+	NameSkewWarning  = "skew-warning"
+	NameAttemptOrder = "attempt-order"
+	NameDiskFull     = "disk-full"
 )
 
 // CounterLogsLostInFault is the logs result's counter of the lines the
@@ -77,6 +84,7 @@ func Names() []string {
 		NameTerminal, NameOutcomes, NameSingleAttempt, NameLogs, NameWorkersConverge, NameCaps,
 		NameSubmissionAtomic,
 		NameExecutionsRecorded, NameStoreIntegrity, NameNoOrphans, NameSingleWriter, NameReclaims,
+		NameRevoked, NameSkewWarning, NameAttemptOrder, NameDiskFull,
 	}
 }
 

@@ -5,9 +5,11 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -123,4 +125,47 @@ func waitExec(t *testing.T, dir, role string, timeout time.Duration) marker.Exec
 	}
 	t.Fatalf("no %s exec in %s after %s", role, dir, timeout)
 	return marker.Exec{}
+}
+
+func TestNoop_ScratchBytesFailsOnWriteError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory")
+	}
+	bin := noopBin(t)
+	config, markers := writeConfig(t, marker.NoopClass{DurationMS: 2000, LogEveryMS: 200, ScratchBytes: 4096, ChattyChild: true})
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) }) //nolint:errcheck // so TempDir can remove it
+	cmd := exec.CommandContext(t.Context(), bin, taskArgs(config)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "SQILOAD_INCARNATION=0.0")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	start := time.Now()
+	err := cmd.Run()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 1 {
+		t.Fatalf("noop = %v, want exit code 1", err)
+	}
+	if !strings.Contains(stderr.String(), "scratch write failed") {
+		t.Errorf("stderr = %q, want it to contain %q", stderr.String(), "scratch write failed")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("noop took %s to fail; it should fail at once, not after its 2s duration", elapsed)
+	}
+	execs, _, err := marker.ReadAll(markers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var main *marker.Exec
+	for i := range execs {
+		if execs[i].Role == marker.RoleMain {
+			main = &execs[i]
+		}
+	}
+	if main == nil || main.End == nil || main.ExitCode != 1 {
+		t.Errorf("main marker = %+v, want an end with exit code 1", main)
+	}
 }

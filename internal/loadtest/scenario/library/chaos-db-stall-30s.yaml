@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-db-stall-30s
+description: chaos - stall the server's database for 30s (heartbeat_timeout) at 3m15s under steady load (100 workers, about 2.5 tasks/s); no completed work may be redone and nothing reclaimed, 4.25 min
+# The stall comes at 3m15s, after the server's startup liveness grace: the
+# server runs no liveness sweep for about 3m10s after it starts, so a stall
+# inside that window cannot be mistaken for dead workers however long it lasts.
+# Thirty seconds is heartbeat_timeout, the line the heartbeat sweep judges a
+# worker by: while the store is stalled no heartbeat can be recorded, so the
+# last recorded one ages by the whole stall, and the sweep that follows must
+# not read that as 100 dead workers. It heals at 3m45s.
+duration: 4m15s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 100
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 3m15s
+    database: {mode: stall}
+    duration: 30s
+
+# The workers never lose the broker, only the store stalls, so no worker should
+# go offline and the server should reclaim nothing. The server breaks both:
+# when the store answers again, the heartbeat sweep and the stale-assigned reap
+# act on what the stall kept it from writing, before the queued heartbeats and
+# running reports land. The sweep takes live workers offline and reclaims
+# their attempts (which then run beside the re-lease, and whose finished work
+# is rejected), and the reap returns tasks leased just before the stall to the
+# queue while they run. Which of them wins the race varies by run and backend
+# (on PostgreSQL the reap can fire while the sweep does not), so every entry is
+# "may". A worker taken offline stays offline, so work re-leased to it after
+# the heal can be taken back a second time; the number of attempts open when
+# the stall starts (about 50) therefore does not cap what the heal takes back,
+# and nothing here derives the rework ceiling. The ceiling of 60 is empirical:
+# rework counts only attempts that finished successfully and were not
+# credited, and it peaks at about 24 attempts. A run above 60 would be a worse
+# defect than the one recorded, not a run to absorb by raising the bound.
+expect:
+  max_rework_attempts: 0
+  max_reclaims: 0
+  known_violations:
+    - check: rework
+      kind: may
+      max_attempts: 60
+      reason: when the store answers again the heartbeat sweep reclaims attempts from live workers whose queued heartbeats it has not yet written, and the stale-assigned reap takes back tasks whose running report it has not written, so their finished work is rejected; whether either wins the race varies by run and backend
+      tracker: H13f7
+    - check: reclaims
+      kind: may
+      reason: when the store answers again the heartbeat sweep takes live workers offline on the heartbeat the stall kept it from writing and reclaims their attempts; on PostgreSQL the queued heartbeats usually win that race
+      tracker: H13f7
+    - check: single-attempt
+      kind: may
+      reason: a task the heal sweep or the stale-assigned reap took back is leased again while its first attempt still runs, until the stale-running cancel stops the first
+      tracker: H13f7
+    - check: workers-converge
+      kind: may
+      reason: a live worker the heal sweep marked offline stays offline while its connection stays up, since heartbeats never bring a worker back online and it re-registers only on a reconnect; how many the sweep marks varies by run and backend
+      tracker: H13f3

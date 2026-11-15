@@ -28,40 +28,22 @@ case "$PG_PHASE" in
 esac
 # runs_phase NAME: true when PG_PHASE selects the phase NAME.
 runs_phase() { [ "$PG_PHASE" = all ] || [ "$PG_PHASE" = "$1" ]; }
-# Pinned patch tags, used when SQI_TEST_POSTGRES_IMAGE is unset. Keep in step
-# with the matrix images of the postgres-integration job in
-# .github/workflows/ci.yml.
-case "$PG_VERSION" in
-  16) IMAGE="postgres:16.15" ;;
-  18) IMAGE="postgres:18.6" ;;
-  *) echo "PG_VERSION must be 16 or 18" >&2; exit 2 ;;
-esac
-IMAGE="${SQI_TEST_POSTGRES_IMAGE:-$IMAGE}"
+# The image pins live in scripts/lib/pg-throwaway.sh; keep them in step with
+# the matrix images of the postgres-integration job in .github/workflows/ci.yml.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/pg-throwaway.sh
+. "$SCRIPT_DIR/lib/pg-throwaway.sh"
+pg_throwaway_image || exit $?
 # -race unless TEST_FLAGS is set; make passes it empty for RACE=off.
 RACE_FLAG="${TEST_FLAGS--race}"
 
-if [ -z "${SQI_TEST_POSTGRES_DSN:-}" ]; then
-  if ! docker info >/dev/null 2>&1; then
-    echo "docker unavailable — skipping PostgreSQL tests"
-    exit 0
-  fi
-  # Docker picks the host port (-p 127.0.0.1::5432); it is read back below.
-  NAME="sqi-pg-test-$$"
-  docker run -d --rm --name "$NAME" --tmpfs /var/lib/postgresql \
-    -e POSTGRES_PASSWORD=sqi -p 127.0.0.1::5432 "$IMAGE" >/dev/null
-  trap 'docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
-  # -h 127.0.0.1 makes pg_isready use TCP. The image's entrypoint first runs a
-  # temporary server that listens on the Unix socket only, then restarts it;
-  # the default (socket) probe passes during that temporary phase and the
-  # tests would race the restart. Only the final server listens on TCP.
-  for _ in $(seq 1 60); do
-    docker exec "$NAME" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break
-    sleep 1
-  done
-  docker exec "$NAME" pg_isready -h 127.0.0.1 -U postgres >/dev/null
-  PORT="$(docker port "$NAME" 5432/tcp | head -n 1 | sed 's/.*://')"
-  [ -n "$PORT" ] || { echo "could not read the published port of $NAME" >&2; exit 1; }
-  export SQI_TEST_POSTGRES_DSN="postgres://postgres:sqi@127.0.0.1:${PORT}/postgres?sslmode=disable"
+rc=0
+pg_throwaway_start || rc=$?
+if [ "$rc" -eq 3 ]; then
+  echo "docker unavailable — skipping PostgreSQL tests"
+  exit 0
+elif [ "$rc" -ne 0 ]; then
+  exit "$rc"
 fi
 export SQI_TEST_REQUIRE_POSTGRES=1
 

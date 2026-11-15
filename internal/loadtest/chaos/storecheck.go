@@ -43,12 +43,28 @@ type StoreInput struct {
 	// MaxReclaims, when set, adds the reclaims check: the server took back no
 	// more than this many attempts.
 	MaxReclaims *int
+	// Revoked are the real workers whose credentials a revoke fault removed;
+	// when set, the revoked check runs.
+	Revoked []RevokedWorker
+	// SkewedGroups maps each worker group with a clock skew to the IDs of its
+	// simulated workers; when set, the skew-warning check reads ServerLog.
+	SkewedGroups map[string][]string
+	// ServerLog is the path of the server's log.
+	ServerLog string
+	// RealIDs are the real workers' IDs, for disk-full.
+	RealIDs []string
+	// DiskFaults are the workers-volume disk_full faults that fired; when set,
+	// the disk-full check runs. DiskErr is why RealIDs or a window could not be
+	// built, which leaves the check unmeasured.
+	DiskFaults []DiskWindow
+	DiskErr    error
 }
 
 // StoreReport is what StoreChecks found.
 type StoreReport struct {
-	// Results are [store-integrity, executions-recorded], then reclaims when
-	// StoreInput.MaxReclaims is set.
+	// Results are [store-integrity, executions-recorded, attempt-order], then
+	// revoked, skew-warning and disk-full when StoreInput asks for them, then
+	// reclaims when StoreInput.MaxReclaims is set.
 	Results []verify.Result
 	// Rework is what the faults cost; nil when it could not be measured, and
 	// ReworkErr then says why.
@@ -59,9 +75,10 @@ type StoreReport struct {
 	Reclaims *report.Reclaims
 }
 
-// StoreChecks opens the stopped server's store, runs store-integrity and
-// executions-recorded (and reclaims when StoreInput.MaxReclaims is set), and
-// measures the rework and the reclaims.
+// StoreChecks opens the stopped server's store, runs store-integrity,
+// executions-recorded and attempt-order (and revoked, skew-warning, disk-full
+// and reclaims when StoreInput asks for them), and measures the rework and the
+// reclaims.
 //
 // store-integrity: on SQLite, PRAGMA integrity_check is "ok" and PRAGMA
 // foreign_key_check finds nothing; on both backends, no active usage claim
@@ -75,6 +92,21 @@ type StoreReport struct {
 // or canceled); and no real task ran more times than the store has attempts
 // for it.
 //
+// attempt-order: every attempt's created_at, started_at and ended_at are in
+// that order, within a second.
+//
+// revoked: no revoked worker's last heartbeat, and no attempt given to it, is
+// more than five seconds after its credential was revoked. The worker's row
+// may stay online meanwhile; only the timestamps are judged.
+//
+// skew-warning: the server's log warns about at least one worker of every
+// group whose clock was skewed.
+//
+// disk-full: for each workers-volume disk_full fault, the attempts that failed
+// on real workers between the fault's start and ten seconds after the disk was
+// freed match the fault's reason and number no more than its bound, and every
+// real worker has a succeeded attempt that started after the disk was freed.
+//
 // A store the checks cannot open, or whose farm's jobs they cannot list,
 // fails every check as unmeasured, with the error as evidence, and leaves the
 // rework and the reclaims unmeasured.
@@ -87,11 +119,7 @@ func StoreChecks(ctx context.Context, in StoreInput) StoreReport {
 	var integrity, executions verify.Evidence
 	fail := func(s string) StoreReport {
 		integrity.AddUnmeasured(s)
-		executions.AddUnmeasured(s)
-		results := []verify.Result{integrity.Result(verify.NameStoreIntegrity), executions.Result(verify.NameExecutionsRecorded)}
-		if in.MaxReclaims != nil {
-			results = append(results, verify.Unmeasured(s, verify.NameReclaims)...)
-		}
+		results := append([]verify.Result{integrity.Result(verify.NameStoreIntegrity)}, verify.Unmeasured(s, CheckNames(in)[1:]...)...)
 		return StoreReport{Results: results, ReworkErr: errors.New(s)}
 	}
 	if sqliteDriver(opts.Driver) {
@@ -119,6 +147,7 @@ func StoreChecks(ctx context.Context, in StoreInput) StoreReport {
 		executions.Note(fmt.Sprintf("%d marker files unreadable, so a real task's execution count may be low", in.SkippedMarkers))
 	}
 	out := StoreReport{Results: []verify.Result{integrity.Result(verify.NameStoreIntegrity), executions.Result(verify.NameExecutionsRecorded)}}
+	out.Results = append(out.Results, farm.attemptChecks(ctx, in)...)
 	if rw, err := farm.rework(ctx, leased, in.Markers, in.Faults); err != nil {
 		out.ReworkErr = err
 	} else {
@@ -128,10 +157,28 @@ func StoreChecks(ctx context.Context, in StoreInput) StoreReport {
 	if rcErr == nil {
 		out.Reclaims = &rc
 	}
-	if in.MaxReclaims != nil {
+	if in.MaxReclaims != nil { // as CheckNames lists reclaims
 		out.Results = append(out.Results, reclaimsResult(out.Reclaims, rcErr, *in.MaxReclaims))
 	}
 	return out
+}
+
+// CheckNames lists the checks StoreChecks runs on in, in order.
+func CheckNames(in StoreInput) []string {
+	names := []string{verify.NameStoreIntegrity, verify.NameExecutionsRecorded, verify.NameAttemptOrder}
+	if len(in.Revoked) > 0 {
+		names = append(names, verify.NameRevoked)
+	}
+	if len(in.SkewedGroups) > 0 {
+		names = append(names, verify.NameSkewWarning)
+	}
+	if len(in.DiskFaults) > 0 || in.DiskErr != nil {
+		names = append(names, verify.NameDiskFull)
+	}
+	if in.MaxReclaims != nil {
+		names = append(names, verify.NameReclaims)
+	}
+	return names
 }
 
 func sqliteDriver(driver string) bool { return driver == "" || driver == backend.DriverSQLite }

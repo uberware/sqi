@@ -2399,6 +2399,153 @@ after the lease is released is refused by the leader fence.
 
 ---
 
+## What the chaos suite establishes
+
+The [chaos suite](chaos-testing.md) injects faults into a running farm of real
+`sqi-server` and `sqi-worker` processes and a simulated fleet, and checks that
+it converges. The fleet is 100 workers in the database scenarios, 40 in the
+full-volume scenario, 120 in the descriptor and clock scenarios, and 60
+simulated plus 2 real in the worker-volume and revoke scenarios, at about 2.5
+tasks per second or less. This section describes how the farm behaves under
+each fault on a default configuration (`scheduler.heartbeat_timeout` 30 s,
+`scheduler.reconcile_grace` 2 minutes), on Linux with SQLite, Linux with
+PostgreSQL 18 and Windows with SQLite, and for the disk faults on Linux in a
+container with size-limited volumes. It describes the scenarios' results, not
+a guarantee, and leaves out what they do not cover. A defect is named by its
+row in [Known server defects](load-testing.md#known-server-defects).
+
+### A database that stops answering
+
+`chaos-db-stall-5s`, `chaos-db-stall-30s` and `chaos-db-stall-2m` make the
+database unavailable without closing a connection: on SQLite by holding its
+write lock from outside the server, on PostgreSQL by stopping the traffic
+between the server and the database. The server and the workers stay up
+throughout.
+
+| Stall | Result |
+|---|---|
+| 5 seconds | Ridden out on both stores and on Windows: no attempt is reclaimed and no completed work is redone. |
+| 30 seconds (`heartbeat_timeout`) | Recovery breaks on SQLite on Linux and can break on PostgreSQL and on Windows. The server reclaims attempts from live workers, redoes completed work (from one attempt to a few dozen), can run tasks twice at once, and can leave workers offline 55 seconds after the stall ends. On PostgreSQL and on Windows some runs redo nothing. |
+| 2 minutes | Recovery breaks on every store. On SQLite no worker is online 55 seconds after the stall ends. On PostgreSQL about half to three quarters of the workers are, and 30 to 50 attempts are reclaimed and about as many completed attempts redone. |
+
+Both longer stalls fail the same way (H13f7). The queued heartbeats and status
+reports wait in the broker while the database cannot be written. When it
+answers again, the heartbeat sweep, the stale-assigned reap and the attempt
+reconciler judge the rows the stall left behind before those messages land:
+live workers are marked offline and their attempts reclaimed, tasks still
+running are taken back and leased again, and work that finished during the
+stall is rejected. A worker marked offline stays offline while its connection
+stays up and re-registers only on a reconnect (H13f3). The 30 second stall
+equals the fixed 30 second timeout after which a task still `assigned` is
+taken back, and the 2 minute stall equals `scheduler.reconcile_grace`'s
+default, so each of those two reaches a sweep that acts on the stalled rows.
+
+On SQLite, a stall longer than the 5 second busy timeout makes some
+submissions fail with HTTP 500, not 503: about 5% of them during a 30 second
+stall and about 20% during a 2 minute one. A 5 second stall refuses none, and
+a stall on PostgreSQL refuses none. In `chaos-db-drop` (PostgreSQL only, its
+connections dropped and new ones refused for 30 seconds), no completed work is
+redone, and a submission made while the connections are refused fails with
+500.
+
+### A full data volume on the server
+
+`chaos-disk-server-full` leaves the server's data volume (512 MB, holding the
+database and the broker's data) with no free space for 60 seconds while 40
+workers run tasks that log 5,000 lines each:
+
+- The server process stays up and does not restart.
+- `GET /readyz` answers 200 throughout the fill, and `POST /api/v1/jobs` keeps
+  returning 201.
+- Task and status processing stops within seconds of the fill. No task reaches
+  a terminal status afterwards.
+- `sqi-server` logs nothing about the full volume, during the fill or after
+  (H13f10).
+- Nothing recovers after the space returns. The broker's streams store nothing
+  from the fill to the end of the run (H13f9). When the server's startup
+  liveness grace of about 3 minutes 10 seconds is over, the heartbeat sweep
+  marks every worker offline and reclaims its attempts, and none comes back.
+  Whether a restart of the server recovers it is not known.
+
+Readiness does not show this state. Watch free space on the data volume
+directly.
+
+### Running out of file descriptors
+
+`chaos-server-fd-exhaustion` (Linux) lowers the running server's descriptor
+limit so it can open only 10 more files for 40 seconds while 30 of 120 workers
+redial after a short network cut. The example unit above sets
+`LimitNOFILE=65536`. In most runs a broker stream stops storing and stores
+nothing more for the rest of the run, also after the limit lifts: the task
+status stream, the heartbeat stream, or both. Otherwise the farm is unharmed.
+When the task status stream stops, tasks lease but never reach running, and
+each is taken back and leased again about every 30 seconds, so finished work
+never counts; well over a thousand completed attempts can be redone in a run.
+When the heartbeat stream stops, every worker is marked offline and its
+attempts are reclaimed while it still runs them. The server logs nothing about
+the broker (H13f10), and the scenario does not probe readiness. A stopped
+stream's newest block file is last written inside the limit window and never
+again. A standalone nats-server fails the same way when it runs out of
+descriptors; that this is the cause in sqi is unconfirmed, because sqi drops
+the broker's errors.
+
+### A full session volume on a worker
+
+`chaos-disk-worker-full-at-setup` and `chaos-disk-worker-full-mid-render` fill
+the volume the two real workers keep their session directories on, for 60
+seconds, in a container with a 64 MB volume.
+
+- With no free space or inodes at task setup, every attempt that fails in the
+  window names "no space left on device", at most 12 fail, and both workers
+  run tasks to success after the space returns. The check has no minimum; its
+  summary records how many attempts failed in each fault window.
+- With 1 MiB left while each task writes 8 MiB, the render fails partway with
+  the process's non-zero exit, about 8 to 10 attempts in the window, under the
+  bound of 15. Both workers succeed work after the space returns.
+- No completed work is redone in either scenario.
+
+### Revoking a worker's credential
+
+`chaos-worker-revoke` revokes one of two real workers' broker credentials while
+it runs 30 second tasks, then stops it 60 seconds later.
+
+- The broker disconnects the worker within milliseconds and refuses its
+  reconnects.
+- The worker process keeps running and finishes the tasks it holds, which
+  cannot be reported. They are reclaimed when the heartbeat sweep marks the
+  worker offline, and run elsewhere, so their completed work is redone. Stop a
+  revoked worker's process.
+- A lease request the worker parked before the revoke can still be served
+  after it (H13f8). The worker is then given a task, which waits for the sweep,
+  about half a minute, before it runs elsewhere. Whether this happens depends
+  on which worker's request takes the task.
+
+### Workers with the wrong clock
+
+`chaos-clock-skew` runs 20 simulated workers each with a clock 10 minutes
+ahead, 10 minutes behind and one day ahead of the server's. No worker is
+marked offline, no attempt is reclaimed, no completed work is redone, and the
+server logs `scheduler: worker heartbeat delayed or skewed` for each skewed
+group. That message says the worker's tasks are not reconciled until its
+heartbeats arrive in time again. A skewed clock does not affect whether a
+worker stays online.
+
+It does affect what the server records. The server stamps an attempt's start
+with its own clock and takes its end from the worker's status report, so
+attempts of a worker 10 minutes behind are recorded as ended about 10 minutes
+before they started (H13f6). A worker whose clock runs ahead produces no
+out-of-order attempt, but its recorded run times are longer than the real
+ones. Keep worker clocks within `scheduler.heartbeat_timeout` of the server's.
+
+### A short session lifetime
+
+`chaos-session-expiry` runs 100 workers under broker authentication with
+`nats.auth.user_ttl` set to 1 minute, so each reconnects about four times in
+the run. No work is redone and no attempt is reclaimed, on Linux with SQLite
+and on Windows.
+
+---
+
 ## Diagnosing performance issues
 
 Enable `pprof` endpoints temporarily for profiling (never leave enabled in

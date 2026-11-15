@@ -1074,7 +1074,7 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true' }}
 
     env:
-      # Keep in step with scripts/test-postgres.sh's default for each major.
+      # Keep in step with scripts/lib/pg-throwaway.sh's default for each major.
       PG_IMAGE: ${{ matrix.pg == '16' && 'postgres:16.15' || 'postgres:18.6' }}
 
     strategy:
@@ -2510,7 +2510,7 @@ jobs:
   # consecutive passing runs on GitHub-hosted runners. Until then the failing
   # step, the log and the uploaded run directories are the signal. Once all
   # three have their 20 passes, remove continue-on-error and add the scenarios
-  # to the gated list in load-nightly.yml (see docs/chaos-testing.md, "CI").
+  # to the chaos job's GATED in load-nightly.yml (see docs/chaos-testing.md, "CI").
   chaos-smoke:
     name: Chaos smoke (${{ matrix.scenario }})
     runs-on: ubuntu-latest

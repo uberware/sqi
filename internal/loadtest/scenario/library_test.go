@@ -11,12 +11,16 @@ import (
 )
 
 var builtinNames = []string{
-	"chaos-churn-instant-restart", "chaos-churn-storm", "chaos-logs-during-restart",
+	"chaos-churn-instant-restart", "chaos-churn-storm", "chaos-clock-skew",
+	"chaos-db-drop", "chaos-db-stall-2m", "chaos-db-stall-30s", "chaos-db-stall-5s",
+	"chaos-disk-server-full", "chaos-disk-worker-full-at-setup", "chaos-disk-worker-full-mid-render",
+	"chaos-logs-during-restart",
 	"chaos-net-blip", "chaos-net-flap", "chaos-net-rack-partition", "chaos-net-slow-site",
 	"chaos-power-cut-server-first", "chaos-power-cut-workers-first",
+	"chaos-server-fd-exhaustion",
 	"chaos-server-kill-20s", "chaos-server-kill-5s", "chaos-server-kill-90s", "chaos-server-kill-mid-submit",
-	"chaos-server-stall-long", "chaos-server-stall-short", "chaos-server-term",
-	"chaos-worker-gone", "chaos-worker-kill-mid-task", "chaos-worker-sleep",
+	"chaos-server-stall-long", "chaos-server-stall-short", "chaos-server-term", "chaos-session-expiry",
+	"chaos-worker-gone", "chaos-worker-kill-mid-task", "chaos-worker-revoke", "chaos-worker-sleep",
 	"ci-medium", "expr-mix", "jobs-flood", "logs-heavy", "mixed-medium", "progress-heavy", "queues-many",
 	"smoke", "soak-steady", "steps-deep", "tasks-wide", "ui-heavy", "workers-churn", "workers-ramp",
 }
@@ -42,6 +46,32 @@ func TestBuiltins_AllValidate(t *testing.T) {
 				t.Errorf("description %q must be one non-empty line", s.Description)
 			}
 		})
+	}
+}
+
+// TestBuiltins_DiskScenariosNeedTheContainer pins what load-nightly.yml's chaos
+// plan relies on: every chaos-disk-* scenario needs the container's volumes,
+// so --chaos-matrix without --container leaves it to the container job.
+func TestBuiltins_DiskScenariosNeedTheContainer(t *testing.T) {
+	var n int
+	for _, name := range BuiltinNames() {
+		if !strings.HasPrefix(name, "chaos-disk-") {
+			continue
+		}
+		n++
+		s, err := Builtin(name)
+		if err != nil {
+			t.Fatalf("Builtin(%q): %v", name, err)
+		}
+		if why := s.ChaosSkipReason(ChaosEnv{GOOS: "linux", Store: "sqlite"}); why == "" {
+			t.Errorf("%s runs without --container; give it a disk_full fault or rename it", name)
+		}
+		if why := s.ChaosSkipReason(ChaosEnv{GOOS: "linux", Store: "sqlite", Container: true}); why != "" {
+			t.Errorf("%s does not run in the container: %s", name, why)
+		}
+	}
+	if n == 0 {
+		t.Fatal("the library has no chaos-disk-* scenario")
 	}
 }
 

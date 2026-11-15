@@ -119,6 +119,7 @@ func (v *validator) workers() {
 		}
 		seen[w.Name] = true
 		v.workerCounts(path, w)
+		v.clockSkew(path, w)
 		if w.Heartbeat.Duration <= 0 {
 			v.failf(path+".heartbeat", "must be positive")
 		}

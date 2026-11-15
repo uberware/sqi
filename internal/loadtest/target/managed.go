@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
+	"github.com/uberware/sqi/internal/loadtest/dbfault"
+	"github.com/uberware/sqi/internal/loadtest/diskfill"
 	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/netfault"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
@@ -75,6 +77,14 @@ type ManagedConfig struct {
 	// Seed is the run seed, mixed into each broker lane's jitter; 0 seeds a
 	// lane with its group's index alone.
 	Seed uint64
+	// ServerVolume, when set, is a directory on a size-limited file system
+	// that holds the server's data: its data directory is
+	// ServerVolume/<RunID>. A disk_full fault fills that volume.
+	ServerVolume string
+	// WorkerVolume, when set, is the same for the real workers' session
+	// directories: each is WorkerVolume/<RunID>/<n>-sessions, so a task's
+	// working directory is on it.
+	WorkerVolume string
 
 	readyTimeout time.Duration // how long to wait for /readyz; 0 is defaultReadyTimeout
 	stopTimeout  time.Duration // grace between interrupt and kill; 0 is defaultStopTimeout
@@ -90,8 +100,10 @@ type managed struct {
 
 	settings   serverSettings
 	configPath string
+	// workerVolume is the absolute WorkerVolume, "" when none.
+	workerVolume string
 
-	pgDSN      string // the run's DSN
+	pgDSN      string // the run's DSN, which the harness's own connections use
 	pgAdminDSN string // set when the harness created pgDB
 	pgDB       string
 
@@ -109,6 +121,16 @@ type managed struct {
 	lanes     map[string]*netfault.Proxy
 	markerDir string
 
+	// dbProxy fronts sqi-server's PostgreSQL connections when the scenario has
+	// a database fault, and serverDSN is pgDSN through it; both are set before
+	// the server starts and never changed after. Without a proxy serverDSN is "".
+	dbProxy   *netfault.Proxy
+	serverDSN string
+	// dbMu guards dbLock, the SQLite write lock a database stall holds, and
+	// serializes the database faults with Close.
+	dbMu   sync.Mutex
+	dbLock *dbfault.SQLiteLock
+
 	mu           sync.Mutex // guards what follows against Close and the fault controller
 	server       *proc
 	workers      []*realWorker
@@ -117,6 +139,23 @@ type managed struct {
 	// resumedGroups are the task groups resumeAll continued, which Close
 	// ends.
 	resumedGroups []int
+	// fdSaved is the server's open-file limit LimitServerFDs replaced, nil when
+	// none is applied. Stopping the server forgets it.
+	fdSaved *savedFDLimit
+
+	// volMu guards ballast and serializes filling and freeing a volume with
+	// Close. Acquire it before mu.
+	volMu sync.Mutex
+	// ballast is what FillVolume wrote, by volume name.
+	ballast map[string]*diskfill.Ballast
+	// fill writes a volume's ballast; diskfill.Fill, except in tests.
+	fill func(dir string, headroom int64, inodes bool) (*diskfill.Ballast, error)
+
+	// probeMu guards readyProbe, the client ServerReady probes /readyz with,
+	// built on the first probe and kept: a probe each second would otherwise
+	// leave an idle connection behind per probe.
+	probeMu    sync.Mutex
+	readyProbe *client.Client
 
 	closeOnce sync.Once
 	closeErr  error
@@ -170,9 +209,25 @@ func newManaged(cfg ManagedConfig) (*managed, error) {
 		settings:     serverSettings{RunDir: runDir, Spec: cfg.Scenario.Server, BootstrapUser: bootstrapUser},
 		configPath:   filepath.Join(runDir, "server.yaml"),
 		creds:        simworker.NoCredentials{},
+		ballast:      map[string]*diskfill.Ballast{},
+		fill:         diskfill.Fill,
 	}
 	if m.runID == "" {
 		m.runID = filepath.Base(runDir)
+	}
+	if cfg.ServerVolume != "" {
+		vol, err := filepath.Abs(cfg.ServerVolume)
+		if err != nil {
+			return nil, fmt.Errorf("target: server volume: %w", err)
+		}
+		m.settings.Volume, m.settings.RunID = vol, m.runID
+	}
+	if cfg.WorkerVolume != "" {
+		vol, err := filepath.Abs(cfg.WorkerVolume)
+		if err != nil {
+			return nil, fmt.Errorf("target: worker volume: %w", err)
+		}
+		m.workerVolume = vol
 	}
 	if cfg.Scenario.HasRealTask() {
 		m.markerDir = filepath.Join(runDir, "markers")
@@ -222,6 +277,7 @@ func (m *managed) start(ctx context.Context) error {
 	steps := []func(context.Context) error{
 		m.checkBinaries,
 		m.preparePostgres,
+		m.startDatabaseProxy,
 		m.prepareTLS,
 		m.startServer,
 		m.authenticate,
@@ -392,8 +448,8 @@ func (m *managed) serverEnv() []string {
 	if m.bootstrapPassword != "" {
 		extra = append(extra, "SQI_AUTH_BOOTSTRAP_PASSWORD="+m.bootstrapPassword)
 	}
-	if m.pgDSN != "" {
-		extra = append(extra, "SQI_STORE_POSTGRES_DSN="+m.pgDSN)
+	if dsn := cmp.Or(m.serverDSN, m.pgDSN); dsn != "" {
+		extra = append(extra, "SQI_STORE_POSTGRES_DSN="+dsn)
 	}
 	return childEnv(os.Environ(), extra...)
 }
@@ -453,6 +509,7 @@ func (m *managed) stopServer(ctx context.Context) error {
 	m.mu.Lock()
 	p := m.server
 	m.server = nil
+	m.fdSaved = nil // the limit went with the process
 	m.mu.Unlock()
 	if p == nil {
 		return nil
@@ -547,6 +604,13 @@ func (m *managed) spawnWorker(ctx context.Context, w *realWorker) error {
 	m.mu.Unlock()
 	n := w.index + 1 // the directory and log names count from 1
 	id := incarnationID(w.index, restarts)
+	if restarts == 0 && m.joinToken != "" {
+		// Only the first incarnation gets a copy: a worker whose copy was removed
+		// (a revoked one) finds none when it is restarted.
+		if err := m.writeWorkerJoinToken(n); err != nil {
+			return err
+		}
+	}
 	env, err := m.workerEnv(w.group, n, id)
 	if err != nil {
 		return err
@@ -586,6 +650,41 @@ func (m *managed) spawnWorker(ctx context.Context, w *realWorker) error {
 	return nil
 }
 
+// workerDir is real worker n's data directory (n counts from 1).
+func (m *managed) workerDir(n int) string {
+	return filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(n))
+}
+
+// workerJoinTokenFile is real worker n's own copy of the join token. The shared
+// joinTokenFile stays for the simulated fleet, so removing a copy takes the
+// token from one worker alone.
+func (m *managed) workerJoinTokenFile(n int) string {
+	return filepath.Join(m.workerDir(n), "join-token")
+}
+
+// writeWorkerJoinToken writes real worker n's token copy, mode 0600, in its
+// data directory, creating the directory with mode 0700 as the worker does. A
+// copy that is already there is left as it is.
+func (m *managed) writeWorkerJoinToken(n int) error {
+	if err := os.MkdirAll(m.workerDir(n), 0o700); err != nil {
+		return fmt.Errorf("target: create %s: %w", m.workerDir(n), err)
+	}
+	f, err := os.OpenFile(m.workerJoinTokenFile(n), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("target: write the join token of real worker %d: %w", n, err)
+	}
+	if _, err := f.WriteString(m.joinToken); err != nil {
+		return errors.Join(fmt.Errorf("target: write the join token of real worker %d: %w", n, err), f.Close())
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("target: write the join token of real worker %d: %w", n, err)
+	}
+	return nil
+}
+
 // workerLog is real worker i's log, which every incarnation appends to.
 func (m *managed) workerLog(i int) string {
 	return filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(i+1)+".log")
@@ -598,7 +697,7 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int, inc string) ([]string
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(n))
+	dir := m.workerDir(n)
 	name := g.Name
 	if name == "" {
 		name = "real"
@@ -609,7 +708,7 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int, inc string) ([]string
 		"SQI_WORKER_FARM_ID=" + m.farm.id,
 		"SQI_WORKER_NAME=" + name + "-" + strconv.Itoa(n),
 		"SQI_WORKER_DATA_DIR=" + dir,
-		"SQI_WORKER_SESSION_DIR=" + dir + "-sessions",
+		"SQI_WORKER_SESSION_DIR=" + m.sessionDir(n),
 		"SQI_WORKER_ALLOW_ROOT=true",
 		"SQI_WORKER_LOG_FORMAT=text",
 		"SQI_WORKER_LOG_LEVEL=info",
@@ -641,7 +740,7 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int, inc string) ([]string
 		env = append(env, "SQI_WORKER_HEARTBEAT_INTERVAL="+g.Heartbeat.String())
 	}
 	if m.joinToken != "" {
-		env = append(env, "SQI_WORKER_NATS_JOIN_TOKEN_FILE="+m.joinTokenFile(), "SQI_WORKER_NATS_SERVER_URL="+m.httpURL)
+		env = append(env, "SQI_WORKER_NATS_JOIN_TOKEN_FILE="+m.workerJoinTokenFile(n), "SQI_WORKER_NATS_SERVER_URL="+m.httpURL)
 	}
 	if m.tlsFiles.CAFile != "" {
 		env = append(
@@ -652,6 +751,16 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int, inc string) ([]string
 		)
 	}
 	return childEnv(os.Environ(), env...), nil
+}
+
+// sessionDir is real worker n's session directory: under the worker volume
+// when there is one, else beside the worker's data directory.
+func (m *managed) sessionDir(n int) string {
+	name := strconv.Itoa(n) + "-sessions"
+	if m.workerVolume != "" {
+		return filepath.Join(m.workerVolume, m.runID, name)
+	}
+	return filepath.Join(m.settings.RunDir, "workers", name)
 }
 
 // capabilityTags renders tags as sqi-worker's comma-separated key=value
@@ -747,10 +856,11 @@ func (m *managed) writeNoopConfig() error {
 	for _, j := range m.cfg.Scenario.Jobs {
 		if rt := j.RealTask; rt != nil {
 			cfg.Classes[j.Name] = marker.NoopClass{
-				DurationMS:  int(rt.Duration.Milliseconds()),
-				LogEveryMS:  int(rt.LogEvery.Milliseconds()),
-				ChattyChild: rt.ChattyChild,
-				SilentChild: rt.SilentChild,
+				DurationMS:   int(rt.Duration.Milliseconds()),
+				LogEveryMS:   int(rt.LogEvery.Milliseconds()),
+				ChattyChild:  rt.ChattyChild,
+				SilentChild:  rt.SilentChild,
+				ScratchBytes: rt.ScratchBytes,
 			}
 		}
 	}
@@ -801,21 +911,24 @@ func (m *managed) workerPIDs() []int {
 	return pids
 }
 
-// Close first continues every task group and process the harness stalled,
-// then stops the real workers (together), then ends the task process groups
-// the markers still show running, then stops the server: each process gets
-// an interrupt and the stop grace (30 s by default) to exit before it is
-// killed, and a done ctx kills at once. It then drops a database the harness
-// created and closes the broker lanes. Every process is reaped before Close
-// returns, whatever the error, and nothing is started once it has begun.
+// Close first puts back the server's open-file limit and releases a database
+// fault, so the server can finish its writes; then it continues every task
+// group and process the harness stalled, stops the real workers (together),
+// ends the task process groups the markers still show running, and stops the
+// server: each process gets an interrupt and the stop grace (30 s by default)
+// to exit before it is killed, and a done ctx kills at once. It then frees the
+// volumes' ballast, drops a database the harness created and closes the broker
+// lanes and the database proxy. Every process is reaped before Close returns,
+// whatever the error, and nothing is started once it has begun.
 func (m *managed) Close(ctx context.Context) error {
 	m.closeOnce.Do(func() {
 		m.mu.Lock()
 		m.closing = true
 		m.mu.Unlock()
+		errs := []error{m.RestoreServerFDs(), m.HealDatabase(ctx)}
 		m.resumeAll(ctx)
-		errs := m.stopWorkers(ctx, true)
-		errs = append(errs, m.endTaskGroups(ctx), m.stopServer(ctx))
+		errs = append(errs, m.stopWorkers(ctx, true)...)
+		errs = append(errs, m.endTaskGroups(ctx), m.stopServer(ctx), m.freeVolumes(ctx))
 		if m.pgDB != "" {
 			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cliTimeout)
 			if err := dropDatabase(dctx, m.pgAdminDSN, m.pgDB); err != nil {

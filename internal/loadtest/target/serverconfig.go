@@ -23,10 +23,21 @@ type serverSettings struct {
 	HTTPAddr, NATSAddr string
 	Spec               scenario.ServerSpec
 	BootstrapUser      string
+	// Volume, when set, holds the server's data: dataDir is Volume/<RunID>.
+	// The rest of the run directory (logs, markers, server.yaml) stays where
+	// RunDir is, so the harness can still write while the volume is full.
+	Volume, RunID string
 }
 
-func (s serverSettings) dataDir() string { return filepath.Join(s.RunDir, "data") }
-func (s serverSettings) tlsDir() string  { return filepath.Join(s.RunDir, "tls") }
+// dataDir is where the server keeps its state: its SQLite database and its
+// broker's data.
+func (s serverSettings) dataDir() string {
+	if s.Volume != "" {
+		return filepath.Join(s.Volume, s.RunID)
+	}
+	return filepath.Join(s.RunDir, "data")
+}
+func (s serverSettings) tlsDir() string { return filepath.Join(s.RunDir, "tls") }
 
 // sqlitePath is the server's SQLite database.
 func (s serverSettings) sqlitePath() string { return filepath.Join(s.dataDir(), "sqi.db") }

@@ -319,9 +319,16 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	w.instance.Store(&inc.instanceID)
 
 	id, g := w.spec.ID, w.spec.Group
+	// A skewed worker offsets only the timestamps it puts on the wire; the
+	// ledger and the harness's timers read the real clock.
+	skew := g.ClockSkew.Duration
+	wire := func() time.Time { return time.Now().Add(skew) }
+	logCfg := logstreamer.DefaultConfig()
+	logCfg.Now = wire
 	st := status.New(nc, status.Config{WorkerID: id}, w.logger)
-	logs := logstreamer.New(nc, id, logstreamer.DefaultConfig(), w.logger)
+	logs := logstreamer.New(nc, id, logCfg, w.logger)
 	d := NewDispatcher(id, st, logs, w.behavior, w.ledger, w.rng)
+	d.wireNow = wire
 	d.instanceID = inc.instanceID
 	d.logger = w.logger
 	if _, err := cancel.Subscribe(nc, id, d, w.logger); err != nil {
@@ -335,7 +342,7 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	if interval <= 0 {
 		interval = defaultHeartbeat
 	}
-	hb := heartbeat.New(nc, id, g.CPU, interval, d, inc, w.logger)
+	hb := heartbeat.New(nc, id, g.CPU, interval, d, inc, w.logger).WithClock(wire)
 	loop := lease.New(lease.NATSTransport{NC: nc}, d, lease.Config{
 		QueueIDs: lease.QueueIDs(g.Queues), WorkerID: id, InstanceID: inc.instanceID,
 	}, w.logger)

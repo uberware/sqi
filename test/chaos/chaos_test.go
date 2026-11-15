@@ -6,7 +6,6 @@ package chaos
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -33,6 +32,11 @@ const (
 	storeEnv = "SQI_CHAOS_STORE"
 	// chaosPrefix marks the built-in scenarios the suite runs.
 	chaosPrefix = "chaos-"
+	// containerEnv is "1" when the size-limited volumes of make
+	// chaos-container are mounted; the two variables below then name them.
+	containerEnv    = "SQI_CHAOS_CONTAINER"
+	serverVolumeEnv = "SQI_CHAOS_SERVER_VOLUME"
+	workerVolumeEnv = "SQI_CHAOS_WORKER_VOLUME"
 )
 
 var (
@@ -103,10 +107,22 @@ func chaosStore(t *testing.T) string {
 
 // managedFor is the target configuration for one store. PostgreSQL gets an
 // empty database the harness uses as it is; without SQI_TEST_POSTGRES_DSN
-// the test skips (or fails, with SQI_TEST_REQUIRE_POSTGRES=1).
+// the test skips (or fails, with SQI_TEST_REQUIRE_POSTGRES=1). With
+// SQI_CHAOS_CONTAINER=1 the server's and the workers' volumes come from
+// SQI_CHAOS_SERVER_VOLUME and SQI_CHAOS_WORKER_VOLUME, and the test fails when
+// either is empty.
 func managedFor(t *testing.T, store string) *target.ManagedConfig {
 	t.Helper()
 	cfg := *binaries(t)
+	if inContainer() {
+		cfg.ServerVolume = os.Getenv(serverVolumeEnv)
+		cfg.WorkerVolume = os.Getenv(workerVolumeEnv)
+		for _, name := range []string{serverVolumeEnv, workerVolumeEnv} {
+			if os.Getenv(name) == "" {
+				t.Fatalf("%s=1 but %s is empty", containerEnv, name)
+			}
+		}
+	}
 	if store == "postgres" {
 		cfg.PostgresDSN = storetest.PostgresEmptyDSN(t)
 	}
@@ -125,7 +141,9 @@ func chaosNames() []string {
 }
 
 // chaosScenario returns the named built-in scenario on store, changed by
-// mutate when it is set, defaults applied and validated.
+// mutate when it is set, defaults applied and validated. It skips the test
+// when this environment cannot run the scenario, before validating it, so a
+// PostgreSQL-only scenario on SQLite skips instead of failing validation.
 func chaosScenario(t *testing.T, name, store string, mutate func(*scenario.Scenario)) *scenario.Scenario {
 	t.Helper()
 	sc, err := scenario.Builtin(name)
@@ -139,30 +157,29 @@ func chaosScenario(t *testing.T, name, store string, mutate func(*scenario.Scena
 		mutate(sc)
 	}
 	sc.ApplyDefaults()
+	if why := skipReason(sc, store); why != "" {
+		t.Skipf("skipped on %s: %s", runtime.GOOS, why)
+	}
 	if err := sc.Validate(scenario.TargetManaged); err != nil {
 		t.Fatal(err)
 	}
 	return sc
 }
 
-// stallReason says why sc cannot run on this OS: a stall is SIGSTOP and
-// SIGCONT, which Windows does not have. It is "" when sc can run.
-func stallReason(sc *scenario.Scenario) string {
-	if runtime.GOOS != "windows" {
-		return ""
-	}
-	for i, f := range sc.Faults {
-		if f.Stall == nil {
-			continue
-		}
-		what := "the server"
-		if !f.Stall.Server {
-			what = "real workers of group " + f.Stall.Group
-		}
-		return fmt.Sprintf("faults[%d] stalls %s, and a stall (SIGSTOP/SIGCONT) is POSIX only", i, what)
-	}
-	return ""
+// skipReason says why sc cannot run in this environment, "" when it can: see
+// (*scenario.Scenario).ChaosSkipReason for the rules. store is the store the
+// run is on, and the size-limited volumes are present with SQI_CHAOS_CONTAINER=1.
+func skipReason(sc *scenario.Scenario, store string) string {
+	return sc.ChaosSkipReason(scenario.ChaosEnv{
+		GOOS:      runtime.GOOS,
+		Store:     store,
+		Container: inContainer(),
+	})
 }
+
+// inContainer reports whether the suite runs where make chaos-container
+// mounted its size-limited volumes.
+func inContainer() bool { return os.Getenv(containerEnv) == "1" }
 
 // runChaos runs sc once with seed 1 and returns its record and run directory.
 // A run that returns an error fails the test, with the summary logged.
@@ -208,9 +225,13 @@ func logSummary(t *testing.T, dir string) {
 // violations applied: a failure the scenario expects counts as held, and an
 // expected "must" failure that did not happen is a failed result of its own.
 //
-// Scenarios that stall a process are skipped on Windows. Each run's directory
-// is logged, and on failure its summary.md; it lies under $SQI_LOAD_OUT when
-// that is set and under t.TempDir otherwise.
+// A scenario is skipped, with the reason, when this environment cannot inject
+// its faults (scenario.ChaosSkipReason): a stall fault on Windows; an fd_limit
+// or disk_full fault off Linux; a disk_full fault without the size-limited
+// volumes (SQI_CHAOS_CONTAINER=1, set by make chaos-container); a database drop
+// fault off PostgreSQL (SQI_CHAOS_STORE=postgres). Each run's directory is
+// logged, and on failure its summary.md; it lies under $SQI_LOAD_OUT when that
+// is set and under t.TempDir otherwise.
 func TestChaos(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs real sqi binaries for several minutes per scenario; skipped with -short")
@@ -223,9 +244,6 @@ func TestChaos(t *testing.T) {
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			sc := chaosScenario(t, name, store, nil)
-			if why := stallReason(sc); why != "" {
-				t.Skipf("skipped on %s: %s", runtime.GOOS, why)
-			}
 			rec, dir := runChaos(t, sc, store)
 			if !checkRecord(t, rec) {
 				logSummary(t, dir)

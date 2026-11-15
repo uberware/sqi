@@ -8,15 +8,21 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/client"
+	"github.com/uberware/sqi/internal/loadtest/dbfault"
 	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/netfault"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/store/backend"
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
 
 // Faults is what a fault controller drives. Only the managed target has it.
@@ -71,6 +77,46 @@ type Faults interface {
 	// StoreOptions says how to open the run's store once the server is
 	// stopped.
 	StoreOptions() backend.Options
+	// StallDatabase stalls the store: on SQLite an outside connection takes
+	// the write lock, on PostgreSQL the proxy in front of the server's
+	// connections forwards nothing.
+	StallDatabase(ctx context.Context) error
+	// DropDatabase cuts the server's PostgreSQL connections and refuses new
+	// ones. PostgreSQL only: on SQLite it is an error.
+	DropDatabase(ctx context.Context) error
+	// HealDatabase releases the lock or heals the proxy. It does nothing when
+	// no database fault is applied.
+	HealDatabase(ctx context.Context) error
+	// FillVolume fills the volume "server" or "workers" with ballast, leaving
+	// headroom bytes free and, with inodes, no inodes. It is an error when the
+	// target has no such volume. Filling a filled volume is a no-op.
+	FillVolume(volume string, headroom int64, inodes bool) error
+	// FreeVolume removes the volume's ballast. It does nothing when the volume
+	// is not filled and is an error when the target has no such volume.
+	FreeVolume(volume string) error
+	// LimitServerFDs lowers the running sqi-server's soft RLIMIT_NOFILE so that it
+	// can open headroom more files, leaving the hard limit, and returns the
+	// open-file count it saw. Limiting a limited server is a no-op that returns
+	// the first count. Linux only; elsewhere, with a server running, it returns
+	// errFDLimitUnsupported.
+	LimitServerFDs(headroom int) (open int, err error)
+	// RestoreServerFDs puts back the soft limit LimitServerFDs replaced. It does
+	// nothing when none is applied or the server is gone.
+	RestoreServerFDs() error
+	// ServerReady probes the server's /readyz: "ready", or the probe's error
+	// text.
+	ServerReady(ctx context.Context) (status string)
+	// RealWorkerID is real worker i's worker ID, read from its data directory's
+	// worker.id. It is an error until the worker has started once.
+	RealWorkerID(i int) (string, error)
+	// RevokeWorker removes real worker i's join-token file, then revokes its
+	// credential through the REST API, and returns its worker ID. Without the
+	// file a restarted worker cannot enroll again. The run must have broker
+	// authentication.
+	RevokeWorker(ctx context.Context, i int) (workerID string, err error)
+	// ServerLog is the path of the server's log, which every incarnation
+	// appends to.
+	ServerLog() string
 }
 
 // Lane is a worker group's connection to the broker, which a fault can cut,
@@ -109,6 +155,18 @@ var errStallUnsupported = errors.New("target: stall needs SIGSTOP, which Windows
 
 // errClosing refuses a restart once Close has begun.
 var errClosing = errors.New("target: the target is closing")
+
+// errNoDatabaseProxy is what a database fault returns on a PostgreSQL run whose
+// scenario declared none, so no proxy fronts the server's connections.
+var errNoDatabaseProxy = errors.New("target: the run has no database proxy; declare a database fault in the scenario")
+
+// savedFDLimit is the limit LimitServerFDs replaced, on the process it
+// replaced it on, and the open-file count it saw.
+type savedFDLimit struct {
+	pid  int
+	old  fdLimit
+	open int
+}
 
 // errUnsafeGroup refuses a group signal to a group id that is not safe to
 // signal, such as one read from a corrupt marker.
@@ -180,6 +238,11 @@ func (m *managed) startLanes(ctx context.Context) error {
 
 func (m *managed) closeLanes() error {
 	var errs []error
+	if m.dbProxy != nil {
+		if err := m.dbProxy.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("target: close the database proxy: %w", err))
+		}
+	}
 	for _, name := range slices.Sorted(maps.Keys(m.lanes)) {
 		if err := m.lanes[name].Close(); err != nil {
 			errs = append(errs, fmt.Errorf("target: close the broker lane of worker group %s: %w", name, err))
@@ -214,6 +277,292 @@ func (m *managed) StoreOptions() backend.Options {
 		return backend.Options{Driver: backend.DriverPostgres, PostgresDSN: m.pgDSN, Logger: m.logger}
 	}
 	return backend.Options{Driver: backend.DriverSQLite, SQLitePath: m.settings.sqlitePath()}
+}
+
+// StallDatabase takes the SQLite write lock from outside the server, or
+// blackholes the PostgreSQL proxy. Stalling an already stalled database is a
+// no-op.
+func (m *managed) StallDatabase(ctx context.Context) error {
+	m.dbMu.Lock()
+	defer m.dbMu.Unlock()
+	if m.isClosing() {
+		return errClosing
+	}
+	if m.settings.Spec.Store == backend.DriverPostgres {
+		if m.dbProxy == nil {
+			return errNoDatabaseProxy
+		}
+		m.logger.InfoContext(ctx, "stalling the database")
+		m.dbProxy.Blackhole()
+		return nil
+	}
+	if m.dbLock != nil {
+		return nil
+	}
+	m.logger.InfoContext(ctx, "stalling the database: taking the SQLite write lock")
+	l, err := dbfault.LockSQLite(ctx, m.settings.sqlitePath())
+	if err != nil {
+		return fmt.Errorf("target: stall the database: %w", err)
+	}
+	m.dbLock = l
+	return nil
+}
+
+// DropDatabase cuts the PostgreSQL proxy.
+func (m *managed) DropDatabase(ctx context.Context) error {
+	m.dbMu.Lock()
+	defer m.dbMu.Unlock()
+	if m.isClosing() {
+		return errClosing
+	}
+	if m.settings.Spec.Store != backend.DriverPostgres {
+		return errors.New("target: dropping the database's connections needs PostgreSQL; SQLite has none to drop")
+	}
+	if m.dbProxy == nil {
+		return errNoDatabaseProxy
+	}
+	m.logger.InfoContext(ctx, "dropping the database connections")
+	m.dbProxy.Cut()
+	return nil
+}
+
+// HealDatabase releases the SQLite lock and heals the PostgreSQL proxy,
+// whichever is applied.
+func (m *managed) HealDatabase(ctx context.Context) error {
+	m.dbMu.Lock()
+	defer m.dbMu.Unlock()
+	var err error
+	if m.dbLock != nil {
+		m.logger.InfoContext(ctx, "healing the database: releasing the SQLite write lock")
+		err = m.dbLock.Release()
+		m.dbLock = nil
+	}
+	if m.dbProxy != nil {
+		m.dbProxy.Heal()
+	}
+	if err != nil {
+		return fmt.Errorf("target: heal the database: %w", err)
+	}
+	return nil
+}
+
+// volumeDir is the directory FillVolume fills: the one the volume's data lives
+// in. It is an error when the target has no such volume.
+func (m *managed) volumeDir(volume string) (string, error) {
+	switch {
+	case volume == scenario.VolumeServer && m.settings.Volume != "":
+		return m.settings.dataDir(), nil
+	case volume == scenario.VolumeWorkers && m.workerVolume != "":
+		return filepath.Join(m.workerVolume, m.runID), nil
+	case volume == scenario.VolumeServer:
+		return "", errors.New("target: the run has no server volume; set ManagedConfig.ServerVolume")
+	case volume == scenario.VolumeWorkers:
+		return "", errors.New("target: the run has no workers volume; set ManagedConfig.WorkerVolume")
+	}
+	return "", fmt.Errorf("target: unknown volume %q; want %q or %q", volume, scenario.VolumeServer, scenario.VolumeWorkers)
+}
+
+// FillVolume writes the ballast. A failed fill leaves nothing behind (Fill
+// removes what it wrote), so no fault stays applied after an error.
+func (m *managed) FillVolume(volume string, headroom int64, inodes bool) error {
+	dir, err := m.volumeDir(volume)
+	if err != nil {
+		return err
+	}
+	m.volMu.Lock()
+	defer m.volMu.Unlock()
+	if m.isClosing() {
+		return errClosing
+	}
+	if _, ok := m.ballast[volume]; ok {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("target: fill the %s volume: %w", volume, err)
+	}
+	m.logger.InfoContext(context.Background(), "filling a volume", slog.String("volume", volume), slog.String("dir", dir), slog.Int64("headroom", headroom), slog.Bool("inodes", inodes))
+	b, err := m.fill(dir, headroom, inodes)
+	if err != nil {
+		return fmt.Errorf("target: fill the %s volume: %w", volume, err)
+	}
+	m.ballast[volume] = b
+	return nil
+}
+
+// FreeVolume removes the volume's ballast. When removing fails the ballast is
+// kept, so Close tries again.
+func (m *managed) FreeVolume(volume string) error {
+	if _, err := m.volumeDir(volume); err != nil {
+		return err
+	}
+	m.volMu.Lock()
+	defer m.volMu.Unlock()
+	b, ok := m.ballast[volume]
+	if !ok {
+		return nil
+	}
+	m.logger.InfoContext(context.Background(), "freeing a volume", slog.String("volume", volume))
+	if err := b.Free(); err != nil {
+		return fmt.Errorf("target: free the %s volume: %w", volume, err)
+	}
+	delete(m.ballast, volume)
+	return nil
+}
+
+// freeVolumes frees every volume still filled; Close calls it once the server
+// and the workers are stopped.
+func (m *managed) freeVolumes(ctx context.Context) error {
+	m.volMu.Lock()
+	defer m.volMu.Unlock()
+	var errs []error
+	for _, v := range slices.Sorted(maps.Keys(m.ballast)) {
+		m.logger.InfoContext(ctx, "freeing a volume", slog.String("volume", v))
+		if err := m.ballast[v].Free(); err != nil {
+			errs = append(errs, fmt.Errorf("target: free the %s volume: %w", v, err))
+			continue
+		}
+		delete(m.ballast, v)
+	}
+	return errors.Join(errs...)
+}
+
+// LimitServerFDs lowers the server's soft open-file limit so that it can open
+// headroom more files. The limit is put back by RestoreServerFDs, StopForChecks and
+// Close.
+func (m *managed) LimitServerFDs(headroom int) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch {
+	case m.closing:
+		return 0, errClosing
+	case m.server == nil:
+		return 0, errors.New("target: no sqi-server has been started")
+	case m.server.exited():
+		return 0, errors.New("target: sqi-server is not running")
+	}
+	pid := m.server.pid()
+	if s := m.fdSaved; s != nil && s.pid == pid {
+		return s.open, nil
+	}
+	m.logger.InfoContext(context.Background(), "limiting the server's open files", slog.Int("pid", pid), slog.Int("headroom", headroom))
+	open, old, err := limitFDs(pid, headroom)
+	if err != nil {
+		return 0, err
+	}
+	m.fdSaved = &savedFDLimit{pid: pid, old: old, open: open}
+	return open, nil
+}
+
+// RestoreServerFDs puts back the limit LimitServerFDs replaced. With nothing
+// limited, which is always so off Linux, it does nothing. A server that is
+// gone has nothing to restore either. When putting the limit back fails it
+// stays saved, so the next call tries again.
+func (m *managed) RestoreServerFDs() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.fdSaved
+	if s == nil {
+		return nil
+	}
+	m.logger.InfoContext(context.Background(), "restoring the server's open-file limit", slog.Int("pid", s.pid))
+	if err := restoreFDs(s.pid, s.old); err != nil {
+		return err
+	}
+	m.fdSaved = nil
+	return nil
+}
+
+// readyProbeTimeout bounds one ServerReady probe.
+const readyProbeTimeout = 2 * time.Second
+
+// ServerReady asks the server's /readyz once.
+func (m *managed) ServerReady(ctx context.Context) string {
+	if m.httpURL == "" {
+		return "no sqi-server has been started"
+	}
+	probe, err := m.probeClient()
+	if err != nil {
+		return err.Error()
+	}
+	ctx, cancel := context.WithTimeout(ctx, readyProbeTimeout)
+	defer cancel()
+	if err := probe.Ready(ctx); err != nil {
+		return err.Error()
+	}
+	return "ready"
+}
+
+// probeClient is the client ServerReady probes with, built once.
+func (m *managed) probeClient() (*client.Client, error) {
+	m.probeMu.Lock()
+	defer m.probeMu.Unlock()
+	if m.readyProbe == nil {
+		c, err := newClient(m.httpURL, "", m.tlsFiles)
+		if err != nil {
+			return nil, err
+		}
+		m.readyProbe = c
+	}
+	return m.readyProbe, nil
+}
+
+// ServerLog is the path of server.log.
+func (m *managed) ServerLog() string { return m.serverLog() }
+
+// RealWorkerID reads real worker i's ID from its data directory.
+func (m *managed) RealWorkerID(i int) (string, error) {
+	m.mu.Lock()
+	n := len(m.workers)
+	m.mu.Unlock()
+	if i < 0 || i >= n {
+		return "", fmt.Errorf("target: no real worker %d (the run has %d)", i, n)
+	}
+	path := workerconfig.WorkerIDFilePath(m.workerDir(i + 1))
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("target: real worker %d has not started: it has no %s", i, path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("target: read the ID of real worker %d: %w", i, err)
+	}
+	id := strings.TrimSpace(string(raw))
+	if id == "" {
+		return "", fmt.Errorf("target: %s is empty", path)
+	}
+	return id, nil
+}
+
+// RevokeWorker takes the join token away before it revokes, so the worker cannot
+// enroll again in the gap between the two. The error of a failed REST call
+// comes with the ID, and the token stays gone.
+func (m *managed) RevokeWorker(ctx context.Context, i int) (string, error) {
+	if m.isClosing() {
+		return "", errClosing
+	}
+	if m.joinToken == "" {
+		return "", errors.New("target: the run has no broker authentication, so there is no credential to revoke")
+	}
+	if m.client == nil {
+		return "", errors.New("target: the target has no REST client yet")
+	}
+	id, err := m.RealWorkerID(i)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Remove(m.workerJoinTokenFile(i + 1)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return id, fmt.Errorf("target: remove the join token of real worker %d: %w", i, err)
+	}
+	m.logger.InfoContext(ctx, "revoking a real worker's credential", slog.Int("worker", i), slog.String("worker_id", id))
+	if err := m.client.RevokeWorkerCredential(ctx, id); err != nil {
+		return id, fmt.Errorf("target: revoke the credential of real worker %d (%s): %w", i, id, err)
+	}
+	return id, nil
+}
+
+func (m *managed) isClosing() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closing
 }
 
 func (m *managed) currentServer() (*proc, error) {
@@ -516,12 +865,13 @@ func (m *managed) Incarnations() []Incarnation {
 	return slices.Clone(m.incarnations)
 }
 
-// StopForChecks stops the real workers together, then the server, each
-// gracefully. The data directory, the database and the lanes stay; Close
-// releases them.
+// StopForChecks puts back the server's open-file limit, then stops the real
+// workers together and the server, each gracefully. The data directory, the
+// database and the lanes stay; Close releases them.
 func (m *managed) StopForChecks(ctx context.Context) error {
+	errs := []error{m.RestoreServerFDs()}
 	m.resumeAll(ctx)
-	errs := m.stopWorkers(ctx, false)
+	errs = append(errs, m.stopWorkers(ctx, false)...)
 	if p, err := m.currentServer(); err == nil {
 		errs = append(errs, p.stop(ctx, m.stopTimeout))
 	}

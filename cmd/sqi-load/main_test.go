@@ -5,8 +5,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -231,6 +234,107 @@ func TestCLI_Scenarios(t *testing.T) {
 	code, _, stderr := runCLI(t, &fakeRunner{}, "scenarios", "--show", "nope")
 	if code != exitUsage || !strings.Contains(stderr, "smoke") {
 		t.Errorf("--show nope: exit %d, stderr %q", code, stderr)
+	}
+}
+
+// chaosMatrix runs scenarios --chaos-matrix and returns the names it printed.
+func chaosMatrix(t *testing.T, args ...string) []string {
+	t.Helper()
+	code, stdout, stderr := runCLI(t, &fakeRunner{}, append([]string{"scenarios", "--chaos-matrix"}, args...)...)
+	if code != exitOK {
+		t.Fatalf("scenarios --chaos-matrix %v: exit %d, stderr %q", args, code, stderr)
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(stdout), &names); err != nil {
+		t.Fatalf("output is not a JSON array of names: %v\n%s", err, stdout)
+	}
+	if !sort.StringsAreSorted(names) {
+		t.Errorf("names are not sorted: %v", names)
+	}
+	return names
+}
+
+func TestScenariosChaosMatrix(t *testing.T) {
+	windows := chaosMatrix(t, "--os", "windows", "--store", "sqlite")
+	linux := chaosMatrix(t, "--os", "linux", "--store", "sqlite")
+	for _, names := range [][]string{windows, linux} {
+		for _, n := range names {
+			if !strings.HasPrefix(n, "chaos-") {
+				t.Errorf("%q is not a chaos scenario", n)
+			}
+		}
+	}
+	if !slices.Contains(windows, "chaos-net-blip") {
+		t.Errorf("windows/sqlite does not list chaos-net-blip: %v", windows)
+	}
+	for _, n := range []string{"chaos-server-stall-long", "chaos-server-stall-short", "chaos-worker-sleep"} {
+		if slices.Contains(windows, n) {
+			t.Errorf("windows/sqlite lists %s, which stalls a process", n)
+		}
+		if !slices.Contains(linux, n) {
+			t.Errorf("linux/sqlite does not list %s", n)
+		}
+	}
+
+	if !slices.Contains(windows, "chaos-db-stall-5s") {
+		t.Errorf("windows/sqlite does not list chaos-db-stall-5s: %v", windows)
+	}
+	needsEnv := []string{"chaos-server-stall-long", "chaos-db-drop", "chaos-disk-server-full", "chaos-server-fd-exhaustion"}
+	for _, n := range needsEnv {
+		if slices.Contains(windows, n) {
+			t.Errorf("windows/sqlite lists %s, which needs linux, postgres or a container", n)
+		}
+	}
+	disk := []string{"chaos-disk-server-full", "chaos-disk-worker-full-at-setup", "chaos-disk-worker-full-mid-render"}
+	for _, n := range append([]string{"chaos-db-drop"}, disk...) {
+		if slices.Contains(linux, n) {
+			t.Errorf("linux/sqlite without --container lists %s", n)
+		}
+	}
+	if !slices.Contains(linux, "chaos-server-fd-exhaustion") {
+		t.Errorf("linux/sqlite does not list chaos-server-fd-exhaustion: %v", linux)
+	}
+
+	container := chaosMatrix(t, "--os", "linux", "--store", "sqlite", "--container")
+	for _, n := range disk {
+		if !slices.Contains(container, n) {
+			t.Errorf("linux/sqlite --container does not list %s", n)
+		}
+	}
+	for _, n := range linux {
+		if !slices.Contains(container, n) {
+			t.Errorf("--container drops %s", n)
+		}
+	}
+	if len(container) != len(linux)+len(disk) {
+		t.Errorf("--container adds %d scenarios, want the %d chaos-disk-* ones: %v, without it %v",
+			len(container)-len(linux), len(disk), container, linux)
+	}
+
+	postgres := chaosMatrix(t, "--os", "linux", "--store", "postgres")
+	if !slices.Contains(postgres, "chaos-db-drop") {
+		t.Errorf("linux/postgres does not list chaos-db-drop: %v", postgres)
+	}
+	if len(postgres) != len(linux)+1 {
+		t.Errorf("postgres adds %d scenarios over sqlite, want only chaos-db-drop: %v, sqlite %v", len(postgres)-len(linux), postgres, linux)
+	}
+	full := chaosMatrix(t, "--os", "linux", "--store", "postgres", "--container")
+	for _, n := range needsEnv {
+		if !slices.Contains(full, n) {
+			t.Errorf("linux/postgres --container does not list %s", n)
+		}
+	}
+
+	if code, _, stderr := runCLI(t, &fakeRunner{}, "scenarios", "--chaos-matrix", "--os", "darwin"); code != exitOK {
+		t.Errorf("--os darwin: exit %d, stderr %q", code, stderr)
+	}
+	if code, _, stderr := runCLI(t, &fakeRunner{}, "scenarios", "--chaos-matrix", "--os", "freebsd"); code != exitUsage || !strings.Contains(stderr, "freebsd") {
+		t.Errorf("--os freebsd: exit %d, stderr %q", code, stderr)
+	}
+
+	code, _, stderr := runCLI(t, &fakeRunner{}, "scenarios", "--chaos-matrix", "--store", "mysql")
+	if code != exitUsage || !strings.Contains(stderr, "mysql") {
+		t.Errorf("--store mysql: exit %d, stderr %q", code, stderr)
 	}
 }
 

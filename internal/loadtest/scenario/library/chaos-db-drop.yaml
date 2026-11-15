@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-db-drop
+description: chaos - drop the server's PostgreSQL connections and refuse new ones for 30s at 3m15s under steady load (100 workers, about 2.5 tasks/s); no completed work may be redone, 4.25 min
+# PostgreSQL only: the suite runs it with server.store postgres, which the test
+# sets, not this file. The server's pooled connections are closed and new ones
+# refused for 30s, heartbeat_timeout, so every query fails outright rather than
+# waiting as a stall does, and the pool must reconnect when the database is back
+# at 3m45s.
+#
+# The fault comes at 3m15s, after the server's startup liveness grace: the
+# server runs no liveness sweep for about 3m10s after it starts.
+duration: 4m15s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 100
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 3m15s
+    database: {mode: drop}
+    duration: 30s
+
+# A write the dropped connections fail is retried, so no completed work is
+# redone. Reclaims are reported, not bounded. A job submitted while the
+# connections are refused fails with a 500 and is not retried; that is the
+# submissions-rejected finding, which reports the lighter load and fails
+# nothing.
+expect:
+  max_rework_attempts: 0

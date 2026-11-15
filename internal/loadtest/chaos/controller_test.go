@@ -5,6 +5,7 @@ package chaos
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -40,6 +41,12 @@ type fakeTarget struct {
 	// restart fails.
 	bootNeedsServer bool
 	serverDown      bool
+	// ready answers ServerReady call n with ready[n], and with "ready" past the
+	// end of the list.
+	ready []string
+	nPoll int
+	// failOn makes the named call return its error after recording itself.
+	failOn map[string]error
 }
 
 func newFakeTarget(workers map[string][]int, lanes ...string) *fakeTarget {
@@ -166,6 +173,69 @@ func (t *fakeTarget) RestartWorker(_ context.Context, i int) error {
 	return nil
 }
 
+func (t *fakeTarget) StallDatabase(context.Context) error { t.record("StallDatabase", -1); return nil }
+
+func (t *fakeTarget) DropDatabase(context.Context) error { t.record("DropDatabase", -1); return nil }
+
+func (t *fakeTarget) HealDatabase(context.Context) error {
+	t.record("HealDatabase", -1)
+	return t.failed("HealDatabase")
+}
+
+// failed is the error the test set for the call called name.
+func (t *fakeTarget) failed(name string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.failOn[name]
+}
+
+func (t *fakeTarget) FillVolume(volume string, _ int64, _ bool) error {
+	t.record("FillVolume:"+volume, -1)
+	return nil
+}
+
+func (t *fakeTarget) FreeVolume(volume string) error {
+	t.record("FreeVolume:"+volume, -1)
+	return t.failed("FreeVolume")
+}
+
+func (t *fakeTarget) LimitServerFDs(headroom int) (int, error) {
+	t.record("LimitServerFDs", headroom)
+	return 100, nil
+}
+
+func (t *fakeTarget) RestoreServerFDs() error {
+	t.record("RestoreServerFDs", -1)
+	return t.failed("RestoreServerFDs")
+}
+
+func (t *fakeTarget) ServerReady(context.Context) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := t.nPoll
+	t.nPoll++
+	if n < len(t.ready) {
+		return t.ready[n]
+	}
+	return "ready"
+}
+
+// polls is how many times ServerReady was called.
+func (t *fakeTarget) polls() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.nPoll
+}
+
+func (*fakeTarget) RealWorkerID(i int) (string, error) { return "worker-" + strconv.Itoa(i), nil }
+
+func (t *fakeTarget) RevokeWorker(_ context.Context, i int) (string, error) {
+	t.record("RevokeWorker", i)
+	return "worker-" + strconv.Itoa(i), nil
+}
+
+func (*fakeTarget) ServerLog() string { return "" }
+
 func (*fakeTarget) RealLive() int { return 0 }
 
 func (t *fakeTarget) Incarnations() []target.Incarnation {
@@ -183,7 +253,9 @@ func (t *fakeTarget) Lane(group string) target.Lane {
 
 func (*fakeTarget) MarkerDir() string                   { return "" }
 func (*fakeTarget) StopForChecks(context.Context) error { return nil }
-func (*fakeTarget) StoreOptions() backend.Options       { return backend.Options{} }
+func (*fakeTarget) StoreOptions() backend.Options {
+	return backend.Options{Driver: backend.DriverPostgres}
+}
 func (t *fakeTarget) laneCalls(group string) []laneCall { return t.lanes[group].snapshot() }
 func (t *fakeTarget) laneOps(group string) []string     { return ops(t.laneCalls(group)) }
 func (t *fakeTarget) laneState(group string) string     { return t.lanes[group].state() }
@@ -758,7 +830,7 @@ func TestController_StallRejectedOnWindows(t *testing.T) {
 		{Duration: d(time.Second), Kill: &scenario.ProcTarget{Server: true}, RestartAfter: d(time.Second)},
 		{Duration: d(time.Second), Stall: &scenario.ProcTarget{Group: "render"}},
 	}, groups("render"), ft, nil, quiet())
-	const want = "chaos: faults[1]: stall needs SIGSTOP, which Windows does not have"
+	const want = "chaos: faults[1]: a stall fault cannot suspend a process on windows"
 	if err == nil || err.Error() != want {
 		t.Fatalf("NewController error = %v, want %q", err, want)
 	}
@@ -909,5 +981,328 @@ func TestController_HealAllWhileRunning(t *testing.T) {
 		if rec.ServerRestart {
 			t.Errorf("record %+v marks a server restart; a stall keeps the server's process", rec)
 		}
+	}
+}
+
+// fastReady makes the controller probe readiness every 20ms for the test.
+func fastReady(t *testing.T) {
+	t.Helper()
+	old := readyEvery
+	readyEvery = 20 * time.Millisecond
+	t.Cleanup(func() { readyEvery = old })
+}
+
+func callNames(cs []call) []string {
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = c.name
+	}
+	return out
+}
+
+func TestController_DatabaseFaultFiresAndHeals(t *testing.T) {
+	for _, tc := range []struct{ mode, fire string }{
+		{scenario.DatabaseStall, "StallDatabase"},
+		{scenario.DatabaseDrop, "DropDatabase"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ft := newFakeTarget(nil)
+			c := newController(t, []scenario.Fault{{
+				Duration: d(150 * time.Millisecond), Database: &scenario.DatabaseFault{Mode: tc.mode},
+			}}, groups("render"), ft)
+			start, err := run(t, c)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if got := callNames(ft.snapshot()); !slices.Equal(got, []string{tc.fire, "HealDatabase"}) {
+				t.Fatalf("calls = %v, want [%s HealDatabase]", got, tc.fire)
+			}
+			heal, _ := ft.firstNamed("HealDatabase")
+			near(t, "HealDatabase", start, heal.at, 150*time.Millisecond)
+			recs := c.Records()
+			if len(recs) != 1 || recs[0].Kind != scenario.FaultDatabase || recs[0].Healed.IsZero() || recs[0].Error != "" {
+				t.Errorf("records = %+v, want one healed database fault", recs)
+			}
+			if ws := c.Windows(); len(ws) != 0 {
+				t.Errorf("windows = %+v, want none: the log stream is durable", ws)
+			}
+		})
+	}
+}
+
+func TestController_DiskFullServerRecordsReadiness(t *testing.T) {
+	asPOSIX(t)
+	fastReady(t)
+	ft := newFakeTarget(nil)
+	ft.ready = []string{"ready", "503 degraded", "503 degraded", "ready"}
+	c := newController(t, []scenario.Fault{{
+		Duration: d(300 * time.Millisecond), DiskFull: &scenario.DiskFull{Volume: scenario.VolumeServer, HeadroomBytes: 1 << 20},
+	}}, groups("render", "rack-b"), ft)
+	if _, err := run(t, c); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := callNames(ft.snapshot()); !slices.Equal(got, []string{"FillVolume:server", "FreeVolume:server"}) {
+		t.Fatalf("calls = %v, want [FillVolume:server FreeVolume:server]", got)
+	}
+	recs := c.Records()
+	if len(recs) != 1 || recs[0].Healed.IsZero() {
+		t.Fatalf("records = %+v, want one healed fault", recs)
+	}
+	want := []string{"+0s: 503 degraded", "+0s: ready", fmt.Sprintf("%d readiness probes, 2 not ready", ft.polls())}
+	if !slices.Equal(recs[0].Notes, want) {
+		t.Errorf("notes = %v, want %v", recs[0].Notes, want)
+	}
+	ws := c.Windows()
+	if len(ws) != 1 || len(ws[0].Groups) != 0 {
+		t.Errorf("windows = %+v, want one over every group", ws)
+	}
+}
+
+// A server that stays ready through a full volume still leaves a note, so the
+// record tells "probed, always ready" apart from "never probed".
+func TestController_DiskFullServerAlwaysReadyNotesTheProbes(t *testing.T) {
+	asPOSIX(t)
+	fastReady(t)
+	ft := newFakeTarget(nil)
+	c := newController(t, []scenario.Fault{{
+		Duration: d(200 * time.Millisecond), DiskFull: &scenario.DiskFull{Volume: scenario.VolumeServer},
+	}}, groups("render"), ft)
+	if _, err := run(t, c); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	n := ft.polls()
+	if n < 2 {
+		t.Fatalf("readiness probed %d times in 200ms at 20ms, want several", n)
+	}
+	want := []string{fmt.Sprintf("%d readiness probes, 0 not ready", n)}
+	if recs := c.Records(); len(recs) != 1 || !slices.Equal(recs[0].Notes, want) {
+		t.Errorf("records = %+v, want one with notes %v", recs, want)
+	}
+}
+
+func TestController_DiskFullWorkersOpensNoWindow(t *testing.T) {
+	asPOSIX(t)
+	ft := newFakeTarget(nil)
+	c := newController(t, []scenario.Fault{{
+		Duration: d(100 * time.Millisecond), DiskFull: &scenario.DiskFull{Volume: scenario.VolumeWorkers, Inodes: true},
+	}}, groups("render"), ft)
+	if _, err := run(t, c); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := callNames(ft.snapshot()); !slices.Equal(got, []string{"FillVolume:workers", "FreeVolume:workers"}) {
+		t.Fatalf("calls = %v, want [FillVolume:workers FreeVolume:workers]", got)
+	}
+	if n := ft.nPoll; n != 0 {
+		t.Errorf("readiness probed %d times on a workers volume, want none", n)
+	}
+	if recs := c.Records(); len(recs) != 1 || recs[0].Healed.IsZero() || len(recs[0].Notes) != 0 {
+		t.Errorf("records = %+v, want one healed fault without notes", recs)
+	}
+	if ws := c.Windows(); len(ws) != 0 {
+		t.Errorf("windows = %+v, want none: real workers are outside the logs check", ws)
+	}
+}
+
+func TestController_FDLimitWindow(t *testing.T) {
+	asPOSIX(t)
+	ft := newFakeTarget(nil)
+	c := newController(t, []scenario.Fault{{
+		Duration: d(150 * time.Millisecond), FDLimit: &scenario.FDLimit{Headroom: 50},
+	}}, groups("render"), ft)
+	if _, err := run(t, c); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	limit, ok := ft.firstNamed("LimitServerFDs")
+	if !ok || limit.arg != 50 {
+		t.Fatalf("LimitServerFDs = %+v, want one with headroom 50", ft.named("LimitServerFDs"))
+	}
+	if n := ft.count("RestoreServerFDs"); n != 1 {
+		t.Errorf("RestoreServerFDs called %d times, want once", n)
+	}
+	recs := c.Records()
+	if len(recs) != 1 || recs[0].Healed.IsZero() || !slices.Equal(recs[0].Notes, []string{"open files 100, soft limit 150"}) {
+		t.Errorf("records = %+v, want one healed fault noting its limit", recs)
+	}
+	if ws := c.Windows(); len(ws) != 1 || len(ws[0].Groups) != 0 {
+		t.Errorf("windows = %+v, want one over every group", ws)
+	}
+}
+
+func TestController_RevokeRecordsWorkersAndTerms(t *testing.T) {
+	ft := newFakeTarget(map[string][]int{"render": {0, 1, 2}})
+	gs := []scenario.WorkerGroup{{Name: "render", Real: 3}}
+	c := newController(t, []scenario.Fault{{
+		Duration: d(150 * time.Millisecond), Revoke: &scenario.ProcTarget{Group: "render", Real: 2},
+	}}, gs, ft)
+	start, err := run(t, c)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := callNames(ft.snapshot()); !slices.Equal(got, []string{"RevokeWorker", "RevokeWorker", "TermWorker", "TermWorker"}) {
+		t.Fatalf("calls = %v, want both revokes, then both terms", got)
+	}
+	for _, c := range ft.named("TermWorker") {
+		near(t, "TermWorker", start, c.at, 150*time.Millisecond)
+	}
+	if n := ft.count("RestartWorker"); n != 0 {
+		t.Errorf("RestartWorker called %d times, want none", n)
+	}
+	recs := c.Records()
+	if len(recs) != 1 || recs[0].Error != "" || recs[0].Healed.IsZero() {
+		t.Fatalf("records = %+v, want one healed revoke", recs)
+	}
+	if want := []string{"worker-0", "worker-1"}; !slices.Equal(recs[0].Workers, want) {
+		t.Errorf("Workers = %v, want %v", recs[0].Workers, want)
+	}
+	if recs[0].Target != "group render (real 0,1)" {
+		t.Errorf("Target = %q", recs[0].Target)
+	}
+	if ws := c.Windows(); len(ws) != 0 {
+		t.Errorf("windows = %+v, want none", ws)
+	}
+}
+
+func TestController_RevokeWithNoRunningWorkerFails(t *testing.T) {
+	ft := newFakeTarget(map[string][]int{"render": {0}})
+	ft.endWorker(0)
+	gs := []scenario.WorkerGroup{{Name: "render", Real: 1}}
+	c := newController(t, []scenario.Fault{{Duration: d(50 * time.Millisecond), Revoke: &scenario.ProcTarget{Group: "render"}}}, gs, ft)
+	if _, err := run(t, c); err == nil || !strings.Contains(err.Error(), "no running real worker") {
+		t.Fatalf("Run error = %v, want one naming no running real worker", err)
+	}
+}
+
+// TestController_HealAllUndoesDatabaseDiskAndFDFaults ends each fault early, by
+// canceling the run or by HealAll while it runs, and proves its undo is called
+// exactly once however many times HealAll runs after.
+func TestController_HealAllUndoesDatabaseDiskAndFDFaults(t *testing.T) {
+	asPOSIX(t)
+	fastReady(t)
+	cases := []struct {
+		name  string
+		fault scenario.Fault
+		calls []string
+	}{
+		{
+			"database",
+			scenario.Fault{Duration: d(10 * time.Second), Database: &scenario.DatabaseFault{Mode: scenario.DatabaseStall}},
+			[]string{"StallDatabase", "HealDatabase"},
+		},
+		{
+			"disk server",
+			scenario.Fault{Duration: d(10 * time.Second), DiskFull: &scenario.DiskFull{Volume: scenario.VolumeServer}},
+			[]string{"FillVolume:server", "FreeVolume:server"},
+		},
+		{
+			"disk workers",
+			scenario.Fault{Duration: d(10 * time.Second), DiskFull: &scenario.DiskFull{Volume: scenario.VolumeWorkers}},
+			[]string{"FillVolume:workers", "FreeVolume:workers"},
+		},
+		{
+			"fd limit",
+			scenario.Fault{Duration: d(10 * time.Second), FDLimit: &scenario.FDLimit{Headroom: 10}},
+			[]string{"LimitServerFDs", "RestoreServerFDs"},
+		},
+	}
+	for _, tc := range cases {
+		for _, how := range []string{"cancel", "healall"} {
+			t.Run(tc.name+"/"+how, func(t *testing.T) {
+				ft := newFakeTarget(nil)
+				c := newController(t, []scenario.Fault{tc.fault}, groups("render"), ft)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				mid := make(chan []string, 1)
+				if how == "healall" {
+					time.AfterFunc(100*time.Millisecond, c.HealAll)
+					// HealAll alone, before the run ends, must have undone the fault.
+					time.AfterFunc(150*time.Millisecond, func() { mid <- callNames(ft.snapshot()) })
+					time.AfterFunc(200*time.Millisecond, cancel)
+				} else {
+					time.AfterFunc(100*time.Millisecond, cancel)
+				}
+				start := time.Now()
+				if err := c.Run(ctx, start); err != nil {
+					t.Fatalf("Run: %v", err)
+				}
+				if el := time.Since(start); el > 2*time.Second {
+					t.Errorf("Run took %s after the cancel", el)
+				}
+				if how == "healall" {
+					if got := <-mid; !slices.Equal(got, tc.calls) {
+						t.Errorf("calls 50ms after HealAll = %v, want %v", got, tc.calls)
+					}
+				}
+				c.HealAll()
+				c.HealAll()
+				if got := callNames(ft.snapshot()); !slices.Equal(got, tc.calls) {
+					t.Errorf("calls = %v, want %v: each fired and undone exactly once", got, tc.calls)
+				}
+			})
+		}
+	}
+}
+
+// TestController_HealAllToleratesFailingUndo proves a failing undo is logged and
+// the others still run.
+func TestController_HealAllToleratesFailingUndo(t *testing.T) {
+	asPOSIX(t)
+	ft := newFakeTarget(nil)
+	ft.failOn = map[string]error{
+		"HealDatabase":     errors.New("lock gone"),
+		"FreeVolume":       errors.New("busy"),
+		"RestoreServerFDs": errors.New("unsupported off Linux"),
+	}
+	c := newController(t, []scenario.Fault{
+		{Duration: d(10 * time.Second), Database: &scenario.DatabaseFault{Mode: scenario.DatabaseStall}},
+		{Duration: d(10 * time.Second), DiskFull: &scenario.DiskFull{Volume: scenario.VolumeWorkers}},
+		{Duration: d(10 * time.Second), FDLimit: &scenario.FDLimit{Headroom: 10}},
+	}, groups("render"), ft)
+	time.AfterFunc(100*time.Millisecond, c.HealAll)
+	mid := make(chan []string, 1)
+	time.AfterFunc(150*time.Millisecond, func() { mid <- callNames(ft.snapshot()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	c.Run(ctx, time.Now()) //nolint:errcheck // the undo errors are what is under test
+	got := <-mid
+	for _, name := range []string{"HealDatabase", "FreeVolume:workers", "RestoreServerFDs"} {
+		if !slices.Contains(got, name) {
+			t.Errorf("%s not called by HealAll; one failing undo must not stop the rest (calls %v)", name, got)
+		}
+	}
+}
+
+// sqliteTarget is a fakeTarget whose store is SQLite.
+type sqliteTarget struct{ *fakeTarget }
+
+func (sqliteTarget) StoreOptions() backend.Options { return backend.Options{} }
+
+func TestController_DatabaseDropRefusedOnSQLite(t *testing.T) {
+	_, err := NewController([]scenario.Fault{
+		{Duration: d(time.Second), Database: &scenario.DatabaseFault{Mode: scenario.DatabaseDrop}},
+	}, groups("render"), sqliteTarget{newFakeTarget(nil)}, nil, quiet())
+	const want = "chaos: faults[0]: a database drop fault needs the postgres store, not sqlite"
+	if err == nil || err.Error() != want {
+		t.Fatalf("NewController error = %v, want %q", err, want)
+	}
+}
+
+func TestController_DiskFullAndFDLimitRefusedOffLinux(t *testing.T) {
+	old := goos
+	goos = "darwin"
+	t.Cleanup(func() { goos = old })
+	ft := newFakeTarget(nil)
+	for name, tc := range map[string]struct {
+		fault scenario.Fault
+		want  string
+	}{
+		"fd_limit":  {scenario.Fault{FDLimit: &scenario.FDLimit{Headroom: 10}}, "an fd_limit fault needs linux (RLIMIT_NOFILE), not darwin"},
+		"disk_full": {scenario.Fault{DiskFull: &scenario.DiskFull{Volume: scenario.VolumeServer}}, "a disk_full fault needs linux"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewController([]scenario.Fault{tc.fault}, groups("render"), ft, nil, quiet())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("NewController error = %v, want one containing %q", err, tc.want)
+			}
+		})
 	}
 }

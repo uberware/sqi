@@ -462,3 +462,42 @@ func TestPublish_NoAttemptSourceLeavesAttemptFieldsUnset(t *testing.T) {
 		}
 	}
 }
+
+// TestPublisher_WithClockStampsHeartbeat verifies that WithClock replaces the
+// wire timestamp and that nil restores time.Now.
+func TestPublisher_WithClockStampsHeartbeat(t *testing.T) {
+	publishOnce := func(t *testing.T, configure func(*Publisher) *Publisher) protocol.HeartbeatMsg {
+		t.Helper()
+		var data []byte
+		nc := &stubConn{publishFn: func(_ string, d []byte) error { data = d; return nil }}
+		p := configure(New(nc, "worker-clock", 4, 15*time.Second, NoopStateSource{}, &stubRegistrar{}, discardLogger()))
+		p.publish(context.Background())
+		var msg protocol.HeartbeatMsg
+		if err := json.Unmarshal(data, &msg); err != nil {
+			t.Fatalf("unmarshal heartbeat: %v", err)
+		}
+		return msg
+	}
+
+	t.Run("fixed clock", func(t *testing.T) {
+		t0 := time.Date(2031, 2, 3, 4, 5, 6, 0, time.UTC)
+		msg := publishOnce(t, func(p *Publisher) *Publisher {
+			return p.WithClock(func() time.Time { return t0 })
+		})
+		if !msg.At.Equal(t0) {
+			t.Errorf("At = %v, want %v", msg.At, t0)
+		}
+		if msg.UptimeSeconds < 0 || msg.UptimeSeconds > 5 {
+			t.Errorf("UptimeSeconds = %v, want a real-clock measurement near zero", msg.UptimeSeconds)
+		}
+	})
+
+	t.Run("nil clock is time.Now", func(t *testing.T) {
+		msg := publishOnce(t, func(p *Publisher) *Publisher {
+			return p.WithClock(func() time.Time { return time.Time{} }).WithClock(nil)
+		})
+		if d := time.Since(msg.At); d < -time.Second || d > time.Second {
+			t.Errorf("At = %v, want within 1s of now", msg.At)
+		}
+	})
+}

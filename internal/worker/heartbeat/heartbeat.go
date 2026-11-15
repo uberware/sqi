@@ -130,6 +130,8 @@ type Publisher struct {
 	registrar        Registrar
 	logger           *slog.Logger
 	startTime        time.Time
+	// wireNow stamps each heartbeat's Timestamp; nil is time.Now.
+	wireNow func() time.Time
 }
 
 // New creates a Publisher. nc and registrar must be non-nil.
@@ -162,6 +164,14 @@ func New(
 		logger:             logger,
 		startTime:          time.Now(),
 	}
+}
+
+// WithClock makes the publisher stamp each heartbeat's Timestamp with now
+// instead of time.Now. Uptime, the flush timeout and the watchdog keep the
+// real clock. A nil now restores time.Now. Call before Run.
+func (p *Publisher) WithClock(now func() time.Time) *Publisher {
+	p.wireNow = now
+	return p
 }
 
 // Run starts the heartbeat ticker and the NATS watchdog goroutine.
@@ -204,6 +214,9 @@ func (p *Publisher) Run(ctx context.Context) {
 // strain.
 func (p *Publisher) publish(ctx context.Context) {
 	now := time.Now()
+	if p.wireNow != nil {
+		now = p.wireNow()
+	}
 
 	msg := protocol.HeartbeatMsg{
 		Version:            protocol.ProtocolVersion,

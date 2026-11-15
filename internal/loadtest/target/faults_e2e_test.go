@@ -14,10 +14,12 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
+	"github.com/uberware/sqi/internal/loadtest/dbfault"
 	"github.com/uberware/sqi/internal/loadtest/internal/proctest"
 	"github.com/uberware/sqi/internal/loadtest/marker"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/scheduler"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // assertServerBack checks the restarted server answers on the same addresses
@@ -578,4 +580,187 @@ func TestManaged_CloseEndsAStalledThenKilledWorkersTasks(t *testing.T) {
 			t.Errorf("task process %d still running after Close", pid)
 		}
 	}
+}
+
+// TestManaged_CloseReleasesDatabaseLock: a stall left applied is released by
+// Close, so the database is not left locked behind a finished run.
+func TestManaged_CloseReleasesDatabaseLock(t *testing.T) {
+	skipShort(t)
+	server, _, _ := binaries(t)
+	m := startManaged(t, ManagedConfig{RunDir: t.TempDir(), ServerBin: server, Scenario: testScenario(scenario.ServerSpec{Store: "sqlite"})})
+	if err := m.StallDatabase(t.Context()); err != nil {
+		t.Fatalf("StallDatabase: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	if err := m.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	lctx, lcancel := context.WithTimeout(t.Context(), time.Second)
+	defer lcancel()
+	lock, err := dbfault.LockSQLite(lctx, m.settings.sqlitePath())
+	if err != nil {
+		t.Fatalf("LockSQLite after Close within 1 s: %v", err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Errorf("Release: %v", err)
+	}
+}
+
+// TestManaged_StallDatabaseBlocksTheServerOnSQLite: with the outside lock held
+// a job submit does not complete, and one does once the lock is released.
+func TestManaged_StallDatabaseBlocksTheServerOnSQLite(t *testing.T) {
+	skipShort(t)
+	server, _, _ := binaries(t)
+	m := startManaged(t, ManagedConfig{RunDir: t.TempDir(), ServerBin: server, Scenario: testScenario(scenario.ServerSpec{Store: "sqlite"})})
+	c := mustClient(t, m)
+	if err := m.StallDatabase(t.Context()); err != nil {
+		t.Fatalf("StallDatabase: %v", err)
+	}
+	sctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	_, status, err := c.SubmitJob(sctx, client.SubmitRequest{FarmID: m.FarmID(), QueueID: m.QueueIDs()["render"], Template: []byte(fakeJob())})
+	cancel()
+	if err == nil && status < 500 {
+		t.Errorf("a submit succeeded (status %d) while the database was locked", status)
+	}
+	if err := m.HealDatabase(t.Context()); err != nil {
+		t.Fatalf("HealDatabase: %v", err)
+	}
+	submitWithin(t, m, c, 30*time.Second)
+}
+
+// fakeJob is a job whose command never runs: no worker takes it.
+func fakeJob() string {
+	return fmt.Sprintf(noopJob, "sqi-load-noop", strconv.Quote(scenario.ClassArg("x")))
+}
+
+// submitWithin submits a job until one succeeds, failing after d.
+func submitWithin(t *testing.T, m *managed, c *client.Client, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	var last error
+	for time.Now().Before(deadline) {
+		sctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		_, _, last = c.SubmitJob(sctx, client.SubmitRequest{FarmID: m.FarmID(), QueueID: m.QueueIDs()["render"], Template: []byte(fakeJob())})
+		cancel()
+		if last == nil {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("no job submit succeeded within %s; last error: %v\nserver log:\n%s", d, last, tailLines(m.serverLog(), 30))
+}
+
+// TestManaged_PostgresDatabaseFaultsThroughProxy runs a real server on
+// PostgreSQL through the database proxy: a stall and a drop stop a submit, and
+// healing lets one through. It skips without SQI_TEST_POSTGRES_DSN.
+func TestManaged_PostgresDatabaseFaultsThroughProxy(t *testing.T) {
+	skipShort(t)
+	if !storetest.PostgresEnabled() {
+		t.Skip("PostgreSQL not configured: set SQI_TEST_POSTGRES_DSN, or run make test-postgres")
+	}
+	admin := os.Getenv("SQI_TEST_POSTGRES_DSN")
+	if admin == "" {
+		t.Fatal("SQI_TEST_POSTGRES_DSN is unset")
+	}
+	server, _, _ := binaries(t)
+	sc := testScenario(scenario.ServerSpec{Store: "postgres"})
+	sc.Faults = []scenario.Fault{{Database: &scenario.DatabaseFault{Mode: scenario.DatabaseStall}}}
+	runID := "pgf-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	m := startManaged(t, ManagedConfig{RunDir: t.TempDir(), RunID: runID, ServerBin: server, Scenario: sc, PostgresDSN: admin})
+	c := mustClient(t, m)
+
+	if m.dbProxy == nil || m.serverDSN == "" {
+		t.Fatal("the server does not go through a database proxy")
+	}
+	if m.serverDSN == m.pgDSN || m.PostgresDSN() != m.pgDSN {
+		t.Fatalf("serverDSN %q, pgDSN %q: the harness's own DSN must stay the direct one", m.serverDSN, m.pgDSN)
+	}
+	rctx, rcancel := context.WithTimeout(t.Context(), 5*time.Second)
+	if err := c.Ready(rctx); err != nil {
+		t.Fatalf("/readyz through the proxy: %v", err)
+	}
+	rcancel()
+	submitWithin(t, m, c, 30*time.Second)
+
+	for _, fault := range []struct {
+		name  string
+		apply func(context.Context) error
+	}{{"stall", m.StallDatabase}, {"drop", m.DropDatabase}} {
+		if err := fault.apply(t.Context()); err != nil {
+			t.Fatalf("%s: %v", fault.name, err)
+		}
+		sctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		start := time.Now()
+		_, status, err := c.SubmitJob(sctx, client.SubmitRequest{FarmID: m.FarmID(), QueueID: m.QueueIDs()["render"], Template: []byte(fakeJob())})
+		cancel()
+		if err == nil && status < 500 {
+			t.Errorf("%s: a submit succeeded (status %d) while the database was cut off", fault.name, status)
+		}
+		if elapsed := time.Since(start); elapsed > 12*time.Second {
+			t.Errorf("%s: the submit took %s to fail, want within 10 s", fault.name, elapsed)
+		}
+		if err := m.HealDatabase(t.Context()); err != nil {
+			t.Fatalf("heal after %s: %v", fault.name, err)
+		}
+		submitWithin(t, m, c, 30*time.Second)
+	}
+}
+
+// TestManaged_E2E_RevokeWorker revokes the credential of a real worker that is
+// enrolled and online: the broker cuts the worker off, so its heartbeats stop
+// reaching the server, and the target's own copy of the join token is gone.
+// The server lists the worker offline only after its post-start liveness grace
+// (almost three minutes), which the test waits out only with
+// SQI_LOAD_SLOW_TESTS=1.
+func TestManaged_E2E_RevokeWorker(t *testing.T) {
+	skipShort(t)
+	server, worker, noop := binaries(t)
+	sc := testScenario(scenario.ServerSpec{
+		Store:      "sqlite",
+		BrokerAuth: true,
+		HTTPAuth:   true,
+		Config:     map[string]any{"scheduler": map[string]any{"heartbeat_timeout": heartbeatTimeout.String()}},
+	})
+	sc.Workers = []scenario.WorkerGroup{{
+		Name: "render", Real: 1, Queues: []string{"render"}, Heartbeat: scenario.Duration{Duration: heartbeatInterval},
+	}}
+	m := startManaged(t, ManagedConfig{RunDir: t.TempDir(), ServerBin: server, WorkerBin: worker, NoopBin: noop, Scenario: sc})
+	graceEnds := time.Now().Add(scheduler.ReconnectGrace(heartbeatTimeout))
+	c := mustClient(t, m)
+	online := waitWorker(t, m, c, "online", 30*time.Second)
+	waitHeartbeatAfter(t, m, c, lastHeartbeat(t, c, m.FarmID()), 5*heartbeatInterval)
+
+	id, err := m.RevokeWorker(t.Context(), 0)
+	if err != nil {
+		t.Fatalf("RevokeWorker: %v\nserver log:\n%s", err, tailLines(m.ServerLog(), 30))
+	}
+	if id != online.ID {
+		t.Errorf("RevokeWorker returned %q, the server lists the worker as %q", id, online.ID)
+	}
+	if exists(m.workerJoinTokenFile(1)) {
+		t.Error("the worker's join token copy still exists after the revocation")
+	}
+	if !exists(m.joinTokenFile()) {
+		t.Error("the shared join token was removed; the simulated fleet needs it")
+	}
+	time.Sleep(heartbeatInterval) // one in flight lands
+	frozen := lastHeartbeat(t, c, m.FarmID())
+	time.Sleep(3 * heartbeatInterval)
+	if got := lastHeartbeat(t, c, m.FarmID()); !got.Equal(frozen) {
+		t.Errorf("the server stored a heartbeat at %s from the revoked worker (last before: %s)", got, frozen)
+	}
+	if info, err := os.Stat(m.ServerLog()); err != nil || info.Size() == 0 {
+		t.Errorf("ServerLog %s: %v, %v; want an existing, non-empty file", m.ServerLog(), info, err)
+	}
+
+	if os.Getenv(slowTestsEnv) != "1" {
+		t.Logf("not waiting out the server's liveness grace for the worker to go offline; set %s=1 to", slowTestsEnv)
+		return
+	}
+	if wait := time.Until(graceEnds); wait > 0 {
+		t.Logf("waiting %s for the server's liveness grace to pass", wait.Round(time.Second))
+		time.Sleep(wait)
+	}
+	waitWorker(t, m, c, "offline", heartbeatTimeout+sweepInterval+10*time.Second)
 }

@@ -1,0 +1,131 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-server-fd-exhaustion
+description: chaos - lower the server's file descriptor limit to 10 free descriptors for 40s while a rack of 30 of 120 workers redials after a 20s cut; records whether the farm converges once the limit lifts, 5 min
+# Linux only (RLIMIT_NOFILE, set on the server with prlimit); it needs no
+# privilege and no container.
+#
+# A server started with a low limit and more workers than it can hold would
+# exercise this, but the simulated fleet fails the whole run when a worker
+# cannot connect at start, so that shape cannot run. Instead the limit is
+# applied to the running server while a partitioned rack redials, which
+# exercises the same paths: EMFILE in the HTTP and broker accept loops, and
+# every file the server opens meanwhile (SQLite, JetStream blocks, logs).
+# "Recovers when workers leave" becomes "recovers when descriptors are free
+# again".
+#
+# A cut worker redials on the real worker's backoff: nats.go waits before each
+# attempt, 4s, 8s, 16s, 32s, 64s, each +-20%, so the attempts come about 4s,
+# 12s, 28s and 60s after the cut (the third between 22.4s and 33.6s, the fourth
+# between 48s and 72s). The timeline puts the third attempt, the first after
+# the heal, inside the limit, and the next one after it:
+#   3m15s  rack-b is cut from the broker for 20s (its 12s attempt, at most
+#          14.4s, still fails on the cut)
+#   3m20s  the limit drops to leave the server 10 free descriptors
+#   3m35s  rack-b heals; its 30 workers redial 22.4s to 33.6s after the cut,
+#          into 10 free descriptors
+#   4m00s  the limit lifts, 40s after it dropped and 45s after the cut, before
+#          any refused worker's next attempt (48s at the earliest, plus its
+#          connect timeout), so every refused worker is back by 74s after the
+#          cut, well inside the 55s workers-converge allows after the last heal.
+# The broker's own accept errors never reach the server log: sqi-server drops
+# nats-server's error output, so the fault shows as the server's open
+# files held at the limit while rack-b workers are still out, not as a log line.
+#
+# The farm often does not converge. The redialing workers take the free
+# descriptors, and a stream can stop storing: its newest block file is last
+# written inside the window and never again, also after the limit lifts, and
+# the stream stores nothing more for the rest of the run. A standalone
+# nats-server 2.15.2 ends in the same state: out of descriptors while a
+# work-queue stream needs a new block file, its writes fail for good. That
+# sqi's broker fails for the same reason is unconfirmed, because sqi drops the
+# broker's errors and the failed write is not in the server log. The broker
+# creates block files many times a minute, and which stream stops depends on
+# whose block create falls in the window: the task status stream, the
+# heartbeat stream, both, or neither (the run then passes every check); the
+# log stream has not been seen to stop. So every entry below is "may".
+#   - Status stream: no task reaches running or a terminal status. The
+#     stale-assigned reap takes each task back 30-45s after its lease and
+#     leases it again, so every open task re-runs about every 30s until the
+#     run ends, about 370s after the break, and its work never counts.
+#   - Heartbeat stream: the sweep marks every worker offline for good and
+#     reclaims the attempts they are still running.
+duration: 5m
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: rack-a
+    count: 90
+    ramp: 50/s
+    cpu: 8
+    os: linux
+  - name: rack-b
+    count: 30
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 3m15s
+    partition: {groups: [rack-b]}
+    duration: 20s
+  - at: 3m20s
+    fd_limit: {headroom: 10}
+    duration: 40s
+
+# As in chaos-net-rack-partition: rack-b's work in flight when it is cut can be
+# reclaimed and re-run while the cut workers finish it (a refused worker is out
+# for about a minute, past heartbeat_timeout), about 12 tasks on rack-b's
+# quarter of the fleet and up to about 25 with the backlog; the bound of 30
+# covers that.
+#
+# With the status stream broken, rework is open tasks times re-runs: about 12
+# re-runs a task in the 370s left after the break, on every task open when the
+# stream breaks or submitted after it. That comes to 1,050 to 1,572 attempts,
+# the most when the heartbeat stream breaks too, since the sweep's reclaims
+# re-lease tasks sooner than the reap; a heartbeat-only break gives 56 to 88.
+# The ceiling of 2,500 leaves 60% over the highest count; a count over it is
+# still a failure.
+expect:
+  max_rework_attempts: 30
+  known_violations:
+    - check: terminal
+      kind: may
+      reason: the task status stream stopped storing inside the descriptor-limit window and stored nothing more for the rest of the run (consistent with a block file the broker could not create while the limit held, unconfirmed in sqi's logs), so no task status is stored after it and no job finishes
+      tracker: H13f9
+    - check: outcomes
+      kind: may
+      reason: when the status stream breaks no task status is stored after it, so the open tasks stay assigned and never reach the status the simulator decided
+      tracker: H13f9
+    - check: rework
+      kind: may
+      max_attempts: 2500
+      reason: whichever stream breaks, finished work is rejected - with the status stream broken the stale-assigned reap takes every leased task back and leases it again about every 30s, and with the heartbeat stream broken the sweep reclaims the attempts of workers still running them
+      tracker: H13f9
+    - check: single-attempt
+      kind: may
+      reason: when the heartbeat stream breaks, the sweep reclaims the attempts of workers still running them and leases the tasks again
+      tracker: H13f9
+    - check: workers-converge
+      kind: may
+      reason: when the heartbeat stream breaks no heartbeat is stored, the sweep marks every worker offline and none comes back
+      tracker: H13f9
+    - check: executions-recorded
+      kind: may
+      reason: when the heartbeat stream breaks, the attempts the swept workers were running can stay open in the stopped server's store; it fires when both streams break
+      tracker: H13f9

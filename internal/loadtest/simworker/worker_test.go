@@ -4,6 +4,7 @@ package simworker_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/driver"
@@ -401,5 +403,113 @@ func TestWorker_StopAndCrashWithATaskInFlight(t *testing.T) {
 				t.Errorf("task status after a crash = %q, want running (nothing told the server)", task.Status)
 			}
 		})
+	}
+}
+
+// TestWorker_ClockSkewMovesOnlyWireTimestamps runs a worker whose wire clock is
+// ten minutes fast: the heartbeat, status and log-chunk timestamps carry the
+// offset, while the ledger records the real clock.
+func TestWorker_ClockSkewMovesOnlyWireTimestamps(t *testing.T) {
+	const skew = 10 * time.Minute
+	const slack = 2 * time.Second
+	f := newFarm(t)
+	l := simworker.NewLedger()
+	id := uuid.NewString()
+
+	nc, err := nats.Connect(f.srv.NATSURL())
+	if err != nil {
+		t.Fatalf("connect observer: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	var mu sync.Mutex
+	var hbAt, statusAt, logAt []time.Time
+	collect := func(dst *[]time.Time, at func([]byte) (time.Time, bool)) nats.MsgHandler {
+		return func(m *nats.Msg) {
+			if ts, ok := at(m.Data); ok {
+				mu.Lock()
+				*dst = append(*dst, ts)
+				mu.Unlock()
+			}
+		}
+	}
+	for _, s := range []struct {
+		subj string
+		dst  *[]time.Time
+		at   func([]byte) (time.Time, bool)
+	}{
+		{"worker.heartbeat." + id, &hbAt, func(b []byte) (time.Time, bool) {
+			var m protocol.HeartbeatMsg
+			err := json.Unmarshal(b, &m)
+			return m.At, err == nil
+		}},
+		{"task.status.>", &statusAt, func(b []byte) (time.Time, bool) {
+			var m protocol.TaskStatusMsg
+			err := json.Unmarshal(b, &m)
+			return m.At, err == nil
+		}},
+		{"task.logs.>", &logAt, func(b []byte) (time.Time, bool) {
+			var m protocol.LogChunkMsg
+			err := json.Unmarshal(b, &m)
+			return m.At, err == nil
+		}},
+	} {
+		if _, err := nc.Subscribe(s.subj, collect(s.dst, s.at)); err != nil {
+			t.Fatalf("subscribe %s: %v", s.subj, err)
+		}
+	}
+
+	spec := simworker.WorkerSpec{
+		ID: id, Hostname: "sim-skew", FarmID: f.farmID,
+		Group: scenario.WorkerGroup{
+			Name: "sim", CPU: 4, RAMMb: 8192, OS: "linux",
+			Heartbeat: scenario.Duration{Duration: 100 * time.Millisecond},
+			ClockSkew: scenario.Duration{Duration: skew},
+		},
+		NATSURL: f.srv.NATSURL(),
+	}
+	w := simworker.NewWorker(spec, fixedPlan(simworker.TaskPlan{
+		Duration: 50 * time.Millisecond, Outcome: simworker.OutcomeSucceeded, LogLines: 2, LineBytes: 16,
+	}), l, slog.New(slog.DiscardHandler))
+	if err := w.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := w.Stop(ctx); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+
+	jobID := f.submit(t, 1, 1)
+	waitFor(t, 30*time.Second, "terminal event", func() bool { return countKind(l, "", simworker.KindTerminal) == 1 })
+	waitFor(t, 10*time.Second, "wire timestamps", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(hbAt) > 0 && len(statusAt) >= 2 && len(logAt) > 0
+	})
+	f.waitJob(t, jobID, "completed", 30*time.Second)
+
+	// A timestamp was stamped when sent, so by now it has aged by however long
+	// the test has run since; allow that.
+	const age = 30 * time.Second
+	wantSkewed := func(what string, ts []time.Time) {
+		t.Helper()
+		for _, at := range ts {
+			if ahead := time.Until(at); ahead < skew-age || ahead > skew+slack {
+				t.Errorf("%s At = %v is %v ahead of now, want about %v", what, at, ahead, skew)
+			}
+		}
+	}
+	mu.Lock()
+	wantSkewed("heartbeat", hbAt)
+	wantSkewed("status", statusAt)
+	wantSkewed("log chunk", logAt)
+	mu.Unlock()
+
+	for _, e := range l.Events() {
+		if d := time.Since(e.At); d < -slack || d > age {
+			t.Errorf("ledger %s At = %v, want the real clock (up to %v ago)", e.Kind, e.At, age)
+		}
 	}
 }

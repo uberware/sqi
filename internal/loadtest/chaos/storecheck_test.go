@@ -173,7 +173,7 @@ func check(t *testing.T, ts testStore, in StoreInput) map[string]verify.Result {
 		names = append(names, r.Name)
 		byName[r.Name] = r
 	}
-	if want := []string{verify.NameStoreIntegrity, verify.NameExecutionsRecorded}; !slices.Equal(names, want) {
+	if want := []string{verify.NameStoreIntegrity, verify.NameExecutionsRecorded, verify.NameAttemptOrder}; !slices.Equal(names, want) {
 		t.Fatalf("StoreChecks returned %v, want %v", names, want)
 	}
 	return byName
@@ -463,7 +463,7 @@ func TestReclaims_CountsTheServersReclaims(t *testing.T) {
 		rep.Reclaims.ByReason[store.FailureReasonWorkerOffline] != 1 || rep.Reclaims.ByReason[store.FailureReasonWorkerRestarted] != 1 {
 		t.Fatalf("Reclaims = %+v, want one offline and one restart reclaim", rep.Reclaims)
 	}
-	if len(rep.Results) != 2 {
+	if len(rep.Results) != 3 {
 		t.Errorf("results %+v, want no reclaims check without a bound", rep.Results)
 	}
 
@@ -473,14 +473,14 @@ func TestReclaims_CountsTheServersReclaims(t *testing.T) {
 	}{{0, false}, {1, false}, {2, true}} {
 		in.MaxReclaims = &tc.bound
 		results := StoreChecks(t.Context(), in).Results
-		if len(results) != 3 || results[2].Name != verify.NameReclaims {
+		if len(results) != 4 || results[3].Name != verify.NameReclaims {
 			t.Fatalf("bound %d: results %+v, want reclaims last", tc.bound, results)
 		}
-		if r := results[2]; r.OK != tc.wantOK || r.Unmeasured {
+		if r := results[3]; r.OK != tc.wantOK || r.Unmeasured {
 			t.Errorf("bound %d: reclaims = %+v, want OK %v", tc.bound, r, tc.wantOK)
 		}
 		if !tc.wantOK {
-			wantFail(t, results[2], "2 attempts", "a1", "a3")
+			wantFail(t, results[3], "2 attempts", "a1", "a3")
 		}
 	}
 }
@@ -489,7 +489,7 @@ func TestReclaims_UnopenedStoreIsUnmeasured(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.db")
 	bound := 0
 	rep := StoreChecks(t.Context(), StoreInput{Options: backend.Options{Driver: backend.DriverSQLite, SQLitePath: missing}, MaxReclaims: &bound})
-	if rep.Reclaims != nil || len(rep.Results) != 3 || rep.Results[2].Name != verify.NameReclaims || !rep.Results[2].Unmeasured {
+	if rep.Reclaims != nil || len(rep.Results) != 4 || rep.Results[3].Name != verify.NameReclaims || !rep.Results[3].Unmeasured {
 		t.Errorf("StoreChecks = %+v, want reclaims unmeasured and uncounted", rep)
 	}
 }

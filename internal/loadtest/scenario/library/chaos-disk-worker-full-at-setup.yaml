@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-disk-worker-full-at-setup
+description: chaos - leave the 2 real workers' session volume no free space or inodes at 1m for 60s, so tasks fail at setup with their cause; the workers go on once it clears, 3 min
+# The real workers' session directories are on a size-limited volume (make
+# chaos-container). The fault leaves it no free space and no free inodes for
+# 60s, so a task a worker starts inside the window cannot even create its
+# session directory and fails at setup with ENOSPC, before any of its process
+# runs; the hold tasks write nothing themselves. 60 simulated workers carry the
+# background load on render. The space returns at 2m.
+#
+# The attempts that fail on a real worker inside the window must each name
+# their cause (reason matches "no space left on device", in any case), and no
+# more than 12 may fail: 6 hold tasks a minute start about 6 in the 60s window
+# and each failed task is retried at most once inside it, so about 12 is the
+# ceiling with room for a retry that fails again.
+duration: 3m
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}, {name: render-real, max_concurrent_tasks: 8}]
+
+workers:
+  - name: sim
+    count: 60
+    ramp: 50/s
+    cpu: 8
+    os: linux
+    queues: [render]
+  - name: render
+    real: 2
+    queues: [render-real]
+
+jobs:
+  - name: frames
+    rate: 0.15/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+  - name: hold
+    rate: 6/m
+    queue: render-real
+    steps: 1
+    tasks_per_step: 1
+    cores: 1
+    real_task: {duration: 30s, log_every: 1s, scratch_bytes: 0}
+
+faults:
+  - at: 1m
+    disk_full:
+      volume: workers
+      headroom_bytes: 0
+      inodes: true
+      reason: '(?i)no space left on device'
+      max_failed: 12
+    duration: 60s
+
+# A task that fails at setup is retried and completes once the space returns.
+# Rework counts only attempts that exited 0 and were not credited; a failed
+# attempt is not rework, and nothing here finishes uncredited, so the bound is
+# 0.
+expect:
+  max_rework_attempts: 0

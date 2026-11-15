@@ -377,6 +377,7 @@ An empty `queues` list becomes one queue named `default`.
 | `tags` | none | Capability tags, for example `{arnold: "true"}`. |
 | `queues` | empty | Queues the group leases from. Empty means every queue. |
 | `heartbeat` | `15s` | Heartbeat interval. |
+| `clock_skew` | `0` | Offsets the clock of every simulated worker in the group, positive or negative, at most 48 hours. It moves the timestamps on heartbeats, task status reports and log chunks only. Not allowed on a group with real workers. See [Chaos testing](chaos-testing.md#skewed-worker-clocks). |
 | `churn` | none | See below. |
 
 **Churn** applies per worker, as independent random events over the run:
@@ -878,8 +879,9 @@ to 5 hours 30 minutes, so the job (six hour cap) has room for the build and
 the artifact upload. A longer or malformed duration fails the job before
 anything builds.
 
-The chaos suite has CI jobs of its own, `chaos-smoke` and a nightly `chaos` job
-in the same workflow file; see [Chaos testing](chaos-testing.md#ci).
+The chaos suite has CI jobs of its own, `chaos-smoke` and four nightly jobs
+(`chaos`, `chaos-postgres`, `chaos-container` and `chaos-windows`) in the same
+workflow file; see [Chaos testing](chaos-testing.md#ci).
 
 Every CI job is GitHub-hosted at about 4 vCPU, with no larger or self-hosted
 runner, so `ci-medium` is sized to stay valid on one. `mixed-medium` and the
@@ -1083,14 +1085,18 @@ worker offline and reclaims their attempts. Work that finished during the stall
 is rejected when its report lands and runs again, and an attempt reclaimed
 while its lease reply is still in flight can run beside the task's next
 attempt until the stale-running cancel stops it. `chaos-server-stall-long`
-records it.
+records it. A stall shorter than `heartbeat_timeout` can hit it too: a worker
+whose last heartbeat was one heartbeat interval old when the stall began is
+stale at SIGCONT once the stall lasts the rest of the timeout, which
+`chaos-server-stall-short` (15 s) records on `workers-converge`.
 
 ### A worker the sweep marks offline stays offline (H13f3)
 
 A live worker the heartbeat sweep marks offline stays offline while its
 connection stays up: heartbeats never bring a worker back online, and it
-re-registers only on a reconnect. `chaos-server-stall-long` and
-`chaos-worker-sleep` record it, where `workers-converge` fails.
+re-registers only on a reconnect. `chaos-server-stall-long`,
+`chaos-worker-sleep`, `chaos-server-stall-short` and the two longer database
+stalls record it, where `workers-converge` fails.
 
 ### Killing sqi-worker on Linux leaves its task's processes running (H13f4)
 
@@ -1105,6 +1111,74 @@ re-runs on a live worker. `chaos-worker-kill-mid-task` records it, where
 `Scheduler.Stop` reads the scheduler's `cancel` function while
 `Scheduler.Run` is still setting it, when the server shuts down right after it
 launches the scheduler. The race detector reports it. No scenario records it.
+
+### A worker's clock sets an attempt's end time (H13f6)
+
+The server stamps an attempt's start with its own clock at the lease but takes
+its end from the time the worker puts on its terminal status. A worker whose
+clock runs behind by more than a task's run time records attempts that end
+before they start, and one that runs ahead inflates run times.
+`chaos-clock-skew` records it, where `attempt-order` fails.
+
+### Recovery from a database stall acts on unwritten state (H13f7)
+
+While the database stalls, heartbeats and task status reports wait in the
+broker, but none is written. When the database answers again, the heartbeat
+sweep, the stale-assigned reap and the attempt reconciler judge the rows the
+stall left behind before the queued messages land: live workers are taken
+offline and their attempts reclaimed, tasks still running are taken back and
+run twice at once, and work that finished during the stall is rejected.
+Which of them fires varies with the backend and the timing.
+`chaos-db-stall-30s` and `chaos-db-stall-2m` record it, where `rework`,
+`reclaims`, `single-attempt` and (with H13f3) `workers-converge` can fail.
+
+### A revoked worker can still be given a task (H13f8)
+
+Revoking a worker's credential disconnects it from the broker at once, but a
+lease request it parked before the revoke is still served when the next task
+arrives. The task goes to the disconnected worker and waits until the heartbeat
+sweep takes the worker offline and reclaims it. `chaos-worker-revoke` records
+it, where `revoked` can fail.
+
+### A full volume or descriptor limit can stop a broker stream for the rest of the run (H13f9)
+
+When the server's data volume fills, the embedded broker's first stream write
+that fails with ENOSPC leaves that stream failing every later write, also
+after the space returns, for the rest of the run; whether a restart clears it
+is not known. No task status, heartbeat or log is stored, while `/readyz`
+stays ready, REST requests succeed and nothing is logged. When the heartbeat
+sweep runs, every worker is marked offline and none returns.
+`chaos-disk-server-full` records it, where `terminal`, `outcomes`,
+`single-attempt`, `workers-converge` and `executions-recorded` fail.
+
+Running out of file descriptors often ends the same way: a stream's newest
+block file is last written inside the descriptor-limit window and never again,
+also after the limit lifts, and nothing more is stored on it for the rest of
+the run. Which stream stops varies by run. When the task status stream stops,
+leased tasks never reach running: the stale-assigned reap takes each one back
+and leases it again about every 30 seconds, and the finished work never
+counts. When the heartbeat stream stops, every worker is marked offline and
+its attempts are reclaimed while it still runs them. When neither stream
+stops, the farm is unharmed. `chaos-server-fd-exhaustion` records `rework`,
+`terminal`, `outcomes`, `single-attempt`, `workers-converge` and
+`executions-recorded`, each as one that can fail.
+
+The cause inside the broker is unconfirmed: sqi's own logs cannot show it,
+because the broker's errors are dropped (H13f10). The task status and
+heartbeat streams create a new block file many times a minute, because
+nats-server 2.15.2 starts a new last block whenever an ack empties the current
+one. A standalone nats-server 2.15.2, run out of descriptors while a
+work-queue stream needs a new block file, logs a critical write error and
+refuses every later store on that stream after the limit lifts.
+
+### The embedded broker's errors are not logged (H13f10)
+
+`sqi-server` logs only the embedded nats-server's fatal errors and drops its
+notices, warnings and errors, so a stream's write error or a refused connection
+in the broker never reaches the server log. No check fails on it; it is why
+`chaos-disk-server-full` logs nothing about the full volume and why
+`chaos-server-fd-exhaustion` shows the broker's refused connections only in the
+server's open-file count.
 
 ---
 

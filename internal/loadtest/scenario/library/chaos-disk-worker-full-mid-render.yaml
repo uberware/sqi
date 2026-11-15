@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-disk-worker-full-mid-render
+description: chaos - leave the 2 real workers' session volume 1 MiB free at 1m05s for 60s while their tasks write 8 MiB each; the tasks fail with their cause, are retried, and the workers go on, 3 min
+# The real workers' session directories share one size-limited volume (make
+# chaos-container: 64 MiB, 8192 inodes). Each hold task writes 8 MiB into its
+# working directory over its 30s, about 0.27 MiB/s. Hold jobs come every 10s,
+# so 3 run at a time (4 for a moment at a boundary, 32 MiB), well inside the
+# volume outside the fault. Each task that ends frees its 8 MiB, so a fault at
+# a task's end (every 10s from the start of submissions) gives the space back
+# at once and the running tasks never fill the volume. The fault comes at
+# 1m05s, halfway between two ends: the three running tasks hold about 12 MiB
+# and need 4 MiB more before the next end, and the fault leaves 1 MiB free, so
+# they fill the volume within seconds and a task's process exits with an error
+# partway through its render; while the fault lasts, each cycle's tasks need
+# more than the ends give back. The fault fills blocks, not inodes, so a task's
+# session directory is still created and the failure is always its process's.
+# 60 simulated workers carry the background load on render. The space returns
+# at 2m05s.
+#
+# The attempts that fail on a real worker inside the window (the 60s plus the
+# check's 10s tail) must each name their cause (reason matches the worker's
+# "process exited with code"), and no more than 15 may fail. A failed task waits
+# retry_delay (30s) for its next attempt and has 3, so one whose first failure
+# falls in the window's first 30s fails at most twice inside it, and one whose
+# first failure falls later at most once. The 3 tasks running when it starts
+# and the 3 started in its first 30s can fail twice (12), the 3 started later
+# once (3): 15.
+duration: 3m
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}, {name: render-real, max_concurrent_tasks: 8}]
+
+workers:
+  - name: sim
+    count: 60
+    ramp: 50/s
+    cpu: 8
+    os: linux
+    queues: [render]
+  - name: render
+    real: 2
+    queues: [render-real]
+
+jobs:
+  - name: frames
+    rate: 0.15/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+  - name: hold
+    rate: 6/m
+    queue: render-real
+    steps: 1
+    tasks_per_step: 1
+    cores: 1
+    real_task: {duration: 30s, log_every: 1s, scratch_bytes: 8388608}
+
+faults:
+  - at: 1m05s
+    disk_full:
+      volume: workers
+      headroom_bytes: 1048576
+      reason: 'process exited with code'
+      max_failed: 15
+    duration: 60s
+
+# A task that fails on the full volume is retried and completes once the space
+# returns. Rework counts only attempts that exited 0 and were not credited; a
+# failed attempt is not rework, and nothing here finishes uncredited, so the
+# bound is 0.
+expect:
+  max_rework_attempts: 0

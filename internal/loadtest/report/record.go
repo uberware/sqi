@@ -137,8 +137,13 @@ type FaultRecord struct {
 	// started it again (a kill, a term or a power cut), so the server's broker
 	// connection came up again when it healed. A stall leaves the process,
 	// and its connection, in place.
-	ServerRestart bool      `json:"server_restart,omitempty"`
-	Start         time.Time `json:"start"`
+	ServerRestart bool `json:"server_restart,omitempty"`
+	// Workers are the IDs of the real workers a revoke hit.
+	Workers []string `json:"workers,omitempty"`
+	// Notes are what the controller observed while the fault was applied, for
+	// example the server's readiness during a full data volume.
+	Notes []string  `json:"notes,omitempty"`
+	Start time.Time `json:"start"`
 	// Healed is zero when the fault never healed: a worker left dead, an
 	// error, or a run interrupted before the heal.
 	Healed time.Time `json:"healed"`

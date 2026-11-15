@@ -80,6 +80,8 @@ type WorkerGroup struct {
 	Queues    []string          `yaml:"queues"` // empty means every queue
 	Heartbeat Duration          `yaml:"heartbeat"`
 	Churn     Churn             `yaml:"churn"`
+	// ClockSkew offsets the simulated workers' wire clock; it may be negative.
+	ClockSkew Duration `yaml:"clock_skew"`
 }
 
 // WorkerCounts is the size of the simulated fleet and the number of real

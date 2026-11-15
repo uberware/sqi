@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -206,7 +207,7 @@ func TestRun_DrainWaitsForFaultsToHeal(t *testing.T) {
 	want := []string{
 		verify.NameTerminal, verify.NameOutcomes, verify.NameSingleAttempt, verify.NameLogs,
 		verify.NameWorkersConverge, verify.NameCaps, verify.NameSubmissionAtomic,
-		verify.NameStoreIntegrity, verify.NameExecutionsRecorded,
+		verify.NameStoreIntegrity, verify.NameExecutionsRecorded, verify.NameAttemptOrder,
 	}
 	if !slices.Equal(names, want) {
 		t.Errorf("invariants %v, want %v", names, want)
@@ -274,5 +275,113 @@ func TestChaosConvergeWithin(t *testing.T) {
 				t.Errorf("chaosConvergeWithin = %s, want %s", got, max(tc.want, base))
 			}
 		})
+	}
+}
+
+// identityFaults is a fault target that knows its real workers and its log.
+type identityFaults struct {
+	target.Faults
+
+	ids map[int]string
+}
+
+func (identityFaults) ServerLog() string { return "server.log" }
+
+func (f identityFaults) RealWorkerID(i int) (string, error) {
+	if id, ok := f.ids[i]; ok {
+		return id, nil
+	}
+	return "", errors.New("real worker " + strconv.Itoa(i) + " has not started")
+}
+
+// recordsOnly is a fault controller that has fired the records it holds.
+type recordsOnly struct{ records []report.FaultRecord }
+
+func (recordsOnly) Run(context.Context, time.Time) error { return nil }
+func (r recordsOnly) Records() []report.FaultRecord      { return r.records }
+func (recordsOnly) Windows() []verify.FaultWindow        { return nil }
+func (recordsOnly) HealAll()                             {}
+
+func TestStoreChecks_PassesIdentityAndDiskInputs(t *testing.T) {
+	t0 := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	two := 2
+	sc := &scenario.Scenario{
+		Workers: []scenario.WorkerGroup{{Name: "render", Real: 2}},
+		Faults: []scenario.Fault{
+			{Revoke: &scenario.ProcTarget{Group: "render", Real: 1}},
+			{DiskFull: &scenario.DiskFull{Volume: scenario.VolumeWorkers, Reason: "no space", MaxFailed: &two}},
+			{DiskFull: &scenario.DiskFull{Volume: scenario.VolumeServer}},
+			{Latency: &scenario.LatencySpec{}},
+		},
+	}
+	records := []report.FaultRecord{
+		{Index: 0, Kind: scenario.FaultRevoke, Workers: []string{"wid-1"}, Start: t0, Healed: t0.Add(time.Second)},
+		{Index: 1, Kind: scenario.FaultDiskFull, Start: t0.Add(time.Minute), Healed: t0.Add(2 * time.Minute)},
+		{Index: 2, Kind: scenario.FaultDiskFull, Start: t0.Add(3 * time.Minute), Healed: t0.Add(4 * time.Minute)},
+		{Index: 3, Kind: scenario.FaultLatency, Start: t0, Healed: t0},
+	}
+	bound := 4
+	sc.Expect.MaxReclaims = &bound
+	r := &run{
+		sc: sc, tgt: &plainTarget{}, ctl: recordsOnly{records},
+		faults: identityFaults{ids: map[int]string{0: "wid-0", 1: "wid-1"}},
+	}
+	in := r.storeInput()
+	if len(in.Revoked) != 1 || in.Revoked[0].ID != "wid-1" || !in.Revoked[0].At.Equal(t0) {
+		t.Errorf("Revoked = %+v, want wid-1 at %s", in.Revoked, t0)
+	}
+	if !slices.Equal(in.RealIDs, []string{"wid-0", "wid-1"}) {
+		t.Errorf("RealIDs = %v, want both real workers", in.RealIDs)
+	}
+	if len(in.DiskFaults) != 1 {
+		t.Fatalf("DiskFaults = %+v, want only the workers-volume fault", in.DiskFaults)
+	}
+	w := in.DiskFaults[0]
+	if !w.Start.Equal(t0.Add(time.Minute)) || !w.Healed.Equal(t0.Add(2*time.Minute)) || w.MaxFailed == nil || *w.MaxFailed != 2 ||
+		w.Reason == nil || w.Reason.String() != "no space" {
+		t.Errorf("DiskFaults[0] = %+v, want the fault's window, reason and bound", w)
+	}
+	if in.DiskErr != nil || in.SkewedGroups != nil || in.ServerLog != "" {
+		t.Errorf("DiskErr = %v, SkewedGroups = %v, ServerLog = %q; want none", in.DiskErr, in.SkewedGroups, in.ServerLog)
+	}
+	want := []string{
+		verify.NameStoreIntegrity, verify.NameExecutionsRecorded, verify.NameAttemptOrder,
+		verify.NameRevoked, verify.NameDiskFull, verify.NameReclaims,
+	}
+	if got := chaos.CheckNames(in); !slices.Equal(got, want) {
+		t.Errorf("CheckNames = %v, want %v", got, want)
+	}
+
+	t.Run("a real worker that never started leaves disk-full unmeasured", func(t *testing.T) {
+		r.faults = identityFaults{ids: map[int]string{0: "wid-0"}}
+		in := r.storeInput()
+		if in.DiskErr == nil || !strings.Contains(in.DiskErr.Error(), "real worker 1 has not started") {
+			t.Errorf("DiskErr = %v, want the worker's error", in.DiskErr)
+		}
+	})
+	t.Run("a bad reason leaves disk-full unmeasured", func(t *testing.T) {
+		bad := *sc
+		bad.Faults = slices.Clone(sc.Faults)
+		bad.Faults[1] = scenario.Fault{DiskFull: &scenario.DiskFull{Volume: scenario.VolumeWorkers, Reason: "("}}
+		rr := &run{sc: &bad, tgt: &plainTarget{}, ctl: recordsOnly{records}, faults: identityFaults{}}
+		if in := rr.storeInput(); in.DiskErr == nil || !strings.Contains(in.DiskErr.Error(), `reason "("`) {
+			t.Errorf("DiskErr = %v, want the reason's compile error", in.DiskErr)
+		}
+	})
+}
+
+func TestSkewedGroups(t *testing.T) {
+	skew := scenario.Duration{Duration: time.Hour}
+	specs := []simworker.WorkerSpec{
+		{ID: "a-0", Group: scenario.WorkerGroup{Name: "rack-a", ClockSkew: skew}},
+		{ID: "a-1", Group: scenario.WorkerGroup{Name: "rack-a", ClockSkew: skew}},
+		{ID: "b-0", Group: scenario.WorkerGroup{Name: "rack-b"}},
+	}
+	got := skewedGroups(specs)
+	if len(got) != 1 || !slices.Equal(got["rack-a"], []string{"a-0", "a-1"}) {
+		t.Errorf("skewedGroups = %v, want rack-a with both workers", got)
+	}
+	if got := skewedGroups(specs[2:]); got != nil {
+		t.Errorf("skewedGroups with no skew = %v, want nil", got)
 	}
 }

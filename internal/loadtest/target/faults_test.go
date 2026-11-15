@@ -5,6 +5,10 @@ package target
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,10 +20,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/client"
+	"github.com/uberware/sqi/internal/loadtest/dbfault"
 	"github.com/uberware/sqi/internal/loadtest/internal/proctest"
 	"github.com/uberware/sqi/internal/loadtest/netfault"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/store/backend"
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
 
 // The signal helpers' environment. "parent" starts a "child" and writes its
@@ -44,6 +51,10 @@ func runSignalHelper(mode string) (code int, ok bool) {
 		return 0, true
 	case "counter":
 		return helperCounter(), true
+	case "fdopen":
+		return helperFDOpen(), true
+	case "limitrec":
+		return helperLimitRec(), true
 	default:
 		return 0, false
 	}
@@ -514,5 +525,292 @@ func TestIncarnationID(t *testing.T) {
 	}
 	if got := incarnationID(3, 12); got != "3.12" {
 		t.Errorf("incarnationID(3, 12) = %q", got)
+	}
+}
+
+func TestManaged_DropDatabaseOnSQLiteIsAnError(t *testing.T) {
+	m, err := newManaged(ManagedConfig{RunDir: t.TempDir(), Scenario: testScenario(scenario.ServerSpec{Store: "sqlite"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DropDatabase(t.Context()); err == nil || !strings.Contains(err.Error(), "PostgreSQL") {
+		t.Errorf("DropDatabase on SQLite = %v, want an error naming PostgreSQL", err)
+	}
+}
+
+func TestManaged_DatabaseFaultsOnPostgresNeedTheProxy(t *testing.T) {
+	m, err := newManaged(ManagedConfig{RunDir: t.TempDir(), Scenario: testScenario(scenario.ServerSpec{Store: "postgres"}), PostgresDSN: "postgres://u@db.invalid/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, f := range map[string]func(context.Context) error{"StallDatabase": m.StallDatabase, "DropDatabase": m.DropDatabase} {
+		if err := f(t.Context()); err == nil {
+			t.Errorf("%s with no database proxy succeeded", name)
+		}
+	}
+	if err := m.HealDatabase(t.Context()); err != nil {
+		t.Errorf("HealDatabase with nothing applied = %v, want nil", err)
+	}
+}
+
+// TestManaged_DatabaseFaultsDriveTheProxy blackholes, cuts and heals the proxy
+// in front of a listener standing in for PostgreSQL.
+func TestManaged_DatabaseFaultsDriveTheProxy(t *testing.T) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); io.Copy(c, c) }() //nolint:errcheck // echo
+		}
+	}()
+	dsn := "postgres://u@" + ln.Addr().String() + "/x?sslmode=disable"
+	m, err := newManaged(ManagedConfig{RunDir: t.TempDir(), Scenario: pgScenario(scenario.DatabaseDrop), PostgresDSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.pgDSN = dsn
+	if err := m.startDatabaseProxy(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer m.closeLanes() //nolint:errcheck // cleanup
+
+	echo := func(timeout time.Duration) error {
+		var d net.Dialer
+		c, err := d.DialContext(t.Context(), "tcp", m.dbProxy.Addr())
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		c.SetDeadline(time.Now().Add(timeout)) //nolint:errcheck // a failed deadline fails the read
+		if _, err := c.Write([]byte("x")); err != nil {
+			return err
+		}
+		_, err = io.ReadFull(c, make([]byte, 1))
+		return err
+	}
+	if err := echo(2 * time.Second); err != nil {
+		t.Fatalf("echo through a healthy proxy: %v", err)
+	}
+	if err := m.StallDatabase(t.Context()); err != nil {
+		t.Fatalf("StallDatabase: %v", err)
+	}
+	if err := echo(300 * time.Millisecond); err == nil {
+		t.Error("echo succeeded through a blackholed proxy")
+	}
+	if err := m.HealDatabase(t.Context()); err != nil {
+		t.Fatalf("HealDatabase: %v", err)
+	}
+	if err := echo(2 * time.Second); err != nil {
+		t.Errorf("echo after HealDatabase: %v", err)
+	}
+	if err := m.DropDatabase(t.Context()); err != nil {
+		t.Fatalf("DropDatabase: %v", err)
+	}
+	if err := echo(2 * time.Second); err == nil {
+		t.Error("echo succeeded through a cut proxy")
+	}
+	if err := m.HealDatabase(t.Context()); err != nil {
+		t.Fatalf("HealDatabase: %v", err)
+	}
+	if err := echo(2 * time.Second); err != nil {
+		t.Errorf("echo after healing a cut: %v", err)
+	}
+}
+
+// TestManaged_StallDatabaseOnSQLiteHoldsTheLock holds the write lock until
+// HealDatabase, and calling either twice is harmless.
+func TestManaged_StallDatabaseOnSQLiteHoldsTheLock(t *testing.T) {
+	m, err := newManaged(ManagedConfig{RunDir: t.TempDir(), Scenario: testScenario(scenario.ServerSpec{Store: "sqlite"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(m.settings.dataDir(), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StallDatabase(t.Context()); err != nil {
+		t.Fatalf("StallDatabase: %v", err)
+	}
+	if err := m.StallDatabase(t.Context()); err != nil {
+		t.Errorf("second StallDatabase = %v, want nil", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	if l, err := dbfault.LockSQLite(ctx, m.settings.sqlitePath()); err == nil {
+		l.Release() //nolint:errcheck // cleanup
+		t.Fatal("LockSQLite succeeded while StallDatabase held the lock")
+	}
+	if err := m.HealDatabase(t.Context()); err != nil {
+		t.Fatalf("HealDatabase: %v", err)
+	}
+	if err := m.HealDatabase(t.Context()); err != nil {
+		t.Errorf("second HealDatabase = %v, want nil", err)
+	}
+	l, err := dbfault.LockSQLite(t.Context(), m.settings.sqlitePath())
+	if err != nil {
+		t.Fatalf("LockSQLite after HealDatabase: %v", err)
+	}
+	l.Release() //nolint:errcheck // cleanup
+}
+
+// revokeManaged is a target with two real worker slots whose token copies and
+// worker IDs exist, and whose REST client talks to an httptest server that
+// records the revocations. It returns the IDs of the two workers.
+func revokeManaged(t *testing.T, onRevoke func(path string)) (m *managed, ids [2]string) {
+	t.Helper()
+	sc := testScenario(scenario.ServerSpec{Store: "sqlite", BrokerAuth: true})
+	sc.Workers = []scenario.WorkerGroup{{Name: "render", Real: 2}}
+	m = newTestManaged(t, sc)
+	m.joinToken = "shared-token"
+	if err := os.WriteFile(m.joinTokenFile(), []byte(m.joinToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.addWorkerSlots()
+	for i := range ids {
+		n := i + 1
+		if err := m.writeWorkerJoinToken(n); err != nil {
+			t.Fatalf("writeWorkerJoinToken(%d): %v", n, err)
+		}
+		ids[i] = "00000000-0000-4000-8000-00000000000" + strconv.Itoa(n)
+		if err := os.WriteFile(workerconfig.WorkerIDFilePath(m.workerDir(n)), []byte(ids[i]+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			onRevoke(r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	m.client = client.New(srv.URL)
+	return m, ids
+}
+
+func TestManaged_RevokeRemovesThatWorkersJoinToken(t *testing.T) {
+	var m *managed
+	var ids [2]string
+	var paths []string
+	var tokenGoneAtCall bool
+	m, ids = revokeManaged(t, func(path string) {
+		paths = append(paths, path)
+		tokenGoneAtCall = !exists(filepath.Join(m.settings.RunDir, "workers", "1", "join-token"))
+	})
+	slot1 := filepath.Join(m.settings.RunDir, "workers", "1", "join-token")
+	slot2 := filepath.Join(m.settings.RunDir, "workers", "2", "join-token")
+	for _, p := range []string{slot1, slot2, m.joinTokenFile()} {
+		if !exists(p) {
+			t.Fatalf("%s does not exist before the revocation", p)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(slot1)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Errorf("token copy mode = %v, %v; want 0600", info, err)
+		}
+	}
+	if got, err := m.RealWorkerID(0); err != nil || got != ids[0] {
+		t.Fatalf("RealWorkerID(0) = %q, %v; want %q", got, err, ids[0])
+	}
+
+	id, err := m.RevokeWorker(t.Context(), 0)
+	if err != nil {
+		t.Fatalf("RevokeWorker(0): %v", err)
+	}
+	if id != ids[0] {
+		t.Errorf("RevokeWorker returned %q, want %q", id, ids[0])
+	}
+	if want := []string{"/api/v1/workers/" + ids[0] + "/credential"}; !slices.Equal(paths, want) {
+		t.Errorf("revocations = %v, want %v", paths, want)
+	}
+	if !tokenGoneAtCall {
+		t.Error("the worker's token copy still existed when the REST call arrived; it must be removed first")
+	}
+	if exists(slot1) {
+		t.Error("worker 0's token copy still exists")
+	}
+	if !exists(slot2) || !exists(m.joinTokenFile()) {
+		t.Errorf("worker 1's copy (%v) or the shared token (%v) was removed", exists(slot2), exists(m.joinTokenFile()))
+	}
+}
+
+func TestManaged_RevokeOfAnUnstartedWorkerIsAnError(t *testing.T) {
+	m := newTestManaged(t, laneScenario(false))
+	m.joinToken = "tok"
+	m.addWorkerSlots()
+	m.client = client.New("http://127.0.0.1:1")
+	if _, err := m.RevokeWorker(t.Context(), 0); err == nil {
+		t.Error("RevokeWorker of a worker that never started succeeded")
+	}
+	if _, err := m.RevokeWorker(t.Context(), 99); err == nil {
+		t.Error("RevokeWorker of an unknown worker succeeded")
+	}
+}
+
+func TestManaged_RevokeRemovesTheTokenCopyEvenWhenTheRestCallFails(t *testing.T) {
+	m, ids := revokeManaged(t, func(string) {})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	t.Cleanup(srv.Close)
+	m.client = client.New(srv.URL)
+	id, err := m.RevokeWorker(t.Context(), 1)
+	if err == nil || !strings.Contains(err.Error(), "404") {
+		t.Fatalf("RevokeWorker err = %v, want one naming the 404", err)
+	}
+	if id != ids[1] {
+		t.Errorf("id = %q, want %q even on a failure", id, ids[1])
+	}
+	if exists(filepath.Join(m.settings.RunDir, "workers", "2", "join-token")) {
+		t.Error("the token copy was kept although the revoke was attempted; it is removed first")
+	}
+}
+
+func TestManaged_RevokeAfterCloseBeginsIsRefused(t *testing.T) {
+	m, _ := revokeManaged(t, func(string) { t.Error("a revocation reached the server after Close began") })
+	m.mu.Lock()
+	m.closing = true
+	m.mu.Unlock()
+	if _, err := m.RevokeWorker(t.Context(), 0); !errors.Is(err, errClosing) {
+		t.Errorf("RevokeWorker err = %v, want errClosing", err)
+	}
+}
+
+func TestManaged_RealWorkerIDBeforeStartIsAnError(t *testing.T) {
+	m := newTestManaged(t, laneScenario(false))
+	m.addWorkerSlots()
+	if id, err := m.RealWorkerID(0); err == nil {
+		t.Errorf("RealWorkerID(0) = %q before the worker started, want an error", id)
+	}
+	if id, err := m.RealWorkerID(99); err == nil {
+		t.Errorf("RealWorkerID(99) = %q, want an error for an unknown worker", id)
+	}
+}
+
+func TestManaged_WorkerEnvUsesItsOwnJoinTokenCopy(t *testing.T) {
+	sc := testScenario(scenario.ServerSpec{Store: "sqlite", BrokerAuth: true})
+	sc.Workers = []scenario.WorkerGroup{{Name: "render", Real: 1}}
+	m := newTestManaged(t, sc)
+	m.joinToken, m.httpURL = "tok", "http://127.0.0.1:1"
+	env, err := m.workerEnv(sc.Workers[0], 1, "0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SQI_WORKER_NATS_JOIN_TOKEN_FILE=" + filepath.Join(m.settings.RunDir, "workers", "1", "join-token")
+	if !slices.Contains(env, want) {
+		t.Errorf("worker env lacks %q; has %v", want, env)
+	}
+}
+
+func TestManaged_ServerLogIsTheServersLog(t *testing.T) {
+	m := newTestManaged(t, laneScenario(false))
+	var f Faults = m
+	if got := f.ServerLog(); got != filepath.Join(m.settings.RunDir, "server.log") {
+		t.Errorf("ServerLog = %q", got)
 	}
 }

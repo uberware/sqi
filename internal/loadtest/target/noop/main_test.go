@@ -194,3 +194,57 @@ func countLines(s, prefix string) int {
 	}
 	return n
 }
+
+func TestNoop_ScratchBytesWritesAll(t *testing.T) {
+	bin := noopBin(t)
+	const scratch = 3<<20 + 17 // not a multiple of the chunk count
+	config, markers := writeConfig(t, marker.NoopClass{DurationMS: 600, LogEveryMS: 200, ScratchBytes: scratch})
+	dir := t.TempDir()
+	cmd := exec.CommandContext(t.Context(), bin, taskArgs(config)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "SQILOAD_INCARNATION=0.0")
+	if out, err := cmd.Output(); err != nil {
+		t.Fatalf("noop: %v\n%s", err, out)
+	}
+	fi, err := os.Stat(filepath.Join(dir, "scratch.bin"))
+	if err != nil {
+		t.Fatalf("scratch.bin: %v", err)
+	}
+	if fi.Size() != scratch {
+		t.Errorf("scratch.bin is %d bytes, want %d", fi.Size(), scratch)
+	}
+	execs, _, err := marker.ReadAll(markers)
+	if err != nil || len(execs) != 1 || execs[0].End == nil || execs[0].ExitCode != 0 {
+		t.Errorf("markers = %+v, %v; want one main exec that ended with 0", execs, err)
+	}
+}
+
+// TestNoop_ScratchBytesSpreadOverTheDuration checks the bytes arrive one chunk
+// per tick rather than all at once.
+func TestNoop_ScratchBytesSpreadOverTheDuration(t *testing.T) {
+	bin := noopBin(t)
+	config, _ := writeConfig(t, marker.NoopClass{DurationMS: 1500, LogEveryMS: 300, ScratchBytes: 5 << 20})
+	dir := t.TempDir()
+	cmd := exec.CommandContext(t.Context(), bin, taskArgs(config)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "SQILOAD_INCARNATION=0.0")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() }) //nolint:errcheck // cleanup of a finished or killed process
+	// Poll for the first bytes rather than sleeping a fixed time, which a
+	// loaded runner can stretch past the end of the task.
+	var size int64
+	deadline := time.Now().Add(10 * time.Second)
+	for size <= 0 && time.Now().Before(deadline) {
+		if fi, err := os.Stat(filepath.Join(dir, "scratch.bin")); err == nil {
+			size = fi.Size()
+		}
+		if size <= 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if size <= 0 || size >= 5<<20 {
+		t.Errorf("scratch.bin is %d bytes when first seen in a 1.5s task, want some but not all of %d", size, 5<<20)
+	}
+}

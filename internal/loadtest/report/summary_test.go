@@ -199,6 +199,37 @@ func TestSummary_FaultsTableEscapesCells(t *testing.T) {
 	}
 }
 
+// TestSummary_FaultNotesAndWorkers proves a fault's revoked workers and
+// observations print under the table, and that a fault without either adds
+// nothing.
+func TestSummary_FaultNotesAndWorkers(t *testing.T) {
+	r := baseRecord()
+	r.Faults = []FaultRecord{
+		{Index: 0, Kind: "kill", Target: "server", Start: t0.Add(time.Second), Healed: t0.Add(2 * time.Second)},
+		{
+			Index: 1, Kind: "revoke", Target: "group render (real 0,1)", Start: t0.Add(3 * time.Second),
+			Workers: []string{"w-a", "w-b"},
+			Notes:   []string{"+0s: ready", "+12s: 503 degraded\nsecond line"},
+		},
+	}
+	var b strings.Builder
+	if err := writeSummary(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	got := b.String()
+	for _, want := range []string{
+		"- Fault #1 workers: w-a, w-b\n",
+		"- Fault #1 notes: +0s: ready; +12s: 503 degraded second line\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Fault #0 workers") || strings.Contains(got, "Fault #0 notes") {
+		t.Errorf("a fault with neither workers nor notes printed a line:\n%s", got)
+	}
+}
+
 func TestSummary_RendersFaultsReworkAndKnown(t *testing.T) {
 	r := baseRecord()
 	r.Faults = []FaultRecord{

@@ -14,9 +14,11 @@ name: Load nightly
 # to gate on timings. Compare runs with `sqi-load compare` on the uploaded
 # directories.
 #
-# The `chaos` jobs run the whole chaos suite (docs/chaos-testing.md) on SQLite,
-# one job per scenario. They ignore `scenario` and run on a dispatch only when
-# `duration` is empty, so a soak dispatch runs the soak alone.
+# The `chaos` jobs run the whole chaos suite (docs/chaos-testing.md), one job
+# per scenario: `chaos` on SQLite, `chaos-postgres` on PostgreSQL and
+# `chaos-windows` on Windows, plus `chaos-container` for the disk scenarios.
+# They ignore `scenario` and run on a dispatch only when `duration` is empty,
+# so a soak dispatch runs the soak alone.
 on:
   schedule:
     - cron: "30 3 * * *"
@@ -177,32 +179,55 @@ jobs:
   # a CPU. chaos-plan lists the scenarios from the library, so a new one joins
   # without an edit here.
   #
-  # Only the tests listed under `gated` below fail their job. The list is
+  # Only the tests listed in a job's GATED fail it. Every GATED is
   # empty: every test is advisory and raises a warning annotation when it does
   # not pass, the framework test included, since it runs a real scenario
-  # (chaos-server-term). A test moves to the gated list after 20 consecutive
+  # (chaos-server-term). A test moves to a GATED after 20 consecutive
   # passing runs on GitHub-hosted runners; add its name (TestChaos/<scenario>,
-  # or TestChaos_<name>) to that one list to promote it.
+  # or TestChaos_<name>) to that job's GATED to promote it.
+  #
+  # Three more jobs cover what `chaos` does not. `chaos-postgres` runs the
+  # scenarios that apply on PostgreSQL (the database ones included) against a
+  # service container; `chaos-windows` runs those that apply on Windows;
+  # `chaos-container` runs the chaos-disk-* scenarios on real size-limited
+  # volumes in Docker. All are advisory in the same way, each with its own
+  # GATED, promoted by the same rule (docs/chaos-testing.md, "CI").
   chaos-plan:
     name: Chaos suite plan
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'schedule' || inputs.duration == '' }}
     outputs:
-      scenarios: ${{ steps.list.outputs.scenarios }}
+      linux_sqlite: ${{ steps.list.outputs.linux_sqlite }}
+      linux_postgres: ${{ steps.list.outputs.linux_postgres }}
+      windows: ${{ steps.list.outputs.windows }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # The library says which scenarios apply to each OS and store (the
+      # POSIX-only stalls are not run on Windows, the database faults need
+      # PostgreSQL). Without --container the chaos-disk-* scenarios, which run
+      # in the container job, are left out of all three lists. The framework
+      # test runs on Linux with SQLite only.
       - name: List the chaos scenarios
         id: list
         shell: bash
         run: |
-          names=(framework)
-          for f in internal/loadtest/scenario/library/chaos-*.yaml; do
-            names+=("$(basename "$f" .yaml)")
-          done
-          json=$(printf '%s\n' "${names[@]}" | jq -R . | jq -cs .)
-          echo "scenarios=$json" >> "$GITHUB_OUTPUT"
+          go build -o "$RUNNER_TEMP/sqi-load" ./cmd/sqi-load
+          list() { "$RUNNER_TEMP/sqi-load" scenarios --chaos-matrix --os "$1" --store "$2"; }
+          linux_sqlite=$(list linux sqlite | jq -c '["framework"] + .')
+          linux_postgres=$(list linux postgres)
+          windows=$(list windows sqlite)
+          {
+            echo "linux_sqlite=$linux_sqlite"
+            echo "linux_postgres=$linux_postgres"
+            echo "windows=$windows"
+          } >> "$GITHUB_OUTPUT"
 
   chaos:
     name: Chaos suite (sqlite, ${{ matrix.scenario }})
@@ -212,7 +237,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: ${{ fromJSON(needs.chaos-plan.outputs.scenarios) }}
+        scenario: ${{ fromJSON(needs.chaos-plan.outputs.linux_sqlite) }}
 
     env:
       CHAOS_OUT: ${{ github.workspace }}/chaos-runs
@@ -255,42 +280,230 @@ jobs:
           retention-days: 30
 
       # A skipped or filtered test would still leave `go test` green, so each
-      # is asserted by name. The trailing space keeps a name from matching a
-      # longer one with the same prefix.
+      # is asserted by name. GATED lists the tests that fail the job; the rest
+      # are advisory.
       - name: Assert the gated tests passed
         if: ${{ always() }}
         shell: bash
         env:
+          GATED: ""
           SCENARIO: ${{ matrix.scenario }}
         run: |
-          gated=(
-          )
           if [ "$SCENARIO" = framework ]; then
             mapfile -t tests < <(grep -ho '^func TestChaos_[A-Za-z0-9_]*' test/chaos/*_test.go | sed 's/^func //')
           else
             tests=("TestChaos/$SCENARIO")
           fi
-          fail=0
-          {
-            echo "| Test | Gating | Result |"
-            echo "|---|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
-          for t in "${tests[@]}"; do
-            if printf '%s\n' "${gated[@]}" | grep -qxF "$t"; then
-              gating=gated
-            else
-              gating=advisory
-            fi
-            if grep -q -- "--- PASS: $t " "$CHAOS_LOG"; then
-              result=PASS
-            elif [ "$gating" = gated ]; then
-              echo "::error::$t did not pass (or did not run)"
-              result=FAIL
-              fail=1
-            else
-              echo "::warning::advisory test $t did not pass (or did not run)"
-              result="not passed"
-            fi
-            echo "| $t | $gating | $result |" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/assert-gated-tests.sh "$CHAOS_LOG" "${tests[@]}"
+
+  # The same scenarios on PostgreSQL: the ones that apply there, the database
+  # faults (chaos-db-*) among them. The service container is one server per
+  # job and the DSN names its postgres database, which the harness uses as it
+  # is, so each scenario job has a server to itself. `make chaos STORE=postgres`
+  # runs through scripts/chaos-postgres.sh, which uses the DSN given instead of
+  # starting a container of its own.
+  chaos-postgres:
+    name: Chaos suite (postgres, ${{ matrix.scenario }})
+    runs-on: ubuntu-latest
+    needs: chaos-plan
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(needs.chaos-plan.outputs.linux_postgres) }}
+
+    # Keep the image in step with scripts/lib/pg-throwaway.sh and ci.yml's
+    # postgres-integration PG 18 entry.
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_PASSWORD: sqi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -h 127.0.0.1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      CHAOS_OUT: ${{ github.workspace }}/chaos-runs
+      CHAOS_LOG: ${{ github.workspace }}/chaos.log
+      SQI_CHAOS_STORE: postgres
+      SQI_TEST_POSTGRES_DSN: postgres://postgres:sqi@127.0.0.1:5432/postgres?sslmode=disable
+      SQI_TEST_REQUIRE_POSTGRES: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # As in `chaos`: the next step, not make's status, decides what fails the
+      # job.
+      - name: Run the chaos test
+        shell: bash
+        env:
+          SQI_LOAD_OUT: ${{ env.CHAOS_OUT }}
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          make chaos STORE=postgres "SCENARIO=$SCENARIO" 2>&1 | tee "$CHAOS_LOG" || echo "make exited non-zero; the next step decides what fails the job"
+
+      - name: Upload the run directories
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: chaos-runs-postgres-${{ matrix.scenario }}
+          path: |
+            ${{ env.CHAOS_OUT }}
+            ${{ env.CHAOS_LOG }}
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Advisory, as in `chaos`: add a name to GATED to promote it
+      # (docs/chaos-testing.md, "CI").
+      - name: Assert the gated tests passed
+        if: ${{ always() }}
+        shell: bash
+        env:
+          GATED: ""
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          bash scripts/assert-gated-tests.sh "$CHAOS_LOG" "TestChaos/$SCENARIO"
+
+  # The chaos-disk-* scenarios and the diskfill ballast tests, in a container
+  # that gives them real size-limited volumes (`make chaos-container`). The
+  # target adds CAP_SYS_ADMIN to the container, which the runner's Docker
+  # allows, and runs it with `--security-opt apparmor=unconfined`, since the
+  # default AppArmor profile denies the tmpfs mounts of the ballast tests
+  # (unverified on these runners). It exits 0 when Docker is missing, so the
+  # assertion step below is what notices a run that never happened. The disk
+  # scenarios are read from
+  # the library, so a new chaos-disk-*.yaml is asserted without an edit here.
+  chaos-container:
+    name: Chaos suite (container, disk)
+    runs-on: ubuntu-latest
+    # Uses none of chaos-plan's lists, so it does not wait for them.
+    if: ${{ github.event_name == 'schedule' || inputs.duration == '' }}
+    timeout-minutes: 120
+
+    env:
+      CHAOS_OUT: ${{ github.workspace }}/chaos-runs
+      CHAOS_LOG: ${{ github.workspace }}/chaos.log
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run the chaos container target
+        shell: bash
+        env:
+          SQI_LOAD_OUT: ${{ env.CHAOS_OUT }}
+        run: |
+          mkdir -p "$SQI_LOAD_OUT"
+          make chaos-container 2>&1 | tee "$CHAOS_LOG" || echo "make exited non-zero; the next step decides what fails the job"
+
+      # The container runs as root and the harness writes 0600 files in 0700
+      # directories, so the run directories are root-owned and unreadable to
+      # the runner user; without this the upload fails and takes the job (and
+      # the run directories) with it.
+      - name: Make the run directories readable
+        if: ${{ always() }}
+        shell: bash
+        run: sudo chown -R "$(id -u):$(id -g)" "$CHAOS_OUT"
+
+      - name: Upload the run directories
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: chaos-runs-container
+          path: |
+            ${{ env.CHAOS_OUT }}
+            ${{ env.CHAOS_LOG }}
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Advisory, as in `chaos`: add a name to GATED to promote it
+      # (docs/chaos-testing.md, "CI").
+      - name: Assert the gated tests passed
+        if: ${{ always() }}
+        shell: bash
+        env:
+          GATED: ""
+        run: |
+          tests=()
+          for f in internal/loadtest/scenario/library/chaos-disk-*.yaml; do
+            tests+=("TestChaos/$(basename "$f" .yaml)")
           done
-          exit "$fail"
+          tests+=(TestFill_LeavesHeadroom TestFill_Inodes)
+          bash scripts/assert-gated-tests.sh "$CHAOS_LOG" "${tests[@]}"
+
+  # The scenarios that apply on Windows, with SQLite, on a Windows runner.
+  chaos-windows:
+    name: Chaos suite (windows, ${{ matrix.scenario }})
+    runs-on: windows-latest
+    needs: chaos-plan
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(needs.chaos-plan.outputs.windows) }}
+
+    env:
+      CHAOS_OUT: ${{ github.workspace }}/chaos-runs
+      CHAOS_LOG: ${{ github.workspace }}/chaos.log
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Git Bash. The runner image is not guaranteed to carry GNU make, so
+      # without it the same go test line as the Makefile's `chaos` target runs
+      # directly.
+      - name: Run the chaos test
+        shell: bash
+        env:
+          SQI_LOAD_OUT: ${{ env.CHAOS_OUT }}
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          if command -v make >/dev/null 2>&1; then
+            make chaos "SCENARIO=$SCENARIO" 2>&1 | tee "$CHAOS_LOG" || echo "make exited non-zero; the next step decides what fails the job"
+          else
+            go test -tags chaos -run "^TestChaos\$/^$SCENARIO\$" -v -timeout 3h ./test/chaos/ 2>&1 | tee "$CHAOS_LOG" || echo "go test exited non-zero; the next step decides what fails the job"
+          fi
+
+      - name: Upload the run directories
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: chaos-runs-windows-${{ matrix.scenario }}
+          path: |
+            ${{ env.CHAOS_OUT }}
+            ${{ env.CHAOS_LOG }}
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Advisory, as in `chaos`: add a name to GATED to promote it
+      # (docs/chaos-testing.md, "CI").
+      - name: Assert the gated tests passed
+        if: ${{ always() }}
+        shell: bash
+        env:
+          GATED: ""
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          bash scripts/assert-gated-tests.sh "$CHAOS_LOG" "TestChaos/$SCENARIO"
