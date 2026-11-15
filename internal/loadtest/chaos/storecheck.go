@@ -102,10 +102,10 @@ type StoreReport struct {
 // skew-warning: the server's log warns about at least one worker of every
 // group whose clock was skewed.
 //
-// disk-full: during each workers-volume disk_full fault, the attempts that
-// failed on real workers match the fault's reason and number no more than its
-// bound, and every real worker succeeded an attempt that started after the
-// disk was freed.
+// disk-full: for each workers-volume disk_full fault, the attempts that failed
+// on real workers between the fault's start and ten seconds after the disk was
+// freed match the fault's reason and number no more than its bound, and every
+// real worker has a succeeded attempt that started after the disk was freed.
 //
 // A store the checks cannot open, or whose farm's jobs they cannot list,
 // fails every check as unmeasured, with the error as evidence, and leaves the

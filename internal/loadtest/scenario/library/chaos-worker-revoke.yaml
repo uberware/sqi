@@ -18,7 +18,7 @@ description: chaos - revoke one of 2 real workers' credentials at 3m21s under br
 # attempts after the revoke. Hold jobs arrive every 10s from the start of
 # submissions, so the revoke comes 1s after one (3m21s) and the next one 9s
 # after it: a hold task leased to the revoked worker always lands past the
-# grace, never on it. The server can lease it one (H13f8): a lease request the
+# grace, never on it. The server can lease it one: a lease request the
 # worker parked before the revoke is still served when the next hold job
 # arrives, and the task waits for the reclaim. Whether the revoked worker's
 # request or the other worker's takes that job varies from run to run, so the

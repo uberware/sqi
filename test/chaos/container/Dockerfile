@@ -10,9 +10,9 @@
 # CAP_SYS_ADMIN is also what internal/loadtest/diskfill's own tests need to
 # mount their tmpfs.
 #
-# The source is COPYied in at build time from a staged copy of the repo, not
-# bind-mounted; the Makefile target's comment above `test-isolation` explains
-# why. The final RUN compiles both binaries and the chaos test binary once so
+# The source is copied in at build time from a staged copy of the repo, not
+# bind-mounted; the comment above the Makefile's `test-isolation` target
+# explains why. The final RUN compiles both binaries and the chaos test binary once so
 # the image carries a warm build cache and a scenario run does not pay for it.
 FROM golang:1.26.3-bookworm
 

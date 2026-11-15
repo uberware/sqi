@@ -977,9 +977,9 @@ func (r *run) storeChecks(ctx context.Context) {
 	r.invariants = append(r.invariants, withMarkerErr(rep.Results, markerErr)...)
 }
 
-// storeInput is what the store checks read, but the stopped server's store and
-// the real tasks' markers: the farm, the ledger, the faults that fired and
-// what the revoked, skew-warning and disk-full checks need of them.
+// storeInput is the store checks' input except the stopped server's store
+// options and the real tasks' markers: the farm, the ledger, the faults that
+// fired and what the revoked, skew-warning and disk-full checks need of them.
 func (r *run) storeInput() chaos.StoreInput {
 	records := r.faultRecords()
 	in := chaos.StoreInput{

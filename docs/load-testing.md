@@ -1145,35 +1145,31 @@ it, where `revoked` can fail.
 When the server's data volume fills, the embedded broker's first stream write
 that fails with ENOSPC leaves that stream failing every later write, also
 after the space returns, for the rest of the run; whether a restart clears it
-was not tested. No task status, heartbeat or log is stored, while `/readyz`
-stayed ready while the volume was full, REST requests succeeded and nothing is
-logged. When the heartbeat sweep runs, every worker is marked offline and none
-returns.
+is not known. No task status, heartbeat or log is stored, while `/readyz`
+stays ready, REST requests succeed and nothing is logged. When the heartbeat
+sweep runs, every worker is marked offline and none returns.
 `chaos-disk-server-full` records it, where `terminal`, `outcomes`,
 `single-attempt`, `workers-converge` and `executions-recorded` fail.
 
-Running out of file descriptors ends the same way in most runs. What the runs
-establish: in every run where a stream stopped storing, its newest block file
-was last written inside the descriptor-limit window and never again, also
-after the limit lifted, and nothing more was stored on it until the run ended.
-Which stream stops varies by run. When the task status stream stops, leased
-tasks never reach running: the stale-assigned reap takes each one back and
-leases it again about every 30 seconds, and the finished work never counts.
-When the heartbeat stream stops, every worker is marked offline and its
-attempts are reclaimed while it still runs them. In three runs of sixteen
-neither stream stopped and the farm was unharmed. `chaos-server-fd-exhaustion`
-records `rework`, `terminal`, `outcomes`, `single-attempt`, `workers-converge`
-and `executions-recorded`, each as one that can fail.
+Running out of file descriptors often ends the same way: a stream's newest
+block file is last written inside the descriptor-limit window and never again,
+also after the limit lifts, and nothing more is stored on it for the rest of
+the run. Which stream stops varies by run. When the task status stream stops,
+leased tasks never reach running: the stale-assigned reap takes each one back
+and leases it again about every 30 seconds, and the finished work never
+counts. When the heartbeat stream stops, every worker is marked offline and
+its attempts are reclaimed while it still runs them. When neither stream
+stops, the farm is unharmed. `chaos-server-fd-exhaustion` records `rework`,
+`terminal`, `outcomes`, `single-attempt`, `workers-converge` and
+`executions-recorded`, each as one that can fail.
 
-The cause inside the broker is consistent with these runs but not confirmed in
-sqi's own logs, which do not show it because the broker's errors are dropped
-(H13f10). The streams that stopped, task status and heartbeats, create a new
-block file many times a minute: block numbers reached the hundreds and
-thousands in a 10 minute run, because nats-server 2.15.2 starts a new last
-block whenever an ack empties the current one. A standalone nats-server 2.15.2
-outside sqi, run out of descriptors while a work-queue stream needs a new
-block file, logs a critical write error and refuses every later store on that
-stream after the limit lifts.
+The cause inside the broker is unconfirmed: sqi's own logs cannot show it,
+because the broker's errors are dropped (H13f10). The task status and
+heartbeat streams create a new block file many times a minute, because
+nats-server 2.15.2 starts a new last block whenever an ack empties the current
+one. A standalone nats-server 2.15.2, run out of descriptors while a
+work-queue stream needs a new block file, logs a critical write error and
+refuses every later store on that stream after the limit lifts.
 
 ### The embedded broker's errors are not logged (H13f10)
 

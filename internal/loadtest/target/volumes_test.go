@@ -284,7 +284,7 @@ func TestManaged_ServerReady(t *testing.T) {
 	}
 }
 
-// TestManaged_ServerReadyReusesItsClient proves the probes share one HTTP
+// TestManaged_ServerReadyReusesItsClient checks the probes share one HTTP
 // client: the controller polls readiness every second, and a client per probe
 // would leave an idle connection behind for each.
 func TestManaged_ServerReadyReusesItsClient(t *testing.T) {

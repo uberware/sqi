@@ -45,8 +45,9 @@ func (t task) loop() loopResult {
 
 // scratchFor prints like printFor and writes ScratchBytes to scratch.bin in
 // equal chunks, one per print interval (every 200 ms when it prints once), the
-// first at once. It prints scratch write failed and reports it on any error:
-// a task that cannot write to a full disk fails, as a real one does.
+// first at once. On any write error it prints "scratch write failed" to stderr
+// and returns loopScratchFailed, so a task that cannot write to a full disk
+// fails as a real one does.
 func (t task) scratchFor(logEvery time.Duration) loopResult {
 	interval := logEvery
 	if interval <= 0 {

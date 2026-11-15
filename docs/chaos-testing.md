@@ -96,8 +96,8 @@ look for `--- PASS: TestChaos/chaos-disk-` lines. Set `SQI_LOAD_OUT` to keep
 the run directories; the container writes them as root. A Docker host that
 applies its default AppArmor profile refuses the tmpfs mounts the ballast
 tests make, so the `docker run` line passes `--security-opt
-apparmor=unconfined`. Whether that is enough on GitHub's runners is unverified
-until the first nightly run. The container scenarios run on SQLite only:
+apparmor=unconfined`. Whether that is enough on GitHub's runners is
+unverified. The container scenarios run on SQLite only:
 `make chaos-container STORE=postgres` stops with an error.
 
 The test logs each run's directory, and on a failure its `summary.md`. A
@@ -110,8 +110,8 @@ seconds after it starts, and the faults that depend on a worker being marked
 offline fire after that, so a run is several minutes longer than its faults
 need. On Linux each of the three smoke scenarios takes about 4 to 5.5 minutes, about
 13 minutes for the three plus the first binary build. A full pass of the
-scenarios that apply on one platform and store takes about two hours (the 22
-that apply on Windows took 1 hour 48 minutes); `make chaos` allows three.
+scenarios that apply on one platform and store takes about two hours; `make
+chaos` allows three.
 
 **Platforms.** Linux is the platform the suite is built for. A scenario is
 skipped, with its reason in the test output, where its faults cannot be
@@ -260,8 +260,9 @@ A scenario with several problems reports all of them, each with its path
 - A group's `clock_skew` is at most 48 hours from the server's clock, and the
   group has no real workers.
 - A fault that takes the server down (kill, term or stall of the server, a
-  power cut, a full server volume or a lowered file descriptor limit) needs `clients.websocket.count` and `clients.rest_pollers.count`
-  at 0: UI clients do not survive a server outage.
+  power cut, a full server volume or a lowered file descriptor limit) needs
+  `clients.websocket.count` and `clients.rest_pollers.count` at 0: UI clients
+  do not survive a server outage.
 
 A stall is also refused at run time on Windows.
 
@@ -347,8 +348,9 @@ which read the real tasks' markers, one with `max_rework_attempts` adds
 `rework`, one with `max_reclaims` adds `reclaims`, one with a `revoke` fault
 adds `revoked`, one with a `clock_skew` group adds `skew-warning`, and one with
 a `disk_full` fault on a workers volume adds `disk-full`; a `must` known
-violation that did not fire adds a failed `known:<check>` (see below). A failing invariant carries
-evidence naming the job, task, attempt or process, at most 20 entries.
+violation that did not fire adds a failed `known:<check>` (see below). A
+failing invariant carries evidence naming the job, task, attempt or process,
+at most 20 entries.
 
 | Invariant | The exact rule |
 |---|---|
@@ -496,7 +498,7 @@ server defects](load-testing.md#known-server-defects).
 | H13f6 | The server records an attempt's `ended_at` from the worker's clock and its `started_at` from its own, so a worker whose clock runs behind records attempts that end before they start. | `chaos-clock-skew`, `attempt-order`, `must` |
 | H13f7 | When a stalled database answers again, the heartbeat sweep, the stale-assigned reap and the attempt reconciler act on the state the stall kept from being written, before the queued heartbeats and status reports land: live workers go offline, running tasks are taken back and run twice, finished work is rejected. | `chaos-db-stall-30s`, `rework` (up to 60), `reclaims` and `single-attempt`, `may`; `chaos-db-stall-2m`, `single-attempt`, `may` |
 | H13f8 | A lease request a worker parked before its credential was revoked is still served after the revoke, so the disconnected worker is given a task that waits until the sweep reclaims it. | `chaos-worker-revoke`, `revoked`, `may` |
-| H13f9 | After a write to a broker stream fails because the data volume is full or the server is out of file descriptors, the stream may store nothing more for the rest of the run; whether a restart clears it was not tested. With a full volume the server stayed ready and answered REST while the volume was full (readiness was not probed in the descriptor runs). Every worker is then reclaimed. | `chaos-disk-server-full`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded`, `must`; `chaos-server-fd-exhaustion`, the same checks and `rework` (up to 2500), `may` |
+| H13f9 | After a write to a broker stream fails because the data volume is full or the server is out of file descriptors, the stream may store nothing more for the rest of the run; whether a restart clears it is not known. With a full volume the server stays ready and answers REST while the volume is full. Every worker is then reclaimed. | `chaos-disk-server-full`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded`, `must`; `chaos-server-fd-exhaustion`, the same checks and `rework` (up to 2500), `may` |
 | H13f10 | `sqi-server` drops the embedded broker's notices, warnings and errors, so a broker failure never reaches the server log. | Not tied to a check. |
 
 ---
@@ -647,8 +649,8 @@ runners, add its name (`TestChaos/<scenario>`, or
 `TestChaos_MustViolationThatDoesNotFireFails`) to the `GATED` variable of the
 job that runs it in `load-nightly.yml` (whitespace-separated). Each of the four
 jobs sets one, on the step that asserts its gated scenarios, which runs
-`scripts/assert-gated-tests.sh`. A scenario that runs in several
-jobs is promoted per job. Once all three smoke
+`scripts/assert-gated-tests.sh`. A scenario that runs in several jobs is
+promoted per job. Once all three smoke
 scenarios have their 20, also remove `continue-on-error` from the `chaos-smoke`
 job in `ci.yml`, so a failing pull request is blocked. A scenario that cannot
 meet 20 stays advisory.

@@ -28,23 +28,21 @@ description: chaos - lower the server's file descriptor limit to 10 above its op
 #          connect timeout), so every refused worker is back by 74s after the
 #          cut, well inside the 55s workers-converge allows after the last heal.
 # The broker's own accept errors never reach the server log: sqi-server drops
-# nats-server's error output (H13f10), so the fault shows as the server's open
+# nats-server's error output, so the fault shows as the server's open
 # files held at the limit while rack-b workers are still out, not as a log line.
 #
-# The farm does not converge in most runs (H13f9). The redialing workers take
-# the free descriptors. In every run where a stream stopped storing, its newest
-# block file was last written inside the window and never again, also after
-# the limit lifted, and the stream stored nothing more until the run ended. A
-# standalone nats-server 2.15.2 reproduces that end state without sqi: out of
-# descriptors while a work-queue stream needs a new block file, its writes fail
-# for good. That sqi's broker fails the same way is consistent with those runs
-# but not confirmed here: sqi drops the broker's errors (H13f10), so the failed
-# write is not in the server log. The broker creates block files many times a
-# minute, and which stream stops depends on whose block create falls in the
-# window. In sixteen runs the task status stream stopped alone in six, the
-# heartbeat stream alone in three, both in four, and neither in three, which
-# then passed every check; the log stream never did. So every entry below is
-# "may".
+# The farm often does not converge. The redialing workers take the free
+# descriptors, and a stream can stop storing: its newest block file is last
+# written inside the window and never again, also after the limit lifts, and
+# the stream stores nothing more for the rest of the run. A standalone
+# nats-server 2.15.2 ends in the same state: out of descriptors while a
+# work-queue stream needs a new block file, its writes fail for good. That
+# sqi's broker fails for the same reason is unconfirmed, because sqi drops the
+# broker's errors and the failed write is not in the server log. The broker
+# creates block files many times a minute, and which stream stops depends on
+# whose block create falls in the window: the task status stream, the
+# heartbeat stream, both, or neither (the run then passes every check); the
+# log stream has not been seen to stop. So every entry below is "may".
 #   - Status stream: no task reaches running or a terminal status. The
 #     stale-assigned reap takes each task back 30-45s after its lease and
 #     leases it again, so every open task re-runs about every 30s until the
@@ -96,38 +94,38 @@ faults:
 # quarter of the fleet and up to about 25 with the backlog; the bound of 30
 # covers that.
 #
-# The H13f9 status-stream loop's rework is open tasks times re-runs, about
-# 12 re-runs a task in the 370s left after the break (no task showed more than
-# 12 attempts), on every task open when the stream breaks or submitted after
-# it. The ten such runs counted 1,050 to 1,572, the most where the heartbeats
-# broke too, as the sweep's reclaims re-lease tasks sooner than the reap; the
-# heartbeat-only runs counted 56 to 88. The ceiling of 2,500 leaves 60% over
-# the most counted; a count over it is still a failure.
+# With the status stream broken, rework is open tasks times re-runs: about 12
+# re-runs a task in the 370s left after the break, on every task open when the
+# stream breaks or submitted after it. That comes to 1,050 to 1,572 attempts,
+# the most when the heartbeat stream breaks too, since the sweep's reclaims
+# re-lease tasks sooner than the reap; a heartbeat-only break gives 56 to 88.
+# The ceiling of 2,500 leaves 60% over the highest count; a count over it is
+# still a failure.
 expect:
   max_rework_attempts: 30
   known_violations:
     - check: terminal
       kind: may
-      reason: the task status stream stopped storing inside the descriptor-limit window and stored nothing more for the rest of the run (consistent with a block file the broker could not create while the limit held, unconfirmed in sqi's logs), so no task status is stored after it and no job finishes; the status stream broke in ten runs of sixteen
+      reason: the task status stream stopped storing inside the descriptor-limit window and stored nothing more for the rest of the run (consistent with a block file the broker could not create while the limit held, unconfirmed in sqi's logs), so no task status is stored after it and no job finishes
       tracker: H13f9
     - check: outcomes
       kind: may
-      reason: when the status stream breaks no task status is stored after it, so the open tasks stay assigned and never reach the status the simulator decided; ten runs of sixteen
+      reason: when the status stream breaks no task status is stored after it, so the open tasks stay assigned and never reach the status the simulator decided
       tracker: H13f9
     - check: rework
       kind: may
       max_attempts: 2500
-      reason: whichever stream breaks, finished work is rejected - with the status stream broken the stale-assigned reap takes every leased task back and leases it again about every 30s, and with the heartbeat stream broken the sweep reclaims the attempts of workers still running them; thirteen runs of sixteen, the other three broke neither stream
+      reason: whichever stream breaks, finished work is rejected - with the status stream broken the stale-assigned reap takes every leased task back and leases it again about every 30s, and with the heartbeat stream broken the sweep reclaims the attempts of workers still running them
       tracker: H13f9
     - check: single-attempt
       kind: may
-      reason: when the heartbeat stream breaks, the sweep reclaims the attempts of workers still running them and leases the tasks again; the heartbeat stream broke in seven runs of sixteen
+      reason: when the heartbeat stream breaks, the sweep reclaims the attempts of workers still running them and leases the tasks again
       tracker: H13f9
     - check: workers-converge
       kind: may
-      reason: when the heartbeat stream breaks no heartbeat is stored, the sweep marks every worker offline and none comes back; seven runs of sixteen
+      reason: when the heartbeat stream breaks no heartbeat is stored, the sweep marks every worker offline and none comes back
       tracker: H13f9
     - check: executions-recorded
       kind: may
-      reason: when the heartbeat stream breaks, the attempts the swept workers were running can stay open in the stopped server's store; it fired in the four runs where both streams broke
+      reason: when the heartbeat stream breaks, the attempts the swept workers were running can stay open in the stopped server's store; it fires when both streams break
       tracker: H13f9

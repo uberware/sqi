@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-# Exclusions for the `make chaos-container` build context. NOT the repo-root
+# Exclusions for the `make chaos-container` build context. Not the repo-root
 # .dockerignore, which excludes test/ and scripts/ and so cannot serve an image
 # that needs test/chaos/**; the Makefile stages a filtered copy of the repo with
 # these patterns and places this file at the staged root (see the comment above

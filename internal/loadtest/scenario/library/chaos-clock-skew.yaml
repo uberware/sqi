@@ -16,10 +16,10 @@ description: chaos - 60 of 120 simulated workers run their clocks 10m ahead, 10m
 # sets bounds.
 #
 # The server stamps an attempt's started_at with its own clock at the lease
-# but takes ended_at from the time the worker puts on its terminal status
-# (H13f6). A task on a behind-10m worker runs 10-30s, so every attempt one of
-# those 20 workers finishes ends about 10 minutes before it started, and
-# attempt-order fails on every run.
+# but takes ended_at from the time the worker puts on its terminal status. A
+# task on a behind-10m worker runs 10-30s, so every attempt one of those 20
+# workers finishes ends about 10 minutes before it started, and attempt-order
+# fails.
 duration: 4m
 warmup: 10s
 drain_timeout: 5m

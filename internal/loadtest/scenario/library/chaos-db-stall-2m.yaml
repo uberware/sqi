@@ -12,10 +12,9 @@ description: chaos - stall the server's database for 2m at 3m15s under steady lo
 # during the stall, whose worker's heartbeats no longer list it while its
 # terminal report still waits behind the stall, has been open for longer than
 # the grace when the store answers again: the attempt reconciler can reclaim
-# it as well as the heartbeat sweep (H13f7). The sweep marks live workers
-# offline at the heal on every run, and they stay offline (H13f3), so
-# workers-converge fails every run on both backends. Tasks running twice at
-# once follow on SQLite every run and have not on PostgreSQL.
+# it as well as the heartbeat sweep. The sweep marks live workers offline at
+# the heal, and they stay offline, so workers-converge fails on both backends.
+# Tasks running twice at once follow on SQLite, not on PostgreSQL.
 duration: 5m30s
 warmup: 10s
 drain_timeout: 5m
@@ -55,5 +54,5 @@ expect:
       tracker: H13f3
     - check: single-attempt
       kind: may
-      reason: a task the heal sweep or the attempt reconciler took back is leased again while its first attempt still runs, until the stale-running cancel stops the first; every run on SQLite, none so far on PostgreSQL
+      reason: a task the heal sweep or the attempt reconciler took back is leased again while its first attempt still runs, until the stale-running cancel stops the first; seen on SQLite, not on PostgreSQL
       tracker: H13f7

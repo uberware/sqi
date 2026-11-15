@@ -38,18 +38,18 @@ faults:
     duration: 15s
 
 # A stall shorter than heartbeat_timeout leaves every worker online, so
-# nothing is reclaimed and no completed work is redone. Not quite, today: a
+# nothing is reclaimed and no completed work is redone. Not always: a
 # worker's last recorded heartbeat can be one heartbeat interval (15s) old when
 # the stall starts, so at SIGCONT it is 30s old, heartbeat_timeout, and the
-# resume sweep runs before the stall's queued heartbeats are consumed (H13f2).
-# A worker whose heartbeat fell due within milliseconds of the stall's start is
-# marked offline, and stays offline (H13f3); that happened in 1 run of 4, so the
-# entry is "may".
+# resume sweep runs before the stall's queued heartbeats are consumed. A worker
+# whose heartbeat fell due within milliseconds of the stall's start is marked
+# offline and stays offline. That happens in some runs only, so the entry is
+# "may".
 expect:
   max_rework_attempts: 0
   max_reclaims: 0
   known_violations:
     - check: workers-converge
       kind: may
-      reason: the resume sweep runs before the stall's queued heartbeats are consumed (H13f2), so a worker whose heartbeat fell due just inside the 15s stall is 30s stale at SIGCONT and is marked offline, and a live worker marked offline stays offline while its connection stays up
+      reason: the resume sweep runs before the stall's queued heartbeats are consumed, so a worker whose heartbeat fell due just inside the 15s stall is 30s stale at SIGCONT and is marked offline, and a live worker marked offline stays offline while its connection stays up
       tracker: H13f3

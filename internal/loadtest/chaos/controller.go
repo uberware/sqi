@@ -944,8 +944,8 @@ func (c *Controller) fdFault(ctx context.Context, i int, f *scenario.FDLimit, d 
 }
 
 // revokeFault revokes the credential of some of a group's real workers, and d
-// later stops each of them: the operator decommissions the node, so it is not
-// restarted. It opens no fault window. A run interrupted before the stop leaves
+// later stops each of them without a restart, as an operator decommissioning
+// the node would. It opens no fault window. A run interrupted before the stop leaves
 // the workers running; the target stops them when it closes.
 func (c *Controller) revokeFault(ctx context.Context, i int, p *scenario.ProcTarget, d time.Duration) error {
 	workers := c.pick(p.Group, p.Real)

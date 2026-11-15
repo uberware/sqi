@@ -663,8 +663,8 @@ func (m *managed) workerJoinTokenFile(n int) string {
 }
 
 // writeWorkerJoinToken writes real worker n's token copy, mode 0600, in its
-// data directory, which the worker creates with the same mode. A copy that is
-// already there is left as it is.
+// data directory, creating the directory with mode 0700 as the worker does. A
+// copy that is already there is left as it is.
 func (m *managed) writeWorkerJoinToken(n int) error {
 	if err := os.MkdirAll(m.workerDir(n), 0o700); err != nil {
 		return fmt.Errorf("target: create %s: %w", m.workerDir(n), err)

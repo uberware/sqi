@@ -65,7 +65,8 @@ const (
 	NameSingleWriter       = "single-writer"
 	NameReclaims           = "reclaims"
 
-	// The H13b chaos checks.
+	// Package chaos also reports these, from the stopped server's store and
+	// the server's log.
 	NameRevoked      = "revoked"
 	NameSkewWarning  = "skew-warning"
 	NameAttemptOrder = "attempt-order"

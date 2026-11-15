@@ -39,26 +39,22 @@ faults:
     database: {mode: stall}
     duration: 30s
 
-# The workers never lose the broker, only the store stalls, so no worker goes
-# offline and the server reclaims nothing. The server breaks both (H13f7): when
-# the store answers again, the heartbeat sweep and the stale-assigned reap act
-# on what the stall kept it from writing, before the queued heartbeats and
+# The workers never lose the broker, only the store stalls, so no worker should
+# go offline and the server should reclaim nothing. The server breaks both:
+# when the store answers again, the heartbeat sweep and the stale-assigned reap
+# act on what the stall kept it from writing, before the queued heartbeats and
 # running reports land. The sweep takes live workers offline and reclaims
 # their attempts (which then run beside the re-lease, and whose finished work
 # is rejected), and the reap returns tasks leased just before the stall to the
-# queue while they run. Which of them wins the race varies: on SQLite the sweep
-# took 15, 38 and 94 workers offline in three runs and none in one Windows run;
-# on PostgreSQL the reap fired in two runs of three and the sweep in none, so
-# every entry is "may". A worker taken offline stays offline (H13f3), so work
-# re-leased to it after the heal can be taken back a second time; the number
-# of attempts open when the stall starts (about 50) therefore does not cap what
-# the heal takes back (one run reclaimed 97 attempts), and nothing here derives
-# the rework ceiling. The ceiling of 60 is empirical: rework counts only
-# attempts that finished successfully and were not credited, and across the 17
-# recorded runs of this scenario (SQLite and PostgreSQL under WSL, and Windows)
-# it peaked at 24 attempts on SQLite (23 on Windows, 1 on PostgreSQL). A run
-# above 60 would be a worse defect than the one recorded, not a run to absorb
-# by raising the bound.
+# queue while they run. Which of them wins the race varies by run and backend
+# (on PostgreSQL the reap can fire while the sweep does not), so every entry is
+# "may". A worker taken offline stays offline, so work re-leased to it after
+# the heal can be taken back a second time; the number of attempts open when
+# the stall starts (about 50) therefore does not cap what the heal takes back,
+# and nothing here derives the rework ceiling. The ceiling of 60 is empirical:
+# rework counts only attempts that finished successfully and were not
+# credited, and it peaks at about 24 attempts. A run above 60 would be a worse
+# defect than the one recorded, not a run to absorb by raising the bound.
 expect:
   max_rework_attempts: 0
   max_reclaims: 0
@@ -70,7 +66,7 @@ expect:
       tracker: H13f7
     - check: reclaims
       kind: may
-      reason: when the store answers again the heartbeat sweep takes live workers offline on the heartbeat the stall kept it from writing and reclaims their attempts; on PostgreSQL the queued heartbeats have won that race in every run
+      reason: when the store answers again the heartbeat sweep takes live workers offline on the heartbeat the stall kept it from writing and reclaims their attempts; on PostgreSQL the queued heartbeats usually win that race
       tracker: H13f7
     - check: single-attempt
       kind: may
@@ -78,5 +74,5 @@ expect:
       tracker: H13f7
     - check: workers-converge
       kind: may
-      reason: a live worker the heal sweep marked offline stays offline while its connection stays up, since heartbeats never bring a worker back online and it re-registers only on a reconnect; how many the sweep marks varies, none on PostgreSQL so far
+      reason: a live worker the heal sweep marked offline stays offline while its connection stays up, since heartbeats never bring a worker back online and it re-registers only on a reconnect; how many the sweep marks varies by run and backend
       tracker: H13f3

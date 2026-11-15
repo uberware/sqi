@@ -379,9 +379,10 @@ jobs:
   # that gives them real size-limited volumes (`make chaos-container`). The
   # target adds CAP_SYS_ADMIN to the container, which the runner's Docker
   # allows, and runs it with `--security-opt apparmor=unconfined`, since the
-  # default AppArmor profile denies the tmpfs mounts of the ballast tests (the
-  # effect on these runners is unverified until the first nightly). It exits 0 when Docker is missing, so the assertion step below is
-  # what notices a run that never happened. The disk scenarios are read from
+  # default AppArmor profile denies the tmpfs mounts of the ballast tests
+  # (unverified on these runners). It exits 0 when Docker is missing, so the
+  # assertion step below is what notices a run that never happened. The disk
+  # scenarios are read from
   # the library, so a new chaos-disk-*.yaml is asserted without an edit here.
   chaos-container:
     name: Chaos suite (container, disk)
