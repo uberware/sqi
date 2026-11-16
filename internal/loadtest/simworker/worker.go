@@ -355,7 +355,7 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	// controller: the server asks a worker it holds offline, whose heartbeats
 	// still arrive, to register again here.
 	inc.ctl = &controlResponder{ctx: hbCtx, register: inc.Register, logger: w.logger}
-	if _, err := subscribeControl(nc, id, inc.ctl); err != nil {
+	if err := subscribeControl(nc, id, inc.ctl); err != nil {
 		stopHB()
 		nc.Close()
 		return nil, err
@@ -482,7 +482,7 @@ func (inc *incarnation) stop(ctx context.Context) {
 	inc.disp.shutdown(endShutdown) // refuses any late dispatch
 	inc.stopHB()
 	<-inc.hbDone
-	inc.ctl.wait()
+	inc.ctl.stop()
 	inc.reg.Deregister("graceful shutdown", "") // best effort, logged, as in sqi-worker
 	inc.nc.Close()                              // flushes the deregistration and any terminal statuses
 }
@@ -503,7 +503,7 @@ func (inc *incarnation) crash() {
 	inc.stopHB() // also stops the lease loop and a re-registration under way
 	<-inc.leaseDone
 	<-inc.hbDone
-	inc.ctl.wait()
+	inc.ctl.stop()
 	inc.disp.shutdown(endCrashed)
 	inc.disp.wait(context.Background())
 	inc.nc.Close()

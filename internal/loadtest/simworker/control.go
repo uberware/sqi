@@ -5,6 +5,7 @@ package simworker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -42,24 +43,29 @@ type controlResponder struct {
 	// answers every request made before it lands.
 	registering atomic.Bool
 	wg          sync.WaitGroup
+
+	// sub is the control subscription, set by subscribeControl.
+	sub *nats.Subscription
 }
 
 // subscribeControl subscribes r to workerID's control subject on nc and
 // flushes, so the server has the subscription before the worker first asks for
-// work, as power.Subscribe does for a real worker.
-func subscribeControl(nc *nats.Conn, workerID string, r *controlResponder) (*nats.Subscription, error) {
+// work, as power.Subscribe does for a real worker. r keeps the subscription
+// for [controlResponder.stop].
+func subscribeControl(nc *nats.Conn, workerID string, r *controlResponder) error {
 	subj := bus.WorkerControlSubject(workerID)
 	sub, err := nc.Subscribe(subj, r.handle)
 	if err != nil {
-		return nil, fmt.Errorf("simworker: subscribe %q: %w", subj, err)
+		return fmt.Errorf("simworker: subscribe %q: %w", subj, err)
 	}
 	if err := nc.Flush(); err != nil {
 		if uerr := sub.Unsubscribe(); uerr != nil {
 			r.logger.WarnContext(r.ctx, "simworker: unsubscribe after failed flush", slog.Any("error", uerr))
 		}
-		return nil, fmt.Errorf("simworker: flush subscription %q: %w", subj, err)
+		return fmt.Errorf("simworker: flush subscription %q: %w", subj, err)
 	}
-	return sub, nil
+	r.sub = sub
+	return nil
 }
 
 // handle answers one control request on the subscription's goroutine. The
@@ -106,5 +112,14 @@ func (*controlResponder) decide(data []byte) (protocol.ControlReplyMsg, bool) {
 	}
 }
 
-// wait waits for a re-registration still running.
-func (r *controlResponder) wait() { r.wg.Wait() }
+// stop unsubscribes from the control subject, then waits for a
+// re-registration still running. Unsubscribing first means no request can be
+// accepted, and start a registration, once the wait has begun.
+func (r *controlResponder) stop() {
+	if r.sub != nil {
+		if err := r.sub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+			r.logger.WarnContext(r.ctx, "simworker: unsubscribe from the control subject", slog.Any("error", err))
+		}
+	}
+	r.wg.Wait()
+}

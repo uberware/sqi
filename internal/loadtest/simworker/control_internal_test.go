@@ -5,6 +5,7 @@ package simworker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 
 	"github.com/uberware/sqi/internal/bus"
@@ -163,4 +165,71 @@ func TestWorker_MarkedOfflineComesBackOnline(t *testing.T) {
 	}
 	await("offline")
 	await("online")
+}
+
+// stop takes the responder off its subject before it waits for a
+// re-registration still running, so a request arriving while a worker is torn
+// down finds no responder rather than being accepted and starting a
+// registration after the wait.
+func TestControlResponder_StopUnsubscribesBeforeWaiting(t *testing.T) {
+	ns, err := natsserver.NewServer(&natsserver.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ns.Start()
+	t.Cleanup(ns.Shutdown)
+	if !ns.ReadyForConnections(5 * time.Second) {
+		t.Fatal("NATS server not ready")
+	}
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+
+	release := make(chan struct{})
+	var registrations atomic.Int64
+	r := &controlResponder{ctx: t.Context(), logger: slog.New(slog.DiscardHandler), register: func(context.Context) error {
+		registrations.Add(1)
+		<-release
+		return nil
+	}}
+	if err := subscribeControl(nc, "w1", r); err != nil {
+		t.Fatalf("subscribeControl: %v", err)
+	}
+	reregister := protocol.ControlMsg{Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlReregister}
+	if reply := controlRequest(t, nc, "w1", reregister); !reply.Accepted {
+		t.Fatalf("reregister reply = %+v, want accepted", reply)
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		r.stop()
+		close(stopped)
+	}()
+	data, err := json.Marshal(reregister)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := nc.Request(bus.WorkerControlSubject("w1"), data, time.Second)
+		if errors.Is(err, nats.ErrNoResponders) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a request while stopping got %v, want no responders", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case <-stopped:
+		t.Fatal("stop returned while a re-registration was still running")
+	default:
+	}
+	close(release)
+	<-stopped
+	if n := registrations.Load(); n != 1 {
+		t.Errorf("registrations = %d, want 1", n)
+	}
 }
