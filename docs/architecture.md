@@ -1832,9 +1832,12 @@ cases:
   pull was lost is redelivered only after the consumer's `AckWait`, so after a
   lost pull or a bus reconnect the worker tracker is held at the moment of the
   interruption for 10 s and the task tracker for 30 s. The marker loop reads
-  the interruption time every tick, and the heartbeat sweep and the
-  stale-assigned reap read it again before they compute their cutoffs, so a
-  check that runs between an interruption and the next tick is held too.
+  the interruption time every tick, and each heartbeat-sweep tick reads it
+  again before it reads the trackers, unless the liveness sweeps are
+  deferred, so a check that runs between an interruption and the next tick is
+  held too. The tick reads the trackers once, and the heartbeat sweep, the
+  stale-assigned reap, attempt reconciliation and the capacity sweep all judge
+  that one reading.
 - **Heartbeats that expired unread** (worker tracker only). The markers vouch
   only for messages the stream still holds, and `SQI_WORKER` keeps a message
   for 2 minutes. A worker consumer more than that far behind loses heartbeats
