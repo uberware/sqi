@@ -159,13 +159,18 @@ func (t *ingestTracker) effective(now time.Time) time.Time {
 	return eff
 }
 
-// lag is how far the newest processed marker trails now, or 0 before the
-// first marker.
-func (t *ingestTracker) lag(now time.Time) time.Duration {
+// lag is how far the newest processed marker trails now. Before the first
+// marker it is the time since started, when the consumer began reading: a
+// promoted standby or a restarted server behind a backlog has processed no
+// marker exactly while its lag is largest.
+func (t *ingestTracker) lag(now, started time.Time) time.Duration {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.caughtUpTo.IsZero() {
-		return 0
+		if started.IsZero() {
+			return 0
+		}
+		return now.Sub(started)
 	}
 	return now.Sub(t.caughtUpTo)
 }

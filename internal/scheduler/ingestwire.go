@@ -244,11 +244,12 @@ func ingestKeys(msg jetstream.Msg) []string {
 }
 
 // refreshIngestGauges sets how far each tracked consumer's newest processed
-// marker trails now and how many of its messages wait to be applied again.
+// marker trails now (before its first, how long the scheduler has run) and
+// how many of its messages wait to be applied again.
 func (s *Scheduler) refreshIngestGauges(context.Context) {
-	now := time.Now()
+	now := s.now()
 	for consumer, t := range map[string]*ingestTracker{"worker": s.ingestWorker, "task": s.ingestTask} {
-		s.metrics.SchedulerIngestLagSeconds.WithLabelValues(consumer).Set(t.lag(now).Seconds())
+		s.metrics.SchedulerIngestLagSeconds.WithLabelValues(consumer).Set(t.lag(now, s.startedAt).Seconds())
 		s.metrics.SchedulerIngestPending.WithLabelValues(consumer).Set(float64(t.pendingCount(now)))
 	}
 }

@@ -463,7 +463,9 @@ func TestCheckBusInterruption_Holds(t *testing.T) {
 
 func TestRefreshIngestGauges(t *testing.T) {
 	s := newMetricsScheduler(nil, &recordBus{}, "")
-	now := time.Now().UTC()
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	s.now = (&testClock{t: now}).now
+	s.startedAt = now.Add(-40 * time.Second)
 	s.ingestTask.marker(now.Add(-3 * time.Second))
 	s.nakMsg(t.Context(), &fakeJSMsg{subject: bus.WorkerHeartbeatSubject("w1"), natsSeq: 1, stamp: now, delivered: 1})
 	s.nakMsg(t.Context(), &fakeJSMsg{subject: bus.WorkerHeartbeatSubject("w2"), natsSeq: 2, stamp: now, delivered: 1})
@@ -476,11 +478,11 @@ func TestRefreshIngestGauges(t *testing.T) {
 	if got := gaugeValue(t, s.metrics.SchedulerIngestPending.WithLabelValues("task")); got != 0 {
 		t.Errorf("task pending = %v, want 0", got)
 	}
-	if got := gaugeValue(t, s.metrics.SchedulerIngestLagSeconds.WithLabelValues("task")); got < 3 || got > 60 {
-		t.Errorf("task lag = %vs, want about 3s", got)
+	if got := gaugeValue(t, s.metrics.SchedulerIngestLagSeconds.WithLabelValues("task")); got != 3 {
+		t.Errorf("task lag = %vs, want 3s", got)
 	}
-	if got := gaugeValue(t, s.metrics.SchedulerIngestLagSeconds.WithLabelValues("worker")); got != 0 {
-		t.Errorf("worker lag = %vs, want 0 before its first marker", got)
+	if got := gaugeValue(t, s.metrics.SchedulerIngestLagSeconds.WithLabelValues("worker")); got != 40 {
+		t.Errorf("worker lag = %vs, want 40s (the time since the scheduler started) before its first marker", got)
 	}
 }
 

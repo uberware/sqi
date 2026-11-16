@@ -19,7 +19,7 @@ func TestIngestTracker_ZeroUntilFirstMarker(t *testing.T) {
 	if got := tr.effective(ingestT0); !got.IsZero() {
 		t.Fatalf("effective before first marker = %v, want zero", got)
 	}
-	if got := tr.lag(ingestT0); got != 0 {
+	if got := tr.lag(ingestT0, ingestT0); got != 0 {
 		t.Fatalf("lag before first marker = %v, want 0", got)
 	}
 
@@ -27,7 +27,7 @@ func TestIngestTracker_ZeroUntilFirstMarker(t *testing.T) {
 	if got := tr.effective(ingestT0); !got.Equal(ingestT0) {
 		t.Fatalf("effective = %v, want %v", got, ingestT0)
 	}
-	if got := tr.lag(ingestAt(5)); got != 5*time.Second {
+	if got := tr.lag(ingestAt(5), ingestT0); got != 5*time.Second {
 		t.Fatalf("lag = %v, want 5s", got)
 	}
 }
@@ -187,7 +187,7 @@ func TestIngestTracker_ConcurrentUse(t *testing.T) {
 				_ = tr.pending(taskKey("x"), now)
 				_ = tr.pendingIDs(keyKindTask, now)
 				_ = tr.pendingCount(now)
-				_ = tr.lag(now)
+				_ = tr.lag(now, ingestT0)
 				_ = tr.gap(now, time.Second)
 				tr.ack(seq)
 			}
@@ -272,5 +272,18 @@ func TestIngestTracker_GapAndHoldTakeTheEarlier(t *testing.T) {
 	}
 	if got := tr.effective(ingestAt(61)); !got.Equal(ingestAt(20)) {
 		t.Fatalf("effective once the hold ends = %v, want %v (the gap still holds)", got, ingestAt(20))
+	}
+}
+
+// TestIngestTracker_LagBeforeFirstMarker: before the first marker the lag is
+// the time since the consumer started, which is when a backlog is largest.
+func TestIngestTracker_LagBeforeFirstMarker(t *testing.T) {
+	tr := newIngestTracker(2*time.Minute, 10)
+	if got := tr.lag(ingestAt(90), ingestAt(0)); got != 90*time.Second {
+		t.Fatalf("lag before the first marker = %v, want 90s", got)
+	}
+	tr.marker(ingestAt(85))
+	if got := tr.lag(ingestAt(90), ingestAt(0)); got != 5*time.Second {
+		t.Fatalf("lag after a marker = %v, want 5s", got)
 	}
 }
