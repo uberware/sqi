@@ -87,6 +87,12 @@ type Metrics struct {
 	// task).
 	SchedulerIngestPending *prometheus.GaugeVec
 
+	// SchedulerWorkerReregisterRequests counts the requests the scheduler
+	// sends a worker it holds offline whose heartbeats still arrive, asking it
+	// to register again, by outcome: accepted, refused, or error (no reply,
+	// or one that would not decode).
+	SchedulerWorkerReregisterRequests *prometheus.CounterVec
+
 	// ── Workers ───────────────────────────────────────────────────────────────
 
 	// WorkersTotal is the current number of registered workers, partitioned by
@@ -260,6 +266,16 @@ func New() *Metrics {
 				Help:      "Cancels sent to a live worker still reporting an attempt the store has closed or has no record of, by cause (closed, unknown).",
 			},
 			[]string{"cause"},
+		),
+
+		SchedulerWorkerReregisterRequests: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "worker_reregister_requests_total",
+				Help:      "Requests asking a worker held offline whose heartbeats still arrive to register again, by outcome (accepted, refused, error).",
+			},
+			[]string{"outcome"},
 		),
 
 		SchedulerAssignmentDuration: prometheus.NewHistogramVec(
@@ -493,6 +509,7 @@ func New() *Metrics {
 		m.SchedulerIdleWorkers,
 		m.SchedulerIngestLagSeconds,
 		m.SchedulerIngestPending,
+		m.SchedulerWorkerReregisterRequests,
 		m.WorkersTotal,
 		m.NATSPublishedTotal,
 		m.NATSConsumedTotal,
@@ -518,6 +535,10 @@ func New() *Metrics {
 	for _, consumer := range []string{"worker", "task"} {
 		m.SchedulerIngestLagSeconds.WithLabelValues(consumer)
 		m.SchedulerIngestPending.WithLabelValues(consumer)
+	}
+	// And each reregister outcome.
+	for _, outcome := range []string{"accepted", "refused", "error"} {
+		m.SchedulerWorkerReregisterRequests.WithLabelValues(outcome)
 	}
 
 	return m

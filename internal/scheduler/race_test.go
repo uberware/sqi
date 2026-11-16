@@ -1085,7 +1085,7 @@ func TestHeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 			fired := false
 			wrapped := &heartbeatDuringSweepStore{Store: st, hook: &once{fn: func() {
 				fired = true
-				if err := st.UpdateWorkerHeartbeat(context.Background(), workerID, time.Now().UTC(), nil); err != nil {
+				if _, err := st.UpdateWorkerHeartbeat(context.Background(), workerID, time.Now().UTC(), nil); err != nil {
 					t.Errorf("heartbeat in hook: %v", err)
 				}
 			}}}

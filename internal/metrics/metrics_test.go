@@ -158,3 +158,22 @@ func TestNew_ServesIngestMetrics(t *testing.T) {
 		}
 	}
 }
+
+// TestNew_ServesReregisterRequests pins the reregister-request counter's name,
+// and that each outcome's series is served from the start.
+func TestNew_ServesReregisterRequests(t *testing.T) {
+	m := metrics.New()
+	m.SchedulerWorkerReregisterRequests.WithLabelValues("accepted").Inc()
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		`sqi_scheduler_worker_reregister_requests_total{outcome="accepted"} 1`,
+		`sqi_scheduler_worker_reregister_requests_total{outcome="refused"} 0`,
+		`sqi_scheduler_worker_reregister_requests_total{outcome="error"} 0`,
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("exposition missing %q", want)
+		}
+	}
+}

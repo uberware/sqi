@@ -334,6 +334,33 @@ func TestActuator_RetireSendsRetireActionAndFinishesOnDeregister(t *testing.T) {
 	}
 }
 
+// A member that retired but whose heartbeats keep arriving (its sleep has not
+// taken yet, or never does) stays asleep: a heartbeat does not wake it, and it
+// is not asked to register again, which would bring it back online.
+func TestActuator_RetiredMemberStillHeartbeatingStaysAsleep(t *testing.T) {
+	f := newActFixture(t, nil)
+	g := createGroup(t, f.st, wolGroup("lan", nil))
+	addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), true)
+	t0 := time.Now().UTC()
+	f.sweep(t, t0)
+	f.sweep(t, t0.Add(2*time.Minute))
+	deregisterAs(t, f.s, "m1", protocol.DeregisterRetired)
+
+	for range 3 {
+		if !heartbeat(t, f.s, "m1") {
+			t.Fatal("heartbeat from the retired member not acked")
+		}
+	}
+	f.s.reregister.calls.Wait()
+
+	if w := f.worker(t, "m1"); w.PowerState != store.PowerAsleep || w.Status != store.WorkerStatusOffline {
+		t.Fatalf("m1 after heartbeating = %s/%s, want asleep and offline", w.PowerState, w.Status)
+	}
+	if calls := f.bus.sentCommand(protocol.ControlReregister); len(calls) != 0 {
+		t.Fatalf("reregister requests = %+v, want none", calls)
+	}
+}
+
 // A refusal puts the member back to awake at once, with the worker's reason,
 // and it is not asked again until it has been idle for another idle timeout.
 func TestActuator_RetireRefusedAbortsToAwake(t *testing.T) {

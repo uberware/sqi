@@ -212,13 +212,23 @@ func (e *unreadableReplyError) Unwrap() error { return e.err }
 func (p *wolProvider) control(
 	ctx context.Context, workerID string, msg protocol.ControlMsg, timeout time.Duration,
 ) (protocol.ControlReplyMsg, error) {
+	return requestControl(ctx, p.request, workerID, msg, timeout)
+}
+
+// requestControl sends msg to workerID through request and decodes its reply,
+// waiting at most timeout. A reply that does not decode is an
+// [unreadableReplyError].
+func requestControl(
+	ctx context.Context, request func(context.Context, string, []byte) ([]byte, error),
+	workerID string, msg protocol.ControlMsg, timeout time.Duration,
+) (protocol.ControlReplyMsg, error) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return protocol.ControlReplyMsg{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	raw, err := p.request(ctx, workerID, data)
+	raw, err := request(ctx, workerID, data)
 	if err != nil {
 		return protocol.ControlReplyMsg{}, err
 	}

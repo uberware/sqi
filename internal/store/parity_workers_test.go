@@ -22,15 +22,49 @@ func TestParity_UpdateWorkerHeartbeat(t *testing.T) {
 			farm := seedGraph(t, st, graphOpts{}).Farm
 			w := seedWorker(t, st, farm.ID, store.WorkerStatusOnline, t0)
 
-			if err := st.UpdateWorkerHeartbeat(ctx, w.ID, t1, nil); err != nil {
+			if _, err := st.UpdateWorkerHeartbeat(ctx, w.ID, t1, nil); err != nil {
 				t.Fatalf("UpdateWorkerHeartbeat: %v", err)
 			}
 			got, err := st.GetWorker(ctx, w.ID)
 			if err != nil || got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t1) {
 				t.Fatalf("GetWorker = (%+v, %v), want last heartbeat %v", got, err, t1)
 			}
-			if err := st.UpdateWorkerHeartbeat(ctx, "ghost", t1, nil); !errors.Is(err, store.ErrNotFound) {
+			if _, err := st.UpdateWorkerHeartbeat(ctx, "ghost", t1, nil); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("unknown worker: err = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
+// TestParity_UpdateWorkerHeartbeat_ReportsStatus pins the outcome a recorded
+// heartbeat returns: the worker's status and power state as the write left
+// them, and Recorded false for a late heartbeat the store ignored.
+func TestParity_UpdateWorkerHeartbeat_ReportsStatus(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			b1, b2 := subSecond()
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			w := seedWorker(t, st, farm.ID, store.WorkerStatusOnline, b1.Add(-time.Hour))
+
+			out, err := st.UpdateWorkerHeartbeat(ctx, w.ID, b1, &b1)
+			want := store.HeartbeatOutcome{Recorded: true, Status: store.WorkerStatusOnline, PowerState: store.PowerAwake}
+			if err != nil || out != want {
+				t.Fatalf("online worker: (%+v, %v), want (%+v, nil)", out, err, want)
+			}
+
+			if _, ok, err := st.OfflineStaleWorker(ctx, w.ID, b2, b2); err != nil || !ok {
+				t.Fatalf("OfflineStaleWorker = (%v, %v), want (true, nil)", ok, err)
+			}
+			out, err = st.UpdateWorkerHeartbeat(ctx, w.ID, b2, &b2)
+			want = store.HeartbeatOutcome{Recorded: true, Status: store.WorkerStatusOffline, PowerState: store.PowerAwake}
+			if err != nil || out != want {
+				t.Fatalf("offline worker: (%+v, %v), want (%+v, nil)", out, err, want)
+			}
+
+			out, err = st.UpdateWorkerHeartbeat(ctx, w.ID, b1, &b1)
+			if err != nil || out.Recorded {
+				t.Fatalf("late heartbeat: (%+v, %v), want Recorded false and no error", out, err)
 			}
 		})
 	}
@@ -215,7 +249,7 @@ func TestParity_RegisterWorker_NoBrokerStampBehavesAsBefore(t *testing.T) {
 // stamp (nil is a message with no usable metadata).
 func beatStamped(t *testing.T, st store.Store, id string, at time.Time, stamp *time.Time) {
 	t.Helper()
-	if err := st.UpdateWorkerHeartbeat(t.Context(), id, at, stamp); err != nil {
+	if _, err := st.UpdateWorkerHeartbeat(t.Context(), id, at, stamp); err != nil {
 		t.Fatalf("UpdateWorkerHeartbeat(at %v, stamped %v): %v", at, stamp, err)
 	}
 }
@@ -353,7 +387,7 @@ func TestParity_UpdateWorkerHeartbeat_NeverHeartbeatedWorker(t *testing.T) {
 			t1, _ := subSecond()
 			farm := seedGraph(t, st, graphOpts{}).Farm
 			registerAt(t, st, farm.ID, "w-fresh", store.WorkerStatusOnline, nil)
-			if err := st.UpdateWorkerHeartbeat(t.Context(), "w-fresh", t1, nil); err != nil {
+			if _, err := st.UpdateWorkerHeartbeat(t.Context(), "w-fresh", t1, nil); err != nil {
 				t.Fatalf("UpdateWorkerHeartbeat: %v", err)
 			}
 			if got := mustWorker(t, st, "w-fresh"); got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t1) {
@@ -367,7 +401,7 @@ func TestParity_UpdateWorkerHeartbeat_UnknownWorkerNotFound(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			t1, _ := subSecond()
-			if err := st.UpdateWorkerHeartbeat(t.Context(), "ghost", t1, nil); !errors.Is(err, store.ErrNotFound) {
+			if _, err := st.UpdateWorkerHeartbeat(t.Context(), "ghost", t1, nil); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("unknown worker: err = %v, want ErrNotFound", err)
 			}
 		})

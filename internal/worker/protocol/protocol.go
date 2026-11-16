@@ -83,7 +83,11 @@ import (
 //   - A worker subscribes to worker.control.<workerID> before it asks for work
 //     and answers power commands ([ControlMsg]) there. A worker that does not
 //     listen would leave a sleep or shutdown request unanswered.
-const ProtocolVersion = "6"
+//   - A worker answers [ControlReregister] on that subject by registering
+//     again. The server sends it to a worker it holds offline while the
+//     worker's heartbeats still arrive; a worker that does not know the
+//     command stays offline until its broker connection drops.
+const ProtocolVersion = "7"
 
 // ── Message type constants ────────────────────────────────────────────────────
 
@@ -277,6 +281,10 @@ const (
 	// addresses in [ControlMsg.MACs] to the endpoints in [ControlMsg.Targets].
 	// It goes to a running peer, never to the sleeping host.
 	ControlWake ControlCommand = "wake"
+	// ControlReregister asks the worker to register again. The server sends
+	// it to a worker it holds offline whose heartbeats still arrive, since
+	// registration is the only way back to online.
+	ControlReregister ControlCommand = "reregister"
 )
 
 // ControlMsg is the request the server sends to worker.control.<workerID> over
@@ -303,9 +311,9 @@ type ControlReplyMsg struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// The reasons a worker refuses a sleep or shutdown with, as
-// [ControlReplyMsg.Reason] carries them. The server matches
-// [ControlRefusalAlreadyRetiring] and reports the others as given.
+// The reasons a worker refuses a command with, as [ControlReplyMsg.Reason]
+// carries them. The server matches [ControlRefusalAlreadyRetiring] and reports
+// the others as given.
 const (
 	// ControlRefusalBusy: the worker is running a task.
 	ControlRefusalBusy = "busy"
@@ -313,7 +321,8 @@ const (
 	ControlRefusalNotAllowed = "worker.power.allow_remote_sleep is false"
 	// ControlRefusalAlreadyRetiring: the worker is already carrying out a
 	// sleep or shutdown. The command is under way, so a server repeating it
-	// reads this as accepted.
+	// reads this as accepted. A [ControlReregister] is refused with it too: the
+	// retirement registers the worker again itself when the machine is back.
 	ControlRefusalAlreadyRetiring = "already retiring"
 )
 

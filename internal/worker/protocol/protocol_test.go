@@ -262,8 +262,8 @@ func TestHeartbeatMsg_AttemptFieldsWireKeys(t *testing.T) {
 }
 
 func TestAssignMsg_LogProgressRoundTrip(t *testing.T) {
-	if protocol.ProtocolVersion != "6" { // adding an omitempty field does not change it
-		t.Errorf("ProtocolVersion = %q, want 6", protocol.ProtocolVersion)
+	if protocol.ProtocolVersion != "7" { // adding an omitempty field does not change it
+		t.Errorf("ProtocolVersion = %q, want 7", protocol.ProtocolVersion)
 	}
 	in := protocol.AssignMsg{LogProgress: &protocol.LogProgress{
 		FrameParameter: "Frames",
@@ -305,7 +305,12 @@ func TestControlMsg_RoundTrip(t *testing.T) {
 		{
 			"sleep",
 			protocol.ControlMsg{Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlSleep},
-			`{"version":"6","type":"control","command":"sleep"}`,
+			`{"version":"7","type":"control","command":"sleep"}`,
+		},
+		{
+			"reregister",
+			protocol.ControlMsg{Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlReregister},
+			`{"version":"7","type":"control","command":"reregister"}`,
 		},
 		{
 			"wake",
@@ -313,7 +318,7 @@ func TestControlMsg_RoundTrip(t *testing.T) {
 				Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlWake,
 				MACs: []string{"aa:bb:cc:dd:ee:ff"}, Targets: []string{"192.168.1.255:9"},
 			},
-			`{"version":"6","type":"control","command":"wake","macs":["aa:bb:cc:dd:ee:ff"],"targets":["192.168.1.255:9"]}`,
+			`{"version":"7","type":"control","command":"wake","macs":["aa:bb:cc:dd:ee:ff"],"targets":["192.168.1.255:9"]}`,
 		},
 	}
 	for _, tt := range tests {

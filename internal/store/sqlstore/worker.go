@@ -107,11 +107,13 @@ RETURNING ` + workerCols
 	// redelivery) matches no row, and any other is recorded whatever its
 	// last_heartbeat_at. A NULL stamp (both stamp arguments) matches as the
 	// stored one does, so an unstamped heartbeat is recorded unconditionally
-	// and keeps the stored stamp.
+	// and keeps the stored stamp. It returns the status and power state the
+	// row holds, which the heartbeat does not change.
 	sqlUpdateWorkerHeartbeat = `
 UPDATE workers SET last_heartbeat_at = ?, updated_at = ?,
 	heartbeat_broker_at = COALESCE(?, heartbeat_broker_at)
-WHERE id = ? AND (heartbeat_broker_at IS NULL OR heartbeat_broker_at <= COALESCE(?, heartbeat_broker_at))`
+WHERE id = ? AND (heartbeat_broker_at IS NULL OR heartbeat_broker_at <= COALESCE(?, heartbeat_broker_at))
+RETURNING status, power_state`
 
 	sqlWorkerExists = `SELECT 1 FROM workers WHERE id = ?`
 
@@ -501,16 +503,26 @@ func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool)
 }
 
 // UpdateWorkerHeartbeat implements [store.WorkerStore].
-func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time, brokerAt *time.Time) error {
+func (s *Store) UpdateWorkerHeartbeat(
+	ctx context.Context, id string, at time.Time, brokerAt *time.Time,
+) (store.HeartbeatOutcome, error) {
 	now, beat, stamp := TimeText(time.Now().UTC()), TimeText(at), nullTimeToText(brokerAt)
-	var unknown bool
+	var (
+		out     store.HeartbeatOutcome
+		unknown bool
+	)
 	err := s.write(ctx, "update worker heartbeat", func(w writer) error {
-		unknown = false
-		res, err := w.Stmt(ctx, s.stmtUpdateWorkerHeartbeat).ExecContext(ctx, beat, now, stamp, id, stamp)
-		if err != nil {
-			return err
+		out, unknown = store.HeartbeatOutcome{}, false
+		var status, power string
+		err := w.Stmt(ctx, s.stmtUpdateWorkerHeartbeat).QueryRowContext(ctx, beat, now, stamp, id, stamp).
+			Scan(&status, &power)
+		if err == nil {
+			out = store.HeartbeatOutcome{
+				Recorded: true, Status: store.WorkerStatus(status), PowerState: store.PowerState(power),
+			}
+			return nil
 		}
-		if n, err := res.RowsAffected(); err != nil || n > 0 {
+		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		// Nothing matched: an unknown worker, or a heartbeat the broker stamped
@@ -526,10 +538,13 @@ func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Ti
 			return err
 		}
 	})
-	if err == nil && unknown {
-		return store.ErrNotFound
+	if err != nil {
+		return store.HeartbeatOutcome{}, mapErr(err)
 	}
-	return mapErr(err)
+	if unknown {
+		return store.HeartbeatOutcome{}, store.ErrNotFound
+	}
+	return out, nil
 }
 
 // ListStaleWorkers implements [store.WorkerStore].

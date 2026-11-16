@@ -423,6 +423,10 @@ type Scheduler struct {
 	// for at most [revokeDrainTimeout], for the calls still running.
 	revokes backgroundCalls
 
+	// reregister tracks the requests asking an offline worker whose
+	// heartbeats still arrive to register again (see reregister.go).
+	reregister reregisterAsks
+
 	// ctx is the lifecycle context for the scheduler; set during [Run] and used
 	// by NATS message-handler callbacks that cannot receive a context parameter.
 	// After Run returns ctx is canceled.
@@ -720,6 +724,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	// Stop any backoff-wake timers still pending so they don't outlive Run.
 	s.stopRetryWakeTimers()
+
+	s.closeReregisterCalls(ctx)
 
 	// Capacity provider calls first: one that finishes a retirement starts a
 	// broker revocation, which the wait below then covers.
@@ -1515,7 +1521,8 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		seen = *stamp
 		brokerStamp = *stamp
 	}
-	if err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, seen, stamp); err != nil {
+	out, err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, seen, stamp)
+	if err != nil {
 		if s.stopIfFenced(ctx, err) {
 			return
 		}
@@ -1538,6 +1545,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		s.nakMsg(ctx, msg)
 		return
 	}
+	s.maybeAskReregister(ctx, m.WorkerID, out)
 	// Keyed on AttemptsReported, not on the list: a worker holding nothing
 	// sends an empty list, and that empty report is how the reconciler learns
 	// an attempt is no longer held. A worker that sends neither field is never
@@ -1602,6 +1610,7 @@ func (s *Scheduler) sweepOnce(ctx context.Context) {
 		s.sweepUnschedulable,
 		s.sweepCapacity,
 		s.sweepBlockedJobsOnce,
+		s.pruneReregisterAsks,
 		// The gauges refresh on the same tick, so there is no separate
 		// metrics loop.
 		s.refreshQueueDepthGauge,

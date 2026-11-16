@@ -235,6 +235,17 @@ func StaleRegistration(stored, incoming Worker) bool {
 		incoming.RegistrationBrokerAt.Before(*stored.RegistrationBrokerAt)
 }
 
+// HeartbeatOutcome is what [WorkerStore.UpdateWorkerHeartbeat] did. Status and
+// PowerState are set only when Recorded is true.
+type HeartbeatOutcome struct {
+	// Recorded is false when the heartbeat was a late one the store ignored.
+	Recorded bool
+	// Status is the worker's liveness after the write.
+	Status WorkerStatus
+	// PowerState is the worker's power state after the write.
+	PowerState PowerState
+}
+
 // EffectiveStatus is the status the API and the worker gauge report:
 // [WorkerStatusDisabled] while the worker is disabled, otherwise its liveness.
 func (w Worker) EffectiveStatus() WorkerStatus {
@@ -386,10 +397,14 @@ type WorkerStore interface {
 	// is accepted and ignored, not an error, while one stamped no earlier is
 	// recorded whatever at says. A nil brokerAt is recorded unconditionally
 	// and keeps the stored HeartbeatBrokerAt.
+	// The outcome reports whether the heartbeat was recorded and, when it was,
+	// the worker's status and power state as the write left them, so the
+	// caller can tell a live worker the sweep marked offline without a second
+	// read. An ignored heartbeat returns Recorded false and no error.
 	// This is a hot path; implementations should use a single UPDATE
 	// statement, reading only to tell an unknown worker from an ignored
 	// heartbeat. Returns [ErrNotFound] if the worker does not exist.
-	UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time, brokerAt *time.Time) error
+	UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time, brokerAt *time.Time) (HeartbeatOutcome, error)
 
 	// ListStaleWorkers returns workers whose last heartbeat is older than
 	// before and whose status is [WorkerStatusOnline], disabled or not (a dead

@@ -209,7 +209,8 @@ var singleStatementWrites = []fenceCase{
 		},
 		op: func(ctx context.Context, st store.Store, f fenceFixture) error {
 			now := time.Now().UTC()
-			return st.UpdateWorkerHeartbeat(ctx, f.workerID, now, &now)
+			_, err := st.UpdateWorkerHeartbeat(ctx, f.workerID, now, &now)
+			return err
 		},
 		observe: func(t *testing.T, st store.Store, f fenceFixture) string {
 			t.Helper()
@@ -333,7 +334,7 @@ func TestParity_Fence_IgnoredWorkerWritesStillFence(t *testing.T) {
 			if err := reg(ctx, later); err != nil {
 				t.Fatalf("register: %v", err)
 			}
-			if err := st.UpdateWorkerHeartbeat(ctx, "w-fence-order", later, &later); err != nil {
+			if _, err := st.UpdateWorkerHeartbeat(ctx, "w-fence-order", later, &later); err != nil {
 				t.Fatalf("heartbeat: %v", err)
 			}
 			stale, current := takeOver(t, st)
@@ -345,10 +346,12 @@ func TestParity_Fence_IgnoredWorkerWritesStillFence(t *testing.T) {
 			}{
 				{"stale registration", func(c context.Context) error { return reg(c, earlier) }, store.ErrStaleRegistration},
 				{"earlier-stamped heartbeat", func(c context.Context) error {
-					return st.UpdateWorkerHeartbeat(c, "w-fence-order", later, &earlier)
+					_, err := st.UpdateWorkerHeartbeat(c, "w-fence-order", later, &earlier)
+					return err
 				}, nil},
 				{"unknown worker heartbeat", func(c context.Context) error {
-					return st.UpdateWorkerHeartbeat(c, "w-ghost", later, nil)
+					_, err := st.UpdateWorkerHeartbeat(c, "w-ghost", later, nil)
+					return err
 				}, store.ErrNotFound},
 			}
 			for _, tc := range cases {
@@ -1155,7 +1158,8 @@ var fenceMutators = map[string]fenceMutator{
 		w := fenceWorker(t, st, store.WorkerStatusOnline, time.Now().Add(-time.Hour))
 		return func(ctx context.Context) error {
 			now := time.Now().UTC()
-			return st.UpdateWorkerHeartbeat(ctx, w.ID, now, &now)
+			_, err := st.UpdateWorkerHeartbeat(ctx, w.ID, now, &now)
+			return err
 		}
 	},
 	// The capacity power writes: each moves a group member of its own from one

@@ -9,7 +9,9 @@
 // [protocol.ControlReplyMsg]. Sleep and shutdown refuse unless the operator set
 // worker.power.allow_remote_sleep, and always refuse while a task is running.
 // Wake needs no opt-in: the worker only sends UDP broadcasts for a peer that is
-// asleep and so cannot receive a command itself.
+// asleep and so cannot receive a command itself. Reregister needs none either:
+// the server sends it to a worker it holds offline whose heartbeats still
+// arrive, and the worker registers again unless it is retiring.
 //
 // # Leaving and coming back
 //
@@ -236,6 +238,8 @@ func (c *controller) decide(data []byte) plan {
 		return c.decidePower(msg.Command)
 	case protocol.ControlWake:
 		return c.decideWake(msg)
+	case protocol.ControlReregister:
+		return c.decideReregister()
 	default:
 		return refuse("unknown command %q", msg.Command)
 	}
@@ -365,6 +369,26 @@ func (c *controller) comeBack(ctx context.Context) {
 	}
 	if err := c.d.Reregister(ctx); err != nil {
 		c.log.ErrorContext(ctx, "power: re-registration failed", slog.Any("error", err))
+	}
+}
+
+// decideReregister decides a request to register again, which the server
+// sends a worker it holds offline while its heartbeats still arrive. It needs
+// no opt-in. While a sleep or shutdown is under way it is refused: the
+// retirement registers the worker again when the machine is back, and a
+// registration now would put a worker about to go down back online.
+func (c *controller) decideReregister() plan {
+	if c.retiring.Load() {
+		return refuse(protocol.ControlRefusalAlreadyRetiring)
+	}
+	return plan{
+		reply: protocol.ControlReplyMsg{Accepted: true},
+		act: func() {
+			if err := c.d.Reregister(c.ctx); err != nil {
+				c.log.ErrorContext(c.ctx, "power: re-registration the server asked for failed",
+					slog.String("worker_id", c.d.WorkerID), slog.Any("error", err))
+			}
+		},
 	}
 }
 
