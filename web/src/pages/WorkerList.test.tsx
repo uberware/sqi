@@ -588,6 +588,92 @@ describe('WorkerList', () => {
     })
   })
 
+  // ── Action failures ───────────────────────────────────────────────────
+
+  describe('action failures', () => {
+    function problem(status: number, detail: string): Response {
+      return new Response(JSON.stringify({ type: 'about:blank', title: 'Error', status, detail }), {
+        status,
+        headers: { 'Content-Type': 'application/problem+json' },
+      })
+    }
+
+    /**
+     * Serve the worker list for every GET and answer each mutation from
+     * `answer`, so invalidation refetches never consume a mutation's response.
+     */
+    function serve(workers: Worker[], answer: (url: string) => Response) {
+      fetchMock.mockImplementation((input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url
+        if ((init?.method ?? 'GET') === 'GET') {
+          return Promise.resolve(okJson(makeListResponse(workers)))
+        }
+        return Promise.resolve(answer(url))
+      })
+      render(<WorkerList />, { wrapper: Wrapper })
+    }
+
+    const ONLINE = [
+      makeWorker({ id: 'w1', status: 'online', hostname: 'node-1' }),
+      makeWorker({ id: 'w2', status: 'online', hostname: 'node-2' }),
+    ]
+    const REMOVABLE = [
+      makeWorker({ id: 'w1', status: 'offline', removable: true, hostname: 'node-1' }),
+      makeWorker({ id: 'w2', status: 'offline', removable: true, hostname: 'node-2' }),
+    ]
+
+    it('reports a remove that fails before a later one succeeds', async () => {
+      serve(REMOVABLE, (url) =>
+        url.endsWith('/workers/w1')
+          ? problem(409, 'worker is online')
+          : new Response(null, { status: 204 }),
+      )
+
+      fireEvent.click(await screen.findByLabelText('Select all workers'))
+      fireEvent.click(await screen.findByRole('button', { name: 'Remove selected (2)' }))
+
+      expect(
+        await screen.findByText('Remove failed for 1 of 2 workers: worker is online'),
+      ).toBeInTheDocument()
+    })
+
+    it('reports a disable that fails before a later one succeeds', async () => {
+      serve(ONLINE, (url) =>
+        url.includes('/workers/w1/')
+          ? problem(500, 'boom')
+          : okJson({ id: 'w2', status: 'disabled' }),
+      )
+
+      fireEvent.click(await screen.findByLabelText('Select all workers'))
+      fireEvent.click(await screen.findByRole('button', { name: 'Disable selected (2)' }))
+
+      expect(await screen.findByText('Disable failed for 1 of 2 workers: boom')).toBeInTheDocument()
+    })
+
+    it('reports a single-row failure without a count', async () => {
+      serve(ONLINE, () => problem(500, 'boom'))
+
+      fireEvent.click(await screen.findByLabelText('Disable worker node-1'))
+
+      expect(await screen.findByText('Disable failed: boom')).toBeInTheDocument()
+    })
+
+    it('leaves a row selected after its own Disable button is used', async () => {
+      serve(ONLINE, () => okJson({ id: 'w1', status: 'disabled' }))
+
+      fireEvent.click(await screen.findByLabelText('Select worker node-1'))
+      fireEvent.click(screen.getByLabelText('Disable worker node-1'))
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining('/workers/w1/disable'),
+          expect.anything(),
+        )
+      })
+      expect(screen.getByLabelText('Select worker node-1')).toBeChecked()
+    })
+  })
+
   // ── +N more capability tag overflow ──────────────────────────────────
 
   describe('capability tag overflow', () => {
