@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: chaos-db-stall-3m
+description: chaos - stall the server's database for 3m at 3m15s under steady load (100 workers, about 2.5 tasks/s), longer than SQI_WORKER's 2-minute MaxAge; no completed work may be redone and nothing reclaimed, 6.75 min
+# The stall comes at 3m15s, after the server's startup liveness grace (about
+# 3m10s), and lasts 3m: longer than SQI_WORKER's 2-minute MaxAge. While the
+# store is stalled the worker consumer applies almost nothing, so heartbeats
+# published early in the stall expire from the stream before the server reads
+# them. When the store answers again the consumer reads on from where the
+# stream now starts, and the first markers it reads come after heartbeats that
+# never reached the store. The consumer sees the stream sequence skip past
+# them and holds the heartbeat sweep at the marker it read before the stall
+# until it has read a whole heartbeat_timeout of the stream past the skip, so
+# no live worker is taken offline. It heals at 6m15s.
+#
+# SQI_TASK keeps its messages for 24 hours, so every running and terminal
+# report queued behind the stall is still applied; the stale-assigned reap and
+# the attempt reconciler wait for them as in chaos-db-stall-2m.
+duration: 6m45s
+warmup: 10s
+drain_timeout: 5m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: render
+    count: 100
+    ramp: 50/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: frames
+    rate: 0.25/s
+    queue: render
+    steps: 2
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 10s, max: 30s}
+      log_lines: 20
+      log_line_bytes: 120
+
+faults:
+  - at: 3m15s
+    database: {mode: stall}
+    duration: 3m
+
+# The workers never lose the broker, only the store stalls, so no worker should
+# go offline and the server should reclaim nothing.
+expect:
+  max_rework_attempts: 0
+  max_reclaims: 0
