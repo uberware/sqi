@@ -233,33 +233,28 @@ func (s *Scheduler) recordIngestNak(msg jetstream.Msg, md *jetstream.MsgMetadata
 	t.nak(md.Sequence.Stream, md.Timestamp, md.NumDelivered, ingestKeys(msg))
 }
 
-// ingestKeys returns the keys of what msg would change once applied: its
-// worker for a worker message, and for a task status also its task and
-// attempt (each left out when the body does not name it).
-func ingestKeys(msg jetstream.Msg) []string {
+// ingestKeys returns what msg would change once applied: its worker for a
+// worker message, and for a task status also its task and attempt (each left
+// out when the body does not name it).
+func ingestKeys(msg jetstream.Msg) ingestRef {
 	subject := msg.Subject()
 	workerID, _, ok := bus.ParseWorkerSubject(subject)
 	if !ok {
-		return nil
+		return ingestRef{}
 	}
 	switch {
 	case strings.HasPrefix(subject, "worker."):
-		return []string{workerKey(workerID)}
+		return ingestRef{worker: workerID}
 	case strings.HasPrefix(subject, bus.SubjectTaskStatusPrefix+"."):
-		keys := []string{workerKey(workerID)}
+		ref := ingestRef{worker: workerID}
 		var m protocol.TaskStatusMsg
 		if err := json.Unmarshal(msg.Data(), &m); err != nil {
-			return keys
+			return ref
 		}
-		if m.TaskID != "" {
-			keys = append(keys, taskKey(m.TaskID))
-		}
-		if m.AttemptID != "" {
-			keys = append(keys, attemptKey(m.AttemptID))
-		}
-		return keys
+		ref.task, ref.attempt = m.TaskID, m.AttemptID
+		return ref
 	default:
-		return nil
+		return ingestRef{}
 	}
 }
 

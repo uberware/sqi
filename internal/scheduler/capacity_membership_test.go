@@ -633,7 +633,7 @@ func TestCapacitySweep_VanishedEphemeralWaitsForWorkerConsumer(t *testing.T) {
 				f.s.ingestWorker.marker(t0.Add(tc.marker))
 			}
 			if tc.pending {
-				f.s.ingestWorker.nak(3, now.Add(-time.Second), 1, []string{workerKey("gone")})
+				f.s.ingestWorker.nak(3, now.Add(-time.Second), 1, ingestRef{worker: "gone"})
 			}
 
 			f.s.sweepCapacityAt(t.Context(), now)

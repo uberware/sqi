@@ -4,7 +4,6 @@ package scheduler
 
 import (
 	"reflect"
-	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -14,20 +13,6 @@ import (
 var ingestT0 = time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 
 func ingestAt(sec int) time.Time { return ingestT0.Add(time.Duration(sec) * time.Second) }
-
-// pending reports whether an unapplied message names key. The checks read
-// pendingIDs once per tick instead.
-func (t *ingestTracker) pending(key string, now time.Time) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.prune(now)
-	for _, e := range t.pendingMsg {
-		if slices.Contains(e.keys, key) {
-			return true
-		}
-	}
-	return false
-}
 
 func TestIngestTracker_ZeroUntilFirstMarker(t *testing.T) {
 	tr := newIngestTracker(2*time.Minute, 10)
@@ -58,15 +43,15 @@ func TestIngestTracker_MarkerNeverMovesBack(t *testing.T) {
 
 func TestIngestTracker_PendingPerMessage(t *testing.T) {
 	tr := newIngestTracker(2*time.Minute, 10)
-	k := []string{workerKey("w")}
+	k := ingestRef{worker: "w"}
 	tr.nak(1, ingestAt(0), 1, k)
 	tr.nak(2, ingestAt(1), 1, k)
 	tr.ack(2)
-	if !tr.pending(workerKey("w"), ingestAt(2)) {
+	if !tr.pending(ingestAt(2)).workers["w"] {
 		t.Fatal("key must stay pending while message 1 is unacked")
 	}
 	tr.ack(1)
-	if tr.pending(workerKey("w"), ingestAt(2)) {
+	if tr.pending(ingestAt(2)).workers["w"] {
 		t.Fatal("key must clear once both messages are acked")
 	}
 	tr.ack(99) // unknown: no-op
@@ -74,12 +59,12 @@ func TestIngestTracker_PendingPerMessage(t *testing.T) {
 
 func TestIngestTracker_NakReplacesEntry(t *testing.T) {
 	tr := newIngestTracker(2*time.Minute, 10)
-	tr.nak(1, ingestAt(0), 1, []string{workerKey("a")})
-	tr.nak(1, ingestAt(1), 2, []string{workerKey("b")})
-	if tr.pending(workerKey("a"), ingestAt(2)) {
+	tr.nak(1, ingestAt(0), 1, ingestRef{worker: "a"})
+	tr.nak(1, ingestAt(1), 2, ingestRef{worker: "b"})
+	if tr.pending(ingestAt(2)).workers["a"] {
 		t.Fatal("replaced entry's old key must not stay pending")
 	}
-	if !tr.pending(workerKey("b"), ingestAt(2)) {
+	if !tr.pending(ingestAt(2)).workers["b"] {
 		t.Fatal("replacement entry's key must be pending")
 	}
 	if got := tr.pendingCount(ingestAt(2)); got != 1 {
@@ -89,7 +74,7 @@ func TestIngestTracker_NakReplacesEntry(t *testing.T) {
 
 func TestIngestTracker_LastDeliveryClears(t *testing.T) {
 	tr := newIngestTracker(2*time.Minute, 10)
-	keys := []string{workerKey("w"), taskKey("t")}
+	keys := ingestRef{worker: "w", task: "t"}
 	tr.nak(5, ingestAt(0), 9, keys)
 	if got := tr.pendingCount(ingestAt(1)); got != 1 {
 		t.Fatalf("pendingCount after delivery 9 = %d, want 1", got)
@@ -98,7 +83,7 @@ func TestIngestTracker_LastDeliveryClears(t *testing.T) {
 	if got := tr.pendingCount(ingestAt(1)); got != 0 {
 		t.Fatalf("pendingCount after final delivery = %d, want 0", got)
 	}
-	if tr.pending(workerKey("w"), ingestAt(1)) {
+	if tr.pending(ingestAt(1)).workers["w"] {
 		t.Fatal("key pending after final delivery")
 	}
 	tr.nak(6, ingestAt(0), 10, keys) // never recorded
@@ -109,12 +94,12 @@ func TestIngestTracker_LastDeliveryClears(t *testing.T) {
 
 func TestIngestTracker_ExpiresByOwnStamp(t *testing.T) {
 	tr := newIngestTracker(2*time.Minute, 10)
-	k := []string{workerKey("w")}
+	k := ingestRef{worker: "w"}
 	tr.nak(1, ingestAt(0), 1, k)
-	if !tr.pending(workerKey("w"), ingestAt(119)) {
+	if !tr.pending(ingestAt(119)).workers["w"] {
 		t.Fatal("must be pending at t0+119s")
 	}
-	if tr.pending(workerKey("w"), ingestAt(121)) {
+	if tr.pending(ingestAt(121)).workers["w"] {
 		t.Fatal("must not be pending at t0+121s")
 	}
 	if got := tr.pendingCount(ingestAt(121)); got != 0 {
@@ -123,7 +108,7 @@ func TestIngestTracker_ExpiresByOwnStamp(t *testing.T) {
 
 	tr.nak(2, ingestAt(0), 1, k)
 	tr.nak(3, ingestAt(60), 1, k)
-	if !tr.pending(workerKey("w"), ingestAt(121)) {
+	if !tr.pending(ingestAt(121)).workers["w"] {
 		t.Fatal("the younger message must keep the key pending")
 	}
 	if got := tr.pendingCount(ingestAt(121)); got != 1 {
@@ -170,18 +155,25 @@ func TestIngestTracker_HoldBeforeFirstMarkerStaysZero(t *testing.T) {
 	}
 }
 
-func TestIngestTracker_PendingIDsByKind(t *testing.T) {
+func TestIngestTracker_PendingByKind(t *testing.T) {
 	tr := newIngestTracker(2*time.Minute, 10)
-	tr.nak(1, ingestAt(0), 1, []string{taskKey("t1"), workerKey("w1")})
-	tr.nak(2, ingestAt(0), 1, []string{taskKey("t2"), attemptKey("a1")})
-	if got, want := tr.pendingIDs(keyKindTask, ingestAt(1)), map[string]bool{"t1": true, "t2": true}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("task ids = %v, want %v", got, want)
+	if got := tr.pending(ingestAt(0)); got.workers != nil || got.tasks != nil || got.attempts != nil {
+		t.Fatalf("pending with nothing recorded = %+v, want all nil", got)
 	}
-	if got, want := tr.pendingIDs(keyKindWorker, ingestAt(1)), map[string]bool{"w1": true}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("worker ids = %v, want %v", got, want)
+	tr.nak(1, ingestAt(0), 1, ingestRef{task: "t1", worker: "w1"})
+	tr.nak(2, ingestAt(0), 1, ingestRef{task: "t2", attempt: "a1"})
+	got := tr.pending(ingestAt(1))
+	if want := map[string]bool{"t1": true, "t2": true}; !reflect.DeepEqual(got.tasks, want) {
+		t.Fatalf("task ids = %v, want %v", got.tasks, want)
 	}
-	if got := tr.pendingIDs(keyKindTask, ingestAt(200)); len(got) != 0 {
-		t.Fatalf("expired task ids = %v, want none", got)
+	if want := map[string]bool{"w1": true}; !reflect.DeepEqual(got.workers, want) {
+		t.Fatalf("worker ids = %v, want %v", got.workers, want)
+	}
+	if want := map[string]bool{"a1": true}; !reflect.DeepEqual(got.attempts, want) {
+		t.Fatalf("attempt ids = %v, want %v", got.attempts, want)
+	}
+	if got := tr.pending(ingestAt(200)); len(got.tasks) != 0 {
+		t.Fatalf("expired task ids = %v, want none", got.tasks)
 	}
 }
 
@@ -196,11 +188,10 @@ func TestIngestTracker_ConcurrentUse(t *testing.T) {
 				seq := uint64(g*1000 + i)
 				now := ingestAt(i)
 				tr.marker(now)
-				tr.nak(seq, now, 1, []string{taskKey(strconv.FormatUint(seq, 10))})
+				tr.nak(seq, now, 1, ingestRef{task: strconv.FormatUint(seq, 10)})
 				tr.hold(now, now.Add(time.Second))
 				_ = tr.effective(now)
-				_ = tr.pending(taskKey("x"), now)
-				_ = tr.pendingIDs(keyKindTask, now)
+				_ = tr.pending(now)
 				_ = tr.pendingCount(now)
 				_ = tr.lag(now, ingestT0)
 				_ = tr.gap(now, time.Second)

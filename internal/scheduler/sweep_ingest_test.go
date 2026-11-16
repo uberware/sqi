@@ -105,7 +105,7 @@ func testSweepSkipsPending(t *testing.T, what string, tracker func(*Scheduler) *
 	now := t0.Add(2 * time.Minute)
 	s, _, _ := newIngestSweepScheduler(t, st, now)
 	markers(s, now, now)
-	tracker(s).nak(7, now.Add(-time.Second), 1, []string{workerKey(workerID), taskKey(taskID)})
+	tracker(s).nak(7, now.Add(-time.Second), 1, ingestRef{worker: workerID, task: taskID})
 
 	s.sweepStaleWorkers(t.Context())
 
@@ -289,7 +289,7 @@ func TestReap_UsesTaskEffectiveAndSkipsPending(t *testing.T) {
 			s, _, _ := newIngestSweepScheduler(t, st, now)
 			markers(s, now, t0.Add(tc.marker))
 			if tc.pending {
-				s.ingestTask.nak(9, t0, 1, []string{workerKey("w-live"), taskKey(taskID)})
+				s.ingestTask.nak(9, t0, 1, ingestRef{worker: "w-live", task: taskID})
 			}
 
 			s.reapStaleAssignedTasks(t.Context())

@@ -46,8 +46,8 @@ func (s *Scheduler) dropIngestHeldWorkers(ctx context.Context, stale []store.Wor
 		return stale
 	}
 	pending := ingestPendingWorkers{
-		worker: s.ingestWorker.pendingIDs(keyKindWorker, now),
-		task:   s.ingestTask.pendingIDs(keyKindWorker, now),
+		worker: s.ingestWorker.pending(now).workers,
+		task:   s.ingestTask.pending(now).workers,
 	}
 	kept := stale[:0]
 	for _, w := range stale {
@@ -95,7 +95,7 @@ func (s *Scheduler) assignedReapCutoff(now time.Time) (cutoff time.Time, skip ma
 	if effT.IsZero() {
 		return time.Time{}, nil, false
 	}
-	return effT.Add(-s.cfg.AssignedTaskTimeout).UTC(), s.ingestTask.pendingIDs(keyKindTask, now), true
+	return effT.Add(-s.cfg.AssignedTaskTimeout).UTC(), s.ingestTask.pending(now).tasks, true
 }
 
 // logIngestHeldBack logs once per episode that the liveness sweep is held

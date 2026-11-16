@@ -3,28 +3,40 @@
 package scheduler
 
 import (
-	"strings"
 	"sync"
 	"time"
 )
 
-// Kinds of identifier an ingest message can leave unapplied.
-const (
-	keyKindWorker  = "worker"
-	keyKindTask    = "task"
-	keyKindAttempt = "attempt"
-)
-
-func ingestKey(kind, id string) string { return kind + "/" + id }
-
-func workerKey(id string) string  { return ingestKey(keyKindWorker, id) }
-func taskKey(id string) string    { return ingestKey(keyKindTask, id) }
-func attemptKey(id string) string { return ingestKey(keyKindAttempt, id) }
+// ingestRef names what a stream message changes once applied: its worker,
+// and for a task status also its task and attempt. An empty field names
+// nothing of that kind.
+type ingestRef struct {
+	worker, task, attempt string
+}
 
 // pendingEntry is one stream message the consumer has not yet applied.
 type pendingEntry struct {
 	stamp time.Time
-	keys  []string
+	ref   ingestRef
+}
+
+// pendingNames is what the unapplied messages name, by kind. A nil map names
+// nothing of that kind.
+type pendingNames struct {
+	workers, tasks, attempts map[string]bool
+}
+
+// addName returns set with id added, allocating it on first use. An empty id
+// is not added.
+func addName(set map[string]bool, id string) map[string]bool {
+	if id == "" {
+		return set
+	}
+	if set == nil {
+		set = make(map[string]bool)
+	}
+	set[id] = true
+	return set
 }
 
 // ingestTracker records how far one server consumer has applied its stream:
@@ -103,16 +115,16 @@ func (t *ingestTracker) releaseGapLocked() {
 }
 
 // nak records that stream message seq, stamped stamp, failed on its
-// delivered-th delivery and names keys. On its last delivery it will not
+// delivered-th delivery and names ref. On its last delivery it will not
 // return, so it is removed instead.
-func (t *ingestTracker) nak(seq uint64, stamp time.Time, delivered uint64, keys []string) {
+func (t *ingestTracker) nak(seq uint64, stamp time.Time, delivered uint64, ref ingestRef) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if delivered >= t.maxDeliver {
 		delete(t.pendingMsg, seq)
 		return
 	}
-	t.pendingMsg[seq] = pendingEntry{stamp: stamp, keys: append([]string(nil), keys...)}
+	t.pendingMsg[seq] = pendingEntry{stamp: stamp, ref: ref}
 }
 
 // ack removes message seq. An unknown seq is a no-op.
@@ -174,19 +186,16 @@ func (t *ingestTracker) lag(now, started time.Time) time.Duration {
 	return now.Sub(t.caughtUpTo)
 }
 
-// pendingIDs returns the identifiers of the pending keys of one kind.
-func (t *ingestTracker) pendingIDs(kind string, now time.Time) map[string]bool {
+// pending returns what the unapplied messages name, by kind.
+func (t *ingestTracker) pending(now time.Time) pendingNames {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.prune(now)
-	prefix := kind + "/"
-	out := make(map[string]bool)
+	var out pendingNames
 	for _, e := range t.pendingMsg {
-		for _, k := range e.keys {
-			if id, ok := strings.CutPrefix(k, prefix); ok {
-				out[id] = true
-			}
-		}
+		out.workers = addName(out.workers, e.ref.worker)
+		out.tasks = addName(out.tasks, e.ref.task)
+		out.attempts = addName(out.attempts, e.ref.attempt)
 	}
 	return out
 }

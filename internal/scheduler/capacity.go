@@ -223,7 +223,7 @@ func (s *Scheduler) removeVanishedEphemerals(
 	if effW.IsZero() {
 		return false
 	}
-	pendingWorkers := s.ingestWorker.pendingIDs(keyKindWorker, now)
+	pendingWorkers := s.ingestWorker.pending(now).workers
 	removed := 0
 	for _, g := range groups {
 		kept := make([]store.Worker, 0, len(members[g.ID]))

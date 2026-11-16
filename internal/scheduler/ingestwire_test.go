@@ -119,10 +119,9 @@ func TestNakMsg_RecordsPendingKeys(t *testing.T) {
 
 	s.nakMsg(t.Context(), msg)
 
-	for _, key := range []string{workerKey("w1"), taskKey("t1"), attemptKey("a1")} {
-		if !s.ingestTask.pending(key, now) {
-			t.Errorf("%s not pending after the nak", key)
-		}
+	got := s.ingestTask.pending(now)
+	if !got.workers["w1"] || !got.tasks["t1"] || !got.attempts["a1"] {
+		t.Errorf("pending after the nak = %+v, want worker w1, task t1 and attempt a1", got)
 	}
 	if n := s.ingestWorker.pendingCount(now); n != 0 {
 		t.Errorf("ingestWorker holds %d pending messages, want 0 (a task status belongs to ingestTask)", n)
@@ -147,7 +146,7 @@ func TestNakMsg_FailedNakStillPending(t *testing.T) {
 
 	s.nakMsg(t.Context(), msg)
 
-	if !s.ingestWorker.pending(workerKey("w1"), now) {
+	if !s.ingestWorker.pending(now).workers["w1"] {
 		t.Error("worker w1 not pending after a nak that failed")
 	}
 }
@@ -164,28 +163,28 @@ func TestIngestKeys(t *testing.T) {
 		name    string
 		subject string
 		data    []byte
-		want    []string
+		want    ingestRef
 	}{
-		{"heartbeat", bus.WorkerHeartbeatSubject("w1"), []byte(`{}`), []string{workerKey("w1")}},
-		{"register", bus.WorkerRegisterSubject("w2"), nil, []string{workerKey("w2")}},
-		{"deregister", bus.WorkerDeregisterSubject("w3"), nil, []string{workerKey("w3")}},
+		{"heartbeat", bus.WorkerHeartbeatSubject("w1"), []byte(`{}`), ingestRef{worker: "w1"}},
+		{"register", bus.WorkerRegisterSubject("w2"), nil, ingestRef{worker: "w2"}},
+		{"deregister", bus.WorkerDeregisterSubject("w3"), nil, ingestRef{worker: "w3"}},
 		{
 			"task status", bus.TaskStatusSubject("w1", "j1"),
 			statusBody(protocol.TaskStatusMsg{TaskID: "t1", AttemptID: "a1"}),
-			[]string{workerKey("w1"), taskKey("t1"), attemptKey("a1")},
+			ingestRef{worker: "w1", task: "t1", attempt: "a1"},
 		},
 		{
 			"task status without an attempt", bus.TaskStatusSubject("w1", "j1"),
 			statusBody(protocol.TaskStatusMsg{TaskID: "t1"}),
-			[]string{workerKey("w1"), taskKey("t1")},
+			ingestRef{worker: "w1", task: "t1"},
 		},
-		{"undecodable task status", bus.TaskStatusSubject("w1", "j1"), []byte("{not json"), []string{workerKey("w1")}},
-		{"marker", bus.SubjectMarkerTask, nil, nil},
-		{"log chunk", bus.TaskLogsSubject("w1", "t1"), nil, nil},
+		{"undecodable task status", bus.TaskStatusSubject("w1", "j1"), []byte("{not json"), ingestRef{worker: "w1"}},
+		{"marker", bus.SubjectMarkerTask, nil, ingestRef{}},
+		{"log chunk", bus.TaskLogsSubject("w1", "t1"), nil, ingestRef{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := ingestKeys(&fakeJSMsg{subject: tc.subject, data: tc.data})
-			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			if got != tc.want {
 				t.Errorf("ingestKeys = %v, want %v", got, tc.want)
 			}
 		})
@@ -247,13 +246,12 @@ func TestHeartbeatForUnknownWorker_PendingOnlyThatWorker(t *testing.T) {
 	if !msg.nacked || msg.acked {
 		t.Fatalf("heartbeat acked=%v nacked=%v, want nak'd", msg.acked, msg.nacked)
 	}
-	if got, want := s.ingestWorker.pendingIDs(keyKindWorker, now), map[string]bool{"w-ghost": true}; !maps.Equal(got, want) {
-		t.Errorf("pending workers = %v, want %v", got, want)
+	got := s.ingestWorker.pending(now)
+	if want := map[string]bool{"w-ghost": true}; !maps.Equal(got.workers, want) {
+		t.Errorf("pending workers = %v, want %v", got.workers, want)
 	}
-	for _, kind := range []string{keyKindTask, keyKindAttempt} {
-		if got := s.ingestWorker.pendingIDs(kind, now); len(got) != 0 {
-			t.Errorf("pending %s IDs = %v, want none", kind, got)
-		}
+	if len(got.tasks) != 0 || len(got.attempts) != 0 {
+		t.Errorf("pending tasks = %v, attempts = %v, want none", got.tasks, got.attempts)
 	}
 	if n := s.ingestTask.pendingCount(now); n != 0 {
 		t.Errorf("ingestTask holds %d pending messages, want 0", n)

@@ -710,7 +710,7 @@ func TestSweepOnce_ReconcilesByTheTaskTracker(t *testing.T) {
 			s.ingestWorker.marker(s.startedAt)
 			s.ingestTask.marker(now.Add(-tc.task))
 			if tc.pending {
-				s.ingestTask.nak(4, now.Add(-time.Second), 1, []string{attemptKey(attempt.ID)})
+				s.ingestTask.nak(4, now.Add(-time.Second), 1, ingestRef{attempt: attempt.ID})
 			}
 
 			s.sweepOnce(t.Context())

@@ -210,7 +210,7 @@ func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time) {
 		return
 	}
 	taskEffective := s.ingestTask.effective(now)
-	pendingAttempts := s.ingestTask.pendingIDs(keyKindAttempt, now)
+	pendingAttempts := s.ingestTask.pending(now).attempts
 	pending := func(id string) bool { return pendingAttempts[id] }
 	for _, a := range s.reconciler.due(open, now, taskEffective, pending) {
 		if s.deposed() {
