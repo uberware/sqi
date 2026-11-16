@@ -11,10 +11,9 @@ description: chaos - stall the server's database for 2m at 3m15s under steady lo
 # Two minutes is also scheduler.reconcile_grace, so an attempt that ended
 # during the stall, whose worker's heartbeats no longer list it while its
 # terminal report still waits behind the stall, has been open for longer than
-# the grace when the store answers again: the attempt reconciler can reclaim
-# it as well as the heartbeat sweep. The sweep marks live workers offline at
-# the heal, and they stay offline, so workers-converge fails on both backends.
-# Tasks running twice at once follow on SQLite, not on PostgreSQL.
+# the grace when the store answers again. The attempt reconciler and the
+# heartbeat sweep wait for the queued reports and heartbeats to be applied, so
+# neither takes back work from a live worker.
 duration: 5m30s
 warmup: 10s
 drain_timeout: 5m
@@ -45,14 +44,3 @@ faults:
   - at: 3m15s
     database: {mode: stall}
     duration: 2m
-
-expect:
-  known_violations:
-    - check: workers-converge
-      kind: must
-      reason: when the store answers again the heartbeat sweep marks live workers offline on the heartbeat the stall kept it from writing, and a live worker marked offline stays offline while its connection stays up, since heartbeats never bring a worker back online
-      tracker: H13f3
-    - check: single-attempt
-      kind: may
-      reason: a task the heal sweep or the attempt reconciler took back is leased again while its first attempt still runs, until the stale-running cancel stops the first; seen on SQLite, not on PostgreSQL
-      tracker: H13f7

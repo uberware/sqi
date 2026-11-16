@@ -55,11 +55,8 @@ faults:
 # server's cancel lands. At 4 long tasks a minute of 90s, about 6 are in
 # flight across the 2 real workers, so the stalled one cannot hold more.
 # The bound allows 8, so it fails only on
-# rework the stall cannot explain.
+# rework the stall cannot explain. The worker the sweep marked offline while
+# it slept heartbeats again once it resumes, is asked to register again, and
+# is back online before the run ends.
 expect:
   max_rework_attempts: 8
-  known_violations:
-    - check: workers-converge
-      kind: must
-      reason: the worker the sweep marked offline while it slept stays offline once it resumes, since its connection stayed up, heartbeats never bring a worker back online, and it re-registers only on a reconnect
-      tracker: H13f3

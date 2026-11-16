@@ -6,9 +6,9 @@ description: chaos - SIGSTOP the server (and its embedded broker) for 60s, about
 # inside that window cannot show whether a sweep runs before the heartbeat
 # backlog is consumed.
 # POSIX only (SIGSTOP); the chaos test skips it on Windows.
-# The rework known violation (H13f2) carries a ceiling of 60 attempts, above
-# the work of the up to 45 workers the sweep can reclaim. Rework past it is a
-# different defect and fails the run.
+# At SIGCONT the server first applies the heartbeats and reports the broker
+# kept for it during the stall; the liveness sweep waits until it has, so no
+# live worker is marked offline and nothing is reclaimed or redone.
 duration: 4m30s
 warmup: 10s
 drain_timeout: 5m
@@ -42,17 +42,3 @@ faults:
 
 expect:
   max_rework_attempts: 0
-  known_violations:
-    - check: rework
-      kind: must
-      max_attempts: 60
-      reason: on SIGCONT the heartbeat sweep runs before the stall's heartbeat backlog is consumed, marks every live worker offline and reclaims its attempts, so work that finished during the stall is rejected when its report lands and re-run
-      tracker: H13f2
-    - check: single-attempt
-      kind: must
-      reason: an attempt the resume sweep reclaims while its lease reply is still in flight reaches its worker after the task was leased again, and runs alongside the new attempt until the stale-running cancel stops it
-      tracker: H13f2
-    - check: workers-converge
-      kind: must
-      reason: a live worker the sweep marks offline stays offline while its connection stays up, since heartbeats never bring a worker back online and it re-registers only on a reconnect
-      tracker: H13f3
