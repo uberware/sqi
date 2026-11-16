@@ -1544,11 +1544,11 @@ The store does not close the following.
   (see [Bringing a live worker back online](#bringing-a-live-worker-back-online)),
   and the registration puts it back `online`. Refusing its lease requests
   would idle it until then, and for good if that request never reached it. A
-  request that
-  parked while its worker was online, and is woken after the worker went
-  offline (a graceful deregister or the heartbeat sweep), is answered empty
-  rather than leased a task, so a departed process's last request does not take
-  a task into a dead inbox for the stale-assignment reaper to recover. The same
+  request that parked while its worker was online, and is woken after the
+  worker went offline (a graceful deregister or the heartbeat sweep), is
+  answered empty rather than leased a task, so a departed process's last
+  request does not take a task into a dead inbox for the stale-assignment
+  reaper to recover. The same
   holds when the worker goes offline, or its row is deleted, after the request
   read it online but before the lease commits: the scheduler sets
   `RequireOnline` on a lease for a worker it read online, and `LeaseTask`
@@ -1831,12 +1831,51 @@ cases:
 - **A consumer interruption.** A message the broker sent while a consumer's
   pull was lost is redelivered only after the consumer's `AckWait`, so after a
   lost pull or a bus reconnect the worker tracker is held at the moment of the
-  interruption for 10 s and the task tracker for 30 s.
+  interruption for 10 s and the task tracker for 30 s. The marker loop reads
+  the interruption time every tick, and the heartbeat sweep and the
+  stale-assigned reap read it again before they compute their cutoffs, so a
+  check that runs between an interruption and the next tick is held too.
+- **Heartbeats that expired unread** (worker tracker only). The markers vouch
+  only for messages the stream still holds, and `SQI_WORKER` keeps a message
+  for 2 minutes. A worker consumer more than that far behind loses heartbeats
+  before it reads them, and a marker read after them says nothing about what
+  they carried. The consumer detects the loss from stream sequences: for the
+  one consumer of a work-queue stream, first deliveries (`NumDelivered` 1)
+  arrive in increasing stream sequence, so a first delivery more than one past
+  the previous first delivery means the messages between were removed unread.
+  Redeliveries can arrive in any order and are not counted, and a marker can
+  be the message that shows a skip. On a skip the worker tracker is held at
+  the newest marker handled before it (zero when there was none) until it has
+  handled a marker stamped `scheduler.heartbeat_timeout` or more after the
+  first message read past the skip. Until then the sweep's cutoff stays a
+  heartbeat timeout before a time up to which everything was read; once it is
+  released, the heartbeat timeout before the effective time lies wholly after
+  the skip and was wholly read, so every live worker has a heartbeat applied
+  inside it. A further skip while held keeps the hold's time and moves its
+  release to that skip's first message plus the heartbeat timeout. The server
+  logs `scheduler: worker messages expired from the stream unread; liveness
+  held until the consumer reads a heartbeat timeout past them` at Warn once
+  per hold, with the number of messages skipped. This covers two cases: a
+  blocking stall longer than about two and a half minutes (a database proxy
+  that stops forwarding, or a SQLite write lock that holds every write) after
+  which the consumer resumes two minutes behind and reads on from where the
+  stream now starts, and a consumer that cannot keep up with its fleet and
+  sits at the stream's expiry front, losing heartbeats while later markers
+  arrive. In the second case skips keep coming and the effective time stays
+  where it was, so a worker that really dies meanwhile is not marked offline
+  until the consumer recovers. That is the trade-off: without the hold the
+  sweep took live workers offline by the thousand and their tasks ran again
+  (1,568 at once in one load run). `sqi_scheduler_ingest_lag_seconds` for the
+  worker consumer shows the condition. A first delivery the client lost
+  before the handler (an interruption) also reads as a skip, which only holds
+  the tracker longer.
 
 Before a consumer has handled its first marker its effective time is zero and
 the checks that depend on it do nothing, so a newly promoted leader judges
-nothing until the backlog ahead of its first markers has been applied. None of
-these intervals is configuration.
+nothing until the backlog ahead of its first markers has been applied. A new
+process counts stream sequences from the first message it reads, so it
+detects no skip in a backlog it starts behind; its zero tracker and the
+start-up grace cover that. None of these intervals is configuration.
 
 **The three checks** run on the heartbeat-sweep tick, each after its own
 start-up grace:
@@ -1859,6 +1898,13 @@ start-up grace:
   omitted it, and never while a status report waiting to be applied again
   names it.
 
+The capacity sweep's removal of a vanished ephemeral member (an offline
+member last heard from more than its group's boot timeout ago, deleted with
+its credential revoked) judges by the worker tracker's effective time in the
+same way, and keeps a member a message waiting to be applied again names: the
+delete cannot be undone, and a queued heartbeat or registration would show the
+member came back.
+
 When either consumer's effective time trails `now` by more than a sweep
 interval, the sweep logs `scheduler: liveness sweep held back until the
 consumers catch up` at Info once per episode, with `worker_caught_up_to` and
@@ -1871,14 +1917,10 @@ its cutoff, with no worker traffic needed. While a consumer is behind, a dead
 worker is marked offline correspondingly late, which is the price of never
 taking a live one offline on unapplied state.
 
-The markers vouch only for messages the stream still held. `SQI_WORKER` keeps
-a message for 2 minutes, so a worker consumer that falls further behind than
-that loses heartbeats unread, while a later marker still moves the effective
-time past them: the sweep then marks those workers offline, and each comes
-back through the request to register again once one of its heartbeats is
-recorded. That is a server too slow for its fleet's heartbeat rate (see
-[Open questions](load-testing.md#open-questions), question 1), which this
-mechanism does not cure.
+A server too slow for its fleet's heartbeat rate (see
+[Open questions](load-testing.md#open-questions), question 1) is not cured by
+any of this: the hold after expired heartbeats keeps it from taking live
+workers offline, at the cost of not detecting dead ones while it lasts.
 
 The comparisons mix three clocks: the server's (an assignment's `assigned_at`,
 a pause), the clock of the node that leads `SQI_WORKER` (heartbeat stamps and
@@ -2075,7 +2117,10 @@ Each tick it:
    (ephemeral, not disabled, offline, last heartbeat older than the group's
    `boot_timeout`, whatever their deregistration said), revoking their
    credentials. It skips this while the liveness sweeps are deferred after a
-   broker outage;
+   broker outage, measures the time offline up to how far the worker consumer
+   has applied `SQI_WORKER` rather than up to now, and keeps a member a
+   message waiting to be applied again names (see
+   [After a backlog](#after-a-backlog-waiting-for-the-consumers));
 3. expires the power transitions that overran: for every group of the farm,
    enabled or not and whatever its provider, a `waking` member older than the
    group's `boot_timeout` becomes `wake_failed` (`FailWakes`) and a `retiring`

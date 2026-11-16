@@ -129,9 +129,9 @@ Which scenarios a given machine runs is a function of the library, and
 `sqi-load scenarios --chaos-matrix --os linux --store postgres` prints them
 as a JSON array (`--os` is `linux`, `windows` or `darwin`, `--store` is
 `sqlite` or `postgres`, and `--container` adds the size-limited volumes).
-Linux with SQLite runs 26 of the 30 scenarios, Linux with PostgreSQL 27, the
-container 29 with SQLite, and Windows with SQLite 22. `--container --store
-postgres` would print all 30, but `make chaos-container` runs SQLite only, so
+Linux with SQLite runs 27 of the 31 scenarios, Linux with PostgreSQL 28, the
+container 30 with SQLite, and Windows with SQLite 23. `--container --store
+postgres` would print all 31, but `make chaos-container` runs SQLite only, so
 no target runs that combination.
 
 ---
@@ -426,8 +426,8 @@ bounds the count. A run with the bound gets a `reclaims` result: OK within it,
 failed over it (with the count and examples), and failed as unmeasured when
 the store could not be read. `chaos-net-blip`, `chaos-net-slow-site`,
 `chaos-server-stall-short`, `chaos-db-stall-5s`, `chaos-db-stall-30s`,
-`chaos-clock-skew` and `chaos-session-expiry` set it to `0`: none of their
-faults or conditions should take a worker offline.
+`chaos-db-stall-3m`, `chaos-clock-skew` and `chaos-session-expiry` set it to
+`0`: none of their faults or conditions should take a worker offline.
 
 ---
 
@@ -500,7 +500,7 @@ server defects](load-testing.md#known-server-defects).
 
 ## The scenario library
 
-The 30 chaos scenarios are built in and named `chaos-...`. Unless noted, a
+The 31 chaos scenarios are built in and named `chaos-...`. Unless noted, a
 scenario runs on SQLite or PostgreSQL, with 100 simulated 8-core workers and
 about 2.5 tasks per second of 2-step jobs. A scenario's Fault column says
 where it needs more: PostgreSQL, Linux, or the container of `make
@@ -530,6 +530,7 @@ chaos-container`.
 | `chaos-db-stall-5s` | Stall the database for 5s at 1m. | rework 0, reclaims 0 | 3m |
 | `chaos-db-stall-30s` | Stall the database for 30s, `heartbeat_timeout`, at 3m15s. | rework 0, reclaims 0 | 4m15s |
 | `chaos-db-stall-2m` | Stall the database for 2m at 3m15s: four `heartbeat_timeout`s, and `scheduler.reconcile_grace`. | no bound | 5m30s |
+| `chaos-db-stall-3m` | Stall the database for 3m at 3m15s: longer than `SQI_WORKER`'s 2-minute MaxAge, so heartbeats expire unread and the worker consumer must hold the heartbeat sweep after the skip. | rework 0, reclaims 0 | 6m45s |
 | `chaos-db-drop` | Close the server's PostgreSQL connections and refuse new ones for 30s at 3m15s. PostgreSQL only. Submissions made meanwhile are refused with 500, which the summary reports as a finding. | rework 0 | 4m15s |
 | `chaos-disk-server-full` | Leave the server's data volume no free space for 60s at 1m, under a verbose renderer (5,000 lines of 200 bytes per task) on 40 workers. Container. | H13f9 `must` on `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded` | 3m |
 | `chaos-disk-worker-full-at-setup` | Leave the 2 real workers' session volume no free space and no free inodes for 60s at 1m, so tasks fail at setup. Each failure must name "no space left on device", at most 12 may fail, and each real worker must succeed a task afterwards. Container. | rework 0 | 3m |

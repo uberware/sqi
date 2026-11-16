@@ -541,7 +541,10 @@ termination hook usually stops the service, an instance scaled in that way is
 marked offline, and the capacity sweep then does the rest: an ephemeral member
 offline longer than its group's `boot_timeout_seconds` (judged by its last
 heartbeat) is deleted and its credential revoked. A member with no recorded
-heartbeat is never judged vanished.
+heartbeat is never judged vanished. The time offline is measured up to how far
+the server has applied the heartbeats queued in the broker, not up to now, so
+a server that has fallen behind (a stalled database, say) deletes nothing a
+queued heartbeat or registration would show came back.
 
 `boot_timeout_seconds` is also how long an ephemeral member may be out of
 touch. The sweep cannot tell a terminated machine from one that is stopped,
