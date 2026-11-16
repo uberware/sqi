@@ -27,6 +27,61 @@ import (
 	"github.com/uberware/sqi/internal/ws"
 )
 
+// caughtUp is a task-consumer position far enough ahead of every fixture time
+// that it never holds a reclaim back; notPending reports no attempt pending.
+var (
+	caughtUp   = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+	notPending = func(string) bool { return false }
+)
+
+// TestReconcilerDue_WaitsForTaskConsumer pins that an omitted attempt is
+// reclaimed only once the task-status consumer has handled everything its
+// worker published before the omitting heartbeat.
+func TestReconcilerDue_WaitsForTaskConsumer(t *testing.T) {
+	const grace, skew = 2 * time.Minute, 30 * time.Second
+	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	stamp := t0.Add(150 * time.Second)
+	open := []store.OpenAttempt{{AttemptID: "a1", TaskID: "t1", WorkerID: "w1", CreatedAt: t0}}
+	cases := []struct {
+		name          string
+		taskEffective time.Time
+		want          bool
+	}{
+		{"consumer behind the heartbeat: kept", t0.Add(100 * time.Second), false},
+		{"consumer at the heartbeat: reclaimed", stamp, true},
+		{"consumer has seen no marker: kept", time.Time{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReconciler(grace, skew)
+			r.record("w1", stamp, stamp, stamp, nil)
+			got := r.due(open, stamp, tc.taskEffective, notPending)
+			if (len(got) == 1) != tc.want {
+				t.Fatalf("due = %v, want reclaim=%v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReconcilerDue_SkipsPendingAttempt pins that an attempt with a task-status
+// message still unapplied is not reclaimed, even with the consumer caught up.
+func TestReconcilerDue_SkipsPendingAttempt(t *testing.T) {
+	const grace, skew = 2 * time.Minute, 30 * time.Second
+	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	stamp := t0.Add(150 * time.Second)
+	open := []store.OpenAttempt{{AttemptID: "a1", TaskID: "t1", WorkerID: "w1", CreatedAt: t0}}
+	r := newReconciler(grace, skew)
+	r.record("w1", stamp, stamp, stamp, nil)
+
+	pending := func(id string) bool { return id == "a1" }
+	if got := r.due(open, stamp, stamp, pending); len(got) != 0 {
+		t.Fatalf("due = %v, want none while a1 has a pending status message", got)
+	}
+	if got := r.due(open, stamp, stamp, notPending); len(got) != 1 {
+		t.Fatalf("due = %v, want a1 reclaimed once nothing is pending", got)
+	}
+}
+
 func TestReconciler_Due(t *testing.T) {
 	const grace, skew = 2 * time.Minute, 30 * time.Second
 	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
@@ -85,9 +140,9 @@ func TestReconciler_Due(t *testing.T) {
 				if wa.IsZero() {
 					wa = rp.at
 				}
-				r.record("w1", wa, rp.at, rp.ids)
+				r.record("w1", wa, rp.at, time.Time{}, rp.ids)
 			}
-			got := r.due([]store.OpenAttempt{tc.open}, tc.now)
+			got := r.due([]store.OpenAttempt{tc.open}, tc.now, caughtUp, notPending)
 			if (len(got) == 1) != tc.want {
 				t.Fatalf("due = %v, want reclaim=%v", got, tc.want)
 			}
@@ -105,11 +160,11 @@ func TestReconciler_LateOlderReportCannotReplaceANewerOne(t *testing.T) {
 	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	r := newReconciler(grace, skew)
 	newer := t0.Add(3 * time.Minute)
-	r.record("w1", newer.Add(ahead), newer, []string{"a1"})
+	r.record("w1", newer.Add(ahead), newer, time.Time{}, []string{"a1"})
 	late := newer.Add(35 * time.Second)
-	r.record("w1", newer.Add(ahead-10*time.Second), late, nil) // sent before a1 was leased
+	r.record("w1", newer.Add(ahead-10*time.Second), late, time.Time{}, nil) // sent before a1 was leased
 	open := store.OpenAttempt{AttemptID: "a1", TaskID: "t1", WorkerID: "w1", CreatedAt: newer.Add(-time.Second)}
-	if got := r.due([]store.OpenAttempt{open}, late); len(got) != 0 {
+	if got := r.due([]store.OpenAttempt{open}, late, caughtUp, notPending); len(got) != 0 {
 		t.Fatalf("due = %v; the older report replaced the newer one that holds a1", got)
 	}
 }
@@ -122,23 +177,23 @@ func TestReconciler_LateOlderReportCannotReplaceANewerOne(t *testing.T) {
 func TestReconciler_RecordWarnsOncePerSkewedEpisode(t *testing.T) {
 	r := newReconciler(2*time.Minute, 30*time.Second)
 	now := time.Now().UTC()
-	if !r.record("w1", now.Add(-time.Hour), now, nil) {
+	if !r.record("w1", now.Add(-time.Hour), now, time.Time{}, nil) {
 		t.Fatal("first skewed report should ask the caller to warn")
 	}
-	if r.record("w1", now.Add(-time.Hour), now.Add(time.Second), nil) {
+	if r.record("w1", now.Add(-time.Hour), now.Add(time.Second), time.Time{}, nil) {
 		t.Fatal("a second skewed report from the same worker should not warn again")
 	}
 	if _, ok := r.reports["w1"]; ok {
 		t.Fatal("a skewed report must not be recorded")
 	}
 	in := now.Add(2 * time.Second)
-	if r.record("w1", in, in, nil) {
+	if r.record("w1", in, in, time.Time{}, nil) {
 		t.Fatal("an in-window report must not warn")
 	}
-	if !r.record("w1", now.Add(-time.Hour), now.Add(3*time.Second), nil) {
+	if !r.record("w1", now.Add(-time.Hour), now.Add(3*time.Second), time.Time{}, nil) {
 		t.Fatal("a skewed report after an in-window one starts a new episode and should warn again")
 	}
-	if !r.record("w2", now.Add(-time.Hour), now, nil) {
+	if !r.record("w2", now.Add(-time.Hour), now, time.Time{}, nil) {
 		t.Fatal("another worker's first skewed report should warn")
 	}
 }
@@ -352,7 +407,8 @@ func TestReconcileAttempts_ReclaimsAnUnreportedAttempt(t *testing.T) {
 	s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
 
 	at := created.Add(2 * time.Minute)
-	s.reconciler.record(reconcileWorker, at, at, nil)
+	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
+	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), at)
 
 	task := mustTaskOf(t, st, "t1")
@@ -376,7 +432,8 @@ func TestReconcileAttempts_HoldsDuringStartup(t *testing.T) {
 	at := created.Add(2 * time.Minute)
 	s.startedAt = at.Add(-time.Second) // started less than grace ago
 
-	s.reconciler.record(reconcileWorker, at, at, nil)
+	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
+	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), at)
 
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusRunning {
@@ -399,7 +456,8 @@ func TestReconcileAttempts_LateTerminalReportIsDiscarded(t *testing.T) {
 	created := attempt.CreatedAt
 	armReconciler(s, created)
 	at := created.Add(2 * time.Minute)
-	s.reconciler.record(reconcileWorker, at, at, nil)
+	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
+	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), at)
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusReady {
 		t.Fatalf("fixture: task = %s, want ready after the reclaim", got)
@@ -485,8 +543,8 @@ func TestReconciler_DueBoundaries(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newReconciler(grace, skew)
-			r.record("w1", tc.reportAt, tc.reportAt, nil)
-			if got := r.due(open, tc.now); (len(got) == 1) != tc.want {
+			r.record("w1", tc.reportAt, tc.reportAt, time.Time{}, nil)
+			if got := r.due(open, tc.now, caughtUp, notPending); (len(got) == 1) != tc.want {
 				t.Fatalf("due = %v, want reclaim=%v", got, tc.want)
 			}
 		})
@@ -501,14 +559,14 @@ func TestReconciler_PrunesOldStateWithoutChangingADecision(t *testing.T) {
 	const grace, skew = time.Minute, 30 * time.Second
 	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	r := newReconciler(grace, skew)
-	r.record("gone", t0, t0, []string{"old"})                                          // will be 2×grace+1s old
-	r.record("w1", t0, t0, []string{"a1"})                                             // a1's last sighting, likewise
-	r.record("w2", t0.Add(31*time.Second), t0.Add(31*time.Second), []string{"recent"}) // 90s old: past grace, inside 2×grace
+	r.record("gone", t0, t0, time.Time{}, []string{"old"})                                          // will be 2×grace+1s old
+	r.record("w1", t0, t0, time.Time{}, []string{"a1"})                                             // a1's last sighting, likewise
+	r.record("w2", t0.Add(31*time.Second), t0.Add(31*time.Second), time.Time{}, []string{"recent"}) // 90s old: past grace, inside 2×grace
 
 	now := t0.Add(2*grace + time.Second)
-	r.record("w1", now, now, nil) // w1 fresh, no longer naming a1
+	r.record("w1", now, now, time.Time{}, nil) // w1 fresh, no longer naming a1
 	open := []store.OpenAttempt{{AttemptID: "a1", TaskID: "t1", WorkerID: "w1", CreatedAt: t0.Add(-time.Hour)}}
-	if got := r.due(open, now); len(got) != 1 {
+	if got := r.due(open, now, caughtUp, notPending); len(got) != 1 {
 		t.Fatalf("first due = %v, want a1 reclaimed", got)
 	}
 	if _, ok := r.reports["gone"]; ok {
@@ -526,7 +584,7 @@ func TestReconciler_PrunesOldStateWithoutChangingADecision(t *testing.T) {
 	if _, ok := r.lastSeen["recent"]; !ok {
 		t.Error("a sighting inside 2×grace was pruned")
 	}
-	if got := r.due(open, now); len(got) != 1 {
+	if got := r.due(open, now, caughtUp, notPending); len(got) != 1 {
 		t.Fatalf("due after pruning = %v, want a1 still reclaimed: pruning must not change a decision", got)
 	}
 }
@@ -595,7 +653,7 @@ func TestSweepOnce_DemotesAJobAReconcileReclaimLeftIdle(t *testing.T) {
 	s.startedAt = attempt.CreatedAt.Add(-time.Hour)
 	time.Sleep(5 * grace)
 	now := time.Now().UTC()
-	s.reconciler.record(reconcileWorker, now, now, nil)
+	s.reconciler.record(reconcileWorker, now, now, time.Time{}, nil)
 
 	ingestCaughtUp(s)
 	s.sweepOnce(t.Context())
@@ -644,7 +702,8 @@ func TestReconcileAttempts_CancelsAReportedClosedAttempt(t *testing.T) {
 
 			for sweep := 1; sweep <= 2; sweep++ {
 				at := attempt.CreatedAt.Add(time.Duration(sweep) * time.Minute)
-				s.reconciler.record(reconcileWorker, at, at, []string{attempt.ID})
+				s.reconciler.record(reconcileWorker, at, at, time.Time{}, []string{attempt.ID})
+				ingestCaughtUp(s)
 				s.reconcileAttempts(t.Context(), at)
 				if len(b.cancels) != sweep {
 					t.Fatalf("after sweep %d: cancels = %+v, want %d", sweep, b.cancels, sweep)
@@ -699,7 +758,8 @@ func TestReconcileAttempts_CancelsOnlyReportedClosedAttempts(t *testing.T) {
 			if tt.startup {
 				s.startedAt = at.Add(-time.Second)
 			}
-			s.reconciler.record(reconcileWorker, reportAt, reportAt, tt.report(attempt))
+			s.reconciler.record(reconcileWorker, reportAt, reportAt, time.Time{}, tt.report(attempt))
+			ingestCaughtUp(s)
 			s.reconcileAttempts(t.Context(), at)
 			if len(b.cancels) != 0 {
 				t.Fatalf("cancels = %+v, want none", b.cancels)
@@ -724,7 +784,8 @@ func TestReconcileAttempts_CancelsAReportedUnknownAttempt(t *testing.T) {
 
 	for sweep := 1; sweep <= 2; sweep++ {
 		at := attempt.CreatedAt.Add(time.Duration(sweep) * time.Minute)
-		s.reconciler.record(reconcileWorker, at, at, []string{attempt.ID, "attempt-the-store-never-saw"})
+		s.reconciler.record(reconcileWorker, at, at, time.Time{}, []string{attempt.ID, "attempt-the-store-never-saw"})
+		ingestCaughtUp(s)
 		s.reconcileAttempts(t.Context(), at)
 		if len(b.cancels) != sweep {
 			t.Fatalf("after sweep %d: cancels = %+v, want %d", sweep, b.cancels, sweep)
@@ -759,7 +820,7 @@ func (l *leaseDuringList) ListOpenAttempts(ctx context.Context) ([]store.OpenAtt
 			Task("t2", "s2", store.TaskStatusRunning).
 			SubmitLeasing(l.t, l.Store, reconcileWorker)
 		l.fresh = attempts["t2"].ID
-		l.s.reconciler.record(reconcileWorker, l.at, l.at, []string{l.fresh})
+		l.s.reconciler.record(reconcileWorker, l.at, l.at, time.Time{}, []string{l.fresh})
 	}
 	return open, err
 }
@@ -777,7 +838,8 @@ func TestReconcileAttempts_NeverCancelsAnAttemptLeasedDuringTheSweep(t *testing.
 	l := &leaseDuringList{Store: st, t: t, s: s, at: at}
 	s.store = l
 
-	s.reconciler.record(reconcileWorker, at, at, []string{attempt.ID})
+	s.reconciler.record(reconcileWorker, at, at, time.Time{}, []string{attempt.ID})
+	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), at)
 
 	if l.fresh == "" {

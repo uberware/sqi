@@ -391,7 +391,8 @@ func TestReconcileAttempts_GraceFromRunStart(t *testing.T) {
 	started := s.startedAt
 
 	early := started.Add(time.Minute - time.Nanosecond)
-	s.reconciler.record(reconcileWorker, early, early, nil) // w1 reports holding nothing
+	s.reconciler.record(reconcileWorker, early, early, time.Time{}, nil) // w1 reports holding nothing
+	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), early)
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusRunning {
 		t.Fatalf("task = %s a nanosecond before the grace from Run, want running", got)
@@ -401,7 +402,8 @@ func TestReconcileAttempts_GraceFromRunStart(t *testing.T) {
 	}
 
 	at := started.Add(time.Minute)
-	s.reconciler.record(reconcileWorker, at, at, nil)
+	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
+	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), at)
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusReady {
 		t.Errorf("task = %s the grace after Run started, want ready (reclaimed)", got)

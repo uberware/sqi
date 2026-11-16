@@ -1510,8 +1510,10 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 
 	stamp := s.brokerAt(ctx, msg, "worker.heartbeat", m.WorkerID)
 	seen := received
+	var brokerStamp time.Time
 	if stamp != nil {
 		seen = *stamp
+		brokerStamp = *stamp
 	}
 	if err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, seen, stamp); err != nil {
 		if s.stopIfFenced(ctx, err) {
@@ -1551,7 +1553,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 			"ignoring its attempt list, and its tasks are not reconciled until it sends a shorter one",
 			slog.String("worker_id", m.WorkerID), slog.Int("attempts", len(m.ActiveAttemptIDs)),
 			slog.Int("limit", maxReportedAttempts))
-	case s.reconciler.record(m.WorkerID, at, received, m.ActiveAttemptIDs):
+	case s.reconciler.record(m.WorkerID, at, received, brokerStamp, m.ActiveAttemptIDs):
 		s.logger.WarnContext(ctx, LogHeartbeatSkewed+": more than heartbeat_timeout "+
 			"between the worker's timestamp and its receipt; its tasks are not reconciled until its "+
 			"heartbeats arrive in time again",

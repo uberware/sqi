@@ -49,6 +49,7 @@ const LogHeartbeatSkewed = "scheduler: worker heartbeat delayed or skewed"
 type workerReport struct {
 	workerAt   time.Time // the worker's own timestamp, for ordering its reports
 	receivedAt time.Time
+	brokerAt   time.Time // when the broker stored the heartbeat; zero without a stamp
 	attempts   map[string]struct{}
 }
 
@@ -78,7 +79,13 @@ func newReconciler(grace, skew time.Duration) *reconciler {
 // same clock tick) is taken. After a worker's clock steps backwards, its
 // reports are ignored until the recorded one is pruned; until then that report
 // goes stale and due reclaims none of the worker's attempts.
-func (r *reconciler) record(workerID string, workerAt, receivedAt time.Time, attemptIDs []string) bool {
+//
+// brokerAt is the broker's timestamp on the heartbeat, zero when the message
+// carried none. due holds the report back until the task-status consumer has
+// handled every message the worker published before it.
+func (r *reconciler) record(
+	workerID string, workerAt, receivedAt, brokerAt time.Time, attemptIDs []string,
+) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if d := receivedAt.Sub(workerAt); d > r.skew || d < -r.skew {
@@ -95,7 +102,7 @@ func (r *reconciler) record(workerID string, workerAt, receivedAt time.Time, att
 		set[id] = struct{}{}
 		r.lastSeen[id] = receivedAt
 	}
-	r.reports[workerID] = workerReport{workerAt: workerAt, receivedAt: receivedAt, attempts: set}
+	r.reports[workerID] = workerReport{workerAt: workerAt, receivedAt: receivedAt, brokerAt: brokerAt, attempts: set}
 	return false
 }
 
@@ -104,13 +111,20 @@ func (r *reconciler) record(workerID string, workerAt, receivedAt time.Time, att
 // grace (measured on the server's clock from the later of the attempt's
 // creation and the last report that named it). It also forgets state old
 // enough not to matter.
-func (r *reconciler) due(open []store.OpenAttempt, now time.Time) []store.OpenAttempt {
+//
+// An attempt is also kept until the task-status consumer has applied what its
+// worker published before the report: taskEffective (zero before the consumer's
+// first marker) must reach the report's broker stamp, and pending must not name
+// the attempt, because a queued status message may be about to close it.
+func (r *reconciler) due(
+	open []store.OpenAttempt, now, taskEffective time.Time, pending func(attemptID string) bool,
+) []store.OpenAttempt {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []store.OpenAttempt
 	for _, a := range open {
 		rep, ok := r.reports[a.WorkerID]
-		if !ok || !r.freshLocked(rep, now) {
+		if !ok || !r.freshLocked(rep, now) || !consumerCaughtUp(rep, taskEffective) || pending(a.AttemptID) {
 			continue
 		}
 		if _, held := rep.attempts[a.AttemptID]; held {
@@ -126,6 +140,12 @@ func (r *reconciler) due(open []store.OpenAttempt, now time.Time) []store.OpenAt
 	}
 	r.pruneLocked(now)
 	return out
+}
+
+// consumerCaughtUp reports whether the task-status consumer, applied up to
+// taskEffective, has handled every message published before rep.
+func consumerCaughtUp(rep workerReport, taskEffective time.Time) bool {
+	return !taskEffective.IsZero() && (rep.brokerAt.IsZero() || !rep.brokerAt.After(taskEffective))
 }
 
 // heldAttempt is a worker's report of an attempt it holds.
@@ -189,7 +209,9 @@ func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time) {
 		}
 		return
 	}
-	for _, a := range s.reconciler.due(open, now) {
+	taskEffective := s.ingestTask.effective(now)
+	pending := func(id string) bool { return s.ingestTask.pending(attemptKey(id), now) }
+	for _, a := range s.reconciler.due(open, now, taskEffective, pending) {
 		if s.deposed() {
 			return
 		}

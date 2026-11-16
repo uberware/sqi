@@ -972,8 +972,9 @@ func TestReconcileAttempts_FencedStops(t *testing.T) {
 	created := attempts["t1"].CreatedAt
 	armReconciler(s, created)
 	at := created.Add(2 * time.Minute)
-	s.reconciler.record(reconcileWorker, at, at, nil) // the worker reports holding nothing
+	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil) // the worker reports holding nothing
 
+	ingestCaughtUp(s)
 	s.reconcileAttempts(deposedCtx(t, st), at)
 
 	if n := spy.reclaims.Load(); n != 1 {
