@@ -110,22 +110,23 @@ export async function fetchDeleteJob(id: string): Promise<void> {
   await apiFetch(`/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
-/** Pause a pending or running job via `PATCH /jobs/{id}` with `{ action: "pause" }`. */
-export function fetchPauseJob(id: string): Promise<Job> {
+/** Send a pause or resume via `PATCH /jobs/{id}` with `{ action }`. */
+function patchJobAction(id: string, action: 'pause' | 'resume'): Promise<Job> {
   return apiFetch<Job>(`/jobs/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'pause' }),
+    body: JSON.stringify({ action }),
   })
+}
+
+/** Pause a pending or running job via `PATCH /jobs/{id}` with `{ action: "pause" }`. */
+export function fetchPauseJob(id: string): Promise<Job> {
+  return patchJobAction(id, 'pause')
 }
 
 /** Resume a paused job via `PATCH /jobs/{id}` with `{ action: "resume" }`. */
 export function fetchResumeJob(id: string): Promise<Job> {
-  return apiFetch<Job>(`/jobs/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'resume' }),
-  })
+  return patchJobAction(id, 'resume')
 }
 
 /**

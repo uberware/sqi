@@ -35,68 +35,50 @@
 
 /* ── Bulk action bar ─────────────────────────────────────────────────────────── */
 
-.bulkCancelBtn,
-.bulkRetryBtn,
-.bulkPauseBtn,
-.bulkResumeBtn,
-.bulkDeleteBtn {
+/* Base for every bulk action button; each action class below sets its tone. */
+.bulkBtn {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--bulk-tone);
   border-radius: var(--radius-md);
   background: transparent;
+  color: var(--bulk-tone);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   transition: background var(--transition-base);
 }
 
+.bulkBtn:hover:not(:disabled) {
+  background: var(--bulk-tone-muted);
+}
+
+.bulkBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .bulkCancelBtn,
 .bulkDeleteBtn {
-  border: 1px solid var(--color-error);
-  color: var(--color-error);
+  --bulk-tone: var(--color-error);
+  --bulk-tone-muted: var(--color-error-muted);
 }
 
 .bulkRetryBtn {
-  border: 1px solid var(--color-warning);
-  color: var(--color-warning);
+  --bulk-tone: var(--color-warning);
+  --bulk-tone-muted: var(--color-warning-muted);
 }
 
 .bulkPauseBtn {
-  border: 1px solid var(--color-info);
-  color: var(--color-info);
+  --bulk-tone: var(--color-info);
+  --bulk-tone-muted: var(--color-info-muted);
 }
 
 .bulkResumeBtn {
-  border: 1px solid var(--color-success);
-  color: var(--color-success);
-}
-
-.bulkCancelBtn:hover:not(:disabled),
-.bulkDeleteBtn:hover:not(:disabled) {
-  background: var(--color-error-muted);
-}
-
-.bulkRetryBtn:hover:not(:disabled) {
-  background: var(--color-warning-muted);
-}
-
-.bulkPauseBtn:hover:not(:disabled) {
-  background: var(--color-info-muted);
-}
-
-.bulkResumeBtn:hover:not(:disabled) {
-  background: var(--color-success-muted);
-}
-
-.bulkCancelBtn:disabled,
-.bulkRetryBtn:disabled,
-.bulkPauseBtn:disabled,
-.bulkResumeBtn:disabled,
-.bulkDeleteBtn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+  --bulk-tone: var(--color-success);
+  --bulk-tone-muted: var(--color-success-muted);
 }
 
 /* ── Table wrapper ───────────────────────────────────────────────────────────── */
