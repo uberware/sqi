@@ -572,7 +572,7 @@ func (r *stressRun) cancelJob(int) {
 // before the call is stale: what it is offered depends on the schedule, not on
 // how long an assignment has been waiting by the clock.
 func (r *stressRun) reap(int) {
-	reclaimed, err := r.st.ReclaimStaleAssignedTasks(r.t.Context(), time.Now().UTC())
+	reclaimed, err := r.st.ReclaimStaleAssignedTasks(r.t.Context(), time.Now().UTC(), nil)
 	if r.expect("ReclaimStaleAssignedTasks", err) {
 		r.counts.reaped.Add(int64(len(reclaimed)))
 	}

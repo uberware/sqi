@@ -866,7 +866,7 @@ var fenceMutators = map[string]fenceMutator{
 	"ReclaimStaleAssignedTasks": func(t *testing.T, st store.Store) func(context.Context) error {
 		fenceLiveJob(t, st, store.TaskStatusAssigned)
 		return func(ctx context.Context) error {
-			_, err := st.ReclaimStaleAssignedTasks(ctx, time.Now().UTC().Add(time.Minute))
+			_, err := st.ReclaimStaleAssignedTasks(ctx, time.Now().UTC().Add(time.Minute), nil)
 			return err
 		}
 	},

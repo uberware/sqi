@@ -175,7 +175,7 @@ func TestSubSecond_StaleAssignment(t *testing.T) {
 			req.Now = t0
 			storetest.Lease(t, st, req)
 
-			got, err := st.ReclaimStaleAssignedTasks(t.Context(), t1)
+			got, err := st.ReclaimStaleAssignedTasks(t.Context(), t1, nil)
 			if err != nil {
 				t.Fatalf("ReclaimStaleAssignedTasks: %v", err)
 			}

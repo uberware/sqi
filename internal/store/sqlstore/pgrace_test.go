@@ -187,7 +187,7 @@ func TestPGRace_G11_LateReportCannotEndATaskReLeasedMeanwhile(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 1, "w1", "w2")
 	a1 := storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1"))
-	if _, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour)); err != nil {
+	if _, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour), nil); err != nil {
 		t.Fatalf("reap: %v", err) // a1 closed failed, task ready
 	}
 	p.atStatement(sqlstore.SQLSelectTaskStatus)
@@ -425,7 +425,7 @@ func TestPGRace_G12_ReaperAndCompletionDoNotDeadlock(t *testing.T) {
 			return err
 		},
 		func() error {
-			_, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour))
+			_, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour), nil)
 			return err
 		})
 	assertPausedAt(t, p, sqlstore.SQLIsLatestAttempt)
@@ -456,7 +456,7 @@ func TestPGRace_G1_AReportedTaskIsNeverReaped(t *testing.T) {
 			started, startErr = st.StartTaskAttempt(t.Context(), a.ID, w.Tasks[0], "sess", time.Now())
 		})
 		wg.Go(func() {
-			reaped, reapErr = st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour))
+			reaped, reapErr = st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour), nil)
 		})
 		wg.Wait()
 		if startErr != nil {
@@ -496,7 +496,7 @@ func TestPGRace_G3_ReaperReturnsExactlyWhatItReset(t *testing.T) {
 		})
 	}
 	wg.Go(func() {
-		reaped, reapErr = st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour))
+		reaped, reapErr = st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour), nil)
 	})
 	wg.Wait()
 	if reapErr != nil {

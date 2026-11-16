@@ -21,7 +21,7 @@ func TestReclaimStaleAssignedTasks_ClosesAndReleases(t *testing.T) {
 			stale := leaseClaiming(t, st, g.Tasks["a"][0].ID, false, pool)
 			live := leaseClaiming(t, st, g.Tasks["a"][1].ID, true, pool)
 
-			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute))
+			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute), nil)
 			if err != nil || len(got) != 1 || got[0].ID != g.Tasks["a"][0].ID {
 				t.Fatalf("ReclaimStaleAssignedTasks = (%+v, %v), want only the assigned task", got, err)
 			}
@@ -52,7 +52,7 @@ func TestReclaimStaleAssignedTasks_ReturnsPostResetRows(t *testing.T) {
 				tasks: []store.TaskStatus{store.TaskStatusAssigned},
 			})
 
-			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute))
+			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute), nil)
 			if err != nil || len(got) != 1 {
 				t.Fatalf("ReclaimStaleAssignedTasks = (%+v, %v), want one task", got, err)
 			}
@@ -81,7 +81,7 @@ func TestReclaimStaleAssignedTasks_OnlyStaleAndOnlyAssigned(t *testing.T) {
 			})
 			fresh := g.Attempts[g.Tasks["a"][0].ID]
 
-			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(-time.Hour))
+			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(-time.Hour), nil)
 			if err != nil || len(got) != 0 {
 				t.Fatalf("ReclaimStaleAssignedTasks with an old cutoff = (%+v, %v), want nothing", got, err)
 			}
@@ -93,10 +93,10 @@ func TestReclaimStaleAssignedTasks_OnlyStaleAndOnlyAssigned(t *testing.T) {
 			}
 
 			cutoff := time.Now().UTC().Add(time.Minute)
-			if got, err = st.ReclaimStaleAssignedTasks(t.Context(), cutoff); err != nil || len(got) != 1 {
+			if got, err = st.ReclaimStaleAssignedTasks(t.Context(), cutoff, nil); err != nil || len(got) != 1 {
 				t.Fatalf("first reclaim = (%+v, %v), want the one assigned task", got, err)
 			}
-			if got, err = st.ReclaimStaleAssignedTasks(t.Context(), cutoff); err != nil || len(got) != 0 {
+			if got, err = st.ReclaimStaleAssignedTasks(t.Context(), cutoff, nil); err != nil || len(got) != 0 {
 				t.Fatalf("second reclaim = (%+v, %v), want nothing", got, err)
 			}
 		})
@@ -126,7 +126,7 @@ func TestReclaimStaleAssignedTasks_ReleasesLeakedClaimOfClosedAttempt(t *testing
 				t.Fatalf("fixture: active claims = %d, want 1", n)
 			}
 
-			if got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute)); err != nil || len(got) != 1 {
+			if got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute), nil); err != nil || len(got) != 1 {
 				t.Fatalf("ReclaimStaleAssignedTasks = (%+v, %v), want one task", got, err)
 			}
 			if n := activeClaims(t, st, pool.ID); n != 0 {
@@ -149,7 +149,7 @@ func TestReclaimStaleAssignedTasks_ReclaimsAcrossBatches(t *testing.T) {
 			}
 			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: statuses})
 
-			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute))
+			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute), nil)
 			if err != nil || len(got) != n {
 				t.Fatalf("ReclaimStaleAssignedTasks = (%d tasks, %v), want %d", len(got), err, n)
 			}
@@ -167,6 +167,32 @@ func TestReclaimStaleAssignedTasks_ReclaimsAcrossBatches(t *testing.T) {
 				if a := mustAttempt(t, st, g.Attempts[task.ID].ID); a.Status != store.AttemptStatusFailed {
 					t.Fatalf("attempt of task %s = %q, want failed", task.ID, a.Status)
 				}
+			}
+		})
+	}
+}
+
+// TestReclaimStaleAssignedTasks_SkipsListedTasks: a stale assignment named in
+// skip is left assigned with its attempt open, and the others are reclaimed.
+func TestReclaimStaleAssignedTasks_SkipsListedTasks(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedGraph(t, st, graphOpts{}, stepSpec{
+				name: "a", status: store.StepStatusReady,
+				tasks: []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusAssigned},
+			})
+			kept, reaped := g.Tasks["a"][0], g.Tasks["a"][1]
+
+			skip := map[string]bool{kept.ID: true}
+			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute), skip)
+			if err != nil || len(got) != 1 || got[0].ID != reaped.ID {
+				t.Fatalf("ReclaimStaleAssignedTasks = (%+v, %v), want only %s", got, err, reaped.ID)
+			}
+			if s := mustTask(t, st, kept.ID).Status; s != store.TaskStatusAssigned {
+				t.Fatalf("skipped task status = %q, want assigned", s)
+			}
+			if a := mustAttempt(t, st, g.Attempts[kept.ID].ID); a.Status != store.AttemptStatusRunning {
+				t.Fatalf("skipped task's attempt = %q, want running", a.Status)
 			}
 		})
 	}

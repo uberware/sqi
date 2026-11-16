@@ -81,6 +81,7 @@ func TestSweepStaleWorkers_ReclaimsAndTerminates(t *testing.T) {
 	// WorkerTimeout default is 30s; age the heartbeat well beyond it.
 	workerID, taskID, attemptID := seedStaleWorkerWithTask(t, st, time.Hour)
 
+	ingestCaughtUp(s)
 	s.sweepStaleWorkers(t.Context())
 
 	// Worker marked offline.
@@ -146,6 +147,7 @@ func TestReapStaleAssignedTasks_ReclaimsStuckTask(t *testing.T) {
 	// AssignedTaskTimeout default is 10m; age the assignment well beyond it.
 	taskID, attemptID := seedAssignedTask(t, st, time.Hour)
 
+	ingestCaughtUp(s)
 	s.reapStaleAssignedTasks(t.Context())
 
 	tk, err := st.GetTask(t.Context(), taskID)
@@ -181,6 +183,7 @@ func TestReapStaleAssignedTasks_NotifiesReclaimedTask(t *testing.T) {
 	staleID, _ := seedAssignedTask(t, st, time.Hour)
 	seedAssignedTask(t, st, 5*time.Second) // fresh: the reaper must leave it alone
 
+	ingestCaughtUp(s)
 	s.reapStaleAssignedTasks(t.Context())
 
 	if len(notifier.tasks) != 1 {
@@ -200,7 +203,7 @@ type partialReapSt struct {
 	reclaimed []store.Task
 }
 
-func (s *partialReapSt) ReclaimStaleAssignedTasks(context.Context, time.Time) ([]store.Task, error) {
+func (s *partialReapSt) ReclaimStaleAssignedTasks(context.Context, time.Time, map[string]bool) ([]store.Task, error) {
 	return s.reclaimed, errors.New("store unavailable")
 }
 
@@ -216,6 +219,7 @@ func TestReapStaleAssignedTasks_AnnouncesTasksReclaimedBeforeAnError(t *testing.
 	notifier := &recordingNotifier{}
 	s.notifier = notifier
 
+	ingestCaughtUp(s)
 	s.reapStaleAssignedTasks(t.Context())
 
 	var got []string
@@ -237,6 +241,7 @@ func TestReapStaleAssignedTasks_LeavesFreshAssignment(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	taskID, _ := seedAssignedTask(t, st, 5*time.Second)
 
+	ingestCaughtUp(s)
 	s.reapStaleAssignedTasks(t.Context())
 
 	tk, err := st.GetTask(t.Context(), taskID)
@@ -260,6 +265,7 @@ func TestSweepStaleWorkers_NoStaleWorkers_NoOp(t *testing.T) {
 		t.Fatalf("RegisterWorker: %v", err)
 	}
 
+	ingestCaughtUp(s)
 	s.sweepStaleWorkers(t.Context())
 
 	w, err := st.GetWorker(t.Context(), "w-fresh")
@@ -509,6 +515,7 @@ func TestSweepStaleWorkers_ListError_ReturnsQuietly(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 
 	// Should not panic and should simply return on the store error.
+	ingestCaughtUp(s)
 	s.sweepStaleWorkers(t.Context())
 }
 
@@ -531,6 +538,7 @@ func TestSweepThenDemote_StalledJobReturnsToPending(t *testing.T) {
 	jobID := tk.JobID
 
 	// Heartbeat-sweep tick body.
+	ingestCaughtUp(s)
 	s.sweepStaleWorkers(t.Context())
 	s.reapStaleAssignedTasks(t.Context())
 	s.demoteStalledJobs(t.Context())
@@ -628,6 +636,7 @@ func TestSweepStaleWorkers_AnnouncesOnlyWorkersTakenOffline(t *testing.T) {
 	seedWorkerWithHeartbeat(t, st, "w-broken", store.WorkerStatusOnline, time.Hour)
 	seedWorkerWithHeartbeat(t, st, "w-dead", store.WorkerStatusOnline, time.Hour)
 
+	ingestCaughtUp(s)
 	s.sweepStaleWorkers(t.Context())
 
 	for id, want := range map[string]store.WorkerStatus{"w-broken": store.WorkerStatusOnline, "w-dead": store.WorkerStatusOffline} {

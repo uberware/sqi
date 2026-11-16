@@ -113,7 +113,8 @@ func (s *Store) transitionPendingTasksWhereLocked(
 // each reclaimed task's running attempts as failed and releases the claims of
 // its closed attempts, and returns the reclaimed tasks as they are after the
 // reset (assigned_worker_id empty), matching the SQLite store's RETURNING.
-func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
+// Tasks named in skip are left as they are.
+func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time, skip map[string]bool) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.fenceLocked(ctx); err != nil {
@@ -123,7 +124,7 @@ func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time)
 	// Order mirrors SQLite's: the tasks, then their attempts, then the claims.
 	// The store lock stands in for the row locks.
 	return s.reclaimToReadyLocked(func(t store.Task) bool {
-		return t.Status == store.TaskStatusAssigned && t.AssignedAt != nil && t.AssignedAt.Before(cutoff)
+		return !skip[t.ID] && t.Status == store.TaskStatusAssigned && t.AssignedAt != nil && t.AssignedAt.Before(cutoff)
 	}, "", time.Now().UTC()), nil
 }
 

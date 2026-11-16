@@ -481,7 +481,12 @@ type Scheduler struct {
 	// ingestLoop is the marker loop's state between ticks.
 	ingestLoop ingestLoopState
 
-	// now is the marker loop's clock. Overridable in tests.
+	// heldBack remembers whether the liveness sweep is in a held-back
+	// episode; see [Scheduler.logIngestHeldBack].
+	heldBack heldBackLog
+
+	// now is the clock of the marker loop, the heartbeat sweep and the
+	// stuck-assigned reap. Overridable in tests.
 	now func() time.Time
 }
 
@@ -1664,12 +1669,23 @@ func (s *Scheduler) announceDemoted(ctx context.Context, demoted []string) {
 // reclaims nothing (see [Scheduler.livenessDeferred]): the worker's running
 // report may be waiting in the stream, and reclaiming now re-dispatches a task
 // that is already running.
+//
+// It judges assigned_at against AssignedTaskTimeout before the time up to
+// which the task-status consumer has applied its stream, not before now, and
+// leaves alone the tasks a status report waiting to be applied again names
+// ([Scheduler.assignedReapCutoff]): a running report still queued would move
+// the task, and reclaiming it first re-dispatches a running task. Before that
+// consumer's first marker it reclaims nothing.
 func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
-	if deferred, _ := s.livenessDeferred(time.Now()); deferred {
+	now := s.now()
+	if deferred, _ := s.livenessDeferred(now); deferred {
 		return
 	}
-	cutoff := time.Now().UTC().Add(-s.cfg.AssignedTaskTimeout)
-	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff)
+	cutoff, skip, ok := s.assignedReapCutoff(now)
+	if !ok {
+		return
+	}
+	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff, skip)
 	s.announceReaped(ctx, reclaimed)
 	s.warnUnlessStopped(ctx, err, "scheduler: reclaim stale assigned tasks failed")
 }
@@ -1727,12 +1743,24 @@ func (s *Scheduler) notifyTaskReclaimed(ctx context.Context, task store.Task, no
 // acting on it would reclaim tasks that are still running. It logs once per
 // outage and once per grace window ([Scheduler.logLivenessDeferred]);
 // [Scheduler.reapStaleAssignedTasks] defers silently on the same tick.
+//
+// Past that, a heartbeat counts as expired only by the time up to which the
+// worker consumer has applied its stream ([Scheduler.workerSweepCutoff]), so a
+// consumer that falls behind holds the sweep back instead of letting queued
+// heartbeats read as silence, and a candidate is left alone while a message
+// naming it waits to be applied again or the task-status consumer has not yet
+// caught up to its expiry ([Scheduler.ingestHoldsWorker]). Before the worker
+// consumer's first marker nothing is swept.
 func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
-	if deferred, up := s.livenessDeferred(time.Now()); deferred {
+	now := s.now()
+	if deferred, up := s.livenessDeferred(now); deferred {
 		s.logLivenessDeferred(ctx, up)
 		return
 	}
-	cutoff := time.Now().UTC().Add(-s.cfg.WorkerTimeout)
+	cutoff, effT, ok := s.workerSweepCutoff(ctx, now)
+	if !ok {
+		return
+	}
 	stale, err := s.store.ListStaleWorkers(ctx, cutoff)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
@@ -1740,6 +1768,7 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 		}
 		return
 	}
+	stale = s.dropIngestHeldWorkers(ctx, stale, now, effT)
 	if len(stale) == 0 {
 		return
 	}

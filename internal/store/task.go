@@ -357,7 +357,11 @@ type TaskStore interface {
 	// the cutoff. Locking the task rows first, or anchoring after the UPDATE
 	// ... RETURNING, would take a task row before its job row, the reverse of
 	// every job-level operation's order.
-	ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]Task, error)
+	//
+	// skip holds task IDs that are left as they are even when stale; nil skips
+	// nothing. The scheduler passes the tasks a queued status report may still
+	// move.
+	ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time, skip map[string]bool) ([]Task, error)
 
 	// CountActiveTasksInQueue returns the number of tasks for the given queue
 	// that are currently in [TaskStatusAssigned] or [TaskStatusRunning] state.

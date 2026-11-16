@@ -772,11 +772,11 @@ func (s *sweepSpy) DeleteTerminalJobsBefore(ctx context.Context, before time.Tim
 	return s.Store.DeleteTerminalJobsBefore(ctx, before, includeFailed)
 }
 
-func (s *sweepSpy) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
+func (s *sweepSpy) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time, skip map[string]bool) ([]store.Task, error) {
 	if err := s.enter("ReclaimStaleAssignedTasks"); err != nil {
 		return nil, err
 	}
-	return s.Store.ReclaimStaleAssignedTasks(ctx, cutoff)
+	return s.Store.ReclaimStaleAssignedTasks(ctx, cutoff, skip)
 }
 
 func (s *sweepSpy) ListOpenAttempts(ctx context.Context) ([]store.OpenAttempt, error) {
@@ -838,6 +838,7 @@ func TestSweep_FencedStopsTick(t *testing.T) {
 	s, rec := newFenceScheduler(t, spy, "farm-1")
 	ctx := deposedCtx(t, st)
 
+	ingestCaughtUp(s)
 	s.sweepOnce(ctx)
 
 	if got := spy.called(); !slices.Equal(got, []string{"ListStaleWorkers"}) {
@@ -875,6 +876,7 @@ func TestSweep_FencedAtEachStageStopsTick(t *testing.T) {
 			spy := &sweepSpy{Store: newCheckedFake(t), failAt: failAt}
 			s, rec := newFenceScheduler(t, spy, "farm-1")
 
+			ingestCaughtUp(s)
 			s.sweepOnce(t.Context())
 
 			want := sweepEntries

@@ -597,6 +597,7 @@ func TestSweepOnce_DemotesAJobAReconcileReclaimLeftIdle(t *testing.T) {
 	now := time.Now().UTC()
 	s.reconciler.record(reconcileWorker, now, now, nil)
 
+	ingestCaughtUp(s)
 	s.sweepOnce(t.Context())
 
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusReady {

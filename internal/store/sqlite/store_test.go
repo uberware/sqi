@@ -979,7 +979,7 @@ func TestTask_ReclaimStaleAssignedTasks(t *testing.T) {
 	leaseTask(t, s, "t2", "w1")
 
 	cutoff := time.Now().Add(-30 * time.Minute)
-	reclaimed, err := s.ReclaimStaleAssignedTasks(ctx, cutoff)
+	reclaimed, err := s.ReclaimStaleAssignedTasks(ctx, cutoff, nil)
 	if err != nil {
 		t.Fatalf("ReclaimStaleAssignedTasks: %v", err)
 	}

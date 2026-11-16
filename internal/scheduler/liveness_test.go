@@ -72,6 +72,7 @@ func TestSweepStaleWorkers_DeferredWhileBusDown(t *testing.T) {
 	s, logs := newLivenessScheduler(t, st, busUpAt(-1))
 	workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 40*time.Second)
 
+	ingestCaughtUp(s)
 	s.sweepStaleWorkers(t.Context())
 
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
@@ -94,6 +95,7 @@ func TestSweepStaleWorkers_DeferredUntilReconnectGraceAfterReconnect(t *testing.
 	s, logs := newLivenessScheduler(t, st, func() time.Time { return time.Now().UTC().Add(-up) })
 	workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 40*time.Second)
 
+	ingestCaughtUp(s)
 	s.sweepStaleWorkers(t.Context())
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Fatalf("worker status = %q after 10s of bus uptime, want online (deferred)", got)
@@ -126,6 +128,7 @@ func TestReapStaleAssignedTasks_DeferredAfterReconnect(t *testing.T) {
 	s, _ := newLivenessScheduler(t, st, func() time.Time { return time.Now().UTC().Add(-up) })
 	taskID, _ := seedAssignedTask(t, st, time.Hour)
 
+	ingestCaughtUp(s)
 	s.reapStaleAssignedTasks(t.Context())
 	if got := taskStatus(t, st, taskID); got != store.TaskStatusAssigned {
 		t.Fatalf("task status = %q after 10s of bus uptime, want assigned (deferred)", got)
@@ -149,6 +152,7 @@ func TestReapStaleAssignedTasks_DeferredWhileBusDown(t *testing.T) {
 	s, _ := newLivenessScheduler(t, st, busUpAt(-1))
 	taskID, _ := seedAssignedTask(t, st, time.Hour)
 
+	ingestCaughtUp(s)
 	s.reapStaleAssignedTasks(t.Context())
 
 	if got := taskStatus(t, st, taskID); got != store.TaskStatusAssigned {
@@ -161,6 +165,7 @@ func TestSweepStaleWorkers_NoSourceKeepsTodaysBehaviour(t *testing.T) {
 	s, logs := newLivenessScheduler(t, st, nil)
 	workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 40*time.Second)
 
+	ingestCaughtUp(s)
 	s.sweepStaleWorkers(t.Context())
 
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
@@ -218,6 +223,7 @@ func TestSweepOnce_DeferralLoggedOncePerTick(t *testing.T) {
 	workerID, workerTask, _ := seedStaleWorkerWithTask(t, st, 40*time.Second)
 	assignedTask, _ := seedAssignedTask(t, st, time.Hour)
 
+	ingestCaughtUp(s)
 	s.sweepOnce(t.Context())
 
 	if n := strings.Count(logs.String(), "liveness sweep deferred"); n != 1 {
@@ -318,6 +324,7 @@ func TestLivenessDeferred_CountsFromRunStart(t *testing.T) {
 		})
 	}
 
+	ingestCaughtUp(s)
 	s.sweepStaleWorkers(t.Context())
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Errorf("worker = %s right after Run started, want online (deferred)", got)
