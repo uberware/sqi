@@ -485,6 +485,10 @@ type Scheduler struct {
 	// ingestLoop is the marker loop's state between ticks.
 	ingestLoop ingestLoopState
 
+	// interrupt is the newest bus interruption the trackers were held for;
+	// see [Scheduler.checkBusInterruption].
+	interrupt interruptSeen
+
 	// workerSeq is the newest stream sequence the worker consumer has had a
 	// first delivery of; see [Scheduler.noteWorkerDelivery].
 	workerSeq firstDeliverySeq

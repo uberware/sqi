@@ -35,8 +35,26 @@ type ingestLoopState struct {
 	// publishFailing is set while marker publishes fail, so an outage is
 	// logged once.
 	publishFailing bool
-	// lastInterrupt is the newest bus interruption already held for.
-	lastInterrupt time.Time
+}
+
+// interruptSeen is the newest bus interruption the trackers have been held
+// for. The marker loop, the heartbeat sweep and the reap all read the
+// interruption time, so it is guarded.
+type interruptSeen struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+// claim reports whether at is a bus interruption newer than any claimed
+// before, and records it.
+func (i *interruptSeen) claim(at time.Time) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if at.IsZero() || !at.After(i.last) {
+		return false
+	}
+	i.last = at
+	return true
 }
 
 // runIngestMarkers publishes an ingest marker into SQI_WORKER and SQI_TASK
@@ -94,16 +112,18 @@ func (s *Scheduler) ingestMarkerTick(ctx context.Context) {
 
 // checkBusInterruption holds each tracker for its consumer's AckWait from the
 // latest bus interruption, once per interruption: a message the broker sent
-// while a consumer's pull was lost is redelivered only after that long.
+// while a consumer's pull was lost is redelivered only after that long. The
+// marker loop calls it every tick, and the heartbeat sweep and the reap call
+// it before reading the trackers, so a check landing between an interruption
+// and the next tick is held too. Safe for concurrent use.
 func (s *Scheduler) checkBusInterruption(now time.Time) {
 	if s.cfg.BusInterruptedAt == nil {
 		return
 	}
 	at := s.cfg.BusInterruptedAt()
-	if at.IsZero() || !at.After(s.ingestLoop.lastInterrupt) {
+	if !s.interrupt.claim(at) {
 		return
 	}
-	s.ingestLoop.lastInterrupt = at
 	// A hold must start no later than now; an interruption recorded after
 	// now was read starts at now.
 	if at.After(now) {

@@ -25,9 +25,11 @@ type heldBackLog struct {
 // reached the store, so judging by now would take a live worker offline
 // whenever the consumer falls behind. It returns false before the worker
 // consumer's first marker, when nothing it has applied can be trusted yet.
-// effT is the task consumer's effective time at now, which
-// [Scheduler.ingestHoldsWorker] also needs.
+// A bus interruption not yet held for is held for first. effT is the task
+// consumer's effective time at now, which [Scheduler.ingestHoldsWorker] also
+// needs.
 func (s *Scheduler) workerSweepCutoff(ctx context.Context, now time.Time) (cutoff, effT time.Time, ok bool) {
+	s.checkBusInterruption(now)
 	effW := s.ingestWorker.effective(now)
 	effT = s.ingestTask.effective(now)
 	s.logIngestHeldBack(ctx, now, effW, effT)
@@ -85,8 +87,10 @@ func (s *Scheduler) ingestHoldsWorker(w store.Worker, effT time.Time, pending in
 // judges by, AssignedTaskTimeout before the time up to which the task-status
 // consumer has applied its stream, and the tasks a queued status report still
 // names, which the reap leaves alone. It returns false before the task
-// consumer's first marker.
+// consumer's first marker. A bus interruption not yet held for is held for
+// first.
 func (s *Scheduler) assignedReapCutoff(now time.Time) (cutoff time.Time, skip map[string]bool, ok bool) {
+	s.checkBusInterruption(now)
 	effT := s.ingestTask.effective(now)
 	if effT.IsZero() {
 		return time.Time{}, nil, false

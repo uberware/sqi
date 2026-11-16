@@ -196,6 +196,43 @@ func TestSweep_HeldAfterHeartbeatsExpireUnread(t *testing.T) {
 	}
 }
 
+// TestSweepAndReap_HeldByAnInterruptionTheMarkerLoopHasNotSeen: a bus
+// interruption is read when the sweep and the reap compute their cutoffs,
+// not only on the marker loop's next tick, so a sweep tick landing just after
+// one is held at the interruption time.
+func TestSweepAndReap_HeldByAnInterruptionTheMarkerLoopHasNotSeen(t *testing.T) {
+	st := newCheckedFake(t)
+	workerID, _, t0 := seedIngestSweepWorker(t, st)
+	assignedID, _ := seedAssignedTask(t, st, time.Hour)
+	tk, err := st.GetTask(t.Context(), assignedID)
+	if err != nil || tk.AssignedAt == nil {
+		t.Fatalf("GetTask = (%+v, %v), want an assigned_at", tk, err)
+	}
+	a0 := *tk.AssignedAt
+
+	s, clock, _ := newIngestSweepScheduler(t, st, t0)
+	interrupted := t0.Add(ingestSweepTimeout - time.Second)
+	s.cfg.BusInterruptedAt = func() time.Time { return interrupted }
+	s.ingestWorker.marker(t0.Add(ingestSweepTimeout + time.Second))
+	clock.t = t0.Add(ingestSweepTimeout + 2*time.Second)
+	s.ingestTask.marker(clock.t)
+
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Errorf("worker status = %q a moment after an interruption, want online (held at the interruption)", got)
+	}
+
+	s2, clock2, _ := newIngestSweepScheduler(t, st, a0)
+	interrupted = a0.Add(ingestSweepTimeout - time.Second)
+	s2.cfg.BusInterruptedAt = func() time.Time { return interrupted }
+	s2.ingestTask.marker(a0.Add(ingestSweepTimeout + time.Second))
+	clock2.t = a0.Add(ingestSweepTimeout + 2*time.Second)
+	s2.reapStaleAssignedTasks(t.Context())
+	if got := taskStatus(t, st, assignedID); got != store.TaskStatusAssigned {
+		t.Errorf("assigned task status = %q a moment after an interruption, want assigned (held at the interruption)", got)
+	}
+}
+
 func TestSweep_PromotedStandbyJudgesNothingBeforeFirstMarkers(t *testing.T) {
 	st := newCheckedFake(t)
 	workerID, taskID, t0 := seedIngestSweepWorker(t, st)
