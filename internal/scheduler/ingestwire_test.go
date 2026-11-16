@@ -266,6 +266,11 @@ func TestRunIngestMarkers_PublishFailureDoesNotAdvance(t *testing.T) {
 	s := newIngestScheduler(DefaultConfig(), b, &logs)
 	clock := &testClock{t: time.Now()}
 	s.now = clock.now
+	// A marker handled before the outage: the failed publishes must leave it
+	// the effective time, neither advanced nor held back.
+	handled := clock.t.Add(-time.Second)
+	s.ingestWorker.marker(handled)
+	s.ingestTask.marker(handled)
 
 	// The loop publishes as soon as it starts.
 	ctx, cancel := context.WithCancel(t.Context())
@@ -284,16 +289,19 @@ func TestRunIngestMarkers_PublishFailureDoesNotAdvance(t *testing.T) {
 		t.Fatal("runIngestMarkers published no marker at start")
 	}
 
+	// The loop's own ticker may have fired once more under a loaded host, so
+	// count only the ticks driven here.
+	before := b.published()
 	for range 4 {
 		clock.t = clock.t.Add(ingestMarkerInterval)
 		s.ingestMarkerTick(t.Context())
 	}
-	if got := b.published(); got != 5 {
-		t.Errorf("published %d times, want 5", got)
+	if got := b.published() - before; got != 4 {
+		t.Errorf("published %d times in 4 ticks, want 4", got)
 	}
 	for name, tr := range map[string]*ingestTracker{"worker": s.ingestWorker, "task": s.ingestTask} {
-		if got := tr.effective(clock.t); !got.IsZero() {
-			t.Errorf("%s tracker effective = %v after failed publishes, want zero", name, got)
+		if got := tr.effective(clock.t); !got.Equal(handled) {
+			t.Errorf("%s tracker effective = %v after failed publishes, want %v (the marker handled before)", name, got, handled)
 		}
 	}
 	if n := strings.Count(logs.String(), "broker unreachable"); n != 1 {
