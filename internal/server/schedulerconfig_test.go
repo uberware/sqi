@@ -80,6 +80,30 @@ func TestSchedulerConfig_WiresTheClientsBusUpSince(t *testing.T) {
 	}
 }
 
+// TestSchedulerConfig_WiresTheClientsInterruptedAt pins that the ingest
+// trackers' interruption hold is fed by the server's bus client, and that a
+// caller-supplied source is not overwritten.
+func TestSchedulerConfig_WiresTheClientsInterruptedAt(t *testing.T) {
+	client := &bus.Client{}
+	got := schedulerConfig(DefaultConfig(), client)
+	if got.BusInterruptedAt == nil {
+		t.Fatal("BusInterruptedAt is nil; the scheduler would never hold its ingest trackers after an interruption")
+	}
+	if !got.BusInterruptedAt().IsZero() {
+		t.Error("a client that was never interrupted must report the zero time")
+	}
+	if schedulerConfig(DefaultConfig(), nil).BusInterruptedAt != nil {
+		t.Error("BusInterruptedAt set with no bus client")
+	}
+
+	marker := time.Unix(1, 0)
+	cfg := DefaultConfig()
+	cfg.Scheduler.BusInterruptedAt = func() time.Time { return marker }
+	if got := schedulerConfig(cfg, client).BusInterruptedAt(); !got.Equal(marker) {
+		t.Errorf("BusInterruptedAt = %v, want the caller's source (%v) kept", got, marker)
+	}
+}
+
 // TestSchedulerConfig_GraceCoversAWorkersRedial pins the grace the
 // server wires. Workers reconnect on their own backoff, independent of the
 // server's, so after a long outage a live worker can redial that much later

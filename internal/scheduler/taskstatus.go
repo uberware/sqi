@@ -75,6 +75,10 @@ func (s *Scheduler) startTaskStatusConsumer(ctx context.Context) error {
 // unauthenticated and non-loopback.
 func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
 	ctx := s.ctx
+	if msg.Subject() == bus.SubjectMarkerTask {
+		s.handleIngestMarker(ctx, msg)
+		return
+	}
 
 	var m protocol.TaskStatusMsg
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {

@@ -77,6 +77,16 @@ type Metrics struct {
 	// Updated by the scheduler after each worker-registry or sweep event.
 	SchedulerIdleWorkers *prometheus.GaugeVec
 
+	// SchedulerIngestLagSeconds is how far the newest ingest marker each
+	// scheduler consumer has processed trails now, by consumer (worker,
+	// task); 0 before the first marker.
+	SchedulerIngestLagSeconds *prometheus.GaugeVec
+
+	// SchedulerIngestPending is the number of messages each scheduler
+	// consumer failed to apply and will receive again, by consumer (worker,
+	// task).
+	SchedulerIngestPending *prometheus.GaugeVec
+
 	// ── Workers ───────────────────────────────────────────────────────────────
 
 	// WorkersTotal is the current number of registered workers, partitioned by
@@ -273,6 +283,26 @@ func New() *Metrics {
 			[]string{"farm"},
 		),
 
+		SchedulerIngestLagSeconds: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "ingest_lag_seconds",
+				Help:      "How far the newest ingest marker each scheduler consumer has processed trails now, partitioned by consumer (worker, task).",
+			},
+			[]string{"consumer"},
+		),
+
+		SchedulerIngestPending: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "ingest_pending",
+				Help:      "Messages each scheduler consumer failed to apply and will receive again, partitioned by consumer (worker, task).",
+			},
+			[]string{"consumer"},
+		),
+
 		WorkersTotal: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: "sqi",
@@ -461,6 +491,8 @@ func New() *Metrics {
 		m.SchedulerCancelsResent,
 		m.SchedulerAssignmentDuration,
 		m.SchedulerIdleWorkers,
+		m.SchedulerIngestLagSeconds,
+		m.SchedulerIngestPending,
 		m.WorkersTotal,
 		m.NATSPublishedTotal,
 		m.NATSConsumedTotal,
@@ -481,6 +513,11 @@ func New() *Metrics {
 	// defined before the first resend.
 	for _, cause := range []string{"closed", "unknown"} {
 		m.SchedulerCancelsResent.WithLabelValues(cause)
+	}
+	// Likewise both consumers, so each series exists before the first sweep.
+	for _, consumer := range []string{"worker", "task"} {
+		m.SchedulerIngestLagSeconds.WithLabelValues(consumer)
+		m.SchedulerIngestPending.WithLabelValues(consumer)
 	}
 
 	return m

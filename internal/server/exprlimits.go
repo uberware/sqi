@@ -56,6 +56,9 @@ func schedulerConfig(cfg Config, client *bus.Client) scheduler.Config {
 	if sched.BusUpSince == nil && client != nil {
 		sched.BusUpSince = client.BusUpSince
 	}
+	if sched.BusInterruptedAt == nil && client != nil {
+		sched.BusInterruptedAt = client.InterruptedAt
+	}
 	if sched.BusReconnectGrace <= 0 {
 		sched.BusReconnectGrace = scheduler.ReconnectGrace(sched.WorkerTimeout)
 	}

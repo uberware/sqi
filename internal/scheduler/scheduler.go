@@ -168,6 +168,14 @@ type Config struct {
 	// store holds. Not a tuning knob; the server wires it from its bus client.
 	BusUpSince func() time.Time
 
+	// BusInterruptedAt reports the latest moment the bus connection or one of
+	// the scheduler's consumers was interrupted, and the zero time if none has
+	// been. Messages the broker sent during an interruption are redelivered
+	// only after the consumer's AckWait, so the ingest trackers are held for
+	// that long after it. Nil means no interruption is ever seen. Not a tuning
+	// knob; the server wires it from its bus client.
+	BusInterruptedAt func() time.Time
+
 	// BusReconnectGrace is how long the bus must have been up before the
 	// liveness sweeps act on heartbeats again. It must cover the time a live
 	// worker needs to notice the outage ended, redial and heartbeat, which is
@@ -314,6 +322,7 @@ type busClient interface {
 	SubscribeWorkerDiag(handler func(subject string, data []byte)) (*nats.Subscription, error)
 	SubscribeLease(handler func(workerID, queueID string, data []byte) []byte) (*nats.Subscription, error)
 	RequestWorkerControl(ctx context.Context, workerID string, data []byte) ([]byte, error)
+	PublishIngestMarkers(ctx context.Context) error
 }
 
 // Scheduler owns the assignment loop, worker registry, and heartbeat sweep.
@@ -463,6 +472,17 @@ type Scheduler struct {
 	// subscription is running, by [Scheduler.StartDiag] or by Run.
 	diagMu      sync.Mutex
 	diagStarted bool
+
+	// ingestWorker and ingestTask track how far the worker and task-status
+	// consumers have applied their streams; see ingest.go and ingestwire.go.
+	ingestWorker *ingestTracker
+	ingestTask   *ingestTracker
+
+	// ingestLoop is the marker loop's state between ticks.
+	ingestLoop ingestLoopState
+
+	// now is the marker loop's clock. Overridable in tests.
+	now func() time.Time
 }
 
 // deferralLog is the state behind [Scheduler.logLivenessDeferred].
@@ -557,6 +577,9 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		instanceRefusalWarnEvery: 5 * time.Minute,
 		retryWakeTimers:          make(map[*time.Timer]struct{}),
 		reconciler:               rec,
+		ingestWorker:             newIngestTracker(bus.WorkerStreamMaxAge, bus.WorkerConsumerMaxDeliver),
+		ingestTask:               newIngestTracker(bus.TaskStreamMaxAge, bus.TaskStatusConsumerMaxDeliver),
+		now:                      time.Now,
 		// ctx is replaced with the derived cancellable context in Run. The
 		// background fallback keeps NATS callbacks from dereferencing a nil
 		// context if invoked before Run (e.g. in a partial test setup).
@@ -664,6 +687,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	// ── Heartbeat sweep ───────────────────────────────────────────
 	s.wg.Go(func() {
 		s.runHeartbeatSweep(ctx)
+	})
+
+	// ── Ingest markers ────────────────────────────────────────────
+	s.wg.Go(func() {
+		s.runIngestMarkers(ctx)
 	})
 
 	// Seed WorkersTotal gauge with current DB state so it is non-zero on
@@ -938,6 +966,10 @@ func (s *Scheduler) buildUsageContext(
 func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 	ctx := s.ctx
 	subject := msg.Subject()
+	if subject == bus.SubjectMarkerWorker {
+		s.handleIngestMarker(ctx, msg)
+		return
+	}
 
 	workerID, _, ok := bus.ParseWorkerSubject(subject)
 	if !ok {
@@ -1568,6 +1600,7 @@ func (s *Scheduler) sweepOnce(ctx context.Context) {
 		s.refreshQueueDepthGauge,
 		s.refreshIdleWorkerGauge,
 		s.refreshUsageClaimGauge,
+		s.refreshIngestGauges,
 	} {
 		if s.deposed() {
 			return
@@ -2118,7 +2151,9 @@ func (s *Scheduler) ackMsg(ctx context.Context, msg jetstream.Msg) {
 			slog.String("subject", msg.Subject()),
 			slog.Any("error", err),
 		)
+		return
 	}
+	s.recordIngestAck(msg)
 }
 
 // nakMsg negatively-acknowledges msg, asking for it to be redelivered after
@@ -2132,7 +2167,8 @@ func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 	var delivered uint64
-	if md, err := msg.Metadata(); err == nil {
+	md, mdErr := msg.Metadata()
+	if mdErr == nil {
 		delivered = md.NumDelivered
 	}
 	if err := msg.NakWithDelay(nakDelay(delivered)); err != nil {
@@ -2141,6 +2177,10 @@ func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg) {
 			slog.String("subject", msg.Subject()),
 			slog.Any("error", err),
 		)
+		return
+	}
+	if mdErr == nil {
+		s.recordIngestNak(msg, md)
 	}
 }
 

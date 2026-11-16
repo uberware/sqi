@@ -62,6 +62,8 @@ func (*stubBus) RequestWorkerControl(context.Context, string, []byte) ([]byte, e
 	return nil, nats.ErrNoResponders
 }
 
+func (*stubBus) PublishIngestMarkers(context.Context) error { return nil }
+
 func (b *stubBus) PublishTaskCancel(_ context.Context, workerID string, data []byte) error {
 	var m protocol.TaskCancelMsg
 	if err := json.Unmarshal(data, &m); err != nil || workerID == "" {
