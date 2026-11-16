@@ -110,13 +110,23 @@ export async function fetchDeleteJob(id: string): Promise<void> {
   await apiFetch(`/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
-/** Resume a paused job via `PATCH /jobs/{id}` with `{ action: "resume" }`. */
-export function fetchResumeJob(id: string): Promise<Job> {
+/** Send a pause or resume via `PATCH /jobs/{id}` with `{ action }`. */
+function patchJobAction(id: string, action: 'pause' | 'resume'): Promise<Job> {
   return apiFetch<Job>(`/jobs/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'resume' }),
+    body: JSON.stringify({ action }),
   })
+}
+
+/** Pause a pending or running job via `PATCH /jobs/{id}` with `{ action: "pause" }`. */
+export function fetchPauseJob(id: string): Promise<Job> {
+  return patchJobAction(id, 'pause')
+}
+
+/** Resume a paused job via `PATCH /jobs/{id}` with `{ action: "resume" }`. */
+export function fetchResumeJob(id: string): Promise<Job> {
+  return patchJobAction(id, 'resume')
 }
 
 /**
@@ -212,6 +222,17 @@ export function useDeleteJob() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => fetchDeleteJob(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
+    },
+  })
+}
+
+/** Pause a pending or running job. Invalidates all job queries on success. */
+export function usePauseJob() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchPauseJob(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
     },

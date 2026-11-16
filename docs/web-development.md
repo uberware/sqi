@@ -387,6 +387,20 @@ shows a **Retry M** button when retryable jobs are selected alongside (or
 instead of) cancelable ones. The select-all header includes retryable jobs in
 its scope.
 
+The bulk toolbar also offers **Pause M** (selected `pending` or `running` jobs)
+and **Resume M** (selected `paused` jobs), backed by `PATCH /api/v1/jobs/{id}`
+with `{ "action": "pause" }` or `{ "action": "resume" }`. The statuses each job
+action applies to live in `src/lib/jobStatus.ts`; the pause and resume sets
+mirror `resolveAction` in `internal/api/jobs.go`.
+
+Per-row and bulk actions on `JobList` and `WorkerList` run through the
+`useBulkAction` hook (`src/hooks/useBulkAction.ts`). It runs the action for
+each selected item in turn, tracks which rows are busy, and keeps one failure
+message per action, such as "Cancel failed for 2 of 5 jobs: …", that a later
+success in the same batch cannot clear. Do not drive a bulk action's error banner from
+a mutation's `isError`: the next success resets it and hides the failure. Use
+the hook for any new list page with bulk actions.
+
 The `jobs` subject carries a synthetic `status: "removed"` event when a job is
 hard-deleted — either by a per-row or bulk **Delete** action in `JobList`, or
 automatically by the server's retention sweep. `JobList` handles this by

@@ -15,6 +15,7 @@ import CopyableId from '@/components/CopyableId'
 import RefreshControls from '@/components/RefreshControls'
 import { useListWorkers, queryKeys } from '@/api/queries'
 import { useDisableWorker, useEnableWorker, useRemoveWorker } from '@/api/mutations'
+import { useBulkAction } from '@/hooks/useBulkAction'
 import { useListFilters } from '@/hooks/useListFilters'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { useWebSocket } from '@/ws/context'
@@ -28,6 +29,10 @@ import styles from './WorkerList.module.css'
 
 const WORKER_STATUSES = new Set(['online', 'offline', 'disabled'])
 const WORKER_SORT_FIELDS = new Set(['hostname', 'status', 'registered_at', 'last_heartbeat_at'])
+
+/** Worker actions that report their failures in a banner. */
+type WorkerAction = 'Disable' | 'Enable' | 'Remove'
+const WORKER_ACTIONS: readonly WorkerAction[] = ['Disable', 'Enable', 'Remove']
 
 const STATUS_FILTERS: { label: string; value: WorkerStatus | '' }[] = [
   { label: 'All', value: '' },
@@ -199,19 +204,20 @@ export default function WorkerList() {
 
   // ── Enable/disable/remove mutations ─────────────────────────────
   const queryClient = useQueryClient()
-  const disableWorker = useDisableWorker()
-  const enableWorker = useEnableWorker()
-  const removeWorker = useRemoveWorker()
-  const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set())
+  const { mutateAsync: disableWorker } = useDisableWorker()
+  const { mutateAsync: enableWorker } = useEnableWorker()
+  const { mutateAsync: removeWorker } = useRemoveWorker()
+  const action = useBulkAction<WorkerAction>('workers')
 
   // ── Multi-select state ──────────────────────────────────────────
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   // Eligible subsets for each bulk action (ineligible selections are skipped).
-  const disableableIds = new Set(workers.filter((w) => w.status === 'online').map((w) => w.id))
-  const removableIds = new Set(workers.filter((w) => w.removable).map((w) => w.id))
-  const selectedDisableable = [...selectedIds].filter((id) => disableableIds.has(id))
-  const selectedRemovable = [...selectedIds].filter((id) => removableIds.has(id))
+  // In page order, as on the job list.
+  const selectedWhere = (pred: (worker: Worker) => boolean) =>
+    workers.filter((w) => selectedIds.has(w.id) && pred(w)).map((w) => w.id)
+  const selectedDisableable = selectedWhere((w) => w.status === 'online')
+  const selectedRemovable = selectedWhere((w) => w.removable)
 
   const toggleRow = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -237,79 +243,10 @@ export default function WorkerList() {
     })
   }, [])
 
-  const handleDisable = useCallback(
-    async (id: string) => {
-      enableWorker.reset() // clear any stale enable-error before starting a disable
-      setTogglingIds((prev) => new Set(prev).add(id))
-      try {
-        await disableWorker.mutateAsync(id)
-      } catch {
-        // Error visible via disableWorker.isError
-      } finally {
-        setTogglingIds((prev) => {
-          const next = new Set(prev)
-          next.delete(id)
-          return next
-        })
-      }
-    },
-    [disableWorker, enableWorker],
-  )
-
-  const handleEnable = useCallback(
-    async (id: string) => {
-      disableWorker.reset() // clear any stale disable-error before starting an enable
-      setTogglingIds((prev) => new Set(prev).add(id))
-      try {
-        await enableWorker.mutateAsync(id)
-      } catch {
-        // Error visible via enableWorker.isError
-      } finally {
-        setTogglingIds((prev) => {
-          const next = new Set(prev)
-          next.delete(id)
-          return next
-        })
-      }
-    },
-    [enableWorker, disableWorker],
-  )
-
-  const handleRemove = useCallback(
-    async (id: string) => {
-      setTogglingIds((prev) => new Set(prev).add(id))
-      try {
-        await removeWorker.mutateAsync(id)
-      } catch {
-        // Error visible via removeWorker.isError; do not re-throw so a bulk
-        // remove continues past individual failures (e.g. a 409 race).
-      } finally {
-        setTogglingIds((prev) => {
-          const next = new Set(prev)
-          next.delete(id)
-          return next
-        })
-        deselect(id)
-      }
-    },
-    [removeWorker, deselect],
-  )
-
-  // ── Bulk actions ────────────────────────────────────────────────
-  // Each applies only to its eligible subset; ineligible selections are
-  // silently skipped. Runs sequentially so one failure doesn't abort the rest.
-  const handleBulkDisable = useCallback(async () => {
-    for (const id of selectedDisableable) {
-      await handleDisable(id)
-      deselect(id)
-    }
-  }, [selectedDisableable, handleDisable, deselect])
-
-  const handleBulkRemove = useCallback(async () => {
-    for (const id of selectedRemovable) {
-      await handleRemove(id)
-    }
-  }, [selectedRemovable, handleRemove])
+  // A per-row Disable or Enable leaves the row selected; a bulk action and a
+  // remove deselect each worker as it finishes.
+  const thenDeselect = (run: (id: string) => Promise<unknown>) => (id: string) =>
+    run(id).finally(() => deselect(id))
 
   // ── WS-driven worker updates ────────────────────────────────────
   useWebSocket('workers', (payload) => {
@@ -392,14 +329,9 @@ export default function WorkerList() {
           Failed to load workers: {error instanceof Error ? error.message : 'Unknown error'}
         </ErrorBanner>
       )}
-      {(disableWorker.isError || enableWorker.isError || removeWorker.isError) && (
-        <ErrorBanner>
-          Action failed:{' '}
-          {(disableWorker.error ?? enableWorker.error ?? removeWorker.error) instanceof Error
-            ? ((disableWorker.error ?? enableWorker.error ?? removeWorker.error) as Error).message
-            : 'Unknown error'}
-        </ErrorBanner>
-      )}
+      {[...action.errors].map(([verb, message]) => (
+        <ErrorBanner key={verb}>{message}</ErrorBanner>
+      ))}
 
       {/* Workers table */}
       <div className={styles.tableWrap}>
@@ -437,7 +369,7 @@ export default function WorkerList() {
               </tr>
             )}
             {workers.map((worker) => {
-              const isToggling = togglingIds.has(worker.id)
+              const isToggling = WORKER_ACTIONS.some((verb) => action.isBusy(verb, worker.id))
               const isSelected = selectedIds.has(worker.id)
               return (
                 <tr key={worker.id} className={isSelected ? styles.rowSelected : undefined}>
@@ -485,7 +417,7 @@ export default function WorkerList() {
                       <IconButton
                         icon={<Pause />}
                         className={`${styles.toggleBtn} ${styles['toggleBtn--disable']}`}
-                        onClick={() => void handleDisable(worker.id)}
+                        onClick={() => void action.run('Disable', [worker.id], disableWorker)}
                         busy={isToggling}
                         title="Disable"
                         label={`Disable worker ${worker.name || worker.hostname}`}
@@ -495,7 +427,7 @@ export default function WorkerList() {
                       <IconButton
                         icon={<Play />}
                         className={`${styles.toggleBtn} ${styles['toggleBtn--enable']}`}
-                        onClick={() => void handleEnable(worker.id)}
+                        onClick={() => void action.run('Enable', [worker.id], enableWorker)}
                         busy={isToggling}
                         title="Enable"
                         label={`Enable worker ${worker.name || worker.hostname}`}
@@ -505,7 +437,9 @@ export default function WorkerList() {
                       <IconButton
                         icon={<Trash />}
                         className={`${styles.toggleBtn} ${styles['toggleBtn--remove']}`}
-                        onClick={() => void handleRemove(worker.id)}
+                        onClick={() =>
+                          void action.run('Remove', [worker.id], thenDeselect(removeWorker))
+                        }
                         busy={isToggling}
                         title="Remove"
                         label={`Remove worker ${worker.name || worker.hostname}`}
@@ -539,8 +473,10 @@ export default function WorkerList() {
         <BulkBar count={selectedIds.size} onClear={() => setSelectedIds(new Set())}>
           <button
             className={`${styles.bulkBtn} ${styles['bulkBtn--disable']}`}
-            onClick={() => void handleBulkDisable()}
-            disabled={selectedDisableable.length === 0 || disableWorker.isPending}
+            onClick={() =>
+              void action.run('Disable', selectedDisableable, thenDeselect(disableWorker))
+            }
+            disabled={selectedDisableable.length === 0 || action.isRunning('Disable')}
             type="button"
             aria-label={`Disable selected (${selectedDisableable.length})`}
           >
@@ -549,8 +485,8 @@ export default function WorkerList() {
           </button>
           <button
             className={`${styles.bulkBtn} ${styles['bulkBtn--remove']}`}
-            onClick={() => void handleBulkRemove()}
-            disabled={selectedRemovable.length === 0 || removeWorker.isPending}
+            onClick={() => void action.run('Remove', selectedRemovable, thenDeselect(removeWorker))}
+            disabled={selectedRemovable.length === 0 || action.isRunning('Remove')}
             type="button"
             aria-label={`Remove selected (${selectedRemovable.length})`}
           >

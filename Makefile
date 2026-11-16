@@ -522,7 +522,7 @@ docker_build_staged = ctx=$$(mktemp -d) && trap 'rm -rf "$$ctx"' EXIT && \
 # so a local run has passed only when it prints six
 # `--- PASS: TestNATSCluster_` lines.
 NATS_IMAGE_FLOOR   := nats:2.14.9@sha256:2721e37c651cb38039c583b0ee1b7248155e607ccaabfea19b38eb95a86fc3ff
-NATS_IMAGE_CURRENT := nats:2.15.2@sha256:991242c32d2738ffd358fd6614dd96c735017b4b3b34bfdb2c52a072d66db211
+NATS_IMAGE_CURRENT := nats:2.15.3@sha256:9d85d87039bfba33baf48de4da32a2ee572bcd6c94f6365d05733a672de49253
 NATS_IMAGE         ?= $(NATS_IMAGE_CURRENT)
 
 .PHONY: test-nats-cluster
