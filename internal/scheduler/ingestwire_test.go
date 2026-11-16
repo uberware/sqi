@@ -5,16 +5,17 @@ package scheduler
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"maps"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
@@ -107,24 +108,19 @@ func TestHandleTaskStatusMessage_MarkerAdvancesTracker(t *testing.T) {
 	}
 }
 
-func TestNakMsg_RecordsPendingKeys(t *testing.T) {
-	var logs bytes.Buffer
-	s := newIngestScheduler(DefaultConfig(), &recordBus{}, &logs)
+func TestNakMsg_RecordsPendingRef(t *testing.T) {
+	s := newIngestScheduler(DefaultConfig(), &recordBus{}, &bytes.Buffer{})
 	now := time.Now().UTC()
-	body, err := json.Marshal(map[string]string{"task_id": "t1", "attempt_id": "a1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	msg := &fakeJSMsg{subject: bus.TaskStatusSubject("w1", "j1"), data: body, natsSeq: 7, stamp: now, delivered: 1}
+	msg := newIngestMsg(s.ingestTask, &fakeJSMsg{subject: bus.TaskStatusSubject("w1", "j1"), natsSeq: 7, stamp: now, delivered: 1})
 
-	s.nakMsg(t.Context(), msg)
+	s.nakMsg(t.Context(), msg, ingestRef{worker: "w1", task: "t1", attempt: "a1"})
 
 	got := s.ingestTask.pending(now)
 	if !got.workers["w1"] || !got.tasks["t1"] || !got.attempts["a1"] {
 		t.Errorf("pending after the nak = %+v, want worker w1, task t1 and attempt a1", got)
 	}
 	if n := s.ingestWorker.pendingCount(now); n != 0 {
-		t.Errorf("ingestWorker holds %d pending messages, want 0 (a task status belongs to ingestTask)", n)
+		t.Errorf("ingestWorker holds %d pending messages, want 0 (the message is bound to ingestTask)", n)
 	}
 
 	s.ackMsg(t.Context(), msg)
@@ -133,81 +129,122 @@ func TestNakMsg_RecordsPendingKeys(t *testing.T) {
 	}
 }
 
+// TestNakMsg_UnboundMessageChangesNoTracker: a message no tracked consumer
+// received (a log chunk) is nak'd and acked without touching a tracker.
+func TestNakMsg_UnboundMessageChangesNoTracker(t *testing.T) {
+	s := newIngestScheduler(DefaultConfig(), &recordBus{}, &bytes.Buffer{})
+	now := time.Now().UTC()
+	msg := &fakeJSMsg{subject: bus.TaskLogsSubject("w1", "t1"), natsSeq: 7, stamp: now, delivered: 1}
+
+	s.nakMsg(t.Context(), msg, ingestRef{worker: "w1"})
+
+	if !msg.nacked {
+		t.Fatal("message not nak'd")
+	}
+	if w, k := s.ingestWorker.pendingCount(now), s.ingestTask.pendingCount(now); w != 0 || k != 0 {
+		t.Errorf("pending worker = %d, task = %d, want 0 and 0", w, k)
+	}
+}
+
 // TestNakMsg_FailedNakStillPending: a message whose nak did not reach the
-// broker is still unapplied and comes back after AckWait, so its keys are
+// broker is still unapplied and comes back after AckWait, so what it names is
 // recorded pending all the same.
 func TestNakMsg_FailedNakStillPending(t *testing.T) {
 	s := newIngestScheduler(DefaultConfig(), &recordBus{}, &bytes.Buffer{})
 	now := time.Now().UTC()
-	msg := &fakeJSMsg{
+	msg := newIngestMsg(s.ingestWorker, &fakeJSMsg{
 		subject: bus.WorkerHeartbeatSubject("w1"), natsSeq: 5, stamp: now, delivered: 1,
 		nakErr: errors.New("connection closed"),
-	}
+	})
 
-	s.nakMsg(t.Context(), msg)
+	s.nakMsg(t.Context(), msg, ingestRef{worker: "w1"})
 
 	if !s.ingestWorker.pending(now).workers["w1"] {
 		t.Error("worker w1 not pending after a nak that failed")
 	}
 }
 
-func TestIngestKeys(t *testing.T) {
-	statusBody := func(v any) []byte {
-		b, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return b
-	}
-	for _, tc := range []struct {
-		name    string
-		subject string
-		data    []byte
-		want    ingestRef
-	}{
-		{"heartbeat", bus.WorkerHeartbeatSubject("w1"), []byte(`{}`), ingestRef{worker: "w1"}},
-		{"register", bus.WorkerRegisterSubject("w2"), nil, ingestRef{worker: "w2"}},
-		{"deregister", bus.WorkerDeregisterSubject("w3"), nil, ingestRef{worker: "w3"}},
-		{
-			"task status", bus.TaskStatusSubject("w1", "j1"),
-			statusBody(protocol.TaskStatusMsg{TaskID: "t1", AttemptID: "a1"}),
-			ingestRef{worker: "w1", task: "t1", attempt: "a1"},
-		},
-		{
-			"task status without an attempt", bus.TaskStatusSubject("w1", "j1"),
-			statusBody(protocol.TaskStatusMsg{TaskID: "t1"}),
-			ingestRef{worker: "w1", task: "t1"},
-		},
-		{"undecodable task status", bus.TaskStatusSubject("w1", "j1"), []byte("{not json"), ingestRef{worker: "w1"}},
-		{"marker", bus.SubjectMarkerTask, nil, ingestRef{}},
-		{"log chunk", bus.TaskLogsSubject("w1", "t1"), nil, ingestRef{}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := ingestKeys(&fakeJSMsg{subject: tc.subject, data: tc.data})
-			if got != tc.want {
-				t.Errorf("ingestKeys = %v, want %v", got, tc.want)
-			}
-		})
-	}
+// failingIngestStore fails the writes a worker or task status message makes
+// first, so its handler naks it.
+type failingIngestStore struct {
+	store.Store
 }
 
-func TestTrackerFor(t *testing.T) {
-	s := newIngestScheduler(DefaultConfig(), &recordBus{}, &bytes.Buffer{})
+var errIngestStore = errors.New("store unavailable")
+
+func (failingIngestStore) RegisterWorker(context.Context, store.Worker) (store.Worker, store.Registration, error) {
+	return store.Worker{}, store.Registration{}, errIngestStore
+}
+
+func (failingIngestStore) UpdateWorkerHeartbeat(context.Context, string, time.Time, *time.Time) (store.HeartbeatOutcome, error) {
+	return store.HeartbeatOutcome{}, errIngestStore
+}
+
+func (failingIngestStore) GetTaskAttempt(context.Context, string) (store.TaskAttempt, error) {
+	return store.TaskAttempt{}, errIngestStore
+}
+
+// TestTrackedConsumers_NakRecordsWhatTheMessageNames: each tracked consumer
+// records a message its handler naks in its own tracker, naming the
+// subject's worker and, for a task status, the body's task and attempt.
+func TestTrackedConsumers_NakRecordsWhatTheMessageNames(t *testing.T) {
+	now := time.Now().UTC()
 	for _, tc := range []struct {
-		subject string
-		want    *ingestTracker
+		name   string
+		msg    *fakeJSMsg
+		task   bool
+		want   pendingNames
+		handle func(*Scheduler, *fakeJSMsg)
 	}{
-		{bus.WorkerHeartbeatSubject("w1"), s.ingestWorker},
-		{bus.WorkerRegisterSubject("w1"), s.ingestWorker},
-		{bus.SubjectMarkerWorker, s.ingestWorker},
-		{bus.TaskStatusSubject("w1", "j1"), s.ingestTask},
-		{bus.SubjectMarkerTask, s.ingestTask},
-		{bus.TaskLogsSubject("w1", "t1"), nil},
-		{"sqi.marker.other", nil},
+		{
+			name: "register",
+			msg: &fakeJSMsg{subject: bus.WorkerRegisterSubject("w2"), data: workerMsgJSON(t, protocol.RegisterMsg{
+				Version: protocol.ProtocolVersion, WorkerID: "w2", InstanceID: "i1",
+			})},
+			want:   pendingNames{workers: map[string]bool{"w2": true}},
+			handle: func(s *Scheduler, m *fakeJSMsg) { s.handleWorkerMessage(m) },
+		},
+		{
+			name: "heartbeat",
+			msg: &fakeJSMsg{subject: bus.WorkerHeartbeatSubject("w1"), data: workerMsgJSON(t, protocol.HeartbeatMsg{
+				Version: protocol.ProtocolVersion, WorkerID: "w1", At: now,
+			})},
+			want:   pendingNames{workers: map[string]bool{"w1": true}},
+			handle: func(s *Scheduler, m *fakeJSMsg) { s.handleWorkerMessage(m) },
+		},
+		{
+			name: "task status",
+			msg: &fakeJSMsg{subject: bus.TaskStatusSubject("w1", "j1"), data: workerMsgJSON(t, protocol.TaskStatusMsg{
+				Version: protocol.ProtocolVersion, WorkerID: "w1", TaskID: "t1", AttemptID: "a1",
+			})},
+			task: true,
+			want: pendingNames{
+				workers: map[string]bool{"w1": true}, tasks: map[string]bool{"t1": true}, attempts: map[string]bool{"a1": true},
+			},
+			handle: func(s *Scheduler, m *fakeJSMsg) { s.handleTaskStatusMessage(m) },
+		},
 	} {
-		if got := s.trackerFor(tc.subject); got != tc.want {
-			t.Errorf("trackerFor(%q) = %p, want %p", tc.subject, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			s := newIngestScheduler(DefaultConfig(), &recordBus{}, &bytes.Buffer{})
+			s.store = failingIngestStore{Store: fake.New()}
+			tc.msg.natsSeq, tc.msg.stamp, tc.msg.delivered = 3, now, 1
+
+			tc.handle(s, tc.msg)
+
+			if !tc.msg.nacked || tc.msg.acked {
+				t.Fatalf("acked=%v nacked=%v, want nak'd", tc.msg.acked, tc.msg.nacked)
+			}
+			own, other := s.ingestWorker, s.ingestTask
+			if tc.task {
+				own, other = other, own
+			}
+			if got := own.pending(now); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("pending = %+v, want %+v", got, tc.want)
+			}
+			if n := other.pendingCount(now); n != 0 {
+				t.Errorf("the other consumer's tracker holds %d pending messages, want 0", n)
+			}
+		})
 	}
 }
 
@@ -216,12 +253,12 @@ func TestTrackerFor(t *testing.T) {
 func TestAckNak_WithoutMetadataIsIgnored(t *testing.T) {
 	s := newIngestScheduler(DefaultConfig(), &recordBus{}, &bytes.Buffer{})
 	now := time.Now().UTC()
-	msg := &fakeJSMsg{
+	raw := &fakeJSMsg{
 		subject: bus.WorkerHeartbeatSubject("w1"), natsSeq: 3, stamp: now, delivered: 1,
 		metaErr: errors.New("no metadata"),
 	}
-	s.nakMsg(t.Context(), msg)
-	if !msg.nacked {
+	s.nakMsg(t.Context(), newIngestMsg(s.ingestWorker, raw), ingestRef{worker: "w1"})
+	if !raw.nacked {
 		t.Fatal("message not nak'd")
 	}
 	if n := s.ingestWorker.pendingCount(now); n != 0 {
@@ -473,8 +510,10 @@ func TestRefreshIngestGauges(t *testing.T) {
 	s.now = (&testClock{t: now}).now
 	s.startedAt = now.Add(-40 * time.Second)
 	s.ingestTask.marker(now.Add(-3 * time.Second))
-	s.nakMsg(t.Context(), &fakeJSMsg{subject: bus.WorkerHeartbeatSubject("w1"), natsSeq: 1, stamp: now, delivered: 1})
-	s.nakMsg(t.Context(), &fakeJSMsg{subject: bus.WorkerHeartbeatSubject("w2"), natsSeq: 2, stamp: now, delivered: 1})
+	for i, id := range []string{"w1", "w2"} {
+		msg := &fakeJSMsg{subject: bus.WorkerHeartbeatSubject(id), natsSeq: uint64(i + 1), stamp: now, delivered: 1}
+		s.nakMsg(t.Context(), newIngestMsg(s.ingestWorker, msg), ingestRef{worker: id})
+	}
 
 	s.refreshIngestGauges(t.Context())
 

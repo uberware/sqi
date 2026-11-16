@@ -976,22 +976,23 @@ func (s *Scheduler) buildUsageContext(
 
 // ── Worker NATS consumer ─────────────────────────────────────────────
 
-// handleWorkerMessage is the JetStream message handler for the worker
-// register, heartbeat and deregister subjects (all three flow through the
-// SQI_WORKER stream and its single durable consumer).
+// handleWorkerMessage is the JetStream message handler of the SQI_WORKER
+// stream's single durable consumer. It binds each message to the worker
+// tracker, handles the ingest marker, and routes the rest
+// ([Scheduler.routeWorkerMessage]).
+func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
+	s.receiveTracked(msg, s.ingestWorker, bus.SubjectMarkerWorker, s.noteWorkerDelivery, s.routeWorkerMessage)
+}
+
+// routeWorkerMessage dispatches a worker register, heartbeat or deregister
+// message (all three flow through the SQI_WORKER stream) to its handler.
 //
 // Each subject carries the publishing worker's ID as its last token, so the
 // routing below recovers that identity before dispatching to the per-message
 // handler.
-func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
+func (s *Scheduler) routeWorkerMessage(msg jetstream.Msg) {
 	ctx := s.ctx
-	// Before the marker branch, so a marker can reveal a skip too.
-	s.noteWorkerDelivery(ctx, msg)
 	subject := msg.Subject()
-	if subject == bus.SubjectMarkerWorker {
-		s.handleIngestMarker(ctx, msg)
-		return
-	}
 
 	workerID, _, ok := bus.ParseWorkerSubject(subject)
 	if !ok {
@@ -1194,7 +1195,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 			slog.String("worker_id", m.WorkerID),
 			slog.Any("error", err),
 		)
-		s.nakMsg(ctx, msg)
+		s.nakMsg(ctx, msg, ingestRef{worker: subjectWorkerID})
 		return
 	}
 	if len(reg.Reclaimed) > 0 {
@@ -1545,7 +1546,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 				ctx, "scheduler: heartbeat for unknown worker — will retry",
 				slog.String("worker_id", m.WorkerID),
 			)
-			s.nakMsg(ctx, msg)
+			s.nakMsg(ctx, msg, ingestRef{worker: subjectWorkerID})
 			return
 		}
 		s.logger.WarnContext(
@@ -1553,7 +1554,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 			slog.String("worker_id", m.WorkerID),
 			slog.Any("error", err),
 		)
-		s.nakMsg(ctx, msg)
+		s.nakMsg(ctx, msg, ingestRef{worker: subjectWorkerID})
 		return
 	}
 	s.maybeAskReregister(ctx, m.WorkerID, out)
@@ -2204,7 +2205,7 @@ func (s *Scheduler) ackMsg(ctx context.Context, msg jetstream.Msg) {
 		)
 		return
 	}
-	s.recordIngestAck(msg)
+	recordIngestAck(msg)
 }
 
 // nakMsg negatively-acknowledges msg, asking for it to be redelivered after
@@ -2213,13 +2214,16 @@ func (s *Scheduler) ackMsg(ctx context.Context, msg jetstream.Msg) {
 // of the message's deliveries on this server, which can no longer process
 // it, and hold it back from the new leader for the delay; left
 // unacknowledged, it goes to the new leader when its ack wait runs out.
-func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg) {
+//
+// ref names what msg changes once applied. It is recorded when msg is bound to
+// an ingest tracker ([ingestMsg]); a message from an untracked consumer passes
+// the zero ref.
+func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg, ref ingestRef) {
 	if s.leftForNewLeader(ctx, msg) {
 		return
 	}
 	var delivered uint64
-	md, mdErr := msg.Metadata()
-	if mdErr == nil {
+	if md, err := msg.Metadata(); err == nil {
 		delivered = md.NumDelivered
 	}
 	if err := msg.NakWithDelay(nakDelay(delivered)); err != nil {
@@ -2231,9 +2235,7 @@ func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg) {
 	}
 	// Recorded whether or not the nak reached the broker: either way the
 	// message is unapplied and comes back, after the delay or after AckWait.
-	if mdErr == nil {
-		s.recordIngestNak(msg, md)
-	}
+	recordIngestNak(msg, ref)
 }
 
 // nakBaseDelay and nakMaxDelay bound how long a nak'd message waits to be

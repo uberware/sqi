@@ -4,16 +4,13 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/bus"
-	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 const (
@@ -60,7 +57,7 @@ func (i *interruptSeen) claim(at time.Time) bool {
 // runIngestMarkers publishes an ingest marker into SQI_WORKER and SQI_TASK
 // every [ingestMarkerInterval] until ctx is canceled, the first at once. The
 // consumers advance their trackers when the markers come back to them (see
-// [Scheduler.handleIngestMarker]); publishing advances nothing.
+// [Scheduler.receiveTracked]); publishing advances nothing.
 func (s *Scheduler) runIngestMarkers(ctx context.Context) {
 	ticker := time.NewTicker(ingestMarkerInterval)
 	defer ticker.Stop()
@@ -155,13 +152,59 @@ func (f *firstDeliverySeq) next(seq uint64) uint64 {
 	return skipped
 }
 
-// noteWorkerDelivery holds the worker tracker when msg shows that SQI_WORKER
-// removed messages before the worker consumer read them. Its MaxAge is two
-// minutes, so heartbeats expire unread whenever the consumer falls that far
-// behind: during a store stall that blocks the handler, or under a load it
-// cannot keep up with. A marker read after them would otherwise move the
-// tracker past heartbeats that never reached the store, and the sweep would
-// take live workers offline.
+// ingestMsg is a message a tracked consumer received, bound to that
+// consumer's tracker, with its metadata read once on arrival. [Scheduler.ackMsg]
+// and [Scheduler.nakMsg] record it in the tracker.
+type ingestMsg struct {
+	jetstream.Msg
+
+	tracker *ingestTracker
+	md      *jetstream.MsgMetadata
+	mdErr   error
+}
+
+// newIngestMsg binds msg to t and reads its metadata.
+func newIngestMsg(t *ingestTracker, msg jetstream.Msg) *ingestMsg {
+	md, err := msg.Metadata()
+	return &ingestMsg{Msg: msg, tracker: t, md: md, mdErr: err}
+}
+
+// Metadata returns the metadata read when the message arrived.
+func (m *ingestMsg) Metadata() (*jetstream.MsgMetadata, error) { return m.md, m.mdErr }
+
+// receiveTracked is the start of a tracked consumer's handler. It binds raw
+// to t, reports a first delivery to onFirst when that is set (only the worker
+// consumer checks for messages removed unread; see
+// [Scheduler.noteWorkerDelivery]), then advances t and acks for the
+// consumer's marker subject, and passes anything else to route.
+func (s *Scheduler) receiveTracked(
+	raw jetstream.Msg, t *ingestTracker, marker string,
+	onFirst func(context.Context, *jetstream.MsgMetadata), route func(jetstream.Msg),
+) {
+	ctx := s.ctx
+	msg := newIngestMsg(t, raw)
+	// Before the marker branch, so a marker can reveal a skip too.
+	if onFirst != nil && msg.mdErr == nil && msg.md.NumDelivered == 1 {
+		onFirst(ctx, msg.md)
+	}
+	if raw.Subject() != marker {
+		route(msg)
+		return
+	}
+	// The consumer has handled everything stored before the marker.
+	if msg.mdErr == nil {
+		t.marker(msg.md.Timestamp)
+	}
+	s.ackMsg(ctx, msg)
+}
+
+// noteWorkerDelivery holds the worker tracker when md, the metadata of a
+// first delivery, shows that SQI_WORKER removed messages before the worker
+// consumer read them. Its MaxAge is two minutes, so heartbeats expire unread
+// whenever the consumer falls that far behind: during a store stall that
+// blocks the handler, or under a load it cannot keep up with. A marker read
+// after them would otherwise move the tracker past heartbeats that never
+// reached the store, and the sweep would take live workers offline.
 //
 // For the one consumer of a work-queue stream, first deliveries
 // (NumDelivered 1) arrive in increasing stream sequence, so a first delivery
@@ -172,11 +215,7 @@ func (f *firstDeliverySeq) next(seq uint64) uint64 {
 // startup grace covers it. A first delivery the client dropped before the
 // handler (an interruption) also reads as a skip, which only holds the
 // tracker longer.
-func (s *Scheduler) noteWorkerDelivery(ctx context.Context, msg jetstream.Msg) {
-	md, err := msg.Metadata()
-	if err != nil || md.NumDelivered != 1 {
-		return
-	}
+func (s *Scheduler) noteWorkerDelivery(ctx context.Context, md *jetstream.MsgMetadata) {
 	skipped := s.workerSeq.next(md.Sequence.Stream)
 	if skipped == 0 {
 		return
@@ -188,73 +227,19 @@ func (s *Scheduler) noteWorkerDelivery(ctx context.Context, msg jetstream.Msg) {
 	}
 }
 
-// trackerFor returns the tracker of the consumer that receives subject, or
-// nil for a subject neither tracked consumer receives.
-func (s *Scheduler) trackerFor(subject string) *ingestTracker {
-	switch {
-	case subject == bus.SubjectMarkerWorker || strings.HasPrefix(subject, "worker."):
-		return s.ingestWorker
-	case subject == bus.SubjectMarkerTask || strings.HasPrefix(subject, bus.SubjectTaskStatusPrefix+"."):
-		return s.ingestTask
-	default:
-		return nil
-	}
-}
-
-// handleIngestMarker records that the consumer receiving msg, a marker, has
-// handled everything stored before it, and acks it.
-func (s *Scheduler) handleIngestMarker(ctx context.Context, msg jetstream.Msg) {
-	if t := s.trackerFor(msg.Subject()); t != nil {
-		if md, err := msg.Metadata(); err == nil {
-			t.marker(md.Timestamp)
-		}
-	}
-	s.ackMsg(ctx, msg)
-}
-
-// recordIngestAck removes an acked message from its consumer's tracker.
-func (s *Scheduler) recordIngestAck(msg jetstream.Msg) {
-	t := s.trackerFor(msg.Subject())
-	if t == nil {
-		return
-	}
-	if md, err := msg.Metadata(); err == nil {
-		t.ack(md.Sequence.Stream)
+// recordIngestAck removes an acked message from the tracker it is bound to,
+// if any.
+func recordIngestAck(msg jetstream.Msg) {
+	if m, ok := msg.(*ingestMsg); ok && m.mdErr == nil {
+		m.tracker.ack(m.md.Sequence.Stream)
 	}
 }
 
 // recordIngestNak records a nak'd message, which will be delivered again, in
-// its consumer's tracker.
-func (s *Scheduler) recordIngestNak(msg jetstream.Msg, md *jetstream.MsgMetadata) {
-	t := s.trackerFor(msg.Subject())
-	if t == nil || md == nil {
-		return
-	}
-	t.nak(md.Sequence.Stream, md.Timestamp, md.NumDelivered, ingestKeys(msg))
-}
-
-// ingestKeys returns what msg would change once applied: its worker for a
-// worker message, and for a task status also its task and attempt (each left
-// out when the body does not name it).
-func ingestKeys(msg jetstream.Msg) ingestRef {
-	subject := msg.Subject()
-	workerID, _, ok := bus.ParseWorkerSubject(subject)
-	if !ok {
-		return ingestRef{}
-	}
-	switch {
-	case strings.HasPrefix(subject, "worker."):
-		return ingestRef{worker: workerID}
-	case strings.HasPrefix(subject, bus.SubjectTaskStatusPrefix+"."):
-		ref := ingestRef{worker: workerID}
-		var m protocol.TaskStatusMsg
-		if err := json.Unmarshal(msg.Data(), &m); err != nil {
-			return ref
-		}
-		ref.task, ref.attempt = m.TaskID, m.AttemptID
-		return ref
-	default:
-		return ingestRef{}
+// the tracker it is bound to, if any, as naming ref.
+func recordIngestNak(msg jetstream.Msg, ref ingestRef) {
+	if m, ok := msg.(*ingestMsg); ok && m.mdErr == nil {
+		m.tracker.nak(m.md.Sequence.Stream, m.md.Timestamp, m.md.NumDelivered, ref)
 	}
 }
 
