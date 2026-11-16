@@ -259,3 +259,10 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// size returns how many asks are remembered.
+func (r *reregisterAsks) size() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.asked)
+}

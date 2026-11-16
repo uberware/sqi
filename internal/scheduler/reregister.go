@@ -95,13 +95,6 @@ func (r *reregisterAsks) prune(cutoff time.Time) {
 	}
 }
 
-// size returns how many asks are remembered.
-func (r *reregisterAsks) size() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.asked)
-}
-
 // maybeAskReregister asks workerID to register again when out, the outcome
 // of recording its heartbeat, shows a heartbeat recorded for a worker the
 // store holds offline that is not retiring or asleep (a capacity-group member
