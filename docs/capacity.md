@@ -845,6 +845,7 @@ A worker answers power requests the server sends it on `worker.control.<workerID
 |---|---|---|
 | `sleep`, `shutdown` | it is running a task (`busy`), or `worker.power.allow_remote_sleep` is `false` (the default), or the platform has no command for it, or it is carrying out one already (`already retiring`) | replies, deregisters as `retired`, then runs the command |
 | `wake` | no valid 6-byte MAC address, or no target | sends Wake-on-LAN broadcasts for the addresses to the targets, on the server's behalf |
+| `reregister` | it is carrying out a sleep or shutdown (`already retiring`) | replies, then registers again. The server sends it to a worker it holds offline whose heartbeats still arrive, never to a member that is `retiring` or `asleep` (see [Bringing a live worker back online](architecture.md#bringing-a-live-worker-back-online)) |
 
 `wake` has no opt-in because a worker acting as a relay only sends UDP
 broadcasts. `sleep` and `shutdown` do, because they stop the machine, and they

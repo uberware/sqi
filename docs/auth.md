@@ -319,7 +319,8 @@ enrollment, and cover only that worker's own subtree:
 - **Subscribe:** `_INBOX_<id>.>` — this worker's own reply inboxes —
   `task.cancel.<id>`, where the server sends every cancel for this worker's
   runs, and `worker.control.<id>`, where the server sends this worker's power
-  commands for a [capacity group](capacity.md#power-control-on-the-worker).
+  commands for a [capacity group](capacity.md#power-control-on-the-worker) and
+  asks it to register again after marking it offline.
 - **Reply once to a request it received:** a power command is a core-NATS
   request, and its reply goes to the requester's reply subject, which no fixed
   publish permission can name. The worker may publish one message, within a
