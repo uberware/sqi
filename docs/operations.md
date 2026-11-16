@@ -2429,7 +2429,8 @@ row in [Known server defects](load-testing.md#known-server-defects).
 
 ### A database that stops answering
 
-`chaos-db-stall-5s`, `chaos-db-stall-30s` and `chaos-db-stall-2m` make the
+`chaos-db-stall-5s`, `chaos-db-stall-30s`, `chaos-db-stall-2m` and
+`chaos-db-stall-3m` make the
 database unavailable without closing a connection: on SQLite by holding its
 write lock from outside the server, on PostgreSQL by stopping the traffic
 between the server and the database. The server and the workers stay up
@@ -2440,6 +2441,7 @@ throughout.
 | 5 seconds | Ridden out on both stores and on Windows: no attempt is reclaimed and no completed work is redone. |
 | 30 seconds (`heartbeat_timeout`) | Ridden out on both stores and on Windows: no worker goes offline, no attempt is reclaimed and no completed work is redone. |
 | 2 minutes | The same, on both stores and on Windows. |
+| 3 minutes | The same, on both stores. The stall outlasts the 2 minute retention of the worker stream, so heartbeats expire from it unread. The worker consumer sees the sequence numbers it skipped and holds its liveness verdict until it has read `heartbeat_timeout` past the gap, so the heartbeat sweep does not read the missing heartbeats as dead workers: no live worker goes offline and no task is re-run. |
 
 The queued heartbeats and status reports wait in the broker while the
 database cannot be written. The 30 second stall equals both
