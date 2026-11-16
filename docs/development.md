@@ -442,7 +442,7 @@ and `sqi-worker` binaries except where noted:
 | `TestNATSCluster_RestorePurges` | `sqi-server restore` purges sqi's streams and consumers on the cluster |
 
 It runs against two nats-server images, each pinned by tag and digest in the
-Makefile: `NATS_IMAGE_CURRENT` (the default, `nats:2.15.2`, the release
+Makefile: `NATS_IMAGE_CURRENT` (the default, `nats:2.15.3`, the release
 `sqi-server` embeds) and `NATS_IMAGE_FLOOR` (`nats:2.14.9`, the newest patch
 of the oldest series sqi supports). Run the floor with:
 

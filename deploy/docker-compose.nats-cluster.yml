@@ -56,7 +56,7 @@
 # `docker compose ... down -v` removes the nodes and their JetStream data.
 
 x-nats-node: &nats-node
-  image: ${NATS_IMAGE:-nats:2.15.2@sha256:991242c32d2738ffd358fd6614dd96c735017b4b3b34bfdb2c52a072d66db211}
+  image: ${NATS_IMAGE:-nats:2.15.3@sha256:9d85d87039bfba33baf48de4da32a2ee572bcd6c94f6365d05733a672de49253}
   command: ["--config", "/etc/nats/nats.conf"]
   restart: unless-stopped
 
