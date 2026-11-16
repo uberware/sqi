@@ -1106,12 +1106,6 @@ worker's restart and keeps writing the task's output while the reclaimed task
 re-runs on a live worker. `chaos-worker-kill-mid-task` records it, where
 `no-orphans` and `single-writer` can fail on Linux.
 
-### A data race at shutdown in the scheduler (H13f5)
-
-`Scheduler.Stop` reads the scheduler's `cancel` function while
-`Scheduler.Run` is still setting it, when the server shuts down right after it
-launches the scheduler. The race detector reports it. No scenario records it.
-
 ### A worker's clock sets an attempt's end time (H13f6)
 
 The server stamps an attempt's start with its own clock at the lease but takes

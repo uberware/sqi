@@ -54,10 +54,10 @@ func TestRun_StartAndStop(t *testing.T) {
 	}
 }
 
-func TestStop_NilCancel_NoPanic(_ *testing.T) {
+func TestStop_BeforeRun_NoPanic(_ *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "")
-	// s.cancel is nil before Run; Stop must be a safe no-op.
+	// s.cancel is nil before Run; Stop must not panic on it.
 	s.Stop()
 }
 
@@ -75,6 +75,61 @@ func TestStop_WithCancel_CancelsContext(t *testing.T) {
 		// canceled as expected
 	default:
 		t.Error("Stop did not cancel the scheduler context")
+	}
+}
+
+// TestRun_AfterStop_ReturnsAtOnce checks that a Run called after Stop returns
+// at once and subscribes to nothing.
+func TestRun_AfterStop_ReturnsAtOnce(t *testing.T) {
+	b := newSyncBus()
+	s := newMetricsScheduler(newCheckedFake(t), b, "f1")
+	s.Stop()
+
+	done := make(chan error, 1)
+	go func() { done <- s.Run(t.Context()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run after Stop = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		s.Stop()
+		t.Fatal("Run did not return after an earlier Stop")
+	}
+	select {
+	case <-b.leaseHandler:
+		t.Error("Run subscribed to leases after an earlier Stop")
+	default:
+	}
+}
+
+// TestStop_RacingRun races Stop against Run on separate goroutines, as the
+// server does when it shuts down while the scheduler goroutine is starting.
+// Whichever lands first, Run must return; under -race the two must not touch
+// the stop state unsynchronized.
+func TestStop_RacingRun(t *testing.T) {
+	for range 50 {
+		s := newMetricsScheduler(newCheckedFake(t), &recordBus{}, "f1")
+		start := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			<-start
+			done <- s.Run(t.Context())
+		}()
+		go func() {
+			<-start
+			s.Stop()
+		}()
+		close(start)
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Run = %v, want nil", err)
+			}
+		case <-time.After(5 * time.Second):
+			s.Stop()
+			t.Fatal("Run did not return after a concurrent Stop")
+		}
 	}
 }
 
