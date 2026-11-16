@@ -14,8 +14,8 @@ import (
 // suppressWindow is how long natsLogger drops copies of a line it has just
 // logged. A broker stream that can no longer store a message logs the same
 // error every couple of seconds for as long as the server runs; one line a
-// minute says as much, and leaves room in the diagnostics buffer for
-// everything else.
+// minute is enough, and leaves room in the diagnostics buffer for everything
+// else.
 const suppressWindow = time.Minute
 
 // maxSuppressEntries bounds natsLogger's table of recently logged lines, and
@@ -31,9 +31,9 @@ const maxSuppressEntries = 1024
 //   - Errorf: Error "bus: nats server error", attribute error
 //   - Warnf: Warn "bus: nats server warning", attribute warning
 //   - Noticef: Debug "bus: nats server notice", attribute notice (mostly
-//     startup and shutdown chatter; the broker logs its own lifecycle events),
-//     except a slow consumer report, which means dropped messages or a closed
-//     connection and is logged as a warning
+//     startup and shutdown messages, which sqi logs itself), except a slow
+//     consumer report, which means dropped messages or a closed connection
+//     and is logged as a warning
 //   - Fatalf: Error "bus: nats server fatal error", attribute error
 //
 // Debug and trace output are dropped.
@@ -132,9 +132,10 @@ func (*natsLogger) Tracef(string, ...any) {}
 
 // isSlowConsumer reports whether a notice is a slow consumer report other
 // than a recovery: "Slow Consumer Detected: MaxPending ... Exceeded" (the
-// client is closed) or "Slow Consumer Detected|State: WriteDeadline ...
-// exceeded". nats-server puts the client before it, so it is searched for
-// rather than matched as a prefix.
+// client is closed) or "Slow Consumer Detected: WriteDeadline ... exceeded"
+// ("State" replaces "Detected" for a client already reported slow).
+// nats-server puts the client before the text, so it is searched for rather
+// than matched as a prefix.
 func isSlowConsumer(format string) bool {
 	return strings.Contains(format, "Slow Consumer ") && !strings.Contains(format, "Slow Consumer Recovered")
 }
@@ -199,7 +200,7 @@ func (l *natsLogger) arm(k recentKey, r *recentLine, d time.Duration) {
 	r.stop = l.afterFunc(d, func() { l.flush(k, r, gen) })
 }
 
-// disarm stops r's timer, if one is armed. Its natsLogger's mu is held.
+// disarm stops r's timer, if one is armed. The caller holds the logger's mu.
 func disarm(r *recentLine) {
 	if r.stop != nil {
 		r.stop()

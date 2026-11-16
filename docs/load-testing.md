@@ -1143,7 +1143,7 @@ is not known. No task status, heartbeat or log is stored, while `/readyz`
 stays ready and REST requests succeed. The server log shows each stream's
 `Critical write error: write .../<n>.blk: no space left on device` once, then
 `JetStream failed to store a msg on stream ...: ... no space left on device`
-once a minute until the server stops, the same text after the space returns.
+once a minute until the server stops, also after the space returns.
 When the heartbeat sweep runs, every worker is marked offline and none
 returns.
 `chaos-disk-server-full` records it, where `terminal`, `outcomes`,
@@ -1161,17 +1161,16 @@ stops, the farm is unharmed. `chaos-server-fd-exhaustion` records `rework`,
 `terminal`, `outcomes`, `single-attempt`, `workers-converge` and
 `executions-recorded`, each as one that can fail.
 
-The server log shows what happens in the broker. In a
-`chaos-server-fd-exhaustion` run on Linux, the broker failed to accept about
-once a second while the limit held. The server logged `Temporary Client Accept
-Error(... too many open files), sleeping <n>ms` once for each step of the
-broker's back-off up to 1000 ms, then that line once a minute with a
-`suppressed` count. For each stream that stopped it then logged `Filestore [SQI_TASK]
-Critical write error: lmb missing` and `JetStream stream 'SQI > SQI_TASK'
-critical write error: lmb missing` once, and `JetStream failed to store a msg
-on stream 'SQI > SQI_TASK': lmb missing` from then until the server stopped,
-which the server logs once a minute with a `suppressed` count (see [The
-embedded broker's own log](observability.md#the-embedded-brokers-own-log)).
+The server log shows what happens in the broker (see [The embedded broker's own
+log](observability.md#the-embedded-brokers-own-log)). While the limit holds,
+the broker fails to accept a connection about once a second, and the server
+logs `Temporary Client Accept Error(... too many open files), sleeping <n>ms`
+once for each step of the broker's back-off up to 1000 ms, then once a minute
+with a `suppressed` count. For each stream that stops it logs `Filestore
+[SQI_TASK] Critical write error: lmb missing` and `JetStream stream 'SQI >
+SQI_TASK' critical write error: lmb missing` once, then `JetStream failed to
+store a msg on stream 'SQI > SQI_TASK': lmb missing` once a minute, with a
+`suppressed` count, until the server stops.
 The task status and heartbeat streams create a new block file many times a
 minute, because nats-server 2.15.2 starts a new last block whenever an ack
 empties the current one, and a stream whose new last block could not be

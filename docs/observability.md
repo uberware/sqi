@@ -175,17 +175,18 @@ new minute starts; so a count is reported at most a minute late. A copy that
 arrives after the minute, before that report, carries the count instead. When
 the server stops, the counts still pending are logged. A broker stream that
 can no longer store anything logs the same error every couple of seconds,
-which this turns into one line a minute. Lines that name a connection (its
-address and client ID) differ every time and are never dropped.
+which is logged as one line a minute. Lines that name a connection (its
+address and client ID) differ every time, so none of them is dropped.
 
 Normal operation logs none of these at `WARN` or above. A worker whose broker
 credential was revoked, or was never enrolled, retries with growing delays
 (about 2, 6, 14, 30, 62 and 120 seconds after the first refusal) and gives up
 after the last of them, about two minutes in. Each refusal logs a `bus: nats
 server error` naming the connection, next to sqi's own `bus: auth callout
-refused ...` warning, so about seven of each. The broker's `Auth callout service returned an error: not
-authorized` warning names no connection, so it is logged at the first refusal
-and then once a minute with a `suppressed` count.
+refused ...` warning, so a worker causes about seven of each. The broker's
+`Auth callout service returned an error: not authorized` warning names no
+connection, so it is logged at the first refusal and then once a minute with a
+`suppressed` count.
 
 An external broker (`nats.mode: external`) keeps its own log; `sqi-server`
 logs none of it.
