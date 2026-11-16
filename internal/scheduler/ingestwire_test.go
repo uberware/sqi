@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
@@ -64,47 +66,48 @@ type testClock struct{ t time.Time }
 
 func (c *testClock) now() time.Time { return c.t }
 
-func TestHandleWorkerMessage_MarkerAdvancesTracker(t *testing.T) {
-	var logs bytes.Buffer
-	s := newIngestScheduler(DefaultConfig(), &recordBus{}, &logs)
+// TestMarkerAdvancesOnlyItsConsumersTracker: each tracked consumer's handler
+// advances its own tracker to a marker's broker stamp, leaves the other
+// tracker alone, acks the marker, and does not handle it as an ordinary
+// message.
+func TestMarkerAdvancesOnlyItsConsumersTracker(t *testing.T) {
 	t0 := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-	msg := &fakeJSMsg{subject: bus.SubjectMarkerWorker, stamp: t0, natsSeq: 9, delivered: 1}
+	for _, tc := range []struct {
+		name    string
+		subject string
+		handle  func(*Scheduler, jetstream.Msg)
+		task    bool
+		// notLogged is what the handler would log had it taken the marker for
+		// an ordinary message.
+		notLogged string
+	}{
+		{"worker", bus.SubjectMarkerWorker, (*Scheduler).handleWorkerMessage, false, "unexpected subject"},
+		{"task status", bus.SubjectMarkerTask, (*Scheduler).handleTaskStatusMessage, true, "malformed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			s := newIngestScheduler(DefaultConfig(), &recordBus{}, &logs)
+			msg := &fakeJSMsg{subject: tc.subject, stamp: t0, natsSeq: 9, delivered: 1}
 
-	s.handleWorkerMessage(msg)
+			tc.handle(s, msg)
 
-	if !msg.acked || msg.nacked {
-		t.Fatalf("marker acked=%v nacked=%v, want acked", msg.acked, msg.nacked)
-	}
-	if got := s.ingestWorker.effective(t0.Add(time.Second)); !got.Equal(t0) {
-		t.Errorf("ingestWorker.effective = %v, want %v", got, t0)
-	}
-	if got := s.ingestTask.effective(t0.Add(time.Second)); !got.IsZero() {
-		t.Errorf("ingestTask.effective = %v, want zero (a worker marker must not advance it)", got)
-	}
-	if strings.Contains(logs.String(), "unexpected subject") {
-		t.Errorf("a marker was logged as an unexpected subject:\n%s", logs.String())
-	}
-}
-
-func TestHandleTaskStatusMessage_MarkerAdvancesTracker(t *testing.T) {
-	var logs bytes.Buffer
-	s := newIngestScheduler(DefaultConfig(), &recordBus{}, &logs)
-	t0 := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-	msg := &fakeJSMsg{subject: bus.SubjectMarkerTask, stamp: t0, natsSeq: 4, delivered: 1}
-
-	s.handleTaskStatusMessage(msg)
-
-	if !msg.acked || msg.nacked {
-		t.Fatalf("marker acked=%v nacked=%v, want acked", msg.acked, msg.nacked)
-	}
-	if got := s.ingestTask.effective(t0.Add(time.Second)); !got.Equal(t0) {
-		t.Errorf("ingestTask.effective = %v, want %v", got, t0)
-	}
-	if got := s.ingestWorker.effective(t0.Add(time.Second)); !got.IsZero() {
-		t.Errorf("ingestWorker.effective = %v, want zero (a task marker must not advance it)", got)
-	}
-	if strings.Contains(logs.String(), "malformed") {
-		t.Errorf("a marker's empty body was decoded as a status:\n%s", logs.String())
+			if !msg.acked || msg.nacked {
+				t.Fatalf("marker acked=%v nacked=%v, want acked", msg.acked, msg.nacked)
+			}
+			own, other := s.ingestWorker, s.ingestTask
+			if tc.task {
+				own, other = other, own
+			}
+			if got := own.effective(t0.Add(time.Second)); !got.Equal(t0) {
+				t.Errorf("own tracker effective = %v, want %v", got, t0)
+			}
+			if got := other.effective(t0.Add(time.Second)); !got.IsZero() {
+				t.Errorf("other tracker effective = %v, want zero (a marker advances only its consumer's)", got)
+			}
+			if strings.Contains(logs.String(), tc.notLogged) {
+				t.Errorf("the marker was handled as an ordinary message:\n%s", logs.String())
+			}
+		})
 	}
 }
 
@@ -510,6 +513,7 @@ func TestCheckBusInterruption_Holds(t *testing.T) {
 
 func TestRefreshIngestGauges(t *testing.T) {
 	s := newMetricsScheduler(nil, &recordBus{}, "")
+	noIngestMarker(s)
 	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 	s.now = (&testClock{t: now}).now
 	s.startedAt = now.Add(-40 * time.Second)

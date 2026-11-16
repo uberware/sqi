@@ -29,6 +29,7 @@ func newIngestSweepScheduler(t *testing.T, st store.Store, now time.Time) (*Sche
 	t.Helper()
 	var logs bytes.Buffer
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
+	noIngestMarker(s)
 	s.cfg.WorkerTimeout = ingestSweepTimeout
 	s.cfg.AssignedTaskTimeout = ingestSweepTimeout
 	s.logger = slog.New(slog.NewTextHandler(&logs, nil))
@@ -337,6 +338,14 @@ func TestSweep_HeldBackLoggedOncePerEpisode(t *testing.T) {
 	if n := strings.Count(logs.String(), msg); n != 2 {
 		t.Errorf("held back logged %d times over two episodes, want twice:\n%s", n, logs.String())
 	}
+}
+
+// noIngestMarker gives s fresh ingest trackers, which have processed no
+// marker, in place of the caught-up ones the test constructors start with.
+// Tests of a lagging consumer, or of one with no marker yet, start from it.
+func noIngestMarker(s *Scheduler) {
+	s.ingestWorker = newIngestTracker(bus.WorkerStreamMaxAge, bus.WorkerConsumerMaxDeliver)
+	s.ingestTask = newIngestTracker(bus.TaskStreamMaxAge, bus.TaskStatusConsumerMaxDeliver)
 }
 
 // tickView reads the ingest trackers as a sweep tick does, at the

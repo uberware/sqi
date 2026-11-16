@@ -949,7 +949,6 @@ func TestReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 			s := newMetricsScheduler(wrapped, &recordBus{}, "farm-1")
 			s.cfg.AssignedTaskTimeout = time.Minute
 
-			ingestCaughtUp(s)
 			s.reapStaleAssignedTasks(t.Context(), tickView(s))
 
 			if fresh.ID == "" {
@@ -1004,7 +1003,6 @@ func TestSupersededAttemptLateReportIsIgnored(t *testing.T) {
 					s.ctx = t.Context()
 					s.cfg.AssignedTaskTimeout = time.Minute
 
-					ingestCaughtUp(s)
 					s.reapStaleAssignedTasks(t.Context(), tickView(s))
 					fresh := storetest.Lease(t, st, store.LeaseRequest{
 						TaskID: task.ID, WorkerID: "w-new",
@@ -1092,7 +1090,6 @@ func TestHeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 			rec := &workerRecordingNotifier{}
 			s := newRetentionScheduler(wrapped, time.Hour, rec)
 
-			ingestCaughtUp(s)
 			s.sweepStaleWorkers(t.Context(), tickView(s))
 
 			if !fired {
@@ -1139,7 +1136,6 @@ func TestOfflineReclaimReleasesClaims(t *testing.T) {
 			_, taskID, attemptID, pool := seedStaleWorkerWithClaim(t, st, 10*time.Minute)
 			s := newRetentionScheduler(st, time.Hour, ws.NoopNotifier{})
 
-			ingestCaughtUp(s)
 			s.sweepStaleWorkers(t.Context(), tickView(s))
 
 			if got := mustTaskOf(t, st, taskID); got.Status != store.TaskStatusReady {

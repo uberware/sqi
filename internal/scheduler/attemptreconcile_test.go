@@ -405,7 +405,6 @@ func TestReconcileAttempts_ReclaimsAnUnreportedAttempt(t *testing.T) {
 
 	at := created.Add(2 * time.Minute)
 	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
-	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), at, s.readIngest(at))
 
 	task := mustTaskOf(t, st, "t1")
@@ -430,7 +429,6 @@ func TestReconcileAttempts_HoldsDuringStartup(t *testing.T) {
 	s.startedAt = at.Add(-time.Second) // started less than grace ago
 
 	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
-	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), at, s.readIngest(at))
 
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusRunning {
@@ -454,7 +452,6 @@ func TestReconcileAttempts_LateTerminalReportIsDiscarded(t *testing.T) {
 	armReconciler(s, created)
 	at := created.Add(2 * time.Minute)
 	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
-	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), at, s.readIngest(at))
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusReady {
 		t.Fatalf("fixture: task = %s, want ready after the reclaim", got)
@@ -652,7 +649,6 @@ func TestSweepOnce_DemotesAJobAReconcileReclaimLeftIdle(t *testing.T) {
 	now := time.Now().UTC()
 	s.reconciler.record(reconcileWorker, now, now, time.Time{}, nil)
 
-	ingestCaughtUp(s)
 	s.sweepOnce(t.Context())
 
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusReady {
@@ -689,6 +685,7 @@ func TestSweepOnce_ReconcilesByTheTaskTracker(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			st, attempt := seedReconcileAttempt(t)
 			s := newMetricsScheduler(st, &recordBus{}, "f1")
+			noIngestMarker(s)
 			s.ctx = t.Context()
 			s.cfg.ReconcileGrace = time.Minute
 			s.reconciler = newReconciler(time.Minute, 30*time.Second)
@@ -756,7 +753,6 @@ func TestReconcileAttempts_CancelsAReportedClosedAttempt(t *testing.T) {
 			for sweep := 1; sweep <= 2; sweep++ {
 				at := attempt.CreatedAt.Add(time.Duration(sweep) * time.Minute)
 				s.reconciler.record(reconcileWorker, at, at, time.Time{}, []string{attempt.ID})
-				ingestCaughtUp(s)
 				s.reconcileAttempts(t.Context(), at, s.readIngest(at))
 				if len(b.cancels) != sweep {
 					t.Fatalf("after sweep %d: cancels = %+v, want %d", sweep, b.cancels, sweep)
@@ -812,7 +808,6 @@ func TestReconcileAttempts_CancelsOnlyReportedClosedAttempts(t *testing.T) {
 				s.startedAt = at.Add(-time.Second)
 			}
 			s.reconciler.record(reconcileWorker, reportAt, reportAt, time.Time{}, tt.report(attempt))
-			ingestCaughtUp(s)
 			s.reconcileAttempts(t.Context(), at, s.readIngest(at))
 			if len(b.cancels) != 0 {
 				t.Fatalf("cancels = %+v, want none", b.cancels)
@@ -838,7 +833,6 @@ func TestReconcileAttempts_CancelsAReportedUnknownAttempt(t *testing.T) {
 	for sweep := 1; sweep <= 2; sweep++ {
 		at := attempt.CreatedAt.Add(time.Duration(sweep) * time.Minute)
 		s.reconciler.record(reconcileWorker, at, at, time.Time{}, []string{attempt.ID, "attempt-the-store-never-saw"})
-		ingestCaughtUp(s)
 		s.reconcileAttempts(t.Context(), at, s.readIngest(at))
 		if len(b.cancels) != sweep {
 			t.Fatalf("after sweep %d: cancels = %+v, want %d", sweep, b.cancels, sweep)
@@ -892,7 +886,6 @@ func TestReconcileAttempts_NeverCancelsAnAttemptLeasedDuringTheSweep(t *testing.
 	s.store = l
 
 	s.reconciler.record(reconcileWorker, at, at, time.Time{}, []string{attempt.ID})
-	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), at, s.readIngest(at))
 
 	if l.fresh == "" {

@@ -569,6 +569,7 @@ func TestCapacitySweep_VanishedEphemeralRemovedAfterBootTimeout(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			f := newMembershipFixture(t, false)
+			noIngestMarker(f.s)
 			g := createGroup(t, f.st, sizedGroup("cloud", func(g *store.CapacityGroup) { g.Enabled = enabled }))
 			t0 := time.Now().UTC().Add(-time.Hour)
 			vanishedMember(t, f, g, "gone", t0)
@@ -625,6 +626,7 @@ func TestCapacitySweep_VanishedEphemeralWaitsForWorkerConsumer(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newMembershipFixture(t, false)
+			noIngestMarker(f.s)
 			g := createGroup(t, f.st, sizedGroup("cloud", nil)) // BootTimeout 5m
 			t0 := time.Now().UTC().Add(-time.Hour)
 			vanishedMember(t, f, g, "gone", t0)

@@ -271,7 +271,6 @@ func TestHandleHeartbeat_WorkerClockBehindStaysOnline(t *testing.T) {
 					t.Fatalf("heartbeat acked=%v nacked=%v, want acked", hb.acked, hb.nacked)
 				}
 
-				ingestCaughtUp(s)
 				s.sweepStaleWorkers(t.Context(), tickView(s))
 
 				if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
@@ -952,7 +951,6 @@ func TestSweepReclaimsADeadDisabledWorkerWithoutAnOfflineEvent(t *testing.T) {
 			rec := &workerRecordingNotifier{}
 			s := newMetricsScheduler(st, &recordBus{}, "")
 			s.notifier = rec
-			ingestCaughtUp(s)
 			s.sweepStaleWorkers(t.Context(), tickView(s))
 			if got := mustTaskOf(t, st, taskID).Status; got != store.TaskStatusReady {
 				t.Fatalf("task = %q, want ready", got)

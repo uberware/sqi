@@ -66,13 +66,15 @@ func (*recordBus) RequestWorkerControl(context.Context, string, []byte) ([]byte,
 
 func (*recordBus) PublishIngestMarkers(context.Context, time.Duration) error { return nil }
 
-// newMetricsScheduler builds a Scheduler with a real metrics registry so the
-// gauge helpers do not nil-panic. cfg.FarmID is set to farmID.
+// newMetricsScheduler builds a Scheduler with a metrics registry the test can
+// read and its ingest trackers caught up ([ingestCaughtUp]). cfg.FarmID is set
+// to farmID.
 func newMetricsScheduler(st store.Store, bus busClient, farmID string) *Scheduler {
 	cfg := DefaultConfig()
 	cfg.FarmID = farmID
 	s := New(cfg, st, bus, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
 	s.ctx = context.Background()
+	ingestCaughtUp(s)
 	return s
 }
 

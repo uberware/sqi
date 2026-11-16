@@ -62,7 +62,8 @@ type fenceRecorder struct {
 	logs   *lockedBuffer
 }
 
-// newFenceScheduler is a metrics scheduler on st whose OnFenced is recorded.
+// newFenceScheduler is a metrics scheduler on st whose OnFenced is recorded,
+// with its ingest trackers caught up.
 func newFenceScheduler(t *testing.T, st store.Store, farmID string) (*Scheduler, *fenceRecorder) {
 	t.Helper()
 	rec := &fenceRecorder{called: make(chan error, 8), logs: &lockedBuffer{}}
@@ -74,6 +75,7 @@ func newFenceScheduler(t *testing.T, st store.Store, farmID string) (*Scheduler,
 	}
 	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.NewTextHandler(rec.logs, nil)), ws.NoopNotifier{}, nil)
 	s.ctx = context.Background()
+	ingestCaughtUp(s)
 	return s, rec
 }
 
@@ -838,7 +840,6 @@ func TestSweep_FencedStopsTick(t *testing.T) {
 	s, rec := newFenceScheduler(t, spy, "farm-1")
 	ctx := deposedCtx(t, st)
 
-	ingestCaughtUp(s)
 	s.sweepOnce(ctx)
 
 	if got := spy.called(); !slices.Equal(got, []string{"ListStaleWorkers"}) {
@@ -876,7 +877,6 @@ func TestSweep_FencedAtEachStageStopsTick(t *testing.T) {
 			spy := &sweepSpy{Store: newCheckedFake(t), failAt: failAt}
 			s, rec := newFenceScheduler(t, spy, "farm-1")
 
-			ingestCaughtUp(s)
 			s.sweepOnce(t.Context())
 
 			want := sweepEntries
@@ -974,7 +974,6 @@ func TestReconcileAttempts_FencedStops(t *testing.T) {
 	at := created.Add(2 * time.Minute)
 	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil) // the worker reports holding nothing
 
-	ingestCaughtUp(s)
 	s.reconcileAttempts(deposedCtx(t, st), at, s.readIngest(at))
 
 	if n := spy.reclaims.Load(); n != 1 {

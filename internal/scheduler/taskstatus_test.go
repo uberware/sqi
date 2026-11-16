@@ -49,9 +49,11 @@ func newStatusTestSchedulerWithNotifier(st store.Store, notifier ws.Notifier) *S
 	// keep asserting the pre-auto-retry behavior: a single genuine failure
 	// goes straight to store.TaskStatusFailed. Retry/park-specific behavior is
 	// covered separately in failure_test.go.
+	//
+	// Its ingest trackers start caught up.
 	cfg := DefaultConfig()
 	cfg.DefaultMaxAttempts = 1
-	return New(
+	s := New(
 		cfg,
 		st,
 		&stubBus{}, // a stale running report publishes a cancel
@@ -60,6 +62,8 @@ func newStatusTestSchedulerWithNotifier(st store.Store, notifier ws.Notifier) *S
 		notifier,
 		nil, // diagBuf — diagnostics disabled
 	)
+	ingestCaughtUp(s)
+	return s
 }
 
 // recordingNotifier captures NotifyTask events for assertions; other Notify*
