@@ -51,12 +51,33 @@ func (c *Client) consumeErrHandler(name string) jetstream.ConsumeErrHandlerFunc 
 		case errors.Is(err, jetstream.ErrNoHeartbeat),
 			errors.Is(err, nats.ErrNoResponders),
 			errors.Is(err, jetstream.ErrConsumerLeadershipChanged):
+			c.markInterrupted()
 			c.logger.WarnContext(ctx, "bus: consumer pull interrupted; pulling again", attrs...)
 		default:
 			c.logger.WarnContext(ctx, "bus: consumer error", attrs...)
 		}
 	}
 }
+
+// Redelivery and retention settings of the server-side consumers and their
+// streams. The scheduler reads them to decide how long after an interruption
+// its view of the store may lag a stream.
+const (
+	// WorkerConsumerMaxDeliver and TaskStatusConsumerMaxDeliver are the
+	// delivery attempts the worker and task-status consumers allow a message.
+	WorkerConsumerMaxDeliver     = 10
+	TaskStatusConsumerMaxDeliver = 10
+
+	// WorkerConsumerAckWait and TaskStatusConsumerAckWait are how long the
+	// broker waits for an ack before redelivering.
+	WorkerConsumerAckWait     = 10 * time.Second
+	TaskStatusConsumerAckWait = 30 * time.Second
+
+	// WorkerStreamMaxAge and TaskStreamMaxAge are how long SQI_WORKER and
+	// SQI_TASK keep a message.
+	WorkerStreamMaxAge = 2 * time.Minute
+	TaskStreamMaxAge   = 24 * time.Hour
+)
 
 // ── Consumer name helpers ─────────────────────────────────────────────────────
 
@@ -98,8 +119,8 @@ func (c *Client) ConsumeTaskStatus(ctx context.Context, handler jetstream.Messag
 	cfg := jetstream.ConsumerConfig{
 		Durable:       taskStatusConsumerName,
 		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       30 * time.Second,
-		MaxDeliver:    10,
+		AckWait:       TaskStatusConsumerAckWait,
+		MaxDeliver:    TaskStatusConsumerMaxDeliver,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 		Description:   "Server-side task-status consumer.",
 	}
@@ -192,8 +213,8 @@ func (c *Client) ConsumeWorker(ctx context.Context, handler jetstream.MessageHan
 	cfg := jetstream.ConsumerConfig{
 		Durable:       workerConsumerName,
 		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       10 * time.Second,
-		MaxDeliver:    10,
+		AckWait:       WorkerConsumerAckWait,
+		MaxDeliver:    WorkerConsumerMaxDeliver,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 		Description:   "Server-side worker registration and heartbeat consumer.",
 	}

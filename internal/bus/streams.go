@@ -42,18 +42,21 @@ const (
 func streamDefs(replicas int) []jetstream.StreamConfig {
 	return []jetstream.StreamConfig{
 		{
-			// SQI_TASK — task.status.<worker>.<job>
+			// SQI_TASK — task.status.<worker>.<job>, sqi.marker.task
 			//
 			// Workers publish task-state transitions (running, succeeded, failed,
 			// canceled) to this stream keyed by job ID.  The server's status
 			// consumer reads and persists each update to SQLite.
 			// WorkQueuePolicy removes the message after the server acknowledges.
+			//
+			// The scheduler also publishes an empty ingest marker on
+			// sqi.marker.task; see [Client.PublishIngestMarkers].
 			Name:        StreamTask,
 			Description: "Task state transitions reported by workers.",
-			Subjects:    []string{SubjectTaskStatusPrefix + ".>"},
+			Subjects:    []string{SubjectTaskStatusPrefix + ".>", SubjectMarkerTask},
 			Retention:   jetstream.WorkQueuePolicy,
 			Storage:     jetstream.FileStorage,
-			MaxAge:      24 * time.Hour,
+			MaxAge:      TaskStreamMaxAge,
 			Discard:     jetstream.DiscardOld,
 			Replicas:    replicas,
 		},
@@ -79,7 +82,7 @@ func streamDefs(replicas int) []jetstream.StreamConfig {
 		},
 		{
 			// SQI_WORKER — worker.register.<worker>, worker.heartbeat.<worker>,
-			// worker.deregister.<worker>
+			// worker.deregister.<worker>, sqi.marker.worker
 			//
 			// Workers publish registration payloads on connect and reconnect,
 			// heartbeat pings on a configurable interval, and a departure message
@@ -92,16 +95,20 @@ func streamDefs(replicas int) []jetstream.StreamConfig {
 			// and should be discarded rather than processed out of order.
 			// Deregister messages also expire quickly — they have no retry value
 			// once processed.
+			//
+			// The scheduler also publishes an empty ingest marker on
+			// sqi.marker.worker; see [Client.PublishIngestMarkers].
 			Name:        StreamWorker,
 			Description: "Worker registration and heartbeat messages.",
 			Subjects: []string{
 				SubjectWorkerRegisterPrefix + ".>",
 				SubjectWorkerHeartbeatPrefix + ".>",
 				SubjectWorkerDeregisterPrefix + ".>",
+				SubjectMarkerWorker,
 			},
 			Retention: jetstream.WorkQueuePolicy,
 			Storage:   jetstream.FileStorage,
-			MaxAge:    2 * time.Minute,
+			MaxAge:    WorkerStreamMaxAge,
 			Discard:   jetstream.DiscardOld,
 			Replicas:  replicas,
 		},

@@ -112,6 +112,27 @@ func TestWorkerPermissions_ConfinesToOwnSubtree(t *testing.T) {
 	}
 }
 
+// TestMarkerSubjects_ServerOnly: the ingest markers are published by the
+// server alone. ServerPermissions is unrestricted (">" both ways), so the
+// server's credential covers them in both broker modes; a worker has no grant
+// to publish or subscribe on them.
+func TestMarkerSubjects_ServerOnly(t *testing.T) {
+	markers := []string{"sqi.marker.worker", "sqi.marker.task"}
+	worker := brokerauth.WorkerPermissions("worker-a")
+	server := brokerauth.ServerPermissions()
+	for _, s := range markers {
+		if subjectAllowed(worker.Publish, s) {
+			t.Errorf("a worker must NOT be able to publish %q", s)
+		}
+		if subjectAllowed(worker.Subscribe, s) {
+			t.Errorf("a worker must NOT be able to subscribe to %q", s)
+		}
+		if !subjectAllowed(server.Publish, s) {
+			t.Errorf("the server must be able to publish %q", s)
+		}
+	}
+}
+
 // TestWorkerPermissions_AllowsOneResponse: the worker answers a control
 // request it received through a response grant of one message, and holds no
 // general publish grant on reply subjects.

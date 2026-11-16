@@ -16,6 +16,8 @@
 //	worker.deregister.<worker>  — worker → server: graceful departure notification
 //	task.cancel.<worker>        — server → worker: interrupt a running task
 //	worker.control.<worker>     — server → worker: request/reply power command
+//	sqi.marker.worker           — server → server: ingest marker in SQI_WORKER
+//	sqi.marker.task             — server → server: ingest marker in SQI_TASK
 //
 // Every worker → server subject carries the publishing worker's ID directly
 // after its class prefix, and so does the one server → worker subject,
@@ -27,6 +29,10 @@
 // worker's own traffic" — and no way for the server to learn who published a
 // message it received. [ParseWorkerSubject] recovers the identity on the
 // receiving side.
+//
+// The marker subjects carry no worker and belong to the server alone: workers
+// hold no grant on them, and their prefix keeps them out of
+// [ParseWorkerSubject].
 //
 // The remaining tokens (<queue>, <job>, <task>) are the opaque string
 // identifiers of the corresponding entity in the SQLite store. Callers build
@@ -79,6 +85,15 @@ const (
 	// a JetStream ack in place of the worker's reply.
 	// Full subject: SubjectWorkerControlPrefix + "." + workerID.
 	SubjectWorkerControlPrefix = "worker.control"
+
+	// SubjectMarkerWorker and SubjectMarkerTask are the subjects of the ingest
+	// markers: empty messages the scheduler publishes into SQI_WORKER and
+	// SQI_TASK, and later receives on its own consumers. Handling one shows
+	// that everything stored in the stream before it has been handled. The
+	// "sqi." prefix sits outside "worker." and "task." so that no worker
+	// subject pattern, grant or [ParseWorkerSubject] shape can match them.
+	SubjectMarkerWorker = "sqi.marker.worker"
+	SubjectMarkerTask   = "sqi.marker.task"
 
 	// SubjectWorkLeasePrefix is the prefix for worker work-lease requests.
 	// Full subject: SubjectWorkLeasePrefix + "." + workerID + "." + queueID.
