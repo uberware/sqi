@@ -233,3 +233,57 @@ func TestControlResponder_StopUnsubscribesBeforeWaiting(t *testing.T) {
 		t.Errorf("registrations = %d, want 1", n)
 	}
 }
+
+// A reregister that reaches handle after stop, as one already running on the
+// subscription's goroutine can, is refused and starts no registration.
+func TestControlResponder_ReregisterAfterStopIsRefused(t *testing.T) {
+	ns, err := natsserver.NewServer(&natsserver.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ns.Start()
+	t.Cleanup(ns.Shutdown)
+	if !ns.ReadyForConnections(5 * time.Second) {
+		t.Fatal("NATS server not ready")
+	}
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+
+	var registrations atomic.Int64
+	r := &controlResponder{ctx: t.Context(), logger: slog.New(slog.DiscardHandler), register: func(context.Context) error {
+		registrations.Add(1)
+		return nil
+	}}
+	r.stop()
+
+	data, err := json.Marshal(protocol.ControlMsg{
+		Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlReregister,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbox := nc.NewInbox()
+	replies, err := nc.SubscribeSync(inbox)
+	if err != nil {
+		t.Fatalf("SubscribeSync: %v", err)
+	}
+	r.handle(&nats.Msg{Subject: "control", Reply: inbox, Data: data, Sub: replies})
+	msg, err := replies.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("no reply: %v", err)
+	}
+	var reply protocol.ControlReplyMsg
+	if err := json.Unmarshal(msg.Data, &reply); err != nil {
+		t.Fatalf("decode reply %q: %v", msg.Data, err)
+	}
+	if reply.Accepted || reply.Reason != refusalStopping {
+		t.Errorf("reply = %+v, want a refusal with reason %q", reply, refusalStopping)
+	}
+	r.wg.Wait()
+	if n := registrations.Load(); n != 0 {
+		t.Errorf("registrations = %d, want 0", n)
+	}
+}

@@ -22,6 +22,10 @@ import (
 // wake packets from.
 const refusalSimulated = "simulated worker: power commands are not supported"
 
+// refusalStopping is the reason a reregister is refused once the responder is
+// being stopped.
+const refusalStopping = "simulated worker: stopping"
+
 // controlResponder answers the control requests on worker.control.<workerID>
 // for one simulated worker process, as a real worker's power controller does
 // for the one command a simulated worker can carry out: reregister. It accepts
@@ -43,6 +47,12 @@ type controlResponder struct {
 	// answers every request made before it lands.
 	registering atomic.Bool
 	wg          sync.WaitGroup
+
+	// mu orders accepting a reregister (which counts a registration in wg)
+	// against stop. stopped is set under it, and once set no registration is
+	// counted, so wg.Wait never races an Add.
+	mu      sync.Mutex
+	stopped bool
 
 	// sub is the control subscription, set by subscribeControl.
 	sub *nats.Subscription
@@ -68,28 +78,43 @@ func subscribeControl(nc *nats.Conn, workerID string, r *controlResponder) error
 	return nil
 }
 
-// handle answers one control request on the subscription's goroutine. The
-// registration runs on a goroutine of its own afterwards, so a slow broker
-// holds up neither the reply nor the next request.
+// handle answers one control request on the subscription's goroutine. An
+// accepted reregister is counted in wg before the reply goes out, so a caller
+// that stops the responder on seeing the reply waits for the registration, and
+// the registration starts whether or not the reply could be sent. It runs on a
+// goroutine of its own, so a slow broker holds up neither the reply nor the
+// next request. Once the responder is stopped a reregister is refused.
 func (r *controlResponder) handle(m *nats.Msg) {
 	reply, accepted := r.decide(m.Data)
+	launch := false
+	if accepted {
+		r.mu.Lock()
+		switch {
+		case r.stopped:
+			reply = protocol.ControlReplyMsg{Reason: refusalStopping}
+		case r.registering.CompareAndSwap(false, true):
+			r.wg.Add(1)
+			launch = true
+		}
+		r.mu.Unlock()
+	}
 	data, err := json.Marshal(reply)
 	if err == nil {
 		err = m.Respond(data)
 	}
 	if err != nil {
 		r.logger.WarnContext(r.ctx, "simworker: could not answer a control request", slog.Any("error", err))
+	}
+	if !launch {
 		return
 	}
-	if !accepted || !r.registering.CompareAndSwap(false, true) {
-		return
-	}
-	r.wg.Go(func() {
+	go func() {
+		defer r.wg.Done()
 		defer r.registering.Store(false)
 		if err := r.register(r.ctx); err != nil {
 			r.logger.DebugContext(r.ctx, "simworker: re-registration the server asked for failed", slog.Any("error", err))
 		}
-	})
+	}()
 }
 
 // decide returns the reply to data and whether it accepts a reregister.
@@ -112,10 +137,14 @@ func (*controlResponder) decide(data []byte) (protocol.ControlReplyMsg, bool) {
 	}
 }
 
-// stop unsubscribes from the control subject, then waits for a
-// re-registration still running. Unsubscribing first means no request can be
-// accepted, and start a registration, once the wait has begun.
+// stop refuses further reregisters, unsubscribes from the control subject,
+// then waits for every registration already accepted. A request handler still
+// running when the unsubscribe returns either counted its registration before
+// stop took the lock, and is waited for, or finds the responder stopped.
 func (r *controlResponder) stop() {
+	r.mu.Lock()
+	r.stopped = true
+	r.mu.Unlock()
 	if r.sub != nil {
 		if err := r.sub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
 			r.logger.WarnContext(r.ctx, "simworker: unsubscribe from the control subject", slog.Any("error", err))
