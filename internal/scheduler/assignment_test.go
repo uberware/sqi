@@ -64,7 +64,7 @@ func (*recordBus) RequestWorkerControl(context.Context, string, []byte) ([]byte,
 	return nil, nats.ErrNoResponders
 }
 
-func (*recordBus) PublishIngestMarkers(context.Context) error { return nil }
+func (*recordBus) PublishIngestMarkers(context.Context, time.Duration) error { return nil }
 
 // newMetricsScheduler builds a Scheduler with a real metrics registry so the
 // gauge helpers do not nil-panic. cfg.FarmID is set to farmID.

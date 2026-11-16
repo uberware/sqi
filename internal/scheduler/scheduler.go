@@ -80,6 +80,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -322,7 +323,7 @@ type busClient interface {
 	SubscribeWorkerDiag(handler func(subject string, data []byte)) (*nats.Subscription, error)
 	SubscribeLease(handler func(workerID, queueID string, data []byte) []byte) (*nats.Subscription, error)
 	RequestWorkerControl(ctx context.Context, workerID string, data []byte) ([]byte, error)
-	PublishIngestMarkers(ctx context.Context) error
+	PublishIngestMarkers(ctx context.Context, timeout time.Duration) error
 }
 
 // Scheduler owns the assignment loop, worker registry, and heartbeat sweep.
@@ -482,9 +483,6 @@ type Scheduler struct {
 	ingestWorker *ingestTracker
 	ingestTask   *ingestTracker
 
-	// ingestLoop is the marker loop's state between ticks.
-	ingestLoop ingestLoopState
-
 	// interrupt is the newest bus interruption the trackers were held for;
 	// see [Scheduler.checkBusInterruption].
 	interrupt interruptSeen
@@ -493,9 +491,9 @@ type Scheduler struct {
 	// first delivery of; see [Scheduler.noteWorkerDelivery].
 	workerSeq firstDeliverySeq
 
-	// heldBack remembers whether the liveness sweep is in a held-back
-	// episode; see [Scheduler.logIngestHeldBack].
-	heldBack heldBackLog
+	// heldBack is set while the liveness sweep is in a held-back episode, so
+	// an episode is logged once; see [Scheduler.logIngestHeldBack].
+	heldBack atomic.Bool
 
 	// now is the clock of the marker loop, the heartbeat sweep, the
 	// stuck-assigned reap, attempt reconciliation, the ingest gauges and the
@@ -521,6 +519,9 @@ type deferralLog struct {
 // WebSocket hub can fan them out to subscribed clients. Pass
 // [ws.NoopNotifier] (or nil, which is treated as NoopNotifier) when no
 // WebSocket hub is wired.
+//
+// m receives the scheduler's metrics. Nil is treated as a fresh
+// [metrics.New], so the scheduler never checks for it.
 //
 // diagBuf, when non-nil, enables worker diagnostic-log ingestion: the scheduler
 // subscribes to worker.diag.> and appends records under "worker:<id>". Pass nil
@@ -566,6 +567,9 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	n := notifier
 	if n == nil {
 		n = ws.NoopNotifier{}
+	}
+	if m == nil {
+		m = metrics.New()
 	}
 	var rec *reconciler
 	if cfg.ReconcileGrace > 0 {
@@ -627,7 +631,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	s.cancel = cancel
 	s.stopMu.Unlock()
-	s.startedAt = time.Now().UTC()
+	s.startedAt = s.now().UTC()
 	s.ctx = ctx
 
 	s.logger.InfoContext(

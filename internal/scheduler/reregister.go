@@ -29,10 +29,6 @@ const (
 	reregisterMaxInFlight = 32
 	// reregisterRequestTimeout bounds one reregister request.
 	reregisterRequestTimeout = 5 * time.Second
-	// reregisterForgetAfter is how many WorkerTimeouts an ask is remembered
-	// for before the sweep drops it. Any multiple above one keeps the rate
-	// limit; the entry only has to outlive it.
-	reregisterForgetAfter = 4
 )
 
 // reregisterAsks tracks the reregister requests: when each worker was last
@@ -145,14 +141,14 @@ func (s *Scheduler) askReregister(ctx context.Context, workerID string) {
 
 // countReregister counts one reregister request by outcome.
 func (s *Scheduler) countReregister(outcome string) {
-	if s.metrics != nil {
-		s.metrics.SchedulerWorkerReregisterRequests.WithLabelValues(outcome).Inc()
-	}
+	s.metrics.SchedulerWorkerReregisterRequests.WithLabelValues(outcome).Inc()
 }
 
-// pruneReregisterAsks is the sweep's place for dropping old reregister asks.
+// pruneReregisterAsks is the sweep's place for dropping old reregister asks:
+// those made more than a WorkerTimeout ago, which the rate limit no longer
+// counts ([reregisterAsks.claim]).
 func (s *Scheduler) pruneReregisterAsks(context.Context) {
-	s.reregister.prune(s.now().Add(-reregisterForgetAfter * s.cfg.WorkerTimeout))
+	s.reregister.prune(s.now().Add(-s.cfg.WorkerTimeout))
 }
 
 // closeReregisterCalls refuses later reregister requests and waits, briefly,

@@ -22,22 +22,22 @@ import (
 )
 
 // markerBus is a busClient whose PublishIngestMarkers counts its calls,
-// runs onPublish when set, records the context's deadline and returns err.
+// runs onPublish when set, records the timeout and returns err.
 type markerBus struct {
 	recordBus
 
-	mu           sync.Mutex
-	err          error
-	calls        int
-	onPublish    func()
-	lastDeadline time.Time
+	mu          sync.Mutex
+	err         error
+	calls       int
+	onPublish   func()
+	lastTimeout time.Duration
 }
 
-func (b *markerBus) PublishIngestMarkers(ctx context.Context) error {
+func (b *markerBus) PublishIngestMarkers(_ context.Context, timeout time.Duration) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls++
-	b.lastDeadline, _ = ctx.Deadline()
+	b.lastTimeout = timeout
 	if b.onPublish != nil {
 		b.onPublish()
 	}
@@ -325,11 +325,13 @@ func TestRunIngestMarkers_PublishFailureDoesNotAdvance(t *testing.T) {
 	}
 
 	// The loop's own ticker may have fired once more under a loaded host, so
-	// count only the ticks driven here.
+	// count only the ticks driven here, which keep their own loop state.
 	before := b.published()
+	logs.Reset()
+	var loop ingestLoopState
 	for range 4 {
 		clock.t = clock.t.Add(ingestMarkerInterval)
-		s.ingestMarkerTick(t.Context())
+		s.ingestMarkerTick(t.Context(), &loop)
 	}
 	if got := b.published() - before; got != 4 {
 		t.Errorf("published %d times in 4 ticks, want 4", got)
@@ -348,12 +350,12 @@ func TestRunIngestMarkers_PublishFailureDoesNotAdvance(t *testing.T) {
 	b.err = nil
 	b.mu.Unlock()
 	clock.t = clock.t.Add(ingestMarkerInterval)
-	s.ingestMarkerTick(t.Context())
+	s.ingestMarkerTick(t.Context(), &loop)
 	b.mu.Lock()
 	b.err = errors.New("broker unreachable")
 	b.mu.Unlock()
 	clock.t = clock.t.Add(ingestMarkerInterval)
-	s.ingestMarkerTick(t.Context())
+	s.ingestMarkerTick(t.Context(), &loop)
 	if n := strings.Count(logs.String(), "broker unreachable"); n != 2 {
 		t.Errorf("publish failure logged %d times across two outages, want twice:\n%s", n, logs.String())
 	}
@@ -382,7 +384,8 @@ func TestRunIngestMarkers_PauseHolds(t *testing.T) {
 			s := newIngestScheduler(cfg, b, &logs)
 			s.now = clock.now
 
-			s.ingestMarkerTick(t.Context())
+			var loop ingestLoopState
+			s.ingestMarkerTick(t.Context(), &loop)
 			b.mu.Lock()
 			b.onPublish = nil
 			b.mu.Unlock()
@@ -391,7 +394,7 @@ func TestRunIngestMarkers_PauseHolds(t *testing.T) {
 			s.ingestWorker.marker(caught)
 			s.ingestTask.marker(caught)
 			clock.t = prevEnd.Add(tc.gap)
-			s.ingestMarkerTick(t.Context())
+			s.ingestMarkerTick(t.Context(), &loop)
 
 			during := clock.t.Add(cfg.WorkerTimeout - time.Millisecond)
 			after := clock.t.Add(cfg.WorkerTimeout + time.Millisecond)
@@ -428,8 +431,9 @@ func TestRunIngestMarkers_SlowPublishIsNotAPause(t *testing.T) {
 	s.ingestWorker.marker(caught)
 	s.ingestTask.marker(caught)
 
+	var loop ingestLoopState
 	for range 5 {
-		s.ingestMarkerTick(t.Context())
+		s.ingestMarkerTick(t.Context(), &loop)
 		clock.t = clock.t.Add(ingestMarkerInterval)
 	}
 
@@ -443,21 +447,21 @@ func TestRunIngestMarkers_SlowPublishIsNotAPause(t *testing.T) {
 	}
 }
 
-// TestRunIngestMarkers_PublishHasADeadline: the publish is bounded by
+// TestRunIngestMarkers_PublishHasADeadline: each publish is bounded by
 // ingestMarkerInterval, so a stalled broker cannot hold up the loop.
 func TestRunIngestMarkers_PublishHasADeadline(t *testing.T) {
 	b := &markerBus{}
 	s := newIngestScheduler(DefaultConfig(), b, &bytes.Buffer{})
-	start := time.Now()
-	s.ingestMarkerTick(t.Context())
+	var loop ingestLoopState
+	s.ingestMarkerTick(t.Context(), &loop)
 	b.mu.Lock()
-	deadline := b.lastDeadline
+	timeout := b.lastTimeout
 	b.mu.Unlock()
-	if deadline.IsZero() {
-		t.Fatal("PublishIngestMarkers was called with no deadline")
+	if timeout <= 0 {
+		t.Fatalf("PublishIngestMarkers was called with timeout %v, want a bound", timeout)
 	}
-	if limit := start.Add(ingestMarkerInterval); deadline.After(limit.Add(time.Second)) {
-		t.Errorf("publish deadline %v is later than one marker interval (%v) after the tick", deadline, limit)
+	if timeout > ingestMarkerInterval {
+		t.Errorf("publish timeout %v is longer than one marker interval (%v)", timeout, ingestMarkerInterval)
 	}
 }
 

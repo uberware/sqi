@@ -24,8 +24,8 @@ const (
 	ingestPauseThreshold = 3 * ingestMarkerInterval
 )
 
-// ingestLoopState is what the marker loop keeps between ticks. Only the
-// marker loop goroutine touches it.
+// ingestLoopState is what the marker loop keeps between ticks, a local of
+// [Scheduler.runIngestMarkers].
 type ingestLoopState struct {
 	// prevTick is the time of the previous tick, zero before the first.
 	prevTick time.Time
@@ -62,26 +62,27 @@ func (s *Scheduler) runIngestMarkers(ctx context.Context) {
 	ticker := time.NewTicker(ingestMarkerInterval)
 	defer ticker.Stop()
 
-	s.ingestMarkerTick(ctx)
+	var loop ingestLoopState
+	s.ingestMarkerTick(ctx, &loop)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.ingestMarkerTick(ctx)
+			s.ingestMarkerTick(ctx, &loop)
 		}
 	}
 }
 
 // ingestMarkerTick is one tick of [Scheduler.runIngestMarkers]: it holds the
 // trackers after a process pause or a bus interruption, then publishes the
-// markers.
-func (s *Scheduler) ingestMarkerTick(ctx context.Context) {
+// markers. loop is the state the loop keeps between ticks.
+func (s *Scheduler) ingestMarkerTick(ctx context.Context, loop *ingestLoopState) {
 	now := s.now()
-	prev := s.ingestLoop.prevTick
+	prev := loop.prevTick
 	// The gap runs from the end of the previous tick's work, so a slow
 	// publish is not mistaken for a pause.
-	defer func() { s.ingestLoop.prevTick = s.now() }()
+	defer func() { loop.prevTick = s.now() }()
 	// A gap far longer than the ticker's period means the process stopped
 	// running. Measured on the monotonic clock when both times carry it.
 	if !prev.IsZero() {
@@ -94,17 +95,17 @@ func (s *Scheduler) ingestMarkerTick(ctx context.Context) {
 	}
 	s.checkBusInterruption(now)
 
-	// Bounded, so a stalled broker cannot hold up the next tick's checks.
-	pubCtx, cancel := context.WithTimeout(ctx, ingestMarkerInterval)
-	defer cancel()
-	if err := s.bus.PublishIngestMarkers(pubCtx); err != nil {
-		if !s.ingestLoop.publishFailing && ctx.Err() == nil {
+	// Each publish is bounded, so a stalled broker cannot hold up the next
+	// tick's checks for long, and a stall on one stream cannot keep the other
+	// stream's marker back.
+	if err := s.bus.PublishIngestMarkers(ctx, ingestMarkerInterval); err != nil {
+		if !loop.publishFailing && ctx.Err() == nil {
 			s.logger.DebugContext(ctx, "scheduler: publish ingest markers failed", slog.Any("error", err))
 		}
-		s.ingestLoop.publishFailing = true
+		loop.publishFailing = true
 		return
 	}
-	s.ingestLoop.publishFailing = false
+	loop.publishFailing = false
 }
 
 // checkBusInterruption holds each tracker for its consumer's AckWait from the

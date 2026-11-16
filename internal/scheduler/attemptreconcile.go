@@ -269,9 +269,7 @@ func (s *Scheduler) cancelClosedAttempts(ctx context.Context, held map[string]he
 
 // countCancelResent counts one cancel cancelClosedAttempts sends, by cause.
 func (s *Scheduler) countCancelResent(cause string) {
-	if s.metrics != nil {
-		s.metrics.SchedulerCancelsResent.WithLabelValues(cause).Inc()
-	}
+	s.metrics.SchedulerCancelsResent.WithLabelValues(cause).Inc()
 }
 
 // reclaimUnreportedAttempt hands one unreported attempt's task back through
@@ -280,9 +278,7 @@ func (s *Scheduler) countCancelResent(cause string) {
 func (s *Scheduler) reclaimUnreportedAttempt(ctx context.Context, a store.OpenAttempt, now time.Time) {
 	reclaimed, err := s.reclaimAttempt(ctx, a.AttemptID, a.TaskID, now)
 	if reclaimed {
-		if s.metrics != nil {
-			s.metrics.SchedulerTasksReconciled.Inc()
-		}
+		s.metrics.SchedulerTasksReconciled.Inc()
 		s.logger.WarnContext(ctx, "scheduler: reclaimed an attempt its worker no longer reports",
 			slog.String("worker_id", a.WorkerID), slog.String("task_id", a.TaskID),
 			slog.String("attempt_id", a.AttemptID), slog.Duration("open_for", now.Sub(a.CreatedAt)))

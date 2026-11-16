@@ -79,7 +79,7 @@ func TestPublishIngestMarkers_LandInBothStreams(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := c.PublishIngestMarkers(ctx); err != nil {
+	if err := c.PublishIngestMarkers(ctx, 5*time.Second); err != nil {
 		t.Fatalf("PublishIngestMarkers: %v", err)
 	}
 
@@ -111,7 +111,7 @@ func TestPublishIngestMarkers_ReturnsBothErrors(t *testing.T) {
 	b := startBroker(t)
 	c := newClient(t, b)
 	c.Close()
-	err := c.PublishIngestMarkers(context.Background())
+	err := c.PublishIngestMarkers(context.Background(), time.Second)
 	if err == nil {
 		t.Fatal("PublishIngestMarkers on a closed client returned nil")
 	}
@@ -119,6 +119,46 @@ func TestPublishIngestMarkers_ReturnsBothErrors(t *testing.T) {
 		if !strings.Contains(err.Error(), subject) {
 			t.Errorf("error %q does not name %s", err, subject)
 		}
+	}
+}
+
+// TestPublishMarkers_EachHasItsOwnTimeout: a publish that stalls for its
+// whole timeout does not shorten the other's, so a stall on one stream cannot
+// keep the other stream's marker from being published.
+func TestPublishMarkers_EachHasItsOwnTimeout(t *testing.T) {
+	const timeout = 50 * time.Millisecond
+	type call struct {
+		subject string
+		start   time.Time
+		left    time.Duration // time to the deadline when the publish started
+	}
+	var calls []call
+	publish := func(ctx context.Context, subject string, data []byte) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Errorf("publish of %s has no deadline", subject)
+		}
+		if data != nil {
+			t.Errorf("publish of %s carries %q, want an empty body", subject, data)
+		}
+		calls = append(calls, call{subject: subject, start: time.Now(), left: time.Until(deadline)})
+		if subject == SubjectMarkerWorker {
+			<-ctx.Done() // the worker stream stalls for the whole timeout
+			return ctx.Err()
+		}
+		return nil
+	}
+
+	err := publishMarkers(context.Background(), timeout, publish)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error = %v, want the stalled publish's deadline", err)
+	}
+	if len(calls) != 2 || calls[0].subject != SubjectMarkerWorker || calls[1].subject != SubjectMarkerTask {
+		t.Fatalf("publishes = %+v, want the worker marker then the task marker", calls)
+	}
+	if left := calls[1].left; left < timeout/2 {
+		t.Errorf("the task marker's publish started with %v to its deadline, want about %v", left, timeout)
 	}
 }
 

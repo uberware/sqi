@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	nats "github.com/nats-io/nats.go"
@@ -62,7 +63,7 @@ func (*stubBus) RequestWorkerControl(context.Context, string, []byte) ([]byte, e
 	return nil, nats.ErrNoResponders
 }
 
-func (*stubBus) PublishIngestMarkers(context.Context) error { return nil }
+func (*stubBus) PublishIngestMarkers(context.Context, time.Duration) error { return nil }
 
 func (b *stubBus) PublishTaskCancel(_ context.Context, workerID string, data []byte) error {
 	var m protocol.TaskCancelMsg

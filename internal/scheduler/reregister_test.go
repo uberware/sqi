@@ -143,8 +143,9 @@ func TestHeartbeat_ReregisterRateLimited(t *testing.T) {
 }
 
 // The rate limit and the sweep's prune run on the scheduler's clock: a
-// heartbeat a WorkerTimeout later on that clock asks again, and a prune a
-// long while later forgets the ask.
+// heartbeat a WorkerTimeout later on that clock asks again, a prune keeps an
+// ask the rate limit still counts, and a prune more than a WorkerTimeout
+// later forgets it.
 func TestHeartbeat_ReregisterUsesSchedulerClock(t *testing.T) {
 	f := newActFixture(t, nil)
 	offlineWorker(t, f.st, "w1")
@@ -160,7 +161,16 @@ func TestHeartbeat_ReregisterUsesSchedulerClock(t *testing.T) {
 		t.Fatalf("reregister requests = %d, want 2: the second heartbeat is a WorkerTimeout later", n)
 	}
 
-	clock.t = clock.t.Add((reregisterForgetAfter + 1) * f.s.cfg.WorkerTimeout)
+	clock.t = clock.t.Add(f.s.cfg.WorkerTimeout - time.Second)
+	f.s.pruneReregisterAsks(t.Context())
+	if n := f.s.reregister.size(); n != 1 {
+		t.Fatalf("entries after a prune within a WorkerTimeout of the ask = %d, want 1", n)
+	}
+	if f.s.reregister.claim("w1", clock.t, f.s.cfg.WorkerTimeout) {
+		t.Fatal("the rate limit let w1 be asked again within a WorkerTimeout")
+	}
+
+	clock.t = clock.t.Add(2 * time.Second)
 	f.s.pruneReregisterAsks(t.Context())
 	if n := f.s.reregister.size(); n != 0 {
 		t.Fatalf("entries after a prune long after the ask = %d, want 0", n)

@@ -6,19 +6,10 @@ import (
 	"context"
 	"log/slog"
 	"maps"
-	"sync"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
-
-// heldBackLog is the state behind [Scheduler.logIngestHeldBack].
-type heldBackLog struct {
-	mu sync.Mutex
-	// active is set while the consumers trail now by more than a sweep
-	// interval, so an episode is logged once.
-	active bool
-}
 
 // ingestView is what one sweep tick's liveness checks read from the ingest
 // trackers. It is read once per tick, so every check on the tick judges the
@@ -128,12 +119,7 @@ func (s *Scheduler) assignedReapCutoff(v ingestView) (time.Time, bool) {
 // consumer that has processed no marker yet trails by all of now.
 func (s *Scheduler) logIngestHeldBack(ctx context.Context, now, effW, effT time.Time) {
 	behind := now.Sub(effW) > s.cfg.HeartbeatSweepInterval || now.Sub(effT) > s.cfg.HeartbeatSweepInterval
-	h := &s.heldBack
-	h.mu.Lock()
-	start := behind && !h.active
-	h.active = behind
-	h.mu.Unlock()
-	if !start {
+	if was := s.heldBack.Swap(behind); !behind || was {
 		return
 	}
 	s.logger.InfoContext(ctx, "scheduler: liveness sweep held back until the consumers catch up",
