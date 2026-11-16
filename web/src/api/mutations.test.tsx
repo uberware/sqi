@@ -13,6 +13,7 @@ import {
   fetchRemoveWorker,
   fetchDeleteJob,
   fetchResumeJob,
+  fetchPauseJob,
   useSubmitJob,
   useCancelJob,
   useRetryTask,
@@ -22,6 +23,7 @@ import {
   useRemoveWorker,
   useDeleteJob,
   useResumeJob,
+  usePauseJob,
   useSetJobEstimate,
   fetchCreateStorageLocation,
   fetchUpdateStorageLocation,
@@ -226,6 +228,18 @@ describe('fetchResumeJob', () => {
   })
 })
 
+// ── fetchPauseJob ─────────────────────────────────────────────────────────────
+
+describe('fetchPauseJob', () => {
+  it('sends PATCH to /api/v1/jobs/:id with { action: "pause" }', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'job-1', status: 'paused' }))
+    await fetchPauseJob('job-1')
+    expect(calledUrl()).toBe('/api/v1/jobs/job-1')
+    expect(calledInit().method).toBe('PATCH')
+    expect(JSON.parse(calledInit().body as string)).toEqual({ action: 'pause' })
+  })
+})
+
 // ── fetchRetryTask ────────────────────────────────────────────────────────────
 
 describe('fetchRetryTask', () => {
@@ -392,6 +406,22 @@ describe('useResumeJob', () => {
     expect(calledUrl()).toBe('/api/v1/jobs/job-1')
     expect(calledInit().method).toBe('PATCH')
     expect(JSON.parse(calledInit().body as string)).toEqual({ action: 'resume' })
+  })
+})
+
+describe('usePauseJob', () => {
+  it('invalidates jobs on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'job-1', status: 'paused' }))
+
+    const { result } = renderHook(() => usePauseJob(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('job-1')
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.jobs.all })
   })
 })
 

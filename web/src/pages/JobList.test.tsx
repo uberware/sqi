@@ -1114,6 +1114,266 @@ describe('JobList', () => {
     })
   })
 
+  // ── Bulk pause and resume ─────────────────────────────────────────────────────
+
+  describe('bulk pause and resume', () => {
+    function renderJobList(jobs: Job[]) {
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse(jobs)))
+      render(<JobList />, { wrapper: Wrapper })
+    }
+
+    /** PATCH bodies sent to /jobs/{id}, keyed by job id. */
+    function patchedActions(): Record<string, unknown> {
+      const out: Record<string, unknown> = {}
+      for (const [url, init] of fetchMock.mock.calls) {
+        if (typeof url !== 'string' || init?.method !== 'PATCH') continue
+        const id = url.split('/jobs/')[1] ?? ''
+        out[id] = (JSON.parse(init.body as string) as { action: unknown }).action
+      }
+      return out
+    }
+
+    const MIXED = [
+      makeJob({ id: 'jr', name: 'Running', status: 'running' }),
+      makeJob({ id: 'jp', name: 'Pending', status: 'pending' }),
+      makeJob({ id: 'jz', name: 'Paused', status: 'paused' }),
+    ]
+
+    it('counts only the selected jobs each action applies to', async () => {
+      const user = userEvent.setup()
+      renderJobList(MIXED)
+
+      await waitFor(() => screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select all/i }))
+
+      expect(screen.getByRole('button', { name: 'Pause selected (2)' })).toBeEnabled()
+      expect(screen.getByRole('button', { name: 'Resume selected (1)' })).toBeEnabled()
+    })
+
+    it('pauses only the selected pending and running jobs', async () => {
+      const user = userEvent.setup()
+      renderJobList(MIXED)
+      fetchMock.mockResolvedValue(okJson(makeJob({ status: 'paused' })))
+
+      await waitFor(() => screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('button', { name: 'Pause selected (2)' }))
+
+      await waitFor(() => {
+        expect(patchedActions()).toEqual({ jr: 'pause', jp: 'pause' })
+      })
+    })
+
+    it('resumes only the selected paused jobs', async () => {
+      const user = userEvent.setup()
+      renderJobList(MIXED)
+      fetchMock.mockResolvedValue(okJson(makeJob({ status: 'pending' })))
+
+      await waitFor(() => screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('button', { name: 'Resume selected (1)' }))
+
+      await waitFor(() => {
+        expect(patchedActions()).toEqual({ jz: 'resume' })
+      })
+    })
+
+    it('disables Pause when no selected job can be paused, and Resume likewise', async () => {
+      const user = userEvent.setup()
+      renderJobList(MIXED)
+
+      await waitFor(() => screen.getByRole('checkbox', { name: /Select job Paused/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select job Paused/i }))
+      expect(screen.getByRole('button', { name: 'Pause selected (0)' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Resume selected (1)' })).toBeEnabled()
+
+      await user.click(screen.getByRole('checkbox', { name: /Select job Paused/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select job Running/i }))
+      expect(screen.getByRole('button', { name: 'Pause selected (1)' })).toBeEnabled()
+      expect(screen.getByRole('button', { name: 'Resume selected (0)' })).toBeDisabled()
+    })
+
+    it('does not offer Pause for a blocked job', async () => {
+      const user = userEvent.setup()
+      renderJobList([makeJob({ id: 'jb', name: 'Blocked', status: 'blocked' })])
+
+      await waitFor(() => screen.getByRole('checkbox', { name: /Select job Blocked/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select job Blocked/i }))
+      expect(screen.getByRole('button', { name: 'Pause selected (0)' })).toBeDisabled()
+    })
+
+    it('keeps going past a failed pause and reports it', async () => {
+      const user = userEvent.setup()
+      renderJobList(MIXED)
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ status: 409, title: 'job cannot be paused in its current state' }),
+          { status: 409, headers: { 'Content-Type': 'application/problem+json' } },
+        ),
+      )
+      fetchMock.mockResolvedValue(okJson(makeJob({ status: 'paused' })))
+
+      await waitFor(() => screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('button', { name: 'Pause selected (2)' }))
+
+      await waitFor(() => {
+        expect(patchedActions()).toEqual({ jr: 'pause', jp: 'pause' })
+      })
+      expect(await screen.findByText(/Pause failed for 1 of 2 jobs/i)).toBeInTheDocument()
+    })
+  })
+
+  // ── Bulk action failures ──────────────────────────────────────────────────────
+
+  describe('bulk action failures', () => {
+    function problem(status: number, detail: string): Response {
+      return new Response(JSON.stringify({ type: 'about:blank', title: 'Error', status, detail }), {
+        status,
+        headers: { 'Content-Type': 'application/problem+json' },
+      })
+    }
+
+    /**
+     * Serve the job list for every GET and answer each mutation from `answer`,
+     * so invalidation refetches never consume a mutation's response.
+     */
+    function serve(jobs: Job[], answer: (url: string, method: string) => Response) {
+      fetchMock.mockImplementation((input, init) => {
+        const url = typeof input === 'string' ? input : input.toString()
+        const method = init?.method ?? 'GET'
+        if (method === 'GET') return Promise.resolve(okJson(makeListResponse(jobs)))
+        return Promise.resolve(answer(url, method))
+      })
+      render(<JobList />, { wrapper: Wrapper })
+    }
+
+    const RETRYABLE: TaskCounts = {
+      total: 1,
+      pending: 0,
+      ready: 0,
+      assigned: 0,
+      running: 0,
+      succeeded: 0,
+      failed: 1,
+      canceled: 0,
+    }
+
+    it('reports a cancel that fails before a later one succeeds', async () => {
+      const user = userEvent.setup()
+      serve(
+        [
+          makeJob({ id: 'j1', name: 'Job 1', status: 'running' }),
+          makeJob({ id: 'j2', name: 'Job 2', status: 'running' }),
+        ],
+        (url) =>
+          url.includes('/jobs/j1/')
+            ? problem(409, 'job already completed')
+            : new Response(null, { status: 204 }),
+      )
+
+      await waitFor(() => screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('button', { name: 'Cancel selected (2)' }))
+
+      expect(
+        await screen.findByText('Cancel failed for 1 of 2 jobs: job already completed'),
+      ).toBeInTheDocument()
+    })
+
+    it('reports a retry that fails before a later one succeeds', async () => {
+      const user = userEvent.setup()
+      serve(
+        [
+          makeJob({ id: 'j1', name: 'Job 1', status: 'failed', task_counts: RETRYABLE }),
+          makeJob({ id: 'j2', name: 'Job 2', status: 'failed', task_counts: RETRYABLE }),
+        ],
+        (url) =>
+          url.includes('/jobs/j1/') ? problem(500, 'boom') : okJson({ job_id: 'j2', retried: 1 }),
+      )
+
+      await waitFor(() => screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('button', { name: 'Retry selected (2)' }))
+
+      expect(await screen.findByText('Retry failed for 1 of 2 jobs: boom')).toBeInTheDocument()
+    })
+
+    it('reports a delete that fails before a later one succeeds', async () => {
+      const user = userEvent.setup()
+      serve(
+        [
+          makeJob({ id: 'j1', name: 'Job 1', status: 'failed', task_counts: RETRYABLE }),
+          makeJob({ id: 'j2', name: 'Job 2', status: 'failed', task_counts: RETRYABLE }),
+        ],
+        (url) =>
+          url.endsWith('/jobs/j1')
+            ? problem(500, 'disk full')
+            : new Response(null, { status: 204 }),
+      )
+
+      await waitFor(() => screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('button', { name: 'Delete selected (2)' }))
+      await user.click(screen.getByRole('button', { name: /^delete$/i }))
+
+      expect(
+        await screen.findByText('Delete failed for 1 of 2 jobs: disk full'),
+      ).toBeInTheDocument()
+    })
+
+    it('reports a single-row failure without a count', async () => {
+      const user = userEvent.setup()
+      serve([makeJob({ id: 'j1', name: 'Job 1', status: 'running' })], () =>
+        problem(409, 'job already completed'),
+      )
+
+      await user.click(await screen.findByRole('button', { name: 'Cancel job Job 1' }))
+
+      expect(await screen.findByText('Cancel failed: job already completed')).toBeInTheDocument()
+    })
+
+    it("keeps one action's failure when a different action later succeeds", async () => {
+      const user = userEvent.setup()
+      serve(
+        [
+          makeJob({ id: 'j1', name: 'Job 1', status: 'running' }),
+          makeJob({ id: 'j2', name: 'Job 2', status: 'failed', task_counts: RETRYABLE }),
+        ],
+        (url) =>
+          url.includes('/cancel') ? problem(409, 'nope') : okJson({ job_id: 'j2', retried: 1 }),
+      )
+
+      await user.click(await screen.findByRole('button', { name: 'Cancel job Job 1' }))
+      expect(await screen.findByText('Cancel failed: nope')).toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: 'Retry job Job 2' }))
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining('/jobs/j2/retry'),
+          expect.objectContaining({ method: 'POST' }),
+        )
+      })
+      expect(screen.getByText('Cancel failed: nope')).toBeInTheDocument()
+    })
+
+    it("clears an action's failure when that action next succeeds", async () => {
+      const user = userEvent.setup()
+      let calls = 0
+      serve([makeJob({ id: 'j1', name: 'Job 1', status: 'running' })], () =>
+        ++calls === 1 ? problem(500, 'flaky') : okJson(makeJob({ id: 'j1', status: 'paused' })),
+      )
+
+      await user.click(await screen.findByRole('checkbox', { name: /Select job Job 1/i }))
+      await user.click(screen.getByRole('button', { name: 'Pause selected (1)' }))
+      expect(await screen.findByText('Pause failed: flaky')).toBeInTheDocument()
+
+      await user.click(screen.getByRole('checkbox', { name: /Select job Job 1/i }))
+      await user.click(screen.getByRole('button', { name: 'Pause selected (1)' }))
+      await waitFor(() => expect(screen.queryByText(/Pause failed/)).not.toBeInTheDocument())
+    })
+  })
+
   // ── Pagination ────────────────────────────────────────────────────────────────
 
   describe('pagination', () => {
