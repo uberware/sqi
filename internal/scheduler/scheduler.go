@@ -419,8 +419,16 @@ type Scheduler struct {
 	// After Run returns ctx is canceled.
 	ctx context.Context
 
+	// stopMu guards cancel and stopped. [Run] and [Stop] are called on
+	// different goroutines (the server runs the scheduler on its own and stops
+	// it from shutdown), and Stop can land before Run has started.
+	stopMu sync.Mutex
 	// cancel is called to stop all internal goroutines; set during [Run].
 	cancel context.CancelFunc
+	// stopped is set by [Stop]. A Run that starts after it returns at once: a
+	// Scheduler runs at most once (an HA leader that loses its leadership
+	// exits, and a promoted standby builds its Scheduler once).
+	stopped bool
 
 	// retryWakeMu guards retryWakeTimers: the in-flight backoff-wake timers
 	// scheduled by scheduleRetryWake, tracked so shutdown can stop them
@@ -563,12 +571,21 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 // scheduler high availability it carries the leader's epoch
 // ([store.WithLeaderEpoch]), so a write made after another server took over
 // fails with [store.ErrFenced] (see fence.go).
+//
+// A Run that starts after [Stop] returns nil at once, starting nothing.
 func (s *Scheduler) Run(ctx context.Context) error {
-	s.startedAt = time.Now().UTC()
 	ctx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
-	s.ctx = ctx
 	defer cancel()
+	s.stopMu.Lock()
+	if s.stopped {
+		s.stopMu.Unlock()
+		s.logger.InfoContext(ctx, "scheduler: stopped before it started")
+		return nil
+	}
+	s.cancel = cancel
+	s.stopMu.Unlock()
+	s.startedAt = time.Now().UTC()
+	s.ctx = ctx
 
 	s.logger.InfoContext(
 		ctx, "scheduler: starting",
@@ -693,8 +710,12 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 // Stop cancels the scheduler's internal context, triggering a clean shutdown.
-// It does not wait for goroutines to finish — that happens inside [Run].
+// It does not wait for goroutines to finish — that happens inside [Run]. It
+// may be called before Run, from any goroutine; that Run then returns at once.
 func (s *Scheduler) Stop() {
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	s.stopped = true
 	if s.cancel != nil {
 		s.cancel()
 	}

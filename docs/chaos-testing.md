@@ -485,7 +485,7 @@ enforced end to end: it runs `chaos-server-term` with a `must` entry for
 
 ### Recorded defects
 
-The suite records ten defects in sqi. Each is also listed under [Known
+The suite records nine defects in sqi. Each is also listed under [Known
 server defects](load-testing.md#known-server-defects).
 
 | Tracker | Defect | Recorded in |
@@ -494,7 +494,6 @@ server defects](load-testing.md#known-server-defects).
 | H13f2 | On SIGCONT after a server stall longer than `heartbeat_timeout`, the heartbeat sweep runs before the stall's backlog of heartbeats is consumed and takes every live worker offline, so their work is reclaimed and re-run, and a reclaimed attempt can run beside the new one. A stall shorter than `heartbeat_timeout` can hit it for a worker whose heartbeat was about to fall due. | `chaos-server-stall-long`, `rework` and `single-attempt`, `must`; at the boundary `chaos-server-stall-short`, through its H13f3 entry |
 | H13f3 | A live worker the sweep marks offline stays offline while its connection stays up: heartbeats never bring it back, and it re-registers only on a reconnect. | `chaos-server-stall-long`, `chaos-worker-sleep` and `chaos-db-stall-2m`, `workers-converge`, `must`; `chaos-server-stall-short` and `chaos-db-stall-30s`, `workers-converge`, `may` |
 | H13f4 | Killing `sqi-worker` on Linux leaves its task's process tree running. A silent child, which writes no stdout, never gets SIGPIPE, outlives the worker's restart and writes alongside the re-run. | `chaos-worker-kill-mid-task`, `no-orphans` and `single-writer`, `may`, `os: [linux]` |
-| H13f5 | A data race: `Scheduler.Stop` reads `s.cancel` while `Scheduler.Run` is still setting it, when the server shuts down right after launching the scheduler. The race detector reports it. | Not tied to a scenario. |
 | H13f6 | The server records an attempt's `ended_at` from the worker's clock and its `started_at` from its own, so a worker whose clock runs behind records attempts that end before they start. | `chaos-clock-skew`, `attempt-order`, `must` |
 | H13f7 | When a stalled database answers again, the heartbeat sweep, the stale-assigned reap and the attempt reconciler act on the state the stall kept from being written, before the queued heartbeats and status reports land: live workers go offline, running tasks are taken back and run twice, finished work is rejected. | `chaos-db-stall-30s`, `rework` (up to 60), `reclaims` and `single-attempt`, `may`; `chaos-db-stall-2m`, `single-attempt`, `may` |
 | H13f8 | A lease request a worker parked before its credential was revoked is still served after the revoke, so the disconnected worker is given a task that waits until the sweep reclaims it. | `chaos-worker-revoke`, `revoked`, `may` |
