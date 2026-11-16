@@ -215,7 +215,8 @@ type stubNATS struct {
 	msgs []stubMsg
 
 	// onStatus, when set, is called with each task-status message as it is
-	// published, outside mu, before Publish returns.
+	// published, outside mu, before the message is recorded, so a waiter that
+	// sees a message in msgs (waitForStatus) knows its hook has returned.
 	onStatus func(protocol.TaskStatusMsg)
 }
 
@@ -225,17 +226,19 @@ type stubMsg struct {
 }
 
 func (s *stubNATS) Publish(subj string, data []byte) error {
-	s.mu.Lock()
 	// Make a copy so the original slice remains unmodified.
 	cp := make([]byte, len(data))
 	copy(cp, data)
-	s.msgs = append(s.msgs, stubMsg{subj: subj, data: cp})
+	s.mu.Lock()
 	hook := s.onStatus
 	s.mu.Unlock()
 	var msg protocol.TaskStatusMsg
 	if hook != nil && json.Unmarshal(cp, &msg) == nil && msg.Type == protocol.TypeTaskStatus {
 		hook(msg)
 	}
+	s.mu.Lock()
+	s.msgs = append(s.msgs, stubMsg{subj: subj, data: cp})
+	s.mu.Unlock()
 	return nil
 }
 
