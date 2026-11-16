@@ -910,7 +910,7 @@ jobs:
           - name: floor
             image: nats:2.14.9@sha256:2721e37c651cb38039c583b0ee1b7248155e607ccaabfea19b38eb95a86fc3ff
           - name: current
-            image: nats:2.15.2@sha256:991242c32d2738ffd358fd6614dd96c735017b4b3b34bfdb2c52a072d66db211
+            image: nats:2.15.3@sha256:9d85d87039bfba33baf48de4da32a2ee572bcd6c94f6365d05733a672de49253
 
     steps:
       - name: Checkout
@@ -995,7 +995,7 @@ jobs:
       # NATS_IMAGE_CURRENT and scripts/test-ha.sh's POSTGRES_IMAGE.
       - name: Pull images
         run: |
-          docker pull nats:2.15.2@sha256:991242c32d2738ffd358fd6614dd96c735017b4b3b34bfdb2c52a072d66db211
+          docker pull nats:2.15.3@sha256:9d85d87039bfba33baf48de4da32a2ee572bcd6c94f6365d05733a672de49253
           docker pull postgres:18.6
 
       - name: Run high-availability integration tests

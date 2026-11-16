@@ -1573,7 +1573,7 @@ and a standby takes over (see
 Each minimum is the first release of its series with upstream's fixes to the
 auth callout, which sqi's worker authentication depends on. Series before
 2.14 are refused. The external-mode tests run against 2.14.9 and against
-2.15.2, the release `sqi-server` embeds. `sqi-server` reads the version from
+2.15.3, the release `sqi-server` embeds. `sqi-server` reads the version from
 the node it first reaches and refuses an older one at startup:
 
 ```
