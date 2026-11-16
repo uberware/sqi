@@ -4,6 +4,7 @@ package scheduler
 
 import (
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -13,6 +14,20 @@ import (
 var ingestT0 = time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 
 func ingestAt(sec int) time.Time { return ingestT0.Add(time.Duration(sec) * time.Second) }
+
+// pending reports whether an unapplied message names key. The checks read
+// pendingIDs once per tick instead.
+func (t *ingestTracker) pending(key string, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.prune(now)
+	for _, e := range t.pendingMsg {
+		if slices.Contains(e.keys, key) {
+			return true
+		}
+	}
+	return false
+}
 
 func TestIngestTracker_ZeroUntilFirstMarker(t *testing.T) {
 	tr := newIngestTracker(2*time.Minute, 10)

@@ -38,11 +38,18 @@ func (s *Scheduler) workerSweepCutoff(ctx context.Context, now time.Time) (cutof
 }
 
 // dropIngestHeldWorkers removes from stale the workers [Scheduler.ingestHoldsWorker]
-// holds back.
+// holds back. The pending messages are read once for the whole list.
 func (s *Scheduler) dropIngestHeldWorkers(ctx context.Context, stale []store.Worker, now, effT time.Time) []store.Worker {
+	if len(stale) == 0 {
+		return stale
+	}
+	pending := ingestPendingWorkers{
+		worker: s.ingestWorker.pendingIDs(keyKindWorker, now),
+		task:   s.ingestTask.pendingIDs(keyKindWorker, now),
+	}
 	kept := stale[:0]
 	for _, w := range stale {
-		if s.ingestHoldsWorker(w, now, effT) {
+		if s.ingestHoldsWorker(w, effT, pending) {
 			s.logger.DebugContext(ctx, "scheduler: stale worker held back until its queued messages are applied",
 				slog.String("worker_id", w.ID))
 			continue
@@ -52,17 +59,23 @@ func (s *Scheduler) dropIngestHeldWorkers(ctx context.Context, stale []store.Wor
 	return kept
 }
 
+// ingestPendingWorkers is the set of workers a message waiting to be applied
+// again names, by consumer.
+type ingestPendingWorkers struct {
+	worker, task map[string]bool
+}
+
 // ingestHoldsWorker reports whether the sweep must leave the stale candidate
 // w alone for now: a message naming it waits to be applied again by either
-// consumer, or the task consumer has not yet applied its stream up to the
-// moment w's heartbeat expired, so a status report from before that moment may
-// still be queued. A candidate with no heartbeat time is held back too.
-func (s *Scheduler) ingestHoldsWorker(w store.Worker, now, effT time.Time) bool {
+// consumer (pending), or the task consumer has not yet applied its stream up
+// to the moment w's heartbeat expired, so a status report from before that
+// moment may still be queued. A candidate with no heartbeat time is held back
+// too.
+func (s *Scheduler) ingestHoldsWorker(w store.Worker, effT time.Time, pending ingestPendingWorkers) bool {
 	if w.LastHeartbeatAt == nil {
 		return true
 	}
-	key := workerKey(w.ID)
-	if s.ingestWorker.pending(key, now) || s.ingestTask.pending(key, now) {
+	if pending.worker[w.ID] || pending.task[w.ID] {
 		return true
 	}
 	return effT.Before(w.LastHeartbeatAt.Add(s.cfg.WorkerTimeout))

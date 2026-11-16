@@ -3,7 +3,6 @@
 package scheduler
 
 import (
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -173,19 +172,6 @@ func (t *ingestTracker) lag(now, started time.Time) time.Duration {
 		return now.Sub(started)
 	}
 	return now.Sub(t.caughtUpTo)
-}
-
-// pending reports whether an unapplied message names key.
-func (t *ingestTracker) pending(key string, now time.Time) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.prune(now)
-	for _, e := range t.pendingMsg {
-		if slices.Contains(e.keys, key) {
-			return true
-		}
-	}
-	return false
 }
 
 // pendingIDs returns the identifiers of the pending keys of one kind.
