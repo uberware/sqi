@@ -13,7 +13,8 @@ import (
 // stopWait bounds how long stall waits for a process to stop. A thread takes
 // a pending SIGSTOP as soon as it is scheduled or leaves the kernel, which is
 // microseconds on an idle host and milliseconds on a loaded one; only a
-// thread stuck in uninterruptible sleep holds it up for longer.
+// thread in uninterruptible or killable-only sleep (such as a parent in
+// vfork, waiting for its child to exec) holds it up for longer.
 const stopWait = 10 * time.Second
 
 // awaitStop returns once the kernel reports the process stopped. kill(2) only

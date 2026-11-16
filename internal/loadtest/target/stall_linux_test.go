@@ -4,6 +4,8 @@ package target
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,7 +14,8 @@ import (
 )
 
 // threadStates returns the state letter of every thread of pid, read from
-// /proc/<pid>/task/*/stat.
+// /proc/<pid>/task/*/stat. A thread that exits between the listing and the
+// read is left out.
 func threadStates(t *testing.T, pid int) []string {
 	t.Helper()
 	paths, err := filepath.Glob(filepath.Join("/proc", strconv.Itoa(pid), "task", "*", "stat"))
@@ -22,6 +25,9 @@ func threadStates(t *testing.T, pid int) []string {
 	states := make([]string, 0, len(paths))
 	for _, p := range paths {
 		b, err := os.ReadFile(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			t.Fatalf("read %s: %v", p, err)
 		}
@@ -50,7 +56,8 @@ func TestProc_StallReturnsOnceStopped(t *testing.T) {
 		}
 		states := threadStates(t, p.pid())
 		for _, s := range states {
-			if s != "T" {
+			// An exiting thread (Z, X) takes no part in the group stop.
+			if s != "T" && s != "Z" && s != "X" {
 				t.Fatalf("stall %d returned with thread states %v; want every thread stopped (T)", i, states)
 			}
 		}

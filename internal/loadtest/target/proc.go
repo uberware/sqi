@@ -119,7 +119,8 @@ func (p *proc) stall() error {
 		return fmt.Errorf("target: stop %s (pid %d): %w", p.name, p.pid(), err)
 	}
 	// Set before waiting: the stop is sent, so resume must continue it even
-	// when the wait fails.
+	// when the wait fails. p.mu stays held through the wait, so resume,
+	// isStalled and stop block behind it for at most stopWait.
 	p.stalled = true
 	return p.awaitStop()
 }
