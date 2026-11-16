@@ -580,6 +580,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	if s.stopped {
 		s.stopMu.Unlock()
 		s.logger.InfoContext(ctx, "scheduler: stopped before it started")
+		// A promoted standby starts the diagnostic-log subscriber before Run.
+		s.stopDiag(ctx)
 		return nil
 	}
 	s.cancel = cancel
@@ -672,15 +674,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	<-ctx.Done()
 	s.logger.InfoContext(ctx, "scheduler: shutdown signaled — draining goroutines")
 
-	// Unsubscribe the core-NATS diagnostic-log subscriber if active.
-	s.diagMu.Lock()
-	diagSub := s.diagSub
-	s.diagMu.Unlock()
-	if diagSub != nil {
-		if err := diagSub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
-			s.logger.WarnContext(ctx, "scheduler: diagnostic-log unsubscribe failed", slog.Any("error", err))
-		}
-	}
+	s.stopDiag(ctx)
 
 	// Unsubscribe the core-NATS lease subscriber if active.
 	if s.leaseSub != nil {
@@ -707,6 +701,18 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	s.logger.InfoContext(ctx, "scheduler: stopped")
 	return nil
+}
+
+// stopDiag unsubscribes the core-NATS diagnostic-log subscriber if active.
+func (s *Scheduler) stopDiag(ctx context.Context) {
+	s.diagMu.Lock()
+	diagSub := s.diagSub
+	s.diagMu.Unlock()
+	if diagSub != nil {
+		if err := diagSub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+			s.logger.WarnContext(ctx, "scheduler: diagnostic-log unsubscribe failed", slog.Any("error", err))
+		}
+	}
 }
 
 // Stop cancels the scheduler's internal context, triggering a clean shutdown.

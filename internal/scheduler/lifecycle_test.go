@@ -54,7 +54,7 @@ func TestRun_StartAndStop(t *testing.T) {
 	}
 }
 
-func TestStop_NilCancel_NoPanic(_ *testing.T) {
+func TestStop_BeforeRun_NoPanic(_ *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "")
 	// s.cancel is nil before Run; Stop must not panic on it.
