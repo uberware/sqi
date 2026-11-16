@@ -2177,8 +2177,9 @@ func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg) {
 			slog.String("subject", msg.Subject()),
 			slog.Any("error", err),
 		)
-		return
 	}
+	// Recorded whether or not the nak reached the broker: either way the
+	// message is unapplied and comes back, after the delay or after AckWait.
 	if mdErr == nil {
 		s.recordIngestNak(msg, md)
 	}

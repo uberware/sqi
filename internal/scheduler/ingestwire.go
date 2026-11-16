@@ -63,7 +63,9 @@ func (s *Scheduler) runIngestMarkers(ctx context.Context) {
 func (s *Scheduler) ingestMarkerTick(ctx context.Context) {
 	now := s.now()
 	prev := s.ingestLoop.prevTick
-	s.ingestLoop.prevTick = now
+	// The gap runs from the end of the previous tick's work, so a slow
+	// publish is not mistaken for a pause.
+	defer func() { s.ingestLoop.prevTick = s.now() }()
 	// A gap far longer than the ticker's period means the process stopped
 	// running. Measured on the monotonic clock when both times carry it.
 	if !prev.IsZero() {
@@ -76,7 +78,10 @@ func (s *Scheduler) ingestMarkerTick(ctx context.Context) {
 	}
 	s.checkBusInterruption(now)
 
-	if err := s.bus.PublishIngestMarkers(ctx); err != nil {
+	// Bounded, so a stalled broker cannot hold up the next tick's checks.
+	pubCtx, cancel := context.WithTimeout(ctx, ingestMarkerInterval)
+	defer cancel()
+	if err := s.bus.PublishIngestMarkers(pubCtx); err != nil {
 		if !s.ingestLoop.publishFailing && ctx.Err() == nil {
 			s.logger.DebugContext(ctx, "scheduler: publish ingest markers failed", slog.Any("error", err))
 		}

@@ -52,6 +52,8 @@ type fakeJSMsg struct {
 	delivered uint64
 	// nakDelay is the delay the last NakWithDelay asked for.
 	nakDelay time.Duration
+	// nakErr is what NakWithDelay returns.
+	nakErr error
 }
 
 func (m *fakeJSMsg) Data() []byte    { return m.data }
@@ -69,7 +71,7 @@ func (m *fakeJSMsg) Nak() error {
 
 func (m *fakeJSMsg) NakWithDelay(d time.Duration) error {
 	m.nacked, m.nakDelay = true, d
-	return nil
+	return m.nakErr
 }
 
 func (m *fakeJSMsg) Metadata() (*jetstream.MsgMetadata, error) {

@@ -20,20 +20,26 @@ import (
 	"github.com/uberware/sqi/internal/ws"
 )
 
-// markerBus is a busClient whose PublishIngestMarkers counts its calls and
-// returns err.
+// markerBus is a busClient whose PublishIngestMarkers counts its calls,
+// runs onPublish when set, records the context's deadline and returns err.
 type markerBus struct {
 	recordBus
 
-	mu    sync.Mutex
-	err   error
-	calls int
+	mu           sync.Mutex
+	err          error
+	calls        int
+	onPublish    func()
+	lastDeadline time.Time
 }
 
-func (b *markerBus) PublishIngestMarkers(context.Context) error {
+func (b *markerBus) PublishIngestMarkers(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls++
+	b.lastDeadline, _ = ctx.Deadline()
+	if b.onPublish != nil {
+		b.onPublish()
+	}
 	return b.err
 }
 
@@ -125,6 +131,24 @@ func TestNakMsg_RecordsPendingKeys(t *testing.T) {
 	s.ackMsg(t.Context(), msg)
 	if n := s.ingestTask.pendingCount(now); n != 0 {
 		t.Errorf("ingestTask holds %d pending messages after the ack, want 0", n)
+	}
+}
+
+// TestNakMsg_FailedNakStillPending: a message whose nak did not reach the
+// broker is still unapplied and comes back after AckWait, so its keys are
+// recorded pending all the same.
+func TestNakMsg_FailedNakStillPending(t *testing.T) {
+	s := newIngestScheduler(DefaultConfig(), &recordBus{}, &bytes.Buffer{})
+	now := time.Now().UTC()
+	msg := &fakeJSMsg{
+		subject: bus.WorkerHeartbeatSubject("w1"), natsSeq: 5, stamp: now, delivered: 1,
+		nakErr: errors.New("connection closed"),
+	}
+
+	s.nakMsg(t.Context(), msg)
+
+	if !s.ingestWorker.pending(workerKey("w1"), now) {
+		t.Error("worker w1 not pending after a nak that failed")
 	}
 }
 
@@ -292,35 +316,45 @@ func TestRunIngestMarkers_PublishFailureDoesNotAdvance(t *testing.T) {
 	}
 }
 
+// TestRunIngestMarkers_PauseHolds: a gap of more than ingestPauseThreshold
+// between the end of one tick's work and the start of the next holds both
+// trackers at the end of that work for WorkerTimeout.
 func TestRunIngestMarkers_PauseHolds(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		gap   time.Duration
-		holds bool
+		name    string
+		publish time.Duration // how long the first tick's publish takes
+		gap     time.Duration // from the end of the first tick to the second
+		holds   bool
 	}{
-		{"7s gap holds", 7 * time.Second, true},
-		{"3s gap does not", 3 * time.Second, false},
+		{"7s gap holds", 0, 7 * time.Second, true},
+		{"3s gap does not", 0, 3 * time.Second, false},
+		{"7s gap after a slow publish holds", time.Second, 7 * time.Second, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
 			cfg := DefaultConfig()
-			s := newIngestScheduler(cfg, &markerBus{}, &logs)
 			t0 := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 			clock := &testClock{t: t0}
+			b := &markerBus{onPublish: func() { clock.t = clock.t.Add(tc.publish) }}
+			s := newIngestScheduler(cfg, b, &logs)
 			s.now = clock.now
 
 			s.ingestMarkerTick(t.Context())
-			caught := t0.Add(time.Second)
+			b.mu.Lock()
+			b.onPublish = nil
+			b.mu.Unlock()
+			prevEnd := t0.Add(tc.publish)
+			caught := prevEnd.Add(time.Second)
 			s.ingestWorker.marker(caught)
 			s.ingestTask.marker(caught)
-			clock.t = t0.Add(tc.gap)
+			clock.t = prevEnd.Add(tc.gap)
 			s.ingestMarkerTick(t.Context())
 
 			during := clock.t.Add(cfg.WorkerTimeout - time.Millisecond)
 			after := clock.t.Add(cfg.WorkerTimeout + time.Millisecond)
 			want := caught
 			if tc.holds {
-				want = t0
+				want = prevEnd
 			}
 			for name, tr := range map[string]*ingestTracker{"worker": s.ingestWorker, "task": s.ingestTask} {
 				if got := tr.effective(during); !got.Equal(want) {
@@ -334,6 +368,53 @@ func TestRunIngestMarkers_PauseHolds(t *testing.T) {
 				t.Errorf("pause logged = %v, want %v:\n%s", logged, tc.holds, logs.String())
 			}
 		})
+	}
+}
+
+// TestRunIngestMarkers_SlowPublishIsNotAPause: a publish that takes 5 s on
+// every tick (a connected but stalled broker) is not reported as a process
+// pause, and holds nothing.
+func TestRunIngestMarkers_SlowPublishIsNotAPause(t *testing.T) {
+	var logs bytes.Buffer
+	t0 := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	clock := &testClock{t: t0}
+	b := &markerBus{onPublish: func() { clock.t = clock.t.Add(5 * time.Second) }}
+	s := newIngestScheduler(DefaultConfig(), b, &logs)
+	s.now = clock.now
+	caught := t0.Add(-time.Second)
+	s.ingestWorker.marker(caught)
+	s.ingestTask.marker(caught)
+
+	for range 5 {
+		s.ingestMarkerTick(t.Context())
+		clock.t = clock.t.Add(ingestMarkerInterval)
+	}
+
+	if strings.Contains(logs.String(), "scheduler: process pause detected") {
+		t.Errorf("a slow publish was reported as a pause:\n%s", logs.String())
+	}
+	for name, tr := range map[string]*ingestTracker{"worker": s.ingestWorker, "task": s.ingestTask} {
+		if got := tr.effective(clock.t); !got.Equal(caught) {
+			t.Errorf("%s effective = %v, want %v (no hold)", name, got, caught)
+		}
+	}
+}
+
+// TestRunIngestMarkers_PublishHasADeadline: the publish is bounded by
+// ingestMarkerInterval, so a stalled broker cannot hold up the loop.
+func TestRunIngestMarkers_PublishHasADeadline(t *testing.T) {
+	b := &markerBus{}
+	s := newIngestScheduler(DefaultConfig(), b, &bytes.Buffer{})
+	start := time.Now()
+	s.ingestMarkerTick(t.Context())
+	b.mu.Lock()
+	deadline := b.lastDeadline
+	b.mu.Unlock()
+	if deadline.IsZero() {
+		t.Fatal("PublishIngestMarkers was called with no deadline")
+	}
+	if limit := start.Add(ingestMarkerInterval); deadline.After(limit.Add(time.Second)) {
+		t.Errorf("publish deadline %v is later than one marker interval (%v) after the tick", deadline, limit)
 	}
 }
 
