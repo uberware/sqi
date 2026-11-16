@@ -485,7 +485,7 @@ enforced end to end: it runs `chaos-server-term` with a `must` entry for
 
 ### Recorded defects
 
-The suite records nine defects in sqi. Each is also listed under [Known
+The suite records eight defects in sqi. Each is also listed under [Known
 server defects](load-testing.md#known-server-defects).
 
 | Tracker | Defect | Recorded in |
