@@ -78,9 +78,8 @@ func TestStop_WithCancel_CancelsContext(t *testing.T) {
 	}
 }
 
-// TestRun_AfterStop_ReturnsAtOnce pins that a Stop that lands before Run
-// starts is not lost: Run returns at once, without subscribing to anything,
-// instead of running until its parent context ends.
+// TestRun_AfterStop_ReturnsAtOnce checks that a Run called after Stop returns
+// at once and subscribes to nothing.
 func TestRun_AfterStop_ReturnsAtOnce(t *testing.T) {
 	b := newSyncBus()
 	s := newMetricsScheduler(newCheckedFake(t), b, "f1")

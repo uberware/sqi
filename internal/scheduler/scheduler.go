@@ -425,9 +425,9 @@ type Scheduler struct {
 	stopMu sync.Mutex
 	// cancel is called to stop all internal goroutines; set during [Run].
 	cancel context.CancelFunc
-	// stopped is set by [Stop]. A Run that starts after it returns at once: a
-	// Scheduler runs at most once (an HA leader that loses its leadership
-	// exits, and a promoted standby builds its Scheduler once).
+	// stopped is set by [Stop], and a Run that starts later returns at once.
+	// It never resets: a Scheduler runs at most once (an HA leader that loses
+	// its leadership exits, and a promoted standby builds its Scheduler once).
 	stopped bool
 
 	// retryWakeMu guards retryWakeTimers: the in-flight backoff-wake timers
