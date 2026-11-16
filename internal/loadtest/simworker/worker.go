@@ -246,6 +246,7 @@ type incarnation struct {
 	nc         *nats.Conn
 	reg        *registration.Registrar
 	disp       *Dispatcher
+	ctl        *controlResponder
 
 	stopHB, stopLease context.CancelFunc
 	hbDone, leaseDone chan struct{}
@@ -350,6 +351,15 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	hbCtx, stopHB := context.WithCancel(context.Background())
 	leaseCtx, stopLease := context.WithCancel(hbCtx)
 	inc.stopHB, inc.stopLease = stopHB, stopLease
+	// Before the first lease request, as a real worker subscribes its power
+	// controller: the server asks a worker it holds offline, whose heartbeats
+	// still arrive, to register again here.
+	inc.ctl = &controlResponder{ctx: hbCtx, register: inc.Register, logger: w.logger}
+	if _, err := subscribeControl(nc, id, inc.ctl); err != nil {
+		stopHB()
+		nc.Close()
+		return nil, err
+	}
 	inc.hbDone, inc.leaseDone = make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(inc.hbDone)
@@ -472,6 +482,7 @@ func (inc *incarnation) stop(ctx context.Context) {
 	inc.disp.shutdown(endShutdown) // refuses any late dispatch
 	inc.stopHB()
 	<-inc.hbDone
+	inc.ctl.wait()
 	inc.reg.Deregister("graceful shutdown", "") // best effort, logged, as in sqi-worker
 	inc.nc.Close()                              // flushes the deregistration and any terminal statuses
 }
@@ -489,9 +500,10 @@ func (inc *incarnation) stop(ctx context.Context) {
 // records no status the server did not get, and misses none it did.
 func (inc *incarnation) crash() {
 	close(inc.ended)
-	inc.stopHB() // also stops the lease loop
+	inc.stopHB() // also stops the lease loop and a re-registration under way
 	<-inc.leaseDone
 	<-inc.hbDone
+	inc.ctl.wait()
 	inc.disp.shutdown(endCrashed)
 	inc.disp.wait(context.Background())
 	inc.nc.Close()

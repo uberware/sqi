@@ -81,6 +81,14 @@ type Options struct {
 	BrokerAuth bool
 	// Pprof mounts the /debug/pprof endpoints.
 	Pprof bool
+	// WorkerTimeout, HeartbeatSweepInterval and BusReconnectGrace, when set,
+	// replace the scheduler's 60 s heartbeat timeout, 30 s sweep interval and
+	// the reconnect grace the server derives from the timeout (which stands
+	// the liveness sweep down for its first minute or so), so a test can have
+	// a live worker marked offline quickly.
+	WorkerTimeout          time.Duration
+	HeartbeatSweepInterval time.Duration
+	BusReconnectGrace      time.Duration
 }
 
 // Server is a running in-process sqi-server.
@@ -156,6 +164,15 @@ func startOnce(tb testing.TB, opts Options) (*Server, error) {
 		DiscoveryEnabled: false,
 		DisableRateLimit: true,
 		EnablePprof:      opts.Pprof,
+	}
+	if opts.WorkerTimeout > 0 {
+		cfg.Scheduler.WorkerTimeout = opts.WorkerTimeout
+	}
+	if opts.HeartbeatSweepInterval > 0 {
+		cfg.Scheduler.HeartbeatSweepInterval = opts.HeartbeatSweepInterval
+	}
+	if opts.BusReconnectGrace > 0 {
+		cfg.Scheduler.BusReconnectGrace = opts.BusReconnectGrace
 	}
 	var joinToken string
 	if opts.BrokerAuth {
