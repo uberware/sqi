@@ -114,17 +114,18 @@ func (r *reconciler) record(
 //
 // An attempt is also kept until the task-status consumer has applied what its
 // worker published before the report: taskEffective (zero before the consumer's
-// first marker) must reach the report's broker stamp, and pending must not name
-// the attempt, because a queued status message may be about to close it.
+// first marker) must reach the report's broker stamp, and pending (nil when
+// nothing is pending) must not name the attempt, because a queued status
+// message may be about to close it.
 func (r *reconciler) due(
-	open []store.OpenAttempt, now, taskEffective time.Time, pending func(attemptID string) bool,
+	open []store.OpenAttempt, now, taskEffective time.Time, pending map[string]bool,
 ) []store.OpenAttempt {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []store.OpenAttempt
 	for _, a := range open {
 		rep, ok := r.reports[a.WorkerID]
-		if !ok || !r.freshLocked(rep, now) || !consumerCaughtUp(rep, taskEffective) || pending(a.AttemptID) {
+		if !ok || !r.freshLocked(rep, now) || !consumerCaughtUp(rep, taskEffective) || pending[a.AttemptID] {
 			continue
 		}
 		if _, held := rep.attempts[a.AttemptID]; held {
@@ -196,8 +197,9 @@ func (r *reconciler) pruneLocked(now time.Time) {
 //
 // The held reports are taken before the open attempts are listed: every
 // attempt they name was leased before the list was read, so one missing from
-// the list is closed, not leased since.
-func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time) {
+// the list is closed, not leased since. v is the tick's view of the ingest
+// trackers ([Scheduler.readIngest]).
+func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time, v ingestView) {
 	if s.reconciler == nil || now.Sub(s.startedAt) < s.cfg.ReconcileGrace {
 		return
 	}
@@ -209,10 +211,7 @@ func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time) {
 		}
 		return
 	}
-	taskEffective := s.ingestTask.effective(now)
-	pendingAttempts := s.ingestTask.pending(now).attempts
-	pending := func(id string) bool { return pendingAttempts[id] }
-	for _, a := range s.reconciler.due(open, now, taskEffective, pending) {
+	for _, a := range s.reconciler.due(open, now, v.taskAt, v.pendingAttempts) {
 		if s.deposed() {
 			return
 		}

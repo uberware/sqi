@@ -73,7 +73,7 @@ func TestSweepStaleWorkers_DeferredWhileBusDown(t *testing.T) {
 	workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 40*time.Second)
 
 	ingestCaughtUp(s)
-	s.sweepStaleWorkers(t.Context())
+	s.sweepStaleWorkers(t.Context(), tickView(s))
 
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Errorf("worker status = %q, want online (bus is down)", got)
@@ -96,7 +96,7 @@ func TestSweepStaleWorkers_DeferredUntilReconnectGraceAfterReconnect(t *testing.
 	workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 40*time.Second)
 
 	ingestCaughtUp(s)
-	s.sweepStaleWorkers(t.Context())
+	s.sweepStaleWorkers(t.Context(), tickView(s))
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Fatalf("worker status = %q after 10s of bus uptime, want online (deferred)", got)
 	}
@@ -107,13 +107,13 @@ func TestSweepStaleWorkers_DeferredUntilReconnectGraceAfterReconnect(t *testing.
 	// A full WorkerTimeout and a second: a worker that is still backing off
 	// its redial looks exactly like this, so the sweep must still wait.
 	up = 31 * time.Second
-	s.sweepStaleWorkers(t.Context())
+	s.sweepStaleWorkers(t.Context(), tickView(s))
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Fatalf("worker status = %q after 31s of bus uptime, want online (the grace is %s)", got, testBusGrace)
 	}
 
 	up = testBusGrace + time.Second // grace over, still no heartbeat
-	s.sweepStaleWorkers(t.Context())
+	s.sweepStaleWorkers(t.Context(), tickView(s))
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
 		t.Errorf("worker status = %q after the grace, want offline (a dead worker is not hidden)", got)
 	}
@@ -129,19 +129,19 @@ func TestReapStaleAssignedTasks_DeferredAfterReconnect(t *testing.T) {
 	taskID, _ := seedAssignedTask(t, st, time.Hour)
 
 	ingestCaughtUp(s)
-	s.reapStaleAssignedTasks(t.Context())
+	s.reapStaleAssignedTasks(t.Context(), tickView(s))
 	if got := taskStatus(t, st, taskID); got != store.TaskStatusAssigned {
 		t.Fatalf("task status = %q after 10s of bus uptime, want assigned (deferred)", got)
 	}
 
 	up = 31 * time.Second
-	s.reapStaleAssignedTasks(t.Context())
+	s.reapStaleAssignedTasks(t.Context(), tickView(s))
 	if got := taskStatus(t, st, taskID); got != store.TaskStatusAssigned {
 		t.Fatalf("task status = %q after 31s of bus uptime, want assigned (the grace is %s)", got, testBusGrace)
 	}
 
 	up = testBusGrace + time.Second
-	s.reapStaleAssignedTasks(t.Context())
+	s.reapStaleAssignedTasks(t.Context(), tickView(s))
 	if got := taskStatus(t, st, taskID); got != store.TaskStatusReady {
 		t.Errorf("task status = %q after the grace, want ready (reaped)", got)
 	}
@@ -153,7 +153,7 @@ func TestReapStaleAssignedTasks_DeferredWhileBusDown(t *testing.T) {
 	taskID, _ := seedAssignedTask(t, st, time.Hour)
 
 	ingestCaughtUp(s)
-	s.reapStaleAssignedTasks(t.Context())
+	s.reapStaleAssignedTasks(t.Context(), tickView(s))
 
 	if got := taskStatus(t, st, taskID); got != store.TaskStatusAssigned {
 		t.Errorf("task status = %q, want assigned (bus is down)", got)
@@ -166,7 +166,7 @@ func TestSweepStaleWorkers_NoSourceKeepsTodaysBehaviour(t *testing.T) {
 	workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 40*time.Second)
 
 	ingestCaughtUp(s)
-	s.sweepStaleWorkers(t.Context())
+	s.sweepStaleWorkers(t.Context(), tickView(s))
 
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
 		t.Errorf("worker status = %q, want offline", got)
@@ -259,7 +259,7 @@ func TestSweepStaleWorkers_DeferralLoggedOncePerWindow(t *testing.T) {
 	seedStaleWorkerWithTask(t, st, 40*time.Second)
 
 	for range 3 {
-		s.sweepStaleWorkers(t.Context())
+		s.sweepStaleWorkers(t.Context(), tickView(s))
 	}
 	if down, startup, reconnect := sweepLogs(logs.String()); down != 0 || startup != 1 || reconnect != 0 {
 		t.Fatalf("after three ticks in the startup window: down=%d startup=%d reconnect=%d, want 0/1/0:\n%s",
@@ -271,7 +271,7 @@ func TestSweepStaleWorkers_DeferralLoggedOncePerWindow(t *testing.T) {
 
 	up = time.Time{} // the bus drops
 	for range 3 {
-		s.sweepStaleWorkers(t.Context())
+		s.sweepStaleWorkers(t.Context(), tickView(s))
 	}
 	if down, startup, reconnect := sweepLogs(logs.String()); down != 1 || startup != 1 || reconnect != 0 {
 		t.Fatalf("after three ticks while down: down=%d startup=%d reconnect=%d, want 1/1/0:\n%s",
@@ -280,7 +280,7 @@ func TestSweepStaleWorkers_DeferralLoggedOncePerWindow(t *testing.T) {
 
 	up = time.Now().UTC().Add(-time.Second) // the bus comes back
 	for range 3 {
-		s.sweepStaleWorkers(t.Context())
+		s.sweepStaleWorkers(t.Context(), tickView(s))
 	}
 	if down, startup, reconnect := sweepLogs(logs.String()); down != 1 || startup != 1 || reconnect != 1 {
 		t.Fatalf("after three ticks after the reconnect: down=%d startup=%d reconnect=%d, want 1/1/1:\n%s",
@@ -325,7 +325,7 @@ func TestLivenessDeferred_CountsFromRunStart(t *testing.T) {
 	}
 
 	ingestCaughtUp(s)
-	s.sweepStaleWorkers(t.Context())
+	s.sweepStaleWorkers(t.Context(), tickView(s))
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Errorf("worker = %s right after Run started, want online (deferred)", got)
 	}
@@ -393,7 +393,7 @@ func TestReconcileAttempts_GraceFromRunStart(t *testing.T) {
 	early := started.Add(time.Minute - time.Nanosecond)
 	s.reconciler.record(reconcileWorker, early, early, time.Time{}, nil) // w1 reports holding nothing
 	ingestCaughtUp(s)
-	s.reconcileAttempts(t.Context(), early)
+	s.reconcileAttempts(t.Context(), early, s.readIngest(early))
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusRunning {
 		t.Fatalf("task = %s a nanosecond before the grace from Run, want running", got)
 	}
@@ -404,7 +404,7 @@ func TestReconcileAttempts_GraceFromRunStart(t *testing.T) {
 	at := started.Add(time.Minute)
 	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
 	ingestCaughtUp(s)
-	s.reconcileAttempts(t.Context(), at)
+	s.reconcileAttempts(t.Context(), at, s.readIngest(at))
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusReady {
 		t.Errorf("task = %s the grace after Run started, want ready (reclaimed)", got)
 	}

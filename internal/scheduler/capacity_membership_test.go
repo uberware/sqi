@@ -574,7 +574,7 @@ func TestCapacitySweep_VanishedEphemeralRemovedAfterBootTimeout(t *testing.T) {
 			vanishedMember(t, f, g, "gone", t0)
 
 			f.s.ingestWorker.marker(t0.Add(g.BootTimeout - time.Second))
-			f.s.sweepCapacityAt(t.Context(), t0.Add(g.BootTimeout-time.Second))
+			capacityTick(t.Context(), f.s, t0.Add(g.BootTimeout-time.Second))
 			f.settle()
 			if _, err := f.st.GetWorker(t.Context(), "gone"); err != nil {
 				t.Fatalf("member removed before its boot timeout: GetWorker = %v", err)
@@ -584,8 +584,8 @@ func TestCapacitySweep_VanishedEphemeralRemovedAfterBootTimeout(t *testing.T) {
 			}
 
 			f.s.ingestWorker.marker(t0.Add(g.BootTimeout + time.Second))
-			f.s.sweepCapacityAt(t.Context(), t0.Add(g.BootTimeout+time.Second))
-			f.s.sweepCapacityAt(t.Context(), t0.Add(g.BootTimeout+2*time.Second))
+			capacityTick(t.Context(), f.s, t0.Add(g.BootTimeout+time.Second))
+			capacityTick(t.Context(), f.s, t0.Add(g.BootTimeout+2*time.Second))
 			f.settle()
 			if _, err := f.st.GetWorker(t.Context(), "gone"); !errors.Is(err, store.ErrNotFound) {
 				t.Errorf("GetWorker after the boot timeout = %v, want ErrNotFound", err)
@@ -636,7 +636,7 @@ func TestCapacitySweep_VanishedEphemeralWaitsForWorkerConsumer(t *testing.T) {
 				f.s.ingestWorker.nak(3, now.Add(-time.Second), 1, ingestRef{worker: "gone"})
 			}
 
-			f.s.sweepCapacityAt(t.Context(), now)
+			capacityTick(t.Context(), f.s, now)
 			f.settle()
 
 			_, err := f.st.GetWorker(t.Context(), "gone")
@@ -658,7 +658,7 @@ func TestCapacitySweep_RestartedEphemeralKept(t *testing.T) {
 
 	f.deregister(t, "w1", "inst-1", "")
 	f.register(t, "w1", "inst-2", "")
-	f.s.sweepCapacityAt(t.Context(), time.Now().UTC().Add(g.BootTimeout+time.Minute))
+	capacityTick(t.Context(), f.s, time.Now().UTC().Add(g.BootTimeout+time.Minute))
 	f.settle()
 
 	w := f.worker(t, "w1")

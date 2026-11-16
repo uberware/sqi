@@ -33,7 +33,7 @@ func releaseToNewWorker(t *testing.T, st store.Store, s *Scheduler, task store.T
 	t.Helper()
 	s.cfg.AssignedTaskTimeout = time.Minute
 	ingestCaughtUp(s)
-	s.reapStaleAssignedTasks(t.Context())
+	s.reapStaleAssignedTasks(t.Context(), tickView(s))
 	return storetest.Lease(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: "w-new"})
 }
 

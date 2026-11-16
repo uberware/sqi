@@ -161,7 +161,7 @@ func newActFixture(t *testing.T, wrap func(*fake.Store) store.Store) *actFixture
 // sweepCtx runs one capacity sweep at now under ctx and waits for the
 // provider calls it started.
 func (f *actFixture) sweepCtx(ctx context.Context, now time.Time) {
-	f.s.sweepCapacityAt(ctx, now)
+	capacityTick(ctx, f.s, now)
 	f.s.capState.act.calls.Wait()
 }
 
@@ -515,7 +515,7 @@ func TestActuator_SettledRetirementReleasesParkedLease(t *testing.T) {
 				return controlReply(false, protocol.ControlRefusalBusy), nil
 			})
 			f.sweep(t, t0)
-			f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute))
+			capacityTick(t.Context(), f.s, t0.Add(2*time.Minute))
 			select {
 			case <-asked:
 			case <-time.After(5 * time.Second):
@@ -848,8 +848,8 @@ func TestActuator_DeposedLeaderLateResultWritesNothing(t *testing.T) {
 	})
 	t0 := time.Now().UTC()
 
-	f.s.sweepCapacityAt(ctx, t0)
-	f.s.sweepCapacityAt(ctx, t0.Add(2*time.Minute))
+	capacityTick(ctx, f.s, t0)
+	capacityTick(ctx, f.s, t0.Add(2*time.Minute))
 	select {
 	case <-asked:
 	case <-time.After(5 * time.Second):

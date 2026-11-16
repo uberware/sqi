@@ -82,7 +82,7 @@ func TestSweepStaleWorkers_ReclaimsAndTerminates(t *testing.T) {
 	workerID, taskID, attemptID := seedStaleWorkerWithTask(t, st, time.Hour)
 
 	ingestCaughtUp(s)
-	s.sweepStaleWorkers(t.Context())
+	s.sweepStaleWorkers(t.Context(), tickView(s))
 
 	// Worker marked offline.
 	w, err := st.GetWorker(t.Context(), workerID)
@@ -148,7 +148,7 @@ func TestReapStaleAssignedTasks_ReclaimsStuckTask(t *testing.T) {
 	taskID, attemptID := seedAssignedTask(t, st, time.Hour)
 
 	ingestCaughtUp(s)
-	s.reapStaleAssignedTasks(t.Context())
+	s.reapStaleAssignedTasks(t.Context(), tickView(s))
 
 	tk, err := st.GetTask(t.Context(), taskID)
 	if err != nil {
@@ -184,7 +184,7 @@ func TestReapStaleAssignedTasks_NotifiesReclaimedTask(t *testing.T) {
 	seedAssignedTask(t, st, 5*time.Second) // fresh: the reaper must leave it alone
 
 	ingestCaughtUp(s)
-	s.reapStaleAssignedTasks(t.Context())
+	s.reapStaleAssignedTasks(t.Context(), tickView(s))
 
 	if len(notifier.tasks) != 1 {
 		t.Fatalf("task events = %+v, want exactly one (the reaped task)", notifier.tasks)
@@ -220,7 +220,7 @@ func TestReapStaleAssignedTasks_AnnouncesTasksReclaimedBeforeAnError(t *testing.
 	s.notifier = notifier
 
 	ingestCaughtUp(s)
-	s.reapStaleAssignedTasks(t.Context())
+	s.reapStaleAssignedTasks(t.Context(), tickView(s))
 
 	var got []string
 	for _, e := range notifier.tasks {
@@ -242,7 +242,7 @@ func TestReapStaleAssignedTasks_LeavesFreshAssignment(t *testing.T) {
 	taskID, _ := seedAssignedTask(t, st, 5*time.Second)
 
 	ingestCaughtUp(s)
-	s.reapStaleAssignedTasks(t.Context())
+	s.reapStaleAssignedTasks(t.Context(), tickView(s))
 
 	tk, err := st.GetTask(t.Context(), taskID)
 	if err != nil {
@@ -266,7 +266,7 @@ func TestSweepStaleWorkers_NoStaleWorkers_NoOp(t *testing.T) {
 	}
 
 	ingestCaughtUp(s)
-	s.sweepStaleWorkers(t.Context())
+	s.sweepStaleWorkers(t.Context(), tickView(s))
 
 	w, err := st.GetWorker(t.Context(), "w-fresh")
 	if err != nil {
@@ -516,7 +516,7 @@ func TestSweepStaleWorkers_ListError_ReturnsQuietly(t *testing.T) {
 
 	// Should not panic and should simply return on the store error.
 	ingestCaughtUp(s)
-	s.sweepStaleWorkers(t.Context())
+	s.sweepStaleWorkers(t.Context(), tickView(s))
 }
 
 // TestSweepThenDemote_StalledJobReturnsToPending reproduces the reported issue:
@@ -539,8 +539,8 @@ func TestSweepThenDemote_StalledJobReturnsToPending(t *testing.T) {
 
 	// Heartbeat-sweep tick body.
 	ingestCaughtUp(s)
-	s.sweepStaleWorkers(t.Context())
-	s.reapStaleAssignedTasks(t.Context())
+	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.reapStaleAssignedTasks(t.Context(), tickView(s))
 	s.demoteStalledJobs(t.Context())
 
 	// Task was reclaimed to ready by the sweep …
@@ -637,7 +637,7 @@ func TestSweepStaleWorkers_AnnouncesOnlyWorkersTakenOffline(t *testing.T) {
 	seedWorkerWithHeartbeat(t, st, "w-dead", store.WorkerStatusOnline, time.Hour)
 
 	ingestCaughtUp(s)
-	s.sweepStaleWorkers(t.Context())
+	s.sweepStaleWorkers(t.Context(), tickView(s))
 
 	for id, want := range map[string]store.WorkerStatus{"w-broken": store.WorkerStatusOnline, "w-dead": store.WorkerStatusOffline} {
 		w, err := st.GetWorker(t.Context(), id)

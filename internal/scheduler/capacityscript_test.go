@@ -550,7 +550,7 @@ func TestScriptActuator_AbortedRetirementKeepsDegradation(t *testing.T) {
 	// member retiring.
 	f.prov.onCall = func(c providerCall) {
 		if c.action == "retire" {
-			f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute+15*time.Second))
+			capacityTick(t.Context(), f.s, t0.Add(2*time.Minute+15*time.Second))
 		}
 	}
 	f.sweep(t, t0.Add(2*time.Minute))
@@ -772,7 +772,7 @@ func TestScriptActuator_ScaleDownRowGoneEarlyNoDegradeExactRequested(t *testing.
 			return
 		}
 		acked = handleDeregister(f.s, c.workerIDs[0], protocol.DeregisterRetired)
-		f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute+15*time.Second))
+		capacityTick(t.Context(), f.s, t0.Add(2*time.Minute+15*time.Second))
 	}
 
 	f.sweep(t, t0)
@@ -1162,8 +1162,8 @@ func TestActuator_ShutdownPastDrainWritesNothing(t *testing.T) {
 	f.s.capState.act.drainTimeout = 20 * time.Millisecond
 	t0 := time.Now().UTC()
 
-	f.s.sweepCapacityAt(t.Context(), t0)
-	f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute))
+	capacityTick(t.Context(), f.s, t0)
+	capacityTick(t.Context(), f.s, t0.Add(2*time.Minute))
 	select {
 	case <-asked:
 	case <-time.After(5 * time.Second):
@@ -1196,8 +1196,8 @@ func TestActuator_AbandonedCallsWriteNothing(t *testing.T) {
 	})
 	t0 := time.Now().UTC()
 
-	f.s.sweepCapacityAt(t.Context(), t0)
-	f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute))
+	capacityTick(t.Context(), f.s, t0)
+	capacityTick(t.Context(), f.s, t0.Add(2*time.Minute))
 	select {
 	case <-asked:
 	case <-time.After(5 * time.Second):
@@ -1258,8 +1258,8 @@ func TestActuator_LateResultForVanishedGroupMakesNoSeries(t *testing.T) {
 	})
 	t0 := time.Now().UTC()
 
-	f.s.sweepCapacityAt(t.Context(), t0)
-	f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute))
+	capacityTick(t.Context(), f.s, t0)
+	capacityTick(t.Context(), f.s, t0.Add(2*time.Minute))
 	select {
 	case <-asked:
 	case <-time.After(5 * time.Second):
@@ -1269,7 +1269,7 @@ func TestActuator_LateResultForVanishedGroupMakesNoSeries(t *testing.T) {
 	if _, err := f.st.UpdateCapacityGroup(t.Context(), g); err != nil {
 		t.Fatalf("UpdateCapacityGroup: %v", err)
 	}
-	f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute+15*time.Second))
+	capacityTick(t.Context(), f.s, t0.Add(2*time.Minute+15*time.Second))
 	close(release)
 	f.s.capState.act.calls.Wait()
 
