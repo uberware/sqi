@@ -126,8 +126,8 @@ func TestControl_ReregisterAcceptedPowerCommandsRefused(t *testing.T) {
 			}
 		})
 	}
-	if r := controlRequest(t, nc, w.spec.ID, cmd(protocol.ControlSleep)); r.Reason != refusalSimulated {
-		t.Errorf("sleep refused with %q, want %q", r.Reason, refusalSimulated)
+	if r := controlRequest(t, nc, w.spec.ID, cmd(protocol.ControlSleep)); r.Reason != protocol.ControlRefusalNotAllowed {
+		t.Errorf("sleep refused with %q, want %q", r.Reason, protocol.ControlRefusalNotAllowed)
 	}
 }
 
@@ -167,11 +167,9 @@ func TestWorker_MarkedOfflineComesBackOnline(t *testing.T) {
 	await("online")
 }
 
-// stop takes the responder off its subject before it waits for a
-// re-registration still running, so a request arriving while a worker is torn
-// down finds no responder rather than being accepted and starting a
-// registration after the wait.
-func TestControlResponder_StopUnsubscribesBeforeWaiting(t *testing.T) {
+// startNATS starts an in-process NATS server and returns a connection to it.
+func startNATS(t *testing.T) *nats.Conn {
+	t.Helper()
 	ns, err := natsserver.NewServer(&natsserver.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -186,28 +184,63 @@ func TestControlResponder_StopUnsubscribesBeforeWaiting(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(nc.Close)
+	return nc
+}
 
+// subscribeTestControl subscribes a responder for w1 that registers through
+// register.
+func subscribeTestControl(t *testing.T, nc *nats.Conn, register func(context.Context) error) *controlResponder {
+	t.Helper()
+	r, err := subscribeControl(t.Context(), nc, controlDeps{
+		workerID: "w1", busy: func() int { return 0 },
+		deregister: func(string, protocol.DeregisterKind) {}, register: register,
+		logger: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatalf("subscribeControl: %v", err)
+	}
+	return r
+}
+
+var reregisterMsg = protocol.ControlMsg{
+	Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlReregister,
+}
+
+// awaitCount waits until n reads want.
+func awaitCount(t *testing.T, n *atomic.Int64, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for n.Load() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("count = %d, want %d", n.Load(), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// stop takes the responder off its subject before it waits for a
+// re-registration still running, so a request arriving while a worker is torn
+// down finds no responder, and stop returns only once the registration has.
+func TestControlResponder_StopUnsubscribesBeforeWaiting(t *testing.T) {
+	nc := startNATS(t)
 	release := make(chan struct{})
 	var registrations atomic.Int64
-	r := &controlResponder{ctx: t.Context(), logger: slog.New(slog.DiscardHandler), register: func(context.Context) error {
+	r := subscribeTestControl(t, nc, func(context.Context) error {
 		registrations.Add(1)
 		<-release
 		return nil
-	}}
-	if err := subscribeControl(nc, "w1", r); err != nil {
-		t.Fatalf("subscribeControl: %v", err)
-	}
-	reregister := protocol.ControlMsg{Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlReregister}
-	if reply := controlRequest(t, nc, "w1", reregister); !reply.Accepted {
+	})
+	if reply := controlRequest(t, nc, "w1", reregisterMsg); !reply.Accepted {
 		t.Fatalf("reregister reply = %+v, want accepted", reply)
 	}
+	awaitCount(t, &registrations, 1)
 
 	stopped := make(chan struct{})
 	go func() {
 		r.stop()
 		close(stopped)
 	}()
-	data, err := json.Marshal(reregister)
+	data, err := json.Marshal(reregisterMsg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,55 +267,43 @@ func TestControlResponder_StopUnsubscribesBeforeWaiting(t *testing.T) {
 	}
 }
 
-// A reregister that reaches handle after stop, as one already running on the
-// subscription's goroutine can, is refused and starts no registration.
-func TestControlResponder_ReregisterAfterStopIsRefused(t *testing.T) {
-	ns, err := natsserver.NewServer(&natsserver.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	ns.Start()
-	t.Cleanup(ns.Shutdown)
-	if !ns.ReadyForConnections(5 * time.Second) {
-		t.Fatal("NATS server not ready")
-	}
-	nc, err := nats.Connect(ns.ClientURL())
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(nc.Close)
-
+// A reregister accepted while one is running is answered but starts no second
+// registration: one registration answers every request made before it lands.
+func TestControlResponder_OneRegistrationAtATime(t *testing.T) {
+	nc := startNATS(t)
+	release := make(chan struct{})
 	var registrations atomic.Int64
-	r := &controlResponder{ctx: t.Context(), logger: slog.New(slog.DiscardHandler), register: func(context.Context) error {
+	r := subscribeTestControl(t, nc, func(context.Context) error {
+		registrations.Add(1)
+		<-release
+		return nil
+	})
+	if reply := controlRequest(t, nc, "w1", reregisterMsg); !reply.Accepted {
+		t.Fatalf("first reregister reply = %+v, want accepted", reply)
+	}
+	awaitCount(t, &registrations, 1)
+	if reply := controlRequest(t, nc, "w1", reregisterMsg); !reply.Accepted {
+		t.Fatalf("second reregister reply = %+v, want accepted", reply)
+	}
+	close(release)
+	r.stop()
+	if n := registrations.Load(); n != 1 {
+		t.Errorf("registrations = %d, want 1", n)
+	}
+}
+
+// A reregister that reaches the gate after stop, as one the controller
+// accepted just before the unsubscribe can, starts no registration.
+func TestReregisterGate_AfterStopStartsNothing(t *testing.T) {
+	var registrations atomic.Int64
+	g := reregisterGate{register: func(context.Context) error {
 		registrations.Add(1)
 		return nil
 	}}
-	r.stop()
-
-	data, err := json.Marshal(protocol.ControlMsg{
-		Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlReregister,
-	})
-	if err != nil {
-		t.Fatal(err)
+	g.stop()
+	if err := g.reregister(t.Context()); err != nil {
+		t.Fatalf("reregister after stop: %v", err)
 	}
-	inbox := nc.NewInbox()
-	replies, err := nc.SubscribeSync(inbox)
-	if err != nil {
-		t.Fatalf("SubscribeSync: %v", err)
-	}
-	r.handle(&nats.Msg{Subject: "control", Reply: inbox, Data: data, Sub: replies})
-	msg, err := replies.NextMsg(5 * time.Second)
-	if err != nil {
-		t.Fatalf("no reply: %v", err)
-	}
-	var reply protocol.ControlReplyMsg
-	if err := json.Unmarshal(msg.Data, &reply); err != nil {
-		t.Fatalf("decode reply %q: %v", msg.Data, err)
-	}
-	if reply.Accepted || reply.Reason != refusalStopping {
-		t.Errorf("reply = %+v, want a refusal with reason %q", reply, refusalStopping)
-	}
-	r.wg.Wait()
 	if n := registrations.Load(); n != 0 {
 		t.Errorf("registrations = %d, want 0", n)
 	}

@@ -53,9 +53,11 @@ It is not:
 
 Simulated workers speak the real worker protocol over real NATS connections
 (one connection per worker, so per-connection broker cost is measured) and
-reuse the real worker packages for leasing, heartbeats, status, log streaming
-and cancel. They run no processes: a task is a timer. The design target is
-10,000 simulated workers per generator process; that scale is unmeasured (see
+reuse the real worker packages for leasing, heartbeats, status, log streaming,
+cancel and the server's control requests (a simulated worker accepts a request
+to register again and refuses sleep, shutdown and wake). They run no
+processes: a task is a timer. The design target is 10,000 simulated workers
+per generator process; that scale is unmeasured (see
 [Open questions](#open-questions)). Scenarios can also start a few real
 `sqi-worker` processes beside the simulated fleet so the real execution path
 sees the same load.

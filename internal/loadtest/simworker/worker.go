@@ -354,12 +354,15 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	// Before the first lease request, as a real worker subscribes its power
 	// controller: the server asks a worker it holds offline, whose heartbeats
 	// still arrive, to register again here.
-	inc.ctl = &controlResponder{ctx: hbCtx, register: inc.Register, logger: w.logger}
-	if err := subscribeControl(nc, id, inc.ctl); err != nil {
+	ctl, err := subscribeControl(hbCtx, nc, controlDeps{
+		workerID: id, busy: d.ActiveTaskCount, deregister: reg.Deregister, register: inc.Register, logger: w.logger,
+	})
+	if err != nil {
 		stopHB()
 		nc.Close()
 		return nil, err
 	}
+	inc.ctl = ctl
 	inc.hbDone, inc.leaseDone = make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(inc.hbDone)

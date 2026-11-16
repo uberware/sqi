@@ -58,6 +58,9 @@ const (
 	fallbackPoll = time.Second
 	// maxCommandOutput bounds the command output kept for an error message.
 	maxCommandOutput = 2048
+	// refusalWakeNotSupported is the reason a wake request is refused with
+	// [Config.RefuseWake] set.
+	refusalWakeNotSupported = "this worker does not send wake packets"
 )
 
 // Deps are the worker's parts the controller drives. Busy, Deregister and
@@ -87,6 +90,10 @@ type Config struct {
 	// SleepCommand and ShutdownCommand are argv lists. Empty means the
 	// platform default, if there is one.
 	SleepCommand, ShutdownCommand []string
+	// RefuseWake refuses every wake request, for a worker that cannot send
+	// packets on its peers' behalf, such as a simulated one. The worker
+	// configuration does not set it.
+	RefuseWake bool
 }
 
 // natsConn is the subset of [*nats.Conn] Subscribe uses.
@@ -394,6 +401,9 @@ func (c *controller) decideReregister() plan {
 
 // decideWake decides a wake request.
 func (c *controller) decideWake(msg protocol.ControlMsg) plan {
+	if c.cfg.RefuseWake {
+		return refuse(refusalWakeNotSupported)
+	}
 	var macs []net.HardwareAddr
 	for _, s := range msg.MACs {
 		mac, err := net.ParseMAC(s)

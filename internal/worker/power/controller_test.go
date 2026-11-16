@@ -502,6 +502,24 @@ func TestController_WakeRelaysPackets(t *testing.T) {
 	}
 }
 
+// With RefuseWake set, a valid wake request is refused and sends nothing.
+func TestController_RefuseWake(t *testing.T) {
+	h := newHarness(t, Config{RefuseWake: true})
+	h.send(controlJSON(t, protocol.ControlMsg{
+		Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlWake,
+		MACs: []string{"aa:bb:cc:dd:ee:ff"}, Targets: []string{"192.168.1.255:9"},
+	}))
+	h.wait()
+	if r := h.lastReply(); r.Accepted || r.Reason != refusalWakeNotSupported {
+		t.Fatalf("reply = %+v, want a refusal with reason %q", r, refusalWakeNotSupported)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.wakeMACs) != 0 || len(h.wakeTo) != 0 {
+		t.Errorf("SendWake called with macs %v, targets %v; want no call", h.wakeMACs, h.wakeTo)
+	}
+}
+
 func TestController_WakeBadMACRefused(t *testing.T) {
 	tests := []struct {
 		name    string
