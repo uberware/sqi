@@ -2493,7 +2493,8 @@ it runs out of descriptors.
 
 The server log shows it. While the limit holds, the broker logs `bus: nats
 server error` lines reading `Temporary Client Accept Error(... too many open
-files)`. A stream that stops logs `Filestore [<stream>] Critical write error:
+files)`, once per step of its back-off and then once a minute with a
+`suppressed` count. A stream that stops logs `Filestore [<stream>] Critical write error:
 lmb missing` once, then `JetStream failed to store a msg on stream 'SQI >
 <stream>': lmb missing` once a minute, with a `suppressed` count, until the
 server stops. Watch for these; see [The embedded broker's own

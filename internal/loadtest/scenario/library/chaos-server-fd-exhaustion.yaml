@@ -28,7 +28,8 @@ description: chaos - lower the server's file descriptor limit to 10 free descrip
 #          connect timeout), so every refused worker is back by 74s after the
 #          cut, well inside the 55s workers-converge allows after the last heal.
 # The server log shows the fault as the broker's "Temporary Client Accept
-# Error(... too many open files)", about once a second while the limit holds.
+# Error(... too many open files), sleeping <n>ms": once for each back-off step
+# up to 1000ms, then once a minute with a suppressed count while the limit holds.
 #
 # The farm often does not converge. The redialing workers take the free
 # descriptors, and a stream can stop storing: its newest block file is last

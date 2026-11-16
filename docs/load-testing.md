@@ -1162,9 +1162,11 @@ stops, the farm is unharmed. `chaos-server-fd-exhaustion` records `rework`,
 `executions-recorded`, each as one that can fail.
 
 The server log shows what happens in the broker. In a
-`chaos-server-fd-exhaustion` run on Linux, the broker logged `Temporary Client
-Accept Error(... too many open files)` about once a second while the limit
-held. For each stream that stopped it then logged `Filestore [SQI_TASK]
+`chaos-server-fd-exhaustion` run on Linux, the broker failed to accept about
+once a second while the limit held. The server logged `Temporary Client Accept
+Error(... too many open files), sleeping <n>ms` once for each step of the
+broker's back-off up to 1000 ms, then that line once a minute with a
+`suppressed` count. For each stream that stopped it then logged `Filestore [SQI_TASK]
 Critical write error: lmb missing` and `JetStream stream 'SQI > SQI_TASK'
 critical write error: lmb missing` once, and `JetStream failed to store a msg
 on stream 'SQI > SQI_TASK': lmb missing` from then until the server stopped,

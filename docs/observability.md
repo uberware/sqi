@@ -162,25 +162,30 @@ attribute:
 | Message | Level | Attribute | What it is |
 |---|---|---|---|
 | `bus: nats server error` | `ERROR` | `error` | A broker error: a stream that cannot store a message (`JetStream failed to store a msg on stream 'SQI > SQI_TASK': ...`, `Filestore [SQI_TASK] Critical write error: ...`), an accept error such as `too many open files`, a refused connection (`authentication error`). |
-| `bus: nats server warning` | `WARN` | `warning` | A broker warning, such as `Auth callout service returned an error: not authorized`. |
-| `bus: nats server notice` | `DEBUG` | `notice` | A broker notice: mostly startup and shutdown messages, plus slow-consumer reports. Logged only at `log.level: debug`. |
+| `bus: nats server warning` | `WARN` | `warning` | A broker warning, such as `Auth callout service returned an error: not authorized`, or a slow consumer report (`Slow Consumer Detected: MaxPending of ... Exceeded`, `Slow Consumer Detected: WriteDeadline of ... exceeded`): a client too slow to keep up, whose messages are dropped or whose connection is closed. |
+| `bus: nats server notice` | `DEBUG` | `notice` | A broker notice: startup and shutdown messages, and `Slow Consumer Recovered`. Logged only at `log.level: debug`. |
 | `bus: nats server fatal error` | `ERROR` | `error` | A failure that stops the broker, such as a port already in use. |
 
 The broker's debug and trace output is not logged.
 
 A line identical to one logged at the same level in the last minute is
-dropped. The next copy after that minute carries a `suppressed` attribute: the
-number of copies dropped since the previous one. A broker stream that can no
-longer store anything logs the same error every couple of seconds, which this
-turns into one line a minute. Lines that name a connection (its address and
-client ID) differ every time and are never dropped.
+dropped. If any copy was dropped, the line is logged again when the minute
+ends, with a `suppressed` attribute giving the number of copies dropped, and a
+new minute starts; so a count is reported at most a minute late. A copy that
+arrives after the minute, before that report, carries the count instead. When
+the server stops, the counts still pending are logged. A broker stream that
+can no longer store anything logs the same error every couple of seconds,
+which this turns into one line a minute. Lines that name a connection (its
+address and client ID) differ every time and are never dropped.
 
 Normal operation logs none of these at `WARN` or above. A worker whose broker
-credential was revoked, or was never enrolled, logs one `bus: nats server
-error` and one `bus: nats server warning` for each connection the broker
-refuses, next to sqi's own `bus: auth callout refused ...` warning. The worker
-retries with growing delays and gives up after about two minutes, so that is
-about five of each.
+credential was revoked, or was never enrolled, retries with growing delays
+(about 2, 6, 14, 30 and 62 seconds after the first refusal) and gives up after
+about two minutes. Each refusal logs a `bus: nats server error` naming the
+connection, next to sqi's own `bus: auth callout refused ...` warning, so about
+six of each. The broker's `Auth callout service returned an error: not
+authorized` warning names no connection, so it is logged at the first refusal
+and then once a minute with a `suppressed` count.
 
 An external broker (`nats.mode: external`) keeps its own log; `sqi-server`
 logs none of it.
