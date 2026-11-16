@@ -89,8 +89,9 @@ type Embedded struct {
 	started bool
 
 	ns      *natsserver.Server
-	data    *nats.Conn // sqi's data connection (SQI account)
-	callout *nats.Conn // the auth-callout responder's connection (AUTH); nil with auth off
+	natsLog *natsLogger // ns's logger; closed once ns has stopped
+	data    *nats.Conn  // sqi's data connection (SQI account)
+	callout *nats.Conn  // the auth-callout responder's connection (AUTH); nil with auth off
 
 	// responder answers authorization requests on callout; nil with auth off.
 	responder *Responder
@@ -280,7 +281,7 @@ func (e *Embedded) Start(ctx context.Context) error {
 		}
 	}
 
-	ns, err := e.startServer(ctx, opts, layout)
+	ns, nl, err := e.startServer(ctx, opts, layout)
 	if err != nil {
 		return err
 	}
@@ -296,17 +297,20 @@ func (e *Embedded) Start(ctx context.Context) error {
 	own, err := connectOwn(ctx, ns, keys, responder)
 	if err != nil {
 		stopServer(ns)
+		nl.close()
 		return err
 	}
 
 	if err := provisionStreams(ctx, own.data); err != nil {
 		closeConns(own.data, own.callout)
 		stopServer(ns)
+		nl.close()
 		return err
 	}
 
 	e.mu.Lock()
 	e.ns, e.data, e.callout = ns, own.data, own.callout
+	e.natsLog = nl
 	e.responder = responder
 	e.authTimeout = time.Duration(opts.AuthTimeout * float64(time.Second))
 	e.dataSeed, e.dataPub = keys.dataSeed, keys.dataPub
@@ -322,10 +326,10 @@ func (e *Embedded) Start(ctx context.Context) error {
 // startServer creates and starts the server, waits until it accepts
 // connections, and enables JetStream on the SQI account. JetStream must be on
 // for the account before any client, sqi's own included, touches it.
-func (e *Embedded) startServer(ctx context.Context, opts *natsserver.Options, layout Layout) (*natsserver.Server, error) {
+func (e *Embedded) startServer(ctx context.Context, opts *natsserver.Options, layout Layout) (*natsserver.Server, *natsLogger, error) {
 	ns, err := natsserver.NewServer(opts)
 	if err != nil {
-		return nil, fmt.Errorf("bus: create nats server: %w", err)
+		return nil, nil, fmt.Errorf("bus: create nats server: %w", err)
 	}
 
 	nl := newNATSLogger(e.logger)
@@ -336,16 +340,18 @@ func (e *Embedded) startServer(ctx context.Context, opts *natsserver.Options, la
 
 	if err := waitForNATS(ctx, ns, nl, 10*time.Second); err != nil {
 		ns.Shutdown()
-		return nil, err
+		nl.close()
+		return nil, nil, err
 	}
 	// The listener is open from here. With auth off an anonymous worker can
 	// connect before JetStream is on for SQI; its first registration publish
 	// then gets no stream response, which the worker's registration retries.
 	if err := layout.EnableAccountJetStream(ns); err != nil {
 		stopServer(ns)
-		return nil, err
+		nl.close()
+		return nil, nil, err
 	}
-	return ns, nil
+	return ns, nl, nil
 }
 
 // ownConns are sqi's in-process connections to the embedded broker.
@@ -463,8 +469,10 @@ func closeConns(conns ...*nats.Conn) {
 func (e *Embedded) Shutdown() {
 	e.mu.Lock()
 	ns, data, callout := e.ns, e.data, e.callout
+	nl := e.natsLog
 	responder := e.responder
 	e.ns, e.data, e.callout = nil, nil, nil
+	e.natsLog = nil
 	e.responder = nil
 	e.mu.Unlock()
 
@@ -474,6 +482,7 @@ func (e *Embedded) Shutdown() {
 	closeConns(callout, data)
 	if ns != nil {
 		stopServer(ns)
+		nl.close()
 		e.logger.InfoContext(context.Background(), "bus: nats server stopped")
 	}
 }

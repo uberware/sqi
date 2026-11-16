@@ -16,8 +16,10 @@ description: chaos - fill the server's data volume at 1m for 60s under a verbose
 # leaves that stream with a write error that outlasts the full volume, so from
 # the fill on no task status, heartbeat or log chunk is stored for the rest of
 # the run. The server stays up, answers REST and stays ready while the volume
-# is full, and logs nothing, because it drops the broker's error output. When
-# the startup grace ends, about 73s after the space returns, the sweep marks
+# is full. Its log shows each stream's "Critical write error: ... no space left
+# on device" once, then "JetStream failed to store a msg on stream ..." with
+# the same error once a minute until the server stops, also after the space
+# returns. When the startup grace ends, about 73s after the space returns, the sweep marks
 # every worker offline and reclaims its attempts; none comes back. Every check
 # that needs a status or a heartbeat fails.
 duration: 3m

@@ -1140,8 +1140,12 @@ When the server's data volume fills, the embedded broker's first stream write
 that fails with ENOSPC leaves that stream failing every later write, also
 after the space returns, for the rest of the run; whether a restart clears it
 is not known. No task status, heartbeat or log is stored, while `/readyz`
-stays ready, REST requests succeed and nothing is logged. When the heartbeat
-sweep runs, every worker is marked offline and none returns.
+stays ready and REST requests succeed. The server log shows each stream's
+`Critical write error: write .../<n>.blk: no space left on device` once, then
+`JetStream failed to store a msg on stream ...: ... no space left on device`
+once a minute until the server stops, also after the space returns.
+When the heartbeat sweep runs, every worker is marked offline and none
+returns.
 `chaos-disk-server-full` records it, where `terminal`, `outcomes`,
 `single-attempt`, `workers-converge` and `executions-recorded` fail.
 
@@ -1157,22 +1161,23 @@ stops, the farm is unharmed. `chaos-server-fd-exhaustion` records `rework`,
 `terminal`, `outcomes`, `single-attempt`, `workers-converge` and
 `executions-recorded`, each as one that can fail.
 
-The cause inside the broker is unconfirmed: sqi's own logs cannot show it,
-because the broker's errors are dropped (H13f10). The task status and
-heartbeat streams create a new block file many times a minute, because
-nats-server 2.15.2 starts a new last block whenever an ack empties the current
-one. A standalone nats-server 2.15.2, run out of descriptors while a
-work-queue stream needs a new block file, logs a critical write error and
-refuses every later store on that stream after the limit lifts.
-
-### The embedded broker's errors are not logged (H13f10)
-
-`sqi-server` logs only the embedded nats-server's fatal errors and drops its
-notices, warnings and errors, so a stream's write error or a refused connection
-in the broker never reaches the server log. No check fails on it; it is why
-`chaos-disk-server-full` logs nothing about the full volume and why
-`chaos-server-fd-exhaustion` shows the broker's refused connections only in the
-server's open-file count.
+The server log shows what happens in the broker (see [The embedded broker's own
+log](observability.md#the-embedded-brokers-own-log)). While the limit holds,
+the broker fails to accept a connection about once a second, and the server
+logs `Temporary Client Accept Error(... too many open files), sleeping <n>ms`
+once for each step of the broker's back-off up to 1000 ms, then once a minute
+with a `suppressed` count. For each stream that stops it logs `Filestore
+[SQI_TASK] Critical write error: lmb missing` and `JetStream stream 'SQI >
+SQI_TASK' critical write error: lmb missing` once, then `JetStream failed to
+store a msg on stream 'SQI > SQI_TASK': lmb missing` once a minute, with a
+`suppressed` count, until the server stops.
+The task status and heartbeat streams create a new block file many times a
+minute, because nats-server 2.15.2 starts a new last block whenever an ack
+empties the current one, and a stream whose new last block could not be
+created is left without one. A standalone nats-server 2.15.2, run out of
+descriptors while a work-queue stream needs a new block file, logs the same
+critical write error and refuses every later store on that stream after the
+limit lifts.
 
 ---
 
