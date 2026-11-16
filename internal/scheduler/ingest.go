@@ -43,6 +43,11 @@ type ingestTracker struct {
 
 	holdAt    time.Time
 	holdUntil time.Time
+
+	// gapRelease is set while a gap hold is in force (see [ingestTracker.gap]):
+	// effective stays at or before gapAt until caughtUpTo reaches it.
+	gapAt      time.Time
+	gapRelease time.Time
 }
 
 // newIngestTracker returns a tracker that forgets a message once it is older
@@ -62,6 +67,39 @@ func (t *ingestTracker) marker(stamp time.Time) {
 	defer t.mu.Unlock()
 	if stamp.After(t.caughtUpTo) {
 		t.caughtUpTo = stamp
+	}
+	t.releaseGapLocked()
+}
+
+// gap records that messages were removed from the stream before the consumer
+// read them, and that the first message read after them is stamped after.
+// Markers vouch only for the messages the stream still holds, so a later
+// marker says nothing of what the removed ones carried. effective is held at
+// the newest marker processed before the gap (zero when there was none) until
+// the consumer has processed a marker stamped window or more after after:
+// only then has it read a whole window of the stream past the gap. A gap seen
+// while a hold is in force keeps that hold's time and moves its release to
+// this gap's own after plus window. It reports whether it started a new hold.
+func (t *ingestTracker) gap(after time.Time, window time.Duration) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.releaseGapLocked()
+	release := after.Add(window)
+	if t.gapRelease.IsZero() {
+		t.gapAt, t.gapRelease = t.caughtUpTo, release
+		return true
+	}
+	if release.After(t.gapRelease) {
+		t.gapRelease = release
+	}
+	return false
+}
+
+// releaseGapLocked ends a gap hold once caughtUpTo has reached its release.
+// The caller holds t.mu.
+func (t *ingestTracker) releaseGapLocked() {
+	if !t.gapRelease.IsZero() && !t.caughtUpTo.Before(t.gapRelease) {
+		t.gapAt, t.gapRelease = time.Time{}, time.Time{}
 	}
 }
 
@@ -102,17 +140,23 @@ func (t *ingestTracker) hold(at, until time.Time) {
 }
 
 // effective is the time up to which the consumer has applied its stream: zero
-// before the first marker, then the newest marker, capped by an active hold.
+// before the first marker, then the newest marker, capped by an active hold
+// and by a gap hold (which can be zero).
 func (t *ingestTracker) effective(now time.Time) time.Time {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.caughtUpTo.IsZero() {
 		return time.Time{}
 	}
-	if now.Before(t.holdUntil) && t.holdAt.Before(t.caughtUpTo) {
-		return t.holdAt
+	t.releaseGapLocked()
+	eff := t.caughtUpTo
+	if now.Before(t.holdUntil) && t.holdAt.Before(eff) {
+		eff = t.holdAt
 	}
-	return t.caughtUpTo
+	if !t.gapRelease.IsZero() && t.gapAt.Before(eff) {
+		eff = t.gapAt
+	}
+	return eff
 }
 
 // lag is how far the newest processed marker trails now, or 0 before the

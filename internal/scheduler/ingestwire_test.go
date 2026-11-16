@@ -483,3 +483,67 @@ func TestRefreshIngestGauges(t *testing.T) {
 		t.Errorf("worker lag = %vs, want 0 before its first marker", got)
 	}
 }
+
+// TestHandleWorkerMessage_SequenceGapHoldsTracker: a first delivery whose
+// stream sequence skips past the previous first delivery means the stream
+// removed messages before the consumer read them, and holds the worker
+// tracker at the marker processed before the skip. A redelivery, which may
+// arrive out of order, is never read as a skip, and a marker can be the
+// message that reveals one.
+func TestHandleWorkerMessage_SequenceGapHoldsTracker(t *testing.T) {
+	var logs bytes.Buffer
+	s := newIngestScheduler(DefaultConfig(), &recordBus{}, &logs)
+	s.store = fake.New()
+	t0 := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	at := func(sec int) time.Time { return t0.Add(time.Duration(sec) * time.Second) }
+	marker := func(seq uint64, sec int, delivered uint64) {
+		s.handleWorkerMessage(&fakeJSMsg{subject: bus.SubjectMarkerWorker, natsSeq: seq, stamp: at(sec), delivered: delivered})
+	}
+	heartbeat := func(seq uint64, sec int, delivered uint64) {
+		s.handleWorkerMessage(&fakeJSMsg{
+			subject: bus.WorkerHeartbeatSubject("w-ghost"), natsSeq: seq, stamp: at(sec), delivered: delivered,
+			data: workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: "w-ghost", At: at(sec)}),
+		})
+	}
+
+	marker(10, 0, 1)
+	heartbeat(5, 1, 2)  // a redelivery of an earlier message
+	heartbeat(11, 1, 1) // the next first delivery
+	heartbeat(40, 2, 3) // a redelivery from further on
+	marker(12, 2, 1)
+	if got := s.ingestWorker.effective(at(3)); !got.Equal(at(2)) {
+		t.Fatalf("effective with no skip = %v, want %v (redeliveries are not skips)", got, at(2))
+	}
+	if strings.Contains(logs.String(), "expired") {
+		t.Fatalf("a skip was logged with none:\n%s", logs.String())
+	}
+
+	// 13 and 14 were removed unread; the marker at 15 reveals it.
+	marker(15, 150, 1)
+	marker(16, 152, 1)
+	if got := s.ingestWorker.effective(at(153)); !got.Equal(at(2)) {
+		t.Fatalf("effective after a skip = %v, want %v (the marker before it)", got, at(2))
+	}
+	if !strings.Contains(logs.String(), "scheduler: worker messages expired from the stream unread") {
+		t.Errorf("the skip was not logged:\n%s", logs.String())
+	}
+	marker(17, 150+int(DefaultConfig().WorkerTimeout/time.Second), 1)
+	if got, want := s.ingestWorker.effective(at(200)), at(150+int(DefaultConfig().WorkerTimeout/time.Second)); !got.Equal(want) {
+		t.Fatalf("effective a WorkerTimeout past the skip = %v, want %v (released)", got, want)
+	}
+	if got := s.ingestTask.effective(at(200)); !got.IsZero() {
+		t.Errorf("task tracker effective = %v, want zero (a worker-stream skip is the worker tracker's)", got)
+	}
+}
+
+// TestHandleWorkerMessage_FirstDeliveryAfterStartIsNoSkip: the first message a
+// fresh process reads sets the sequence it counts from, however high it is.
+func TestHandleWorkerMessage_FirstDeliveryAfterStartIsNoSkip(t *testing.T) {
+	s := newIngestScheduler(DefaultConfig(), &recordBus{}, &bytes.Buffer{})
+	t0 := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	s.handleWorkerMessage(&fakeJSMsg{subject: bus.SubjectMarkerWorker, natsSeq: 5000, stamp: t0, delivered: 1})
+	s.handleWorkerMessage(&fakeJSMsg{subject: bus.SubjectMarkerWorker, natsSeq: 5001, stamp: t0.Add(time.Second), delivered: 1})
+	if got := s.ingestWorker.effective(t0.Add(2 * time.Second)); !got.Equal(t0.Add(time.Second)) {
+		t.Fatalf("effective = %v, want %v", got, t0.Add(time.Second))
+	}
+}

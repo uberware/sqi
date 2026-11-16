@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 )
 
@@ -142,6 +143,56 @@ func TestSweep_WaitsForTaskConsumer(t *testing.T) {
 	s.sweepStaleWorkers(t.Context())
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
 		t.Errorf("worker status = %q with the task consumer at t0+30s, want offline", got)
+	}
+}
+
+// TestSweep_HeldAfterHeartbeatsExpireUnread: a store stall longer than
+// SQI_WORKER's MaxAge lets heartbeats expire before the worker consumer reads
+// them. The first marker read after them must not move the cutoff past
+// heartbeats that never reached the store; once the consumer has read a whole
+// WorkerTimeout past them, a worker that is really dead is swept as before.
+func TestSweep_HeldAfterHeartbeatsExpireUnread(t *testing.T) {
+	st := newCheckedFake(t)
+	workerID, taskID, t0 := seedIngestSweepWorker(t, st)
+	s, clock, _ := newIngestSweepScheduler(t, st, t0)
+	marker := func(seq uint64, at time.Time) {
+		s.handleWorkerMessage(&fakeJSMsg{subject: bus.SubjectMarkerWorker, natsSeq: seq, stamp: at, delivered: 1})
+	}
+
+	// Before the stall the consumer reads up to t0+1s. Messages 11 to 99
+	// then expire unread; reading resumes at R.
+	marker(10, t0.Add(time.Second))
+	r := t0.Add(150 * time.Second)
+	marker(100, r)
+	marker(101, r.Add(2*time.Second))
+	clock.t = r.Add(3 * time.Second)
+	s.ingestTask.marker(clock.t)
+
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Fatalf("worker status = %q just after the expired heartbeats, want online (they never reached the store)", got)
+	}
+
+	// Short of a whole WorkerTimeout past R: still held.
+	marker(102, r.Add(ingestSweepTimeout-time.Second))
+	clock.t = r.Add(ingestSweepTimeout)
+	s.ingestTask.marker(clock.t)
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Fatalf("worker status = %q before a whole WorkerTimeout past the gap was read, want online", got)
+	}
+
+	// A whole WorkerTimeout past R has been read and the worker sent nothing
+	// in it: it is dead.
+	marker(103, r.Add(ingestSweepTimeout))
+	clock.t = r.Add(ingestSweepTimeout + time.Second)
+	s.ingestTask.marker(clock.t)
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
+		t.Errorf("worker status = %q once the gap's window was read, want offline", got)
+	}
+	if got := taskStatus(t, st, taskID); got != store.TaskStatusReady {
+		t.Errorf("task status = %q, want ready (reclaimed)", got)
 	}
 }
 

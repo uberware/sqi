@@ -485,6 +485,10 @@ type Scheduler struct {
 	// ingestLoop is the marker loop's state between ticks.
 	ingestLoop ingestLoopState
 
+	// workerSeq is the newest stream sequence the worker consumer has had a
+	// first delivery of; see [Scheduler.noteWorkerDelivery].
+	workerSeq firstDeliverySeq
+
 	// heldBack remembers whether the liveness sweep is in a held-back
 	// episode; see [Scheduler.logIngestHeldBack].
 	heldBack heldBackLog
@@ -976,6 +980,8 @@ func (s *Scheduler) buildUsageContext(
 // handler.
 func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 	ctx := s.ctx
+	// Before the marker branch, so a marker can reveal a skip too.
+	s.noteWorkerDelivery(ctx, msg)
 	subject := msg.Subject()
 	if subject == bus.SubjectMarkerWorker {
 		s.handleIngestMarker(ctx, msg)

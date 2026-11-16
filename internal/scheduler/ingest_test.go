@@ -188,6 +188,7 @@ func TestIngestTracker_ConcurrentUse(t *testing.T) {
 				_ = tr.pendingIDs(keyKindTask, now)
 				_ = tr.pendingCount(now)
 				_ = tr.lag(now)
+				_ = tr.gap(now, time.Second)
 				tr.ack(seq)
 			}
 		}(g)
@@ -195,5 +196,81 @@ func TestIngestTracker_ConcurrentUse(t *testing.T) {
 	wg.Wait()
 	if got := tr.pendingCount(ingestAt(200)); got != 0 {
 		t.Fatalf("pendingCount = %d, want 0", got)
+	}
+}
+
+// TestIngestTracker_GapHoldsUntilAWholeWindowIsRead: after a gap, effective
+// stays at the newest marker processed before it until the consumer has
+// processed a marker a whole window past the first message after the gap.
+func TestIngestTracker_GapHoldsUntilAWholeWindowIsRead(t *testing.T) {
+	const window = 30 * time.Second
+	tr := newIngestTracker(2*time.Minute, 10)
+	tr.marker(ingestAt(10))
+
+	// Messages stored after the marker at 10 s expired unread; the first
+	// read after them is stamped 150 s.
+	if started := tr.gap(ingestAt(150), window); !started {
+		t.Fatal("first gap did not start a hold")
+	}
+	tr.marker(ingestAt(152))
+	if got := tr.effective(ingestAt(153)); !got.Equal(ingestAt(10)) {
+		t.Fatalf("effective just after the gap = %v, want %v (the marker before it)", got, ingestAt(10))
+	}
+	tr.marker(ingestAt(179))
+	if got := tr.effective(ingestAt(180)); !got.Equal(ingestAt(10)) {
+		t.Fatalf("effective at 179 s, short of 150 s + window = %v, want %v", got, ingestAt(10))
+	}
+
+	// A second gap before the release keeps the earlier hold time and moves
+	// the release to its own first message plus the window.
+	if started := tr.gap(ingestAt(175), window); started {
+		t.Fatal("a gap inside a hold reported a new hold")
+	}
+	tr.marker(ingestAt(180))
+	if got := tr.effective(ingestAt(181)); !got.Equal(ingestAt(10)) {
+		t.Fatalf("effective at 180 s after a second gap = %v, want %v", got, ingestAt(10))
+	}
+	tr.marker(ingestAt(205))
+	if got := tr.effective(ingestAt(206)); !got.Equal(ingestAt(205)) {
+		t.Fatalf("effective at 175 s + window = %v, want %v (released)", got, ingestAt(205))
+	}
+
+	// Released: a later gap holds at the marker in force when it is seen.
+	tr.gap(ingestAt(300), window)
+	tr.marker(ingestAt(301))
+	if got := tr.effective(ingestAt(302)); !got.Equal(ingestAt(205)) {
+		t.Fatalf("effective after a new gap = %v, want %v", got, ingestAt(205))
+	}
+}
+
+// TestIngestTracker_GapBeforeFirstMarkerHoldsAtZero: a gap seen before any
+// marker leaves effective zero until the window after it has been read.
+func TestIngestTracker_GapBeforeFirstMarkerHoldsAtZero(t *testing.T) {
+	const window = 30 * time.Second
+	tr := newIngestTracker(2*time.Minute, 10)
+	tr.gap(ingestAt(100), window)
+	tr.marker(ingestAt(101))
+	if got := tr.effective(ingestAt(102)); !got.IsZero() {
+		t.Fatalf("effective after a gap with no earlier marker = %v, want zero", got)
+	}
+	tr.marker(ingestAt(130))
+	if got := tr.effective(ingestAt(131)); !got.Equal(ingestAt(130)) {
+		t.Fatalf("effective at the release = %v, want %v", got, ingestAt(130))
+	}
+}
+
+// TestIngestTracker_GapAndHoldTakeTheEarlier: a pause or interruption hold and
+// a gap hold together cap effective at the earlier of the two.
+func TestIngestTracker_GapAndHoldTakeTheEarlier(t *testing.T) {
+	tr := newIngestTracker(2*time.Minute, 10)
+	tr.marker(ingestAt(20))
+	tr.hold(ingestAt(5), ingestAt(60))
+	tr.gap(ingestAt(30), 30*time.Second)
+	tr.marker(ingestAt(40))
+	if got := tr.effective(ingestAt(41)); !got.Equal(ingestAt(5)) {
+		t.Fatalf("effective under both = %v, want %v", got, ingestAt(5))
+	}
+	if got := tr.effective(ingestAt(61)); !got.Equal(ingestAt(20)) {
+		t.Fatalf("effective once the hold ends = %v, want %v (the gap still holds)", got, ingestAt(20))
 	}
 }

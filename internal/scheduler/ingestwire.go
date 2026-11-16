@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -110,6 +111,61 @@ func (s *Scheduler) checkBusInterruption(now time.Time) {
 	}
 	s.ingestWorker.hold(at, at.Add(bus.WorkerConsumerAckWait))
 	s.ingestTask.hold(at, at.Add(bus.TaskStatusConsumerAckWait))
+}
+
+// firstDeliverySeq is the state behind [Scheduler.noteWorkerDelivery].
+type firstDeliverySeq struct {
+	mu sync.Mutex
+	// last is the highest stream sequence delivered for the first time, zero
+	// before the first.
+	last uint64
+}
+
+// next records a first delivery of stream sequence seq and returns how many
+// messages before it, after the previous first delivery, the consumer never
+// got: 0 when none were skipped or seq is the first one seen.
+func (f *firstDeliverySeq) next(seq uint64) uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var skipped uint64
+	if f.last != 0 && seq > f.last+1 {
+		skipped = seq - f.last - 1
+	}
+	f.last = max(f.last, seq)
+	return skipped
+}
+
+// noteWorkerDelivery holds the worker tracker when msg shows that SQI_WORKER
+// removed messages before the worker consumer read them. Its MaxAge is two
+// minutes, so heartbeats expire unread whenever the consumer falls that far
+// behind: during a store stall that blocks the handler, or under a load it
+// cannot keep up with. A marker read after them would otherwise move the
+// tracker past heartbeats that never reached the store, and the sweep would
+// take live workers offline.
+//
+// For the one consumer of a work-queue stream, first deliveries
+// (NumDelivered 1) arrive in increasing stream sequence, so a first delivery
+// more than one past the previous one means the messages between were removed
+// unread. Redeliveries can arrive in any order and are not counted. The first
+// message after a start sets the sequence to count from, so a fresh process
+// or a promoted standby detects nothing: its tracker starts at zero and the
+// startup grace covers it. A first delivery the client dropped before the
+// handler (an interruption) also reads as a skip, which only holds the
+// tracker longer.
+func (s *Scheduler) noteWorkerDelivery(ctx context.Context, msg jetstream.Msg) {
+	md, err := msg.Metadata()
+	if err != nil || md.NumDelivered != 1 {
+		return
+	}
+	skipped := s.workerSeq.next(md.Sequence.Stream)
+	if skipped == 0 {
+		return
+	}
+	if s.ingestWorker.gap(md.Timestamp, s.cfg.WorkerTimeout) {
+		s.logger.WarnContext(ctx, "scheduler: worker messages expired from the stream unread; liveness held until the consumer reads a heartbeat timeout past them",
+			slog.Uint64("skipped", skipped), slog.Time("first_read_after", md.Timestamp),
+			slog.Duration("heartbeat_timeout", s.cfg.WorkerTimeout))
+	}
 }
 
 // trackerFor returns the tracker of the consumer that receives subject, or
