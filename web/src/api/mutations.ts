@@ -110,6 +110,15 @@ export async function fetchDeleteJob(id: string): Promise<void> {
   await apiFetch(`/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
+/** Pause a pending or running job via `PATCH /jobs/{id}` with `{ action: "pause" }`. */
+export function fetchPauseJob(id: string): Promise<Job> {
+  return apiFetch<Job>(`/jobs/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'pause' }),
+  })
+}
+
 /** Resume a paused job via `PATCH /jobs/{id}` with `{ action: "resume" }`. */
 export function fetchResumeJob(id: string): Promise<Job> {
   return apiFetch<Job>(`/jobs/${encodeURIComponent(id)}`, {
@@ -212,6 +221,17 @@ export function useDeleteJob() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => fetchDeleteJob(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
+    },
+  })
+}
+
+/** Pause a pending or running job. Invalidates all job queries on success. */
+export function usePauseJob() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchPauseJob(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
     },

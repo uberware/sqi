@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useState, useCallback, useRef, useEffect } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 import { Link } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
@@ -10,13 +11,22 @@ import Pagination from '@/components/Pagination'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
 import RemainingTime from '@/components/RemainingTime'
-import { ChevronDown, ChevronUp, ChevronUpDown, Rotate, Trash, X } from '@/components/icons'
+import {
+  ChevronDown,
+  ChevronUp,
+  ChevronUpDown,
+  Pause,
+  Play,
+  Rotate,
+  Trash,
+  X,
+} from '@/components/icons'
 import ErrorBanner from '@/components/ErrorBanner'
 import BulkBar from '@/components/BulkBar'
 import CopyableId from '@/components/CopyableId'
 import RefreshControls from '@/components/RefreshControls'
 import { useListJobs, queryKeys } from '@/api/queries'
-import { useCancelJob, useDeleteJob, useRetryJob } from '@/api/mutations'
+import { useCancelJob, useDeleteJob, usePauseJob, useResumeJob, useRetryJob } from '@/api/mutations'
 import { useListFilters } from '@/hooks/useListFilters'
 import type { SortDirection } from '@/hooks/useListFilters'
 import { useLiveNow } from '@/hooks/useLiveNow'
@@ -43,6 +53,38 @@ const JOB_SORT_FIELDS = new Set(['name', 'priority', 'created_at', 'status'])
 
 /** Job statuses that can still be canceled. */
 const CANCELABLE: ReadonlySet<JobStatus> = new Set(['pending', 'running', 'paused'])
+
+/** Job statuses the server accepts a pause for (`PATCH /jobs/{id}` `action: "pause"`). */
+const PAUSABLE: ReadonlySet<JobStatus> = new Set(['pending', 'running'])
+
+/** Job actions that report their failures in a banner, in banner order. */
+type JobAction = 'Cancel' | 'Delete' | 'Pause' | 'Resume' | 'Retry'
+const ACTION_ORDER: readonly JobAction[] = ['Cancel', 'Delete', 'Pause', 'Resume', 'Retry']
+const NO_ERRORS: Record<JobAction, string | null> = {
+  Cancel: null,
+  Delete: null,
+  Pause: null,
+  Resume: null,
+  Retry: null,
+}
+
+/** Marks `id` busy in `setBusy`'s set while `run` is in flight. */
+async function whileBusy(
+  setBusy: Dispatch<SetStateAction<Set<string>>>,
+  id: string,
+  run: () => Promise<unknown>,
+): Promise<void> {
+  setBusy((prev) => new Set(prev).add(id))
+  try {
+    await run()
+  } finally {
+    setBusy((prev) => {
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }
+}
 
 /** Number of a job's tasks eligible for retry (failed or canceled). */
 function retryableCount(job: Job): number {
@@ -217,6 +259,8 @@ export default function JobList() {
   const cancelJob = useCancelJob()
   const deleteJob = useDeleteJob()
   const retryJob = useRetryJob()
+  const pauseJob = usePauseJob()
+  const resumeJob = useResumeJob()
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
   // Pending confirmation: either a single job id or the selected-bulk set.
   const [confirm, setConfirm] = useState<{ ids: string[]; bulk: boolean } | null>(null)
@@ -342,7 +386,15 @@ export default function JobList() {
   const retryableIds = new Set(retryableJobs.map((j) => j.id))
   const selectedRetryable = [...selectedIds].filter((id) => retryableIds.has(id))
 
-  // A job is selectable if any bulk action applies to it.
+  const selectedPausable = jobs
+    .filter((j) => PAUSABLE.has(j.status) && selectedIds.has(j.id))
+    .map((j) => j.id)
+  const selectedResumable = jobs
+    .filter((j) => j.status === 'paused' && selectedIds.has(j.id))
+    .map((j) => j.id)
+
+  // A job is selectable if any bulk action applies to it. Every pausable or
+  // resumable status is also cancelable, so pause and resume add nothing here.
   const selectableJobs = jobs.filter((j) => CANCELABLE.has(j.status) || retryableCount(j) > 0)
 
   const toggleRow = useCallback((id: string) => {
@@ -360,106 +412,95 @@ export default function JobList() {
     setSelectedIds(allSelected ? new Set() : new Set(selectableJobs.map((j) => j.id)))
   }, [selectableJobs, selectedIds])
 
-  // ── Per-row cancel ────────────────────────────────────────────────────────
+  // ── Per-row and bulk actions ──────────────────────────────────────────────
+
+  // Failures are kept per action rather than read from each mutation's
+  // isError, which the next success resets: in a batch where job 2 of 5 fails
+  // and job 5 succeeds, isError would end false and the failure would vanish.
+  const [actionErrors, setActionErrors] = useState<Record<JobAction, string | null>>(NO_ERRORS)
+
+  // Runs one action per job in turn, deselecting each as it finishes. A
+  // failure does not stop the rest of the batch; the action's banner reports
+  // how many failed and the last error.
+  const runForEach = useCallback(
+    async (verb: JobAction, ids: string[], action: (id: string) => Promise<unknown>) => {
+      setActionErrors((prev) => ({ ...prev, [verb]: null }))
+      let failed = 0
+      let lastMessage = 'Unknown error'
+      for (const id of ids) {
+        try {
+          await action(id)
+        } catch (err) {
+          failed++
+          if (err instanceof Error) lastMessage = err.message
+        } finally {
+          setSelectedIds((prev) => {
+            const next = new Set(prev)
+            next.delete(id)
+            return next
+          })
+        }
+      }
+      if (failed > 0) {
+        const scope = ids.length === 1 ? '' : ` for ${failed} of ${ids.length} jobs`
+        setActionErrors((prev) => ({ ...prev, [verb]: `${verb} failed${scope}: ${lastMessage}` }))
+      }
+    },
+    [],
+  )
+
+  const cancelJobAsync = cancelJob.mutateAsync
+  const retryJobAsync = retryJob.mutateAsync
+  const pauseJobAsync = pauseJob.mutateAsync
+  const resumeJobAsync = resumeJob.mutateAsync
+  const deleteJobAsync = deleteJob.mutateAsync
+
+  const cancelOne = useCallback(
+    (id: string) => whileBusy(setCancelingIds, id, () => cancelJobAsync(id)),
+    [cancelJobAsync],
+  )
+  const retryOne = useCallback(
+    (id: string) => whileBusy(setRetryingIds, id, () => retryJobAsync(id)),
+    [retryJobAsync],
+  )
+  const deleteOne = useCallback(
+    (id: string) => whileBusy(setDeletingIds, id, () => deleteJobAsync(id)),
+    [deleteJobAsync],
+  )
 
   const handleCancelRow = useCallback(
-    async (id: string) => {
-      setCancelingIds((prev) => new Set(prev).add(id))
-      try {
-        await cancelJob.mutateAsync(id)
-      } catch {
-        // Error is visible via cancelJob.isError / cancelJob.error below.
-        // Do not re-throw so bulk cancel continues past individual failures.
-      } finally {
-        setCancelingIds((prev) => {
-          const next = new Set(prev)
-          next.delete(id)
-          return next
-        })
-        setSelectedIds((prev) => {
-          const next = new Set(prev)
-          next.delete(id)
-          return next
-        })
-      }
-    },
-    [cancelJob],
+    (id: string) => runForEach('Cancel', [id], cancelOne),
+    [runForEach, cancelOne],
   )
-
-  // ── Per-row retry ─────────────────────────────────────────────────────────────
-
   const handleRetryRow = useCallback(
-    async (id: string) => {
-      setRetryingIds((prev) => new Set(prev).add(id))
-      try {
-        await retryJob.mutateAsync(id)
-      } catch {
-        // Surfaced via retryJob.isError below; swallow so bulk retry continues.
-      } finally {
-        setRetryingIds((prev) => {
-          const next = new Set(prev)
-          next.delete(id)
-          return next
-        })
-        setSelectedIds((prev) => {
-          const next = new Set(prev)
-          next.delete(id)
-          return next
-        })
-      }
-    },
-    [retryJob],
+    (id: string) => runForEach('Retry', [id], retryOne),
+    [runForEach, retryOne],
   )
 
-  // ── Bulk cancel ───────────────────────────────────────────────────────────
-
-  const handleBulkCancel = useCallback(async () => {
-    for (const id of selectedCancelable) {
-      await handleCancelRow(id)
-    }
-  }, [selectedCancelable, handleCancelRow])
-
-  // ── Bulk retry ────────────────────────────────────────────────────────────
-
-  const handleBulkRetry = useCallback(async () => {
-    for (const id of selectedRetryable) {
-      await handleRetryRow(id)
-    }
-  }, [selectedRetryable, handleRetryRow])
-
-  // ── Per-row and bulk delete ───────────────────────────────────────────────
-
-  const runDelete = useCallback(
-    async (id: string) => {
-      setDeletingIds((prev) => new Set(prev).add(id))
-      try {
-        await deleteJob.mutateAsync(id)
-      } catch {
-        // Surfaced via deleteJob.isError; continue past individual failures.
-      } finally {
-        setDeletingIds((prev) => {
-          const next = new Set(prev)
-          next.delete(id)
-          return next
-        })
-        setSelectedIds((prev) => {
-          const next = new Set(prev)
-          next.delete(id)
-          return next
-        })
-      }
-    },
-    [deleteJob],
+  const handleBulkCancel = useCallback(
+    () => runForEach('Cancel', selectedCancelable, cancelOne),
+    [runForEach, selectedCancelable, cancelOne],
+  )
+  const handleBulkRetry = useCallback(
+    () => runForEach('Retry', selectedRetryable, retryOne),
+    [runForEach, selectedRetryable, retryOne],
+  )
+  const handleBulkPause = useCallback(
+    () => runForEach('Pause', selectedPausable, pauseJobAsync),
+    [runForEach, selectedPausable, pauseJobAsync],
+  )
+  const handleBulkResume = useCallback(
+    () => runForEach('Resume', selectedResumable, resumeJobAsync),
+    [runForEach, selectedResumable, resumeJobAsync],
   )
 
+  // Per-row and bulk delete both go through the confirm dialog.
   const confirmDelete = useCallback(async () => {
     if (!confirm) return
     const ids = confirm.ids
     setConfirm(null)
-    for (const id of ids) {
-      await runDelete(id)
-    }
-  }, [confirm, runDelete])
+    await runForEach('Delete', ids, deleteOne)
+  }, [confirm, runForEach, deleteOne])
 
   // ── Sort handler ──────────────────────────────────────────────────────────
 
@@ -504,23 +545,10 @@ export default function JobList() {
           Failed to load jobs: {error instanceof Error ? error.message : 'Unknown error'}
         </ErrorBanner>
       )}
-      {cancelJob.isError && (
-        <ErrorBanner>
-          Cancel failed:{' '}
-          {cancelJob.error instanceof Error ? cancelJob.error.message : 'Unknown error'}
-        </ErrorBanner>
-      )}
-      {deleteJob.isError && (
-        <ErrorBanner>
-          Delete failed:{' '}
-          {deleteJob.error instanceof Error ? deleteJob.error.message : 'Unknown error'}
-        </ErrorBanner>
-      )}
-      {retryJob.isError && (
-        <ErrorBanner>
-          Retry failed: {retryJob.error instanceof Error ? retryJob.error.message : 'Unknown error'}
-        </ErrorBanner>
-      )}
+      {ACTION_ORDER.map((verb) => {
+        const message = actionErrors[verb]
+        return message === null ? null : <ErrorBanner key={verb}>{message}</ErrorBanner>
+      })}
 
       {/* Job table */}
       <div className={styles.tableWrap}>
@@ -717,6 +745,26 @@ export default function JobList() {
           >
             <Rotate />
             Retry {selectedRetryable.length}
+          </button>
+          <button
+            className={styles.bulkPauseBtn}
+            onClick={() => void handleBulkPause()}
+            disabled={selectedPausable.length === 0 || pauseJob.isPending}
+            type="button"
+            aria-label={`Pause selected (${selectedPausable.length})`}
+          >
+            <Pause />
+            Pause {selectedPausable.length}
+          </button>
+          <button
+            className={styles.bulkResumeBtn}
+            onClick={() => void handleBulkResume()}
+            disabled={selectedResumable.length === 0 || resumeJob.isPending}
+            type="button"
+            aria-label={`Resume selected (${selectedResumable.length})`}
+          >
+            <Play />
+            Resume {selectedResumable.length}
           </button>
           <button
             className={styles.bulkDeleteBtn}
