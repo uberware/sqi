@@ -180,10 +180,10 @@ address and client ID) differ every time and are never dropped.
 
 Normal operation logs none of these at `WARN` or above. A worker whose broker
 credential was revoked, or was never enrolled, retries with growing delays
-(about 2, 6, 14, 30 and 62 seconds after the first refusal) and gives up after
-about two minutes. Each refusal logs a `bus: nats server error` naming the
-connection, next to sqi's own `bus: auth callout refused ...` warning, so about
-six of each. The broker's `Auth callout service returned an error: not
+(about 2, 6, 14, 30, 62 and 120 seconds after the first refusal) and gives up
+after the last of them, about two minutes in. Each refusal logs a `bus: nats
+server error` naming the connection, next to sqi's own `bus: auth callout
+refused ...` warning, so about seven of each. The broker's `Auth callout service returned an error: not
 authorized` warning names no connection, so it is logged at the first refusal
 and then once a minute with a `suppressed` count.
 
