@@ -197,9 +197,8 @@ func (r *reconciler) pruneLocked(now time.Time) {
 //
 // The held reports are taken before the open attempts are listed: every
 // attempt they name was leased before the list was read, so one missing from
-// the list is closed, not leased since. v is the tick's view of the ingest
-// trackers ([Scheduler.readIngest]).
-func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time, v ingestView) {
+// the list is closed, not leased since.
+func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time) {
 	if s.reconciler == nil || now.Sub(s.startedAt) < s.cfg.ReconcileGrace {
 		return
 	}
@@ -211,7 +210,13 @@ func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time, v inge
 		}
 		return
 	}
-	for _, a := range s.reconciler.due(open, now, v.taskAt, v.pendingAttempts) {
+	taskEffective := s.ingestTask.effective(now)
+	// due still runs with nothing open: it also forgets old reports.
+	var pending map[string]bool
+	if len(open) > 0 {
+		pending = s.ingestTask.pending(now).attempts
+	}
+	for _, a := range s.reconciler.due(open, now, taskEffective, pending) {
 		if s.deposed() {
 			return
 		}

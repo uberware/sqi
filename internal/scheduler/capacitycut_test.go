@@ -39,8 +39,8 @@ func TestActuator_AbandonCutsAHungStoreWrite(t *testing.T) {
 	addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), true)
 	t0 := time.Now().UTC()
 
-	capacityTick(t.Context(), f.s, t0)
-	capacityTick(t.Context(), f.s, t0.Add(2*time.Minute))
+	f.s.sweepCapacityAt(t.Context(), t0)
+	f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute))
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):

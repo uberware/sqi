@@ -29,8 +29,8 @@ func TestActuator_NoTransitionsWhileACallRuns(t *testing.T) {
 	t0 := time.Now().UTC()
 
 	// m1 idles past the idle timeout: its retire call starts and hangs.
-	capacityTick(t.Context(), f.s, t0)
-	capacityTick(t.Context(), f.s, t0.Add(2*time.Minute))
+	f.s.sweepCapacityAt(t.Context(), t0)
+	f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute))
 	select {
 	case <-asked:
 	case <-time.After(5 * time.Second):
@@ -41,7 +41,7 @@ func TestActuator_NoTransitionsWhileACallRuns(t *testing.T) {
 	// awake when the call ends, and a sleeping second member.
 	addNamedMember(t, f.st, g.ID, lanWorker("m2", "192.168.1.22", "aa:bb:cc:dd:ee:02"), false)
 	submitReady(t, f.st, 2, store.Step{})
-	capacityTick(t.Context(), f.s, t0.Add(2*time.Minute+15*time.Second))
+	f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute+15*time.Second))
 	if got := f.worker(t, "m2").PowerState; got == store.PowerWaking {
 		t.Fatalf("m2 = %s while the group's call still runs, want it left for the next sweep", got)
 	}

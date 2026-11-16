@@ -405,7 +405,7 @@ func TestReconcileAttempts_ReclaimsAnUnreportedAttempt(t *testing.T) {
 
 	at := created.Add(2 * time.Minute)
 	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
-	s.reconcileAttempts(t.Context(), at, s.readIngest(at))
+	s.reconcileAttempts(t.Context(), at)
 
 	task := mustTaskOf(t, st, "t1")
 	if task.Status != store.TaskStatusReady || task.FailedAttempts != 0 {
@@ -429,7 +429,7 @@ func TestReconcileAttempts_HoldsDuringStartup(t *testing.T) {
 	s.startedAt = at.Add(-time.Second) // started less than grace ago
 
 	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
-	s.reconcileAttempts(t.Context(), at, s.readIngest(at))
+	s.reconcileAttempts(t.Context(), at)
 
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusRunning {
 		t.Fatalf("task = %s, want running: nothing is reclaimed during the first grace", got)
@@ -452,7 +452,7 @@ func TestReconcileAttempts_LateTerminalReportIsDiscarded(t *testing.T) {
 	armReconciler(s, created)
 	at := created.Add(2 * time.Minute)
 	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
-	s.reconcileAttempts(t.Context(), at, s.readIngest(at))
+	s.reconcileAttempts(t.Context(), at)
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusReady {
 		t.Fatalf("fixture: task = %s, want ready after the reclaim", got)
 	}
@@ -498,7 +498,7 @@ func TestReconcileAttempts_DisabledAtZero(t *testing.T) {
 	// A heartbeat reporting nothing is not recorded anywhere, and the sweep
 	// hook does nothing.
 	s.handleWorkerMessage(heartbeatMsg(t, protocol.HeartbeatMsg{At: time.Now().UTC(), AttemptsReported: true}))
-	s.reconcileAttempts(t.Context(), attempt.CreatedAt.Add(10*time.Minute), s.readIngest(attempt.CreatedAt.Add(10*time.Minute)))
+	s.reconcileAttempts(t.Context(), attempt.CreatedAt.Add(10*time.Minute))
 
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusRunning {
 		t.Fatalf("task = %s, want running: reconciliation is disabled", got)
@@ -720,6 +720,52 @@ func TestSweepOnce_ReconcilesByTheTaskTracker(t *testing.T) {
 	}
 }
 
+// markerDuringList is a store whose ListStaleWorkers runs onList first, so a
+// test can change the trackers after a sweep tick has started and before
+// attempt reconciliation runs.
+type markerDuringList struct {
+	store.Store
+
+	onList func()
+}
+
+func (m *markerDuringList) ListStaleWorkers(ctx context.Context, before time.Time) ([]store.Worker, error) {
+	m.onList()
+	return m.Store.ListStaleWorkers(ctx, before)
+}
+
+// TestSweepOnce_ReconcileReadsTheTrackerWhenItRuns pins that attempt
+// reconciliation reads the task tracker when it runs, not when the tick
+// starts: a marker the task consumer processes while the earlier checks run
+// counts. The sweep and marker tickers are phase-locked (15 s against 2 s), so
+// every other tick starts as a marker is published, and a reading taken at the
+// start of the tick would miss it on each of those ticks.
+func TestSweepOnce_ReconcileReadsTheTrackerWhenItRuns(t *testing.T) {
+	st, attempt := seedReconcileAttempt(t)
+	spy := &markerDuringList{Store: st}
+	s := newMetricsScheduler(spy, &recordBus{}, "f1")
+	noIngestMarker(s)
+	s.ctx = t.Context()
+	s.cfg.ReconcileGrace = time.Minute
+	s.reconciler = newReconciler(time.Minute, 30*time.Second)
+	s.startedAt = time.Now().UTC()
+	now := s.startedAt.Add(2 * time.Hour)
+	s.now = (&testClock{t: now}).now
+
+	// The report omitting the attempt was stamped a second before now, after
+	// the newest marker the task consumer had processed when the tick started.
+	s.reconciler.record(reconcileWorker, now, now, now.Add(-time.Second), nil)
+	s.ingestWorker.marker(s.startedAt)
+	s.ingestTask.marker(now.Add(-2 * time.Second))
+	spy.onList = func() { s.ingestTask.marker(now) }
+
+	s.sweepOnce(t.Context())
+
+	if got := mustTaskOf(t, st, attempt.TaskID).Status; got != store.TaskStatusReady {
+		t.Fatalf("task = %s, want ready: the marker processed during the tick covers the report", got)
+	}
+}
+
 // TestReconcileAttempts_CancelsAReportedClosedAttempt pins that a sweep sends
 // a cancel naming an attempt the store has closed while its worker's fresh
 // heartbeat still reports holding it (a ghost run that missed the first
@@ -753,7 +799,7 @@ func TestReconcileAttempts_CancelsAReportedClosedAttempt(t *testing.T) {
 			for sweep := 1; sweep <= 2; sweep++ {
 				at := attempt.CreatedAt.Add(time.Duration(sweep) * time.Minute)
 				s.reconciler.record(reconcileWorker, at, at, time.Time{}, []string{attempt.ID})
-				s.reconcileAttempts(t.Context(), at, s.readIngest(at))
+				s.reconcileAttempts(t.Context(), at)
 				if len(b.cancels) != sweep {
 					t.Fatalf("after sweep %d: cancels = %+v, want %d", sweep, b.cancels, sweep)
 				}
@@ -808,7 +854,7 @@ func TestReconcileAttempts_CancelsOnlyReportedClosedAttempts(t *testing.T) {
 				s.startedAt = at.Add(-time.Second)
 			}
 			s.reconciler.record(reconcileWorker, reportAt, reportAt, time.Time{}, tt.report(attempt))
-			s.reconcileAttempts(t.Context(), at, s.readIngest(at))
+			s.reconcileAttempts(t.Context(), at)
 			if len(b.cancels) != 0 {
 				t.Fatalf("cancels = %+v, want none", b.cancels)
 			}
@@ -833,7 +879,7 @@ func TestReconcileAttempts_CancelsAReportedUnknownAttempt(t *testing.T) {
 	for sweep := 1; sweep <= 2; sweep++ {
 		at := attempt.CreatedAt.Add(time.Duration(sweep) * time.Minute)
 		s.reconciler.record(reconcileWorker, at, at, time.Time{}, []string{attempt.ID, "attempt-the-store-never-saw"})
-		s.reconcileAttempts(t.Context(), at, s.readIngest(at))
+		s.reconcileAttempts(t.Context(), at)
 		if len(b.cancels) != sweep {
 			t.Fatalf("after sweep %d: cancels = %+v, want %d", sweep, b.cancels, sweep)
 		}
@@ -886,7 +932,7 @@ func TestReconcileAttempts_NeverCancelsAnAttemptLeasedDuringTheSweep(t *testing.
 	s.store = l
 
 	s.reconciler.record(reconcileWorker, at, at, time.Time{}, []string{attempt.ID})
-	s.reconcileAttempts(t.Context(), at, s.readIngest(at))
+	s.reconcileAttempts(t.Context(), at)
 
 	if l.fresh == "" {
 		t.Fatal("fixture: the sweep never listed open attempts")

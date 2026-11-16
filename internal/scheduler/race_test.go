@@ -949,7 +949,7 @@ func TestReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 			s := newMetricsScheduler(wrapped, &recordBus{}, "farm-1")
 			s.cfg.AssignedTaskTimeout = time.Minute
 
-			s.reapStaleAssignedTasks(t.Context(), tickView(s))
+			s.reapStaleAssignedTasks(t.Context())
 
 			if fresh.ID == "" {
 				t.Fatal("the hook did not re-lease the task")
@@ -1003,7 +1003,7 @@ func TestSupersededAttemptLateReportIsIgnored(t *testing.T) {
 					s.ctx = t.Context()
 					s.cfg.AssignedTaskTimeout = time.Minute
 
-					s.reapStaleAssignedTasks(t.Context(), tickView(s))
+					s.reapStaleAssignedTasks(t.Context())
 					fresh := storetest.Lease(t, st, store.LeaseRequest{
 						TaskID: task.ID, WorkerID: "w-new",
 						Claims: []store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name}},
@@ -1090,7 +1090,7 @@ func TestHeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 			rec := &workerRecordingNotifier{}
 			s := newRetentionScheduler(wrapped, time.Hour, rec)
 
-			s.sweepStaleWorkers(t.Context(), tickView(s))
+			s.sweepStaleWorkers(t.Context())
 
 			if !fired {
 				t.Fatal("the heartbeat hook never ran: the sweep did not list stale workers, so this test proves nothing")
@@ -1136,7 +1136,7 @@ func TestOfflineReclaimReleasesClaims(t *testing.T) {
 			_, taskID, attemptID, pool := seedStaleWorkerWithClaim(t, st, 10*time.Minute)
 			s := newRetentionScheduler(st, time.Hour, ws.NoopNotifier{})
 
-			s.sweepStaleWorkers(t.Context(), tickView(s))
+			s.sweepStaleWorkers(t.Context())
 
 			if got := mustTaskOf(t, st, taskID); got.Status != store.TaskStatusReady {
 				t.Fatalf("task = %q, want ready (reclaimed)", got.Status)

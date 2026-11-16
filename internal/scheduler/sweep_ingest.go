@@ -11,37 +11,44 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// ingestView is what one sweep tick's liveness checks read from the ingest
-// trackers. It is read once per tick, so every check on the tick judges the
-// same state.
-type ingestView struct {
-	// workerAt and taskAt are the times up to which the worker and
-	// task-status consumers have applied their streams, each zero before its
-	// consumer's first marker.
-	workerAt, taskAt time.Time
-	// pendingWorkers names the workers a message waiting to be applied again
-	// names, in either consumer; workerStreamPending those the worker
-	// consumer's messages name alone.
-	pendingWorkers, workerStreamPending map[string]bool
-	// pendingTasks and pendingAttempts name the tasks and attempts a task
-	// status waiting to be applied again names.
-	pendingTasks, pendingAttempts map[string]bool
+// workerSweepCutoff returns the heartbeat cutoff the worker sweep judges by:
+// WorkerTimeout before the time up to which the worker consumer has applied
+// its stream, not before now. A heartbeat still queued in the stream has not
+// reached the store, so judging by now would take a live worker offline
+// whenever the consumer falls behind. It returns false before the worker
+// consumer's first marker, when nothing it has applied can be trusted yet.
+// A bus interruption not yet held for is held for first. effT is the task
+// consumer's effective time at now, which [Scheduler.ingestHoldsWorker] also
+// needs.
+func (s *Scheduler) workerSweepCutoff(ctx context.Context, now time.Time) (cutoff, effT time.Time, ok bool) {
+	s.checkBusInterruption(now)
+	effW := s.ingestWorker.effective(now)
+	effT = s.ingestTask.effective(now)
+	s.logIngestHeldBack(ctx, now, effW, effT)
+	if effW.IsZero() {
+		return time.Time{}, effT, false
+	}
+	return effW.Add(-s.cfg.WorkerTimeout).UTC(), effT, true
 }
 
-// readIngest reads the trackers at now. Unless the liveness sweeps are
-// deferred at now ([Scheduler.livenessDeferred]), a bus interruption not yet
-// held for is held for first, so a check landing between an interruption and
-// the marker loop's next tick is held too.
-func (s *Scheduler) readIngest(now time.Time) ingestView {
-	if deferred, _ := s.livenessDeferred(now); !deferred {
-		s.checkBusInterruption(now)
+// dropIngestHeldWorkers removes from stale the workers [Scheduler.ingestHoldsWorker]
+// holds back. The pending messages are read once for the whole list, after
+// the list itself, so a message nak'd while the list was read is seen.
+func (s *Scheduler) dropIngestHeldWorkers(ctx context.Context, stale []store.Worker, now, effT time.Time) []store.Worker {
+	if len(stale) == 0 {
+		return stale
 	}
-	v := ingestView{workerAt: s.ingestWorker.effective(now), taskAt: s.ingestTask.effective(now)}
-	w, t := s.ingestWorker.pending(now), s.ingestTask.pending(now)
-	v.workerStreamPending = w.workers
-	v.pendingWorkers = unionNames(w.workers, t.workers)
-	v.pendingTasks, v.pendingAttempts = t.tasks, t.attempts
-	return v
+	pending := unionNames(s.ingestWorker.pending(now).workers, s.ingestTask.pending(now).workers)
+	kept := stale[:0]
+	for _, w := range stale {
+		if s.ingestHoldsWorker(w, effT, pending) {
+			s.logger.DebugContext(ctx, "scheduler: stale worker held back until its queued messages are applied",
+				slog.String("worker_id", w.ID))
+			continue
+		}
+		kept = append(kept, w)
+	}
+	return kept
 }
 
 // unionNames returns the names in a or b, nil when both are empty. It may
@@ -58,59 +65,35 @@ func unionNames(a, b map[string]bool) map[string]bool {
 	return out
 }
 
-// workerSweepCutoff returns the heartbeat cutoff the worker sweep judges by:
-// WorkerTimeout before the time up to which the worker consumer has applied
-// its stream, not before now. A heartbeat still queued in the stream has not
-// reached the store, so judging by now would take a live worker offline
-// whenever the consumer falls behind. It returns false before the worker
-// consumer's first marker, when nothing it has applied can be trusted yet.
-func (s *Scheduler) workerSweepCutoff(ctx context.Context, now time.Time, v ingestView) (time.Time, bool) {
-	s.logIngestHeldBack(ctx, now, v.workerAt, v.taskAt)
-	if v.workerAt.IsZero() {
-		return time.Time{}, false
-	}
-	return v.workerAt.Add(-s.cfg.WorkerTimeout).UTC(), true
-}
-
-// dropIngestHeldWorkers removes from stale the workers [Scheduler.ingestHoldsWorker]
-// holds back.
-func (s *Scheduler) dropIngestHeldWorkers(ctx context.Context, stale []store.Worker, v ingestView) []store.Worker {
-	kept := stale[:0]
-	for _, w := range stale {
-		if s.ingestHoldsWorker(w, v) {
-			s.logger.DebugContext(ctx, "scheduler: stale worker held back until its queued messages are applied",
-				slog.String("worker_id", w.ID))
-			continue
-		}
-		kept = append(kept, w)
-	}
-	return kept
-}
-
 // ingestHoldsWorker reports whether the sweep must leave the stale candidate
 // w alone for now: a message naming it waits to be applied again by either
-// consumer, or the task consumer has not yet applied its stream up to the
-// moment w's heartbeat expired, so a status report from before that moment
-// may still be queued. A candidate with no heartbeat time is held back too.
-func (s *Scheduler) ingestHoldsWorker(w store.Worker, v ingestView) bool {
+// consumer (pending, the workers such messages name), or the task consumer has
+// not yet applied its stream up to the moment w's heartbeat expired, so a
+// status report from before that moment may still be queued. A candidate with
+// no heartbeat time is held back too.
+func (s *Scheduler) ingestHoldsWorker(w store.Worker, effT time.Time, pending map[string]bool) bool {
 	if w.LastHeartbeatAt == nil {
 		return true
 	}
-	if v.pendingWorkers[w.ID] {
+	if pending[w.ID] {
 		return true
 	}
-	return v.taskAt.Before(w.LastHeartbeatAt.Add(s.cfg.WorkerTimeout))
+	return effT.Before(w.LastHeartbeatAt.Add(s.cfg.WorkerTimeout))
 }
 
 // assignedReapCutoff returns the assigned_at cutoff the stuck-assigned reap
 // judges by, AssignedTaskTimeout before the time up to which the task-status
-// consumer has applied its stream. It returns false before the task
-// consumer's first marker.
-func (s *Scheduler) assignedReapCutoff(v ingestView) (time.Time, bool) {
-	if v.taskAt.IsZero() {
-		return time.Time{}, false
+// consumer has applied its stream, and the tasks a queued status report still
+// names, which the reap leaves alone. It returns false before the task
+// consumer's first marker. A bus interruption not yet held for is held for
+// first.
+func (s *Scheduler) assignedReapCutoff(now time.Time) (cutoff time.Time, skip map[string]bool, ok bool) {
+	s.checkBusInterruption(now)
+	effT := s.ingestTask.effective(now)
+	if effT.IsZero() {
+		return time.Time{}, nil, false
 	}
-	return v.taskAt.Add(-s.cfg.AssignedTaskTimeout).UTC(), true
+	return effT.Add(-s.cfg.AssignedTaskTimeout).UTC(), s.ingestTask.pending(now).tasks, true
 }
 
 // logIngestHeldBack logs once per episode that the liveness sweep is held

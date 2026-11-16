@@ -974,7 +974,7 @@ func TestReconcileAttempts_FencedStops(t *testing.T) {
 	at := created.Add(2 * time.Minute)
 	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil) // the worker reports holding nothing
 
-	s.reconcileAttempts(deposedCtx(t, st), at, s.readIngest(at))
+	s.reconcileAttempts(deposedCtx(t, st), at)
 
 	if n := spy.reclaims.Load(); n != 1 {
 		t.Errorf("ReclaimTaskAttempt called %d times, want 1 (reconciliation stops at the fenced reclaim)", n)

@@ -287,7 +287,7 @@ func TestUnschedulable_NoGroupsUnchanged(t *testing.T) {
 			if tc.online {
 				registerOnline(t, st, store.Worker{ID: "w1", FarmID: capFarm, CPUCount: 4})
 			}
-			capacityTick(t.Context(), s, time.Now().UTC())
+			s.sweepCapacityAt(t.Context(), time.Now().UTC())
 			spy.mu.Lock()
 			spy.calls = map[string]int{}
 			spy.mu.Unlock()

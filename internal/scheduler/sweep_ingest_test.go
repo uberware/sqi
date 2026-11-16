@@ -8,9 +8,7 @@ package scheduler
 
 import (
 	"bytes"
-	"context"
 	"log/slog"
-	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -64,7 +62,7 @@ func TestSweep_NoVerdictWhileWorkerConsumerLags(t *testing.T) {
 	s, _, _ := newIngestSweepScheduler(t, st, now)
 	markers(s, t0.Add(5*time.Second), now)
 
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Errorf("worker status = %q, want online (its later heartbeats may still be queued)", got)
@@ -81,7 +79,7 @@ func TestSweep_DeadWorkerSweptWithMarkersOnly(t *testing.T) {
 	s, _, _ := newIngestSweepScheduler(t, st, caughtUp)
 	markers(s, caughtUp, caughtUp)
 
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
 		t.Errorf("worker status = %q, want offline (no heartbeat once the consumers caught up)", got)
@@ -110,14 +108,14 @@ func testSweepSkipsPending(t *testing.T, what string, tracker func(*Scheduler) *
 	markers(s, now, now)
 	tracker(s).nak(7, now.Add(-time.Second), 1, ingestRef{worker: workerID, task: taskID})
 
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Errorf("worker status = %q, want online (a nak'd %s names it)", got, what)
 	}
 
 	tracker(s).ack(7)
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
 		t.Errorf("worker status = %q after the %s was applied, want offline", got, what)
@@ -131,19 +129,19 @@ func TestSweep_WaitsForTaskConsumer(t *testing.T) {
 	s, _, _ := newIngestSweepScheduler(t, st, now)
 	markers(s, now, t0.Add(20*time.Second))
 
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Fatalf("worker status = %q with the task consumer at t0+20s, want online", got)
 	}
 
 	s.ingestTask.marker(t0.Add(29 * time.Second))
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Fatalf("worker status = %q with the task consumer at t0+29s, want online", got)
 	}
 
 	s.ingestTask.marker(t0.Add(ingestSweepTimeout))
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
 		t.Errorf("worker status = %q with the task consumer at t0+30s, want offline", got)
 	}
@@ -171,7 +169,7 @@ func TestSweep_HeldAfterHeartbeatsExpireUnread(t *testing.T) {
 	clock.t = r.Add(3 * time.Second)
 	s.ingestTask.marker(clock.t)
 
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Fatalf("worker status = %q just after the expired heartbeats, want online (they never reached the store)", got)
 	}
@@ -180,7 +178,7 @@ func TestSweep_HeldAfterHeartbeatsExpireUnread(t *testing.T) {
 	marker(102, r.Add(ingestSweepTimeout-time.Second))
 	clock.t = r.Add(ingestSweepTimeout)
 	s.ingestTask.marker(clock.t)
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Fatalf("worker status = %q before a whole WorkerTimeout past the gap was read, want online", got)
 	}
@@ -190,7 +188,7 @@ func TestSweep_HeldAfterHeartbeatsExpireUnread(t *testing.T) {
 	marker(103, r.Add(ingestSweepTimeout))
 	clock.t = r.Add(ingestSweepTimeout + time.Second)
 	s.ingestTask.marker(clock.t)
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
 		t.Errorf("worker status = %q once the gap's window was read, want offline", got)
 	}
@@ -220,7 +218,7 @@ func TestSweepAndReap_HeldByAnInterruptionTheMarkerLoopHasNotSeen(t *testing.T) 
 	clock.t = t0.Add(ingestSweepTimeout + 2*time.Second)
 	s.ingestTask.marker(clock.t)
 
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Errorf("worker status = %q a moment after an interruption, want online (held at the interruption)", got)
 	}
@@ -230,7 +228,7 @@ func TestSweepAndReap_HeldByAnInterruptionTheMarkerLoopHasNotSeen(t *testing.T) 
 	s2.cfg.BusInterruptedAt = func() time.Time { return interrupted }
 	s2.ingestTask.marker(a0.Add(ingestSweepTimeout + time.Second))
 	clock2.t = a0.Add(ingestSweepTimeout + 2*time.Second)
-	s2.reapStaleAssignedTasks(t.Context(), tickView(s2))
+	s2.reapStaleAssignedTasks(t.Context())
 	if got := taskStatus(t, st, assignedID); got != store.TaskStatusAssigned {
 		t.Errorf("assigned task status = %q a moment after an interruption, want assigned (held at the interruption)", got)
 	}
@@ -247,8 +245,8 @@ func TestSweep_PromotedStandbyJudgesNothingBeforeFirstMarkers(t *testing.T) {
 	s.cfg.BusUpSince = func() time.Time { return longAgo }
 	s.startedAt = longAgo
 
-	s.sweepStaleWorkers(t.Context(), tickView(s))
-	s.reapStaleAssignedTasks(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
+	s.reapStaleAssignedTasks(t.Context())
 
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Errorf("worker status = %q, want online (no marker processed yet)", got)
@@ -262,7 +260,7 @@ func TestSweep_PromotedStandbyJudgesNothingBeforeFirstMarkers(t *testing.T) {
 
 	// Only the task consumer has caught up: the worker sweep still waits.
 	s.ingestTask.marker(now)
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
 		t.Errorf("worker status = %q before the worker consumer's first marker, want online", got)
 	}
@@ -295,7 +293,7 @@ func TestReap_UsesTaskEffectiveAndSkipsPending(t *testing.T) {
 				s.ingestTask.nak(9, t0, 1, ingestRef{worker: "w-live", task: taskID})
 			}
 
-			s.reapStaleAssignedTasks(t.Context(), tickView(s))
+			s.reapStaleAssignedTasks(t.Context())
 
 			if got := taskStatus(t, st, taskID); got != tc.wantStatus {
 				t.Errorf("task status = %q, want %q", got, tc.wantStatus)
@@ -311,7 +309,7 @@ func TestSweep_HeldBackLoggedOncePerEpisode(t *testing.T) {
 	s, clock, logs := newIngestSweepScheduler(t, st, now)
 	markers(s, now, now)
 
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 	if strings.Contains(logs.String(), msg) {
 		t.Fatalf("held back logged while caught up:\n%s", logs.String())
 	}
@@ -319,7 +317,7 @@ func TestSweep_HeldBackLoggedOncePerEpisode(t *testing.T) {
 	// The consumers stop advancing: one log for the whole episode.
 	for range 3 {
 		clock.t = clock.t.Add(s.cfg.HeartbeatSweepInterval + time.Second)
-		s.sweepStaleWorkers(t.Context(), tickView(s))
+		s.sweepStaleWorkers(t.Context())
 	}
 	if n := strings.Count(logs.String(), msg); n != 1 {
 		t.Fatalf("held back logged %d times in one episode, want once:\n%s", n, logs.String())
@@ -332,9 +330,9 @@ func TestSweep_HeldBackLoggedOncePerEpisode(t *testing.T) {
 
 	// They catch up, ending the episode; falling behind again is a new one.
 	markers(s, clock.t, clock.t)
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 	clock.t = clock.t.Add(s.cfg.HeartbeatSweepInterval + time.Second)
-	s.sweepStaleWorkers(t.Context(), tickView(s))
+	s.sweepStaleWorkers(t.Context())
 	if n := strings.Count(logs.String(), msg); n != 2 {
 		t.Errorf("held back logged %d times over two episodes, want twice:\n%s", n, logs.String())
 	}
@@ -348,77 +346,10 @@ func noIngestMarker(s *Scheduler) {
 	s.ingestTask = newIngestTracker(bus.TaskStreamMaxAge, bus.TaskStatusConsumerMaxDeliver)
 }
 
-// tickView reads the ingest trackers as a sweep tick does, at the
-// scheduler's clock.
-func tickView(s *Scheduler) ingestView { return s.readIngest(s.now()) }
-
-// capacityTick runs the capacity sweep at now with the trackers read at now.
-func capacityTick(ctx context.Context, s *Scheduler, now time.Time) {
-	s.sweepCapacityAt(ctx, now, s.readIngest(now))
-}
-
 // ingestCaughtUp records both consumers as caught up to now, as the marker
 // loop leaves them while the consumers keep up, so a test of what the sweeps
 // decide is not held back by trackers that have processed no marker.
 func ingestCaughtUp(s *Scheduler) {
 	now := time.Now().UTC()
 	markers(s, now, now)
-}
-
-// TestReadIngest_ClaimsInterruptionOnlyWhenNotDeferred: the view holds the
-// trackers for a bus interruption the marker loop has not yet claimed, as
-// the heartbeat sweep and the reap do, but not while the liveness sweeps are
-// deferred, when neither of them reads the trackers.
-func TestReadIngest_ClaimsInterruptionOnlyWhenNotDeferred(t *testing.T) {
-	at := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-	caught := at.Add(time.Second)
-	for _, tc := range []struct {
-		name   string
-		busUp  time.Time
-		wantAt time.Time
-	}{
-		{"deferred", time.Time{}, caught},
-		{"not deferred", at.Add(-time.Hour), at},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := DefaultConfig()
-			cfg.BusInterruptedAt = func() time.Time { return at }
-			cfg.BusUpSince = func() time.Time { return tc.busUp }
-			s := newIngestScheduler(cfg, &markerBus{}, &bytes.Buffer{})
-			markers(s, caught, caught)
-
-			v := s.readIngest(at.Add(2 * time.Second))
-
-			if !v.workerAt.Equal(tc.wantAt) || !v.taskAt.Equal(tc.wantAt) {
-				t.Errorf("view worker = %v, task = %v, want both %v", v.workerAt, v.taskAt, tc.wantAt)
-			}
-		})
-	}
-}
-
-// TestReadIngest_PendingNames: the view's worker set joins both consumers,
-// the capacity sweep's holds the worker consumer's alone, and every set is
-// nil when nothing is pending.
-func TestReadIngest_PendingNames(t *testing.T) {
-	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-	s := newIngestScheduler(DefaultConfig(), &markerBus{}, &bytes.Buffer{})
-	if v := s.readIngest(now); v.pendingWorkers != nil || v.workerStreamPending != nil ||
-		v.pendingTasks != nil || v.pendingAttempts != nil {
-		t.Fatalf("view with nothing pending = %+v, want nil sets", v)
-	}
-	s.ingestWorker.nak(1, now, 1, ingestRef{worker: "w1"})
-	s.ingestTask.nak(2, now, 1, ingestRef{worker: "w2", task: "t2", attempt: "a2"})
-
-	v := s.readIngest(now)
-
-	for name, tc := range map[string]struct{ got, want map[string]bool }{
-		"workers":       {v.pendingWorkers, map[string]bool{"w1": true, "w2": true}},
-		"worker stream": {v.workerStreamPending, map[string]bool{"w1": true}},
-		"tasks":         {v.pendingTasks, map[string]bool{"t2": true}},
-		"attempts":      {v.pendingAttempts, map[string]bool{"a2": true}},
-	} {
-		if !maps.Equal(tc.got, tc.want) {
-			t.Errorf("%s = %v, want %v", name, tc.got, tc.want)
-		}
-	}
 }

@@ -35,8 +35,8 @@ type ingestLoopState struct {
 }
 
 // interruptSeen is the newest bus interruption the trackers have been held
-// for. The marker loop and the sweep tick both read the interruption time, so
-// it is guarded.
+// for. The marker loop, the heartbeat sweep and the reap all read the
+// interruption time, so it is guarded.
 type interruptSeen struct {
 	mu   sync.Mutex
 	last time.Time
@@ -111,9 +111,9 @@ func (s *Scheduler) ingestMarkerTick(ctx context.Context, loop *ingestLoopState)
 // checkBusInterruption holds each tracker for its consumer's AckWait from the
 // latest bus interruption, once per interruption: a message the broker sent
 // while a consumer's pull was lost is redelivered only after that long. The
-// marker loop calls it every tick, and each sweep tick calls it before reading
-// the trackers ([Scheduler.readIngest]), so a check landing between an
-// interruption and the next tick is held too. Safe for concurrent use.
+// marker loop calls it every tick, and the heartbeat sweep and the reap call
+// it before reading the trackers, so a check landing between an interruption
+// and the next tick is held too. Safe for concurrent use.
 func (s *Scheduler) checkBusInterruption(now time.Time) {
 	if s.cfg.BusInterruptedAt == nil {
 		return

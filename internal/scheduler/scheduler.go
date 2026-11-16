@@ -1614,20 +1614,20 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 // fenced records it and returns, and the tick stops there; a fenced scheduler
 // sweeps nothing more.
 func (s *Scheduler) sweepOnce(ctx context.Context) {
-	// Read once, so the heartbeat sweep, the reap, attempt reconciliation and
-	// the capacity sweep judge the same view of the ingest trackers.
-	v := s.readIngest(s.now())
+	// Each liveness check reads the ingest trackers itself, at its own place
+	// in the tick: one reading taken at the start of the tick would miss a
+	// marker processed while the earlier checks ran.
 	for _, sweep := range []func(context.Context){
-		func(ctx context.Context) { s.sweepStaleWorkers(ctx, v) },
+		s.sweepStaleWorkers,
 		s.sweepRetiredWorkers,
 		s.sweepRetiredJobs,
-		func(ctx context.Context) { s.reapStaleAssignedTasks(ctx, v) },
+		s.reapStaleAssignedTasks,
 		// Before the demotion, so a job left with nothing in flight by a
 		// reconciliation reclaim is demoted on the same tick.
-		func(ctx context.Context) { s.reconcileAttempts(ctx, s.now().UTC(), v) },
+		func(ctx context.Context) { s.reconcileAttempts(ctx, s.now().UTC()) },
 		s.demoteStalledJobs,
 		s.sweepUnschedulable,
-		func(ctx context.Context) { s.sweepCapacity(ctx, v) },
+		s.sweepCapacity,
 		s.sweepBlockedJobsOnce,
 		s.pruneReregisterAsks,
 		// The gauges refresh on the same tick, so there is no separate
@@ -1701,22 +1701,21 @@ func (s *Scheduler) announceDemoted(ctx context.Context, demoted []string) {
 // that is already running.
 //
 // It judges assigned_at against AssignedTaskTimeout before the time up to
-// which the task-status consumer has applied its stream, not before now
-// ([Scheduler.assignedReapCutoff]), and leaves alone the tasks a status report
-// waiting to be applied again names: a running report still queued would move
+// which the task-status consumer has applied its stream, not before now, and
+// leaves alone the tasks a status report waiting to be applied again names
+// ([Scheduler.assignedReapCutoff]): a running report still queued would move
 // the task, and reclaiming it first re-dispatches a running task. Before that
-// consumer's first marker it reclaims nothing. v is the tick's view of the
-// ingest trackers ([Scheduler.readIngest]).
-func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context, v ingestView) {
+// consumer's first marker it reclaims nothing.
+func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 	now := s.now()
 	if deferred, _ := s.livenessDeferred(now); deferred {
 		return
 	}
-	cutoff, ok := s.assignedReapCutoff(v)
+	cutoff, skip, ok := s.assignedReapCutoff(now)
 	if !ok {
 		return
 	}
-	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff, v.pendingTasks)
+	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff, skip)
 	s.announceReaped(ctx, reclaimed)
 	s.warnUnlessStopped(ctx, err, "scheduler: reclaim stale assigned tasks failed")
 }
@@ -1781,15 +1780,14 @@ func (s *Scheduler) notifyTaskReclaimed(ctx context.Context, task store.Task, no
 // heartbeats read as silence, and a candidate is left alone while a message
 // naming it waits to be applied again or the task-status consumer has not yet
 // caught up to its expiry ([Scheduler.ingestHoldsWorker]). Before the worker
-// consumer's first marker nothing is swept. v is the tick's view of the
-// ingest trackers ([Scheduler.readIngest]).
-func (s *Scheduler) sweepStaleWorkers(ctx context.Context, v ingestView) {
+// consumer's first marker nothing is swept.
+func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 	now := s.now()
 	if deferred, up := s.livenessDeferred(now); deferred {
 		s.logLivenessDeferred(ctx, up)
 		return
 	}
-	cutoff, ok := s.workerSweepCutoff(ctx, now, v)
+	cutoff, effT, ok := s.workerSweepCutoff(ctx, now)
 	if !ok {
 		return
 	}
@@ -1800,7 +1798,7 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context, v ingestView) {
 		}
 		return
 	}
-	stale = s.dropIngestHeldWorkers(ctx, stale, v)
+	stale = s.dropIngestHeldWorkers(ctx, stale, now, effT)
 	if len(stale) == 0 {
 		return
 	}

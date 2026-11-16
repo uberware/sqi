@@ -262,8 +262,8 @@ func TestCapacitySweep_NoGroupsDoesNothing(t *testing.T) {
 				t.Fatalf("RegisterWorker: %v", err)
 			}
 
-			s.sweepCapacity(t.Context(), tickView(s))
-			s.sweepCapacity(t.Context(), tickView(s))
+			s.sweepCapacity(t.Context())
+			s.sweepCapacity(t.Context())
 
 			spy.mu.Lock()
 			got := maps.Clone(spy.calls)
@@ -300,7 +300,7 @@ func TestCapacitySweep_ExportsDemandForEligibleWork(t *testing.T) {
 	}))
 	submitReady(t, st, 2, houdiniStep())
 
-	s.sweepCapacity(t.Context(), tickView(s))
+	s.sweepCapacity(t.Context())
 
 	series := capacitySeries(t, s.metrics)
 	for key, want := range map[string]float64{
@@ -340,7 +340,7 @@ func TestCapacitySweep_DemandFallsToZero(t *testing.T) {
 	g := createGroup(t, st, sizedGroup("burst", nil))
 	tasks := submitReady(t, st, 2, store.Step{})
 
-	s.sweepCapacity(t.Context(), tickView(s))
+	s.sweepCapacity(t.Context())
 	if v := statusFor(t, s, g.ID); v.demand != 8 {
 		t.Fatalf("demand before = %d, want 8", v.demand)
 	}
@@ -354,7 +354,7 @@ func TestCapacitySweep_DemandFallsToZero(t *testing.T) {
 	for _, task := range tasks {
 		storetest.Lease(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: "outsider"})
 	}
-	s.sweepCapacity(t.Context(), tickView(s))
+	s.sweepCapacity(t.Context())
 
 	series := capacitySeries(t, s.metrics)
 	for _, key := range []string{"sqi_capacity_demand_cores{group=burst}", "sqi_capacity_desired_machines{group=burst}"} {
@@ -376,7 +376,7 @@ func TestCapacitySweep_DeletedGroupSeriesRemoved(t *testing.T) {
 	disabled := createGroup(t, st, sizedGroup("disabled", nil))
 	submitReady(t, st, 1, store.Step{})
 
-	s.sweepCapacity(t.Context(), tickView(s))
+	s.sweepCapacity(t.Context())
 	if n := len(capacitySeries(t, s.metrics)); n != 16 {
 		t.Fatalf("series before = %d, want 16 (4 groups x 4)", n)
 	}
@@ -392,7 +392,7 @@ func TestCapacitySweep_DeletedGroupSeriesRemoved(t *testing.T) {
 	if _, err := st.UpdateCapacityGroup(t.Context(), disabled); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	s.sweepCapacity(t.Context(), tickView(s))
+	s.sweepCapacity(t.Context())
 
 	var groups []string
 	for key := range capacitySeries(t, s.metrics) {
@@ -426,7 +426,7 @@ func TestCapacitySweep_DeletedGroupSeriesRemoved(t *testing.T) {
 			t.Fatalf("disable %s: %v", g.Name, err)
 		}
 	}
-	s.sweepCapacity(t.Context(), tickView(s))
+	s.sweepCapacity(t.Context())
 	if n := len(capacitySeries(t, s.metrics)); n != 0 {
 		t.Errorf("series with no enabled group = %d, want 0", n)
 	}
@@ -443,25 +443,25 @@ func TestCapacitySweep_IdleSinceResetsWhenBusy(t *testing.T) {
 	addMember(t, st, g.ID, store.Worker{ID: "m1", CPUCount: 4, OS: "linux", Arch: "amd64"})
 	t0 := time.Now().UTC()
 
-	capacityTick(t.Context(), s, t0)
-	capacityTick(t.Context(), s, t0.Add(2*time.Minute))
+	s.sweepCapacityAt(t.Context(), t0)
+	s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute))
 	if v := statusFor(t, s, g.ID); !slices.Equal(v.retire, []string{"m1"}) {
 		t.Fatalf("retire after 2m idle = %v, want [m1]", v.retire)
 	}
 
 	tasks := submitReady(t, st, 1, store.Step{})
 	attempt := storetest.Lease(t, st, store.LeaseRequest{TaskID: tasks[0].ID, WorkerID: "m1"})
-	capacityTick(t.Context(), s, t0.Add(3*time.Minute))
+	s.sweepCapacityAt(t.Context(), t0.Add(3*time.Minute))
 	if v := statusFor(t, s, g.ID); len(v.retire) != 0 {
 		t.Fatalf("retire while busy = %v, want none", v.retire)
 	}
 
 	storetest.Complete(t, st, attempt, store.TaskStatusSucceeded)
-	capacityTick(t.Context(), s, t0.Add(3*time.Minute+30*time.Second))
+	s.sweepCapacityAt(t.Context(), t0.Add(3*time.Minute+30*time.Second))
 	if v := statusFor(t, s, g.ID); len(v.retire) != 0 {
 		t.Errorf("retire 30s after the task ended = %v, want none (idle time must restart)", v.retire)
 	}
-	capacityTick(t.Context(), s, t0.Add(4*time.Minute+30*time.Second))
+	s.sweepCapacityAt(t.Context(), t0.Add(4*time.Minute+30*time.Second))
 	if v := statusFor(t, s, g.ID); !slices.Equal(v.retire, []string{"m1"}) {
 		t.Errorf("retire a minute after the task ended = %v, want [m1]", v.retire)
 	}
@@ -479,8 +479,8 @@ func TestCapacitySweep_ReportsProfileMismatch(t *testing.T) {
 	addMember(t, st, g.ID, store.Worker{ID: "small", CPUCount: 2, OS: "linux", Arch: "amd64", Tags: tags})
 	addMember(t, st, g.ID, store.Worker{ID: "untagged", CPUCount: 4, OS: "linux", Arch: "amd64"})
 
-	s.sweepCapacity(t.Context(), tickView(s))
-	s.sweepCapacity(t.Context(), tickView(s))
+	s.sweepCapacity(t.Context())
+	s.sweepCapacity(t.Context())
 
 	st0, ok := s.CapacityStatus(g.ID)
 	if !ok {

@@ -94,15 +94,14 @@ func (s *Scheduler) capacityStatuses() []capacity.Status {
 	return slices.Clone(cs.statuses)
 }
 
-// sweepCapacity is the capacity step of a sweep tick. v is the tick's view of
-// the ingest trackers ([Scheduler.readIngest]).
-func (s *Scheduler) sweepCapacity(ctx context.Context, v ingestView) {
-	s.sweepCapacityAt(ctx, time.Now().UTC(), v)
+// sweepCapacity is the capacity step of a sweep tick.
+func (s *Scheduler) sweepCapacity(ctx context.Context) {
+	s.sweepCapacityAt(ctx, time.Now().UTC())
 }
 
 // sweepCapacityAt is [Scheduler.sweepCapacity] at now. Each phase is a method
 // of its own, called with sweepMu held.
-func (s *Scheduler) sweepCapacityAt(ctx context.Context, now time.Time, v ingestView) {
+func (s *Scheduler) sweepCapacityAt(ctx context.Context, now time.Time) {
 	cs := &s.capState
 	cs.sweepMu.Lock()
 	defer cs.sweepMu.Unlock()
@@ -128,7 +127,7 @@ func (s *Scheduler) sweepCapacityAt(ctx context.Context, now time.Time, v ingest
 		}
 		return
 	}
-	if s.removeVanishedEphemerals(ctx, now, v, farmGroups, members) {
+	if s.removeVanishedEphemerals(ctx, now, farmGroups, members) {
 		return // fenced
 	}
 	// Before the evaluation, so a member whose wake overran is no longer
@@ -215,20 +214,21 @@ func (s *Scheduler) listCapacityMembers(ctx context.Context, groups []store.Capa
 // first marker, and a member a message waiting to be applied again names is
 // kept.
 func (s *Scheduler) removeVanishedEphemerals(
-	ctx context.Context, now time.Time, v ingestView, groups []store.CapacityGroup, members map[string][]store.Worker,
+	ctx context.Context, now time.Time, groups []store.CapacityGroup, members map[string][]store.Worker,
 ) bool {
 	if deferred, _ := s.livenessDeferred(now); deferred {
 		return false
 	}
-	effW := v.workerAt
+	effW := s.ingestWorker.effective(now)
 	if effW.IsZero() {
 		return false
 	}
+	pendingWorkers := s.ingestWorker.pending(now).workers
 	removed := 0
 	for _, g := range groups {
 		kept := make([]store.Worker, 0, len(members[g.ID]))
 		for _, w := range members[g.ID] {
-			if !vanishedEphemeral(w, g, effW) || v.workerStreamPending[w.ID] {
+			if !vanishedEphemeral(w, g, effW) || pendingWorkers[w.ID] {
 				kept = append(kept, w)
 				continue
 			}
