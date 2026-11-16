@@ -32,7 +32,8 @@ type Faults interface {
 	KillServer(ctx context.Context) error
 	// TermServer stops sqi-server gracefully, the way Close does.
 	TermServer(ctx context.Context) error
-	// StallServer stops sqi-server with SIGSTOP (POSIX only).
+	// StallServer stops sqi-server with SIGSTOP (POSIX only) and, on Linux,
+	// returns once every thread of it has stopped.
 	StallServer() error
 	// ResumeServer continues a stalled sqi-server with SIGCONT.
 	ResumeServer() error

@@ -106,7 +106,8 @@ func (p *proc) exited() bool {
 // process group. It is safe to call more than once.
 func (p *proc) release() { p.releaseOnce.Do(p.plat.release) }
 
-// stall stops the process alone with SIGSTOP; on Windows it returns
+// stall stops the process alone with SIGSTOP and, on Linux, returns once
+// every thread has stopped (see awaitStop); on Windows it returns
 // errStallUnsupported.
 func (p *proc) stall() error {
 	p.mu.Lock()
@@ -117,8 +118,10 @@ func (p *proc) stall() error {
 	if err := stopProcess(p.pid()); err != nil {
 		return fmt.Errorf("target: stop %s (pid %d): %w", p.name, p.pid(), err)
 	}
+	// Set before waiting: the stop is sent, so resume must continue it even
+	// when the wait fails.
 	p.stalled = true
-	return nil
+	return p.awaitStop()
 }
 
 // resume continues the process with SIGCONT. Continuing a process that is
