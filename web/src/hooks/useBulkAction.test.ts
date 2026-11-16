@@ -75,6 +75,37 @@ describe('useBulkAction', () => {
     expect([...result.current.errors]).toEqual([['Retry', 'Retry failed: no a']])
   })
 
+  it('keeps both failures when two runs of one verb overlap', async () => {
+    let releaseBulk = () => {}
+    const { result } = renderHook(() => useBulkAction<Verb>('jobs'))
+
+    // A bulk run on a, b is in flight when a per-row run on d starts and fails.
+    let bulk: Promise<void> = Promise.resolve()
+    act(() => {
+      bulk = result.current.run('Cancel', ['a', 'b'], (id) =>
+        id === 'a'
+          ? new Promise<void>((_, reject) => (releaseBulk = () => reject(new Error('no a'))))
+          : Promise.resolve(),
+      )
+    })
+    await act(() => result.current.run('Cancel', ['d'], failFor('d')))
+    await act(async () => {
+      releaseBulk()
+      await bulk
+    })
+
+    expect(result.current.errors.get('Cancel')).toBe('Cancel failed for 2 of 3 jobs: no a')
+  })
+
+  it('starts counting afresh once no run of the verb is in flight', async () => {
+    const { result } = renderHook(() => useBulkAction<Verb>('jobs'))
+
+    await act(() => result.current.run('Cancel', ['a', 'b'], failFor('a')))
+    await act(() => result.current.run('Cancel', ['c'], failFor('c')))
+
+    expect(result.current.errors.get('Cancel')).toBe('Cancel failed: no c')
+  })
+
   it('marks an id busy and its verb running only while its action is in flight', async () => {
     let release = () => {}
     const { result } = renderHook(() => useBulkAction<Verb>('jobs'))

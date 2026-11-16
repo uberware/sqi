@@ -209,7 +209,7 @@ function applyTaskDelta(
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-/** One action in the bulk bar: disabled when it applies to no selected job. */
+/** One action in the bulk bar: disabled while it runs or when no selected job applies. */
 function BulkButton({
   verb,
   icon,
@@ -550,6 +550,7 @@ export default function JobList() {
             )}
             {jobs.map((job) => {
               const isSelected = selectedIds.has(job.id)
+              // Cancel hides while in flight, so a second click can't send it twice.
               const isCanceling = action.isBusy('Cancel', job.id)
               return (
                 <tr key={job.id} className={isSelected ? styles.rowSelected : undefined}>
@@ -602,7 +603,6 @@ export default function JobList() {
                         icon={<X />}
                         className={styles.cancelBtn}
                         onClick={() => void action.run('Cancel', [job.id], cancelJob)}
-                        busy={isCanceling}
                         title="Cancel"
                         label={`Cancel job ${job.name}`}
                       />

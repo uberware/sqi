@@ -213,10 +213,11 @@ export default function WorkerList() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   // Eligible subsets for each bulk action (ineligible selections are skipped).
-  const disableableIds = new Set(workers.filter((w) => w.status === 'online').map((w) => w.id))
-  const removableIds = new Set(workers.filter((w) => w.removable).map((w) => w.id))
-  const selectedDisableable = [...selectedIds].filter((id) => disableableIds.has(id))
-  const selectedRemovable = [...selectedIds].filter((id) => removableIds.has(id))
+  // In page order, as on the job list.
+  const selectedWhere = (pred: (worker: Worker) => boolean) =>
+    workers.filter((w) => selectedIds.has(w.id) && pred(w)).map((w) => w.id)
+  const selectedDisableable = selectedWhere((w) => w.status === 'online')
+  const selectedRemovable = selectedWhere((w) => w.removable)
 
   const toggleRow = useCallback((id: string) => {
     setSelectedIds((prev) => {
