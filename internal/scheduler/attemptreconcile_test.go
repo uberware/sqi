@@ -670,6 +670,62 @@ func TestSweepOnce_DemotesAJobAReconcileReclaimLeftIdle(t *testing.T) {
 	}
 }
 
+// TestSweepOnce_ReconcilesByTheTaskTracker pins that the sweep's
+// reconciliation reads the scheduler's own clock and its task-status tracker:
+// an omitted attempt is kept while that tracker lags the report that omitted
+// it, or while a status naming the attempt waits to be applied again, and is
+// reclaimed once the tracker has caught up.
+func TestSweepOnce_ReconcilesByTheTaskTracker(t *testing.T) {
+	tests := []struct {
+		name string
+		// task is how far before the report the task tracker has applied
+		// its stream to.
+		task      time.Duration
+		pending   bool
+		reclaimed bool
+	}{
+		{name: "task consumer lags", task: 10 * time.Second},
+		{name: "status pending", pending: true},
+		{name: "caught up", reclaimed: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st, attempt := seedReconcileAttempt(t)
+			s := newMetricsScheduler(st, &recordBus{}, "f1")
+			s.ctx = t.Context()
+			s.cfg.ReconcileGrace = time.Minute
+			s.reconciler = newReconciler(time.Minute, 30*time.Second)
+			// Started just now on the wall clock, so only the scheduler's
+			// own clock, two hours on, is past the startup hold.
+			s.startedAt = time.Now().UTC()
+			now := s.startedAt.Add(2 * time.Hour)
+			s.now = (&testClock{t: now}).now
+
+			// The worker's report omits the attempt; its heartbeat is stamped
+			// by the broker at now.
+			s.reconciler.record(reconcileWorker, now, now, now, nil)
+			// The worker consumer has applied its stream only to the worker's
+			// seeded heartbeat, so the heartbeat sweep leaves the worker alone
+			// and the reconciler decides.
+			s.ingestWorker.marker(s.startedAt)
+			s.ingestTask.marker(now.Add(-tc.task))
+			if tc.pending {
+				s.ingestTask.nak(4, now.Add(-time.Second), 1, []string{attemptKey(attempt.ID)})
+			}
+
+			s.sweepOnce(t.Context())
+
+			want := store.TaskStatusRunning
+			if tc.reclaimed {
+				want = store.TaskStatusReady
+			}
+			if got := mustTaskOf(t, st, "t1").Status; got != want {
+				t.Fatalf("task = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
 // TestReconcileAttempts_CancelsAReportedClosedAttempt pins that a sweep sends
 // a cancel naming an attempt the store has closed while its worker's fresh
 // heartbeat still reports holding it (a ghost run that missed the first

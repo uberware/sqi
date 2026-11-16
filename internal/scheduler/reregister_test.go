@@ -142,6 +142,31 @@ func TestHeartbeat_ReregisterRateLimited(t *testing.T) {
 	}
 }
 
+// The rate limit and the sweep's prune run on the scheduler's clock: a
+// heartbeat a WorkerTimeout later on that clock asks again, and a prune a
+// long while later forgets the ask.
+func TestHeartbeat_ReregisterUsesSchedulerClock(t *testing.T) {
+	f := newActFixture(t, nil)
+	offlineWorker(t, f.st, "w1")
+	clock := &testClock{t: time.Now().UTC()}
+	f.s.now = clock.now
+
+	heartbeat(t, f.s, "w1")
+	f.s.reregister.calls.Wait()
+	clock.t = clock.t.Add(f.s.cfg.WorkerTimeout + time.Second)
+	heartbeat(t, f.s, "w1")
+	f.s.reregister.calls.Wait()
+	if n := len(f.bus.sentCommand(protocol.ControlReregister)); n != 2 {
+		t.Fatalf("reregister requests = %d, want 2: the second heartbeat is a WorkerTimeout later", n)
+	}
+
+	clock.t = clock.t.Add((reregisterForgetAfter + 1) * f.s.cfg.WorkerTimeout)
+	f.s.pruneReregisterAsks(t.Context())
+	if n := f.s.reregister.size(); n != 0 {
+		t.Fatalf("entries after a prune long after the ask = %d, want 0", n)
+	}
+}
+
 // A refusal and a request that fails are counted, and neither stops a later
 // heartbeat, past WorkerTimeout, from asking again.
 func TestHeartbeat_ReregisterOutcomesCounted(t *testing.T) {

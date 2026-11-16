@@ -111,7 +111,7 @@ func (s *Scheduler) maybeAskReregister(ctx context.Context, workerID string, out
 		s.reregister.forget(workerID)
 		return
 	}
-	if !s.reregister.claim(workerID, time.Now(), s.cfg.WorkerTimeout) {
+	if !s.reregister.claim(workerID, s.now(), s.cfg.WorkerTimeout) {
 		return
 	}
 	if !s.reregister.calls.Go(func() {
@@ -152,7 +152,7 @@ func (s *Scheduler) countReregister(outcome string) {
 
 // pruneReregisterAsks is the sweep's place for dropping old reregister asks.
 func (s *Scheduler) pruneReregisterAsks(context.Context) {
-	s.reregister.prune(time.Now().Add(-reregisterForgetAfter * s.cfg.WorkerTimeout))
+	s.reregister.prune(s.now().Add(-reregisterForgetAfter * s.cfg.WorkerTimeout))
 }
 
 // closeReregisterCalls refuses later reregister requests and waits, briefly,

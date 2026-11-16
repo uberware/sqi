@@ -493,8 +493,9 @@ type Scheduler struct {
 	// episode; see [Scheduler.logIngestHeldBack].
 	heldBack heldBackLog
 
-	// now is the clock of the marker loop, the heartbeat sweep and the
-	// stuck-assigned reap. Overridable in tests.
+	// now is the clock of the marker loop, the heartbeat sweep, the
+	// stuck-assigned reap, attempt reconciliation, the ingest gauges and the
+	// reregister rate limit. Overridable in tests.
 	now func() time.Time
 }
 
@@ -1611,7 +1612,7 @@ func (s *Scheduler) sweepOnce(ctx context.Context) {
 		s.reapStaleAssignedTasks,
 		// Before the demotion, so a job left with nothing in flight by a
 		// reconciliation reclaim is demoted on the same tick.
-		func(ctx context.Context) { s.reconcileAttempts(ctx, time.Now().UTC()) },
+		func(ctx context.Context) { s.reconcileAttempts(ctx, s.now().UTC()) },
 		s.demoteStalledJobs,
 		s.sweepUnschedulable,
 		s.sweepCapacity,
