@@ -27,18 +27,18 @@ description: chaos - lower the server's file descriptor limit to 10 free descrip
 #          any refused worker's next attempt (48s at the earliest, plus its
 #          connect timeout), so every refused worker is back by 74s after the
 #          cut, well inside the 55s workers-converge allows after the last heal.
-# The broker's own accept errors never reach the server log: sqi-server drops
-# nats-server's error output, so the fault shows as the server's open
-# files held at the limit while rack-b workers are still out, not as a log line.
+# The server log shows the fault as the broker's "Temporary Client Accept
+# Error(... too many open files)", about once a second while the limit holds.
 #
 # The farm often does not converge. The redialing workers take the free
 # descriptors, and a stream can stop storing: its newest block file is last
 # written inside the window and never again, also after the limit lifts, and
 # the stream stores nothing more for the rest of the run. A standalone
 # nats-server 2.15.2 ends in the same state: out of descriptors while a
-# work-queue stream needs a new block file, its writes fail for good. That
-# sqi's broker fails for the same reason is unconfirmed, because sqi drops the
-# broker's errors and the failed write is not in the server log. The broker
+# work-queue stream needs a new block file, its writes fail for good, and the
+# server log shows the same in sqi: "Filestore [SQI_TASK] Critical write error:
+# lmb missing", then "JetStream failed to store a msg on stream 'SQI >
+# SQI_TASK': lmb missing" for the rest of the run. The broker
 # creates block files many times a minute, and which stream stops depends on
 # whose block create falls in the window: the task status stream, the
 # heartbeat stream, both, or neither (the run then passes every check); the

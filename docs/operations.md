@@ -2459,8 +2459,12 @@ workers run tasks that log 5,000 lines each:
   returning 201.
 - Task and status processing stops within seconds of the fill. No task reaches
   a terminal status afterwards.
-- `sqi-server` logs nothing about the full volume, during the fill or after
-  (H13f10).
+- `sqi-server` logs a `bus: nats server error` for each broker stream the
+  fill reaches, reading `Filestore [<stream>] Critical write error: write
+  .../<n>.blk: no space left on device`, and from then on `JetStream failed to
+  store a msg on stream 'SQI > <stream>': ... no space left on device` once a
+  minute, with a `suppressed` count, still after the space returns. See [The
+  embedded broker's own log](observability.md#the-embedded-brokers-own-log).
 - Nothing recovers after the space returns. The broker's streams store nothing
   from the fill to the end of the run (H13f9). When the server's startup
   liveness grace of about 3 minutes 10 seconds is over, the heartbeat sweep
@@ -2482,12 +2486,18 @@ When the task status stream stops, tasks lease but never reach running, and
 each is taken back and leased again about every 30 seconds, so finished work
 never counts; well over a thousand completed attempts can be redone in a run.
 When the heartbeat stream stops, every worker is marked offline and its
-attempts are reclaimed while it still runs them. The server logs nothing about
-the broker (H13f10), and the scenario does not probe readiness. A stopped
-stream's newest block file is last written inside the limit window and never
-again. A standalone nats-server fails the same way when it runs out of
-descriptors; that this is the cause in sqi is unconfirmed, because sqi drops
-the broker's errors.
+attempts are reclaimed while it still runs them. The scenario does not probe
+readiness. A stopped stream's newest block file is last written inside the
+limit window and never again. A standalone nats-server fails the same way when
+it runs out of descriptors.
+
+The server log shows it. While the limit holds, the broker logs `bus: nats
+server error` lines reading `Temporary Client Accept Error(... too many open
+files)`. A stream that stops logs `Filestore [<stream>] Critical write error:
+lmb missing` once, then `JetStream failed to store a msg on stream 'SQI >
+<stream>': lmb missing` once a minute, with a `suppressed` count, until the
+server stops. Watch for these; see [The embedded broker's own
+log](observability.md#the-embedded-brokers-own-log).
 
 ### A full session volume on a worker
 

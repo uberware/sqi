@@ -498,7 +498,6 @@ server defects](load-testing.md#known-server-defects).
 | H13f7 | When a stalled database answers again, the heartbeat sweep, the stale-assigned reap and the attempt reconciler act on the state the stall kept from being written, before the queued heartbeats and status reports land: live workers go offline, running tasks are taken back and run twice, finished work is rejected. | `chaos-db-stall-30s`, `rework` (up to 60), `reclaims` and `single-attempt`, `may`; `chaos-db-stall-2m`, `single-attempt`, `may` |
 | H13f8 | A lease request a worker parked before its credential was revoked is still served after the revoke, so the disconnected worker is given a task that waits until the sweep reclaims it. | `chaos-worker-revoke`, `revoked`, `may` |
 | H13f9 | After a write to a broker stream fails because the data volume is full or the server is out of file descriptors, the stream may store nothing more for the rest of the run; whether a restart clears it is not known. With a full volume the server stays ready and answers REST while the volume is full. Every worker is then reclaimed. | `chaos-disk-server-full`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded`, `must`; `chaos-server-fd-exhaustion`, the same checks and `rework` (up to 2500), `may` |
-| H13f10 | `sqi-server` drops the embedded broker's notices, warnings and errors, so a broker failure never reaches the server log. | Not tied to a check. |
 
 ---
 
