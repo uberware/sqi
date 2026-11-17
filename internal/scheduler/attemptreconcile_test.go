@@ -847,7 +847,7 @@ func TestSweepOnce_ReconcilesWhenEveryHeartbeatIsNewerThanTheMarker(t *testing.T
 	now := s.startedAt.Add(2 * time.Hour)
 	s.now = (&testClock{t: now}).now
 
-	for at := now.Add(-10 * time.Second); !at.After(now.Add(-200 * time.Millisecond)); at = at.Add(time.Second) {
+	for at := now.Add(-9800 * time.Millisecond); !at.After(now.Add(-200 * time.Millisecond)); at = at.Add(time.Second) {
 		s.reconciler.record(reconcileWorker, at, at, at, nil)
 	}
 	s.ingestWorker.marker(s.startedAt)
