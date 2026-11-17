@@ -1827,7 +1827,7 @@ hours for `SQI_TASK`). The floor passes an acked or removed message at once,
 and one whose deliveries ran out at the next ack that leaves the consumer
 nothing else unacknowledged, which a marker brings whenever the consumer is
 caught up. When the floor cannot be read, nothing is forgotten. The
-tracker's *effective* time is the newest marker handled, held back in two
+tracker's *effective* time is the newest marker handled, held back in three
 cases:
 
 - **A process pause.** When two marker ticks are more than 6 s apart, or one

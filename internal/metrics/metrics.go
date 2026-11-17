@@ -79,7 +79,7 @@ type Metrics struct {
 
 	// SchedulerIngestLagSeconds is how far the newest ingest marker each
 	// scheduler consumer has processed trails now, by consumer (worker,
-	// task); 0 before the first marker.
+	// task); before the first marker, the time since the scheduler started.
 	SchedulerIngestLagSeconds *prometheus.GaugeVec
 
 	// SchedulerIngestPending is the number of messages each scheduler

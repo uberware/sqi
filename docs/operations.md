@@ -2296,7 +2296,7 @@ described in [Writing to a file](#writing-to-a-file).
 | `sqi_scheduler_jobs_autoparked_total` | counter | `queue` | Jobs auto-parked at their failure limit, by queue |
 | `sqi_scheduler_tasks_reconciled_total` | counter | — | Attempts reclaimed because their live worker stopped reporting them (see [Reconciliation](#reconciliation)) |
 | `sqi_scheduler_cancels_resent_total` | counter | `cause` | Cancels sent to a live worker still reporting an attempt the store has closed (`closed`) or has no record of (`unknown`) (see [Reconciliation](#reconciliation)) |
-| `sqi_scheduler_ingest_lag_seconds` | gauge | `consumer` | How far the newest ingest marker the `worker` or `task` consumer has applied trails now; `0` before the first marker (see [Ingest lag and liveness](observability.md#ingest-lag-and-liveness)) |
+| `sqi_scheduler_ingest_lag_seconds` | gauge | `consumer` | How far the newest ingest marker the `worker` or `task` consumer has applied trails now; before the first marker, the time since the scheduler started (see [Ingest lag and liveness](observability.md#ingest-lag-and-liveness)) |
 | `sqi_scheduler_ingest_pending` | gauge | `consumer` | Messages the `worker` or `task` consumer failed to apply and will receive again |
 | `sqi_scheduler_worker_reregister_requests_total` | counter | `outcome` | Requests asking a worker held offline whose heartbeats still arrive to register again, by `outcome` (`accepted`, `refused`, `error`) |
 | `sqi_server_ha_leader` | gauge | — | 1 while this server leads its high-availability group, 0 otherwise. HA only |
