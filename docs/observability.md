@@ -275,8 +275,10 @@ subject, so they stay offline until their broker connection drops.
 Log lines (server log and Admin → Server log):
 
 - `scheduler: process pause detected` (Warn, with `gap`): two of the
-  scheduler's 2 s marker ticks were more than 6 s apart, so the process was
-  not running in between (a VM pause, `SIGSTOP`, a host that slept). For
+  scheduler's 2 s marker ticks were more than 6 s apart, or one tick's own
+  work (two marker publishes, each bounded at 2 s) took longer than that, so
+  the process was not running in between (a VM pause, `SIGSTOP`, a host that
+  slept). For
   `scheduler.heartbeat_timeout` afterwards the liveness checks judge by the
   moment the pause began, so every live worker has time to heartbeat again.
 - `scheduler: liveness sweep held back until the consumers catch up` (Info,

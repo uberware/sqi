@@ -420,33 +420,84 @@ func TestRunIngestMarkers_PauseHolds(t *testing.T) {
 	}
 }
 
-// TestRunIngestMarkers_SlowPublishIsNotAPause: a publish that takes 5 s on
-// every tick (a connected but stalled broker) is not reported as a process
-// pause, and holds nothing.
-func TestRunIngestMarkers_SlowPublishIsNotAPause(t *testing.T) {
-	var logs bytes.Buffer
-	t0 := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-	clock := &testClock{t: t0}
-	b := &markerBus{onPublish: func() { clock.t = clock.t.Add(5 * time.Second) }}
-	s := newIngestScheduler(DefaultConfig(), b, &logs)
-	s.now = clock.now
-	caught := t0.Add(-time.Second)
-	s.ingestWorker.marker(caught)
-	s.ingestTask.marker(caught)
+// TestRunIngestMarkers_PublishUnderThresholdIsNotAPause: a publish slower
+// than the ticker's period but within ingestPauseThreshold (a connected but
+// stalled broker), with each tick starting as soon as the previous one ends as
+// a ticker that has already fired does, is not reported as a process pause and
+// holds nothing.
+func TestRunIngestMarkers_PublishUnderThresholdIsNotAPause(t *testing.T) {
+	for _, publish := range []time.Duration{3 * time.Second, 5 * time.Second} {
+		t.Run(publish.String(), func(t *testing.T) {
+			var logs bytes.Buffer
+			t0 := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+			clock := &testClock{t: t0}
+			b := &markerBus{onPublish: func() { clock.t = clock.t.Add(publish) }}
+			s := newIngestScheduler(DefaultConfig(), b, &logs)
+			s.now = clock.now
+			caught := t0.Add(-time.Second)
+			s.ingestWorker.marker(caught)
+			s.ingestTask.marker(caught)
 
-	var loop ingestLoopState
-	for range 5 {
-		s.ingestMarkerTick(t.Context(), &loop)
-		clock.t = clock.t.Add(ingestMarkerInterval)
-	}
+			var loop ingestLoopState
+			for range 5 {
+				s.ingestMarkerTick(t.Context(), &loop)
+			}
 
-	if strings.Contains(logs.String(), "scheduler: process pause detected") {
-		t.Errorf("a slow publish was reported as a pause:\n%s", logs.String())
+			if strings.Contains(logs.String(), "scheduler: process pause detected") {
+				t.Errorf("a %v publish was reported as a pause:\n%s", publish, logs.String())
+			}
+			for name, tr := range map[string]*ingestTracker{"worker": s.ingestWorker, "task": s.ingestTask} {
+				if got := tr.effective(clock.t); !got.Equal(caught) {
+					t.Errorf("%s effective = %v, want %v (no hold)", name, got, caught)
+				}
+			}
+		})
 	}
-	for name, tr := range map[string]*ingestTracker{"worker": s.ingestWorker, "task": s.ingestTask} {
-		if got := tr.effective(clock.t); !got.Equal(caught) {
-			t.Errorf("%s effective = %v, want %v (no hold)", name, got, caught)
-		}
+}
+
+// TestRunIngestMarkers_PauseDuringPublishHolds: a tick whose own work outlasts
+// ingestPauseThreshold (the process stopped while a bounded publish was in
+// flight) holds both trackers at the tick's start until WorkerTimeout after
+// its end, whether or not the publish then succeeded.
+func TestRunIngestMarkers_PauseDuringPublishHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"publish succeeds", nil},
+		{"publish fails", errors.New("broker unreachable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			cfg := DefaultConfig()
+			t0 := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+			clock := &testClock{t: t0}
+			b := &markerBus{err: tc.err, onPublish: func() { clock.t = clock.t.Add(7 * time.Second) }}
+			s := newIngestScheduler(cfg, b, &logs)
+			s.now = clock.now
+
+			var loop ingestLoopState
+			s.ingestMarkerTick(t.Context(), &loop)
+			end := clock.t
+			// The marker the publish stored is processed after the pause.
+			caught := end.Add(time.Second)
+			s.ingestWorker.marker(caught)
+			s.ingestTask.marker(caught)
+
+			during := end.Add(cfg.WorkerTimeout - time.Millisecond)
+			after := end.Add(cfg.WorkerTimeout + time.Millisecond)
+			for name, tr := range map[string]*ingestTracker{"worker": s.ingestWorker, "task": s.ingestTask} {
+				if got := tr.effective(during); !got.Equal(t0) {
+					t.Errorf("%s effective during the hold window = %v, want %v (the tick's start)", name, got, t0)
+				}
+				if got := tr.effective(after); !got.Equal(caught) {
+					t.Errorf("%s effective after WorkerTimeout = %v, want %v", name, got, caught)
+				}
+			}
+			if !strings.Contains(logs.String(), "scheduler: process pause detected") {
+				t.Errorf("a pause during the publish was not logged:\n%s", logs.String())
+			}
+		})
 	}
 }
 

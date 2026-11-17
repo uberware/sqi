@@ -18,16 +18,18 @@ const (
 	// marker into each consumed stream.
 	ingestMarkerInterval = 2 * time.Second
 
-	// ingestPauseThreshold is the gap between two marker ticks above which
-	// the process is taken to have been paused. While it was, its consumers
-	// applied nothing, so the trackers are held at the tick before the gap.
+	// ingestPauseThreshold is the gap between two marker ticks, or the length
+	// of one tick's own work, above which the process is taken to have been
+	// paused. While it was, its consumers applied nothing, so the trackers are
+	// held at the time before the gap. A tick's two publishes are bounded at
+	// ingestMarkerInterval each, so a running process stays below it.
 	ingestPauseThreshold = 3 * ingestMarkerInterval
 )
 
 // ingestLoopState is what the marker loop keeps between ticks, a local of
 // [Scheduler.runIngestMarkers].
 type ingestLoopState struct {
-	// prevTick is the time of the previous tick, zero before the first.
+	// prevTick is when the previous tick's work ended, zero before the first.
 	prevTick time.Time
 	// publishFailing is set while marker publishes fail, so an outage is
 	// logged once.
@@ -78,26 +80,44 @@ func (s *Scheduler) runIngestMarkers(ctx context.Context) {
 // trackers after a process pause or a bus interruption, then publishes the
 // markers. loop is the state the loop keeps between ticks.
 func (s *Scheduler) ingestMarkerTick(ctx context.Context, loop *ingestLoopState) {
-	now := s.now()
-	prev := loop.prevTick
-	// The gap runs from the end of the previous tick's work, so a slow
-	// publish is not mistaken for a pause.
-	defer func() { loop.prevTick = s.now() }()
-	// A gap far longer than the ticker's period means the process stopped
-	// running. Measured on the monotonic clock when both times carry it.
-	if !prev.IsZero() {
-		if gap := now.Sub(prev); gap > ingestPauseThreshold {
-			until := now.Add(s.cfg.WorkerTimeout)
-			s.ingestWorker.hold(prev, until)
-			s.ingestTask.hold(prev, until)
-			s.logger.WarnContext(ctx, "scheduler: process pause detected", slog.Duration("gap", gap))
-		}
+	start := s.now()
+	// A gap far longer than the ticker's period between the end of the
+	// previous tick's work and the start of this one means the process
+	// stopped running between ticks.
+	if !loop.prevTick.IsZero() {
+		s.holdIfPaused(ctx, loop.prevTick, start)
 	}
-	s.checkBusInterruption(now)
+	s.checkBusInterruption(start)
+	s.publishIngestMarkers(ctx, loop)
+	// The publishes are bounded well below the threshold, so work that
+	// outlasts it means the process stopped while a publish was in flight. A
+	// marker the broker stored after the process resumed can be stamped ahead
+	// of heartbeats workers sent during the pause.
+	end := s.now()
+	s.holdIfPaused(ctx, start, end)
+	loop.prevTick = end
+}
 
-	// Each publish is bounded, so a stalled broker cannot hold up the next
-	// tick's checks for long, and a stall on one stream cannot keep the other
-	// stream's marker back.
+// holdIfPaused holds both trackers at from until WorkerTimeout after to when
+// more than [ingestPauseThreshold] passed between the two, measured on the
+// monotonic clock when both carry it: the process was not running for that
+// long, and its consumers applied nothing.
+func (s *Scheduler) holdIfPaused(ctx context.Context, from, to time.Time) {
+	gap := to.Sub(from)
+	if gap <= ingestPauseThreshold {
+		return
+	}
+	until := to.Add(s.cfg.WorkerTimeout)
+	s.ingestWorker.hold(from, until)
+	s.ingestTask.hold(from, until)
+	s.logger.WarnContext(ctx, "scheduler: process pause detected", slog.Duration("gap", gap))
+}
+
+// publishIngestMarkers publishes one marker into each stream, logging the
+// first failure of an outage. Each publish is bounded, so a stalled broker
+// cannot hold up the next tick's checks for long, and a stall on one stream
+// cannot keep the other stream's marker back.
+func (s *Scheduler) publishIngestMarkers(ctx context.Context, loop *ingestLoopState) {
 	if err := s.bus.PublishIngestMarkers(ctx, ingestMarkerInterval); err != nil {
 		if !loop.publishFailing && ctx.Err() == nil {
 			s.logger.DebugContext(ctx, "scheduler: publish ingest markers failed", slog.Any("error", err))
