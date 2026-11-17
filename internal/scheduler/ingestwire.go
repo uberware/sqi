@@ -99,11 +99,11 @@ func (s *Scheduler) ingestMarkerTick(ctx context.Context, loop *ingestLoopState)
 }
 
 // holdIfPaused holds both trackers at from until WorkerTimeout after to when
-// more than [ingestPauseThreshold] passed between the two, measured on the
-// monotonic clock when both carry it: the process was not running for that
-// long, and its consumers applied nothing.
+// more than [ingestPauseThreshold] passed between the two (see [pauseGap]):
+// the process was not running for that long, and its consumers applied
+// nothing.
 func (s *Scheduler) holdIfPaused(ctx context.Context, from, to time.Time) {
-	gap := to.Sub(from)
+	gap := pauseGap(from, to)
 	if gap <= ingestPauseThreshold {
 		return
 	}
@@ -111,6 +111,16 @@ func (s *Scheduler) holdIfPaused(ctx context.Context, from, to time.Time) {
 	s.ingestWorker.hold(from, until)
 	s.ingestTask.hold(from, until)
 	s.logger.WarnContext(ctx, "scheduler: process pause detected", slog.Duration("gap", gap))
+}
+
+// pauseGap is how long passed from prev to now: the larger of the monotonic
+// and the wall-clock difference. On some systems the monotonic clock stops
+// while the host sleeps, and the wall clock can be stepped, so each reveals a
+// pause the other can miss. A forward step of the wall clock reads as a pause
+// too, which is right: marker stamps jump with it while the stored heartbeats
+// do not.
+func pauseGap(prev, now time.Time) time.Duration {
+	return max(now.Sub(prev), now.Round(0).Sub(prev.Round(0)))
 }
 
 // publishIngestMarkers publishes one marker into each stream, logging the

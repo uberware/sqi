@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -496,6 +497,52 @@ func TestRunIngestMarkers_PauseDuringPublishHolds(t *testing.T) {
 			}
 			if !strings.Contains(logs.String(), "scheduler: process pause detected") {
 				t.Errorf("a pause during the publish was not logged:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+// shiftMonotonic returns t with its monotonic reading moved by d and its wall
+// clock reading unchanged: a reading taken after the monotonic clock stood
+// still (d < 0) while the wall clock ran on, as on a host that slept. The time
+// package offers no way to build one, so it edits the reading in place, and
+// fails the test if the result is not what it should be.
+func shiftMonotonic(t *testing.T, tm time.Time, d time.Duration) time.Time {
+	t.Helper()
+	out := tm
+	// time.Time is {wall uint64; ext int64; loc *Location}; with a monotonic
+	// reading, ext holds it.
+	p := (*struct {
+		wall uint64
+		ext  int64
+		loc  *time.Location
+	})(unsafe.Pointer(&out))
+	p.ext += int64(d)
+	if !out.Round(0).Equal(tm.Round(0)) || out.Sub(tm) != d {
+		t.Fatalf("shiftMonotonic: the time.Time layout is not the one expected (wall %v -> %v, monotonic moved %v, want %v)",
+			tm.Round(0), out.Round(0), out.Sub(tm), d)
+	}
+	return out
+}
+
+// TestPauseGap: the gap between two clock readings is the larger of their
+// monotonic and wall-clock differences, so a pause during which the monotonic
+// clock stood still (a host that slept) still shows.
+func TestPauseGap(t *testing.T) {
+	mono := time.Now()
+	for _, tc := range []struct {
+		name      string
+		prev, now time.Time
+		want      time.Duration
+	}{
+		{"wall only", time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC), time.Date(2026, 11, 15, 12, 0, 7, 0, time.UTC), 7 * time.Second},
+		{"both clocks agree", mono, mono.Add(7 * time.Second), 7 * time.Second},
+		{"monotonic clock stood still", mono, shiftMonotonic(t, mono.Add(10*time.Second), -8*time.Second), 10 * time.Second},
+		{"wall clock stepped back", mono, shiftMonotonic(t, mono.Add(-5*time.Second), 12*time.Second), 7 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pauseGap(tc.prev, tc.now); got != tc.want {
+				t.Errorf("pauseGap = %v, want %v", got, tc.want)
 			}
 		})
 	}

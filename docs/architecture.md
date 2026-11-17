@@ -1822,9 +1822,11 @@ tracker's *effective* time is the newest marker handled, held back in two
 cases:
 
 - **A process pause.** When two marker ticks are more than 6 s apart, or one
-  tick's own work takes longer than that (three marker intervals, on the
-  monotonic clock; a tick's two publishes are bounded at 2 s each), the process
-  was not running. On resume a marker can be stored before the heartbeats the
+  tick's own work takes longer than that (three marker intervals; a tick's two
+  publishes are bounded at 2 s each), the process was not running. The gap is
+  the larger of the monotonic and the wall-clock difference, because on some
+  systems the monotonic clock stops while the host sleeps; a forward step of
+  the wall clock therefore holds the trackers too. On resume a marker can be stored before the heartbeats the
   workers buffered during the pause, so for `scheduler.heartbeat_timeout` after
   the resume both trackers report no later than the moment before the gap:
   long enough for every live worker to publish a fresh heartbeat. The server
