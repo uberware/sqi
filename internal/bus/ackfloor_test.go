@@ -90,6 +90,15 @@ func TestConsumerAckFloor_PassesOnlyWhatWillNotBeDeliveredAgain(t *testing.T) {
 		defer mu.Unlock()
 		return delivered[exhaustedSubj] >= TaskStatusConsumerMaxDeliver
 	})
+	// The broker gives up on it once the last nak lands, which leaves the
+	// consumer nothing unacknowledged.
+	waitFor("the broker to give up on the message", func() bool {
+		info, err := c.js.Consumer(ctx, StreamTask, taskStatusConsumerName)
+		if err != nil {
+			t.Fatalf("Consumer: %v", err)
+		}
+		return info.CachedInfo().NumAckPending == 0
+	})
 	_, next := publish("next", "ack")
 	waitFor("the floor to pass a message out of deliveries", func() bool { return floor() >= next })
 	if f := floor(); f < exhausted {
