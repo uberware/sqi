@@ -79,6 +79,117 @@ func TestReconcilerDue_SkipsPendingAttempt(t *testing.T) {
 	}
 }
 
+// latestReport returns the latest report r keeps for workerID.
+func latestReport(r *reconciler, workerID string) (workerReport, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	reps := r.reports[workerID]
+	if len(reps) == 0 {
+		return workerReport{}, false
+	}
+	return reps[len(reps)-1], true
+}
+
+// recordEverySecond records a report from w1 omitting every attempt each
+// second from the first time to the second, received, sent and stamped by the broker at once.
+func recordEverySecond(r *reconciler, from, to time.Time) {
+	for at := from; !at.After(to); at = at.Add(time.Second) {
+		r.record("w1", at, at, at, nil)
+	}
+}
+
+// TestReconcilerDue_DecidesOnTheNewestAppliedReport pins that due decides on
+// the newest report the task-status consumer has applied, not only the
+// latest: a worker heartbeating faster than the markers always has a report
+// newer than the newest applied marker, and judging only that one would hold
+// the reclaim back for as long as that lasts.
+func TestReconcilerDue_DecidesOnTheNewestAppliedReport(t *testing.T) {
+	const grace, skew = 40 * time.Second, 30 * time.Second
+	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	now := t0.Add(45 * time.Second)
+	// Restored: the attempt was opened long ago and never reported since.
+	open := []store.OpenAttempt{{AttemptID: "a1", TaskID: "t1", WorkerID: "w1", CreatedAt: t0.Add(-time.Hour)}}
+	cases := []struct {
+		name          string
+		taskEffective time.Time
+		want          bool
+	}{
+		{"markers trail the latest heartbeat by 1.5 s: reclaimed", now.Add(-1500 * time.Millisecond), true},
+		{"markers trail it by 3.5 s: reclaimed", now.Add(-3500 * time.Millisecond), true},
+		{"task consumer behind every kept report: kept", t0.Add(-time.Second), false},
+		{"task consumer has seen no marker: kept", time.Time{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReconciler(grace, skew)
+			recordEverySecond(r, t0, now)
+			if got := r.due(open, now, tc.taskEffective, nil); (len(got) == 1) != tc.want {
+				t.Fatalf("due = %v, want reclaim=%v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReconcilerDue_LatestReportHoldingTheAttemptKeepsIt pins that an attempt
+// the latest report lists is never reclaimed, even when an older report the
+// task-status consumer has applied omits it.
+func TestReconcilerDue_LatestReportHoldingTheAttemptKeepsIt(t *testing.T) {
+	const grace, skew = 40 * time.Second, 30 * time.Second
+	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	now := t0.Add(45 * time.Second)
+	open := []store.OpenAttempt{{AttemptID: "a1", TaskID: "t1", WorkerID: "w1", CreatedAt: t0.Add(-time.Hour)}}
+	r := newReconciler(grace, skew)
+	recordEverySecond(r, t0, now.Add(-time.Second))
+	r.record("w1", now, now, now, []string{"a1"})
+	if got := r.due(open, now, now.Add(-1500*time.Millisecond), nil); len(got) != 0 {
+		t.Fatalf("due = %v, want a1 kept: the latest report holds it", got)
+	}
+}
+
+// TestReconcilerDue_LaterSightingKeepsTheAttempt pins that a report naming the
+// attempt after the deciding one keeps it until it has gone unreported for
+// grace since then, though the deciding report omits it.
+func TestReconcilerDue_LaterSightingKeepsTheAttempt(t *testing.T) {
+	const grace, skew = 40 * time.Second, 30 * time.Second
+	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	now := t0.Add(45 * time.Second)
+	open := []store.OpenAttempt{{AttemptID: "a1", TaskID: "t1", WorkerID: "w1", CreatedAt: t0.Add(-time.Hour)}}
+	r := newReconciler(grace, skew)
+	recordEverySecond(r, t0, t0.Add(20*time.Second))
+	seen := t0.Add(21 * time.Second)
+	r.record("w1", seen, seen, seen, []string{"a1"})
+	recordEverySecond(r, t0.Add(22*time.Second), now)
+	if got := r.due(open, now, t0.Add(30*time.Second), nil); len(got) != 0 {
+		t.Fatalf("due = %v, want a1 kept: it was reported %v before the deciding report", got, t0.Add(30*time.Second).Sub(seen))
+	}
+}
+
+// TestReconciler_KeepsOnlyRecentReports pins the bound on what is kept per
+// worker: at most maxKeptReports reports, none but the latest older than
+// grace.
+func TestReconciler_KeepsOnlyRecentReports(t *testing.T) {
+	const grace, skew = 40 * time.Second, 30 * time.Second
+	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+
+	r := newReconciler(grace, skew)
+	recordEverySecond(r, t0, t0.Add(10*time.Minute))
+	if got := len(r.reports["w1"]); got > maxKeptReports {
+		t.Errorf("kept %d reports, want at most %d", got, maxKeptReports)
+	}
+
+	r = newReconciler(grace, skew)
+	for i := range 5 {
+		at := t0.Add(time.Duration(i) * 15 * time.Second)
+		r.record("w1", at, at, at, nil)
+	}
+	latest := t0.Add(60 * time.Second)
+	for _, rep := range r.reports["w1"] {
+		if latest.Sub(rep.receivedAt) >= grace {
+			t.Errorf("kept a report received %v before the latest, want none %v or older", latest.Sub(rep.receivedAt), grace)
+		}
+	}
+}
+
 func TestReconciler_Due(t *testing.T) {
 	const grace, skew = 2 * time.Minute, 30 * time.Second
 	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
@@ -329,7 +440,7 @@ func TestHandleWorkerHeartbeat_RecordsReportedAttempts(t *testing.T) {
 		t.Fatal("the default config should enable reconciliation")
 	}
 	held := func() (map[string]struct{}, bool) {
-		rep, ok := s.reconciler.reports[reconcileWorker]
+		rep, ok := latestReport(s.reconciler, reconcileWorker)
 		return rep.attempts, ok
 	}
 
@@ -383,15 +494,15 @@ func TestHandleWorkerHeartbeat_IgnoresAnOversizedAttemptList(t *testing.T) {
 	if !msg.acked {
 		t.Fatal("an oversized heartbeat should still be acked: it is a liveness ping")
 	}
-	rep := s.reconciler.reports[reconcileWorker]
+	rep, _ := latestReport(s.reconciler, reconcileWorker)
 	if _, has := rep.attempts["a1"]; !has || len(rep.attempts) != 1 {
 		t.Fatalf("report holds %d attempts, want the previous report (a1) to stand", len(rep.attempts))
 	}
 
 	ids = ids[:maxReportedAttempts]
 	s.handleWorkerMessage(heartbeatMsg(t, protocol.HeartbeatMsg{At: time.Now().UTC(), AttemptsReported: true, ActiveAttemptIDs: ids}))
-	if got := len(s.reconciler.reports[reconcileWorker].attempts); got != maxReportedAttempts {
-		t.Fatalf("a list at the limit recorded %d attempts, want %d", got, maxReportedAttempts)
+	if rep, _ := latestReport(s.reconciler, reconcileWorker); len(rep.attempts) != maxReportedAttempts {
+		t.Fatalf("a list at the limit recorded %d attempts, want %d", len(rep.attempts), maxReportedAttempts)
 	}
 }
 
@@ -717,6 +828,35 @@ func TestSweepOnce_ReconcilesByTheTaskTracker(t *testing.T) {
 				t.Fatalf("task = %s, want %s", got, want)
 			}
 		})
+	}
+}
+
+// TestSweepOnce_ReconcilesWhenEveryHeartbeatIsNewerThanTheMarker pins that a
+// worker heartbeating every second, faster than the 2 s markers, is
+// reconciled on the first sweep after the grace: its latest heartbeat is
+// always newer than the newest marker the task consumer has applied, but the
+// one before it is not.
+func TestSweepOnce_ReconcilesWhenEveryHeartbeatIsNewerThanTheMarker(t *testing.T) {
+	st, attempt := seedReconcileAttempt(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	noIngestMarker(s)
+	s.ctx = t.Context()
+	s.cfg.ReconcileGrace = time.Minute
+	s.reconciler = newReconciler(time.Minute, 30*time.Second)
+	s.startedAt = time.Now().UTC()
+	now := s.startedAt.Add(2 * time.Hour)
+	s.now = (&testClock{t: now}).now
+
+	for at := now.Add(-10 * time.Second); !at.After(now.Add(-200 * time.Millisecond)); at = at.Add(time.Second) {
+		s.reconciler.record(reconcileWorker, at, at, at, nil)
+	}
+	s.ingestWorker.marker(s.startedAt)
+	s.ingestTask.marker(now.Add(-time.Second))
+
+	s.sweepOnce(t.Context())
+
+	if got := mustTaskOf(t, st, attempt.TaskID).Status; got != store.TaskStatusReady {
+		t.Fatalf("task = %s, want ready: the heartbeat before the latest is covered by the marker", got)
 	}
 }
 

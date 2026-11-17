@@ -420,16 +420,25 @@ The heartbeat handler records each report in an in-memory, per-process
 `scheduler.heartbeat_timeout` from its receipt. The sweep takes the attempts
 the fresh reports hold, then lists every open attempt in the store
 (`store.ListOpenAttempts`), in that order, so that every attempt a report
-names was leased before the list was read. It reclaims an open attempt
-through `store.ReclaimTaskAttempt` when its worker's latest report is fresh,
-omits it, and has omitted it for at least `scheduler.reconcile_grace`,
-measured on the server's clock from the later of the attempt's creation and
-the last report that named it. It also waits until the task-status consumer
-has applied everything the worker published before that report (see
-[After a backlog: waiting for the consumers](#after-a-backlog-waiting-for-the-consumers)),
-and leaves alone an attempt that a status report waiting to be applied again
-names, so a status consumer that falls behind holds reconciliation back rather
-than reclaiming a finished task before its report is read. A reclaim counts in
+names was leased before the list was read. The reconciler keeps each
+worker's recent reports (up to 32, none but the latest older than
+`scheduler.reconcile_grace`) and decides on the newest one the task-status
+consumer has applied everything before: the consumer's effective time (see
+[After a backlog: waiting for the consumers](#after-a-backlog-waiting-for-the-consumers))
+has reached that report's broker stamp. It reclaims an open attempt through
+`store.ReclaimTaskAttempt` when that report omits it and was received at least
+`scheduler.reconcile_grace` after the later of the attempt's creation and the
+last report that named it (on the server's clock), and the worker's latest
+report is fresh and omits it too. The deciding report shows that the worker
+no longer held the attempt when it sent it and that any terminal report it
+sent before has been applied, so an attempt still open was lost. Deciding on
+the latest report alone would only be later: a worker that heartbeats more
+often than the 2 s markers always has a report newer than the newest marker
+applied. Cancel resends are judged on the latest report, which alone says
+what the worker holds now. The sweep leaves alone an attempt that a status
+report waiting to be applied again names, so a status consumer that falls
+behind holds reconciliation back rather than reclaiming a finished task before
+its report is read. A reclaim counts in
 `sqi_scheduler_tasks_reconciled_total`.
 
 The same sweep repairs the opposite case. An attempt a fresh report still

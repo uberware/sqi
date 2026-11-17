@@ -1046,7 +1046,9 @@ and no task reclaimed means workers are missing cancels.
   reports are processed.
 - **A backlog of status reports holds reconciliation back.** An attempt is
   reclaimed only once the server has applied every status report the worker
-  published before the heartbeat that left the attempt out, so a server that
+  published before a heartbeat that left the attempt out (the newest such
+  heartbeat it has caught up to, as long as the latest one leaves it out too),
+  so a server that
   falls behind on its status reports (a stalled database, an overloaded
   server) waits for them rather than reclaiming a task whose report is still
   queued. `sqi_scheduler_ingest_lag_seconds{consumer="task"}` shows how far
