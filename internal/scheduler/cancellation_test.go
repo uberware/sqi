@@ -16,11 +16,13 @@ import (
 	"log/slog"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/storetest"
@@ -61,6 +63,10 @@ func (*stubBus) SubscribeLease(_ func(string, string, []byte) []byte) (*nats.Sub
 func (*stubBus) RequestWorkerControl(context.Context, string, []byte) ([]byte, error) {
 	return nil, nats.ErrNoResponders
 }
+
+func (*stubBus) PublishIngestMarkers(context.Context, time.Duration) error { return nil }
+
+func (*stubBus) ConsumerAckFloor(context.Context, bus.IngestConsumer) (uint64, error) { return 0, nil }
 
 func (b *stubBus) PublishTaskCancel(_ context.Context, workerID string, data []byte) error {
 	var m protocol.TaskCancelMsg

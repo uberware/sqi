@@ -206,21 +206,33 @@ func (s *Scheduler) listCapacityMembers(ctx context.Context, groups []store.Capa
 // cutoff, in the delete itself. Nothing is removed while the liveness sweeps
 // are deferred ([Scheduler.livenessDeferred]): during a broker outage no
 // machine can come back, so its time offline proves nothing.
+//
+// Time offline is measured up to the time the worker consumer has applied
+// SQI_WORKER to, as the heartbeat sweep measures it, not up to now: a
+// heartbeat or registration still queued would show the member came back,
+// and the delete cannot be undone. Nothing is removed before that consumer's
+// first marker, and a member a message waiting to be applied again names is
+// kept.
 func (s *Scheduler) removeVanishedEphemerals(
 	ctx context.Context, now time.Time, groups []store.CapacityGroup, members map[string][]store.Worker,
 ) bool {
 	if deferred, _ := s.livenessDeferred(now); deferred {
 		return false
 	}
+	effW := s.ingestWorker.effective(now)
+	if effW.IsZero() {
+		return false
+	}
+	pendingWorkers := s.ingestWorker.pending(now).workers
 	removed := 0
 	for _, g := range groups {
 		kept := make([]store.Worker, 0, len(members[g.ID]))
 		for _, w := range members[g.ID] {
-			if !vanishedEphemeral(w, g, now) {
+			if !vanishedEphemeral(w, g, effW) || pendingWorkers[w.ID] {
 				kept = append(kept, w)
 				continue
 			}
-			gone, deleted, err := s.store.DeleteVanishedEphemeralWorker(ctx, w.ID, now.Add(-g.BootTimeout), now)
+			gone, deleted, err := s.store.DeleteVanishedEphemeralWorker(ctx, w.ID, effW.Add(-g.BootTimeout), now)
 			if s.stopIfFenced(ctx, err) {
 				return true
 			}
@@ -249,11 +261,12 @@ func (s *Scheduler) removeVanishedEphemerals(
 }
 
 // vanishedEphemeral reports whether w, a member of g, is an ephemeral member
-// offline for longer than g's BootTimeout at now. A member with no recorded
-// heartbeat is never judged vanished.
-func vanishedEphemeral(w store.Worker, g store.CapacityGroup, now time.Time) bool {
+// offline for longer than g's BootTimeout at applied, the time the worker
+// consumer has applied its stream to. A member with no recorded heartbeat is
+// never judged vanished.
+func vanishedEphemeral(w store.Worker, g store.CapacityGroup, applied time.Time) bool {
 	return w.Ephemeral && !w.Disabled && w.Status == store.WorkerStatusOffline &&
-		w.LastHeartbeatAt != nil && now.Sub(*w.LastHeartbeatAt) > g.BootTimeout
+		w.LastHeartbeatAt != nil && applied.Sub(*w.LastHeartbeatAt) > g.BootTimeout
 }
 
 // clearCapacity forgets every status, series and remembered time. It touches

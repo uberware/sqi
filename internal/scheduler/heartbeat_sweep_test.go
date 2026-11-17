@@ -200,7 +200,7 @@ type partialReapSt struct {
 	reclaimed []store.Task
 }
 
-func (s *partialReapSt) ReclaimStaleAssignedTasks(context.Context, time.Time) ([]store.Task, error) {
+func (s *partialReapSt) ReclaimStaleAssignedTasks(context.Context, time.Time, map[string]bool) ([]store.Task, error) {
 	return s.reclaimed, errors.New("store unavailable")
 }
 
@@ -316,13 +316,14 @@ func seedWorkerWithHeartbeat(t *testing.T, st *fake.Store, id string, status sto
 }
 
 // newRetentionScheduler builds a Scheduler with the given offline-worker
-// retention and a worker-recording notifier.
+// retention, a worker-recording notifier and its ingest trackers caught up.
 func newRetentionScheduler(st store.Store, retention time.Duration, n ws.Notifier) *Scheduler {
 	cfg := DefaultConfig()
 	cfg.FarmID = "farm-1"
 	cfg.OfflineWorkerRetention = retention
 	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), n, nil)
 	s.ctx = context.Background()
+	ingestCaughtUp(s)
 	return s
 }
 

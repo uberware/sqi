@@ -259,23 +259,26 @@ func (s *Store) deleteEphemeralWorkerLocked(id string, now time.Time, also func(
 }
 
 // UpdateWorkerHeartbeat records the most recent heartbeat time for the given
-// worker. A heartbeat the broker stamped before the recorded one is ignored; an
-// unstamped one is recorded unconditionally and keeps the recorded stamp.
-func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time, brokerAt *time.Time) error {
+// worker and reports its status and power state. A heartbeat the broker stamped
+// before the recorded one is ignored; an unstamped one is recorded
+// unconditionally and keeps the recorded stamp.
+func (s *Store) UpdateWorkerHeartbeat(
+	ctx context.Context, id string, at time.Time, brokerAt *time.Time,
+) (store.HeartbeatOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.fenceLocked(ctx); err != nil {
-		return err
+		return store.HeartbeatOutcome{}, err
 	}
 
 	worker, ok := s.workers[id]
 	if !ok {
-		return store.ErrNotFound
+		return store.HeartbeatOutcome{}, store.ErrNotFound
 	}
 
 	if brokerAt != nil {
 		if worker.HeartbeatBrokerAt != nil && brokerAt.Before(*worker.HeartbeatBrokerAt) {
-			return nil
+			return store.HeartbeatOutcome{}, nil
 		}
 		stamp := *brokerAt
 		worker.HeartbeatBrokerAt = &stamp
@@ -283,7 +286,7 @@ func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Ti
 	worker.LastHeartbeatAt = &at
 	worker.UpdatedAt = time.Now()
 	s.workers[id] = worker
-	return nil
+	return store.HeartbeatOutcome{Recorded: true, Status: worker.Status, PowerState: worker.PowerState}, nil
 }
 
 // heartbeatBefore reports whether w's last heartbeat is strictly older than

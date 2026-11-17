@@ -442,6 +442,41 @@ func TestController_SecondSleepRefused(t *testing.T) {
 	h.wait()
 }
 
+// A reregister request is accepted without the remote-sleep opt-in and, once
+// the reply is delivered, registers the worker again.
+func TestDecide_ReregisterAcceptedCallsReregister(t *testing.T) {
+	h := newHarness(t, Config{})
+	h.sendCmd(protocol.ControlReregister)
+	h.wait()
+	if r := h.lastReply(); !r.Accepted {
+		t.Fatalf("reply = %+v, want accepted", r)
+	}
+	if got, want := h.snapshot(), []string{"reply:accepted=true", "reregister"}; !slices.Equal(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+// While a sleep or shutdown is under way the worker refuses to register again:
+// the retirement's own comeBack registers it when the machine is back.
+func TestDecide_ReregisterRefusedWhileRetiring(t *testing.T) {
+	h := newHarness(t, optedIn())
+	h.clock.step = 0
+	h.runErr = errors.New("exit status 1")
+	h.runGate = make(chan struct{})
+	h.sendCmd(protocol.ControlSleep)
+	h.waitFor("run:")
+
+	h.sendCmd(protocol.ControlReregister)
+	if r := h.lastReply(); r.Accepted || r.Reason != protocol.ControlRefusalAlreadyRetiring {
+		t.Fatalf("reregister while retiring: reply = %+v, want refusal %q", r, protocol.ControlRefusalAlreadyRetiring)
+	}
+	close(h.runGate)
+	h.wait()
+	if n := strings.Count(strings.Join(h.snapshot(), "|"), "reregister"); n != 1 {
+		t.Fatalf("events = %v, want only the failed sleep's one re-registration", h.snapshot())
+	}
+}
+
 func TestController_WakeRelaysPackets(t *testing.T) {
 	h := newHarness(t, Config{}) // no opt-in, and busy: wake needs neither
 	h.busy.Store(3)
@@ -464,6 +499,24 @@ func TestController_WakeRelaysPackets(t *testing.T) {
 	}
 	if slices.Contains(h.events, "deregister:capacity group retirement: wake:retired") || len(h.runs) != 0 {
 		t.Errorf("wake must not deregister or run a command: %v", h.events)
+	}
+}
+
+// With RefuseWake set, a valid wake request is refused and sends nothing.
+func TestController_RefuseWake(t *testing.T) {
+	h := newHarness(t, Config{RefuseWake: true})
+	h.send(controlJSON(t, protocol.ControlMsg{
+		Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlWake,
+		MACs: []string{"aa:bb:cc:dd:ee:ff"}, Targets: []string{"192.168.1.255:9"},
+	}))
+	h.wait()
+	if r := h.lastReply(); r.Accepted || r.Reason != refusalWakeNotSupported {
+		t.Fatalf("reply = %+v, want a refusal with reason %q", r, refusalWakeNotSupported)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.wakeMACs) != 0 || len(h.wakeTo) != 0 {
+		t.Errorf("SendWake called with macs %v, targets %v; want no call", h.wakeMACs, h.wakeTo)
 	}
 }
 

@@ -569,10 +569,12 @@ func TestCapacitySweep_VanishedEphemeralRemovedAfterBootTimeout(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			f := newMembershipFixture(t, false)
+			noIngestMarker(f.s)
 			g := createGroup(t, f.st, sizedGroup("cloud", func(g *store.CapacityGroup) { g.Enabled = enabled }))
 			t0 := time.Now().UTC().Add(-time.Hour)
 			vanishedMember(t, f, g, "gone", t0)
 
+			f.s.ingestWorker.marker(t0.Add(g.BootTimeout - time.Second))
 			f.s.sweepCapacityAt(t.Context(), t0.Add(g.BootTimeout-time.Second))
 			f.settle()
 			if _, err := f.st.GetWorker(t.Context(), "gone"); err != nil {
@@ -582,6 +584,7 @@ func TestCapacitySweep_VanishedEphemeralRemovedAfterBootTimeout(t *testing.T) {
 				t.Fatalf("RevokeWorker calls before the boot timeout = %v, want none", got)
 			}
 
+			f.s.ingestWorker.marker(t0.Add(g.BootTimeout + time.Second))
 			f.s.sweepCapacityAt(t.Context(), t0.Add(g.BootTimeout+time.Second))
 			f.s.sweepCapacityAt(t.Context(), t0.Add(g.BootTimeout+2*time.Second))
 			f.settle()
@@ -596,6 +599,54 @@ func TestCapacitySweep_VanishedEphemeralRemovedAfterBootTimeout(t *testing.T) {
 			}
 			if !strings.Contains(f.logs.String(), "worker_id=gone") {
 				t.Errorf("removal not logged:\n%s", f.logs.String())
+			}
+		})
+	}
+}
+
+// A vanished ephemeral member is judged by how far the worker consumer has
+// applied SQI_WORKER, not by now: a heartbeat or registration still queued
+// would bring it back, and deleting it revokes its credential for good. While
+// the consumer lags, has processed no marker, or holds a message naming the
+// member for retry, the member is kept.
+func TestCapacitySweep_VanishedEphemeralWaitsForWorkerConsumer(t *testing.T) {
+	tests := []struct {
+		name string
+		// marker is how far past the member's last heartbeat the worker
+		// consumer has applied its stream; negative means no marker yet.
+		marker  time.Duration
+		pending bool
+		removed bool
+	}{
+		{name: "no marker yet", marker: -1},
+		{name: "consumer behind", marker: 4 * time.Minute},
+		{name: "member's message pending", marker: 6 * time.Minute, pending: true},
+		{name: "caught up", marker: 6 * time.Minute, removed: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newMembershipFixture(t, false)
+			noIngestMarker(f.s)
+			g := createGroup(t, f.st, sizedGroup("cloud", nil)) // BootTimeout 5m
+			t0 := time.Now().UTC().Add(-time.Hour)
+			vanishedMember(t, f, g, "gone", t0)
+			now := t0.Add(time.Hour)
+			if tc.marker >= 0 {
+				f.s.ingestWorker.marker(t0.Add(tc.marker))
+			}
+			if tc.pending {
+				f.s.ingestWorker.nak(3, now.Add(-time.Second), 1, ingestRef{worker: "gone"})
+			}
+
+			f.s.sweepCapacityAt(t.Context(), now)
+			f.settle()
+
+			_, err := f.st.GetWorker(t.Context(), "gone")
+			if gone := errors.Is(err, store.ErrNotFound); gone != tc.removed {
+				t.Errorf("member removed = %v (GetWorker = %v), want %v", gone, err, tc.removed)
+			}
+			if active := f.credentialActive(t, "gone"); active == tc.removed {
+				t.Errorf("credential active = %v, want %v", active, !tc.removed)
 			}
 		})
 	}

@@ -9,7 +9,9 @@
 // [protocol.ControlReplyMsg]. Sleep and shutdown refuse unless the operator set
 // worker.power.allow_remote_sleep, and always refuse while a task is running.
 // Wake needs no opt-in: the worker only sends UDP broadcasts for a peer that is
-// asleep and so cannot receive a command itself.
+// asleep and so cannot receive a command itself. Reregister needs none either:
+// the server sends it to a worker it holds offline whose heartbeats still
+// arrive, and the worker registers again unless it is retiring.
 //
 // # Leaving and coming back
 //
@@ -56,6 +58,9 @@ const (
 	fallbackPoll = time.Second
 	// maxCommandOutput bounds the command output kept for an error message.
 	maxCommandOutput = 2048
+	// refusalWakeNotSupported is the reason a wake request is refused with
+	// [Config.RefuseWake] set.
+	refusalWakeNotSupported = "this worker does not send wake packets"
 )
 
 // Deps are the worker's parts the controller drives. Busy, Deregister and
@@ -85,6 +90,10 @@ type Config struct {
 	// SleepCommand and ShutdownCommand are argv lists. Empty means the
 	// platform default, if there is one.
 	SleepCommand, ShutdownCommand []string
+	// RefuseWake refuses every wake request, for a worker that cannot send
+	// packets on its peers' behalf, such as a simulated one. The worker
+	// configuration does not set it.
+	RefuseWake bool
 }
 
 // natsConn is the subset of [*nats.Conn] Subscribe uses.
@@ -236,6 +245,8 @@ func (c *controller) decide(data []byte) plan {
 		return c.decidePower(msg.Command)
 	case protocol.ControlWake:
 		return c.decideWake(msg)
+	case protocol.ControlReregister:
+		return c.decideReregister()
 	default:
 		return refuse("unknown command %q", msg.Command)
 	}
@@ -368,8 +379,31 @@ func (c *controller) comeBack(ctx context.Context) {
 	}
 }
 
+// decideReregister decides a request to register again, which the server
+// sends a worker it holds offline while its heartbeats still arrive. It needs
+// no opt-in. While a sleep or shutdown is under way it is refused: the
+// retirement registers the worker again when the machine is back, and a
+// registration now would put a worker about to go down back online.
+func (c *controller) decideReregister() plan {
+	if c.retiring.Load() {
+		return refuse(protocol.ControlRefusalAlreadyRetiring)
+	}
+	return plan{
+		reply: protocol.ControlReplyMsg{Accepted: true},
+		act: func() {
+			if err := c.d.Reregister(c.ctx); err != nil {
+				c.log.ErrorContext(c.ctx, "power: re-registration the server asked for failed",
+					slog.String("worker_id", c.d.WorkerID), slog.Any("error", err))
+			}
+		},
+	}
+}
+
 // decideWake decides a wake request.
 func (c *controller) decideWake(msg protocol.ControlMsg) plan {
+	if c.cfg.RefuseWake {
+		return refuse(refusalWakeNotSupported)
+	}
 	var macs []net.HardwareAddr
 	for _, s := range msg.MACs {
 		mac, err := net.ParseMAC(s)

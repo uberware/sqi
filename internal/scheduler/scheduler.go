@@ -80,6 +80,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -167,6 +168,14 @@ type Config struct {
 	// BusReconnectGrace. Nil means no grace: every sweep acts on what the
 	// store holds. Not a tuning knob; the server wires it from its bus client.
 	BusUpSince func() time.Time
+
+	// BusInterruptedAt reports the latest moment the bus connection or one of
+	// the scheduler's consumers was interrupted, and the zero time if none has
+	// been. Messages the broker sent during an interruption are redelivered
+	// only after the consumer's AckWait, so the ingest trackers are held for
+	// that long after it. Nil means no interruption is ever seen. Not a tuning
+	// knob; the server wires it from its bus client.
+	BusInterruptedAt func() time.Time
 
 	// BusReconnectGrace is how long the bus must have been up before the
 	// liveness sweeps act on heartbeats again. It must cover the time a live
@@ -314,6 +323,8 @@ type busClient interface {
 	SubscribeWorkerDiag(handler func(subject string, data []byte)) (*nats.Subscription, error)
 	SubscribeLease(handler func(workerID, queueID string, data []byte) []byte) (*nats.Subscription, error)
 	RequestWorkerControl(ctx context.Context, workerID string, data []byte) ([]byte, error)
+	PublishIngestMarkers(ctx context.Context, timeout time.Duration) error
+	ConsumerAckFloor(ctx context.Context, consumer bus.IngestConsumer) (uint64, error)
 }
 
 // Scheduler owns the assignment loop, worker registry, and heartbeat sweep.
@@ -414,6 +425,10 @@ type Scheduler struct {
 	// for at most [revokeDrainTimeout], for the calls still running.
 	revokes backgroundCalls
 
+	// reregister tracks the requests asking an offline worker whose
+	// heartbeats still arrive to register again (see reregister.go).
+	reregister reregisterAsks
+
 	// ctx is the lifecycle context for the scheduler; set during [Run] and used
 	// by NATS message-handler callbacks that cannot receive a context parameter.
 	// After Run returns ctx is canceled.
@@ -463,6 +478,28 @@ type Scheduler struct {
 	// subscription is running, by [Scheduler.StartDiag] or by Run.
 	diagMu      sync.Mutex
 	diagStarted bool
+
+	// ingestWorker and ingestTask track how far the worker and task-status
+	// consumers have applied their streams; see ingest.go and ingestwire.go.
+	ingestWorker *ingestTracker
+	ingestTask   *ingestTracker
+
+	// interrupt is the newest bus interruption the trackers were held for;
+	// see [Scheduler.checkBusInterruption].
+	interrupt interruptSeen
+
+	// workerSeq is the newest stream sequence the worker consumer has had a
+	// first delivery of; see [Scheduler.noteWorkerDelivery].
+	workerSeq firstDeliverySeq
+
+	// heldBack is set while the liveness sweep is in a held-back episode, so
+	// an episode is logged once; see [Scheduler.logIngestHeldBack].
+	heldBack atomic.Bool
+
+	// now is the clock of the marker loop, the heartbeat sweep, the
+	// stuck-assigned reap, attempt reconciliation, the ingest gauges and the
+	// reregister rate limit. Overridable in tests.
+	now func() time.Time
 }
 
 // deferralLog is the state behind [Scheduler.logLivenessDeferred].
@@ -483,6 +520,9 @@ type deferralLog struct {
 // WebSocket hub can fan them out to subscribed clients. Pass
 // [ws.NoopNotifier] (or nil, which is treated as NoopNotifier) when no
 // WebSocket hub is wired.
+//
+// m receives the scheduler's metrics. Nil is treated as a fresh
+// [metrics.New], so the scheduler never checks for it.
 //
 // diagBuf, when non-nil, enables worker diagnostic-log ingestion: the scheduler
 // subscribes to worker.diag.> and appends records under "worker:<id>". Pass nil
@@ -529,6 +569,9 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	if n == nil {
 		n = ws.NoopNotifier{}
 	}
+	if m == nil {
+		m = metrics.New()
+	}
 	var rec *reconciler
 	if cfg.ReconcileGrace > 0 {
 		// The skew bound is the heartbeat timeout, and the reconciler's
@@ -557,6 +600,9 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		instanceRefusalWarnEvery: 5 * time.Minute,
 		retryWakeTimers:          make(map[*time.Timer]struct{}),
 		reconciler:               rec,
+		ingestWorker:             newIngestTracker(bus.WorkerStreamMaxAge, bus.WorkerConsumerMaxDeliver),
+		ingestTask:               newIngestTracker(bus.TaskStreamMaxAge, bus.TaskStatusConsumerMaxDeliver),
+		now:                      time.Now,
 		// ctx is replaced with the derived cancellable context in Run. The
 		// background fallback keeps NATS callbacks from dereferencing a nil
 		// context if invoked before Run (e.g. in a partial test setup).
@@ -586,7 +632,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	s.cancel = cancel
 	s.stopMu.Unlock()
-	s.startedAt = time.Now().UTC()
+	s.startedAt = s.now().UTC()
 	s.ctx = ctx
 
 	s.logger.InfoContext(
@@ -666,6 +712,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		s.runHeartbeatSweep(ctx)
 	})
 
+	// ── Ingest markers ────────────────────────────────────────────
+	s.wg.Go(func() {
+		s.runIngestMarkers(ctx)
+	})
+
 	// Seed WorkersTotal gauge with current DB state so it is non-zero on
 	// startup even if no NATS registration messages have been seen yet.
 	s.refreshWorkerGauge(ctx)
@@ -687,6 +738,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	// Stop any backoff-wake timers still pending so they don't outlive Run.
 	s.stopRetryWakeTimers()
+
+	s.closeReregisterCalls(ctx)
 
 	// Capacity provider calls first: one that finishes a retirement starts a
 	// broker revocation, which the wait below then covers.
@@ -928,14 +981,21 @@ func (s *Scheduler) buildUsageContext(
 
 // ── Worker NATS consumer ─────────────────────────────────────────────
 
-// handleWorkerMessage is the JetStream message handler for the worker
-// register, heartbeat and deregister subjects (all three flow through the
-// SQI_WORKER stream and its single durable consumer).
+// handleWorkerMessage is the JetStream message handler of the SQI_WORKER
+// stream's single durable consumer. It binds each message to the worker
+// tracker, handles the ingest marker, and routes the rest
+// ([Scheduler.routeWorkerMessage]).
+func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
+	s.receiveTracked(msg, s.ingestWorker, bus.SubjectMarkerWorker, s.noteWorkerDelivery, s.routeWorkerMessage)
+}
+
+// routeWorkerMessage dispatches a worker register, heartbeat or deregister
+// message (all three flow through the SQI_WORKER stream) to its handler.
 //
 // Each subject carries the publishing worker's ID as its last token, so the
 // routing below recovers that identity before dispatching to the per-message
 // handler.
-func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
+func (s *Scheduler) routeWorkerMessage(msg jetstream.Msg) {
 	ctx := s.ctx
 	subject := msg.Subject()
 
@@ -1140,7 +1200,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 			slog.String("worker_id", m.WorkerID),
 			slog.Any("error", err),
 		)
-		s.nakMsg(ctx, msg)
+		s.nakMsg(ctx, msg, ingestRef{worker: subjectWorkerID})
 		return
 	}
 	if len(reg.Reclaimed) > 0 {
@@ -1473,10 +1533,13 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 
 	stamp := s.brokerAt(ctx, msg, "worker.heartbeat", m.WorkerID)
 	seen := received
+	var brokerStamp time.Time
 	if stamp != nil {
 		seen = *stamp
+		brokerStamp = *stamp
 	}
-	if err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, seen, stamp); err != nil {
+	out, err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, seen, stamp)
+	if err != nil {
 		if s.stopIfFenced(ctx, err) {
 			return
 		}
@@ -1488,7 +1551,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 				ctx, "scheduler: heartbeat for unknown worker — will retry",
 				slog.String("worker_id", m.WorkerID),
 			)
-			s.nakMsg(ctx, msg)
+			s.nakMsg(ctx, msg, ingestRef{worker: subjectWorkerID})
 			return
 		}
 		s.logger.WarnContext(
@@ -1496,9 +1559,10 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 			slog.String("worker_id", m.WorkerID),
 			slog.Any("error", err),
 		)
-		s.nakMsg(ctx, msg)
+		s.nakMsg(ctx, msg, ingestRef{worker: subjectWorkerID})
 		return
 	}
+	s.maybeAskReregister(ctx, m.WorkerID, out)
 	// Keyed on AttemptsReported, not on the list: a worker holding nothing
 	// sends an empty list, and that empty report is how the reconciler learns
 	// an attempt is no longer held. A worker that sends neither field is never
@@ -1514,7 +1578,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 			"ignoring its attempt list, and its tasks are not reconciled until it sends a shorter one",
 			slog.String("worker_id", m.WorkerID), slog.Int("attempts", len(m.ActiveAttemptIDs)),
 			slog.Int("limit", maxReportedAttempts))
-	case s.reconciler.record(m.WorkerID, at, received, m.ActiveAttemptIDs):
+	case s.reconciler.record(m.WorkerID, at, received, brokerStamp, m.ActiveAttemptIDs):
 		s.logger.WarnContext(ctx, LogHeartbeatSkewed+": more than heartbeat_timeout "+
 			"between the worker's timestamp and its receipt; its tasks are not reconciled until its "+
 			"heartbeats arrive in time again",
@@ -1551,23 +1615,31 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 // fenced records it and returns, and the tick stops there; a fenced scheduler
 // sweeps nothing more.
 func (s *Scheduler) sweepOnce(ctx context.Context) {
+	// Each liveness check reads the ingest trackers itself, at its own place
+	// in the tick: one reading taken at the start of the tick would miss a
+	// marker processed while the earlier checks ran.
 	for _, sweep := range []func(context.Context){
+		// First, so the checks below read pending messages against the
+		// broker's latest record.
+		s.pruneIngestByAckFloor,
 		s.sweepStaleWorkers,
 		s.sweepRetiredWorkers,
 		s.sweepRetiredJobs,
 		s.reapStaleAssignedTasks,
 		// Before the demotion, so a job left with nothing in flight by a
 		// reconciliation reclaim is demoted on the same tick.
-		func(ctx context.Context) { s.reconcileAttempts(ctx, time.Now().UTC()) },
+		func(ctx context.Context) { s.reconcileAttempts(ctx, s.now().UTC()) },
 		s.demoteStalledJobs,
 		s.sweepUnschedulable,
 		s.sweepCapacity,
 		s.sweepBlockedJobsOnce,
+		s.pruneReregisterAsks,
 		// The gauges refresh on the same tick, so there is no separate
 		// metrics loop.
 		s.refreshQueueDepthGauge,
 		s.refreshIdleWorkerGauge,
 		s.refreshUsageClaimGauge,
+		s.refreshIngestGauges,
 	} {
 		if s.deposed() {
 			return
@@ -1631,12 +1703,23 @@ func (s *Scheduler) announceDemoted(ctx context.Context, demoted []string) {
 // reclaims nothing (see [Scheduler.livenessDeferred]): the worker's running
 // report may be waiting in the stream, and reclaiming now re-dispatches a task
 // that is already running.
+//
+// It judges assigned_at against AssignedTaskTimeout before the time up to
+// which the task-status consumer has applied its stream, not before now, and
+// leaves alone the tasks a status report waiting to be applied again names
+// ([Scheduler.assignedReapCutoff]): a running report still queued would move
+// the task, and reclaiming it first re-dispatches a running task. Before that
+// consumer's first marker it reclaims nothing.
 func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
-	if deferred, _ := s.livenessDeferred(time.Now()); deferred {
+	now := s.now()
+	if deferred, _ := s.livenessDeferred(now); deferred {
 		return
 	}
-	cutoff := time.Now().UTC().Add(-s.cfg.AssignedTaskTimeout)
-	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff)
+	cutoff, skip, ok := s.assignedReapCutoff(now)
+	if !ok {
+		return
+	}
+	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff, skip)
 	s.announceReaped(ctx, reclaimed)
 	s.warnUnlessStopped(ctx, err, "scheduler: reclaim stale assigned tasks failed")
 }
@@ -1694,12 +1777,24 @@ func (s *Scheduler) notifyTaskReclaimed(ctx context.Context, task store.Task, no
 // acting on it would reclaim tasks that are still running. It logs once per
 // outage and once per grace window ([Scheduler.logLivenessDeferred]);
 // [Scheduler.reapStaleAssignedTasks] defers silently on the same tick.
+//
+// Past that, a heartbeat counts as expired only by the time up to which the
+// worker consumer has applied its stream ([Scheduler.workerSweepCutoff]), so a
+// consumer that falls behind holds the sweep back instead of letting queued
+// heartbeats read as silence, and a candidate is left alone while a message
+// naming it waits to be applied again or the task-status consumer has not yet
+// caught up to its expiry ([Scheduler.ingestHoldsWorker]). Before the worker
+// consumer's first marker nothing is swept.
 func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
-	if deferred, up := s.livenessDeferred(time.Now()); deferred {
+	now := s.now()
+	if deferred, up := s.livenessDeferred(now); deferred {
 		s.logLivenessDeferred(ctx, up)
 		return
 	}
-	cutoff := time.Now().UTC().Add(-s.cfg.WorkerTimeout)
+	cutoff, effT, ok := s.workerSweepCutoff(ctx, now)
+	if !ok {
+		return
+	}
 	stale, err := s.store.ListStaleWorkers(ctx, cutoff)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
@@ -1707,6 +1802,7 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 		}
 		return
 	}
+	stale = s.dropIngestHeldWorkers(ctx, stale, now, effT)
 	if len(stale) == 0 {
 		return
 	}
@@ -2118,7 +2214,9 @@ func (s *Scheduler) ackMsg(ctx context.Context, msg jetstream.Msg) {
 			slog.String("subject", msg.Subject()),
 			slog.Any("error", err),
 		)
+		return
 	}
+	recordIngestAck(msg)
 }
 
 // nakMsg negatively-acknowledges msg, asking for it to be redelivered after
@@ -2127,7 +2225,11 @@ func (s *Scheduler) ackMsg(ctx context.Context, msg jetstream.Msg) {
 // of the message's deliveries on this server, which can no longer process
 // it, and hold it back from the new leader for the delay; left
 // unacknowledged, it goes to the new leader when its ack wait runs out.
-func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg) {
+//
+// ref names what msg changes once applied. It is recorded when msg is bound to
+// an ingest tracker ([ingestMsg]); a message from an untracked consumer passes
+// the zero ref.
+func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg, ref ingestRef) {
 	if s.leftForNewLeader(ctx, msg) {
 		return
 	}
@@ -2142,6 +2244,9 @@ func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg) {
 			slog.Any("error", err),
 		)
 	}
+	// Recorded whether or not the nak reached the broker: either way the
+	// message is unapplied and comes back, after the delay or after AckWait.
+	recordIngestNak(msg, ref)
 }
 
 // nakBaseDelay and nakMaxDelay bound how long a nak'd message waits to be

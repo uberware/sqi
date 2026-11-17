@@ -1,0 +1,445 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package scheduler
+
+// Tests for the liveness checks judging by how far the consumers have applied
+// their streams (sweep_ingest.go): a heartbeat or status report still queued
+// must not read as silence.
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/store"
+)
+
+// ingestSweepTimeout is the WorkerTimeout and AssignedTaskTimeout these tests
+// run with.
+const ingestSweepTimeout = 30 * time.Second
+
+// newIngestSweepScheduler is a metrics scheduler with both timeouts at
+// ingestSweepTimeout, its clock at now, and its log captured.
+func newIngestSweepScheduler(t *testing.T, st store.Store, now time.Time) (*Scheduler, *testClock, *bytes.Buffer) {
+	t.Helper()
+	var logs bytes.Buffer
+	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
+	noIngestMarker(s)
+	s.cfg.WorkerTimeout = ingestSweepTimeout
+	s.cfg.AssignedTaskTimeout = ingestSweepTimeout
+	s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	clock := &testClock{t: now}
+	s.now = clock.now
+	return s, clock, &logs
+}
+
+// seedIngestSweepWorker seeds the stale worker of [seedStaleWorkerWithTask]
+// with its heartbeat an hour ago and returns its ID, its task's ID and the
+// heartbeat time.
+func seedIngestSweepWorker(t *testing.T, st store.Store) (workerID, taskID string, t0 time.Time) {
+	t.Helper()
+	workerID, taskID, _ = seedStaleWorkerWithTask(t, st, time.Hour)
+	w, err := st.GetWorker(t.Context(), workerID)
+	if err != nil || w.LastHeartbeatAt == nil {
+		t.Fatalf("GetWorker = (%+v, %v), want a heartbeat", w, err)
+	}
+	return workerID, taskID, *w.LastHeartbeatAt
+}
+
+// markers records that both consumers have processed a marker stamped at.
+func markers(s *Scheduler, worker, task time.Time) {
+	s.ingestWorker.marker(worker)
+	s.ingestTask.marker(task)
+}
+
+func TestSweep_NoVerdictWhileWorkerConsumerLags(t *testing.T) {
+	st := newCheckedFake(t)
+	workerID, taskID, t0 := seedIngestSweepWorker(t, st)
+	now := t0.Add(120 * time.Second)
+	s, _, _ := newIngestSweepScheduler(t, st, now)
+	markers(s, t0.Add(5*time.Second), now)
+
+	s.sweepStaleWorkers(t.Context())
+
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Errorf("worker status = %q, want online (its later heartbeats may still be queued)", got)
+	}
+	if got := taskStatus(t, st, taskID); got != store.TaskStatusRunning {
+		t.Errorf("task status = %q, want running", got)
+	}
+}
+
+func TestSweep_DeadWorkerSweptWithMarkersOnly(t *testing.T) {
+	st := newCheckedFake(t)
+	workerID, taskID, t0 := seedIngestSweepWorker(t, st)
+	caughtUp := t0.Add(ingestSweepTimeout + time.Second)
+	s, _, _ := newIngestSweepScheduler(t, st, caughtUp)
+	markers(s, caughtUp, caughtUp)
+
+	s.sweepStaleWorkers(t.Context())
+
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
+		t.Errorf("worker status = %q, want offline (no heartbeat once the consumers caught up)", got)
+	}
+	if got := taskStatus(t, st, taskID); got != store.TaskStatusReady {
+		t.Errorf("task status = %q, want ready (reclaimed)", got)
+	}
+}
+
+func TestSweep_SkipsWorkerWithPendingHeartbeat(t *testing.T) {
+	testSweepSkipsPending(t, "heartbeat", func(s *Scheduler) *ingestTracker { return s.ingestWorker })
+}
+
+func TestSweep_SkipsWorkerWithPendingStatusReport(t *testing.T) {
+	testSweepSkipsPending(t, "status report", func(s *Scheduler) *ingestTracker { return s.ingestTask })
+}
+
+// testSweepSkipsPending checks that a stale worker named by a nak'd message
+// in tracker stays online until the message is applied.
+func testSweepSkipsPending(t *testing.T, what string, tracker func(*Scheduler) *ingestTracker) {
+	t.Helper()
+	st := newCheckedFake(t)
+	workerID, taskID, t0 := seedIngestSweepWorker(t, st)
+	now := t0.Add(2 * time.Minute)
+	s, _, _ := newIngestSweepScheduler(t, st, now)
+	markers(s, now, now)
+	tracker(s).nak(7, now.Add(-time.Second), 1, ingestRef{worker: workerID, task: taskID})
+
+	s.sweepStaleWorkers(t.Context())
+
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Errorf("worker status = %q, want online (a nak'd %s names it)", got, what)
+	}
+
+	tracker(s).ack(7)
+	s.sweepStaleWorkers(t.Context())
+
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
+		t.Errorf("worker status = %q after the %s was applied, want offline", got, what)
+	}
+}
+
+func TestSweep_WaitsForTaskConsumer(t *testing.T) {
+	st := newCheckedFake(t)
+	workerID, _, t0 := seedIngestSweepWorker(t, st)
+	now := t0.Add(60 * time.Second)
+	s, _, _ := newIngestSweepScheduler(t, st, now)
+	markers(s, now, t0.Add(20*time.Second))
+
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Fatalf("worker status = %q with the task consumer at t0+20s, want online", got)
+	}
+
+	s.ingestTask.marker(t0.Add(29 * time.Second))
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Fatalf("worker status = %q with the task consumer at t0+29s, want online", got)
+	}
+
+	s.ingestTask.marker(t0.Add(ingestSweepTimeout))
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
+		t.Errorf("worker status = %q with the task consumer at t0+30s, want offline", got)
+	}
+}
+
+// TestSweep_HeldAfterHeartbeatsExpireUnread: a store stall longer than
+// SQI_WORKER's MaxAge lets heartbeats expire before the worker consumer reads
+// them. The first marker read after them must not move the cutoff past
+// heartbeats that never reached the store; once the consumer has read a whole
+// WorkerTimeout past them, a worker that is really dead is swept as before.
+func TestSweep_HeldAfterHeartbeatsExpireUnread(t *testing.T) {
+	st := newCheckedFake(t)
+	workerID, taskID, t0 := seedIngestSweepWorker(t, st)
+	s, clock, _ := newIngestSweepScheduler(t, st, t0)
+	marker := func(seq uint64, at time.Time) {
+		s.handleWorkerMessage(&fakeJSMsg{subject: bus.SubjectMarkerWorker, natsSeq: seq, stamp: at, delivered: 1})
+	}
+
+	// Before the stall the consumer reads up to t0+1s. Messages 11 to 99
+	// then expire unread; reading resumes at R.
+	marker(10, t0.Add(time.Second))
+	r := t0.Add(150 * time.Second)
+	marker(100, r)
+	marker(101, r.Add(2*time.Second))
+	clock.t = r.Add(3 * time.Second)
+	s.ingestTask.marker(clock.t)
+
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Fatalf("worker status = %q just after the expired heartbeats, want online (they never reached the store)", got)
+	}
+
+	// Short of a whole WorkerTimeout past R: still held.
+	marker(102, r.Add(ingestSweepTimeout-time.Second))
+	clock.t = r.Add(ingestSweepTimeout)
+	s.ingestTask.marker(clock.t)
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Fatalf("worker status = %q before a whole WorkerTimeout past the gap was read, want online", got)
+	}
+
+	// A whole WorkerTimeout past R has been read and the worker sent nothing
+	// in it: it is dead.
+	marker(103, r.Add(ingestSweepTimeout))
+	clock.t = r.Add(ingestSweepTimeout + time.Second)
+	s.ingestTask.marker(clock.t)
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
+		t.Errorf("worker status = %q once the gap's window was read, want offline", got)
+	}
+	if got := taskStatus(t, st, taskID); got != store.TaskStatusReady {
+		t.Errorf("task status = %q, want ready (reclaimed)", got)
+	}
+}
+
+// TestSweepAndReap_HeldByAnInterruptionTheMarkerLoopHasNotSeen: a bus
+// interruption is read when the sweep and the reap compute their cutoffs,
+// not only on the marker loop's next tick, so a sweep tick landing just after
+// one is held at the interruption time.
+func TestSweepAndReap_HeldByAnInterruptionTheMarkerLoopHasNotSeen(t *testing.T) {
+	st := newCheckedFake(t)
+	workerID, _, t0 := seedIngestSweepWorker(t, st)
+	assignedID, _ := seedAssignedTask(t, st, time.Hour)
+	tk, err := st.GetTask(t.Context(), assignedID)
+	if err != nil || tk.AssignedAt == nil {
+		t.Fatalf("GetTask = (%+v, %v), want an assigned_at", tk, err)
+	}
+	a0 := *tk.AssignedAt
+
+	s, clock, _ := newIngestSweepScheduler(t, st, t0)
+	interrupted := t0.Add(ingestSweepTimeout - time.Second)
+	s.cfg.BusInterruptedAt = func() time.Time { return interrupted }
+	s.ingestWorker.marker(t0.Add(ingestSweepTimeout + time.Second))
+	clock.t = t0.Add(ingestSweepTimeout + 2*time.Second)
+	s.ingestTask.marker(clock.t)
+
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Errorf("worker status = %q a moment after an interruption, want online (held at the interruption)", got)
+	}
+
+	s2, clock2, _ := newIngestSweepScheduler(t, st, a0)
+	interrupted = a0.Add(ingestSweepTimeout - time.Second)
+	s2.cfg.BusInterruptedAt = func() time.Time { return interrupted }
+	s2.ingestTask.marker(a0.Add(ingestSweepTimeout + time.Second))
+	clock2.t = a0.Add(ingestSweepTimeout + 2*time.Second)
+	s2.reapStaleAssignedTasks(t.Context())
+	if got := taskStatus(t, st, assignedID); got != store.TaskStatusAssigned {
+		t.Errorf("assigned task status = %q a moment after an interruption, want assigned (held at the interruption)", got)
+	}
+}
+
+func TestSweep_PromotedStandbyJudgesNothingBeforeFirstMarkers(t *testing.T) {
+	st := newCheckedFake(t)
+	workerID, taskID, t0 := seedIngestSweepWorker(t, st)
+	assignedID, _ := seedAssignedTask(t, st, time.Hour)
+	now := t0.Add(time.Hour)
+	s, _, _ := newIngestSweepScheduler(t, st, now)
+	s.cfg.BusReconnectGrace = testBusGrace
+	longAgo := now.Add(-2 * testBusGrace)
+	s.cfg.BusUpSince = func() time.Time { return longAgo }
+	s.startedAt = longAgo
+
+	s.sweepStaleWorkers(t.Context())
+	s.reapStaleAssignedTasks(t.Context())
+
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Errorf("worker status = %q, want online (no marker processed yet)", got)
+	}
+	if got := taskStatus(t, st, taskID); got != store.TaskStatusRunning {
+		t.Errorf("task status = %q, want running", got)
+	}
+	if got := taskStatus(t, st, assignedID); got != store.TaskStatusAssigned {
+		t.Errorf("assigned task status = %q, want assigned (no marker processed yet)", got)
+	}
+
+	// Only the task consumer has caught up: the worker sweep still waits.
+	s.ingestTask.marker(now)
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Errorf("worker status = %q before the worker consumer's first marker, want online", got)
+	}
+}
+
+func TestReap_UsesTaskEffectiveAndSkipsPending(t *testing.T) {
+	tests := []struct {
+		name       string
+		marker     time.Duration // task marker, after the assignment
+		pending    bool
+		wantStatus store.TaskStatus
+	}{
+		{name: "consumer behind", marker: 10 * time.Second, wantStatus: store.TaskStatusAssigned},
+		{name: "consumer caught up", marker: ingestSweepTimeout + time.Second, wantStatus: store.TaskStatusReady},
+		{name: "report pending", marker: ingestSweepTimeout + time.Second, pending: true, wantStatus: store.TaskStatusAssigned},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newCheckedFake(t)
+			taskID, _ := seedAssignedTask(t, st, time.Hour)
+			tk, err := st.GetTask(t.Context(), taskID)
+			if err != nil || tk.AssignedAt == nil {
+				t.Fatalf("GetTask = (%+v, %v), want an assigned_at", tk, err)
+			}
+			t0 := *tk.AssignedAt
+			now := t0.Add(2 * time.Minute)
+			s, _, _ := newIngestSweepScheduler(t, st, now)
+			markers(s, now, t0.Add(tc.marker))
+			if tc.pending {
+				s.ingestTask.nak(9, t0, 1, ingestRef{worker: "w-live", task: taskID})
+			}
+
+			s.reapStaleAssignedTasks(t.Context())
+
+			if got := taskStatus(t, st, taskID); got != tc.wantStatus {
+				t.Errorf("task status = %q, want %q", got, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestSweep_HeldBackLoggedOncePerEpisode(t *testing.T) {
+	const msg = "liveness sweep held back until the consumers catch up"
+	st := newCheckedFake(t)
+	now := time.Now().UTC()
+	s, clock, logs := newIngestSweepScheduler(t, st, now)
+	markers(s, now, now)
+
+	s.sweepStaleWorkers(t.Context())
+	if strings.Contains(logs.String(), msg) {
+		t.Fatalf("held back logged while caught up:\n%s", logs.String())
+	}
+
+	// The consumers stop advancing: one log for the whole episode.
+	for range 3 {
+		clock.t = clock.t.Add(s.cfg.HeartbeatSweepInterval + time.Second)
+		s.sweepStaleWorkers(t.Context())
+	}
+	if n := strings.Count(logs.String(), msg); n != 1 {
+		t.Fatalf("held back logged %d times in one episode, want once:\n%s", n, logs.String())
+	}
+	for _, attr := range []string{"worker_caught_up_to=", "task_caught_up_to="} {
+		if !strings.Contains(logs.String(), attr) {
+			t.Errorf("held-back log lacks %s:\n%s", attr, logs.String())
+		}
+	}
+
+	// They catch up, ending the episode; falling behind again is a new one.
+	markers(s, clock.t, clock.t)
+	s.sweepStaleWorkers(t.Context())
+	clock.t = clock.t.Add(s.cfg.HeartbeatSweepInterval + time.Second)
+	s.sweepStaleWorkers(t.Context())
+	if n := strings.Count(logs.String(), msg); n != 2 {
+		t.Errorf("held back logged %d times over two episodes, want twice:\n%s", n, logs.String())
+	}
+}
+
+// noIngestMarker gives s fresh ingest trackers, which have processed no
+// marker, in place of the caught-up ones the test constructors start with.
+// Tests of a lagging consumer, or of one with no marker yet, start from it.
+func noIngestMarker(s *Scheduler) {
+	s.ingestWorker = newIngestTracker(bus.WorkerStreamMaxAge, bus.WorkerConsumerMaxDeliver)
+	s.ingestTask = newIngestTracker(bus.TaskStreamMaxAge, bus.TaskStatusConsumerMaxDeliver)
+}
+
+// ingestCaughtUp records both consumers as caught up to now, as the marker
+// loop leaves them while the consumers keep up, so a test of what the sweeps
+// decide is not held back by trackers that have processed no marker.
+func ingestCaughtUp(s *Scheduler) {
+	now := time.Now().UTC()
+	markers(s, now, now)
+}
+
+// floorBus is a busClient whose ConsumerAckFloor answers from floors, or
+// fails with errs, and records whether each call carried a deadline.
+type floorBus struct {
+	recordBus
+
+	mu         sync.Mutex
+	floors     map[bus.IngestConsumer]uint64
+	errs       map[bus.IngestConsumer]error
+	calls      int
+	noDeadline bool
+}
+
+func (b *floorBus) ConsumerAckFloor(ctx context.Context, c bus.IngestConsumer) (uint64, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.calls++
+	if _, ok := ctx.Deadline(); !ok {
+		b.noDeadline = true
+	}
+	if err := b.errs[c]; err != nil {
+		return 0, err
+	}
+	return b.floors[c], nil
+}
+
+// TestPruneIngestByAckFloor: each tracker drops the pending messages its
+// consumer's ack floor has passed, each broker call is bounded, and a tracker
+// whose floor cannot be read keeps every entry.
+func TestPruneIngestByAckFloor(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	b := &floorBus{
+		floors: map[bus.IngestConsumer]uint64{bus.IngestWorker: 10, bus.IngestTaskStatus: 10},
+		errs:   map[bus.IngestConsumer]error{bus.IngestTaskStatus: errors.New("broker unreachable")},
+	}
+	s := newIngestScheduler(DefaultConfig(), b, &bytes.Buffer{})
+	s.now = (&testClock{t: now}).now
+	for _, tr := range []*ingestTracker{s.ingestWorker, s.ingestTask} {
+		tr.nak(7, now, 1, ingestRef{worker: "below"})
+		tr.nak(11, now, 1, ingestRef{worker: "above"})
+	}
+
+	s.pruneIngestByAckFloor(t.Context())
+
+	if got := s.ingestWorker.pending(now).workers; got["below"] || !got["above"] {
+		t.Errorf("worker tracker pending = %v, want only the entry above the floor", got)
+	}
+	if got := s.ingestTask.pending(now).workers; !got["below"] || !got["above"] {
+		t.Errorf("task tracker pending = %v, want both entries kept (its floor could not be read)", got)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.calls != 2 {
+		t.Errorf("ConsumerAckFloor called %d times, want 2", b.calls)
+	}
+	if b.noDeadline {
+		t.Error("a ConsumerAckFloor call carried no deadline")
+	}
+}
+
+// TestSweep_StuckPendingReportReleasedByAckFloor: a status report whose last
+// delivery never reached the handler keeps its worker from being swept only
+// until the task consumer's ack floor passes it; the sweep reads the floor
+// itself before judging.
+func TestSweep_StuckPendingReportReleasedByAckFloor(t *testing.T) {
+	st := newCheckedFake(t)
+	workerID, taskID, t0 := seedIngestSweepWorker(t, st)
+	now := t0.Add(2 * time.Minute)
+	s, _, _ := newIngestSweepScheduler(t, st, now)
+	b := &floorBus{floors: map[bus.IngestConsumer]uint64{}}
+	s.bus = b
+	markers(s, now, now)
+	s.ingestTask.nak(7, now.Add(-time.Second), 9, ingestRef{worker: workerID, task: taskID})
+
+	s.sweepOnce(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Fatalf("worker status = %q, want online (a pending status report names it)", got)
+	}
+
+	b.mu.Lock()
+	b.floors[bus.IngestTaskStatus] = 7
+	b.mu.Unlock()
+	s.sweepOnce(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
+		t.Errorf("worker status = %q after the ack floor passed the report, want offline", got)
+	}
+}

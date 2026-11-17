@@ -1044,13 +1044,19 @@ and no task reclaimed means workers are missing cancels.
 - **Nothing is reclaimed during the first `reconcile_grace` after the server
   starts**, while heartbeats rebuild what each worker holds and any queued
   reports are processed.
-- **The cost of a mistake is a re-run, never a lost result.** If the server
-  processes status reports more than `reconcile_grace` behind (a badly
-  overloaded server), a task that has finished can be reclaimed before its
-  report is read; the late report is then discarded as belonging to a closed
-  attempt, and the task runs again. If
-  `sqi_scheduler_tasks_reconciled_total` rises while no worker was lost or
-  restored, raise `reconcile_grace`.
+- **A backlog of status reports holds reconciliation back.** An attempt is
+  reclaimed only once the server has applied every status report the worker
+  published before a heartbeat that left the attempt out (the newest such
+  heartbeat it has caught up to, as long as the latest one leaves it out too),
+  so a server that
+  falls behind on its status reports (a stalled database, an overloaded
+  server) waits for them rather than reclaiming a task whose report is still
+  queued. `sqi_scheduler_ingest_lag_seconds{consumer="task"}` shows how far
+  behind it is.
+- **The cost of a mistake is a re-run, never a lost result.** A task reclaimed
+  in error has its late report discarded as belonging to a closed attempt, and
+  runs again. If `sqi_scheduler_tasks_reconciled_total` rises while no worker
+  was lost or restored, raise `reconcile_grace`.
 - **Heartbeats with a skewed clock are ignored.** A heartbeat whose worker
   timestamp is more than `heartbeat_timeout` from the moment it arrives does
   not count (the server warns once until it recovers: `scheduler: worker
@@ -1553,7 +1559,13 @@ What the cluster must provide:
 - with broker authentication on, sqi's accounts and auth-callout settings, in
   config-file accounts as `sqi-server nats external init` generates them. A
   cluster in NATS operator (JWT) mode can host sqi only with broker
-  authentication off.
+  authentication off;
+- clocks synchronized to NTP quality on every node and on every `sqi-server`
+  host. Liveness compares the broker's timestamps on heartbeats and on the
+  scheduler's ingest markers, which the node leading each stream stamps, with
+  each other and with the server's own clock, so a skew between those hosts
+  takes a worker offline early or late by about as much (see
+  [After a backlog: waiting for the consumers](architecture.md#after-a-backlog-waiting-for-the-consumers)).
 
 An external cluster is not, on its own, high availability for `sqi-server`:
 without `ha.enabled` one server runs per account (see
@@ -2286,6 +2298,9 @@ described in [Writing to a file](#writing-to-a-file).
 | `sqi_scheduler_jobs_autoparked_total` | counter | `queue` | Jobs auto-parked at their failure limit, by queue |
 | `sqi_scheduler_tasks_reconciled_total` | counter | — | Attempts reclaimed because their live worker stopped reporting them (see [Reconciliation](#reconciliation)) |
 | `sqi_scheduler_cancels_resent_total` | counter | `cause` | Cancels sent to a live worker still reporting an attempt the store has closed (`closed`) or has no record of (`unknown`) (see [Reconciliation](#reconciliation)) |
+| `sqi_scheduler_ingest_lag_seconds` | gauge | `consumer` | How far the newest ingest marker the `worker` or `task` consumer has applied trails now; before the first marker, the time since the scheduler started (see [Ingest lag and liveness](observability.md#ingest-lag-and-liveness)) |
+| `sqi_scheduler_ingest_pending` | gauge | `consumer` | Messages the `worker` or `task` consumer failed to apply and will receive again |
+| `sqi_scheduler_worker_reregister_requests_total` | counter | `outcome` | Requests asking a worker held offline whose heartbeats still arrive to register again, by `outcome` (`accepted`, `refused`, `error`) |
 | `sqi_server_ha_leader` | gauge | — | 1 while this server leads its high-availability group, 0 otherwise. HA only |
 | `sqi_server_ha_epoch` | gauge | — | The leadership epoch this server leads at, or last saw the leader hold. HA only |
 | `sqi_server_ha_promotions_total` | counter | — | Promotions of this server to leader. HA only |
@@ -2416,7 +2431,8 @@ row in [Known server defects](load-testing.md#known-server-defects).
 
 ### A database that stops answering
 
-`chaos-db-stall-5s`, `chaos-db-stall-30s` and `chaos-db-stall-2m` make the
+`chaos-db-stall-5s`, `chaos-db-stall-30s`, `chaos-db-stall-2m` and
+`chaos-db-stall-3m` make the
 database unavailable without closing a connection: on SQLite by holding its
 write lock from outside the server, on PostgreSQL by stopping the traffic
 between the server and the database. The server and the workers stay up
@@ -2425,20 +2441,22 @@ throughout.
 | Stall | Result |
 |---|---|
 | 5 seconds | Ridden out on both stores and on Windows: no attempt is reclaimed and no completed work is redone. |
-| 30 seconds (`heartbeat_timeout`) | Recovery breaks on SQLite on Linux and can break on PostgreSQL and on Windows. The server reclaims attempts from live workers, redoes completed work (from one attempt to a few dozen), can run tasks twice at once, and can leave workers offline 55 seconds after the stall ends. On PostgreSQL and on Windows some runs redo nothing. |
-| 2 minutes | Recovery breaks on every store. On SQLite no worker is online 55 seconds after the stall ends. On PostgreSQL about half to three quarters of the workers are, and 30 to 50 attempts are reclaimed and about as many completed attempts redone. |
+| 30 seconds (`heartbeat_timeout`) | Ridden out on both stores and on Windows: no worker goes offline, no attempt is reclaimed and no completed work is redone. |
+| 2 minutes | The same, on both stores and on Windows. |
+| 3 minutes | The same, on both stores. The stall outlasts the 2 minute retention of the worker stream, so heartbeats expire from it unread. The worker consumer sees the sequence numbers it skipped and holds its liveness verdict until it has read `heartbeat_timeout` past the gap, so the heartbeat sweep does not read the missing heartbeats as dead workers: no live worker goes offline and no task is re-run. |
 
-Both longer stalls fail the same way (H13f7). The queued heartbeats and status
-reports wait in the broker while the database cannot be written. When it
-answers again, the heartbeat sweep, the stale-assigned reap and the attempt
-reconciler judge the rows the stall left behind before those messages land:
-live workers are marked offline and their attempts reclaimed, tasks still
-running are taken back and leased again, and work that finished during the
-stall is rejected. A worker marked offline stays offline while its connection
-stays up and re-registers only on a reconnect (H13f3). The 30 second stall
-equals the fixed 30 second timeout after which a task still `assigned` is
-taken back, and the 2 minute stall equals `scheduler.reconcile_grace`'s
-default, so each of those two reaches a sweep that acts on the stalled rows.
+The queued heartbeats and status reports wait in the broker while the
+database cannot be written. The 30 second stall equals both
+`heartbeat_timeout` and the fixed 30 second timeout after which a task still
+`assigned` is taken back, and the 2 minute stall equals
+`scheduler.reconcile_grace`'s default, so when the database answers again the
+rows it left behind would read as dead workers, stuck assignments and
+abandoned attempts. The heartbeat sweep, the stale-assigned reap and the
+attempt reconciler wait until the queued messages have been applied before
+they judge those rows (see [After a backlog: waiting for the
+consumers](architecture.md#after-a-backlog-waiting-for-the-consumers)), so
+none of them acts on the stall. The server logs `scheduler: liveness sweep
+held back until the consumers catch up` once while it waits.
 
 On SQLite, a stall longer than the 5 second busy timeout makes some
 submissions fail with HTTP 500, not 503: about 5% of them during a 30 second

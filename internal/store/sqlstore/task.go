@@ -512,7 +512,7 @@ const reclaimBatch = 500
 // reset (I2), so the scheduler never has to look an attempt up after the fact
 // and cannot close the new attempt of a task leased again in between. Each
 // batch commits on its own, so on error the result lists the tasks earlier
-// batches reclaimed.
+// batches reclaimed. Candidates named in skip are dropped before batching.
 //
 // Order: no task row is locked before its job row (every job-level operation
 // locks the job first, so the reverse would deadlock), and the job lock is what
@@ -524,12 +524,13 @@ const reclaimBatch = 500
 // running, say) after its attempt was already closed as failed. A LeaseTask is
 // not a competitor: it moves a ready row, which the re-check does not match,
 // and the task it leaves assigned is not stale.
-func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
+func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time, skip map[string]bool) ([]store.Task, error) {
 	cutoffText := TimeText(cutoff.UTC())
 	cands, err := s.staleAssignedCandidates(ctx, cutoffText)
 	if err != nil {
 		return nil, err
 	}
+	cands = slices.DeleteFunc(cands, func(c staleCandidate) bool { return skip[c.taskID] })
 	var reclaimed []store.Task
 	for batch := range slices.Chunk(cands, reclaimBatch) {
 		got, err := s.reclaimStaleBatch(ctx, batch, cutoffText)

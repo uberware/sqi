@@ -1134,7 +1134,13 @@ log:
 | **Env var** | `SQI_SCHEDULER_HEARTBEAT_TIMEOUT` |
 
 Duration after which a worker that has not sent a heartbeat is declared offline.
-Its in-flight tasks are reclaimed and re-queued for assignment. For high-latency
+Its in-flight tasks are reclaimed and re-queued for assignment. The duration is
+measured up to the point the server has applied the heartbeats queued for it,
+not up to now, so a server that falls behind (a paused process, a stalled
+database) does not take live workers offline; see
+[After a backlog](architecture.md#after-a-backlog-waiting-for-the-consumers).
+A worker marked offline whose heartbeats keep arriving is asked to register
+again. For high-latency
 networks or heavily loaded worker hosts, increase to `60s` or more. Must be
 `> 0`.
 
@@ -1306,10 +1312,11 @@ least `scheduler.heartbeat_timeout`, or start-up fails validation. When the key 
 set neither in the file nor in the environment, the default follows a raised
 `heartbeat_timeout`; set explicitly, it is used exactly as given.
 
-If the server falls more than `reconcile_grace` behind in processing status
-reports, a task that has already finished can be reclaimed and run again
-(never lost or recorded twice); raise this value if
-`sqi_scheduler_tasks_reconciled_total` climbs while no worker was lost.
+An attempt is reclaimed only once the server has applied the status reports
+the worker published before the heartbeat that left it out, so a backlog of
+reports holds reconciliation back rather than reclaiming a finished task.
+Raise this value if `sqi_scheduler_tasks_reconciled_total` climbs while no
+worker was lost.
 A worker that does not report its attempts (v0.3.0 and earlier) is never
 reconciled. See [Reconciliation](operations.md#reconciliation).
 

@@ -205,7 +205,9 @@ leased it but never reported `running`.
 The scheduler's **stale-assigned reaper** runs on every heartbeat-sweep tick
 and returns tasks that have been `assigned` for longer than a fixed internal
 timeout (30 s, `AssignedTaskTimeout`; not a config key) to the
-`ready` queue.
+`ready` queue. The 30 s are counted up to the point the server has applied
+the workers' status reports, not up to now, so a backlog of reports does not
+make running tasks look stuck (see [Ingest lag and liveness](#ingest-lag-and-liveness)).
 If the task's job is now idle (no other tasks in flight), the job is demoted
 from `running` back to `pending` so it does not appear stuck.
 
@@ -221,13 +223,77 @@ The server infers worker health from two signals:
    tasks do not issue lease requests, so the long-poll itself is not a
    liveness signal). A worker whose last heartbeat is older than
    `scheduler.heartbeat_timeout` (default 30 s) is marked offline and its
-   tasks are reclaimed.
+   tasks are reclaimed. The age is measured up to the point the server has
+   applied the heartbeats waiting for it, not up to now (see
+   [Ingest lag and liveness](#ingest-lag-and-liveness)). A worker marked
+   offline whose heartbeats keep arriving is asked to register again and
+   comes back online.
 
 2. **Missing `running` within the tight window.** A task in `assigned` that
    does not transition to `running` within the fixed 30 s reaper window is
    reclaimed by the stale-assigned reaper. No worker self-report is needed: the
    server's ledger is authoritative. The one possible divergence, a task the
    server assigned whose reply was lost, is caught by the same reaper window.
+
+### Ingest lag and liveness
+
+Heartbeats and task status reports reach the server through two broker
+streams, `SQI_WORKER` and `SQI_TASK`, and the server applies each to the store
+in order. When it falls behind (the process was paused, the database stalled,
+or the server is overloaded), the store holds older state than the streams.
+The heartbeat sweep, the stale-assigned reaper and attempt reconciliation
+judge workers and tasks by how far each stream has been applied, so they wait
+rather than take live workers offline on heartbeats that are still queued.
+[After a backlog: waiting for the consumers](architecture.md#after-a-backlog-waiting-for-the-consumers)
+describes the mechanism.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `sqi_scheduler_ingest_lag_seconds` | gauge | `consumer` | How far the newest ingest marker each consumer has applied trails now, by `consumer` (`worker` for heartbeats and registrations, `task` for status reports). Before a consumer's first marker it is the time since the scheduler started, so a newly promoted leader or a restarted server still working through a backlog shows its whole wait. The scheduler publishes a marker into each stream every 2 s, so a healthy server reads a few seconds at most. |
+| `sqi_scheduler_ingest_pending` | gauge | `consumer` | Messages the consumer failed to apply and will receive again. The liveness checks leave alone the workers, tasks and attempts these name. |
+| `sqi_scheduler_worker_reregister_requests_total` | counter | `outcome` | Requests asking a worker the server holds offline, whose heartbeats still arrive, to register again, by `outcome`: `accepted`, `refused` (the worker declined, as it does while it is retiring), or `error` (no reply, or one that would not decode). |
+
+The gauges are refreshed on the heartbeat-sweep tick, about every 15 seconds,
+on the leader only. A lag that keeps growing means the server cannot keep up
+with its streams: until it does, a worker that really died is marked offline
+late by about the lag, and its tasks wait that much longer to be reclaimed.
+
+Alert on `consumer="worker"` well below 120 s, a minute for instance.
+`SQI_WORKER` keeps a message for 2 minutes, so a worker consumer that falls
+that far behind loses heartbeats before it reads them. The server notices the
+skip in the stream and holds the heartbeat sweep (and the capacity sweep's
+removal of vanished ephemeral members) at the point it had read to before the
+skip, until it has read a whole `scheduler.heartbeat_timeout` of the stream
+past it, so the lost heartbeats do not read as silence. A consumer that stays
+at the expiry front keeps skipping, and the hold keeps going: no live worker is
+taken offline, but neither is a dead one until the consumer catches up. The
+`task` consumer's stream keeps messages for 24 hours and has no such limit.
+
+A rising `error` count means offline workers are not answering on their control
+subject, so they stay offline until their broker connection drops.
+
+Log lines (server log and Admin → Server log):
+
+- `scheduler: process pause detected` (Warn, with `gap`): two of the
+  scheduler's 2 s marker ticks were more than 6 s apart, or one tick's own
+  work (two marker publishes, each bounded at 2 s) took longer than that, so
+  the process was not running in between (a VM pause, `SIGSTOP`, a host that
+  slept). For
+  `scheduler.heartbeat_timeout` afterwards the liveness checks judge by the
+  moment the pause began, so every live worker has time to heartbeat again.
+- `scheduler: liveness sweep held back until the consumers catch up` (Info,
+  with `worker_caught_up_to` and `task_caught_up_to`): a consumer trails now by
+  more than a sweep interval. Logged once when such an episode starts.
+- `scheduler: worker messages expired from the stream unread; liveness held
+  until the consumer reads a heartbeat timeout past them` (Warn, with
+  `skipped`, `first_read_after` and `heartbeat_timeout`): the worker consumer
+  fell more than 2 minutes behind and `SQI_WORKER` dropped messages it had not
+  read, so the heartbeat sweep is held as described above. Logged once per
+  hold; skips while it lasts extend it silently.
+- `scheduler: asked an offline worker to register again` (Debug, with
+  `worker_id`): a heartbeat arrived from a worker the store holds offline, so
+  the server asked it to register again. Each worker is asked at most once per
+  `scheduler.heartbeat_timeout`.
 
 ### Why isn't my job running? — Unschedulable tasks
 

@@ -259,7 +259,7 @@ const supersededWorker = "w2"
 func seedSupersededAttempt(t *testing.T, st store.Store, taskStatus store.TaskStatus) (store.Task, store.TaskAttempt, store.TaskAttempt, store.UsagePool) {
 	t.Helper()
 	task, old, pool := seedRunningTask(t, st, store.TaskStatusAssigned)
-	if got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute)); err != nil || len(got) != 1 {
+	if got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute), nil); err != nil || len(got) != 1 {
 		t.Fatalf("ReclaimStaleAssignedTasks = (%+v, %v), want the one assigned task", got, err)
 	}
 	req := leaseReq(task, poolClaim(pool))

@@ -33,12 +33,13 @@ func TestStreamDefs(t *testing.T) {
 		subjects  []string
 		retention jetstream.RetentionPolicy
 	}{
-		StreamTask: {[]string{SubjectTaskStatusPrefix + ".>"}, jetstream.WorkQueuePolicy},
+		StreamTask: {[]string{SubjectTaskStatusPrefix + ".>", "sqi.marker.task"}, jetstream.WorkQueuePolicy},
 		StreamLogs: {[]string{SubjectTaskLogsPrefix + ".>"}, jetstream.LimitsPolicy},
 		StreamWorker: {[]string{
 			SubjectWorkerRegisterPrefix + ".>",
 			SubjectWorkerHeartbeatPrefix + ".>",
 			SubjectWorkerDeregisterPrefix + ".>",
+			"sqi.marker.worker",
 		}, jetstream.WorkQueuePolicy},
 		StreamCancel: {[]string{SubjectTaskCancelPrefix + ".>"}, jetstream.WorkQueuePolicy},
 	}

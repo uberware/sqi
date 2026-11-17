@@ -35,8 +35,8 @@ func busUpAt(d time.Duration) func() time.Time {
 // for the configured grace".
 const testBusGrace = 90 * time.Second
 
-// newLivenessScheduler is a metrics scheduler with the bus-up source wired and
-// its log captured.
+// newLivenessScheduler is a metrics scheduler with the bus-up source wired,
+// its log captured and its ingest trackers caught up.
 func newLivenessScheduler(t *testing.T, st store.Store, busUp func() time.Time) (*Scheduler, *bytes.Buffer) {
 	t.Helper()
 	var logs bytes.Buffer
@@ -46,6 +46,7 @@ func newLivenessScheduler(t *testing.T, st store.Store, busUp func() time.Time) 
 	cfg.BusReconnectGrace = testBusGrace
 	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.NewTextHandler(&logs, nil)), ws.NoopNotifier{}, nil)
 	s.ctx = t.Context()
+	ingestCaughtUp(s)
 	return s, &logs
 }
 
@@ -384,7 +385,8 @@ func TestReconcileAttempts_GraceFromRunStart(t *testing.T) {
 	started := s.startedAt
 
 	early := started.Add(time.Minute - time.Nanosecond)
-	s.reconciler.record(reconcileWorker, early, early, nil) // w1 reports holding nothing
+	s.reconciler.record(reconcileWorker, early, early, time.Time{}, nil) // w1 reports holding nothing
+	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), early)
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusRunning {
 		t.Fatalf("task = %s a nanosecond before the grace from Run, want running", got)
@@ -394,7 +396,8 @@ func TestReconcileAttempts_GraceFromRunStart(t *testing.T) {
 	}
 
 	at := started.Add(time.Minute)
-	s.reconciler.record(reconcileWorker, at, at, nil)
+	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil)
+	ingestCaughtUp(s)
 	s.reconcileAttempts(t.Context(), at)
 	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusReady {
 		t.Errorf("task = %s the grace after Run started, want ready (reclaimed)", got)

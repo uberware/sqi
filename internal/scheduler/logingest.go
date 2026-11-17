@@ -113,7 +113,7 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 				slog.String("attempt_id", m.AttemptID),
 				slog.Any("error", err),
 			)
-			s.nakMsg(ctx, msg)
+			s.nakMsg(ctx, msg, ingestRef{})
 			return
 		}
 		owner = attemptOwner{workerID: attempt.WorkerID, taskID: attempt.TaskID}
@@ -231,5 +231,5 @@ func (s *Scheduler) persistLogChunkFailed(ctx context.Context, msg jetstream.Msg
 		slog.Int64("seq_num", m.SeqNum),
 		slog.Any("error", err),
 	)
-	s.nakMsg(ctx, msg)
+	s.nakMsg(ctx, msg, ingestRef{})
 }

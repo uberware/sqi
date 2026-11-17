@@ -357,7 +357,7 @@ func TestAttemptClose_MessageSemantics(t *testing.T) {
 			task: store.TaskStatusAssigned,
 			close: func(t *testing.T, st store.Store, _ store.Task) {
 				t.Helper()
-				if _, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute)); err != nil {
+				if _, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute), nil); err != nil {
 					t.Fatalf("ReclaimStaleAssignedTasks: %v", err)
 				}
 			},

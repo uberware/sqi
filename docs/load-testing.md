@@ -53,9 +53,11 @@ It is not:
 
 Simulated workers speak the real worker protocol over real NATS connections
 (one connection per worker, so per-connection broker cost is measured) and
-reuse the real worker packages for leasing, heartbeats, status, log streaming
-and cancel. They run no processes: a task is a timer. The design target is
-10,000 simulated workers per generator process; that scale is unmeasured (see
+reuse the real worker packages for leasing, heartbeats, status, log streaming,
+cancel and the server's control requests (a simulated worker accepts a request
+to register again and refuses sleep, shutdown and wake). They run no
+processes: a task is a timer. The design target is 10,000 simulated workers
+per generator process; that scale is unmeasured (see
 [Open questions](#open-questions)). Scenarios can also start a few real
 `sqi-worker` processes beside the simulated fleet so the real execution path
 sees the same load.
@@ -1077,27 +1079,6 @@ the worker, whose publish returned no error, does not retry. The attempt is
 reclaimed after the restart and the finished task re-runs.
 `chaos-server-term` records it as a known violation of the rework bound.
 
-### A server stall longer than the heartbeat timeout takes every worker offline (H13f2)
-
-On SIGCONT after a stall longer than `heartbeat_timeout`, the heartbeat sweep
-runs before the stall's backlog of heartbeats is consumed, marks every live
-worker offline and reclaims their attempts. Work that finished during the stall
-is rejected when its report lands and runs again, and an attempt reclaimed
-while its lease reply is still in flight can run beside the task's next
-attempt until the stale-running cancel stops it. `chaos-server-stall-long`
-records it. A stall shorter than `heartbeat_timeout` can hit it too: a worker
-whose last heartbeat was one heartbeat interval old when the stall began is
-stale at SIGCONT once the stall lasts the rest of the timeout, which
-`chaos-server-stall-short` (15 s) records on `workers-converge`.
-
-### A worker the sweep marks offline stays offline (H13f3)
-
-A live worker the heartbeat sweep marks offline stays offline while its
-connection stays up: heartbeats never bring a worker back online, and it
-re-registers only on a reconnect. `chaos-server-stall-long`,
-`chaos-worker-sleep`, `chaos-server-stall-short` and the two longer database
-stalls record it, where `workers-converge` fails.
-
 ### Killing sqi-worker on Linux leaves its task's processes running (H13f4)
 
 On a bare-process Linux worker, killing `sqi-worker` leaves the process tree of
@@ -1113,18 +1094,6 @@ its end from the time the worker puts on its terminal status. A worker whose
 clock runs behind by more than a task's run time records attempts that end
 before they start, and one that runs ahead inflates run times.
 `chaos-clock-skew` records it, where `attempt-order` fails.
-
-### Recovery from a database stall acts on unwritten state (H13f7)
-
-While the database stalls, heartbeats and task status reports wait in the
-broker, but none is written. When the database answers again, the heartbeat
-sweep, the stale-assigned reap and the attempt reconciler judge the rows the
-stall left behind before the queued messages land: live workers are taken
-offline and their attempts reclaimed, tasks still running are taken back and
-run twice at once, and work that finished during the stall is rejected.
-Which of them fires varies with the backend and the timing.
-`chaos-db-stall-30s` and `chaos-db-stall-2m` record it, where `rework`,
-`reclaims`, `single-attempt` and (with H13f3) `workers-converge` can fail.
 
 ### A revoked worker can still be given a task (H13f8)
 

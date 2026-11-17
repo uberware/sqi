@@ -105,10 +105,31 @@ func TestWorkerPermissions_ConfinesToOwnSubtree(t *testing.T) {
 		t.Error("a worker must be able to subscribe to its own reply inbox")
 	}
 	if subjectAllowed(p.Subscribe, brokerauth.InboxPrefix(other)+".x.1") {
-		t.Error("a worker must NOT be able to subscribe to another worker's reply inbox")
+		t.Error("a worker must not be able to subscribe to another worker's reply inbox")
 	}
 	if subjectAllowed(p.Subscribe, "_INBOX.x.1") {
-		t.Error("a worker must NOT be able to subscribe to the process-global _INBOX subtree")
+		t.Error("a worker must not be able to subscribe to the process-global _INBOX subtree")
+	}
+}
+
+// TestMarkerSubjects_ServerOnly: the ingest markers are published by the
+// server alone. ServerPermissions is unrestricted (">" both ways), so the
+// server's credential covers them in both broker modes; a worker has no grant
+// to publish or subscribe on them.
+func TestMarkerSubjects_ServerOnly(t *testing.T) {
+	markers := []string{"sqi.marker.worker", "sqi.marker.task"}
+	worker := brokerauth.WorkerPermissions("worker-a")
+	server := brokerauth.ServerPermissions()
+	for _, s := range markers {
+		if subjectAllowed(worker.Publish, s) {
+			t.Errorf("a worker must not be able to publish %q", s)
+		}
+		if subjectAllowed(worker.Subscribe, s) {
+			t.Errorf("a worker must not be able to subscribe to %q", s)
+		}
+		if !subjectAllowed(server.Publish, s) {
+			t.Errorf("the server must be able to publish %q", s)
+		}
 	}
 }
 

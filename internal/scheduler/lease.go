@@ -175,9 +175,9 @@ func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
 // that went offline while its request was parked (a graceful deregister, or
 // the heartbeat sweep) has usually gone, and a task leased to it would wait in
 // a dead inbox until the stale-assignment reaper took it back. At the front, a
-// live worker the sweep took offline would be refused indefinitely, since
-// heartbeats never bring a worker back online; here it is refused once and its
-// next request is served (the offline-worker known gap in
+// live worker the sweep took offline would be refused until its re-registration
+// lands, and for good if the reregister request never reached it; here it is
+// refused once and its next request is served (the offline-worker known gap in
 // docs/architecture.md).
 func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID string) [][]byte {
 	if s.deposed() {

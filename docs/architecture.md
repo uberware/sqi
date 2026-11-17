@@ -420,15 +420,26 @@ The heartbeat handler records each report in an in-memory, per-process
 `scheduler.heartbeat_timeout` from its receipt. The sweep takes the attempts
 the fresh reports hold, then lists every open attempt in the store
 (`store.ListOpenAttempts`), in that order, so that every attempt a report
-names was leased before the list was read. It reclaims an open attempt
-through `store.ReclaimTaskAttempt` when its worker's latest report is fresh,
-omits it, and has omitted it for at least `scheduler.reconcile_grace`,
-measured on the server's clock from the later of the attempt's creation and
-the last report that named it. A reclaim counts in
-`sqi_scheduler_tasks_reconciled_total`. If the status consumer falls more
-than the grace behind, a finished task can be reclaimed before its report is
-read; the report then names a closed attempt and is discarded, so the cost is
-a re-run, never a lost or doubled result.
+names was leased before the list was read. The reconciler keeps each
+worker's recent reports (up to 32, none but the latest older than
+`scheduler.reconcile_grace`) and decides on the newest one the task-status
+consumer has applied everything before: the consumer's effective time (see
+[After a backlog: waiting for the consumers](#after-a-backlog-waiting-for-the-consumers))
+has reached that report's broker stamp. It reclaims an open attempt through
+`store.ReclaimTaskAttempt` when that report omits it and was received at least
+`scheduler.reconcile_grace` after the later of the attempt's creation and the
+last report that named it (on the server's clock), and the worker's latest
+report is fresh and omits it too. The deciding report shows that the worker
+no longer held the attempt when it sent it and that any terminal report it
+sent before has been applied, so an attempt still open was lost. Deciding on
+the latest report alone would only be later: a worker that heartbeats more
+often than the 2 s markers always has a report newer than the newest marker
+applied. Cancel resends are judged on the latest report, which alone says
+what the worker holds now. The sweep leaves alone an attempt that a status
+report waiting to be applied again names, so a status consumer that falls
+behind holds reconciliation back rather than reclaiming a finished task before
+its report is read. A reclaim counts in
+`sqi_scheduler_tasks_reconciled_total`.
 
 The same sweep repairs the opposite case. An attempt a fresh report still
 holds that is missing from the open list has been closed in the store (a
@@ -1170,7 +1181,7 @@ The anchors each operation takes:
 | `CreateJobSubmission` (dependency re-check) | each upstream job row, sorted by id, shared | |
 | `DeleteJob` | the job row, then (not an anchor) each of the job's tasks that has an attempt, `FOR UPDATE` | The task locks hold off a log append, whose foreign-key check takes `FOR KEY SHARE` on its task row; see [What the anchors leave open](#what-the-anchors-leave-open). As a backstop the cascade is retried on a foreign-key violation (`23503`) or a deadlock (`40P01`). |
 | `DeleteTerminalJobsBefore` (retention) | each candidate's job row, one job per transaction, candidates sorted by id, then that job's tasks as for `DeleteJob` | The candidates are read unlocked; each job is deleted only if its eligibility, re-checked under its lock, still holds. A job that no longer qualifies (a retry revived it) is skipped. The cascade is retried as for `DeleteJob`. On an error the result lists the jobs already deleted. |
-| `ReclaimStaleAssignedTasks` | per batch of up to 500 candidates, the batch's job rows sorted by id, taken before the `UPDATE` | The candidates are read unlocked, then each batch runs `UPDATE … RETURNING` re-guarded on the candidate ids, `status = 'assigned'` and the cutoff, so no task row is locked before its job row. Each batch commits on its own; on an error the result lists the tasks earlier batches reclaimed. |
+| `ReclaimStaleAssignedTasks` | per batch of up to 500 candidates, the batch's job rows sorted by id, taken before the `UPDATE` | The candidates are read unlocked, then each batch runs `UPDATE … RETURNING` re-guarded on the candidate ids, `status = 'assigned'` and the cutoff, so no task row is locked before its job row. A candidate in the `skip` set (the tasks a status report waiting to be applied again names) is dropped before the batches. Each batch commits on its own; on an error the result lists the tasks earlier batches reclaimed. |
 | `DemoteStalledJobs` | each candidate's job row, one job per transaction, in id order | The candidates are read unlocked; each job is demoted only if the stalled predicate, re-run under its lock, still holds. A lease in flight holds the job row shared, so it is waited for and the task it assigned is seen. On an error the result lists the jobs already demoted. |
 | `OfflineStaleWorker`, `OfflineWorker` | the worker row, then the job row of each of the worker's assigned or running tasks, sorted by id | A lease holds the worker row shared, so the offline transition waits for a lease in flight and reclaims what it committed. |
 | `RegisterWorker` | the worker row, then, only when the registration is from a new process, the job row of each of the worker's assigned or running tasks, sorted by id | `offlineWorker`'s order. |
@@ -1369,8 +1380,10 @@ The server treats reports, registrations and cancels as follows.
   recorded as `heartbeat_broker_at`: `UpdateWorkerHeartbeat` ignores (and the
   scheduler acks) one the broker stamped before the recorded one, and records
   any other. The time recorded as `last_heartbeat_at`, which the liveness sweep
-  judges against the server's `now` minus `scheduler.heartbeat_timeout`, is
-  that same broker stamp, never the worker's own clock: a worker whose clock
+  judges against `scheduler.heartbeat_timeout` before the time up to which the
+  worker consumer has applied its stream (see
+  [After a backlog: waiting for the consumers](#after-a-backlog-waiting-for-the-consumers)),
+  is that same broker stamp, never the worker's own clock: a worker whose clock
   runs behind, or is stepped back, stays online and keeps its tasks. The stamp
   is the moment the heartbeat was published, so a backlog delivered late
   (after a store outage or a failover) does not make a worker that has since
@@ -1386,8 +1399,8 @@ The server treats reports, registrations and cancels as follows.
   `OfflineWorker` writes nothing when it and the stored one are both non-empty
   and differ: the message comes from a process a later registration replaced,
   and applying it would mark the live process offline and reclaim the tasks it
-  is running (the worker would then stay `offline`, since heartbeats never
-  restore `online`, while it went on leasing). The server acks it and emits no
+  is running (the worker would then stay `offline` until its next heartbeat
+  made the server ask it to register again). The server acks it and emits no
   event. A deregister with no `instance_id` applies unconditionally.
 - A task interrupted by its worker shutting down (`failed` with the message
   `worker_shutdown`) does not consume a retry or count toward the job's
@@ -1535,12 +1548,16 @@ The store does not close the following.
   lease handler refuses a `disabled` worker and a restarted process whose
   registration has not landed, but it looks at no other status, so a worker
   the server has declared offline (a missed heartbeat window) that is in fact
-  alive and keeps requesting work is served. Refusing it would starve it for
-  good, since heartbeats never bring a worker back `online`. A request that
-  parked while its worker was online, and is woken after the worker went
-  offline (a graceful deregister or the heartbeat sweep), is answered empty
-  rather than leased a task, so a departed process's last request does not take
-  a task into a dead inbox for the stale-assignment reaper to recover. The same
+  alive and keeps requesting work is served. Such a worker is not offline for
+  long: its next recorded heartbeat makes the server ask it to register again
+  (see [Bringing a live worker back online](#bringing-a-live-worker-back-online)),
+  and the registration puts it back `online`. Refusing its lease requests
+  would idle it until then, and for good if that request never reached it. A
+  request that parked while its worker was online, and is woken after the
+  worker went offline (a graceful deregister or the heartbeat sweep), is
+  answered empty rather than leased a task, so a departed process's last
+  request does not take a task into a dead inbox for the stale-assignment
+  reaper to recover. The same
   holds when the worker goes offline, or its row is deleted, after the request
   read it online but before the lease commits: the scheduler sets
   `RequireOnline` on a lease for a worker it read online, and `LeaseTask`
@@ -1788,6 +1805,184 @@ a start, `scheduler: bus reconnected recently; liveness sweep deferred` after
 a reconnect, and `scheduler: bus is down; liveness sweep deferred until it
 reconnects` once per outage.
 
+### After a backlog: waiting for the consumers
+
+The reconnect grace covers a broker outage. It does not cover a server whose
+broker connection stayed up while the server itself fell behind: a process
+stopped and resumed (a VM pause, `SIGSTOP`), a stalled database that writes
+nothing while heartbeats and status reports queue in the broker, or a consumer
+that is slow. Afterwards the store still holds the state from
+before, and the messages that would change it wait in `SQI_WORKER` and
+`SQI_TASK`. Judged against `now`, that state reads as dead workers and stuck
+tasks. The liveness checks therefore judge by how far each consumer has
+applied its stream, not by the clock alone.
+
+**Ingest markers.** Every 2 s the scheduler (the leader, with high
+availability) publishes an empty message on `sqi.marker.worker` into
+`SQI_WORKER` and on `sqi.marker.task` into `SQI_TASK`, and receives each on its
+own consumer. A consumer that has handled a marker has handled everything
+stored in its stream before it, so the broker's timestamp on the newest marker
+it has handled is the time up to which the store reflects that stream. An
+in-memory tracker per consumer (`internal/scheduler/ingest.go`) keeps that
+time, and the messages the consumer nak'd and will see again, each with the
+worker, task and attempt it names. A nak'd message is forgotten when it is
+acked, on its last delivery, once the consumer's ack floor has passed it, or
+once the stream would have dropped it. The heartbeat sweep reads each
+consumer's ack floor from the broker at the start of every tick: the broker
+delivers nothing at or below it, so a message whose last delivery never
+reached the handler, whose ack was lost, or that was removed from the stream
+is forgotten there instead of being kept for the stream's whole `MaxAge` (24
+hours for `SQI_TASK`). The floor passes an acked or removed message at once,
+and one whose deliveries ran out at the next ack that leaves the consumer
+nothing else unacknowledged, which a marker brings whenever the consumer is
+caught up. When the floor cannot be read, nothing is forgotten. The
+tracker's *effective* time is the newest marker handled, held back in three
+cases:
+
+- **A process pause.** When two marker ticks are more than 6 s apart, or one
+  tick's own work takes longer than that (three marker intervals; a tick's two
+  publishes are bounded at 2 s each), the process was not running. The gap is
+  the larger of the monotonic and the wall-clock difference, because on some
+  systems the monotonic clock stops while the host sleeps; a forward step of
+  the wall clock therefore holds the trackers too. On resume a marker can be
+  stored before the heartbeats the workers buffered during the pause, so for
+  `scheduler.heartbeat_timeout` after
+  the resume both trackers report no later than the moment before the gap:
+  long enough for every live worker to publish a fresh heartbeat. The server
+  logs `scheduler: process pause detected` at Warn, with the gap.
+- **A consumer interruption.** A message the broker sent while a consumer's
+  pull was lost is redelivered only after the consumer's `AckWait`, so after a
+  lost pull or a bus reconnect the worker tracker is held at the moment of the
+  interruption for 10 s and the task tracker for 30 s. The marker loop reads
+  the interruption time every tick, and the heartbeat sweep and the
+  stale-assigned reap read it again before they compute their cutoffs, so a
+  check that runs between an interruption and the next tick is held too.
+- **Heartbeats that expired unread** (worker tracker only). The markers vouch
+  only for messages the stream still holds, and `SQI_WORKER` keeps a message
+  for 2 minutes. A worker consumer more than that far behind loses heartbeats
+  before it reads them, and a marker read after them says nothing about what
+  they carried. The consumer detects the loss from stream sequences: for the
+  one consumer of a work-queue stream, first deliveries (`NumDelivered` 1)
+  arrive in increasing stream sequence, so a first delivery more than one past
+  the previous first delivery means the messages between were removed unread.
+  Redeliveries can arrive in any order and are not counted, and a marker can
+  be the message that shows a skip. On a skip the worker tracker is held at
+  the newest marker handled before it (zero when there was none) until it has
+  handled a marker stamped `scheduler.heartbeat_timeout` or more after the
+  first message read past the skip. Until then the sweep's cutoff stays a
+  heartbeat timeout before a time up to which everything was read; once it is
+  released, the heartbeat timeout before the effective time lies wholly after
+  the skip and was wholly read, so every live worker has a heartbeat applied
+  inside it. A further skip while held keeps the hold's time and moves its
+  release to that skip's first message plus the heartbeat timeout. The server
+  logs `scheduler: worker messages expired from the stream unread; liveness
+  held until the consumer reads a heartbeat timeout past them` at Warn once
+  per hold, with the number of messages skipped. This covers two cases: a
+  blocking stall longer than about two and a half minutes (a database proxy
+  that stops forwarding, or a SQLite write lock that holds every write) after
+  which the consumer resumes two minutes behind and reads on from where the
+  stream now starts, and a consumer that cannot keep up with its fleet and
+  sits at the stream's expiry front, losing heartbeats while later markers
+  arrive. In the second case skips keep coming and the effective time stays
+  where it was, so a worker that really dies meanwhile is not marked offline
+  until the consumer recovers. That is the trade-off: without the hold the
+  sweep would take live workers offline in bulk and their tasks would run
+  again. `sqi_scheduler_ingest_lag_seconds` for the
+  worker consumer shows the condition. A first delivery the client lost
+  before the handler (an interruption) also reads as a skip, which only holds
+  the tracker longer.
+
+Before a consumer has handled its first marker its effective time is zero and
+the checks that depend on it do nothing, so a newly promoted leader judges
+nothing until the backlog ahead of its first markers has been applied. A new
+process counts stream sequences from the first message it reads, so it
+detects no skip in a backlog it starts behind; its zero tracker and the
+start-up grace cover that. None of these intervals is configuration.
+
+**The three checks** run on the heartbeat-sweep tick, each after its own
+start-up grace:
+
+- **The heartbeat sweep** takes a worker offline when its `last_heartbeat_at`
+  is older than `scheduler.heartbeat_timeout` before the worker tracker's
+  effective time, the same cutoff `ListStaleWorkers` and `OfflineStaleWorker`'s
+  re-check apply. Taking a worker offline reclaims its attempts, and a dead
+  worker can still have a terminal report queued, so a candidate is also left
+  for a later tick while a message naming it waits to be applied again by
+  either consumer, or while the task tracker's effective time has not reached
+  the candidate's `last_heartbeat_at` plus `heartbeat_timeout` (anything it
+  published before it stopped was published before then).
+- **The stale-assigned reap** returns a task to `ready` when its `assigned_at`
+  is more than `AssignedTaskTimeout` (30 s) before the task tracker's
+  effective time, and passes `ReclaimStaleAssignedTasks` the tasks a status
+  report waiting to be applied again names, which it leaves alone.
+- **Attempt reconciliation** reclaims an attempt only once the task tracker's
+  effective time has reached the broker timestamp of the heartbeat that
+  omitted it, and never while a status report waiting to be applied again
+  names it.
+
+The capacity sweep's removal of a vanished ephemeral member (an offline
+member last heard from more than its group's boot timeout ago, deleted with
+its credential revoked) judges by the worker tracker's effective time in the
+same way, and keeps a member a message waiting to be applied again names: the
+delete cannot be undone, and a queued heartbeat or registration would show the
+member came back.
+
+When either consumer's effective time trails `now` by more than a sweep
+interval, the sweep logs `scheduler: liveness sweep held back until the
+consumers catch up` at Info once per episode, with `worker_caught_up_to` and
+`task_caught_up_to`. `sqi_scheduler_ingest_lag_seconds` and
+`sqi_scheduler_ingest_pending`, by `consumer` (`worker` or `task`), show the
+same from outside (see [Observability](observability.md#ingest-lag-and-liveness)).
+
+A worker that really died is still marked offline once the markers move past
+its cutoff, with no worker traffic needed. While a consumer is behind, a dead
+worker is marked offline correspondingly late, which is the price of never
+taking a live one offline on unapplied state.
+
+A server too slow for its fleet's heartbeat rate (see
+[Open questions](load-testing.md#open-questions), question 1) is not cured by
+any of this: the hold after expired heartbeats keeps it from taking live
+workers offline, at the cost of not detecting dead ones while it lasts.
+
+The comparisons mix three clocks: the server's (an assignment's `assigned_at`,
+a pause), the clock of the node that leads `SQI_WORKER` (heartbeat stamps and
+worker markers) and the one that leads `SQI_TASK` (task markers). With the
+embedded broker all three are the server's. With an external cluster they can
+be three hosts, which must keep their clocks synchronized to NTP quality; a
+skew shifts each decision by about as much.
+
+### Bringing a live worker back online
+
+The heartbeat sweep can mark offline a worker that is alive: one that slept
+through the timeout, or one whose heartbeats were delayed past the checks
+above. Recording a heartbeat never changes a worker's status, since
+registration is the one way back to `online`, and a worker registers again on
+its own only when its broker connection drops. So when the heartbeat handler
+records a heartbeat for a worker the store holds `offline`,
+`UpdateWorkerHeartbeat` reports that status (with the power state) in its
+`store.HeartbeatOutcome`, and the scheduler sends the worker a `reregister`
+request on `worker.control.<worker_id>`. The worker replies and publishes its
+registration, which runs the whole registration path and puts it back
+`online`; a disabled worker stays disabled.
+
+- A worker is asked at most once per `scheduler.heartbeat_timeout` while it
+  stays offline, at most 32 requests wait for a reply at once, and each
+  request times out after 5 s. A request runs off the worker consumer, so a
+  worker that does not answer holds nothing up; its next heartbeat asks again
+  once the interval has passed.
+- A capacity-group member whose power state is `retiring` or `asleep` is
+  offline on purpose and is not asked. The worker also refuses `reregister`
+  (`already retiring`) while it is carrying out a sleep or shutdown, in case
+  the server's row lags.
+- Each request is logged at Debug, `scheduler: asked an offline worker to
+  register again`, and counted in
+  `sqi_scheduler_worker_reregister_requests_total` by `outcome`: `accepted`,
+  `refused`, or `error` (no reply, or one that would not decode).
+
+The command needs protocol version `"7"`. The server discards every message
+from a worker of another version, so a mixed farm is not supported; upgrade
+servers before workers.
+
 ### Health
 
 The `nats` readiness check never makes a round trip to the broker, so it
@@ -1944,7 +2139,10 @@ Each tick it:
    (ephemeral, not disabled, offline, last heartbeat older than the group's
    `boot_timeout`, whatever their deregistration said), revoking their
    credentials. It skips this while the liveness sweeps are deferred after a
-   broker outage;
+   broker outage, measures the time offline up to how far the worker consumer
+   has applied `SQI_WORKER` rather than up to now, and keeps a member a
+   message waiting to be applied again names (see
+   [After a backlog](#after-a-backlog-waiting-for-the-consumers));
 3. expires the power transitions that overran: for every group of the farm,
    enabled or not and whatever its provider, a `waking` member older than the
    group's `boot_timeout` becomes `wake_failed` (`FailWakes`) and a `retiring`
@@ -2049,7 +2247,9 @@ deregistration.
 | `worker.heartbeat.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
 | `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks. Ignored when its `instance_id` names a process a later registration replaced. Its optional `kind` (`retired` or `preempted`) makes the server delete an ephemeral capacity-group member and revoke its credential; with no kind the worker is kept |
 | `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |
-| `worker.control.<worker_id>` | Core NATS request/reply (no stream) | server → worker (request); worker → server (reply) | Power command for a capacity group: `sleep` or `shutdown` (the worker's own host), or `wake` (send Wake-on-LAN packets for a peer). Each worker subscribes once before its first lease request. No stream covers it, because a stream would answer the request with a JetStream ack in place of the worker's reply; a worker that is not connected answers with no responders |
+| `worker.control.<worker_id>` | Core NATS request/reply (no stream) | server → worker (request); worker → server (reply) | Power command for a capacity group: `sleep` or `shutdown` (the worker's own host), or `wake` (send Wake-on-LAN packets for a peer); and `reregister`, sent to a worker the store holds offline whose heartbeats still arrive, which answers by registering again. Each worker subscribes once before its first lease request. No stream covers it, because a stream would answer the request with a JetStream ack in place of the worker's reply; a worker that is not connected answers with no responders |
+| `sqi.marker.worker` | JetStream (`SQI_WORKER`) | server → server | Ingest marker: an empty message the scheduler publishes every 2 s and receives on its own worker consumer, showing that consumer has applied everything stored before it. Workers hold no grant for it |
+| `sqi.marker.task` | JetStream (`SQI_TASK`) | server → server | The same for the task-status consumer |
 
 Every worker → server subject carries the publishing worker's ID directly after
 its class prefix. A worker's permissions are fixed when its connection is

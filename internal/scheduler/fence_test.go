@@ -62,7 +62,8 @@ type fenceRecorder struct {
 	logs   *lockedBuffer
 }
 
-// newFenceScheduler is a metrics scheduler on st whose OnFenced is recorded.
+// newFenceScheduler is a metrics scheduler on st whose OnFenced is recorded,
+// with its ingest trackers caught up.
 func newFenceScheduler(t *testing.T, st store.Store, farmID string) (*Scheduler, *fenceRecorder) {
 	t.Helper()
 	rec := &fenceRecorder{called: make(chan error, 8), logs: &lockedBuffer{}}
@@ -74,6 +75,7 @@ func newFenceScheduler(t *testing.T, st store.Store, farmID string) (*Scheduler,
 	}
 	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.NewTextHandler(rec.logs, nil)), ws.NoopNotifier{}, nil)
 	s.ctx = context.Background()
+	ingestCaughtUp(s)
 	return s, rec
 }
 
@@ -772,11 +774,11 @@ func (s *sweepSpy) DeleteTerminalJobsBefore(ctx context.Context, before time.Tim
 	return s.Store.DeleteTerminalJobsBefore(ctx, before, includeFailed)
 }
 
-func (s *sweepSpy) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
+func (s *sweepSpy) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time, skip map[string]bool) ([]store.Task, error) {
 	if err := s.enter("ReclaimStaleAssignedTasks"); err != nil {
 		return nil, err
 	}
-	return s.Store.ReclaimStaleAssignedTasks(ctx, cutoff)
+	return s.Store.ReclaimStaleAssignedTasks(ctx, cutoff, skip)
 }
 
 func (s *sweepSpy) ListOpenAttempts(ctx context.Context) ([]store.OpenAttempt, error) {
@@ -970,7 +972,7 @@ func TestReconcileAttempts_FencedStops(t *testing.T) {
 	created := attempts["t1"].CreatedAt
 	armReconciler(s, created)
 	at := created.Add(2 * time.Minute)
-	s.reconciler.record(reconcileWorker, at, at, nil) // the worker reports holding nothing
+	s.reconciler.record(reconcileWorker, at, at, time.Time{}, nil) // the worker reports holding nothing
 
 	s.reconcileAttempts(deposedCtx(t, st), at)
 

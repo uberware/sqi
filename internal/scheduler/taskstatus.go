@@ -60,8 +60,15 @@ func (s *Scheduler) startTaskStatusConsumer(ctx context.Context) error {
 	return err
 }
 
-// handleTaskStatusMessage is the JetStream message handler for
-// task.status.<worker>.<job> messages published by workers.
+// handleTaskStatusMessage is the JetStream message handler of the SQI_TASK
+// stream's consumer. It binds each message to the task tracker, handles the
+// ingest marker, and passes the rest to [Scheduler.handleTaskStatus].
+func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
+	s.receiveTracked(msg, s.ingestTask, bus.SubjectMarkerTask, nil, s.handleTaskStatus)
+}
+
+// handleTaskStatus handles one task.status.<worker>.<job> message published
+// by a worker.
 //
 // The subject's worker ID is authoritative: it is compared against the
 // attempt's recorded owner in [Scheduler.processTaskStatus], and a mismatch
@@ -73,7 +80,7 @@ func (s *Scheduler) startTaskStatusConsumer(ctx context.Context) error {
 // client can publish under any ID. These checks then catch honest bugs, not
 // attackers. That is why sqi-server warns at startup when the broker is
 // unauthenticated and non-loopback.
-func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
+func (s *Scheduler) handleTaskStatus(msg jetstream.Msg) {
 	ctx := s.ctx
 
 	var m protocol.TaskStatusMsg
@@ -144,7 +151,7 @@ func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
 			slog.String("status", m.Status),
 			slog.Any("error", err),
 		)
-		s.nakMsg(ctx, msg)
+		s.nakMsg(ctx, msg, ingestRef{worker: subjectWorkerID, task: m.TaskID, attempt: m.AttemptID})
 		return
 	}
 

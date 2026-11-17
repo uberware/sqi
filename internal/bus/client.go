@@ -36,6 +36,12 @@ type Client struct {
 	// upSince is when the connection was last established or re-established;
 	// zero while it is down.
 	upSince time.Time
+	// interruptedAt is the latest moment the connection or one of its
+	// consumers is known to have stopped receiving: a disconnect, a
+	// reconnect, a consumer pull the broker stopped answering, or a
+	// subscription that dropped messages. Zero if none has happened. See
+	// [Client.InterruptedAt].
+	interruptedAt time.Time
 	// events counts the connection handlers that have run, so the constructor
 	// can tell that one fired between nats.Connect returning and its own
 	// bookkeeping, and not undo it.
@@ -59,12 +65,37 @@ func (c *Client) BusUpSince() time.Time {
 	return c.upSince
 }
 
+// InterruptedAt returns the latest moment this client's connection or one of
+// its consumers was interrupted, and the zero time if none has been. An
+// interruption is a disconnect, a reconnect, a consumer error that means its
+// pull was lost ([jetstream.ErrNoHeartbeat],
+// [jetstream.ErrConsumerLeadershipChanged], [nats.ErrNoResponders]) or an
+// asynchronous [nats.ErrSlowConsumer]. Safe for concurrent use.
+//
+// Unlike [Client.BusUpSince] it stays set after the connection is back: a
+// message the broker sent while a consumer's pull was lost is redelivered only
+// after the consumer's AckWait, so the store can lag the stream for that long.
+func (c *Client) InterruptedAt() time.Time {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.interruptedAt
+}
+
+// markInterrupted records an interruption that leaves the connection state
+// unchanged.
+func (c *Client) markInterrupted() {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.interruptedAt = time.Now().UTC()
+}
+
 // markUp records a (re)connect.
 func (c *Client) markUp() {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	c.events++
 	c.upSince = time.Now().UTC()
+	c.interruptedAt = c.upSince
 }
 
 // markDown records a disconnect.
@@ -73,6 +104,7 @@ func (c *Client) markDown() {
 	defer c.stateMu.Unlock()
 	c.events++
 	c.upSince = time.Time{}
+	c.interruptedAt = time.Now().UTC()
 }
 
 // markInitialUp records the first connection, unless a connection handler has
@@ -92,8 +124,9 @@ func (c *Client) markInitialUp() {
 //
 // extraOpts are appended after the default options, so a caller can supply
 // authentication (e.g. an nkey credential) without disturbing the reconnect
-// behavior above. NewClient owns the reconnect and disconnect handlers, which
-// maintain [Client.BusUpSince]: one passed in extraOpts is replaced.
+// behavior above. NewClient owns the reconnect, disconnect and asynchronous
+// error handlers, which maintain [Client.BusUpSince] and
+// [Client.InterruptedAt]: one passed in extraOpts is replaced.
 //
 // Prefer [Broker.NewClient] over calling NewClient directly; the Broker
 // supplies the URL, credential and TLS options for its mode.
@@ -124,8 +157,9 @@ func NewClient(url string, logger *slog.Logger, extraOpts ...nats.Option) (*Clie
 	}
 	opts = append(opts, extraOpts...)
 	// The handlers that log through the server's structured logger and
-	// maintain BusUpSince come last: nats.go keeps only the last handler of
-	// each kind, so a caller's own would otherwise silence BusUpSince.
+	// maintain BusUpSince and InterruptedAt come last: nats.go keeps only the
+	// last handler of each kind, so a caller's own would otherwise silence
+	// them.
 	opts = append(
 		opts,
 		nats.ReconnectHandler(func(nc *nats.Conn) {
@@ -137,6 +171,20 @@ func NewClient(url string, logger *slog.Logger, extraOpts ...nats.Option) (*Clie
 			if err != nil {
 				logger.WarnContext(context.Background(), "bus: client disconnected", slog.Any("error", err))
 			}
+		}),
+		nats.ErrorHandler(func(_ *nats.Conn, sub *nats.Subscription, err error) {
+			if !errors.Is(err, nats.ErrSlowConsumer) {
+				logger.WarnContext(context.Background(), "bus: client error", slog.Any("error", err))
+				return
+			}
+			// A slow consumer's messages are dropped, so what the store holds
+			// may trail what was published.
+			c.markInterrupted()
+			attrs := []any{slog.Any("error", err)}
+			if sub != nil {
+				attrs = append(attrs, slog.String("subject", sub.Subject))
+			}
+			logger.WarnContext(context.Background(), "bus: client subscription dropped messages", attrs...)
 		}),
 	)
 

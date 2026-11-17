@@ -12,7 +12,7 @@ import (
 
 var builtinNames = []string{
 	"chaos-churn-instant-restart", "chaos-churn-storm", "chaos-clock-skew",
-	"chaos-db-drop", "chaos-db-stall-2m", "chaos-db-stall-30s", "chaos-db-stall-5s",
+	"chaos-db-drop", "chaos-db-stall-2m", "chaos-db-stall-30s", "chaos-db-stall-3m", "chaos-db-stall-5s",
 	"chaos-disk-server-full", "chaos-disk-worker-full-at-setup", "chaos-disk-worker-full-mid-render",
 	"chaos-logs-during-restart",
 	"chaos-net-blip", "chaos-net-flap", "chaos-net-rack-partition", "chaos-net-slow-site",

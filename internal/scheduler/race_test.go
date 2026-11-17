@@ -913,8 +913,8 @@ type leaseAfterReapStore struct {
 	hook *once
 }
 
-func (s *leaseAfterReapStore) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
-	out, err := s.Store.ReclaimStaleAssignedTasks(ctx, cutoff)
+func (s *leaseAfterReapStore) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time, skip map[string]bool) ([]store.Task, error) {
+	out, err := s.Store.ReclaimStaleAssignedTasks(ctx, cutoff, skip)
 	s.hook.fire()
 	return out, err
 }
@@ -1083,7 +1083,7 @@ func TestHeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 			fired := false
 			wrapped := &heartbeatDuringSweepStore{Store: st, hook: &once{fn: func() {
 				fired = true
-				if err := st.UpdateWorkerHeartbeat(context.Background(), workerID, time.Now().UTC(), nil); err != nil {
+				if _, err := st.UpdateWorkerHeartbeat(context.Background(), workerID, time.Now().UTC(), nil); err != nil {
 					t.Errorf("heartbeat in hook: %v", err)
 				}
 			}}}

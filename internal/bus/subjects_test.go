@@ -79,6 +79,8 @@ func TestParseWorkerSubject(t *testing.T) {
 		{"worker.register", "", "", false},
 		{"task.cancel.w1", "", "", false}, // server → worker
 		{"worker.diag.w1", "", "", false}, // core NATS, not a stream subject
+		{SubjectMarkerWorker, "", "", false},
+		{SubjectMarkerTask, "", "", false},
 		{"task.status.w1.j1.extra", "", "", false},
 		{"task.status..j1", "", "", false},
 		{"task.status.w1.", "", "", false},

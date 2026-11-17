@@ -129,9 +129,9 @@ Which scenarios a given machine runs is a function of the library, and
 `sqi-load scenarios --chaos-matrix --os linux --store postgres` prints them
 as a JSON array (`--os` is `linux`, `windows` or `darwin`, `--store` is
 `sqlite` or `postgres`, and `--container` adds the size-limited volumes).
-Linux with SQLite runs 26 of the 30 scenarios, Linux with PostgreSQL 27, the
-container 29 with SQLite, and Windows with SQLite 22. `--container --store
-postgres` would print all 30, but `make chaos-container` runs SQLite only, so
+Linux with SQLite runs 27 of the 31 scenarios, Linux with PostgreSQL 28, the
+container 30 with SQLite, and Windows with SQLite 23. `--container --store
+postgres` would print all 31, but `make chaos-container` runs SQLite only, so
 no target runs that combination.
 
 ---
@@ -426,8 +426,9 @@ bounds the count. A run with the bound gets a `reclaims` result: OK within it,
 failed over it (with the count and examples), and failed as unmeasured when
 the store could not be read. `chaos-net-blip`, `chaos-net-slow-site`,
 `chaos-server-stall-short`, `chaos-db-stall-5s`, `chaos-db-stall-30s`,
-`chaos-clock-skew` and `chaos-session-expiry` set it to `0`: none of their
-faults or conditions should take a worker offline.
+`chaos-db-stall-2m`, `chaos-db-stall-3m`, `chaos-clock-skew` and
+`chaos-session-expiry` set it to
+`0`: none of their faults or conditions should take a worker offline.
 
 ---
 
@@ -485,17 +486,14 @@ enforced end to end: it runs `chaos-server-term` with a `must` entry for
 
 ### Recorded defects
 
-The suite records eight defects in sqi. Each is also listed under [Known
+The suite records five defects in sqi. Each is also listed under [Known
 server defects](load-testing.md#known-server-defects).
 
 | Tracker | Defect | Recorded in |
 |---|---|---|
 | H13f1 | A worker's terminal status in flight when the server stops gracefully is lost and the finished task re-runs. Task status is a core NATS publish with no acknowledgment, and the embedded broker stops JetStream before it closes client connections. | `chaos-server-term`, `rework`, `may` |
-| H13f2 | On SIGCONT after a server stall longer than `heartbeat_timeout`, the heartbeat sweep runs before the stall's backlog of heartbeats is consumed and takes every live worker offline, so their work is reclaimed and re-run, and a reclaimed attempt can run beside the new one. A stall shorter than `heartbeat_timeout` can hit it for a worker whose heartbeat was about to fall due. | `chaos-server-stall-long`, `rework` and `single-attempt`, `must`; at the boundary `chaos-server-stall-short`, through its H13f3 entry |
-| H13f3 | A live worker the sweep marks offline stays offline while its connection stays up: heartbeats never bring it back, and it re-registers only on a reconnect. | `chaos-server-stall-long`, `chaos-worker-sleep` and `chaos-db-stall-2m`, `workers-converge`, `must`; `chaos-server-stall-short` and `chaos-db-stall-30s`, `workers-converge`, `may` |
 | H13f4 | Killing `sqi-worker` on Linux leaves its task's process tree running. A silent child, which writes no stdout, never gets SIGPIPE, outlives the worker's restart and writes alongside the re-run. | `chaos-worker-kill-mid-task`, `no-orphans` and `single-writer`, `may`, `os: [linux]` |
 | H13f6 | The server records an attempt's `ended_at` from the worker's clock and its `started_at` from its own, so a worker whose clock runs behind records attempts that end before they start. | `chaos-clock-skew`, `attempt-order`, `must` |
-| H13f7 | When a stalled database answers again, the heartbeat sweep, the stale-assigned reap and the attempt reconciler act on the state the stall kept from being written, before the queued heartbeats and status reports land: live workers go offline, running tasks are taken back and run twice, finished work is rejected. | `chaos-db-stall-30s`, `rework` (up to 60), `reclaims` and `single-attempt`, `may`; `chaos-db-stall-2m`, `single-attempt`, `may` |
 | H13f8 | A lease request a worker parked before its credential was revoked is still served after the revoke, so the disconnected worker is given a task that waits until the sweep reclaims it. | `chaos-worker-revoke`, `revoked`, `may` |
 | H13f9 | After a write to a broker stream fails because the data volume is full or the server is out of file descriptors, the stream may store nothing more for the rest of the run; whether a restart clears it is not known. With a full volume the server stays ready and answers REST while the volume is full. Every worker is then reclaimed. | `chaos-disk-server-full`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded`, `must`; `chaos-server-fd-exhaustion`, the same checks and `rework` (up to 2500), `may` |
 
@@ -503,7 +501,7 @@ server defects](load-testing.md#known-server-defects).
 
 ## The scenario library
 
-The 30 chaos scenarios are built in and named `chaos-...`. Unless noted, a
+The 31 chaos scenarios are built in and named `chaos-...`. Unless noted, a
 scenario runs on SQLite or PostgreSQL, with 100 simulated 8-core workers and
 about 2.5 tasks per second of 2-step jobs. A scenario's Fault column says
 where it needs more: PostgreSQL, Linux, or the container of `make
@@ -516,12 +514,12 @@ chaos-container`.
 | `chaos-server-kill-90s` | The same, restarted 90s later: the outage outlasts a worker's reconnect buffer for some of what it publishes. | rework 0 | 3m30s |
 | `chaos-server-kill-mid-submit` | One job of 100,000 tasks, the server killed 2s in, during the write, restarted 10s later. 200 workers; the drain allows 20 minutes. | rework 0 | 3m |
 | `chaos-server-term` | A graceful stop at 1m, restarted 10s later: the upgrade path. | rework 0; H13f1 `may` on `rework`, up to 10 | 3m |
-| `chaos-server-stall-short` | SIGSTOP the server for 15s at 3m15s, under `heartbeat_timeout`. POSIX. | rework 0, reclaims 0; H13f3 `may` on `workers-converge` | 3m45s |
-| `chaos-server-stall-long` | SIGSTOP for 60s at 3m15s, about twice `heartbeat_timeout`. POSIX. | rework 0; H13f2 `must` on `rework` (up to 60) and `single-attempt`; H13f3 `must` on `workers-converge` | 4m30s |
+| `chaos-server-stall-short` | SIGSTOP the server for 15s at 3m15s, under `heartbeat_timeout`. POSIX. | rework 0, reclaims 0 | 3m45s |
+| `chaos-server-stall-long` | SIGSTOP for 60s at 3m15s, about twice `heartbeat_timeout`. POSIX. | rework 0 | 4m30s |
 | `chaos-logs-during-restart` | 40 workers, tasks of 5,000 lines of 200 bytes, the server killed at 1m and restarted 20s later: every terminal status must still arrive. | rework 0 | 3m |
 | `chaos-worker-kill-mid-task` | One of 2 real workers killed at 1m while it runs 60s process trees (a chatty and a silent child), restarted 10s later. 60 simulated workers carry the background load. | rework 8; H13f4 `may` on `no-orphans` and `single-writer`, `os: [linux]` | 3m |
 | `chaos-worker-gone` | One of 2 real workers killed at 30s while it runs 30s tasks, never restarted: its work is reclaimed and the worker is shown offline. **Smoke.** | rework 4 | 3m |
-| `chaos-worker-sleep` | SIGSTOP one of 2 real workers for 75s at 3m15s while it runs 90s tasks, then SIGCONT: stale attempts are canceled, nothing is credited twice. POSIX. | rework 8; H13f3 `must` on `workers-converge` | 4m45s |
+| `chaos-worker-sleep` | SIGSTOP one of 2 real workers for 75s at 3m15s while it runs 90s tasks, then SIGCONT: stale attempts are canceled, nothing is credited twice. POSIX. | rework 8 | 4m45s |
 | `chaos-churn-storm` | No fault: 100 simulated workers each crash about 30 times an hour and restart 10s later. | rework 5 | 3m |
 | `chaos-churn-instant-restart` | The same with an instant restart: a regression guard for an attempt left running after the restart (see [Known server defects](load-testing.md#known-server-defects)). | rework 5 | 3m |
 | `chaos-net-blip` | Cut every one of 120 workers from the broker for 5s at 3m15s and for 15s at 3m40s. No reclaim, no rework. **Smoke.** | rework 0 | 4m15s |
@@ -531,8 +529,9 @@ chaos-container`.
 | `chaos-power-cut-server-first` | At 1m kill the server and every worker (100 simulated, 2 real), bring the server back 20s later and the workers 10s after it. | rework 5 | 3m |
 | `chaos-power-cut-workers-first` | The same with the workers back first, 20s later, and the server 10s after them. | rework 5 | 3m |
 | `chaos-db-stall-5s` | Stall the database for 5s at 1m. | rework 0, reclaims 0 | 3m |
-| `chaos-db-stall-30s` | Stall the database for 30s, `heartbeat_timeout`, at 3m15s. | rework 0, reclaims 0; H13f7 `may` on `rework` (up to 60), `reclaims` and `single-attempt`; H13f3 `may` on `workers-converge` | 4m15s |
-| `chaos-db-stall-2m` | Stall the database for 2m at 3m15s: four `heartbeat_timeout`s, and `scheduler.reconcile_grace`. | H13f3 `must` on `workers-converge`; H13f7 `may` on `single-attempt` | 5m30s |
+| `chaos-db-stall-30s` | Stall the database for 30s, `heartbeat_timeout`, at 3m15s. | rework 0, reclaims 0 | 4m15s |
+| `chaos-db-stall-2m` | Stall the database for 2m at 3m15s: four `heartbeat_timeout`s, and `scheduler.reconcile_grace`. | rework 0, reclaims 0 | 5m30s |
+| `chaos-db-stall-3m` | Stall the database for 3m at 3m15s: longer than `SQI_WORKER`'s 2-minute MaxAge, so heartbeats expire unread and the worker consumer must hold the heartbeat sweep after the skip. | rework 0, reclaims 0 | 6m45s |
 | `chaos-db-drop` | Close the server's PostgreSQL connections and refuse new ones for 30s at 3m15s. PostgreSQL only. Submissions made meanwhile are refused with 500, which the summary reports as a finding. | rework 0 | 4m15s |
 | `chaos-disk-server-full` | Leave the server's data volume no free space for 60s at 1m, under a verbose renderer (5,000 lines of 200 bytes per task) on 40 workers. Container. | H13f9 `must` on `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded` | 3m |
 | `chaos-disk-worker-full-at-setup` | Leave the 2 real workers' session volume no free space and no free inodes for 60s at 1m, so tasks fail at setup. Each failure must name "no space left on device", at most 12 may fail, and each real worker must succeed a task afterwards. Container. | rework 0 | 3m |
@@ -582,7 +581,7 @@ and up to 20 examples.
 
 **Invariants** lists every result as `PASS`, `FAIL`, `UNMEASURED` for a check
 that could not judge (no finding, and no known violation excuses it), or
-`known (H13f2)` for a failure a known violation excused, with its evidence
+`known (H13f1)` for a failure a known violation excused, with its evidence
 beneath. A line
 `known:<check>` that fails is a `must` entry whose check held: the defect it
 records may be fixed, and the entry should be removed.
@@ -668,8 +667,8 @@ It also has these limits:
   distribution.
 - Nothing reports how often each `may` known violation fires, so an entry
   that never fires is not flagged. Where a `may` entry is broad, as on
-  `chaos-server-fd-exhaustion` and `chaos-db-stall-30s`, a regression in the
-  same check is hidden until the defect it records is fixed.
+  `chaos-server-fd-exhaustion`, a regression in the same check is hidden
+  until the defect it records is fixed.
 - The `disk-full` check has no minimum number of failed attempts, so a run in
   which the fault never made a task fail passes it. The summary records the
   count for each fault window; read it to see whether the fault bit.

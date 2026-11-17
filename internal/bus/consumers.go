@@ -28,7 +28,9 @@ const consumePullExpiry = 10 * time.Second
 const consumeHeartbeat = 2 * time.Second
 
 // consume starts consumer with sqi's pull tuning and an error handler that
-// logs every interruption under the consumer's name.
+// logs every interruption under the consumer's name. Consume calls handler
+// for one message at a time, in delivery order; the scheduler's ingest
+// trackers depend on that for the worker and task-status consumers.
 func (c *Client) consume(consumer jetstream.Consumer, name string, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error) {
 	return consumer.Consume(
 		handler,
@@ -51,12 +53,33 @@ func (c *Client) consumeErrHandler(name string) jetstream.ConsumeErrHandlerFunc 
 		case errors.Is(err, jetstream.ErrNoHeartbeat),
 			errors.Is(err, nats.ErrNoResponders),
 			errors.Is(err, jetstream.ErrConsumerLeadershipChanged):
+			c.markInterrupted()
 			c.logger.WarnContext(ctx, "bus: consumer pull interrupted; pulling again", attrs...)
 		default:
 			c.logger.WarnContext(ctx, "bus: consumer error", attrs...)
 		}
 	}
 }
+
+// Redelivery and retention settings of the server-side consumers and their
+// streams. The scheduler reads them to decide how long after an interruption
+// its view of the store may lag a stream.
+const (
+	// WorkerConsumerMaxDeliver and TaskStatusConsumerMaxDeliver are the
+	// delivery attempts the worker and task-status consumers allow a message.
+	WorkerConsumerMaxDeliver     = 10
+	TaskStatusConsumerMaxDeliver = 10
+
+	// WorkerConsumerAckWait and TaskStatusConsumerAckWait are how long the
+	// broker waits for an ack before redelivering.
+	WorkerConsumerAckWait     = 10 * time.Second
+	TaskStatusConsumerAckWait = 30 * time.Second
+
+	// WorkerStreamMaxAge and TaskStreamMaxAge are how long SQI_WORKER and
+	// SQI_TASK keep a message.
+	WorkerStreamMaxAge = 2 * time.Minute
+	TaskStreamMaxAge   = 24 * time.Hour
+)
 
 // ── Consumer name helpers ─────────────────────────────────────────────────────
 
@@ -98,8 +121,8 @@ func (c *Client) ConsumeTaskStatus(ctx context.Context, handler jetstream.Messag
 	cfg := jetstream.ConsumerConfig{
 		Durable:       taskStatusConsumerName,
 		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       30 * time.Second,
-		MaxDeliver:    10,
+		AckWait:       TaskStatusConsumerAckWait,
+		MaxDeliver:    TaskStatusConsumerMaxDeliver,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 		Description:   "Server-side task-status consumer.",
 	}
@@ -192,8 +215,8 @@ func (c *Client) ConsumeWorker(ctx context.Context, handler jetstream.MessageHan
 	cfg := jetstream.ConsumerConfig{
 		Durable:       workerConsumerName,
 		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       10 * time.Second,
-		MaxDeliver:    10,
+		AckWait:       WorkerConsumerAckWait,
+		MaxDeliver:    WorkerConsumerMaxDeliver,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 		Description:   "Server-side worker registration and heartbeat consumer.",
 	}
@@ -210,4 +233,38 @@ func (c *Client) ConsumeWorker(ctx context.Context, handler jetstream.MessageHan
 
 	c.trackConsumer(cc)
 	return cc, nil
+}
+
+// ── Ack floors of the tracked consumers ──────────────────────────────────────
+
+// IngestConsumer names a server consumer whose progress the scheduler
+// tracks: [IngestWorker] or [IngestTaskStatus].
+type IngestConsumer int
+
+const (
+	// IngestWorker is the worker registration and heartbeat consumer
+	// ([Client.ConsumeWorker]).
+	IngestWorker IngestConsumer = iota
+	// IngestTaskStatus is the task-status consumer ([Client.ConsumeTaskStatus]).
+	IngestTaskStatus
+)
+
+// ConsumerAckFloor returns consumer's ack floor: the stream sequence at or
+// below which the broker will deliver it nothing more. A message is at or
+// below the floor once it has been acked or removed from the stream. A
+// message whose deliveries have run out is passed by the floor only once the
+// consumer then has no other message delivered and unacknowledged, which the
+// next ack (an ingest marker's, every few seconds) brings about whenever the
+// consumer is caught up. A message still to be delivered keeps the floor
+// below it. It is one consumer-info request to the broker.
+func (c *Client) ConsumerAckFloor(ctx context.Context, consumer IngestConsumer) (uint64, error) {
+	stream, name := StreamWorker, workerConsumerName
+	if consumer == IngestTaskStatus {
+		stream, name = StreamTask, taskStatusConsumerName
+	}
+	cons, err := c.js.Consumer(ctx, stream, name)
+	if err != nil {
+		return 0, fmt.Errorf("bus: consumer info %s: %w", name, err)
+	}
+	return cons.CachedInfo().AckFloor.Stream, nil
 }

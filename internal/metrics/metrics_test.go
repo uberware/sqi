@@ -124,3 +124,56 @@ func TestNew_NoHAMetricsWithoutRegisterHA(t *testing.T) {
 		t.Errorf("exposition carries HA series without RegisterHA:\n%s", rec.Body.String())
 	}
 }
+
+// TestNew_ServesIngestMetrics pins the ingest metric names, and that both
+// consumers' series are served from the start.
+func TestNew_ServesIngestMetrics(t *testing.T) {
+	m := metrics.New()
+	serve := func() string {
+		rec := httptest.NewRecorder()
+		m.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+		return rec.Body.String()
+	}
+	body := serve()
+	for _, want := range []string{
+		`sqi_scheduler_ingest_lag_seconds{consumer="worker"} 0`,
+		`sqi_scheduler_ingest_lag_seconds{consumer="task"} 0`,
+		`sqi_scheduler_ingest_pending{consumer="worker"} 0`,
+		`sqi_scheduler_ingest_pending{consumer="task"} 0`,
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("exposition missing %q", want)
+		}
+	}
+
+	m.SchedulerIngestLagSeconds.WithLabelValues("task").Set(1.5)
+	m.SchedulerIngestPending.WithLabelValues("worker").Set(3)
+	body = serve()
+	for _, want := range []string{
+		`sqi_scheduler_ingest_lag_seconds{consumer="task"} 1.5`,
+		`sqi_scheduler_ingest_pending{consumer="worker"} 3`,
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("exposition missing %q", want)
+		}
+	}
+}
+
+// TestNew_ServesReregisterRequests pins the reregister-request counter's name,
+// and that each outcome's series is served from the start.
+func TestNew_ServesReregisterRequests(t *testing.T) {
+	m := metrics.New()
+	m.SchedulerWorkerReregisterRequests.WithLabelValues("accepted").Inc()
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		`sqi_scheduler_worker_reregister_requests_total{outcome="accepted"} 1`,
+		`sqi_scheduler_worker_reregister_requests_total{outcome="refused"} 0`,
+		`sqi_scheduler_worker_reregister_requests_total{outcome="error"} 0`,
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("exposition missing %q", want)
+		}
+	}
+}

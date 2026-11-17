@@ -77,6 +77,22 @@ type Metrics struct {
 	// Updated by the scheduler after each worker-registry or sweep event.
 	SchedulerIdleWorkers *prometheus.GaugeVec
 
+	// SchedulerIngestLagSeconds is how far the newest ingest marker each
+	// scheduler consumer has processed trails now, by consumer (worker,
+	// task); before the first marker, the time since the scheduler started.
+	SchedulerIngestLagSeconds *prometheus.GaugeVec
+
+	// SchedulerIngestPending is the number of messages each scheduler
+	// consumer failed to apply and will receive again, by consumer (worker,
+	// task).
+	SchedulerIngestPending *prometheus.GaugeVec
+
+	// SchedulerWorkerReregisterRequests counts the requests the scheduler
+	// sends a worker it holds offline whose heartbeats still arrive, asking it
+	// to register again, by outcome: accepted, refused, or error (no reply,
+	// or one that would not decode).
+	SchedulerWorkerReregisterRequests *prometheus.CounterVec
+
 	// ── Workers ───────────────────────────────────────────────────────────────
 
 	// WorkersTotal is the current number of registered workers, partitioned by
@@ -252,6 +268,16 @@ func New() *Metrics {
 			[]string{"cause"},
 		),
 
+		SchedulerWorkerReregisterRequests: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "worker_reregister_requests_total",
+				Help:      "Requests asking a worker held offline whose heartbeats still arrive to register again, by outcome (accepted, refused, error).",
+			},
+			[]string{"outcome"},
+		),
+
 		SchedulerAssignmentDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "sqi",
@@ -271,6 +297,26 @@ func New() *Metrics {
 				Help:      "Current number of online workers with no active (assigned or running) task, partitioned by farm ID.",
 			},
 			[]string{"farm"},
+		),
+
+		SchedulerIngestLagSeconds: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "ingest_lag_seconds",
+				Help:      "How far the newest ingest marker each scheduler consumer has processed trails now, partitioned by consumer (worker, task).",
+			},
+			[]string{"consumer"},
+		),
+
+		SchedulerIngestPending: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "ingest_pending",
+				Help:      "Messages each scheduler consumer failed to apply and will receive again, partitioned by consumer (worker, task).",
+			},
+			[]string{"consumer"},
 		),
 
 		WorkersTotal: prometheus.NewGaugeVec(
@@ -461,6 +507,9 @@ func New() *Metrics {
 		m.SchedulerCancelsResent,
 		m.SchedulerAssignmentDuration,
 		m.SchedulerIdleWorkers,
+		m.SchedulerIngestLagSeconds,
+		m.SchedulerIngestPending,
+		m.SchedulerWorkerReregisterRequests,
 		m.WorkersTotal,
 		m.NATSPublishedTotal,
 		m.NATSConsumedTotal,
@@ -481,6 +530,15 @@ func New() *Metrics {
 	// defined before the first resend.
 	for _, cause := range []string{"closed", "unknown"} {
 		m.SchedulerCancelsResent.WithLabelValues(cause)
+	}
+	// Likewise both consumers, so each series exists before the first sweep.
+	for _, consumer := range []string{"worker", "task"} {
+		m.SchedulerIngestLagSeconds.WithLabelValues(consumer)
+		m.SchedulerIngestPending.WithLabelValues(consumer)
+	}
+	// And each reregister outcome.
+	for _, outcome := range []string{"accepted", "refused", "error"} {
+		m.SchedulerWorkerReregisterRequests.WithLabelValues(outcome)
 	}
 
 	return m
