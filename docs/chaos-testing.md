@@ -426,7 +426,8 @@ bounds the count. A run with the bound gets a `reclaims` result: OK within it,
 failed over it (with the count and examples), and failed as unmeasured when
 the store could not be read. `chaos-net-blip`, `chaos-net-slow-site`,
 `chaos-server-stall-short`, `chaos-db-stall-5s`, `chaos-db-stall-30s`,
-`chaos-db-stall-3m`, `chaos-clock-skew` and `chaos-session-expiry` set it to
+`chaos-db-stall-2m`, `chaos-db-stall-3m`, `chaos-clock-skew` and
+`chaos-session-expiry` set it to
 `0`: none of their faults or conditions should take a worker offline.
 
 ---
@@ -529,7 +530,7 @@ chaos-container`.
 | `chaos-power-cut-workers-first` | The same with the workers back first, 20s later, and the server 10s after them. | rework 5 | 3m |
 | `chaos-db-stall-5s` | Stall the database for 5s at 1m. | rework 0, reclaims 0 | 3m |
 | `chaos-db-stall-30s` | Stall the database for 30s, `heartbeat_timeout`, at 3m15s. | rework 0, reclaims 0 | 4m15s |
-| `chaos-db-stall-2m` | Stall the database for 2m at 3m15s: four `heartbeat_timeout`s, and `scheduler.reconcile_grace`. | no bound | 5m30s |
+| `chaos-db-stall-2m` | Stall the database for 2m at 3m15s: four `heartbeat_timeout`s, and `scheduler.reconcile_grace`. | rework 0, reclaims 0 | 5m30s |
 | `chaos-db-stall-3m` | Stall the database for 3m at 3m15s: longer than `SQI_WORKER`'s 2-minute MaxAge, so heartbeats expire unread and the worker consumer must hold the heartbeat sweep after the skip. | rework 0, reclaims 0 | 6m45s |
 | `chaos-db-drop` | Close the server's PostgreSQL connections and refuse new ones for 30s at 3m15s. PostgreSQL only. Submissions made meanwhile are refused with 500, which the summary reports as a finding. | rework 0 | 4m15s |
 | `chaos-disk-server-full` | Leave the server's data volume no free space for 60s at 1m, under a verbose renderer (5,000 lines of 200 bytes per task) on 40 workers. Container. | H13f9 `must` on `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded` | 3m |

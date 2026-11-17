@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-db-stall-2m
-description: chaos - stall the server's database for 2m at 3m15s under steady load (100 workers, about 2.5 tasks/s), four heartbeat_timeouts; the run finishes with its store intact, 5.5 min
+description: chaos - stall the server's database for 2m at 3m15s under steady load (100 workers, about 2.5 tasks/s), four heartbeat_timeouts; no completed work may be redone and nothing reclaimed, 5.5 min
 # The stall comes at 3m15s, after the server's startup liveness grace (about
-# 3m10s), and lasts 2m, four times heartbeat_timeout: a long outage the server
-# may handle by reclaiming work from workers it can no longer hear from, so
-# this scenario sets no rework or reclaim bound. Both are reported; what it
-# holds the server to is the base invariants and store-integrity (no lost
-# update, no double write) once the store is back at 5m15s.
+# 3m10s), and lasts 2m, four times heartbeat_timeout. The heartbeats the
+# workers publish meanwhile wait in the stream, and the heartbeat sweep judges
+# by how far the worker consumer has applied it, not by the clock, so no live
+# worker is taken offline. The store is back at 5m15s.
 #
 # Two minutes is also scheduler.reconcile_grace, so an attempt that ended
 # during the stall, whose worker's heartbeats no longer list it while its
@@ -44,3 +43,9 @@ faults:
   - at: 3m15s
     database: {mode: stall}
     duration: 2m
+
+# The workers never lose the broker, only the store stalls, so no worker should
+# go offline and the server should reclaim nothing.
+expect:
+  max_rework_attempts: 0
+  max_reclaims: 0
