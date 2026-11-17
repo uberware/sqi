@@ -1817,7 +1817,16 @@ it has handled is the time up to which the store reflects that stream. An
 in-memory tracker per consumer (`internal/scheduler/ingest.go`) keeps that
 time, and the messages the consumer nak'd and will see again, each with the
 worker, task and attempt it names. A nak'd message is forgotten when it is
-acked, on its last delivery, or once the stream would have dropped it. The
+acked, on its last delivery, once the consumer's ack floor has passed it, or
+once the stream would have dropped it. The heartbeat sweep reads each
+consumer's ack floor from the broker at the start of every tick: the broker
+delivers nothing at or below it, so a message whose last delivery never
+reached the handler, whose ack was lost, or that was removed from the stream
+is forgotten there instead of being kept for the stream's whole `MaxAge` (24
+hours for `SQI_TASK`). The floor passes an acked or removed message at once,
+and one whose deliveries ran out at the next ack that leaves the consumer
+nothing else unacknowledged, which a marker brings whenever the consumer is
+caught up. When the floor cannot be read, nothing is forgotten. The
 tracker's *effective* time is the newest marker handled, held back in two
 cases:
 

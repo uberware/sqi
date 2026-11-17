@@ -134,6 +134,21 @@ func (t *ingestTracker) ack(seq uint64) {
 	delete(t.pendingMsg, seq)
 }
 
+// dropThrough removes every message at or below stream sequence seq: the
+// consumer's ack floor, at or below which the broker delivers nothing more.
+// That covers messages whose last delivery never reached the handler, whose
+// ack was lost, or that were removed from the stream, none of which the
+// handler would otherwise see again.
+func (t *ingestTracker) dropThrough(seq uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for s := range t.pendingMsg {
+		if s <= seq {
+			delete(t.pendingMsg, s)
+		}
+	}
+}
+
 // hold caps effective at the time at until the clock reaches until. A hold that
 // overlaps the one in force keeps the earlier at and the later until.
 func (t *ingestTracker) hold(at, until time.Time) {

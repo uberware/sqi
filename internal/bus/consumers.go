@@ -232,3 +232,37 @@ func (c *Client) ConsumeWorker(ctx context.Context, handler jetstream.MessageHan
 	c.trackConsumer(cc)
 	return cc, nil
 }
+
+// ── Ack floors of the tracked consumers ──────────────────────────────────────
+
+// IngestConsumer names a server consumer whose progress the scheduler
+// tracks: [IngestWorker] or [IngestTaskStatus].
+type IngestConsumer int
+
+const (
+	// IngestWorker is the worker registration and heartbeat consumer
+	// ([Client.ConsumeWorker]).
+	IngestWorker IngestConsumer = iota
+	// IngestTaskStatus is the task-status consumer ([Client.ConsumeTaskStatus]).
+	IngestTaskStatus
+)
+
+// ConsumerAckFloor returns consumer's ack floor: the stream sequence at or
+// below which the broker will deliver it nothing more. A message is at or
+// below the floor once it has been acked or removed from the stream. A
+// message whose deliveries have run out is passed by the floor only once the
+// consumer then has no other message delivered and unacknowledged, which the
+// next ack (an ingest marker's, every few seconds) brings about whenever the
+// consumer is caught up. A message still to be delivered keeps the floor
+// below it. It is one consumer-info request to the broker.
+func (c *Client) ConsumerAckFloor(ctx context.Context, consumer IngestConsumer) (uint64, error) {
+	stream, name := StreamWorker, workerConsumerName
+	if consumer == IngestTaskStatus {
+		stream, name = StreamTask, taskStatusConsumerName
+	}
+	cons, err := c.js.Consumer(ctx, stream, name)
+	if err != nil {
+		return 0, fmt.Errorf("bus: consumer info %s: %w", name, err)
+	}
+	return cons.CachedInfo().AckFloor.Stream, nil
+}

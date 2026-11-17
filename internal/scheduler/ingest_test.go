@@ -92,6 +92,31 @@ func TestIngestTracker_LastDeliveryClears(t *testing.T) {
 	}
 }
 
+// TestIngestTracker_DropThrough: a message whose last delivery never reached
+// the handler (or whose ack was lost) stays pending until the consumer's ack
+// floor passes it; dropThrough removes it and every other entry at or below
+// the floor, and keeps the entries above.
+func TestIngestTracker_DropThrough(t *testing.T) {
+	tr := newIngestTracker(24*time.Hour, 10)
+	tr.nak(4, ingestAt(0), 9, ingestRef{worker: "lost", task: "t4", attempt: "a4"})
+	tr.nak(5, ingestAt(0), 1, ingestRef{worker: "floor"})
+	tr.nak(6, ingestAt(0), 1, ingestRef{worker: "above"})
+
+	tr.dropThrough(3)
+	if got := tr.pendingCount(ingestAt(1)); got != 3 {
+		t.Fatalf("pendingCount after dropThrough below every entry = %d, want 3", got)
+	}
+
+	tr.dropThrough(5)
+	got := tr.pending(ingestAt(1))
+	if got.workers["lost"] || got.tasks["t4"] || got.attempts["a4"] || got.workers["floor"] {
+		t.Errorf("pending after dropThrough(5) = %+v, want the entries at 4 and 5 gone", got)
+	}
+	if !got.workers["above"] {
+		t.Errorf("pending after dropThrough(5) = %+v, want the entry at 6 kept", got)
+	}
+}
+
 func TestIngestTracker_ExpiresByOwnStamp(t *testing.T) {
 	tr := newIngestTracker(2*time.Minute, 10)
 	k := ingestRef{worker: "w"}

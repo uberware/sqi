@@ -8,8 +8,11 @@ package scheduler
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -352,4 +355,91 @@ func noIngestMarker(s *Scheduler) {
 func ingestCaughtUp(s *Scheduler) {
 	now := time.Now().UTC()
 	markers(s, now, now)
+}
+
+// floorBus is a busClient whose ConsumerAckFloor answers from floors, or
+// fails with errs, and records whether each call carried a deadline.
+type floorBus struct {
+	recordBus
+
+	mu         sync.Mutex
+	floors     map[bus.IngestConsumer]uint64
+	errs       map[bus.IngestConsumer]error
+	calls      int
+	noDeadline bool
+}
+
+func (b *floorBus) ConsumerAckFloor(ctx context.Context, c bus.IngestConsumer) (uint64, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.calls++
+	if _, ok := ctx.Deadline(); !ok {
+		b.noDeadline = true
+	}
+	if err := b.errs[c]; err != nil {
+		return 0, err
+	}
+	return b.floors[c], nil
+}
+
+// TestPruneIngestByAckFloor: each tracker drops the pending messages its
+// consumer's ack floor has passed, each broker call is bounded, and a tracker
+// whose floor cannot be read keeps every entry.
+func TestPruneIngestByAckFloor(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	b := &floorBus{
+		floors: map[bus.IngestConsumer]uint64{bus.IngestWorker: 10, bus.IngestTaskStatus: 10},
+		errs:   map[bus.IngestConsumer]error{bus.IngestTaskStatus: errors.New("broker unreachable")},
+	}
+	s := newIngestScheduler(DefaultConfig(), b, &bytes.Buffer{})
+	s.now = (&testClock{t: now}).now
+	for _, tr := range []*ingestTracker{s.ingestWorker, s.ingestTask} {
+		tr.nak(7, now, 1, ingestRef{worker: "below"})
+		tr.nak(11, now, 1, ingestRef{worker: "above"})
+	}
+
+	s.pruneIngestByAckFloor(t.Context())
+
+	if got := s.ingestWorker.pending(now).workers; got["below"] || !got["above"] {
+		t.Errorf("worker tracker pending = %v, want only the entry above the floor", got)
+	}
+	if got := s.ingestTask.pending(now).workers; !got["below"] || !got["above"] {
+		t.Errorf("task tracker pending = %v, want both entries kept (its floor could not be read)", got)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.calls != 2 {
+		t.Errorf("ConsumerAckFloor called %d times, want 2", b.calls)
+	}
+	if b.noDeadline {
+		t.Error("a ConsumerAckFloor call carried no deadline")
+	}
+}
+
+// TestSweep_StuckPendingReportReleasedByAckFloor: a status report whose last
+// delivery never reached the handler keeps its worker from being swept only
+// until the task consumer's ack floor passes it; the sweep reads the floor
+// itself before judging.
+func TestSweep_StuckPendingReportReleasedByAckFloor(t *testing.T) {
+	st := newCheckedFake(t)
+	workerID, taskID, t0 := seedIngestSweepWorker(t, st)
+	now := t0.Add(2 * time.Minute)
+	s, _, _ := newIngestSweepScheduler(t, st, now)
+	b := &floorBus{floors: map[bus.IngestConsumer]uint64{}}
+	s.bus = b
+	markers(s, now, now)
+	s.ingestTask.nak(7, now.Add(-time.Second), 9, ingestRef{worker: workerID, task: taskID})
+
+	s.sweepOnce(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Fatalf("worker status = %q, want online (a pending status report names it)", got)
+	}
+
+	b.mu.Lock()
+	b.floors[bus.IngestTaskStatus] = 7
+	b.mu.Unlock()
+	s.sweepOnce(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOffline {
+		t.Errorf("worker status = %q after the ack floor passed the report, want offline", got)
+	}
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
@@ -65,6 +66,10 @@ func (*recordBus) RequestWorkerControl(context.Context, string, []byte) ([]byte,
 }
 
 func (*recordBus) PublishIngestMarkers(context.Context, time.Duration) error { return nil }
+
+func (*recordBus) ConsumerAckFloor(context.Context, bus.IngestConsumer) (uint64, error) {
+	return 0, nil
+}
 
 // newMetricsScheduler builds a Scheduler with a metrics registry the test can
 // read and its ingest trackers caught up ([ingestCaughtUp]). cfg.FarmID is set

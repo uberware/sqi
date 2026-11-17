@@ -8,6 +8,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 )
 
@@ -79,6 +80,42 @@ func (s *Scheduler) ingestHoldsWorker(w store.Worker, effT time.Time, pending ma
 		return true
 	}
 	return effT.Before(w.LastHeartbeatAt.Add(s.cfg.WorkerTimeout))
+}
+
+// ingestAckFloorTimeout bounds each consumer-info request
+// [Scheduler.pruneIngestByAckFloor] makes, so a stalled broker delays the
+// sweep only briefly.
+const ingestAckFloorTimeout = 2 * time.Second
+
+// pruneIngestByAckFloor drops from each tracker the pending messages its
+// consumer's ack floor has passed ([bus.Client.ConsumerAckFloor]). Otherwise
+// a message the handler never sees again (its last delivery lost before the
+// handler, its ack lost, or removed from the stream) would stay pending until
+// the stream's MaxAge, 24 hours for SQI_TASK, and keep its worker, task and
+// attempt from every liveness check that long. A tracker whose floor cannot
+// be read keeps its entries. It runs once per sweep tick, ahead of the checks
+// that read the pending messages.
+func (s *Scheduler) pruneIngestByAckFloor(ctx context.Context) {
+	for _, c := range []struct {
+		consumer bus.IngestConsumer
+		name     string
+		tracker  *ingestTracker
+	}{
+		{bus.IngestWorker, "worker", s.ingestWorker},
+		{bus.IngestTaskStatus, "task", s.ingestTask},
+	} {
+		callCtx, cancel := context.WithTimeout(ctx, ingestAckFloorTimeout)
+		floor, err := s.bus.ConsumerAckFloor(callCtx, c.consumer)
+		cancel()
+		if err != nil {
+			if ctx.Err() == nil {
+				s.logger.DebugContext(ctx, "scheduler: read consumer ack floor failed; pending messages kept",
+					slog.String("consumer", c.name), slog.Any("error", err))
+			}
+			continue
+		}
+		c.tracker.dropThrough(floor)
+	}
 }
 
 // assignedReapCutoff returns the assigned_at cutoff the stuck-assigned reap

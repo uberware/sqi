@@ -324,6 +324,7 @@ type busClient interface {
 	SubscribeLease(handler func(workerID, queueID string, data []byte) []byte) (*nats.Subscription, error)
 	RequestWorkerControl(ctx context.Context, workerID string, data []byte) ([]byte, error)
 	PublishIngestMarkers(ctx context.Context, timeout time.Duration) error
+	ConsumerAckFloor(ctx context.Context, consumer bus.IngestConsumer) (uint64, error)
 }
 
 // Scheduler owns the assignment loop, worker registry, and heartbeat sweep.
@@ -1618,6 +1619,9 @@ func (s *Scheduler) sweepOnce(ctx context.Context) {
 	// in the tick: one reading taken at the start of the tick would miss a
 	// marker processed while the earlier checks ran.
 	for _, sweep := range []func(context.Context){
+		// First, so the checks below read pending messages against the
+		// broker's latest record.
+		s.pruneIngestByAckFloor,
 		s.sweepStaleWorkers,
 		s.sweepRetiredWorkers,
 		s.sweepRetiredJobs,
