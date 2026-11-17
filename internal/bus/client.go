@@ -157,8 +157,9 @@ func NewClient(url string, logger *slog.Logger, extraOpts ...nats.Option) (*Clie
 	}
 	opts = append(opts, extraOpts...)
 	// The handlers that log through the server's structured logger and
-	// maintain BusUpSince and InterruptedAt come last: nats.go keeps only the last handler of
-	// each kind, so a caller's own would otherwise silence BusUpSince.
+	// maintain BusUpSince and InterruptedAt come last: nats.go keeps only the
+	// last handler of each kind, so a caller's own would otherwise silence
+	// them.
 	opts = append(
 		opts,
 		nats.ReconnectHandler(func(nc *nats.Conn) {

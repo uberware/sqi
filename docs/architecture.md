@@ -1811,7 +1811,7 @@ The reconnect grace covers a broker outage. It does not cover a server whose
 broker connection stayed up while the server itself fell behind: a process
 stopped and resumed (a VM pause, `SIGSTOP`), a stalled database that writes
 nothing while heartbeats and status reports queue in the broker, or a consumer
-that is simply slow. Afterwards the store still holds the state from
+that is slow. Afterwards the store still holds the state from
 before, and the messages that would change it wait in `SQI_WORKER` and
 `SQI_TASK`. Judged against `now`, that state reads as dead workers and stuck
 tasks. The liveness checks therefore judge by how far each consumer has
@@ -1886,8 +1886,8 @@ cases:
   arrive. In the second case skips keep coming and the effective time stays
   where it was, so a worker that really dies meanwhile is not marked offline
   until the consumer recovers. That is the trade-off: without the hold the
-  sweep took live workers offline by the thousand and their tasks ran again
-  (1,568 at once in one load run). `sqi_scheduler_ingest_lag_seconds` for the
+  sweep would take live workers offline in bulk and their tasks would run
+  again. `sqi_scheduler_ingest_lag_seconds` for the
   worker consumer shows the condition. A first delivery the client lost
   before the handler (an interruption) also reads as a skip, which only holds
   the tracker longer.

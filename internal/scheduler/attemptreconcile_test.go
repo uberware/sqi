@@ -90,8 +90,9 @@ func latestReport(r *reconciler, workerID string) (workerReport, bool) {
 	return reps[len(reps)-1], true
 }
 
-// recordEverySecond records a report from w1 omitting every attempt each
-// second from the first time to the second, received, sent and stamped by the broker at once.
+// recordEverySecond records one report a second from w1, from the first time
+// to the second, each omitting every attempt and with its send, receipt and
+// broker stamp all at the same instant.
 func recordEverySecond(r *reconciler, from, to time.Time) {
 	for at := from; !at.After(to); at = at.Add(time.Second) {
 		r.record("w1", at, at, at, nil)

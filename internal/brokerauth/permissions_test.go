@@ -105,10 +105,10 @@ func TestWorkerPermissions_ConfinesToOwnSubtree(t *testing.T) {
 		t.Error("a worker must be able to subscribe to its own reply inbox")
 	}
 	if subjectAllowed(p.Subscribe, brokerauth.InboxPrefix(other)+".x.1") {
-		t.Error("a worker must NOT be able to subscribe to another worker's reply inbox")
+		t.Error("a worker must not be able to subscribe to another worker's reply inbox")
 	}
 	if subjectAllowed(p.Subscribe, "_INBOX.x.1") {
-		t.Error("a worker must NOT be able to subscribe to the process-global _INBOX subtree")
+		t.Error("a worker must not be able to subscribe to the process-global _INBOX subtree")
 	}
 }
 
@@ -122,10 +122,10 @@ func TestMarkerSubjects_ServerOnly(t *testing.T) {
 	server := brokerauth.ServerPermissions()
 	for _, s := range markers {
 		if subjectAllowed(worker.Publish, s) {
-			t.Errorf("a worker must NOT be able to publish %q", s)
+			t.Errorf("a worker must not be able to publish %q", s)
 		}
 		if subjectAllowed(worker.Subscribe, s) {
-			t.Errorf("a worker must NOT be able to subscribe to %q", s)
+			t.Errorf("a worker must not be able to subscribe to %q", s)
 		}
 		if !subjectAllowed(server.Publish, s) {
 			t.Errorf("the server must be able to publish %q", s)

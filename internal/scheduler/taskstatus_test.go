@@ -50,7 +50,7 @@ func newStatusTestSchedulerWithNotifier(st store.Store, notifier ws.Notifier) *S
 	// goes straight to store.TaskStatusFailed. Retry/park-specific behavior is
 	// covered separately in failure_test.go.
 	//
-	// Its ingest trackers start caught up.
+	// The scheduler's ingest trackers start caught up (ingestCaughtUp).
 	cfg := DefaultConfig()
 	cfg.DefaultMaxAttempts = 1
 	s := New(
