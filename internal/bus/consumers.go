@@ -28,7 +28,9 @@ const consumePullExpiry = 10 * time.Second
 const consumeHeartbeat = 2 * time.Second
 
 // consume starts consumer with sqi's pull tuning and an error handler that
-// logs every interruption under the consumer's name.
+// logs every interruption under the consumer's name. Consume calls handler
+// for one message at a time, in delivery order; the scheduler's ingest
+// trackers depend on that for the worker and task-status consumers.
 func (c *Client) consume(consumer jetstream.Consumer, name string, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error) {
 	return consumer.Consume(
 		handler,

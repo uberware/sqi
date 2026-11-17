@@ -208,6 +208,13 @@ func (m *ingestMsg) Metadata() (*jetstream.MsgMetadata, error) { return m.md, m.
 // consumer checks for messages removed unread; see
 // [Scheduler.noteWorkerDelivery]), then advances t and acks for the
 // consumer's marker subject, and passes anything else to route.
+//
+// The trackers rely on Consume calling the handler for one message at a time,
+// in delivery order ([bus.Client.ConsumeWorker], [bus.Client.ConsumeTaskStatus]).
+// A marker may advance its tracker only because every message stored before
+// it has already been handled, applied or recorded as pending, and the
+// first-delivery check finds skipped messages by comparing successive
+// deliveries. Handling messages concurrently or out of order would break both.
 func (s *Scheduler) receiveTracked(
 	raw jetstream.Msg, t *ingestTracker, marker string,
 	onFirst func(context.Context, *jetstream.MsgMetadata), route func(jetstream.Msg),
