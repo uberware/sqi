@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -39,6 +41,7 @@ type scriptedKV struct {
 	jetstream.KeyValue
 
 	deletes []error
+	updates []error
 	gets    []jetstream.KeyValueEntry
 	deleted int
 }
@@ -51,6 +54,15 @@ func (kv *scriptedKV) Delete(context.Context, string, ...jetstream.KVDeleteOpt) 
 	err := kv.deletes[0]
 	kv.deletes = kv.deletes[1:]
 	return err
+}
+
+func (kv *scriptedKV) Update(context.Context, string, []byte, uint64) (uint64, error) {
+	if len(kv.updates) == 0 {
+		return 0, errors.New("unscripted update")
+	}
+	err := kv.updates[0]
+	kv.updates = kv.updates[1:]
+	return 0, err
 }
 
 func (kv *scriptedKV) Get(context.Context, string) (jetstream.KeyValueEntry, error) {
@@ -130,5 +142,28 @@ func TestGuard_ReleaseLeavesAnotherHoldersKey(t *testing.T) {
 				t.Errorf("deletes = %d, want only the first", kv.deleted)
 			}
 		})
+	}
+}
+
+// TestGuard_RefreshRefusedInFlightIsNotARefresh pins that a refresh the
+// server refuses because another write to the key is still in flight does
+// not count as one: the key still reads at the guard's revision, and the
+// write in flight may be another server taking it over, so lastOK must not
+// move (Healthy goes on aging) until a later refresh succeeds or finds the
+// loss.
+func TestGuard_RefreshRefusedInFlightIsNotARefresh(t *testing.T) {
+	const id = "self"
+	own := holderValue(t, id)
+	kv := &scriptedKV{
+		updates: []error{&jetstream.APIError{Code: 400, ErrorCode: jsErrWrongLastSequenceInFlight}},
+		gets:    []jetstream.KeyValueEntry{guardEntry{value: own, rev: 5}},
+	}
+	before := time.Now().Add(-time.Minute)
+	g := &Guard{kv: kv, holder: GuardHolder{InstanceID: id}, revision: 5, lastOK: before, logger: slog.New(slog.DiscardHandler)}
+	if lost := g.refreshOnce(context.Background()); lost {
+		t.Fatal("refreshOnce reported the guard lost")
+	}
+	if !g.lastOK.Equal(before) || g.revision != 5 {
+		t.Errorf("after a refused refresh: lastOK moved %s, revision %d; want unchanged at 5", g.lastOK.Sub(before), g.revision)
 	}
 }

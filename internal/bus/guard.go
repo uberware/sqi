@@ -700,7 +700,16 @@ func (g *Guard) reconcile(ctx context.Context) bool {
 	case entry == nil:
 		return g.retakeExpired(ctx)
 	case g.ownedBy(entry.Value()):
-		g.refreshed(entry.Revision())
+		// A refresh that landed after it was abandoned moved the key on, and
+		// counts. At the same revision nothing was refreshed: the write the
+		// server refused this one for is still in flight and may be another
+		// server's, which the next refresh finds.
+		g.mu.Lock()
+		same := entry.Revision() == g.revision
+		g.mu.Unlock()
+		if !same {
+			g.refreshed(entry.Revision())
+		}
 		return false
 	default:
 		g.markLost(ctx, entry.Value())
