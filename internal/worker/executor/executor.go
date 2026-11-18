@@ -330,34 +330,22 @@ func New(
 
 // Dispatch implements [pull.TaskDispatcher].
 //
-// It creates a session, which enters the assignment's environments, and then
-// launches a goroutine that executes the task process.  Session creation runs
-// synchronously; the task goroutine runs independently.  The server gates
-// concurrency by CPU cores; the worker runs whatever it is leased.
+// It creates a session synchronously, which enters the assignment's
+// environments, then runs the task process on its own goroutine. The run is
+// registered, with its context derived from e.execCtx, before the session is
+// created, so a [Executor.Cancel] and the shutdown drain reach an environment
+// being entered. ctx, the worker's root context, is used for logging and to
+// tell whether the worker is stopping.
 //
-// The run is registered, and its context made, before the session is
-// created, so the whole of session setup is part of the run: a [Executor.Cancel]
-// stops an environment being entered, the shutdown drain waits for it within
-// its grace period and stops it after, and the run's context, derived from
-// e.execCtx, governs it. ctx, the lease loop's, is the worker's root context:
-// it is used for logging and to tell whether the worker is stopping.
+// Once ctx is done (SIGINT/SIGTERM, a service stop, a preemption notice), an
+// assignment is not started: it is reported "failed" with
+// [protocol.MessageWorkerShutdown] so the server reclaims it. Otherwise the rest
+// of a leased batch would enter its environments during the drain.
 //
-// An assignment dispatched once ctx is done (the worker received SIGINT or
-// SIGTERM, a service stop, or a preemption notice) is not started: no
-// environment is entered and nothing runs, the attempt is reported "failed"
-// with [protocol.MessageWorkerShutdown] so the server reclaims it, and an error
-// is returned. The lease loop dispatches a whole batch in turn, so without this
-// the rest of a batch would enter its environments during the drain.
-//
-// If session creation fails — e.g. run-as-user credential resolution,
-// ancestor validation, working-directory setup or an environment's onEnter —
-// the failure is published as a terminal task-status message (see
-// [Executor.publishSetupFailure]) rather than only logged and returned.
-// Without this, the lease loop's caller only logs the error and the task is
-// left in "assigned" until the server's heartbeat/lease sweep eventually
-// reclaims and retries it, surfacing as a bare timeout instead of the actual
-// operator-actionable reason. The returned error is preserved so the lease
-// loop's own logging is unchanged.
+// A failed session setup is published as a terminal status (see
+// [Executor.publishSetupFailure]), so the server sees the actual reason rather
+// than a lease timeout. Both cases also return an error for the lease loop to
+// log.
 func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error {
 	// Idempotent: the lease loop normally held the whole batch already. From
 	// here every return that does not start runTask must release the attempt;
@@ -442,7 +430,7 @@ func (e *Executor) refuseStopping(ctx context.Context, msg *protocol.AssignMsg) 
 		slog.String("task_id", msg.TaskID),
 		slog.String("attempt_id", msg.AttemptID),
 	)
-	e.publishStopped(msg, "", "failed", protocol.MessageWorkerShutdown)
+	e.publishEnded(msg, "", "failed", nil, protocol.MessageWorkerShutdown)
 	// Released only after the status is published, as failSetup does.
 	e.release(msg.AttemptID)
 	return err

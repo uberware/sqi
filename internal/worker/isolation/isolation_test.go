@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/uberware/sqi/internal/worker/isolation"
+	"github.com/uberware/sqi/internal/worker/proctree"
 )
 
 func TestApplyNilCredentialLeavesCmdUnchanged(t *testing.T) {
@@ -36,7 +37,7 @@ func TestApplyPreservesExistingSysProcAttr(t *testing.T) {
 	}
 
 	cmd := exec.CommandContext(context.Background(), "true")
-	configureTestProcessGroup(cmd) // mirrors the executor's process-group setup
+	proctree.Configure(cmd) // the executor's process-group setup
 
 	if err := isolation.Apply(cmd, cred); err != nil {
 		t.Fatalf("Apply: %v", err)

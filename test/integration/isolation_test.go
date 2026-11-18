@@ -86,6 +86,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/envutil"
 	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
+	"github.com/uberware/sqi/internal/worker/proctree"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
 	"github.com/uberware/sqi/internal/worker/staging"
@@ -219,17 +220,6 @@ func newUnisolatedSession(t *testing.T, dataDir string) *session.Session {
 	return sess
 }
 
-// configureProcessGroupForTest mirrors internal/worker/proctree's
-// Configure (tree_unix.go) exactly: Setpgid must be set BEFORE
-// isolation.Apply so Apply's contract ("MUST preserve any SysProcAttr fields
-// the caller already set") is exercised the same way production does.
-func configureProcessGroupForTest(cmd *exec.Cmd) {
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true
-}
-
 // runInSession launches action inside sess exactly as
 // internal/worker/executor.execProcess does: cmd.Dir = sess.WorkDir, Setpgid
 // configured first, isolation.Apply second, environment built from
@@ -238,7 +228,7 @@ func configureProcessGroupForTest(cmd *exec.Cmd) {
 func runInSession(sess *session.Session, action *protocol.Action, envOverrides map[string]string) (string, error) {
 	cmd := exec.CommandContext(context.Background(), action.Command, action.Args...)
 	cmd.Dir = sess.WorkDir
-	configureProcessGroupForTest(cmd)
+	proctree.Configure(cmd)
 	if err := isolation.Apply(cmd, sess.Credential()); err != nil {
 		return "", fmt.Errorf("apply run-as-user credential: %w", err)
 	}
@@ -629,7 +619,7 @@ func TestIsolation_DaemonSecretAbsentAllowlistedLicensePresent(t *testing.T) {
 }
 
 // TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild proves
-// isolation.Apply preserves Setpgid (configureProcessGroupForTest, applied
+// isolation.Apply preserves Setpgid (proctree.Configure, applied
 // FIRST, mirroring internal/worker/executor.execProcess): a privilege-dropped
 // child that itself spawns a grandchild must have BOTH reaped by a SIGKILL to
 // the process group. cmd.Dir is "/" — this test is about SysProcAttr
@@ -644,7 +634,7 @@ func TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild(t *testing.T)
 
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", "sleep 300 & sleep 300 & wait")
 	cmd.Dir = "/"
-	configureProcessGroupForTest(cmd)
+	proctree.Configure(cmd)
 	if err := isolation.Apply(cmd, cred); err != nil {
 		t.Fatalf("apply credential: %v", err)
 	}

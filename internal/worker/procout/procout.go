@@ -141,6 +141,16 @@ func (o *Output) Discard() {
 	}
 }
 
+// Abort kills the process, drops its output and reaps it, for a caller that
+// started the process but cannot go on with it. It returns the kill error; the
+// process's exit status is of no interest after a forced kill.
+func (o *Output) Abort() error {
+	killErr := o.cmd.Process.Kill()
+	o.Discard()
+	o.Wait(nil) //nolint:errcheck // reaping only; the exit status of a killed process says nothing
+	return killErr
+}
+
 // Exited returns a channel that is closed once Wait has seen the process
 // exit, before Wait waits for the output to close. A caller that must not act
 // on a process that has already exited, while its output is still being

@@ -245,34 +245,21 @@ func (e *Executor) runTask(
 		e.publishTerminal(msg, sess.ID, "failed", &exitCode, openjdFailReason, lp, result)
 
 	case result.Canceled:
-		// Task was killed due to context cancellation.  If DrainAndShutdown set
-		// shuttingDown before canceling execCtx, this is a worker force-shutdown:
-		// publish "failed"/"worker_shutdown". Otherwise it is a
-		// per-task server cancel: publish "canceled".
+		// Task was killed due to context cancellation: by the shutdown drain
+		// ("failed"/"worker_shutdown") or by a per-task cancel ("canceled").
 		failed = true
-		if e.shuttingDown.Load() {
-			// Worker force-shutdown path.
-			e.logger.InfoContext(
-				ctx, "executor: task failed (worker shutdown)",
-				slog.String("task_id", msg.TaskID),
-				slog.String("attempt_id", msg.AttemptID),
-				slog.String("session_id", sess.ID),
-				slog.Int("pid", result.PID),
-				slog.Duration("duration", result.duration()),
-			)
-			e.publishTerminal(msg, sess.ID, "failed", nil, protocol.MessageWorkerShutdown, lp, result)
-		} else {
-			// Per-task server cancel.
-			e.logger.InfoContext(
-				ctx, "executor: task canceled",
-				slog.String("task_id", msg.TaskID),
-				slog.String("attempt_id", msg.AttemptID),
-				slog.String("session_id", sess.ID),
-				slog.Int("pid", result.PID),
-				slog.Duration("duration", result.duration()),
-			)
-			e.publishTerminal(msg, sess.ID, "canceled", nil, "", lp, result)
-		}
+		status, reason := e.stopOutcome()
+		e.logger.InfoContext(
+			ctx, "executor: task stopped",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+			slog.String("session_id", sess.ID),
+			slog.String("status", status),
+			slog.String("reason", reason),
+			slog.Int("pid", result.PID),
+			slog.Duration("duration", result.duration()),
+		)
+		e.publishTerminal(msg, sess.ID, status, nil, reason, lp, result)
 
 	case result.TimedOut:
 		// Per-task timeout exceeded.
@@ -346,10 +333,8 @@ func (e *Executor) endedByOnRunGuard(ctx context.Context, msg *protocol.AssignMs
 			slog.String("task_id", msg.TaskID),
 			slog.String("attempt_id", msg.AttemptID),
 		)
-		e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
 		zero := 0
-		e.statusPub.Terminal(context.Background(), msg, sessID, "succeeded", &zero, "", nil, time.Now())
-		e.m.TasksTotal.WithLabelValues("succeeded").Inc()
+		e.publishEnded(msg, sessID, "succeeded", &zero, "")
 		return true
 	}
 
@@ -358,12 +343,7 @@ func (e *Executor) endedByOnRunGuard(ctx context.Context, msg *protocol.AssignMs
 			ctx, "executor: OnRun.Command is empty — failing task",
 			slog.String("task_id", msg.TaskID),
 		)
-		*failed = true
-		e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
-		minusOne := -1
-		e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &minusOne,
-			"task has an empty command", nil, time.Now())
-		e.m.TasksTotal.WithLabelValues("failed").Inc()
+		e.failPreExec(msg, sessID, failed, "task has an empty command")
 		return true
 	}
 	return false
@@ -388,7 +368,7 @@ func (e *Executor) stoppedBeforeStart(
 		slog.String("session_id", sessID),
 		slog.String("status", status),
 	)
-	e.publishStopped(msg, sessID, status, reason)
+	e.publishEnded(msg, sessID, status, nil, reason)
 	return true
 }
 
@@ -581,53 +561,32 @@ func resolveAssignmentExpr(msg *protocol.AssignMsg, sess *session.Session) (*pro
 	return resolvedRun, resolvedEnvVars, resolvedFiles, nil
 }
 
+// preExecExitCode returns the exit code reported for a task that failed before
+// its process ran.
+func preExecExitCode() *int {
+	code := -1
+	return &code
+}
+
 // failPreExec publishes the running→failed transition for a pre-execution
 // failure (exit code -1) and marks the task failed. Callers log their own
 // context-specific message before calling.
 func (e *Executor) failPreExec(msg *protocol.AssignMsg, sessID string, failed *bool, reason string) {
 	*failed = true
-	e.publishPreExecFailure(msg, sessID, reason)
-}
-
-// publishPreExecFailure publishes the running→failed transition for a
-// pre-execution failure (exit code -1) and records the failure metric. It is
-// the part of failPreExec that does not flag a *bool, so
-// [Executor.publishSetupFailure] can reuse it for a failure that occurs before
-// any session exists: Dispatch has no session to clean up on the
-// keepFailedSessions path, because session creation is exactly what failed.
-//
-// Publishing the failure itself never blocks or panics the caller: Running
-// and Terminal both retry transient publish failures internally and then log
-// a warning and return — status loss is preferred over wedging the lease loop.
-func (e *Executor) publishPreExecFailure(msg *protocol.AssignMsg, sessID, reason string) {
-	e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
-	minusOne := -1
-	e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &minusOne, reason, nil, time.Now())
-	e.m.TasksTotal.WithLabelValues("failed").Inc()
+	e.publishEnded(msg, sessID, "failed", preExecExitCode(), reason)
 }
 
 // publishSetupFailure publishes the outcome of a run whose session could not be
-// created (e.g. run-as-user credential resolution, ancestor validation,
-// working-directory setup or an environment's onEnter failing inside
-// session.Manager.Create), as "running" then a terminal status, and records it
-// in the task metrics under that status. The terminal status follows the rule
-// runTask applies to a canceled process:
-//
-//   - runCtx stopped by the shutdown drain: "failed" with
-//     [protocol.MessageWorkerShutdown] and no exit code;
-//   - runCtx stopped by a cancel: "canceled" with no exit code or reason;
-//   - otherwise: "failed" with exit code -1 and err's text, as
-//     [Executor.publishPreExecFailure] publishes.
-//
-// "running" comes first so the server sees assigned → running → terminal, the
-// arrows runTask uses. No session exists, so the messages carry no session ID.
+// created. A run whose context was stopped gets [Executor.stopOutcome];
+// otherwise it failed with exit code -1 and err's text. No session exists, so
+// the messages carry no session ID.
 func (e *Executor) publishSetupFailure(msg *protocol.AssignMsg, runCtx context.Context, err error) {
 	if runCtx.Err() == nil {
-		e.publishPreExecFailure(msg, "", err.Error())
+		e.publishEnded(msg, "", "failed", preExecExitCode(), err.Error())
 		return
 	}
 	status, reason := e.stopOutcome()
-	e.publishStopped(msg, "", status, reason)
+	e.publishEnded(msg, "", status, nil, reason)
 }
 
 // stopOutcome returns the terminal status and reason for a run whose context
@@ -640,12 +599,17 @@ func (e *Executor) stopOutcome() (status, reason string) {
 	return "canceled", ""
 }
 
-// publishStopped publishes "running" then status with reason and no exit code
-// for a run stopped before its process started, and records it in the task
-// metrics under status.
-func (e *Executor) publishStopped(msg *protocol.AssignMsg, sessID, status, reason string) {
+// publishEnded publishes "running" then status for a task that ended without a
+// process result, and records it in the task metrics under status. A nil
+// exitCode reports none. "running" comes first so the server sees assigned →
+// running → terminal, the arrows runTask uses.
+//
+// It never blocks or panics the caller: Running and Terminal retry transient
+// publish failures and then log a warning and return, because status loss is
+// preferred over wedging the lease loop.
+func (e *Executor) publishEnded(msg *protocol.AssignMsg, sessID, status string, exitCode *int, reason string) {
 	e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
-	e.statusPub.Terminal(context.Background(), msg, sessID, status, nil, reason, nil, time.Now())
+	e.statusPub.Terminal(context.Background(), msg, sessID, status, exitCode, reason, nil, time.Now())
 	e.m.TasksTotal.WithLabelValues(status).Inc()
 }
 
@@ -764,13 +728,9 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		// call Kill on. Kill and reap it here so a Supervise failure
 		// (resource exhaustion, restrictive policy, or a run-as-user
 		// permission problem) does not leave an unmanaged process behind.
-		if killErr := cmd.Process.Kill(); killErr != nil {
+		if killErr := out.Abort(); killErr != nil {
 			e.logger.WarnContext(context.Background(), "executor: kill process after supervise failure", slog.Any("error", killErr))
 		}
-		// Nothing reads the output yet, so drop it rather than leave Wait to
-		// the drain delay.
-		out.Discard()
-		out.Wait(nil) //nolint:errcheck // best-effort reap after a forced kill; the supervise error below is what the caller sees
 		return processResult{Err: fmt.Errorf("supervise task process tree: %w", err)}
 	}
 	defer func() {
@@ -885,45 +845,10 @@ func (e *Executor) waitWithTimeout(
 	}
 }
 
-// OpenJD Action.cancelation modes and notify-period bounds.
-//
-// These implement the OpenJD spec for how a running action is terminated on
-// cancel/timeout.  TERMINATE is the spec default when no cancelation is
-// specified: terminate immediately (SIGKILL on POSIX) with no SIGTERM grace.
-const (
-	// modeTerminate terminates the action immediately — SIGKILL on POSIX, no
-	// SIGTERM, no grace period.  This is the OpenJD spec default when an action
-	// declares no cancelation method.
-	modeTerminate = "TERMINATE"
-	// modeNotifyThenTerminate sends SIGTERM (notify), waits the effective notify
-	// period, then SIGKILL.
-	modeNotifyThenTerminate = "NOTIFY_THEN_TERMINATE"
-
-	// defaultNotifyPeriod is the OpenJD default notify period for an OnRun action
-	// using NOTIFY_THEN_TERMINATE when notifyPeriodInSeconds is unset (the "30s
-	// otherwise" default applies only to non-run actions, which are out of scope
-	// here).
-	defaultNotifyPeriod = 120 * time.Second
-)
-
-// terminationMode resolves the effective cancelation mode and, for
-// NOTIFY_THEN_TERMINATE, the effective notify period from an OpenJD
-// Action.cancelation method.
-//
-// A nil method (no cancelation specified) yields TERMINATE — the OpenJD spec
-// default — which terminates immediately with no notify period.  Any mode other
-// than NOTIFY_THEN_TERMINATE is likewise treated as TERMINATE.
-//
-// For NOTIFY_THEN_TERMINATE the notify period is NotifyPeriodSeconds when > 0,
-// otherwise the 120 s default, clamped to a 600 s maximum
-// (proctree.MaxNotifyPeriod).
-func terminationMode(c *protocol.CancelationMethod) (mode string, notifyPeriod time.Duration) {
-	notify, period := proctree.Resolve(c, defaultNotifyPeriod)
-	if !notify {
-		return modeTerminate, 0
-	}
-	return modeNotifyThenTerminate, period
-}
+// defaultNotifyPeriod is the OpenJD default notify period for an OnRun action
+// using NOTIFY_THEN_TERMINATE when notifyPeriodInSeconds is unset (other
+// actions default to 30 s; see internal/worker/session).
+const defaultNotifyPeriod = 120 * time.Second
 
 // killAndWait terminates the process and blocks until waitDone reports that it
 // has exited and its output readers have finished.
@@ -971,9 +896,7 @@ func (e *Executor) killAndWait(
 		// or openjd_fail): honor the OpenJD Action.cancelation method.  TERMINATE
 		// (the spec default) kills immediately; NOTIFY_THEN_TERMINATE notifies
 		// first and waits the effective notify period.
-		mode, period := terminationMode(cancelation)
-		notify = mode == modeNotifyThenTerminate
-		gracePeriod = period
+		notify, gracePeriod = proctree.Resolve(cancelation, defaultNotifyPeriod)
 	}
 
 	e.logger.WarnContext(

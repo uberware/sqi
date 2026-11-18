@@ -677,13 +677,13 @@ task is reported as `worker_shutdown`. A job or task cancel likewise reaches an
 fails or is stopped, every environment already entered still runs its
 `onExit`, bounded only by that action's own `timeout:`. The worker keeps
 heartbeating throughout the drain, so a long grace period does not cost it its
-tasks. On machines an autoscaler terminates, set the autoscaler's termination hook to at least the
-grace period plus a third of it ([Capacity groups](capacity.md#draining-and-shutdown_grace_period)).
-An environment still being entered when the grace period ends is stopped by its
-own `cancelation:` method (a notify period of 30 s unless the template sets
-one, 600 s at most), and the environments already entered then run their
-`onExit`, bounded only by each action's own `timeout:`, so a hook for jobs that
-use environments allows for both.
+tasks.
+
+On machines an autoscaler terminates, set the autoscaler's termination hook to
+at least the grace period plus a third of it, plus, for jobs that use
+environments, an entering environment's notify period (30 s unless the template
+sets one, 600 s at most) and the `onExit` timeouts of the environments already
+entered ([Capacity groups](capacity.md#draining-and-shutdown_grace_period)).
 Must be `> 0`.
 
 ```yaml

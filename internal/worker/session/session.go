@@ -310,11 +310,16 @@ func (s *Session) ActiveTaskIDs() []string {
 // from individual OnExit actions are logged as warnings and the first one is
 // returned.
 //
+// Each onExit runs even when ctx is canceled (by a cancel or the shutdown
+// drain): teardown uses a context without ctx's cancellation, so only the
+// action's own timeout bounds it.
+//
 // ExitEnvironments is idempotent: the first call clears the
 // entered-environments list, so later calls are no-ops. [Manager.Cleanup]
 // always calls ExitEnvironments, so a caller that calls it beforehand (e.g.
 // on the cancellation path) still calls Cleanup.
 func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) error {
+	ctx = context.WithoutCancel(ctx)
 	s.mu.Lock()
 	envs := make([]protocol.AssignEnvironment, len(s.enteredEnvs))
 	copy(envs, s.enteredEnvs)
@@ -788,11 +793,7 @@ func (s *Session) enterEnvironments(ctx context.Context, envs []protocol.AssignE
 				slog.String("failed_env", env.Name),
 				slog.Any("error", err),
 			)
-			// The entry may have failed because ctx was canceled (a cancel or
-			// the worker's shutdown drain), and runAction starts nothing under
-			// a done context, so the earlier environments' onExit actions run
-			// under one that is not canceled, as they do in Manager.Cleanup.
-			if teardownErr := s.ExitEnvironments(context.WithoutCancel(ctx), logger); teardownErr != nil {
+			if teardownErr := s.ExitEnvironments(ctx, logger); teardownErr != nil {
 				logger.WarnContext(
 					ctx, "session: teardown after failed entry encountered additional errors",
 					slog.String("session_id", s.ID),
@@ -1345,14 +1346,10 @@ func startContainedAction(action *protocol.Action, workDir string, env []string,
 	if err != nil {
 		// Nothing has registered the process for cleanup and there is no tree
 		// to stop, so kill and reap it here rather than leave it unmanaged.
-		if killErr := cmd.Process.Kill(); killErr != nil {
+		if killErr := out.Abort(); killErr != nil {
 			logger.WarnContext(context.Background(), "session: kill environment action after supervise failure",
 				slog.String("command", action.Command), slog.Any("error", killErr))
 		}
-		// Nothing reads the output yet, so drop it rather than leave Wait to
-		// the drain delay.
-		out.Discard()
-		out.Wait(nil) //nolint:errcheck // best-effort reap after a forced kill; the supervise error below is what the caller sees
 		return nil, nil, fmt.Errorf("supervise %q process tree: %w", action.Command, err)
 	}
 	return out, tree, nil

@@ -19,24 +19,8 @@ import (
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
-	"github.com/uberware/sqi/internal/worker/procout"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
-
-// lowerDrainDelay shortens procout.DrainDelay for the test, so an action whose
-// descendant survives it returns quickly enough to be measured.
-func lowerDrainDelay(t *testing.T) {
-	t.Helper()
-	setDrainDelay(t, 200*time.Millisecond)
-}
-
-// setDrainDelay sets procout.DrainDelay to d for the test.
-func setDrainDelay(t *testing.T, d time.Duration) {
-	t.Helper()
-	orig := procout.DrainDelay
-	procout.DrainDelay = d
-	t.Cleanup(func() { procout.DrainDelay = orig })
-}
 
 // childRecorder is a runAction line handler that records each `child=<pid>`
 // line and kills every recorded process when the test ends.
@@ -99,43 +83,9 @@ func processGone(pid int, d time.Duration) bool {
 	}
 }
 
-// runActionAsync runs action through runAction in the background and returns
-// the channel its error arrives on.
-func runActionAsync(ctx context.Context, t *testing.T, action *protocol.Action, handler func(stream, line string) string) <-chan error {
-	t.Helper()
-	dir := t.TempDir()
-	result := make(chan error, 1)
-	go func() { result <- runAction(ctx, action, dir, nil, nil, nopLogger(), handler) }()
-	return result
-}
-
-// awaitRunAction waits up to d for the action's result.
-func awaitRunAction(t *testing.T, result <-chan error, d time.Duration) error {
-	t.Helper()
-	select {
-	case err := <-result:
-		return err
-	case <-time.After(d):
-		t.Fatalf("runAction did not return within %v", d)
-		return nil
-	}
-}
-
 // shAction is an environment action running script under sh -c.
 func shAction(script string, timeout int, cancelation *protocol.CancelationMethod) *protocol.Action {
 	return &protocol.Action{Command: "sh", Args: []string{"-c", script}, TimeoutSeconds: timeout, Cancelation: cancelation}
-}
-
-// wantTimedOut fails the test unless err reports the action's 1s timeout, and
-// not a cancel.
-func wantTimedOut(t *testing.T, err error) {
-	t.Helper()
-	if err == nil || !strings.Contains(err.Error(), "timed out after 1s") {
-		t.Errorf("runAction error = %v, want one saying it timed out after 1s", err)
-	}
-	if errors.Is(err, context.Canceled) {
-		t.Errorf("runAction error = %v wraps context.Canceled; a timeout is not a cancel", err)
-	}
 }
 
 const backgroundSleep = "sleep 300 & echo child=$!; wait"
@@ -165,7 +115,6 @@ func TestRunAction_CancelKillsTheWholeTree(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the action never reported its child")
 	}
-	time.Sleep(500 * time.Millisecond)
 	cancel()
 	err := awaitRunAction(t, result, 10*time.Second)
 	if !errors.Is(err, context.Canceled) {
@@ -219,7 +168,7 @@ func TestRunAction_NotifyThenTerminate(t *testing.T) {
 		lowerDrainDelay(t)
 		rec := newChildRecorder(t)
 		script := "(trap '' TERM; exec sleep 300) & echo child=$!; trap 'exit 0' TERM; while :; do sleep 0.1; done"
-		err := awaitRunAction(t, runActionAsync(context.Background(), t, shAction(script, 1, notifyFor(2)), rec.handle), 15*time.Second)
+		err := awaitRunAction(t, runActionAsync(context.Background(), t, shAction(script, 1, notifyFor(1)), rec.handle), 15*time.Second)
 		wantTimedOut(t, err)
 		if pid := rec.pid(t); !processGone(pid, 5*time.Second) {
 			t.Errorf("child %d that ignored SIGTERM survived its leader's exit and the notify period", pid)
@@ -248,7 +197,7 @@ func wantServiceRunning(t *testing.T, err error, rec *childRecorder) {
 // is still draining, so the service it started keeps running and the action
 // succeeds.
 func TestRunAction_ExitBeforeTimeoutLeavesServiceRunning(t *testing.T) {
-	setDrainDelay(t, 3*time.Second)
+	setDrainDelay(t, 2*time.Second) // outlasts the 1s timeout
 	rec := newChildRecorder(t)
 	err := awaitRunAction(t, runActionAsync(context.Background(), t, shAction(backgroundService, 1, nil), rec.handle), 10*time.Second)
 	wantServiceRunning(t, err, rec)
@@ -258,7 +207,7 @@ func TestRunAction_ExitBeforeTimeoutLeavesServiceRunning(t *testing.T) {
 // after the action exited, while its output is still draining, stops
 // nothing.
 func TestRunAction_CancelAfterExitLeavesServiceRunning(t *testing.T) {
-	setDrainDelay(t, 3*time.Second)
+	setDrainDelay(t, 2*time.Second) // outlasts the cancel below
 	rec := newChildRecorder(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -268,7 +217,7 @@ func TestRunAction_CancelAfterExitLeavesServiceRunning(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the action never reported its child")
 	}
-	time.Sleep(time.Second)
+	time.Sleep(500 * time.Millisecond) // the action has exited; its output is still draining
 	cancel()
 	wantServiceRunning(t, awaitRunAction(t, result, 10*time.Second), rec)
 }
@@ -316,15 +265,8 @@ func TestManagerCreate_StoppedEntryStillRunsOnExit(t *testing.T) {
 		result <- err
 	}()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(bIn); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("environment B's onEnter never started")
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !waitForFile(bIn, 10*time.Second) {
+		t.Fatal("environment B's onEnter never started")
 	}
 	cancel()
 

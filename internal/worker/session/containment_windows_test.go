@@ -6,16 +6,13 @@ package session
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/uberware/sqi/internal/worker/procout"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -30,12 +27,16 @@ import (
 // os/exec quotes arguments the CommandLineToArgvW way, which cmd.exe does not
 // parse; the paths are passed unquoted (TempDir paths contain no spaces).
 //
-// Any process still running from the scripts' directory is killed when the
-// test ends.
+// If the test failed, any process still running from the scripts' directory
+// is killed when it ends; a passing test leaves none.
 func startsDetachedGrandchild(t *testing.T, pingSeconds, leaderPings int) (action *protocol.Action, marker string) {
 	t.Helper()
 	dir := t.TempDir()
-	t.Cleanup(func() { killProcessesUnder(t, dir) })
+	t.Cleanup(func() {
+		if t.Failed() {
+			killProcessesUnder(t, dir)
+		}
+	})
 	marker = filepath.Join(dir, "marker.txt")
 	grandchild := filepath.Join(dir, "grandchild.bat")
 	grandchildScript := "@echo off\r\nping -n " + strconv.Itoa(pingSeconds) + " 127.0.0.1 > nul\r\necho alive > \"" + marker + "\"\r\n"
@@ -62,41 +63,12 @@ func killProcessesUnder(t *testing.T, dir string) {
 	}
 }
 
-// lowerWindowsDrainDelay shortens procout.DrainDelay for the test, so an
-// action whose grandchild holds its output returns quickly.
-func lowerWindowsDrainDelay(t *testing.T) {
-	t.Helper()
-	orig := procout.DrainDelay
-	procout.DrainDelay = 200 * time.Millisecond
-	t.Cleanup(func() { procout.DrainDelay = orig })
-}
-
 // runActionWithin runs action and fails the test unless it returns within d.
 func runActionWithin(t *testing.T, action *protocol.Action, d time.Duration) (elapsed time.Duration, err error) {
 	t.Helper()
-	dir := t.TempDir()
-	result := make(chan error, 1)
 	start := time.Now()
-	go func() { result <- runAction(context.Background(), action, dir, nil, nil, nopLogger(), nil) }()
-	select {
-	case err = <-result:
-		return time.Since(start), err
-	case <-time.After(d):
-		t.Fatalf("runAction did not return within %v", d)
-		return 0, nil
-	}
-}
-
-// wantTimedOutAfter1s fails the test unless err reports the action's 1s
-// timeout, and not a cancel.
-func wantTimedOutAfter1s(t *testing.T, err error) {
-	t.Helper()
-	if err == nil || !strings.Contains(err.Error(), "timed out after 1s") {
-		t.Errorf("runAction error = %v, want one saying it timed out after 1s", err)
-	}
-	if errors.Is(err, context.Canceled) {
-		t.Errorf("runAction error = %v wraps context.Canceled; a timeout is not a cancel", err)
-	}
+	err = awaitRunAction(t, runActionAsync(context.Background(), t, action, nil), d)
+	return time.Since(start), err
 }
 
 // wantMarkerAbsentAfter fails the test if marker appears within d: the
@@ -112,19 +84,19 @@ func wantMarkerAbsentAfter(t *testing.T, marker string, d time.Duration) {
 // TestRunAction_TimeoutKillsDetachedGrandchild: an action's timeout stops a
 // grandchild it started detached, not only the process it ran.
 func TestRunAction_TimeoutKillsDetachedGrandchild(t *testing.T) {
-	lowerWindowsDrainDelay(t)
-	action, marker := startsDetachedGrandchild(t, 5, 60)
+	lowerDrainDelay(t)
+	action, marker := startsDetachedGrandchild(t, 3, 60)
 	action.TimeoutSeconds = 1
 	_, err := runActionWithin(t, action, 10*time.Second)
-	wantTimedOutAfter1s(t, err)
-	wantMarkerAbsentAfter(t, marker, 7*time.Second)
+	wantTimedOut(t, err)
+	wantMarkerAbsentAfter(t, marker, 4*time.Second)
 }
 
 // TestRunAction_NormalExitLeavesDetachedGrandchild: an action that exits on
 // its own leaves running what it started, such as a service an onEnter
 // starts for the session's tasks.
 func TestRunAction_NormalExitLeavesDetachedGrandchild(t *testing.T) {
-	lowerWindowsDrainDelay(t)
+	lowerDrainDelay(t)
 	action, marker := startsDetachedGrandchild(t, 3, 1)
 	if _, err := runActionWithin(t, action, 10*time.Second); err != nil {
 		t.Fatalf("runAction: %v", err)
@@ -145,14 +117,14 @@ func TestRunAction_NormalExitLeavesDetachedGrandchild(t *testing.T) {
 // end a console process, so a NOTIFY_THEN_TERMINATE stop kills the tree at
 // once rather than waiting out the notify period.
 func TestRunAction_NotifyFallsThroughToKill(t *testing.T) {
-	lowerWindowsDrainDelay(t)
-	action, marker := startsDetachedGrandchild(t, 5, 60)
+	lowerDrainDelay(t)
+	action, marker := startsDetachedGrandchild(t, 3, 60)
 	action.TimeoutSeconds = 1
 	action.Cancelation = &protocol.CancelationMethod{Mode: "NOTIFY_THEN_TERMINATE", NotifyPeriodSeconds: 30}
 	elapsed, err := runActionWithin(t, action, 40*time.Second)
 	if elapsed >= 20*time.Second {
 		t.Errorf("runAction took %v: it waited out the 30s notify period", elapsed)
 	}
-	wantTimedOutAfter1s(t, err)
-	wantMarkerAbsentAfter(t, marker, 7*time.Second)
+	wantTimedOut(t, err)
+	wantMarkerAbsentAfter(t, marker, 4*time.Second)
 }

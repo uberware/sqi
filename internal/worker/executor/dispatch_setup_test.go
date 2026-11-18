@@ -97,6 +97,60 @@ func waitForMarker(t *testing.T, path string, d time.Duration) {
 	}
 }
 
+// wantSetupError fails the test unless Dispatch returned an error within d.
+func wantSetupError(t *testing.T, result chan error, d time.Duration) {
+	t.Helper()
+	if err := awaitDispatch(t, result, d); err == nil {
+		t.Error("Dispatch returned nil; want the stopped entry's error")
+	}
+}
+
+// wantWorkerShutdown fails the test unless the last status published is
+// "failed" with [protocol.MessageWorkerShutdown].
+func wantWorkerShutdown(t *testing.T, nc *stubNATS) {
+	t.Helper()
+	msgs := nc.statusMsgs()
+	if len(msgs) == 0 {
+		t.Fatal("no status was published")
+	}
+	if last := msgs[len(msgs)-1]; last.Status != "failed" || last.Message != protocol.MessageWorkerShutdown {
+		t.Errorf("terminal status = %q (%q), want failed (%q)", last.Status, last.Message, protocol.MessageWorkerShutdown)
+	}
+}
+
+// drainWithin runs DrainAndShutdown(grace) and fails the test unless it
+// returns within 15s.
+func drainWithin(t *testing.T, exec *executor.Executor, grace time.Duration) (completed, killed int) {
+	t.Helper()
+	type drained struct{ completed, killed int }
+	done := make(chan drained, 1)
+	go func() {
+		c, k := exec.DrainAndShutdown(grace)
+		done <- drained{c, k}
+	}()
+	select {
+	case got := <-done:
+		return got.completed, got.killed
+	case <-time.After(15 * time.Second):
+		t.Fatal("DrainAndShutdown did not return within 15s")
+		return 0, 0
+	}
+}
+
+// twoEnvAssign is an assignment entering A (onEnter, onExit) then B, whose
+// onEnter blocks. It returns the paths A's onExit and B's onEnter create.
+func twoEnvAssign(t *testing.T) (msg *protocol.AssignMsg, aOut, bIn string) {
+	t.Helper()
+	dir := t.TempDir()
+	aIn := filepath.Join(dir, "a-in")
+	aOut, bIn = filepath.Join(dir, "a-out"), filepath.Join(dir, "b-in")
+	msg = setupAssign(
+		touchEnv("A", touchAction(aIn, ""), touchAction(aOut, "")),
+		touchEnv("B", touchAction(bIn, "300s"), nil),
+	)
+	return msg, aOut, bIn
+}
+
 // TestDispatch_CancelDuringOnEnterReportsCanceled: a cancel that arrives while
 // an environment is being entered stops the entry, and the task is reported
 // canceled.
@@ -115,9 +169,7 @@ func TestDispatch_CancelDuringOnEnterReportsCanceled(t *testing.T) {
 	if !exec.Cancel(msg.TaskID, msg.AttemptID) {
 		t.Fatal("Cancel did not find the task whose environment is being entered")
 	}
-	if err := awaitDispatch(t, result, 10*time.Second); err == nil {
-		t.Fatal("Dispatch returned nil; want the stopped entry's error")
-	}
+	wantSetupError(t, result, 10*time.Second)
 	if got := nc.statuses(); !slices.Equal(got, []string{"running", "canceled"}) {
 		t.Fatalf("statuses = %v, want [running canceled]", got)
 	}
@@ -145,21 +197,14 @@ func TestDispatch_RefusesAssignmentOnceWorkerIsStopping(t *testing.T) {
 		t.Fatal("Dispatch returned nil; want an error for a worker that is stopping")
 	}
 
-	time.Sleep(2 * time.Second)
+	// Dispatch is synchronous: an onEnter it started would have run by now.
 	if _, err := os.Stat(entered); err == nil {
 		t.Error("the environment's onEnter ran on a worker that is stopping")
 	}
-	msgs := nc.statusMsgs()
-	got := make([]string, 0, len(msgs))
-	for _, m := range msgs {
-		got = append(got, m.Status)
-	}
-	if !slices.Equal(got, []string{"running", "failed"}) {
+	if got := nc.statuses(); !slices.Equal(got, []string{"running", "failed"}) {
 		t.Fatalf("statuses = %v, want [running failed]", got)
 	}
-	if last := msgs[len(msgs)-1]; last.Message != protocol.MessageWorkerShutdown {
-		t.Errorf("terminal message = %q, want %q", last.Message, protocol.MessageWorkerShutdown)
-	}
+	wantWorkerShutdown(t, nc)
 	held.require(t)
 	if ids := exec.ActiveAttemptIDs(); len(ids) != 0 {
 		t.Errorf("held after Dispatch returned = %v, want none", ids)
@@ -173,10 +218,10 @@ func TestDispatch_RefusesAssignmentOnceWorkerIsStopping(t *testing.T) {
 // attempt as it is registered, which is after its session exists and before
 // anything of the task is staged or started.
 type cancelOnRegister struct {
+	*captureOutput
+
 	exec *executor.Executor
 }
-
-func (*cancelOnRegister) HandleLine(context.Context, string, string, string, string, string) {}
 
 func (c *cancelOnRegister) RegisterTask(attemptID, taskID, _, _ string, _ context.CancelFunc) {
 	c.exec.Cancel(taskID, attemptID)
@@ -191,7 +236,7 @@ func (*cancelOnRegister) TakeFailReason(string) (string, bool) { return "", fals
 // and no attempt is made to start the task's process. The task's command does
 // not exist, so an attempt to start it would be reported failed.
 func TestDispatch_CancelAfterSetupStartsNoProcess(t *testing.T) {
-	hook := &cancelOnRegister{}
+	hook := &cancelOnRegister{captureOutput: &captureOutput{}}
 	exec, nc, _ := newTestExecutorHandler(t, hook, fmtres.ExprLimits{})
 	hook.exec = exec
 	msg := setupAssign(touchEnv("A", nil, nil))
@@ -242,33 +287,11 @@ func TestDispatch_DrainStopsOnEnterAfterGrace(t *testing.T) {
 	result := dispatchAsync(t, exec, msg)
 	waitForMarker(t, started, 10*time.Second)
 
-	type drained struct{ completed, killed int }
-	done := make(chan drained, 1)
-	go func() {
-		c, k := exec.DrainAndShutdown(500 * time.Millisecond)
-		done <- drained{c, k}
-	}()
-	var got drained
-	select {
-	case got = <-done:
-	case <-time.After(15 * time.Second):
-		t.Fatal("DrainAndShutdown did not return within 15s")
+	if _, killed := drainWithin(t, exec, 500*time.Millisecond); killed != 1 {
+		t.Errorf("DrainAndShutdown killed = %d, want 1", killed)
 	}
-	if got.killed != 1 {
-		t.Errorf("DrainAndShutdown killed = %d, want 1", got.killed)
-	}
-
-	msgs := nc.statusMsgs()
-	if len(msgs) == 0 {
-		t.Fatal("no status was published before DrainAndShutdown returned")
-	}
-	last := msgs[len(msgs)-1]
-	if last.Status != "failed" || last.Message != protocol.MessageWorkerShutdown {
-		t.Errorf("terminal status = %q (%q), want failed (%q)", last.Status, last.Message, protocol.MessageWorkerShutdown)
-	}
-	if err := awaitDispatch(t, result, 5*time.Second); err == nil {
-		t.Error("Dispatch returned nil; want the stopped entry's error")
-	}
+	wantWorkerShutdown(t, nc) // published before the drain returned
+	wantSetupError(t, result, 5*time.Second)
 }
 
 // TestDispatch_StoppedEntryRunsEarlierOnExit: when a cancel stops an
@@ -276,21 +299,14 @@ func TestDispatch_DrainStopsOnEnterAfterGrace(t *testing.T) {
 // exited.
 func TestDispatch_StoppedEntryRunsEarlierOnExit(t *testing.T) {
 	exec, _, _ := newTestExecutor(t, nil)
-	dir := t.TempDir()
-	aIn, aOut, bIn := filepath.Join(dir, "a-in"), filepath.Join(dir, "a-out"), filepath.Join(dir, "b-in")
-	msg := setupAssign(
-		touchEnv("A", touchAction(aIn, ""), touchAction(aOut, "")),
-		touchEnv("B", touchAction(bIn, "300s"), nil),
-	)
+	msg, aOut, bIn := twoEnvAssign(t)
 
 	result := dispatchAsync(t, exec, msg)
 	waitForMarker(t, bIn, 10*time.Second)
 	if !exec.Cancel(msg.TaskID, msg.AttemptID) {
 		t.Fatal("Cancel did not find the task whose environment is being entered")
 	}
-	if err := awaitDispatch(t, result, 10*time.Second); err == nil {
-		t.Fatal("Dispatch returned nil; want the stopped entry's error")
-	}
+	wantSetupError(t, result, 10*time.Second)
 	if _, err := os.Stat(aOut); err != nil {
 		t.Errorf("environment A's onExit did not run after B's entry was stopped: %v", err)
 	}
@@ -302,37 +318,15 @@ func TestDispatch_StoppedEntryRunsEarlierOnExit(t *testing.T) {
 // shutdown.
 func TestDispatch_DrainStopsEntryAndRunsEarlierOnExit(t *testing.T) {
 	exec, nc, _ := newTestExecutor(t, nil)
-	dir := t.TempDir()
-	aIn, aOut, bIn := filepath.Join(dir, "a-in"), filepath.Join(dir, "a-out"), filepath.Join(dir, "b-in")
-	msg := setupAssign(
-		touchEnv("A", touchAction(aIn, ""), touchAction(aOut, "")),
-		touchEnv("B", touchAction(bIn, "300s"), nil),
-	)
+	msg, aOut, bIn := twoEnvAssign(t)
 
 	result := dispatchAsync(t, exec, msg)
 	waitForMarker(t, bIn, 10*time.Second)
 
-	done := make(chan struct{})
-	go func() {
-		exec.DrainAndShutdown(500 * time.Millisecond)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(15 * time.Second):
-		t.Fatal("DrainAndShutdown did not return within 15s")
-	}
+	drainWithin(t, exec, 500*time.Millisecond)
 	if _, err := os.Stat(aOut); err != nil {
 		t.Errorf("environment A's onExit had not run when the drain returned: %v", err)
 	}
-	msgs := nc.statusMsgs()
-	if len(msgs) == 0 {
-		t.Fatal("no status was published before DrainAndShutdown returned")
-	}
-	if last := msgs[len(msgs)-1]; last.Status != "failed" || last.Message != protocol.MessageWorkerShutdown {
-		t.Errorf("terminal status = %q (%q), want failed (%q)", last.Status, last.Message, protocol.MessageWorkerShutdown)
-	}
-	if err := awaitDispatch(t, result, 5*time.Second); err == nil {
-		t.Error("Dispatch returned nil; want the stopped entry's error")
-	}
+	wantWorkerShutdown(t, nc)
+	wantSetupError(t, result, 5*time.Second)
 }
