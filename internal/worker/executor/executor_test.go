@@ -1784,6 +1784,13 @@ func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
 		t.Errorf("terminal status = %q; want %q (pipeline failure must fail the task)", last.Status, "failed")
 	}
 
+	// The terminal status is published before the deferred Cleanup runs, so
+	// wait for the task goroutine to finish: it releases the attempt after
+	// Cleanup has returned.
+	if held := waitForNoAttempts(exec, 10*time.Second); len(held) != 0 {
+		t.Fatalf("attempts still held after the task failed: %v", held)
+	}
+
 	// The scratch directory must have been removed by the deferred Cleanup.
 	scratchDir := filepath.Join(scratchBase, jobID, attemptID)
 	if _, err := os.Stat(scratchDir); !os.IsNotExist(err) {
