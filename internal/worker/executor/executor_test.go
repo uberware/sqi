@@ -67,9 +67,9 @@ func TestExecutor_Dispatch_S3PathWithoutStaging(t *testing.T) {
 }
 
 // TestExecutor_firstS3Path verifies that FirstS3Path finds the first s3:// URI
-// in a resolved action's command, args, and env-var values.
-// With stage_locally enabled the guard does not trip on the pre-swap s3:// path
-// (staging is responsible for rewriting it to a scratch path).
+// in a resolved action's command, args, and env-var values. With stage_locally
+// enabled the guard does not apply to an s3:// path before staging, which
+// rewrites it to a scratch path.
 func TestExecutor_firstS3Path(t *testing.T) {
 	action := &protocol.Action{Command: "/bin/echo", Args: []string{"--in", "s3://b/x"}}
 	if p, ok := executor.FirstS3Path(action, nil); !ok || p != "s3://b/x" {
@@ -201,9 +201,9 @@ func TestMain(m *testing.M) {
 	case "ignore_term":
 		// Install SIGTERM handler first, then print "ready" so the parent
 		// test knows the handler is installed before it calls Cancel.
-		// signal.Notify is used (not signal.Ignore) so the Go runtime
-		// captures SIGTERM into our channel rather than relying on SIG_IGN,
-		// which the runtime may reset in the test-binary harness.
+		// signal.Notify captures SIGTERM into the channel; signal.Ignore
+		// would rely on SIG_IGN, which the Go runtime may reset in the
+		// test-binary harness.
 		// The drain loop keeps the process alive until SIGKILL arrives.
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, syscall.SIGTERM)
@@ -325,7 +325,7 @@ func (c *captureOutput) all() []capturedLine {
 }
 
 // newTestExecutor creates an Executor backed by a temp data dir and a stub
-// NATS.  The caller is responsible for removing the temp dir.
+// NATS.  The data dir is a test temp dir, removed when the test ends.
 func newTestExecutor(t *testing.T, capture *captureOutput) (*executor.Executor, *stubNATS, string) {
 	t.Helper()
 	return newTestExecutorLimited(t, capture, fmtres.ExprLimits{})
@@ -510,9 +510,9 @@ func TestExecutor_Dispatch_stdout(t *testing.T) {
 
 // TestExecutor_Dispatch_LongOutputLineDoesNotHang verifies that a task writing
 // an output line over 64 KiB still completes, that the line arrives as 64 KiB
-// pieces, and that the lines after it still arrive. It guards against reading
-// stopping at the long line, which left the pipe undrained and the process
-// blocked writing it.
+// pieces, and that the lines after it still arrive. A reader that stopped at
+// the long line would leave the pipe undrained and the process blocked
+// writing to it.
 func TestExecutor_Dispatch_LongOutputLineDoesNotHang(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -749,7 +749,6 @@ func TestExecutor_DrainAndShutdown_allComplete(t *testing.T) {
 		t.Errorf("completed = %d; want 2", completed)
 	}
 
-	// Both tasks should have published succeeded status.
 	_ = nc
 }
 
@@ -1126,7 +1125,7 @@ func TestExecutor_Cancel_canceledStatus(t *testing.T) {
 	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "30s"})
-	ctx := context.Background() // worker-wide context — NOT canceled
+	ctx := context.Background() // worker-wide context, never canceled
 	if err := exec.Dispatch(ctx, msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -1167,13 +1166,10 @@ func TestExecutor_Cancel_sigkillEscalation(t *testing.T) {
 		t.Skip("SIGTERM/SIGKILL escalation is Unix-specific; Windows uses taskkill")
 	}
 
-	// captureOutput is required here so we can wait for the "ready" line
-	// that the subprocess prints after installing its SIGTERM handler.
-	// Waiting for "ready" (not just "running") avoids the race between
-	// signal.Notify and SIGTERM delivery that arises because "running" is
-	// published before cmd.Start(), leaving the subprocess with almost no
-	// time to set up signal handling before Cancel is called — especially
-	// under the -race build which slows Go runtime initialization.
+	// captureOutput lets the test wait for the "ready" line that the
+	// subprocess prints after installing its SIGTERM handler. "running" is
+	// published before the process starts, so waiting for it alone would race
+	// between signal.Notify in the subprocess and the SIGTERM sent by Cancel.
 	capture := &captureOutput{}
 	exec, nc, _ := newTestExecutor(t, capture)
 
@@ -1208,9 +1204,9 @@ func TestExecutor_Cancel_sigkillEscalation(t *testing.T) {
 
 	elapsed := time.Since(cancelAt)
 	// Lower bound: the subprocess drains SIGTERM without exiting and must
-	// survive until SIGKILL arrives after the 1s notify period.  700ms is
-	// generous enough to avoid flakiness under -race while still proving
-	// that the grace timer fired before SIGKILL was sent.
+	// survive until SIGKILL arrives after the 1s notify period. 700ms leaves
+	// slack for scheduling delay while showing that the notify timer ran
+	// before SIGKILL was sent.
 	if elapsed < 700*time.Millisecond {
 		t.Errorf("process exited in %v — SIGKILL arrived before the 1s notify period elapsed, "+
 			"suggesting the SIGTERM→SIGKILL escalation path was not exercised", elapsed)
@@ -1335,11 +1331,9 @@ func TestExecutor_Cancel_terminateImmediate(t *testing.T) {
 
 	waitForStatus(t, nc, 2, 10*time.Second)
 
-	// Immediate SIGKILL: the SIGTERM-ignoring process must NOT be waited on for
-	// the 500 ms KillGracePeriod.  Generous upper bound for scheduling/-race slack
-	// while still well below the old grace-then-kill timing.
-	// 400ms < 500ms KillGracePeriod: any SIGTERM+grace path would exceed this
-	// bound, proving immediate SIGKILL with no SIGTERM or grace wait.
+	// Immediate SIGKILL: the SIGTERM-ignoring process is not waited on for
+	// the 500 ms KillGracePeriod. 400ms is below KillGracePeriod, so any
+	// SIGTERM-then-grace path would exceed it.
 	if elapsed := time.Since(cancelAt); elapsed > 400*time.Millisecond {
 		t.Errorf("process took %v to exit after Cancel; want prompt SIGKILL with no grace wait", elapsed)
 	}
@@ -1594,36 +1588,30 @@ func TestExecutor_Dispatch_embeddedFiles_writeFail(t *testing.T) {
 
 // ── Dispatch-time pre-execution failure tests ────────────────────────────────
 //
-// Unlike the pre-exec failures above (which happen inside the task goroutine,
-// after Dispatch has already returned nil), these cover a failure in
-// session.Manager.Create itself — synchronous, inside Dispatch, before any
-// taskRun exists. If Dispatch only returned the error to its caller (the
-// lease loop), which logs a warning and drops it, no status would be
-// published, so the task would sit in "assigned" until the server's
-// heartbeat/lease sweep reclaimed and retried it, eventually surfacing only
-// as a bare timeout instead of the actual reason.
+// Unlike the pre-exec failures above, which happen inside the task goroutine
+// after Dispatch has returned nil, these cover a failure in
+// session.Manager.Create itself: synchronous, inside Dispatch, before any
+// taskRun exists. The caller (the lease loop) only logs the returned error, so
+// Dispatch must also publish a failed status. Otherwise the task stays
+// "assigned" until the server's heartbeat/lease sweep reclaims it, and the
+// reason is never reported.
 
 // newCredentialFailureSessionRoot builds a session root directory that
 // isolation.ValidateTraversable (called from session.Manager.Create, before
-// any credential is resolved, the moment an assignment carries run-as-user
-// isolation) will always accept, on any machine, without chmod'ing anything
-// this test does not itself own.
+// any credential is resolved, when an assignment carries run-as-user
+// isolation) accepts on any machine, without chmod'ing anything this test
+// does not itself own.
 //
-// t.TempDir() cannot be used for this: on macOS it sits several
-// testing/OS-owned layers under $TMPDIR (e.g. /var/folders/<x>/<y>/T), each
-// hardcoded 0700 by construction, and some sandboxed dev environments refuse
-// to widen those regardless of Unix ownership — chmod succeeds but the mode
-// is silently unchanged. That made the credential-resolution-failure test
-// this fixture supports skip via t.Skipf on such machines, proving nothing
-// there. Rooting instead directly under the OS-standard, universally
-// 1777 /tmp sidesteps the problem rather than working around it: this test
-// only ever needs to widen the ONE directory it creates (MkdirTemp always
-// creates 0700 regardless of what mode is requested), because every ancestor
-// above it (/tmp itself, and above that /, both effectively fixed system
-// directories) is already traversable by design on every POSIX system.
+// t.TempDir() cannot be used for this: on macOS it sits several OS-owned
+// layers under $TMPDIR (e.g. /var/folders/<x>/<y>/T), each mode 0700, and
+// some sandboxed environments leave those modes unchanged even when chmod
+// succeeds. The root is therefore made directly under /tmp, which is mode
+// 1777. Only the one directory this function creates needs widening
+// (MkdirTemp creates it 0700), because every ancestor of it (/tmp and /) is
+// traversable on every POSIX system.
 func newCredentialFailureSessionRoot(t *testing.T) string {
 	t.Helper()
-	parent, err := os.MkdirTemp("/tmp", "sqi-credfail-*") //nolint:usetesting // t.TempDir() is exactly what this must NOT use — see doc above
+	parent, err := os.MkdirTemp("/tmp", "sqi-credfail-*") //nolint:usetesting // t.TempDir() cannot be used here; see the doc above
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
@@ -1647,8 +1635,7 @@ func TestExecutor_Dispatch_credentialResolutionFailure(t *testing.T) {
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.DiscardHandler)
-	// isolation.NewFake(nil): no known accounts, so Resolve always errors —
-	// the injected Provider failure this test is built to drive.
+	// isolation.NewFake(nil) knows no accounts, so Resolve always errors.
 	mgr := session.NewManager(filepath.Join(parent, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
 	statusPub := status.New(nc, status.Config{WorkerID: "test-worker"}, logger)
 	exec := executor.New(statusPub, mgr, m, nil, executor.Config{}, logger)
@@ -1747,11 +1734,10 @@ func TestExecutor_Dispatch_publishFailureDoesNotWedge(t *testing.T) {
 // ── Staging scratch-dir cleanup test ───────────────────────────────
 
 // TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure checks that the
-// scratch directory is removed: when StageIn succeeds but a subsequent
-// step in buildEffectiveLookup fails (here: a PathMap rule with a non-empty
-// SourcePath but empty DestinationPath causes pathmap.NewLookup to return an
-// error), the scratch directory must still be removed by the caller's deferred
-// stager.Cleanup.
+// scratch directory is removed when StageIn succeeds but a later step in
+// buildEffectiveLookup fails (here a PathMap rule with a non-empty SourcePath
+// and empty DestinationPath makes pathmap.NewLookup return an error). The
+// caller's deferred stager.Cleanup must still remove it.
 func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses POSIX-style path rules")
@@ -1789,7 +1775,7 @@ func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
 		// No Staging entries: StageIn creates the scratch dir but copies nothing.
 		// A PathMap rule with a non-empty SourcePath and empty DestinationPath
 		// causes pathmap.NewLookup to fail after StageIn has already created
-		// the scratch directory — the scenario that would leak the dir.
+		// the scratch directory.
 		PathMap: []protocol.PathMapRule{
 			{SourcePath: "/original/path", DestinationPath: ""},
 		},

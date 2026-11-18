@@ -18,18 +18,16 @@ import (
 // spawnDetachedGrandchild starts, via "cmd /c start /b <script.bat>", a
 // background batch file that pings for pingSeconds and then writes marker.
 // The returned *exec.Cmd is the immediate ("cmd /c start /b ...") process,
-// configured as the executor configures a task (Configure).
-// The batch file it launches is a separate process it does not wait for, so
-// it is orphaned once its starter exits: the case "taskkill /F /T" cannot
-// reach.
+// configured as the executor configures a task (Configure). The batch file it
+// launches is a separate process it does not wait for, so it is orphaned once
+// its starter exits: the case "taskkill /F /T" cannot reach.
 //
 // The script is a .bat file rather than an inline "cmd /c \"...\" & exit"
 // one-liner because Go's os/exec quotes arguments by the CommandLineToArgvW
 // convention and cmd.exe does not parse its command-line tail that way:
 // nested double quotes arrive corrupted and the background process never
-// starts. A test that asserts the marker is absent cannot see that, since an
-// unlaunched process never writes it either. The .bat path is passed as one
-// unquoted argument (TempDir paths contain no spaces).
+// starts, which a test asserting the marker is absent cannot detect. The .bat
+// path is passed as one unquoted argument (TempDir paths contain no spaces).
 func spawnDetachedGrandchild(t *testing.T, pingSeconds int) (cmd *exec.Cmd, marker string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -44,10 +42,10 @@ func spawnDetachedGrandchild(t *testing.T, pingSeconds int) (cmd *exec.Cmd, mark
 	return cmd, marker
 }
 
-// TestTree_RefusesAProcessNotStartedSuspended pins that Supervise
-// checks the start it depends on: a process that was already running when it
-// was assigned may have started children outside the job, so supervision
-// fails, and closing the job kills the process.
+// TestTree_RefusesAProcessNotStartedSuspended: Supervise checks the start it
+// depends on. A process that was already running when it was assigned may
+// have started children outside the job, so supervision fails, and closing
+// the job kills the process.
 func TestTree_RefusesAProcessNotStartedSuspended(t *testing.T) {
 	cmd := exec.CommandContext(t.Context(), "ping", "-n", "30", "127.0.0.1")
 	if err := cmd.Start(); err != nil {
@@ -74,11 +72,11 @@ func TestTree_RefusesAProcessNotStartedSuspended(t *testing.T) {
 	}
 }
 
-// TestTree_HoldsAGrandchildStartedBeforeSupervision pins that a
-// grandchild the task starts is inside its job, however long Supervise
-// takes after Start: the task process does not run until Supervise has
-// assigned it. The wait gives a starter that is not held suspended time to
-// start the grandchild and exit, leaving the grandchild outside the job.
+// TestTree_HoldsAGrandchildStartedBeforeSupervision: a grandchild the task
+// starts is inside its job, however long Supervise takes after Start, because
+// the task process does not run until Supervise has assigned it. The wait
+// gives a starter that is not held suspended time to start the grandchild and
+// exit, which would leave the grandchild outside the job.
 func TestTree_HoldsAGrandchildStartedBeforeSupervision(t *testing.T) {
 	cmd, _ := spawnDetachedGrandchild(t, 30)
 	if err := cmd.Start(); err != nil {
@@ -137,12 +135,11 @@ func TestTree_KillReapsOrphanedGrandchild(t *testing.T) {
 	}
 }
 
-// TestTree_ReleaseLeavesSurvivorsAlone checks that Release matches
-// POSIX: a background child still running after a successful exit keeps
-// running, which internal/worker/staging's stage-out checks (staging.go,
-// openStageOutSource) allow for. Release() must clear
-// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE before closing the handle, or Windows
-// would differ from POSIX in a way no test in that package would catch.
+// TestTree_ReleaseLeavesSurvivorsAlone: Release matches POSIX. A background
+// child still running after a successful exit keeps running, which
+// internal/worker/staging's stage-out checks (staging.go, openStageOutSource)
+// allow for. Release() must clear JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE before
+// closing the handle.
 func TestTree_ReleaseLeavesSurvivorsAlone(t *testing.T) {
 	cmd, marker := spawnDetachedGrandchild(t, 3)
 	if err := cmd.Start(); err != nil {
@@ -166,11 +163,11 @@ func TestTree_ReleaseLeavesSurvivorsAlone(t *testing.T) {
 	}
 }
 
-// TestTree_ReleaseClosesHandleEvenIfSetKillOnCloseFails checks that
-// Release() does not leak the job handle when clearing KILL_ON_JOB_CLOSE
-// fails. An invalid handle makes setKillOnClose (SetInformationJobObject)
-// fail; Release must still close the handle (best-effort) and zero t.job, so
-// a second Release() call is a no-op.
+// TestTree_ReleaseClosesHandleEvenIfSetKillOnCloseFails: Release() does not
+// leak the job handle when clearing KILL_ON_JOB_CLOSE fails. An invalid handle
+// makes setKillOnClose (SetInformationJobObject) fail; Release must still
+// close the handle (best-effort) and zero t.job, so a second Release() call
+// is a no-op.
 func TestTree_ReleaseClosesHandleEvenIfSetKillOnCloseFails(t *testing.T) {
 	tree := &Tree{job: windows.Handle(0xDEADBEEF)}
 
@@ -188,11 +185,11 @@ func TestTree_ReleaseClosesHandleEvenIfSetKillOnCloseFails(t *testing.T) {
 	}
 }
 
-// TestTree_AliveCountsTheJobsProcesses: Alive is what keeps the output
-// drain from starting while a task's job still holds a process, here a
-// grandchild whose parent has already exited, and what lets it start once
-// the job is empty. It reads JOBOBJECT_BASIC_ACCOUNTING_INFORMATION through a
-// struct of its own layout, so this is the only check that layout gets.
+// TestTree_AliveCountsTheJobsProcesses: Alive keeps the output drain from
+// starting while a task's job still holds a process, here a grandchild whose
+// parent has already exited, and lets it start once the job is empty. It reads
+// JOBOBJECT_BASIC_ACCOUNTING_INFORMATION through a struct of its own layout,
+// and this test is the only check of that layout.
 func TestTree_AliveCountsTheJobsProcesses(t *testing.T) {
 	cmd, _ := spawnDetachedGrandchild(t, 30)
 	if err := cmd.Start(); err != nil {

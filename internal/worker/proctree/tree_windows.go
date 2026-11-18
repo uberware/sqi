@@ -10,21 +10,19 @@
 //   - TERMINATE (the spec default): the caller calls Kill directly, which
 //     terminates the whole job object (TerminateJobObject) — the closest
 //     Windows equivalent of SIGKILL, and one that reaps every process in the
-//     tree including a grandchild orphaned before the call (see
-//     Supervise's doc for why "taskkill /F /T"
-//     cannot do that).
+//     tree including a grandchild orphaned before the call (see Tree's doc
+//     for why "taskkill /F /T" cannot do that).
 //   - NOTIFY_THEN_TERMINATE: the caller calls Notify first.  There is no true
 //     SIGTERM on Windows; Notify uses "taskkill /T /PID" (without /F) as a
 //     best-effort graceful request that lets GUI processes handle WM_CLOSE.
-//     Console processes that do not handle it are killed by the OS on a
-//     best-effort basis.  After the notify period, the caller escalates to
-//     Kill.  This is an approximation: a console process may not receive a
-//     graceful-shutdown notification equivalent to SIGTERM.
+//     A console process may not receive a graceful-shutdown notification
+//     equivalent to SIGTERM. After the notify period, the caller escalates
+//     to Kill.
 //
 // Notify falls back to Kill (job-object terminate) if taskkill is
 // unavailable or returns an error, so the process is always terminated.
-// Without a job handle, Kill runs "taskkill /F /T", and proc.Kill() if
-// that fails, so a task whose job could not be created can still be killed.
+// A Tree without a job handle runs "taskkill /F /T" in Kill, and proc.Kill()
+// if that fails.
 
 package proctree
 
@@ -39,8 +37,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Tree owns a Windows job object containing a launched task process
-// and everything it spawns.
+// Tree owns a Windows job object containing a launched task process and
+// everything it spawns.
 //
 // "taskkill /F /T" walks the parent-PID tree at the moment of the call, so a
 // grandchild whose parent has already exited is orphaned and survives it. A
@@ -54,9 +52,9 @@ type Tree struct {
 
 // Supervise places cmd's already-started process into a fresh job object
 // and then lets it run. The process must have been started suspended
-// (Configure), so every process it or its descendants create
-// starts inside the job; Supervise refuses one that was already running,
-// which may have created a child before the assignment. A process a system
+// (Configure), so every process it or its descendants create starts inside
+// the job; Supervise refuses one that was already running, which may have
+// created a child before the assignment. A process a system
 // service starts at the task's request (Task Scheduler, WMI, an
 // out-of-process COM server) is the service's child and outside the job.
 //
@@ -170,8 +168,7 @@ func setKillOnClose(job windows.Handle, on bool) error {
 // It clears KILL_ON_JOB_CLOSE first, which closing the handle would otherwise
 // trigger, so a background child still running after a successful exit keeps
 // running, as on POSIX. internal/worker/staging's stage-out checks
-// (staging.go, openStageOutSource) allow for such a process, and no test in
-// that package would catch the two platforms differing.
+// (staging.go, openStageOutSource) allow for such a process.
 func (t *Tree) Release() error {
 	if t == nil || t.job == 0 {
 		return nil
@@ -220,10 +217,10 @@ func (t *Tree) Alive() bool {
 	return err == nil && info.ActiveProcesses > 0
 }
 
-// Configure starts the task process suspended. A job object can
-// only be assigned to a process that exists, so Supervise
-// (below) assigns it after Start and only then lets it run:
-// every process the task or its descendants create starts inside its job.
+// Configure starts the task process suspended. A job object can only be
+// assigned to a process that exists, so Supervise assigns it after Start and
+// only then lets it run: every process the task or its descendants create
+// starts inside its job.
 func Configure(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -232,43 +229,34 @@ func Configure(cmd *exec.Cmd) {
 }
 
 // Notify makes a best-effort graceful request via "taskkill /T" (without
-// /F), which lets a GUI process handle WM_CLOSE. It deliberately does NOT
-// terminate the job object: NOTIFY_THEN_TERMINATE's whole point is the grace
-// window before the hard kill, and TerminateJobObject offers no such
-// courtesy. The caller escalates to Kill after the notify period.
+// /F), which lets a GUI process handle WM_CLOSE. It does not terminate the job
+// object: NOTIFY_THEN_TERMINATE is a grace window before the hard kill, and
+// TerminateJobObject offers none. The caller escalates to Kill after the
+// notify period. If taskkill fails, Notify falls back to Kill.
 //
-// exec.Command is used intentionally instead of exec.CommandContext (noctx),
-// the same reasoning internal/worker/executor's run.go records for the task process itself: Notify and
-// Kill are called by the caller *as* the mechanism that implements the
-// OpenJD cancelation policy, typically only after the caller's own ctx is
-// already canceled or timed out — that is precisely why we are killing the
-// process. Binding this short, synchronous taskkill invocation to that same
-// context would be actively wrong: os/exec kills a command as soon as its
-// context is done, so an already-canceled ctx could abort taskkill before it
-// signals the target, and this function would never learn whether taskkill
-// succeeded, defeating the Kill fallback below. There is no other context
-// in scope that would be more appropriate to use here, so this helper
-// deliberately runs unbound by any context. (gosec's G204 command-injection
-// check only inspects the command name, "taskkill" — a literal, not a
-// variable — so it does not fire on the call below; no gosec suppression is
-// needed here.)
+// It uses exec.Command rather than exec.CommandContext (noctx), as the task
+// process does in internal/worker/executor's run.go. Notify and Kill
+// implement the OpenJD cancelation policy and are typically called after the
+// caller's own context is already canceled or timed out. os/exec kills a
+// command as soon as its context is done, so a canceled context could abort
+// taskkill before it signals the target, and Notify would never learn whether
+// taskkill succeeded, defeating the Kill fallback.
 func (t *Tree) Notify() error {
 	pid := strconv.Itoa(t.proc.Process.Pid)
-	if err := exec.Command("taskkill", "/T", "/PID", pid).Run(); err != nil { //nolint:noctx // pid is an integer, not user input; context deliberately not threaded, see doc comment above
+	if err := exec.Command("taskkill", "/T", "/PID", pid).Run(); err != nil { //nolint:noctx // pid is an integer, not user input; context not threaded, see doc comment above
 		return t.Kill()
 	}
 	return nil
 }
 
-// Kill force-terminates the entire job object, which reaps every process
-// in the tree — including a grandchild orphaned before this call, which
-// "taskkill /F /T" would miss (see Supervise's doc). Falls back to the
-// old taskkill path if the job handle is somehow absent, so a failure to
-// create the job never leaves a task unkillable.
+// Kill force-terminates the entire job object, which reaps every process in
+// the tree, including a grandchild orphaned before this call, which
+// "taskkill /F /T" would miss (see Tree's doc). If the job handle is absent it
+// falls back to taskkill, then to proc.Kill.
 func (t *Tree) Kill() error {
 	if t.job == 0 {
 		pid := strconv.Itoa(t.proc.Process.Pid)
-		if err := exec.Command("taskkill", "/F", "/T", "/PID", pid).Run(); err != nil { //nolint:noctx // pid is an integer, not user input; context deliberately not threaded, see Notify's doc comment
+		if err := exec.Command("taskkill", "/F", "/T", "/PID", pid).Run(); err != nil { //nolint:noctx // pid is an integer, not user input; context not threaded, see Notify's doc comment
 			return t.proc.Process.Kill()
 		}
 		return nil

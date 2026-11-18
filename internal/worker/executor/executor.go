@@ -11,11 +11,11 @@
 //
 // # Interfaces
 //
-// Executor implements both [pull.TaskDispatcher] and [pull.StateSource] so it
-// can be wired directly into the pull loop.  It also satisfies
-// [heartbeat.StateSource] by exposing [Executor.ActiveTaskCount],
-// [Executor.ActiveTaskIDs], and [Executor.LastAssignmentAt], and
-// [heartbeat.AttemptSource] by exposing [Executor.ActiveAttemptIDs].
+// Executor implements [lease.Dispatcher], so it can be wired directly into the
+// lease loop.  It also satisfies [heartbeat.StateSource] by exposing
+// [Executor.ActiveTaskCount], [Executor.ActiveTaskIDs], and
+// [Executor.LastAssignmentAt], and [heartbeat.AttemptSource] by exposing
+// [Executor.ActiveAttemptIDs].
 //
 // # Concurrency
 //
@@ -32,9 +32,9 @@
 //
 // # Root-user check
 //
-// [CheckRootUser] should be called before creating an Executor.  It returns
-// an error if the worker process is running as root on Linux/macOS and
-// [Config.AllowRoot] is false (see docs/worker-configuration.md, "worker.allow_root").
+// Call [CheckRootUser] before creating an Executor.  It returns an error if the
+// worker process is running as root on Linux/macOS and [Config.AllowRoot] is
+// false (see docs/worker-configuration.md, "worker.allow_root").
 package executor
 
 import (
@@ -77,8 +77,8 @@ type OutputHandler interface {
 // If the configured OutputHandler also implements LogFlusher, the executor
 // calls FlushLogs immediately after the task process exits and before
 // publishing the terminal "succeeded", "failed", or "canceled" status.
-// This guarantees complete log delivery to the server before the task
-// transitions to a terminal state.
+// The server therefore has the complete log before the task reaches a terminal
+// state.
 type LogFlusher interface {
 	// FlushLogs drains all remaining buffered lines for the given
 	// (taskID, attemptID) pair and blocks until the drain is complete.
@@ -130,7 +130,7 @@ type ProgressPatternHook interface {
 }
 
 // DiscardOutput is an [OutputHandler] that silently drops every line.
-// Use it in tests or when output logging is intentionally disabled.
+// Use it in tests or when output logging is disabled.
 type DiscardOutput struct{}
 
 // HandleLine discards the output line.
@@ -164,8 +164,8 @@ type Config struct {
 	// worker force-shutdown (DrainAndShutdown). Defaults to 10 s when zero or
 	// negative.
 	//
-	// Note: per-task timeout and per-task cancellation do not use this value;
-	// they follow the assignment's OpenJD Action.cancelation method (TERMINATE =
+	// Per-task timeout and per-task cancellation do not use this value; they
+	// follow the assignment's OpenJD Action.cancelation method (TERMINATE =
 	// immediate SIGKILL; NOTIFY_THEN_TERMINATE = SIGTERM then the action's notify
 	// period). KillGracePeriod governs only the worker-shutdown grace window.
 	KillGracePeriod time.Duration
@@ -188,16 +188,14 @@ type Config struct {
 	// to staging.New; when false an unconfigured stage_locally job fails hard.
 	StagingDefaults bool
 
-	// StagingIsolationCapable records, once per worker, whether this worker is
-	// capable of run-as-user isolation at all — the identical boolean
-	// cmd/sqi-worker's effectiveSessionRoot already uses to decide the
-	// session root's mode (there: isRoot(); the same value belongs here).
-	// Passed to staging.New via staging.WithIsolationCapable so the shared
-	// scratch base/job directory are created traversable-from-birth (0711)
-	// on a capable worker regardless of which job type's assignment happens
-	// to land first on a fresh scratch base, and stay at the narrower 0750 on
-	// a worker that can never isolate. See staging.WithIsolationCapable's doc
-	// for why this must be a per-worker, not per-assignment, decision.
+	// StagingIsolationCapable records, once per worker, whether this worker can
+	// run-as-user isolate at all. cmd/sqi-worker sets it from
+	// executor.IsRunningAsRoot. Passed to staging.New via
+	// staging.WithIsolationCapable so the shared scratch base and job directory
+	// are created traversable (0711) on a capable worker whichever job type's
+	// assignment arrives first, and stay at the narrower 0750 on a worker that
+	// can never isolate. See staging.WithIsolationCapable's doc for why this is
+	// a per-worker, not per-assignment, decision.
 	StagingIsolationCapable bool
 }
 
@@ -326,9 +324,9 @@ func New(
 	}
 }
 
-// ── pull.TaskDispatcher ───────────────────────────────────────────────────────
+// ── lease.Dispatcher ──────────────────────────────────────────────────────────
 
-// Dispatch implements [pull.TaskDispatcher].
+// Dispatch implements [lease.Dispatcher].
 //
 // It creates a session synchronously, which enters the assignment's
 // environments, then runs the task process on its own goroutine. The run is
@@ -461,10 +459,11 @@ func (e *Executor) ActiveAttemptIDs() []string {
 	return slices.Sorted(maps.Keys(e.held))
 }
 
-// ── pull.StateSource / heartbeat.StateSource ──────────────────────────────────
+// ── heartbeat.StateSource ─────────────────────────────────────────────────────
 
-// ActiveTaskCount returns the number of task processes currently executing.
-// Implements both [pull.StateSource] and [heartbeat.StateSource].
+// ActiveTaskCount returns the number of runs in progress, from Dispatch
+// registering a run until its goroutine exits.
+// Implements [heartbeat.StateSource].
 func (e *Executor) ActiveTaskCount() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -485,7 +484,7 @@ func (e *Executor) ActiveTaskIDs() []string {
 }
 
 // LastAssignmentAt returns the time of the most recent task assignment
-// dispatched to this executor, or nil if no task has been dispatched yet.
+// dispatched to this executor, or nil if none has been dispatched.
 // Implements [heartbeat.StateSource].
 func (e *Executor) LastAssignmentAt() *time.Time {
 	e.mu.Lock()
@@ -547,9 +546,8 @@ func (e *Executor) lastProgress(attemptID string) *int {
 }
 
 // finishProgress flushes the output handler's pending progress snapshot for
-// attemptID and stops later ones, if it supports that, and returns the last
-// progress seen.  Falls back
-// to [Executor.lastProgress] for handlers without FinishProgress.
+// attemptID, stops later ones, and returns the last progress seen.  Handlers
+// without FinishProgress fall back to [Executor.lastProgress].
 func (e *Executor) finishProgress(attemptID string) *int {
 	type progressFinisher interface {
 		FinishProgress(string) *int
@@ -679,14 +677,13 @@ func (e *Executor) DrainAndShutdown(gracePeriod time.Duration) (completed, kille
 // FlushShutdownStatuses publishes a "failed"/"worker_shutdown" status for
 // every task currently in the active-tasks map.
 //
-// This must be called before draining the NATS connection during worker
-// shutdown so the server learns about task failures immediately rather than
-// waiting for the heartbeat-timeout sweep.  Each task goroutine will also
-// publish its own terminal status as it exits; the server must handle
-// duplicate terminal statuses gracefully (accept the first, ignore subsequent).
+// Call it before draining the NATS connection during worker shutdown so the
+// server learns about task failures without waiting for the heartbeat-timeout
+// sweep.  Each task goroutine also publishes its own terminal status as it
+// exits; the server accepts the first terminal status and ignores later ones.
 //
 // The total flush is bounded by a 5-second deadline so that a saturated NATS
-// connection does not stall the shutdown sequence indefinitely.
+// connection cannot stall the shutdown sequence.
 func (e *Executor) FlushShutdownStatuses() {
 	e.mu.Lock()
 	tasks := make([]status.ShutdownTask, 0, len(e.activeTasks))

@@ -217,8 +217,8 @@ func TestRunAction_CancelAfterExitLeavesServiceRunning(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the action never reported its child")
 	}
-	// Long enough for the shell to have exited, short enough to land inside the
-	// 2s drain: 1s of margin on each side.
+	// Long enough for the shell to have exited and short enough to land inside
+	// the 2s drain, with 1s of margin on each side.
 	time.Sleep(time.Second)
 	cancel()
 	wantServiceRunning(t, awaitRunAction(t, result, 10*time.Second), rec)

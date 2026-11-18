@@ -4,25 +4,24 @@
 
 package integration
 
-// isolation_test.go — the real-OS regression guard for run-as-user task
+// isolation_test.go is the real-OS regression guard for run-as-user task
 // isolation (internal/worker/isolation, .../session, .../staging).
 //
 // # Why this file exists
 //
-// Every other test of isolation drives a fake Provider
-// (internal/worker/isolation/fake.go). Those cover sqi's own policy logic
-// thoroughly — refusal of privileged accounts, env-allowlist layering, boot
-// capability gating — but a fake CANNOT show what a real OS does with a real
-// uid/gid switch: whether the child can actually chdir into its working
-// directory, whether an embedded file's permission bits let the target user
-// read or execute it, or whether a real symlink-preserving sync tool (rsync)
-// interacts safely with a recursive chown. Three defects of that kind are
-// invisible to any fake:
+// The other isolation tests drive a fake Provider
+// (internal/worker/isolation/fake.go). They cover sqi's own policy logic:
+// refusal of privileged accounts, env-allowlist layering, boot capability
+// gating. A fake cannot show what a real OS does with a real uid/gid switch:
+// whether the child can chdir into its working directory, whether an embedded
+// file's permission bits let the target user read or execute it, or whether a
+// symlink-preserving sync tool (rsync) interacts safely with a recursive
+// chown. This file covers three failure modes of that kind:
 //
 //   - Traversal: if <dataDir> is 0700 and owned by the daemon (root) and
 //     isolation.SecureWorkDir chowns only the leaf <sessionID> directory, the
 //     child cannot reach its working directory. Go sets process credentials
-//     BEFORE chdir, so the child needs +x on every ancestor of cmd.Dir;
+//     before chdir, so the child needs +x on every ancestor of cmd.Dir;
 //     without it every isolated task fails at Start with EACCES. Staging has
 //     the same shape: the <scratchBase>/<jobID> intermediate directory that
 //     staging.Stager.StageIn creates as a side effect of MkdirAll must be
@@ -31,39 +30,35 @@ package integration
 //     root with root's primary group, is unusable by the target user, which
 //     is neither owner nor group member and gets no "other" bits, so it can
 //     read neither a data file nor execute a runnable one.
-//   - Symlink chown: os.Chown DEREFERENCES symlinks, and `rsync -a` preserves
+//   - Symlink chown: os.Chown dereferences symlinks, and `rsync -a` preserves
 //     staged content as symlinks. A recursive chown built on os.Chown changes
-//     the ownership of a symlink target that lives OUTSIDE scratch, which is
-//     why isolation.ChownRecursive uses os.Lchown.
+//     the ownership of a symlink target that lives outside scratch, so
+//     isolation.ChownRecursive uses os.Lchown.
 //
 // TestIsolation_ProcessRunsAsTargetUID, ..._RunnableEmbeddedFileIsExecutable,
 // ..._NonRunnableEmbeddedFileIsReadable, and
-// ..._StagedSymlinkDoesNotChownTargetOutsideScratch guard against those
-// defects, as TestLDAP_NestedGroupExpansionFallsBackOnNonAD does for the
-// OpenLDAP nested-group behavior that make test-ldap exists to catch.
+// ..._StagedSymlinkDoesNotChownTargetOutsideScratch cover those three.
 //
 // # What it runs against
 //
 // Two real unprivileged accounts (render-a uid 1001, render-b uid 1002)
 // sharing a supplementary group (rendershare gid 3000), created by
-// test/integration/isolation/Dockerfile. This file's tests run as root
-// (requireRoot skips otherwise) and drive the real
-// internal/worker/isolation.Provider, internal/worker/session.Manager, and
-// internal/worker/staging.Stager — the same production code the executor
-// calls — never a fake.
+// test/integration/isolation/Dockerfile. The tests run as root (requireRoot
+// skips otherwise) and drive the real internal/worker/isolation.Provider,
+// internal/worker/session.Manager, and internal/worker/staging.Stager, the
+// production code the executor calls.
 //
-// Several tests deliberately run their probe command with cmd.Dir set to a
-// neutral, non-session directory ("/") rather than a session's WorkDir. That
-// isolates the concern each test is about (supplementary groups,
-// env-passthrough policy, process-group survival) from working-directory
-// traversal, which TestIsolation_ProcessRunsAsTargetUID covers on its own.
-// Tests about the session working directory itself (uid, embedded files) use
-// the real sess.WorkDir and therefore also fail if traversal breaks.
+// Several tests run their probe command with cmd.Dir set to a neutral,
+// non-session directory ("/") rather than a session's WorkDir. That separates
+// the concern each test is about (supplementary groups, env-passthrough
+// policy, process-group survival) from working-directory traversal, which
+// TestIsolation_ProcessRunsAsTargetUID covers on its own. Tests about the
+// session working directory itself (uid, embedded files) use the real
+// sess.WorkDir and therefore also fail if traversal breaks.
 //
-// Skips cleanly (via requireRoot) when not running as root or not on a POSIX
-// OS, so it never blocks a developer running `go test` directly on a
-// non-container machine. make test-isolation is what guarantees it actually
-// runs as root against real accounts — see the Makefile target's own comment.
+// The tests skip (via requireRoot) when not running as root, so a bare
+// `go test` on a non-container machine does not fail. make test-isolation
+// runs them as root against real accounts; see the Makefile target's comment.
 
 import (
 	"bytes"
@@ -106,10 +101,9 @@ const (
 // ── Setup helpers ─────────────────────────────────────────────────────────────
 
 // requireRoot skips the test unless running as root. Real setuid/setgid
-// transitions require root; make test-isolation guarantees that inside its
-// container, but a bare `go test -tags integration` on a developer machine
-// must degrade to a clean skip rather than a confusing failure. The file-level
-// `unix` build constraint already keeps this off Windows.
+// transitions require root; make test-isolation provides that inside its
+// container, and a bare `go test -tags integration` on a developer machine
+// skips. The file-level `unix` build constraint keeps this off Windows.
 func requireRoot(t *testing.T) {
 	t.Helper()
 	if os.Geteuid() != 0 {
@@ -117,50 +111,45 @@ func requireRoot(t *testing.T) {
 	}
 }
 
-// testLogger returns a logger that discards everything below Error, matching
-// the convention in internal/worker/session's own tests.
+// testLogger returns a logger that discards everything, as in
+// internal/worker/session's own tests.
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 100}))
 }
 
 // isolatedDataDir returns a fresh temporary directory usable as an isolated
-// session's dataDir — plain t.TempDir() is not enough here.
+// session's dataDir. Plain t.TempDir() is not enough.
 //
-// Go's testing package creates t.TempDir() itself at a hardcoded,
-// non-configurable 0700, and nests it under a per-test scratch root of its
-// OWN making (e.g. /tmp/TestFoo<random>/001) that is ALSO 0700 — both
-// root-owned in this container, since the suite itself runs as root.
+// Go's testing package creates t.TempDir() at a fixed 0700, nested under a
+// per-test scratch root (e.g. /tmp/TestFoo<random>/001) that is also 0700.
+// Both are root-owned here, since the suite runs as root.
 //
-// Production code deliberately does not widen either of these (see
+// Production code does not widen either of these (see
 // workerconfig.LoadOrCreateWorkerID's doc and session.Manager's
 // prepareSessionsDir): the run-as-user split creates its session root
-// traversable FROM BIRTH at a location the operator controls
+// traversable from birth at a location the operator controls
 // (/var/lib/sqi-worker-sessions by default, whose ancestors are already
-// 0755) rather than ever chmod'ing an existing directory to get there. This
-// fixture stands in for that operator-provisioned location, so it must
-// arrange the SAME starting condition itself: both the directory this
-// helper returns (which callers join with "sessions" to build the Manager's
-// session root, mirroring cmd/sqi-worker's own fallback shape) and its
-// go-test-internal parent — an ancestor entirely outside any path production
-// code is ever given a handle to, so no production fix could reach it
-// regardless of design — must already be traversable before the code under
-// test runs. Mirrors the same execute-only-for-others permission style
-// isolation.ValidateTraversable uses in production.
+// 0755) and never chmods an existing directory to get there. This fixture
+// stands in for that location, so it sets up the same starting condition:
+// both the directory it returns (which callers join with "sessions" to build
+// the Manager's session root, as cmd/sqi-worker's fallback does) and its
+// go-test-internal parent, which no production code is given a handle to,
+// must be traversable before the code under test runs. The permission style
+// (execute-only for others) is the one isolation.ValidateTraversable accepts.
 func isolatedDataDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o711); err != nil {
-		t.Fatalf("make t.TempDir() traversable (test-fixture-only accommodation — see isolatedDataDir's doc): %v", err)
+		t.Fatalf("make t.TempDir() traversable (test-fixture-only accommodation, see isolatedDataDir's doc): %v", err)
 	}
 	if err := os.Chmod(filepath.Dir(dir), 0o711); err != nil {
-		t.Fatalf("make t.TempDir() parent traversable (test-fixture-only accommodation — see isolatedDataDir's doc): %v", err)
+		t.Fatalf("make t.TempDir() parent traversable (test-fixture-only accommodation, see isolatedDataDir's doc): %v", err)
 	}
 	return dir
 }
 
-// newRealProvider returns the real POSIX isolation.Provider — never
-// isolation.NewFake, which cannot see any of the three defects this suite
-// guards against.
+// newRealProvider returns the real POSIX isolation.Provider, never
+// isolation.NewFake, which cannot see the failure modes this suite covers.
 func newRealProvider(t *testing.T) isolation.Provider {
 	t.Helper()
 	p, err := isolation.NewProvider(isolation.Config{Logger: testLogger()})
@@ -172,11 +161,10 @@ func newRealProvider(t *testing.T) isolation.Provider {
 
 // newIsolatedSession creates a real session.Session for an assignment whose
 // Isolation names user/group, using the real Provider and the real
-// session.Manager — exactly the code path internal/worker/executor drives.
-// dataDir is caller-supplied (rather than always a fresh t.TempDir()) so
-// TestIsolation_SessionDirIsPrivateToTargetUser can create two sessions under
-// the same daemon data directory, matching how a real worker would host
-// concurrent sessions for two different queues.
+// session.Manager, the code path internal/worker/executor drives. dataDir is
+// caller-supplied so a test can create two sessions under the same daemon
+// data directory, as a worker hosting concurrent sessions for two queues
+// would.
 func newIsolatedSession(t *testing.T, dataDir, user, group string, isolationCfg workerconfig.IsolationConfig) *session.Session {
 	t.Helper()
 	provider := newRealProvider(t)
@@ -196,13 +184,10 @@ func newIsolatedSession(t *testing.T, dataDir, user, group string, isolationCfg 
 }
 
 // newUnisolatedSession creates a real session.Session for an assignment that
-// carries no Isolation at all — the no-isolation default, which must stay
-// byte-for-byte unchanged. WithSessionRootMode(0o750) mirrors
-// cmd/sqi-worker's effectiveSessionRoot non-root DataDir-fallback branch (the
-// shape this dataDir/"sessions" construction stands in for — see
-// isolatedDataDir's own doc): a deployment with no run_as_user configured
-// anywhere gains nothing from the wider, isolation-only 0711, so the session
-// root stays at 0750.
+// carries no Isolation, the no-isolation default. WithSessionRootMode(0o750)
+// mirrors cmd/sqi-worker's effectiveSessionRoot non-root DataDir fallback: a
+// deployment with no run_as_user configured has no use for the wider,
+// isolation-only 0711, so the session root stays at 0750.
 func newUnisolatedSession(t *testing.T, dataDir string) *session.Session {
 	t.Helper()
 	provider := newRealProvider(t)
@@ -220,7 +205,7 @@ func newUnisolatedSession(t *testing.T, dataDir string) *session.Session {
 	return sess
 }
 
-// runInSession launches action inside sess exactly as
+// runInSession launches action inside sess as
 // internal/worker/executor.execProcess does: cmd.Dir = sess.WorkDir, Setpgid
 // configured first, isolation.Apply second, environment built from
 // sess.BaseEnv() via envutil.BuildFromBase. It returns the combined
@@ -265,9 +250,9 @@ func statUID(t *testing.T, path string) uint32 {
 	return st.Uid
 }
 
-// lstatUID returns path's owner uid WITHOUT following a trailing symlink —
-// the distinction TestIsolation_StagedSymlinkDoesNotChownTargetOutsideScratch
-// exists to exploit: os.Chown follows symlinks, os.Lchown does not.
+// lstatUID returns path's owner uid without following a trailing symlink. The
+// distinction matters to TestIsolation_StagedSymlinkDoesNotChownTargetOutsideScratch:
+// os.Chown follows symlinks, os.Lchown does not.
 func lstatUID(t *testing.T, path string) uint32 {
 	t.Helper()
 	info, err := os.Lstat(path)
@@ -282,11 +267,10 @@ func lstatUID(t *testing.T, path string) uint32 {
 }
 
 // canUserReadFile reports whether user can read path, using the real
-// Provider + isolation.Apply (never a shell su/sudo, which may not be
-// configured for non-interactive use in a minimal container). cmd.Dir is "/"
-// — deliberately NOT a session working directory — so this checks only the
-// permission bits on path's own ancestor chain, not cmd.Dir's, keeping this
-// helper independent of session working-directory traversal.
+// Provider and isolation.Apply (not su/sudo, which a minimal container may not
+// configure for non-interactive use). cmd.Dir is "/", not a session working
+// directory, so this checks only the permission bits on path's own ancestor
+// chain, independent of session working-directory traversal.
 func canUserReadFile(t *testing.T, user, path string) bool {
 	t.Helper()
 	provider := newRealProvider(t)
@@ -303,11 +287,10 @@ func canUserReadFile(t *testing.T, user, path string) bool {
 }
 
 // anyProcessInGroup reports whether any process on the system still belongs
-// to POSIX process group pgid, by scanning /proc. Used to confirm a SIGKILL
-// to a process group actually reaped every descendant, not just the direct
-// child. Linux-only (matches the container this test targets); skips rather
-// than fails if /proc is unavailable, since that means the check itself
-// cannot run, not that reaping failed.
+// to POSIX process group pgid, by scanning /proc. It confirms a SIGKILL to a
+// process group reaped every descendant, not just the direct child.
+// Linux-only; it skips if /proc is unavailable, because then the check cannot
+// run.
 func anyProcessInGroup(t *testing.T, pgid int) bool {
 	t.Helper()
 	entries, err := os.ReadDir("/proc")
@@ -322,9 +305,8 @@ func anyProcessInGroup(t *testing.T, pgid int) bool {
 		if err != nil {
 			continue // process exited between ReadDir and ReadFile
 		}
-		// proc(5): "pid (comm) state ppid pgrp ...". comm may itself contain
-		// spaces or parentheses, so split on the LAST ")" rather than the
-		// first whitespace run.
+		// proc(5): "pid (comm) state ppid pgrp ...". comm may contain spaces
+		// or parentheses, so split on the last ")".
 		rest := string(data)
 		if i := strings.LastIndex(rest, ")"); i >= 0 {
 			rest = rest[i+1:]
@@ -342,13 +324,13 @@ func anyProcessInGroup(t *testing.T, pgid int) bool {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-// TestIsolation_ProcessRunsAsTargetUID guards working-directory traversal. It
-// launches a task exactly as the executor does — cmd.Dir = sess.WorkDir,
-// under render-a's resolved credential — and expects `id -u` to report 1001.
+// TestIsolation_ProcessRunsAsTargetUID checks working-directory traversal. It
+// launches a task as the executor does (cmd.Dir = sess.WorkDir, under
+// render-a's resolved credential) and expects `id -u` to report 1001.
 //
 // If any ancestor of the session leaf is not traversable by render-a (for
-// example a 0700 root-owned <dataDir>), the child cannot chdir into cmd.Dir at
-// all and cmd.Run returns an EACCES "permission denied" error before the task
+// example a 0700 root-owned <dataDir>), the child cannot chdir into cmd.Dir
+// and cmd.Run returns an EACCES "permission denied" error before the task
 // produces output.
 func TestIsolation_ProcessRunsAsTargetUID(t *testing.T) {
 	requireRoot(t)
@@ -364,10 +346,10 @@ func TestIsolation_ProcessRunsAsTargetUID(t *testing.T) {
 }
 
 // TestIsolation_RunnableEmbeddedFileIsExecutable checks that render-a can
-// execute a runnable embedded file — the canonical OpenJD shape is
+// execute a runnable embedded file. The usual OpenJD shape is
 // `embeddedFiles: [{name: run, runnable: true}]` plus
-// `onRun.command: "{{Task.File.run}}"`, which resolves to exactly the path
-// this test executes.
+// `onRun.command: "{{Task.File.run}}"`, which resolves to the path this test
+// executes.
 //
 // A file written 0750 root-owned fails here with "permission denied". A
 // traversal failure (see TestIsolation_ProcessRunsAsTargetUID) also fails
@@ -398,7 +380,7 @@ func TestIsolation_RunnableEmbeddedFileIsExecutable(t *testing.T) {
 
 // TestIsolation_NonRunnableEmbeddedFileIsReadable checks that render-a can
 // read a non-runnable (data) embedded file. A file written 0640 root-owned
-// fails here; as in TestIsolation_RunnableEmbeddedFileIsExecutable, a
+// fails here. As in TestIsolation_RunnableEmbeddedFileIsExecutable, a
 // traversal failure blocks the chdir before the file's own permission bits
 // matter.
 func TestIsolation_NonRunnableEmbeddedFileIsReadable(t *testing.T) {
@@ -421,18 +403,17 @@ func TestIsolation_NonRunnableEmbeddedFileIsReadable(t *testing.T) {
 	}
 }
 
-// TestIsolation_StagedSymlinkDoesNotChownTargetOutsideScratch guards the
+// TestIsolation_StagedSymlinkDoesNotChownTargetOutsideScratch checks the
 // recursive chown of staged content. It drives staging.Stager.StageIn
-// directly (the same production code internal/worker/executor calls before
-// running a task) with an `rsync -a` sync command against an IN entry that is
-// itself a symlink pointing OUTSIDE
-// the scratch tree, at a throwaway file this test creates and owns as root.
-// This never touches a real system file (e.g. /etc/shadow) — only a fixture
-// this test creates inside its own temp directories.
+// directly (the production code internal/worker/executor calls before running
+// a task) with an `rsync -a` sync command against an IN entry that is itself a
+// symlink pointing outside the scratch tree, at a throwaway file this test
+// creates and owns as root. It touches no real system file, only fixtures in
+// its own temp directories.
 //
 // If isolation.ChownRecursive walked the scratch directory with os.Chown, it
-// would DEREFERENCE the symlink and reassign ownership of the OUTSIDE target
-// to the isolated user, rather than leaving it root-owned.
+// would dereference the symlink and reassign ownership of the outside target
+// to the isolated user instead of leaving it root-owned.
 func TestIsolation_StagedSymlinkDoesNotChownTargetOutsideScratch(t *testing.T) {
 	requireRoot(t)
 
@@ -442,33 +423,30 @@ func TestIsolation_StagedSymlinkDoesNotChownTargetOutsideScratch(t *testing.T) {
 		t.Fatalf("resolve %s: %v", renderAUser, err)
 	}
 
-	// A throwaway root-owned file living OUTSIDE any scratch directory this
-	// test creates. Deliberately never a real system path.
+	// A throwaway root-owned file outside any scratch directory this test
+	// creates.
 	targetDir := t.TempDir()
 	targetFile := filepath.Join(targetDir, "root-owned-target")
 	if err := os.WriteFile(targetFile, []byte("root-owned-secret\n"), 0o600); err != nil {
 		t.Fatalf("create throwaway root-owned target: %v", err)
 	}
 	if wantUID := lstatUID(t, targetFile); wantUID != 0 {
-		t.Fatalf("test fixture invariant violated: throwaway target is not root-owned (uid %d)", wantUID)
+		t.Fatalf("fixture target is not root-owned (uid %d)", wantUID)
 	}
 
 	// A symlink to that target, staged in as a single IN entry. `rsync -a`
-	// (its -l) preserves this as a symlink rather than following it.
+	// (through -l) preserves it as a symlink.
 	inDir := t.TempDir()
 	symlinkPath := filepath.Join(inDir, "link-to-target")
 	if err := os.Symlink(targetFile, symlinkPath); err != nil {
 		t.Fatalf("create symlink: %v", err)
 	}
 
-	// isolatedDataDir (not a bare t.TempDir()) for the scratch base
-	// specifically: StageIn validates the scratch base's own ancestors
-	// per-assignment whenever cred is non-nil, exactly as it does in
-	// production — a bare t.TempDir()
-	// sits under Go testing's own per-test MkdirTemp parent, hardcoded 0700
-	// regardless of umask, which is a test-fixture artifact production never
-	// hits (a real scratch base is an operator-provisioned location, not
-	// nested under a throwaway inherently-0700 ancestor).
+	// The scratch base uses isolatedDataDir, not a bare t.TempDir(): StageIn
+	// validates the scratch base's ancestors whenever cred is non-nil, and a
+	// bare t.TempDir() sits under Go testing's per-test parent, fixed at 0700
+	// regardless of umask. A production scratch base is an
+	// operator-provisioned location with traversable ancestors.
 	stager := staging.New(isolatedDataDir(t), "rsync -a {src} {dest}", false, testLogger())
 	if !stager.Configured() {
 		t.Fatal("stager not configured")
@@ -491,10 +469,10 @@ func TestIsolation_StagedSymlinkDoesNotChownTargetOutsideScratch(t *testing.T) {
 
 // TestIsolation_SupplementaryGroupsPreserved checks that render-a's
 // rendershare (gid 3000) supplementary membership survives
-// isolation.Provider.Resolve + isolation.Apply. cmd.Dir is "/" rather than a
-// session's WorkDir: this test is about Credential.Groups, a concern
-// separate from the working-directory traversal that
-// TestIsolation_ProcessRunsAsTargetUID covers on its own.
+// isolation.Provider.Resolve and isolation.Apply. cmd.Dir is "/" rather than a
+// session's WorkDir: the test is about Credential.Groups, separate from the
+// working-directory traversal that TestIsolation_ProcessRunsAsTargetUID
+// covers.
 func TestIsolation_SupplementaryGroupsPreserved(t *testing.T) {
 	requireRoot(t)
 	provider := newRealProvider(t)
@@ -519,16 +497,15 @@ func TestIsolation_SupplementaryGroupsPreserved(t *testing.T) {
 
 // TestIsolation_SupplementaryGroupsStripsGidZero is the real-OS counterpart
 // to stripGID0FromSupplementary's unit test against the fake provider
-// (internal/worker/isolation/isolation_unix_test.go): render-a is a member of
-// BOTH rendershare (gid 3000, an ordinary supplementary group that must be
+// (internal/worker/isolation/isolation_unix_test.go). render-a is a member of
+// both rendershare (gid 3000, an ordinary supplementary group that must be
 // preserved) and root (gid 0, via the Dockerfile's `usermod -aG root
-// render-a`) — the only account in this image ever placed in gid 0. Of the
-// four escalation doors closed in isolation.Provider (explicit group, NSS
-// primary gid, PRIMARY gid, and this one — the supplementary set), this is
-// the one a fake cannot exercise: the fake's GroupIds() is canned, so a
-// fake-only assertion proves the stripping code runs, never that a real OS's
-// actual `id -G` output — which is what finalizeGroups filters — no longer
-// contains 0 afterward.
+// render-a`), the only account in this image placed in gid 0. Of the four
+// routes to gid 0 that isolation.Provider closes (explicit group, NSS primary
+// gid, primary gid, and the supplementary set), this is the one a fake cannot
+// exercise: the fake's GroupIds() is canned, so a fake-only assertion shows
+// the stripping code runs, not that a real OS's `id -G` output, which is what
+// finalizeGroups filters, no longer contains 0.
 func TestIsolation_SupplementaryGroupsStripsGidZero(t *testing.T) {
 	requireRoot(t)
 	provider := newRealProvider(t)
@@ -549,19 +526,19 @@ func TestIsolation_SupplementaryGroupsStripsGidZero(t *testing.T) {
 
 	groups := strings.Fields(string(out))
 	if !slices.Contains(groups, strconv.Itoa(renderShareGID)) {
-		t.Errorf("`id -G` output = %q, want it to still contain %d (rendershare) — the strip must be gid-0-only", out, renderShareGID)
+		t.Errorf("`id -G` output = %q, want it to still contain %d (rendershare); only gid 0 is stripped", out, renderShareGID)
 	}
 	if slices.Contains(groups, "0") {
-		t.Errorf("`id -G` output = %q, want it to NOT contain 0 (root) — render-a is a member of root in this "+
-			"image (see the Dockerfile) precisely so this assertion is meaningful", out)
+		t.Errorf("`id -G` output = %q, want it not to contain 0 (root); render-a is a member of root in this "+
+			"image (see the Dockerfile) so that this assertion is meaningful", out)
 	}
 }
 
 // TestIsolation_SessionDirIsPrivateToTargetUser checks that a session working
-// directory is 0700 and owned by the target user, and that a SECOND
+// directory is 0700 and owned by the target user, and that a second
 // unprivileged user (render-b) cannot read into a session created for the
-// FIRST (render-a) — proving isolation holds between two different queues'
-// tasks, not just between the daemon and one task.
+// first (render-a), so isolation holds between two queues' tasks as well as
+// between the daemon and one task.
 func TestIsolation_SessionDirIsPrivateToTargetUser(t *testing.T) {
 	requireRoot(t)
 	dataDir := isolatedDataDir(t)
@@ -584,13 +561,13 @@ func TestIsolation_SessionDirIsPrivateToTargetUser(t *testing.T) {
 	}
 }
 
-// TestIsolation_DaemonSecretAbsentAllowlistedLicensePresent is the
-// env-passthrough policy guard against a REAL uid switch: the daemon's
-// AWS_ACCESS_KEY_ID must never reach an isolated task, while an
+// TestIsolation_DaemonSecretAbsentAllowlistedLicensePresent checks the
+// env-passthrough policy across a real uid switch: the daemon's
+// AWS_ACCESS_KEY_ID must not reach an isolated task, while an
 // operator-allowlisted licensing variable must. cmd.Dir is "/" rather than a
 // session WorkDir, for the same reason as
-// TestIsolation_SupplementaryGroupsPreserved — this test is about
-// session.BaseEnv()'s filtering, not about working-directory traversal.
+// TestIsolation_SupplementaryGroupsPreserved: the test is about
+// session.BaseEnv()'s filtering.
 func TestIsolation_DaemonSecretAbsentAllowlistedLicensePresent(t *testing.T) {
 	requireRoot(t)
 	t.Setenv("AWS_ACCESS_KEY_ID", "must-not-leak")
@@ -618,12 +595,12 @@ func TestIsolation_DaemonSecretAbsentAllowlistedLicensePresent(t *testing.T) {
 	}
 }
 
-// TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild proves
-// isolation.Apply preserves Setpgid (proctree.Configure, applied
-// FIRST, mirroring internal/worker/executor.execProcess): a privilege-dropped
-// child that itself spawns a grandchild must have BOTH reaped by a SIGKILL to
-// the process group. cmd.Dir is "/" — this test is about SysProcAttr
-// survival, not about working-directory traversal.
+// TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild checks that
+// isolation.Apply preserves Setpgid (proctree.Configure is applied first, as
+// in internal/worker/executor.execProcess): a privilege-dropped child that
+// spawns grandchildren must have all of them reaped by a SIGKILL to the
+// process group. cmd.Dir is "/" because the test is about SysProcAttr, not
+// working-directory traversal.
 func TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild(t *testing.T) {
 	requireRoot(t)
 	provider := newRealProvider(t)
@@ -659,7 +636,7 @@ func TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild(t *testing.T)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Errorf("a descendant of pid %d survived SIGKILL to its process group — Setpgid may have been clobbered by isolation.Apply", pid)
+	t.Errorf("a descendant of pid %d survived SIGKILL to its process group; isolation.Apply may have overwritten Setpgid", pid)
 }
 
 // TestIsolation_EnvironmentActionTimeoutReapsPrivilegeDroppedChild proves an
@@ -780,25 +757,21 @@ func realUID(t *testing.T, pid int) string {
 }
 
 // TestIsolation_NoRunAsUserBehaviorUnchanged pins the no-isolation default:
-// with no run_as_user configured anywhere, behavior is byte-for-byte the
-// same as without isolation support — full daemon environment inherited,
-// workdir mode 0750, no credential resolved. It also guards the split between
-// data_dir and the session root: a directory that plays the role of the
-// worker's data_dir (holding only worker.id in production) must come out of
-// session creation at exactly the mode it went in at — session.Manager must
-// never widen it, regardless of whether isolation is configured — since
-// data_dir holds nothing but the worker's persistent, server-correlated
-// identity and must stay private.
+// with no run_as_user configured anywhere, the full daemon environment is
+// inherited, the workdir mode is 0750 and no credential is resolved. It also
+// checks the split between data_dir and the session root: a directory in the
+// role of the worker's data_dir (holding only worker.id in production) must
+// come out of session creation at the mode it went in at. session.Manager
+// never widens it, whether or not isolation is configured, because data_dir
+// holds the worker's persistent, server-correlated identity and must stay
+// private.
 func TestIsolation_NoRunAsUserBehaviorUnchanged(t *testing.T) {
 	requireRoot(t)
 	t.Setenv("ARBITRARY_DAEMON_VAR", "inherited-value")
 
-	// A real data_dir (as workerconfig.LoadOrCreateWorkerID actually
-	// produces it) is 0700; t.TempDir() itself is created via
-	// os.Mkdir(dir, 0777) internally by the testing package (masked by
-	// umask, NOT 0700), so this test sets up the exact precondition
-	// LoadOrCreateWorkerID would have left behind rather than relying on
-	// t.TempDir()'s own incidental default.
+	// A real data_dir (as workerconfig.LoadOrCreateWorkerID produces it) is
+	// 0700. t.TempDir()'s mode comes from the testing package, so set the
+	// precondition explicitly.
 	dataDir := t.TempDir()
 	if err := os.Chmod(dataDir, 0o700); err != nil {
 		t.Fatalf("set up data_dir precondition: %v", err)
@@ -813,13 +786,13 @@ func TestIsolation_NoRunAsUserBehaviorUnchanged(t *testing.T) {
 		t.Errorf("workdir mode = %o, want 0750 (unchanged, no-isolation default)", got)
 	}
 	if got := statMode(t, dataDir); got != 0o700 {
-		t.Errorf("data_dir mode = %o after session creation, want 0700 unchanged — "+
-			"data_dir must NEVER be widened for session traversal (see workerconfig.LoadOrCreateWorkerID's doc)", got)
+		t.Errorf("data_dir mode = %o after session creation, want 0700 unchanged; "+
+			"data_dir is never widened for session traversal (see workerconfig.LoadOrCreateWorkerID's doc)", got)
 	}
 	sessionRoot := filepath.Join(dataDir, "sessions")
 	if got := statMode(t, sessionRoot); got != 0o750 {
-		t.Errorf("session root mode = %o, want 0750 (a deployment with no run_as_user configured anywhere "+
-			"gains nothing from the wider, isolation-only 0711)", got)
+		t.Errorf("session root mode = %o, want 0750 (a deployment with no run_as_user configured "+
+			"has no use for the wider, isolation-only 0711)", got)
 	}
 
 	out, err := runInSession(sess, &protocol.Action{Command: "env"}, nil)
@@ -832,38 +805,31 @@ func TestIsolation_NoRunAsUserBehaviorUnchanged(t *testing.T) {
 }
 
 // TestIsolation_CredentialClosedOnEnterEnvironmentsFailure is the real-root
-// counterpart to internal/worker/session's own (unit-level, fake-credential)
+// counterpart to internal/worker/session's unit tests with a fake credential,
 // TestCredentialClose_ClosedExactlyOnceOnNormalCleanup and
-// TestCredentialClose_NeverCalledWhenCredentialNeverObtained. It covers the
-// third case, Manager.Create's OnEnter-failure teardown path: a credential IS
-// obtained (the account resolves), but a later OnEnter action fails, so
-// Create tears everything down itself, including closing the credential,
-// before returning the error.
+// TestCredentialClose_NeverCalledWhenCredentialNeverObtained. It covers
+// Manager.Create's OnEnter-failure teardown path: a credential is obtained
+// (the account resolves), but a later OnEnter action fails, so Create tears
+// everything down itself, including closing the credential, before returning
+// the error.
 //
-// That case cannot be tested unprivileged, on any POSIX OS, sandboxed or
-// not: unlike session's unit tests (which fake applyCredential and so never
-// actually exec anything under a switched identity), it drives the REAL
-// isolation.Apply for its engineered OnEnter failure ("sh -c exit 1").
-// exec.Cmd.SysProcAttr.Credential always calls setgroups(2), which requires
-// CAP_SETGID even to set a process's own CURRENT supplementary group list
-// unless the caller is already privileged — so run unprivileged, the
-// intended "exit 1" failure is preempted by an unintended EPERM out of
-// isolation.Apply itself. Real root — guaranteed here by requireRoot and make
-// test-isolation's container — has that privilege, so the OnEnter action
-// fails for the reason the test engineers (`exit 1`, run as render-a) rather
-// than for lack of permission to attempt the identity switch.
+// This needs real root. The session unit tests fake applyCredential and never
+// exec under a switched identity; this test drives the real isolation.Apply
+// for its OnEnter failure ("sh -c exit 1"). exec.Cmd.SysProcAttr.Credential
+// always calls setgroups(2), which requires CAP_SETGID even to set a
+// process's own current supplementary group list unless the caller is already
+// privileged. Unprivileged, the "exit 1" failure would be preempted by an
+// EPERM out of isolation.Apply itself. As root (requireRoot, and make
+// test-isolation's container), the OnEnter action fails with `exit 1` run as
+// render-a.
 //
-// session.closeCredentialFn — the call-counting seam the unit tests swap to
-// prove Close was invoked exactly once — is unexported and unreachable from
-// this package. This test proves the same teardown branch
-// ran by its externally observable consequence instead: Manager.Create's
-// OnEnter-failure path calls closeCredential(cred) and then unconditionally
-// os.RemoveAll(workDir) in that one branch (see
-// internal/worker/session/session.go, Create's env-setup-failure branch),
-// never in a loop and never on any other return path — so a session
-// directory that is gone after a genuinely failing OnEnter proves that
-// branch, and the single credential-close call it performs, executed to
-// completion.
+// session.closeCredentialFn, the call-counting seam the unit tests swap to
+// count Close calls, is unexported and unreachable from this package. This
+// test observes the teardown through its effect instead: in Create's
+// environment-setup-failure branch, closeCredential(cred) is followed by
+// os.RemoveAll(workDir) (see internal/worker/session/session.go). This
+// assignment carries no path map, so a session directory that is gone after a
+// failing OnEnter shows that branch ran to completion.
 func TestIsolation_CredentialClosedOnEnterEnvironmentsFailure(t *testing.T) {
 	requireRoot(t)
 	dataDir := isolatedDataDir(t)
@@ -889,9 +855,9 @@ func TestIsolation_CredentialClosedOnEnterEnvironmentsFailure(t *testing.T) {
 
 	sess, err := mgr.Create(context.Background(), msg)
 	if sess != nil {
-		// Create's contract is "session and nil error, or nil and non-nil
-		// error — never both" (see its own doc); clean up defensively so a
-		// contract violation here doesn't also leak a session directory.
+		// Create returns a session with a nil error, or nil with a non-nil
+		// error, never both (see its doc). Clean up so a violation does not
+		// also leak a session directory.
 		mgr.Cleanup(context.Background(), sess, true)
 		t.Fatalf("Create must return nil session alongside a non-nil error; got %+v", sess)
 	}
@@ -899,17 +865,16 @@ func TestIsolation_CredentialClosedOnEnterEnvironmentsFailure(t *testing.T) {
 		t.Fatal("expected Create to fail when OnEnter fails")
 	}
 
-	// Create generates the session ID internally, so its workDir path is not
-	// known to this test directly — but this test's own sessionRoot holds
-	// nothing else, so confirming it is empty proves the ONE workDir Create
-	// created for this failed attempt was removed by the OnEnter-failure
+	// Create generates the session ID, so the test does not know the workDir
+	// path. This test's sessionRoot holds nothing else, so an empty sessionRoot
+	// shows the one workDir Create made was removed by the OnEnter-failure
 	// teardown branch.
 	entries, rdErr := os.ReadDir(sessionRoot)
 	if rdErr != nil {
 		t.Fatalf("read session root %q: %v", sessionRoot, rdErr)
 	}
 	if len(entries) != 0 {
-		t.Errorf("session root has %d leftover entries after a failed Create, want 0 — "+
+		t.Errorf("session root has %d leftover entries after a failed Create, want 0; "+
 			"the OnEnter-failure teardown branch (which closes the credential before removing "+
 			"the working directory) must run to completion", len(entries))
 	}

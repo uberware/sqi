@@ -24,9 +24,9 @@ func TestApplyNilCredentialLeavesCmdUnchanged(t *testing.T) {
 	}
 }
 
-// Apply must not destroy SysProcAttr fields the caller already set. The executor
-// sets Setpgid before calling Apply, and losing it means a canceled task leaks
-// its process tree — worst of all for a privileged-drop child.
+// Apply must not discard SysProcAttr fields the caller already set. The
+// executor sets Setpgid before calling Apply, and losing it means a canceled
+// task leaks its process tree.
 func TestApplyPreservesExistingSysProcAttr(t *testing.T) {
 	p := isolation.NewFake(map[string]isolation.FakeAccount{
 		"render-svc": {UID: 1001, GID: 2001},
@@ -61,10 +61,9 @@ func TestFakeProviderResolvesAndRefuses(t *testing.T) {
 	}
 }
 
-// TestFakeProviderValidatesGroup exercises the same policy Critical-1 added
-// to the real provider (privileged-group refusal, membership verification)
-// against the fake, so that later tests written against the fake actually
-// prove something instead of silently passing regardless of Group.
+// TestFakeProviderValidatesGroup exercises the real provider's group policy
+// (privileged-group refusal, membership verification) against the fake, so
+// that tests written against the fake do not pass regardless of Group.
 func TestFakeProviderValidatesGroup(t *testing.T) {
 	p := isolation.NewFake(map[string]isolation.FakeAccount{
 		"render-svc": {
@@ -86,11 +85,11 @@ func TestFakeProviderValidatesGroup(t *testing.T) {
 	}
 }
 
-// TestFakeProviderRejectsInvalidUsername is the Minor-9 fake/real parity
-// fix: the real provider rejects a "-u"-shaped username before it's used
-// for anything (TestUnixProviderRejectsInvalidUsernameBeforeAnyLookup); the
-// fake must reject the same shapes, or a test written against the fake
-// would pass with a username that fails against the real provider.
+// TestFakeProviderRejectsInvalidUsername: the real provider rejects a
+// "-u"-shaped username before using it for anything
+// (TestUnixProviderRejectsInvalidUsernameBeforeAnyLookup); the fake must
+// reject the same shapes, or a test written against the fake would pass with
+// a username that fails against the real provider.
 func TestFakeProviderRejectsInvalidUsername(t *testing.T) {
 	p := isolation.NewFake(map[string]isolation.FakeAccount{
 		"-rf": {UID: 1001, GID: 2001},
@@ -114,9 +113,9 @@ func TestFakeProviderRejectsInvalidGroup(t *testing.T) {
 }
 
 // TestFakeProviderRejectsPrimaryGIDZero mirrors the real provider's
-// primary-gid-0 refusal (TestResolveGIDRefusesPrimaryGIDZero) in the fake, so a test written
-// against the fake proves something about an account whose primary group is
-// gid 0 instead of silently accepting it.
+// primary-gid-0 refusal (TestResolveGIDRefusesPrimaryGIDZero) in the fake, so
+// a test written against the fake does not accept an account whose primary
+// group is gid 0.
 func TestFakeProviderRejectsPrimaryGIDZero(t *testing.T) {
 	p := isolation.NewFake(map[string]isolation.FakeAccount{
 		"render-svc": {UID: 1001, GID: 0},
@@ -127,8 +126,8 @@ func TestFakeProviderRejectsPrimaryGIDZero(t *testing.T) {
 }
 
 // TestFakeProviderAllowsOrdinaryPrimaryGID is the fake-provider companion to
-// TestResolveGIDAllowsOrdinaryStaffStylePrimaryGID, guarding against the fake
-// over-correcting the same way the real provider must not.
+// TestResolveGIDAllowsOrdinaryStaffStylePrimaryGID: the fake must not refuse
+// an ordinary primary gid, as the real provider must not.
 func TestFakeProviderAllowsOrdinaryPrimaryGID(t *testing.T) {
 	p := isolation.NewFake(map[string]isolation.FakeAccount{
 		"render-svc": {UID: 1001, GID: 2001},

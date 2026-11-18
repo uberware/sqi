@@ -977,8 +977,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     # Does not wait for the build, lint and unit-test job: it is the longest
-    # job after it, so waiting put the two in series. A failure there no longer
-    # stops this job early.
+    # job after it, so waiting would put the two in series. A failure there
+    # does not stop this job early.
     if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true' }}
 
     steps:
@@ -1801,8 +1801,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     # Does not wait for the build, lint and unit-test job: it is the longest
-    # job after it, so waiting put the two in series. A failure there no longer
-    # stops this job early.
+    # job after it, so waiting would put the two in series. A failure there
+    # does not stop this job early.
     if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true' }}
 
     steps:
@@ -2021,7 +2021,7 @@ jobs:
             echo "::error::$(hostname).local still does not resolve"; exit 1; }
 
       # The tests advertise on loopback only, so a run never announces a
-      # service on the network it is on, and never fall back to a real
+      # service on the network it is on, and never falls back to a real
       # interface. That needs two things macOS lo0 has and Linux lo lacks:
       #
       #  1. The MULTICAST flag. The tests select interfaces by it, so an
@@ -2041,7 +2041,7 @@ jobs:
           sudo ip -6 addr add fe80::1/64 dev lo || true
           ip -o -6 addr show lo scope link | grep -q fe80 || {
             echo "::error::lo has no link-local address, so a loopback-only mDNS"
-            echo "::error::advertisement cannot register — see the comment above"
+            echo "::error::advertisement cannot register; see the comment above"
             exit 1; }
 
       - name: Run the discovery suite over real multicast

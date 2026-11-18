@@ -56,8 +56,7 @@ decide which waiting work the group could run before any machine exists. A
 named group needs no profile, because sqi reads each member's own last
 registration.
 
-A worker belongs to at most one group. A worker in no group behaves exactly as
-it always did.
+A worker belongs to at most one group. A worker in no group is an ordinary worker.
 
 ### The opt-in rule
 
@@ -499,7 +498,7 @@ worker joins only through its group token.
 When a worker's request to join is refused (no such group, another farm, a
 named group), the registration still succeeds and the server logs a warning
 saying why. The same applies with broker authentication on to a group token
-whose group has since been changed to named: its machines no longer join it.
+whose group has since been changed to named: its machines do not join it.
 
 An ephemeral member cannot be removed from its group. It would join again
 at its next registration, which a restart or a NATS reconnect triggers: through
@@ -552,7 +551,7 @@ hibernated or cut off from the server by a network outage (a site-to-cloud VPN
 going down, say). A machine that comes back after its member was deleted has
 a revoked credential, which the broker refuses, and a worker keeps its
 credential file rather than enrolling again with its image's token: it never
-reconnects, and sqi no longer counts it. Replace such a machine, or set
+reconnects, and sqi does not count it. Replace such a machine, or set
 `boot_timeout_seconds` to cover the longest stop or outage the group must ride
 out. Only an outage of the server's own broker is waited out for you.
 
@@ -865,9 +864,9 @@ the exception: the command is under way, so sqi takes it as accepted.
 
 A request that reaches no one (no worker listens on the member's control
 subject) is handled according to which server began the retirement. When this
-server began it, the request was its first: nothing was delivered, so the retirement is refused with
-`worker is not listening on its control subject` and the member is `awake`
-again at once. A request this server only repeats, for a retirement recorded
+server began it, the request was its first and nothing was delivered, so the retirement is
+refused with `worker is not listening on its control subject` and the member is
+`awake` again at once. A request this server only repeats, for a retirement recorded
 before it started (after a restart or a failover), leaves the member `retiring`
 instead: the worker may have carried out the first request and be on its way
 down, so sqi waits for its deregistration or the boot timeout.

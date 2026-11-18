@@ -118,8 +118,8 @@ func TestRunAction_NormalExitLeavesDetachedGrandchild(t *testing.T) {
 // once rather than waiting out the notify period.
 func TestRunAction_NotifyFallsThroughToKill(t *testing.T) {
 	lowerDrainDelay(t)
-	// The grandchild waits about 3s, longer than in the other tests: the kill
-	// lands only after a "taskkill /T" run, which can be slow on a busy host.
+	// The grandchild waits about 3s, longer than in the other tests, because the
+	// kill lands only after a "taskkill /T" run, which can be slow on a busy host.
 	action, marker := startsDetachedGrandchild(t, 4, 60)
 	action.TimeoutSeconds = 1
 	action.Cancelation = &protocol.CancelationMethod{Mode: "NOTIFY_THEN_TERMINATE", NotifyPeriodSeconds: 30}

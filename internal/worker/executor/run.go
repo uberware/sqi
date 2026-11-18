@@ -56,8 +56,8 @@ type processResult struct {
 	// TimedOut is true when the process was killed because the per-task
 	// OnRun.TimeoutSeconds was exceeded.
 	TimedOut bool
-	// Canceled is true when the process was killed because the parent context
-	// was canceled (typically worker shutdown).
+	// Canceled is true when the process was killed because its context was
+	// canceled, by a per-task cancel or by the shutdown drain.
 	Canceled bool
 }
 
@@ -79,8 +79,9 @@ func (r processResult) duration() time.Duration {
 //  6. Honor per-task timeout and context cancellation.
 //  7. Publish terminal status (succeeded/failed/canceled).
 //  8. Update metrics.
-//  9. Remove from active-tasks and release the held attempt.
+//  9. Remove from active-tasks.
 //  10. Clean up the session.
+//  11. Release the held attempt.
 //
 // runTask is launched by [Executor.Dispatch] and runs independently until the
 // task terminates. Dispatch registered run and made its context, taskCtx,
@@ -120,7 +121,7 @@ func (e *Executor) runTask(
 	// present. Never fails the task.
 	e.installLogProgress(ctx, msg)
 
-	// LIFO defers — registration order (first→last) and execution order (last→first):
+	// Defers run last-registered first:
 	//   Registered 1st → runs last:        wg.Done
 	//   Registered 2nd → runs next-to-last: release (the held attempt)
 	//   Registered 3rd → runs 4th:         taskCancel
@@ -151,12 +152,11 @@ func (e *Executor) runTask(
 	// rewrites path_mapping.json when staging rules are added alongside the
 	// translation_file delivery.
 	//
-	// Pre-execution failures below publish a "running" status
-	// immediately before the terminal "failed", consistent with the nil-action
-	// and empty-command branches above and with the execProcess convention
-	// ("Publish running status before Start so the server records the attempt").
-	// Every attempt must have a running→terminal transition for the server's
-	// state machine; the running status is not a claim that a process exists.
+	// Pre-execution failures below publish a "running" status immediately
+	// before the terminal "failed", as the nil-action and empty-command
+	// branches above and execProcess do. The server's state machine needs a
+	// running→terminal transition for every attempt; the running status does
+	// not mean a process exists.
 	lookup, scratchDir, ok := e.buildEffectiveLookup(ctx, msg, sess.ID, sess.WorkDir, sess.Credential(), &failed)
 	defer e.stager.Cleanup(scratchDir)
 	if !ok {
@@ -184,8 +184,7 @@ func (e *Executor) runTask(
 
 	// ── Pre-exec validation: s3:// guard + embedded file write ─────────────────
 	// Guards the object-store path (see guardUnstagedS3) and materializes
-	// step-level embedded files before OnRun.  Combined into one call to stay
-	// within the cyclomatic-complexity limit for runTask.
+	// step-level embedded files before OnRun.
 	// It also compiles the step's SQI_LOG_CHECKS, if any, into the checker that
 	// watches the process's output.
 	checker, ok := e.preExecValidate(ctx, msg, sess, resolvedRun, resolvedEnvVars, resolvedFiles, &failed)
@@ -452,13 +451,15 @@ func (e *Executor) publishTerminal(msg *protocol.AssignMsg, sessID, status strin
 //   - each step embedded file's data against that same task scope, so file data
 //     may reference Task.Param.* and Task.File.* (the materialized path of any
 //     step file, including itself or a sibling);
-//   - the merged environment-variable values against the environment scope
-//     (Task.Param.* is unavailable; Env.File.* of every environment
-//     exposed so env-var values may reference an environment file's path).
 //
-// It returns the resolved action copy, the resolved environment-variable map,
-// and the step embedded files with their data resolved, or a descriptive error
-// naming the offending reference.
+// The environment-variable map is the static environment session.Create
+// resolved at enter time, each environment's values against its own
+// environment scope (Task.Param.* is unavailable; Env.File.* is exposed so a
+// value may reference that environment's file paths).
+//
+// It returns the resolved action copy, the environment-variable map, and the
+// step embedded files with their data resolved, or a descriptive error naming
+// the offending reference.
 //
 // msg.EXPR selects the resolution path. A base-spec assignment (EXPR false,
 // the zero value) takes the fmtstring.Resolve-backed resolveAssignmentBaseSpec.
@@ -700,7 +701,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// even if the command is not found or cannot be executed.  If Start fails
 	// the caller publishes a terminal "failed" immediately after, so the
 	// server always sees a running→failed transition.
-	// lastProgress is nil here because the process has not yet emitted any output.
+	// The status carries no progress: the process has emitted no output.
 	e.statusPub.Running(context.Background(), msg, sess.ID, nil, startedAt)
 
 	// procout, not StdoutPipe, so the task's exit is seen while a descendant
@@ -948,8 +949,8 @@ func (e *Executor) killAndWait(
 	}
 
 	// Wait for the process to exit gracefully or escalate to SIGKILL.
-	// Use time.NewTimer (not time.After) so the timer is stopped and GC'd
-	// promptly when the process exits before the grace period elapses.
+	// time.NewTimer, not time.After, so the timer is stopped when the process
+	// exits before the grace period elapses.
 	graceTimer := time.NewTimer(gracePeriod)
 	defer graceTimer.Stop()
 	select {
@@ -1031,8 +1032,7 @@ func (e *Executor) flushTaskLogs(ctx context.Context, msg *protocol.AssignMsg, s
 
 // takeFailReason retrieves the openjd_fail reason stored for attemptID by the
 // output handler's TaskLifecycleHook, if wired. Returns ("", false) when no
-// openjd_fail was seen or no hook is configured. Extracted from runTask to keep
-// its cyclomatic complexity within the project limit.
+// openjd_fail was seen or no hook is configured.
 func (e *Executor) takeFailReason(attemptID string) (string, bool) {
 	if hook, ok := e.outputHandler.(TaskLifecycleHook); ok {
 		return hook.TakeFailReason(attemptID)
@@ -1046,12 +1046,13 @@ func (e *Executor) takeFailReason(attemptID string) (string, bool) {
 // swap_in_place substitutes paths in the action; command_flags appends rendered
 // flags; environment sets the configured variable. translation_file is handled
 // at session/executor file-write time, not here. Returns the (possibly new)
-// action and the env map (mutated in place and returned for clarity).
+// action and the env map; a non-nil env is written in place, and a nil one is
+// replaced by a new map when the environment delivery sets a variable.
 //
-// Deliveries are applied in a fixed canonical order (swap_in_place →
-// command_flags → environment) regardless of the declared order in the
-// template. This prevents a hand-authored template that lists command_flags
-// before swap_in_place from double-substituting the appended flag strings.
+// Deliveries are applied in a fixed order (swap_in_place → command_flags →
+// environment) whatever order the template declares them in, so a template that
+// lists command_flags before swap_in_place does not have its appended flag
+// strings substituted a second time.
 func applyDeliveries(deliveries []protocol.PathDelivery, lookup *pathmap.Lookup, action *protocol.Action, env map[string]string) (outAction *protocol.Action, outEnv map[string]string) {
 	// Index enabled deliveries by kind so we can apply in fixed canonical order.
 	type kindCfg struct{ pattern, variable string }
@@ -1107,8 +1108,7 @@ func hasDelivery(ds []protocol.PathDelivery, kind string) bool {
 
 // preExecValidate runs the pre-exec steps that sit between resolveAssignment
 // and the process launch: (1) compiling the step's SQI_LOG_CHECKS, (2) the s3://
-// path guard and (3) step embedded-file materialization. Combining them keeps
-// runTask's cyclomatic complexity within the project limit. It returns the log
+// path guard and (3) step embedded-file materialization. It returns the log
 // checker (nil when the step has no checks) and true when all steps pass; false
 // when any failed the task (caller must return).
 func (e *Executor) preExecValidate(
@@ -1120,8 +1120,8 @@ func (e *Executor) preExecValidate(
 	resolvedFiles []protocol.EmbeddedFile,
 	failed *bool,
 ) (*logChecker, bool) {
-	// The server validated the patterns at submission, so a compile error here is
-	// defense only; it fails the task before anything runs.
+	// The server validated the patterns at submission, so a compile error is not
+	// expected here; it fails the task before anything runs.
 	checker, err := newLogChecker(msg.LogChecks)
 	if err != nil {
 		e.logger.ErrorContext(
@@ -1157,8 +1157,7 @@ func (e *Executor) preExecValidate(
 // guardUnstagedS3 checks whether the resolved command/args/env contains an
 // s3:// URI without stage_locally enabled, and if so fails the task pre-exec
 // with a clear reason. It returns true when the task was failed (caller must
-// return), false otherwise. Extracted from runTask to keep its cyclomatic
-// complexity within the project limit.
+// return), false otherwise.
 func (e *Executor) guardUnstagedS3(
 	ctx context.Context,
 	msg *protocol.AssignMsg,

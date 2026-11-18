@@ -2,12 +2,12 @@
 
 // Package session manages the lifecycle of OpenJD sessions on the worker.
 //
-// A Session is the ephemeral execution context within which one or more
-// tasks from the same job step run. It provides:
+// A Session is the ephemeral execution context in which the task of one
+// assignment runs. It provides:
 //   - An isolated working directory under <session_root>/<session_id>/
 //   - Ordered environment entry (OnEnter actions run in declaration order)
 //   - Ordered environment exit (OnExit actions run in reverse order)
-//   - Safe concurrent task tracking via AddTask / RemoveTask
+//   - Concurrency-safe tracking of running tasks via AddTask / RemoveTask
 //
 // # Session identity
 //
@@ -20,8 +20,8 @@
 // # Scope
 //
 // Sessions are worker-side runtime state, not database rows. The server
-// records the session ID only on task_attempts. There is no sessions table
-// (for session-reuse scheduling), and a session runs exactly one task; see
+// records the session ID only on task_attempts. There is no sessions table,
+// and a session runs exactly one task, so sessions are never reused; see
 // docs/architecture.md ("SQLite schema overview").
 //
 // # Usage
@@ -84,12 +84,11 @@ var applyCredential = isolation.Apply
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
-// Session is the ephemeral execution context for one or more tasks from the
-// same job step. Obtain one via [Manager.Create]; end it by calling
+// Session is the ephemeral execution context for the task of one assignment.
+// Obtain one via [Manager.Create]; end it by calling
 // [Session.ExitEnvironments] followed by [Manager.Cleanup].
 //
-// Session is safe for concurrent use. Multiple tasks may execute within a
-// single session simultaneously.
+// Session is safe for concurrent use.
 type Session struct {
 	// ID is the worker-generated unique identifier for this session.
 	// Callers include this in every [protocol.TaskStatusMsg] (as
@@ -123,17 +122,15 @@ type Session struct {
 	hasPathMap bool
 
 	// msg is the assignment that created this session, and the only task
-	// dispatched into it: sessions are not reused across tasks (see the
-	// package comment). resolveEnvParts reads msg.EXPR to choose between the
-	// base-spec fmtres.EnvScope/ResolveAction path and the phase-3
-	// fmtres.EnvSymbols/ResolveActionExpr path, and reads msg.PathMap for the
-	// EXPR path's metering and path-mapping options. Never mutated after
-	// Create, so it is read without the mu lock, like
+	// dispatched into it (see the package comment). resolveEnvParts reads
+	// msg.EXPR to choose between the base-spec fmtres.EnvScope/ResolveAction
+	// path and the phase-3 fmtres.EnvSymbols/ResolveActionExpr path, and reads
+	// msg.PathMap for the EXPR path's metering and path-mapping options. Never
+	// mutated after Create, so it is read without the mu lock, like
 	// jobParams/pathMapFile/hasPathMap above.
 	//
-	// Non-nil for every Session: Manager.Create dereferences msg
-	// (msg.Isolation) before it builds one, so resolveEnvParts reads s.msg
-	// without a nil check.
+	// Non-nil for every Session: Manager.Create dereferences msg before it
+	// builds one.
 	msg *protocol.AssignMsg
 
 	// exprBudget is the one [fmtres.AssignmentBudget] shared by every live,
@@ -141,11 +138,10 @@ type Session struct {
 	// it before enterEnvironments runs, so every environment table built
 	// during session creation shares it, and the executor's task-table
 	// resolution (internal/worker/executor's resolveAssignmentExpr, via
-	// [Session.ExprBudget]) reuses it. One budget per session, not per table
-	// and not per worker process, bounds an assignment's total entry-time
-	// phase-3 retained bytes and resolved positions across every table it
-	// builds; see fmtres.AssignmentBudget's doc comment for the choice of
-	// scope and how worker concurrency affects its size.
+	// [Session.ExprBudget]) reuses it. It bounds an assignment's total
+	// entry-time phase-3 retained bytes and resolved positions across every
+	// table it builds; see fmtres.AssignmentBudget's doc comment for how
+	// worker concurrency affects its size.
 	//
 	// The teardown path (resolveEnvAction, reached only via
 	// ExitEnvironments) does not charge this budget; see that method's doc
@@ -186,12 +182,11 @@ type Session struct {
 
 	// cred is the run-as-user identity every action runs under, or nil.
 	//
-	// Sessions are not reused (see the package comment). Any session reuse
-	// must not cross run-as-user identities, so a reuse key must include
-	// cred's identity: a session accumulates environment state (static
-	// Environment.variables and dynamic openjd_env exports) for its lifetime,
-	// and reusing it across identities hands one user's exported secrets to
-	// another user's tasks.
+	// Sessions are not reused (see the package comment). A session accumulates
+	// environment state (static Environment.variables and dynamic openjd_env
+	// exports) for its lifetime, so reusing one across run-as-user identities
+	// would hand one user's exported secrets to another user's tasks; a reuse
+	// key would have to include cred's identity.
 	cred *isolation.Credential
 
 	// baseEnv is the daemon environment already filtered by the worker's
@@ -216,7 +211,7 @@ type Session struct {
 //
 // Both places that start job-supplied commands call this: the executor for a
 // task's onRun and runAction's callers for an environment's onEnter/onExit.
-// Any new launch site must call it too, or it ignores the operator's mapping.
+// A new launch site must call it too, or it ignores the operator's mapping.
 func (s *Session) ResolveAction(a *protocol.Action) *protocol.Action {
 	if a == nil {
 		return nil
@@ -386,11 +381,11 @@ type Manager struct {
 	sessionRoot string
 	// sessionRootMode is the mode sessionRoot is created at when it does not
 	// already exist (os.MkdirAll never changes an existing directory's mode;
-	// see prepareSessionsDir). Defaults to 0711, traversable from creation,
-	// unless overridden via WithSessionRootMode. cmd/sqi-worker's
-	// effectiveSessionRoot passes 0750 for the non-root fallback under
-	// data_dir: run-as-user isolation needs root whatever the directory
-	// permissions, so that location gains nothing from 0711.
+	// see prepareSessionsDir). Defaults to 0711 unless overridden via
+	// WithSessionRootMode. cmd/sqi-worker's effectiveSessionRoot passes 0750
+	// for the non-root fallback under data_dir: run-as-user isolation needs
+	// root whatever the directory permissions, so that location gains nothing
+	// from 0711.
 	sessionRootMode    os.FileMode
 	keepFailedSessions bool
 	// provider resolves run-as-user credentials for isolated assignments.
@@ -529,17 +524,15 @@ func closeCredential(ctx context.Context, cred *isolation.Credential, sessionID 
 
 // prepareSessionsDir ensures m.sessionRoot (and any missing parent) exists,
 // validates its ancestors when the assignment is isolated, and returns it
-// unchanged for Create to build <sessionID> under. It is a
-// separate function to keep Create within the cyclomatic-complexity limit.
+// unchanged for Create to build <sessionID> under.
 //
 // The directory is created at m.sessionRootMode (0711 by default: search for
 // everyone, nothing readable or writable beyond the owner; see
-// WithSessionRootMode) rather than created narrow and widened afterward.
-// os.MkdirAll never changes the mode of a directory that already exists, so
-// this affects only a directory this call creates; an existing directory's
-// mode is never widened to make it traversable. m.sessionRoot is never
-// the worker's data_dir or an ancestor shared with the persistent worker-id
-// file; see cmd/sqi-worker's effectiveSessionRoot and
+// WithSessionRootMode). os.MkdirAll never changes the mode of a directory that
+// already exists, so this affects only a directory this call creates; an
+// existing directory's mode is never widened. m.sessionRoot is never the
+// worker's data_dir or an ancestor shared with the persistent worker-id file;
+// see cmd/sqi-worker's effectiveSessionRoot and
 // workerconfig.LoadOrCreateWorkerID.
 //
 // Ownership stays with the daemon (root): many run-as-user identities share
@@ -585,19 +578,17 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	}
 
 	// WorkDir must be absolute: it becomes cmd.Dir for every action and the base
-	// for Task.File.* / Env.File.* paths. A relative session root (e.g. under the
-	// Makefile's ./.run/workers) would otherwise yield a relative command path
-	// that the child resolves against cmd.Dir, doubling the path and failing
-	// with "no such file or directory".
+	// for Task.File.* / Env.File.* paths. A relative session root would yield a
+	// relative command path that the child resolves against cmd.Dir, doubling
+	// the path and failing with "no such file or directory".
 	workDir, err := filepath.Abs(filepath.Join(sessionsDir, sessionID))
 	if err != nil {
 		return nil, fmt.Errorf("session %s: resolve absolute working directory: %w", sessionID, err)
 	}
 	// A workDir that will run job code under a different OS identity is
-	// created 0700 (owner-only) rather than narrowed afterward. Unlike
-	// sessionsDir, this directory belongs to one session and one target user
-	// and must stay private; SecureWorkDir (called via resolveCredential
-	// below) then chowns it to cred's uid/gid.
+	// created 0700 (owner-only). Unlike sessionsDir, this directory belongs to
+	// one session and one target user and must stay private; SecureWorkDir
+	// (called via resolveCredential below) then chowns it to cred's uid/gid.
 	workDirMode := os.FileMode(0o750)
 	if msg.Isolation != nil {
 		workDirMode = 0o700
@@ -607,9 +598,8 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	}
 
 	// Resolve the OS identity before any job-supplied code runs. onEnter is
-	// job code, one of the two launch sites that must carry a credential (the
-	// executor's task-process launch is the other), and must never run as the
-	// daemon while looking isolated.
+	// job code and is one of the two launch sites that must carry a credential
+	// (the executor's task-process launch is the other).
 	cred, err := m.resolveCredential(ctx, msg, sessionID, workDir)
 	if err != nil {
 		return nil, err
@@ -630,8 +620,7 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		// unwritable to them, and DCCs write configs wherever these point.
 		// The resolved identity can have no home directory (NSS resolution can
 		// come back empty; see isolation.unixProvider.resolveIdentityViaNSS),
-		// and keeping envutil.BaseEnv's inherited HOME would then hand the
-		// task the daemon's home (typically /root), which this identity cannot
+		// and the inherited HOME (typically /root) is one this identity cannot
 		// write. Fall back to the session's working directory, which
 		// SecureWorkDir (called by resolveCredential above) made cred's own.
 		home := cred.Home
@@ -662,10 +651,9 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 
 	// Write the OpenJD path-mapping file once, at session creation, so that
 	// both environment actions (entered below) and the task action (run later
-	// by the executor) find a real file at Session.PathMappingRulesFile. The
-	// executor does not write it. It is written only when the
-	// translation_file delivery is enabled; an assignment with no deliveries
-	// set gets it whenever it carries rules.
+	// by the executor) find a real file at Session.PathMappingRulesFile. It is
+	// written only when the translation_file delivery is enabled; an
+	// assignment with no deliveries set gets it whenever it carries rules.
 	hasPathMap := len(msg.PathMap) > 0 && translationFileEnabled(msg.PathDeliveries)
 	var pathMapFile string
 	if hasPathMap {
@@ -745,11 +733,10 @@ func (m *Manager) Cleanup(ctx context.Context, s *Session, failed bool) {
 		)
 	}
 
-	// The session's run-as-user credential (if any) is not needed after the
-	// session ends; this is where the normal path closes it, as Create's
-	// error paths do. It is closed even when keepFailedSessions retains the
-	// working directory below: files kept for inspection do not need the
-	// credential handle.
+	// The session's run-as-user credential (if any) is closed here on the
+	// normal path, as Create's error paths close it on theirs. It is closed
+	// even when keepFailedSessions retains the working directory below: files
+	// kept for inspection do not need the credential handle.
 	closeCredential(ctx, s.cred, s.ID, m.logger)
 
 	// Retain the working directory on failure when the debug flag is set.
@@ -896,7 +883,7 @@ type envFileResolver func([]protocol.EmbeddedFile) ([]protocol.EmbeddedFile, err
 // at entry, an onExit referencing a step-template binding would fail as an
 // unknown symbol, and [Session.ExitEnvironments] logs such a failure as a
 // warning and continues. Any OpenJD Template Schemas §3.6.2 ordering
-// constraint belongs here.
+// constraint is implemented here.
 //
 // s.msg.EXPR selects the resolution family. A base-spec assignment (EXPR
 // false, the zero value) takes the
@@ -1327,9 +1314,7 @@ func startContainedAction(action *protocol.Action, workDir string, env []string,
 	cmd.Dir = workDir
 	proctree.Configure(cmd)
 	// This is job-supplied code (an OpenJD environment onEnter/onExit action)
-	// and must run under the session's credential, not the daemon's. onEnter
-	// runs before any task, so a missed credential here would run job code
-	// privileged while every task around it looked isolated.
+	// and must run under the session's credential, not the daemon's.
 	if err := applyCredential(cmd, cred); err != nil {
 		return nil, nil, fmt.Errorf("apply run-as-user credential: %w", err)
 	}
@@ -1485,7 +1470,7 @@ func logActionOutcome(ctx context.Context, logger *slog.Logger, command string, 
 // lets the session intercept OpenJD environment directives and redact secrets
 // before any output reaches the logger.
 //
-// The scanner's per-token buffer is raised from the default 64 KB to 4 MB so
+// The scanner's per-token buffer is 4 MB rather than bufio's default 64 KB, so
 // that environment-action commands that emit long log lines (e.g. compiler
 // output, base64-encoded payloads) do not trigger bufio.ErrTooLong and fail an
 // otherwise-successful action. Directives are short, so this limit does not
@@ -1498,7 +1483,6 @@ func logActionOutcome(ctx context.Context, logger *slog.Logger, command string, 
 func scanActionStream(r io.Reader, stream string, lineHandler func(stream, line string) string) (string, error) {
 	var buf strings.Builder
 	scanner := bufio.NewScanner(r)
-	// Raise the per-token limit from the default 64 KB to 4 MB.
 	const maxLineBytes = 4 * 1024 * 1024
 	scanner.Buffer(make([]byte, 64*1024), maxLineBytes)
 	for scanner.Scan() {
@@ -1552,9 +1536,8 @@ func writeEmbeddedFiles(workDir string, files []protocol.EmbeddedFile, cred *iso
 // write. The mode (0640, or 0750 when Runnable) has no "other" bits, so
 // without the chown an isolated task, being neither the owner nor in the
 // group, could neither read a data file nor execute a runnable one. The mode
-// is never
-// widened to world-readable: these files can carry job data, and the chown
-// makes them usable by the one identity that needs them.
+// is not widened to world-readable: these files can carry job data, and the
+// chown makes them usable by the one identity that needs them.
 //
 // Step embedded files are written after job code has already run as the
 // target uid (the environment onEnter action runs first), at a predictable

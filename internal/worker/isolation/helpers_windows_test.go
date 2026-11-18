@@ -17,6 +17,6 @@ import (
 func assertProcessGroupStillSet(t *testing.T, cmd *exec.Cmd) {
 	t.Helper()
 	if cmd.SysProcAttr == nil || cmd.SysProcAttr.CreationFlags&windows.CREATE_SUSPENDED == 0 {
-		t.Error("Apply must preserve pre-existing SysProcAttr fields on Windows too")
+		t.Error("Apply must preserve CREATE_SUSPENDED on the caller's SysProcAttr")
 	}
 }

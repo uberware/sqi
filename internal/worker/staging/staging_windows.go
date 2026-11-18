@@ -19,50 +19,44 @@ import (
 // handled by a different API than the POSIX open(2) flags this constant
 // augments on unix.
 //
-// This only affects copyFile, which is the STAGE-IN path. Stage-out
-// does not open by path at all: openStageOutSource opens through an
-// os.Root, which on Windows maps to OBJ_DONT_REPARSE and makes the kernel
-// refuse a lookup that meets ANY reparse point — a strictly stronger property
-// than O_NOFOLLOW, and the one that closes the junction bypass.
+// This affects only copyFile, the stage-in path. Stage-out does not open by
+// path: openStageOutSource opens through an os.Root, which on Windows maps to
+// OBJ_DONT_REPARSE and makes the kernel refuse a lookup that meets any
+// reparse point. That is stronger than O_NOFOLLOW and closes the junction
+// bypass.
 //
 // dest needs no equivalent: Go's syscall.Open sets FILE_FLAG_OPEN_REPARSE_POINT
 // whenever O_CREAT|O_EXCL is requested, so copyFromFile's
-// remove-then-O_EXCL-create can never be written through a pre-existing
-// reparse point. See isolation.createExclusiveFile's doc for the same
-// reasoning applied to the same problem.
+// remove-then-O_EXCL-create is never written through a pre-existing reparse
+// point. See isolation.createExclusiveFile's doc for the same reasoning.
 const noFollowFlag = 0
 
 // hasExtraHardlinks reports whether f's underlying file has more than one
 // name (hardlink) on the volume. NTFS supports hardlinks and creating one
-// requires no privilege, so this is a real check on Windows, not a stub.
+// requires no privilege.
 //
-// It has a cost. Both callers use it: openStageOutSource (stage-out only,
-// adversarial) and copyFile, which is the built-in STAGE-IN copy plus
-// copyTree's recursion and is not adversarial at all. So a job INPUT asset
-// carrying a second NTFS hardlink fails stage-in on Windows with "copy
-// refused: ... has more than one hardlink". Content-addressed and dedup asset
-// stores, and "rsync --link-dest"-style delivery, produce multiply linked
-// files as a matter of course. That cost is accepted — the refusal is correct
-// under run-as-user isolation, and POSIX behaves the same way — but it
-// affects legitimate Windows workloads, and this is the function that makes
-// it happen. See copyFile's doc for
-// the operator-facing half and docs/worker-configuration.md for the "a
-// hardlink IS the file" reasoning.
+// Both callers use it: openStageOutSource (stage-out) and copyFile, which is
+// the built-in stage-in copy and the one copyTree recurses through. A job
+// input asset carrying a second NTFS hardlink therefore fails stage-in on
+// Windows with "copy refused: ... has more than one hardlink". Content-addressed
+// and dedup asset stores, and "rsync --link-dest"-style delivery, produce
+// multiply linked files routinely. The refusal is correct under run-as-user
+// isolation and POSIX behaves the same way. See copyFile's doc for the
+// operator-facing half and docs/worker-configuration.md for why a hardlink is
+// treated as the file itself.
 //
-// It must go through GetFileInformationByHandle because Windows exposes no
-// link count via os.FileInfo: Sys() yields a *syscall.Win32FileAttributeData,
-// which has no such field, and Go's Windows fileStat does not carry one
-// either. Only the handle-based call answers the question.
+// It goes through GetFileInformationByHandle because Windows exposes no link
+// count via os.FileInfo: Sys() yields a *syscall.Win32FileAttributeData, which
+// has no such field, and Go's Windows fileStat does not carry one either.
 //
 // The handle is borrowed via SyscallConn, never f.Fd(): Fd() can disassociate
-// a file from the runtime poller, whereas SyscallConn is the supported way to
-// hand a descriptor to a syscall and keeps the file usable afterward.
+// a file from the runtime poller, whereas SyscallConn hands a descriptor to a
+// syscall and keeps the file usable afterward.
 //
-// Windows caveat, recorded so it is not overclaimed: CreateHardLink refuses a
-// target the caller cannot write, so this is a narrower primitive here than
-// on POSIX (where fs.protected_hardlinks is the only thing narrowing it, and
-// it is a host kernel setting sqi does not control). This check is justified
-// on parity and defense in depth, not on a demonstrated escalation.
+// CreateHardLink refuses a target the caller cannot write, so the primitive
+// is narrower here than on POSIX (where only the host's fs.protected_hardlinks
+// setting narrows it, and sqi does not control that). The check is kept for
+// parity with POSIX and as defense in depth.
 func hasExtraHardlinks(f *os.File) (bool, error) {
 	rc, err := f.SyscallConn()
 	if err != nil {
@@ -84,21 +78,20 @@ func hasExtraHardlinks(f *os.File) (bool, error) {
 }
 
 // isAccessError reports whether err from an os.Root lookup is a permission or
-// sharing failure rather than a containment refusal — see
+// sharing failure rather than a containment refusal; see
 // classifyStageOutOpenError for why the two must not be worded alike.
 //
-// The sharing cases are the reason this is a per-platform helper at all: a
-// task's background child that outlives it (nothing kills a task's process
-// group on a SUCCESSFUL exit — see proctree.Tree.Release) can still
-// hold the staged output open with a restrictive share mode, and NTFS answers
-// the daemon's open with ERROR_SHARING_VIOLATION. Go maps neither that nor
-// ERROR_LOCK_VIOLATION to fs.ErrPermission, so without naming them a mundane
-// "the task left a writer open" is reported to the operator as a containment
-// breach.
+// The sharing cases are why this is a per-platform helper: a task's background
+// child that outlives it (the process tree is not killed when a task exits
+// successfully; see proctree.Tree.Release) can still hold the staged output
+// open with a restrictive share mode, and NTFS answers the daemon's open with
+// ERROR_SHARING_VIOLATION. Go maps neither that nor ERROR_LOCK_VIOLATION to
+// fs.ErrPermission, so without naming them a task that left a writer open
+// would be reported to the operator as a containment breach.
 //
 // An escape, and any reparse point met anywhere in the relative path, surface
-// from os.Root as its own "path escapes from parent" error instead — verified
-// on this platform, not assumed — so neither is misclassified here.
+// from os.Root as its own "path escapes from parent" error, so neither is
+// misclassified here.
 func isAccessError(err error) bool {
 	return errors.Is(err, fs.ErrPermission) ||
 		errors.Is(err, windows.ERROR_SHARING_VIOLATION) ||

@@ -12,15 +12,15 @@
 //
 // CreateProcessAsUser (which os/exec invokes whenever SysProcAttr.Token is
 // set) requires SeAssignPrimaryTokenPrivilege. By default only LocalSystem
-// and the LOCAL/NETWORK SERVICE accounts hold it — an elevated Administrator
-// does NOT. So anything asserting that a child really ran as the target user
+// and the LOCAL/NETWORK SERVICE accounts hold it; an elevated Administrator
+// does not. A test asserting that a child ran as the target user therefore
 // belongs in the System tier, which scripts/test-isolation-windows.ps1 runs
 // via a scheduled task with /ru SYSTEM.
 //
-// Everything else — ACL shape, credential storage, and even real impersonated
-// access checks (LogonUserW needs no privilege for a local account with a
-// password; ImpersonateLoggedOnUser needs only SeImpersonatePrivilege, which
-// administrators hold) — belongs in the fast tier.
+// Everything else belongs in the fast tier: ACL shape, credential storage,
+// and real impersonated access checks (LogonUserW needs no privilege for a
+// local account with a password; ImpersonateLoggedOnUser needs only
+// SeImpersonatePrivilege, which administrators hold).
 package integration
 
 import (
@@ -55,8 +55,7 @@ import (
 )
 
 // requireHarness skips unless the PowerShell harness set up the throwaway
-// accounts. A bare `make test-integration` on a developer box must never try
-// to create OS accounts.
+// accounts. A bare `make test-integration` does not create OS accounts.
 func requireHarness(t *testing.T) {
 	t.Helper()
 	if os.Getenv("SQI_TEST_ISOLATION_WINDOWS") != "1" {
@@ -81,24 +80,24 @@ func currentAccountName(t *testing.T) string {
 }
 
 // TestIsolationWindowsSystem_RunsAsSystem is the harness's own smoke test. If
-// the scheduled-task plumbing silently ran the binary as the invoking
-// administrator instead of SYSTEM, every other System-tier assertion would
-// fail for the wrong reason — or, worse, a privilege-dependent test could be
-// skipped and read as a pass. This asserts the premise directly.
+// the scheduled task ran the binary as the invoking administrator instead of
+// SYSTEM, every other System-tier assertion would fail for the wrong reason,
+// or a privilege-dependent test could be skipped and read as a pass. This
+// asserts the premise directly.
 func TestIsolationWindowsSystem_RunsAsSystem(t *testing.T) {
 	requireHarness(t)
 
 	got := currentAccountName(t)
 
 	if !strings.EqualFold(got, `NT AUTHORITY\SYSTEM`) {
-		t.Fatalf("running as %q, want NT AUTHORITY\\SYSTEM — the scheduled task did not elevate to SYSTEM", got)
+		t.Fatalf("running as %q, want NT AUTHORITY\\SYSTEM; the scheduled task did not run as SYSTEM", got)
 	}
 }
 
-// TestIsolationWindows_CredentialRoundTrip proves an operator-provisioned
+// TestIsolationWindows_CredentialRoundTrip checks that an operator-provisioned
 // secret is readable by the worker: encrypt with the machine key, write with
-// a locked-down ACL, read it back. Runs in the admin tier because DPAPI needs
-// no special privilege.
+// a locked-down ACL, read it back. It runs in the admin tier because DPAPI
+// needs no special privilege.
 func TestIsolationWindows_CredentialRoundTrip(t *testing.T) {
 	requireHarness(t)
 	dir := t.TempDir()
@@ -125,8 +124,9 @@ func TestIsolationWindows_CredentialRoundTrip(t *testing.T) {
 	}
 }
 
-// TestIsolationWindows_CredentialMissingIsActionable proves an operator who
-// never ran set-credential gets a message naming the fix, not "empty secret".
+// TestIsolationWindows_CredentialMissingIsActionable checks that an operator
+// who never ran set-credential gets a message naming the fix, not "empty
+// secret".
 func TestIsolationWindows_CredentialMissingIsActionable(t *testing.T) {
 	requireHarness(t)
 
@@ -140,25 +140,20 @@ func TestIsolationWindows_CredentialMissingIsActionable(t *testing.T) {
 	}
 }
 
-// TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees proves
+// TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees checks
 // that after Put, the credential directory and the file it wrote both carry a
-// protected DACL that excludes every unprivileged trustee — BUILTIN\Users
+// protected DACL that excludes every unprivileged trustee, BUILTIN\Users
 // above all, which a ProgramData-rooted parent tree would otherwise grant. It
-// reads the on-disk DACL back with windows.GetNamedSecurityInfo,
-// independently of the openForACL/applyProtectedDACL primitives Put itself
-// uses to write it, so a bug in those primitives can't hide from this
-// assertion the way it could if the test reused the same code path to verify
-// itself.
+// reads the on-disk DACL back with windows.GetNamedSecurityInfo, independently
+// of the openForACL/applyProtectedDACL primitives Put uses to write it.
 //
-// This runs in the elevated tier, not alongside the package's other unit
-// tests (internal/worker/isolation/credstore_windows_test.go), because it
-// cannot: adminOnlyDACL (acl_windows.go) grants the credential directory to
-// SYSTEM and Administrators only — no CREATOR OWNER placeholder standing in
-// for whoever happens to create it — so an unelevated process cannot complete
-// Put() at all. That is deliberate: the documented caller of set-credential
-// is always an elevated Administrator, so nothing legitimate is lost, and it
-// makes "run from an elevated shell" an enforced control rather than a
-// documentation-only convention.
+// This runs in the elevated tier, not alongside the package's unit tests
+// (internal/worker/isolation/credstore_windows_test.go), because an
+// unelevated process cannot complete Put: adminOnlyDACL (acl_windows.go)
+// grants the credential directory to SYSTEM and Administrators only, with no
+// CREATOR OWNER placeholder for the creator. The caller of set-credential is
+// an elevated Administrator, so this makes running from an elevated shell an
+// enforced requirement.
 func TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees(t *testing.T) {
 	requireHarness(t)
 	dir := t.TempDir()
@@ -175,11 +170,9 @@ func TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees(t *tes
 	}
 
 	// Put's on-disk filename is a hex encoding of the normalized account
-	// name (credFileName, internal/worker/isolation/credstore.go) — not
-	// reproduced here, deliberately: this test discovers the file the same
-	// way an operator would, by listing the directory Put just secured,
-	// rather than depending on an unexported naming scheme this package
-	// does not own.
+	// name (credFileName, internal/worker/isolation/credstore.go). The test
+	// finds the file by listing the directory instead of depending on that
+	// unexported naming scheme.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("ReadDir(%q): %v", dir, err)
@@ -206,17 +199,17 @@ func TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees(t *tes
 		acl := readDACL(t, dir)
 
 		// 2: one ACE per trustee, SYSTEM and Administrators, and nothing
-		// else — no CREATOR OWNER, no direct grant for whoever's Put call
-		// is running.
+		// else: no CREATOR OWNER, no direct grant for the account running
+		// Put.
 		//
-		// SetSecurityInfo canonicalizes an inheritable ACE applied to a
-		// container into a direct ACE plus a separate INHERIT_ONLY one, but
-		// only for an ACE carrying GENERIC bits, which have to be re-mapped
-		// per child type. explicitFullControl grants the already-mapped
-		// FILE_ALL_ACCESS (see isolation.fileAllAccess), so no split happens
-		// and the applied ACL matches the one the package builds. A split ACL would
-		// still grant the same two trustees, but "exactly these trustees,
-		// nothing inherited" would no longer be assertable by counting.
+		// SetSecurityInfo splits an inheritable ACE applied to a container
+		// into a direct ACE plus a separate INHERIT_ONLY one, but only for an
+		// ACE carrying GENERIC bits, which are re-mapped per child type.
+		// explicitFullControl grants the already-mapped FILE_ALL_ACCESS (see
+		// isolation.fileAllAccess), so no split happens and the applied ACL
+		// matches the one the package builds. A split ACL would grant the same
+		// two trustees, but counting ACEs would no longer show that nothing
+		// else is granted.
 		if got := aceCount(t, acl); got != 2 {
 			t.Errorf("directory ACL has %d ACEs, want exactly 2 (SYSTEM, Administrators)", got)
 		}
@@ -227,7 +220,7 @@ func TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees(t *tes
 			t.Error("directory ACL must grant Administrators, or an operator is locked out")
 		}
 		if hasSID(t, acl, users) {
-			t.Error("directory ACL must not grant BUILTIN\\Users — that would disclose the stored credential to every local user")
+			t.Error("directory ACL must not grant BUILTIN\\Users; that would disclose the stored credential to every local user")
 		}
 	})
 
@@ -244,13 +237,13 @@ func TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees(t *tes
 			t.Error("file ACL must grant Administrators, or an operator is locked out")
 		}
 		if hasSID(t, acl, users) {
-			t.Error("file ACL must not grant BUILTIN\\Users — that would disclose the stored credential to every local user")
+			t.Error("file ACL must not grant BUILTIN\\Users; that would disclose the stored credential to every local user")
 		}
 	})
 }
 
-// readDACL fetches path's discretionary ACL straight from the filesystem via
-// GetNamedSecurityInfo, the same Win32 call `icacls` itself is built on.
+// readDACL fetches path's discretionary ACL from the filesystem via
+// GetNamedSecurityInfo.
 func readDACL(t *testing.T, path string) *windows.ACL {
 	t.Helper()
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
@@ -264,7 +257,7 @@ func readDACL(t *testing.T, path string) *windows.ACL {
 	return acl
 }
 
-// aceCount reports how many access-allowed entries acl carries.
+// aceCount reports how many entries acl carries.
 func aceCount(t *testing.T, acl *windows.ACL) int {
 	t.Helper()
 	return int(acl.AceCount)
@@ -289,8 +282,7 @@ func hasSID(t *testing.T, acl *windows.ACL, sid *windows.SID) bool {
 // accounts the environment provides (SQI_TEST_ISOLATION_USER_A/PASS_A and
 // the _B pair), so resolveHarnessCredential can resolve either one through
 // the real logon_user Provider. An account whose USER env var is unset is
-// not seeded — callers that only need one of the two accounts still
-// get a usable store.
+// not seeded, so a caller that needs one account still gets a usable store.
 func harnessStore(t *testing.T) isolation.CredentialStore {
 	t.Helper()
 	store := isolation.NewFileStore(t.TempDir())
@@ -317,11 +309,9 @@ func harnessStore(t *testing.T) isolation.CredentialStore {
 
 // resolveHarnessCredential resolves a genuine *isolation.Credential for user
 // via the real logon_user Provider, backed by harnessStore.
-// internal/worker/isolation deliberately exports no test-only API, so this
-// lets the strongest assertions below call the production
-// SecureWorkDir/ChownRecursive with a credential obtained exactly the way a
-// real worker would (through Resolve), rather than a hand-built value that no
-// production code would construct.
+// internal/worker/isolation exports no test-only API, so the assertions below
+// call the production SecureWorkDir/ChownRecursive with a credential obtained
+// through Resolve, as a real worker obtains one, not a hand-built value.
 func resolveHarnessCredential(t *testing.T, user string) *isolation.Credential {
 	t.Helper()
 	store := harnessStore(t)
@@ -336,19 +326,11 @@ func resolveHarnessCredential(t *testing.T, user string) *isolation.Credential {
 	return cred
 }
 
-// advapi32.dll!LogonUserW has no wrapper in golang.org/x/sys/windows —
-// checked against the version this module depends on (v0.47.0), as
-// internal/worker/isolation/provider_windows.go also does for the same call:
-// neither LogonUserW nor a `LogonUser` Go wrapper is exposed there. This
-// package cannot reach that package's unexported logonUserW seam (it is a
-// different package, and that seam is deliberately not exported — see
-// resolveHarnessCredential above), so it is declared directly here instead,
-// the same way golang.org/x/sys/windows's own generated zsyscall_windows.go
-// declares every Win32 call it does wrap.
-// advapi32.dll!ImpersonateLoggedOnUser is likewise unwrapped by
-// golang.org/x/sys/windows v0.47.0 — that package wraps RevertToSelf and
-// ImpersonateSelf, but not this call — so it is declared alongside
-// LogonUserW below for the same reason.
+// golang.org/x/sys/windows has no wrapper for advapi32.dll's
+// LogonUserW or ImpersonateLoggedOnUser; it wraps RevertToSelf and
+// ImpersonateSelf only. This package cannot reach the unexported logonUserW
+// seam in internal/worker/isolation, so both calls are declared here, the way
+// golang.org/x/sys/windows declares the Win32 calls it wraps.
 var (
 	modAdvapi32                 = windows.NewLazySystemDLL("advapi32.dll")
 	procLogonUserW              = modAdvapi32.NewProc("LogonUserW")
@@ -369,8 +351,8 @@ func impersonateLoggedOnUser(tok windows.Token) error {
 
 // logonUserW wraps the raw LogonUserW syscall. logonType/logonProvider match
 // the LOGON32_LOGON_BATCH / LOGON32_PROVIDER_DEFAULT values
-// internal/worker/isolation's own logonUserOS uses, so impersonate below
-// authenticates the harness accounts exactly the way a real worker would.
+// internal/worker/isolation's logonUserOS uses, so impersonate below
+// authenticates the harness accounts as a real worker does.
 func logonUserW(username, domain, password *uint16, logonType, logonProvider uint32) (windows.Token, error) {
 	var token windows.Token
 	r1, _, e1 := procLogonUserW.Call(
@@ -393,8 +375,8 @@ func logonUserW(username, domain, password *uint16, logonType, logonProvider uin
 // impersonate logs on as user and runs fn under that identity. LogonUserW
 // needs no privilege for a local account with a password, and
 // ImpersonateLoggedOnUser needs only SeImpersonatePrivilege, which
-// administrators hold — which is what lets the strongest ACL assertions live
-// in the fast tier instead of behind the scheduled task.
+// administrators hold, so these ACL assertions run in the fast tier instead
+// of behind the scheduled task.
 func impersonate(t *testing.T, user, pass string, fn func()) {
 	t.Helper()
 	u, err := windows.UTF16PtrFromString(user)
@@ -422,14 +404,12 @@ func impersonate(t *testing.T, user, pass string, fn func()) {
 	fn()
 }
 
-// TestIsolationWindows_SessionDirACLIsProtected proves the ACL was not just
-// BUILT correctly but APPLIED correctly. secureDACL's unit test covers the
-// three entries; what it cannot show is that applyProtectedDACL actually
-// stripped inheritance on a real directory. Without the protected flag the
-// session would keep whatever its parent grants — typically BUILTIN\Users —
-// and the three explicit entries would be an addition rather than the whole
-// story, leaving every session readable farm-wide while every structural test
-// still passed.
+// TestIsolationWindows_SessionDirACLIsProtected checks that the ACL is applied
+// as well as built. secureDACL's unit test covers the three entries; it cannot
+// show that applyProtectedDACL stripped inheritance on a real directory.
+// Without the protected flag the session would keep whatever its parent
+// grants, typically BUILTIN\Users, and the three explicit entries would be in
+// addition to those, leaving every session readable by other local users.
 func TestIsolationWindows_SessionDirACLIsProtected(t *testing.T) {
 	requireHarness(t)
 	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
@@ -457,17 +437,16 @@ func TestIsolationWindows_SessionDirACLIsProtected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DACL: %v", err)
 	}
-	// golang.org/x/sys/windows v0.47.0 has no GetAclInformation wrapper (see
-	// aceCount's own doc, below in this file) — windows.ACL already exports
-	// AceCount as a plain struct field, so that is read directly instead.
+	// golang.org/x/sys/windows has no GetAclInformation wrapper; windows.ACL
+	// exports AceCount as a struct field, which aceCount reads.
 	if got := aceCount(t, dacl); got != 3 {
 		t.Errorf("applied DACL has %d ACEs, want exactly 3 (%s, SYSTEM, Administrators)", got, user)
 	}
 }
 
 // TestIsolationWindows_SecondAccountCannotOpenSessionDir is the real access
-// check the structural DACL test cannot make: account B, actually
-// impersonated, must be denied a session directory secured for account A.
+// check the structural DACL test cannot make: account B, impersonated, must be
+// denied a session directory secured for account A.
 func TestIsolationWindows_SecondAccountCannotOpenSessionDir(t *testing.T) {
 	requireHarness(t)
 	userA := os.Getenv("SQI_TEST_ISOLATION_USER_A")
@@ -488,11 +467,11 @@ func TestIsolationWindows_SecondAccountCannotOpenSessionDir(t *testing.T) {
 	})
 }
 
-// TestIsolationWindows_CredentialFileNotReadableByRunAsAccount proves the
-// claim the credential store's own doc makes: machine-scope DPAPI is
-// decryptable by anything on this host that can READ the file, so the file
-// ACL is the real boundary. A task must not be able to recover the password
-// of the account it runs as.
+// TestIsolationWindows_CredentialFileNotReadableByRunAsAccount checks the
+// claim in the credential store's doc: machine-scope DPAPI is decryptable by
+// anything on this host that can read the file, so the file ACL is the
+// boundary. A task must not be able to recover the password of the account it
+// runs as.
 func TestIsolationWindows_CredentialFileNotReadableByRunAsAccount(t *testing.T) {
 	requireHarness(t)
 	userA := os.Getenv("SQI_TEST_ISOLATION_USER_A")
@@ -522,10 +501,10 @@ func TestIsolationWindows_CredentialFileNotReadableByRunAsAccount(t *testing.T) 
 	})
 }
 
-// TestIsolationWindows_ChownRecursiveDoesNotFollowJunction proves the
-// reparse-point guard. A task that plants a junction inside its session
-// directory pointing at a directory it does not own must not have sqi grant
-// its own account full control of the target.
+// TestIsolationWindows_ChownRecursiveDoesNotFollowJunction checks the
+// reparse-point guard. If a task plants a junction inside its session
+// directory pointing at a directory it does not own, sqi must not grant the
+// task's account full control of the target.
 func TestIsolationWindows_ChownRecursiveDoesNotFollowJunction(t *testing.T) {
 	requireHarness(t)
 	userA := os.Getenv("SQI_TEST_ISOLATION_USER_A")
@@ -553,12 +532,11 @@ func TestIsolationWindows_ChownRecursiveDoesNotFollowJunction(t *testing.T) {
 	})
 }
 
-// TestIsolationWindows_CapableRejectsPlainAdmin proves the privilege check is
-// real rather than vacuous. An elevated Administrator does NOT hold
-// SeAssignPrimaryTokenPrivilege, so Capable() must refuse here — and the
-// System tier's counterpart test proves it accepts when the privilege IS
-// present. Without both halves, a Capable() that returned nil unconditionally
-// would look correct.
+// TestIsolationWindows_CapableRejectsPlainAdmin checks that Capable() tests
+// the privilege. An elevated Administrator does not hold
+// SeAssignPrimaryTokenPrivilege, so Capable() must refuse here; the System
+// tier's counterpart test checks that it accepts when the privilege is
+// present. A Capable() that always returned nil would pass only one half.
 func TestIsolationWindows_CapableRejectsPlainAdmin(t *testing.T) {
 	requireHarness(t)
 
@@ -568,15 +546,15 @@ func TestIsolationWindows_CapableRejectsPlainAdmin(t *testing.T) {
 	}
 
 	if err := p.Capable(); err == nil {
-		t.Error("Capable() = nil as a plain administrator, want ErrNotCapable — administrators do not hold SeAssignPrimaryTokenPrivilege")
+		t.Error("Capable() = nil as a plain administrator, want ErrNotCapable; administrators do not hold SeAssignPrimaryTokenPrivilege")
 	}
 }
 
-// TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser proves the loaded
-// profile is real: the child's USERPROFILE resolves under the target
-// account's own directory, not the daemon's. Without LoadUserProfile this
-// would be SYSTEM's profile under System32\config\systemprofile, and every
-// DCC would write its preferences there.
+// TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser checks that the
+// loaded profile is real: the child's USERPROFILE resolves under the target
+// account's own directory, not the daemon's. Without LoadUserProfile it would
+// be SYSTEM's profile under System32\config\systemprofile, and every DCC
+// would write its preferences there.
 func TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser(t *testing.T) {
 	requireHarness(t)
 	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
@@ -605,8 +583,8 @@ func TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser(t *testing.T) {
 	}
 }
 
-// TestIsolationWindowsSystem_Capable is the other half of
-// TestCapableOS_ReportsThePrivilegeCheck: as SYSTEM, the worker holds
+// TestIsolationWindowsSystem_Capable is the System-tier half of
+// TestIsolationWindows_CapableRejectsPlainAdmin: as SYSTEM, the worker holds
 // SeAssignPrimaryTokenPrivilege, so Capable() must accept.
 func TestIsolationWindowsSystem_Capable(t *testing.T) {
 	requireHarness(t)
@@ -622,22 +600,18 @@ func TestIsolationWindowsSystem_Capable(t *testing.T) {
 }
 
 // TestIsolationWindowsSystem_ChildRunsAsTargetUser is the assertion no fake
-// can make: the process really started under the target account's identity.
+// can make: the process started under the target account's identity.
 //
-// This MUST read identity from the child's TOKEN (whoami), never from
-// `cmd /c echo %USERNAME%`. cmd.Env is nil here, so exec.Cmd supplies
-// os.Environ() as a non-NULL lpEnvironment to the underlying
-// CreateProcessAsUser call — and CreateProcessAsUser does NOT rewrite a
-// caller-supplied environment block (that is exactly why MSDN tells callers
-// to build one with CreateEnvironmentBlock instead). So cmd.exe would expand
-// %USERNAME% from the PARENT's block, not the child's actual identity:
-// empirically, `$env:USERNAME='spoofed'; cmd /c "echo %USERNAME%"` prints
-// "spoofed" while `whoami` still prints the real logged-on identity. whoami
-// gets its answer via GetTokenInformation on the process token, so it is the
-// one command here that actually proves the token switch took effect. Do not
-// switch this to %USERNAME% — under the SYSTEM-tier harness the
-// parent's USERNAME is `<COMPUTERNAME>$` or `SYSTEM`, so that version fails
-// outright, and even a passing result would prove nothing about the token.
+// This reads identity from the child's token (whoami), not from
+// `cmd /c echo %USERNAME%`. cmd.Env is nil here, so exec.Cmd passes
+// os.Environ() as a non-NULL lpEnvironment to CreateProcessAsUser, which does
+// not rewrite a caller-supplied environment block (MSDN tells callers to build
+// one with CreateEnvironmentBlock). cmd.exe would therefore expand
+// %USERNAME% from the parent's block, not the child's identity. whoami reads
+// the process token with GetTokenInformation, so it shows that the token
+// switch took effect. Under the SYSTEM-tier harness the parent's USERNAME is
+// `<COMPUTERNAME>$` or `SYSTEM`, so a %USERNAME% check would fail, and a pass
+// would say nothing about the token.
 func TestIsolationWindowsSystem_ChildRunsAsTargetUser(t *testing.T) {
 	requireHarness(t)
 	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
@@ -655,8 +629,8 @@ func TestIsolationWindowsSystem_ChildRunsAsTargetUser(t *testing.T) {
 	}
 
 	// whoami prints "DOMAIN\user" (or "COMPUTERNAME\user" for a local
-	// account); keep only the account part so the comparison is robust to
-	// that qualifier — user, from SQI_TEST_ISOLATION_USER_A, is unqualified.
+	// account). Keep only the account part, because user, from
+	// SQI_TEST_ISOLATION_USER_A, is unqualified.
 	got := strings.TrimSpace(string(out))
 	if i := strings.LastIndex(got, `\`); i != -1 {
 		got = got[i+1:]
@@ -666,9 +640,9 @@ func TestIsolationWindowsSystem_ChildRunsAsTargetUser(t *testing.T) {
 	}
 }
 
-// TestIsolationWindowsSystem_ChildCanWriteSessionDir catches the failure the
-// structural ACL test cannot: an ACL that is correct in shape but too tight
-// in practice, leaving the task unable to write its own scratch.
+// TestIsolationWindowsSystem_ChildCanWriteSessionDir catches what the
+// structural ACL test cannot: an ACL that is correct in shape but too tight in
+// practice, leaving the task unable to write its own scratch.
 func TestIsolationWindowsSystem_ChildCanWriteSessionDir(t *testing.T) {
 	requireHarness(t)
 	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
@@ -694,7 +668,7 @@ func TestIsolationWindowsSystem_ChildCanWriteSessionDir(t *testing.T) {
 	}
 }
 
-// TestIsolationWindowsSystem_DaemonEnvNotInherited proves the environment
+// TestIsolationWindowsSystem_DaemonEnvNotInherited checks that the environment
 // policy holds across a real process boundary: a daemon secret must not reach
 // job code, while an operator-allowlisted license variable must.
 func TestIsolationWindowsSystem_DaemonEnvNotInherited(t *testing.T) {
@@ -729,7 +703,7 @@ func TestIsolationWindowsSystem_DaemonEnvNotInherited(t *testing.T) {
 }
 
 // TestIsolationWindowsSystem_CrossUserSessionDirDenied repeats the admin
-// tier's impersonated check as REAL PROCESSES, which is what actually ships.
+// tier's impersonated check with real processes, as a worker runs them.
 func TestIsolationWindowsSystem_CrossUserSessionDirDenied(t *testing.T) {
 	requireHarness(t)
 	userA := os.Getenv("SQI_TEST_ISOLATION_USER_A")
@@ -776,20 +750,18 @@ func TestIsolationWindowsSystem_NoIsolationUnchanged(t *testing.T) {
 }
 
 // TestIsolationWindowsSystem_StageOutRefusesPlantedJunction tests stage-out's
-// junction refusal at full fidelity: a REAL task, running as a REAL second
-// local account under a real logon token, plants the junction — and the
-// daemon refuses.
+// junction refusal end to end: a real task, running as a second local account
+// under a real logon token, plants the junction, and the daemon refuses.
 //
-// System tier because planting it as the target user needs
-// CreateProcessAsUser, hence SeAssignPrimaryTokenPrivilege, which an elevated
-// administrator does not hold.
+// This is a System-tier test because planting the junction as the target user
+// needs CreateProcessAsUser, hence SeAssignPrimaryTokenPrivilege, which an
+// elevated administrator does not hold.
 //
-// The unit tests in internal/worker/staging prove the refusal; this proves
-// the PREMISE those tests assume — that an isolated task genuinely has write
-// access to its own scratch subdirectory and can therefore perform this swap.
-// Without run-as-user isolation the task already runs as the daemon's own
-// account and gains nothing by winning, so the swap matters only with
-// isolation enabled.
+// The unit tests in internal/worker/staging cover the refusal; this test
+// covers their premise, that an isolated task has write access to its own
+// scratch subdirectory and can perform this swap. Without run-as-user
+// isolation the task already runs as the daemon's account and gains nothing
+// from the swap, so it matters only with isolation enabled.
 func TestIsolationWindowsSystem_StageOutRefusesPlantedJunction(t *testing.T) {
 	requireHarness(t)
 	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
@@ -799,12 +771,11 @@ func TestIsolationWindowsSystem_StageOutRefusesPlantedJunction(t *testing.T) {
 
 	scratch := t.TempDir()
 	// "builtin" duplicates staging's unexported builtinSentinel (staging.go),
-	// which this package cannot import. If that sentinel is ever renamed this
-	// literal silently becomes a sync_command TEMPLATE instead, and stage-out
-	// would try to execute it. The "outside scratch" assertion at the bottom
-	// pins the REASON StageOut refused, so a sentinel drift fails there
-	// naming the wrong error rather than passing as a containment refusal it
-	// never performed.
+	// which this package cannot import. If the sentinel changes, this literal
+	// becomes a sync_command template and stage-out would try to execute it.
+	// The "outside scratch" assertion at the bottom checks the reason StageOut
+	// refused, so a mismatch fails there with the wrong error instead of
+	// passing as a containment refusal.
 	s := staging.New(scratch, "builtin", false, slog.New(slog.DiscardHandler))
 
 	outOrig := filepath.Join(t.TempDir(), "render.exr")
@@ -821,41 +792,38 @@ func TestIsolationWindowsSystem_StageOutRefusesPlantedJunction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The TASK — not the test process — removes its own scratch subdirectory
-	// and junctions it at the secret directory. Asserting this SUCCEEDS is
-	// half the point: if the isolated account could not do it, the refusal
-	// below would be vacuous.
+	// The task, not the test process, removes its own scratch subdirectory
+	// and junctions it at the secret directory. This must succeed: if the
+	// isolated account could not do it, the refusal below would prove nothing.
 	stagedDir := filepath.Join(scratchDir, "0")
 
-	// The script MUST be delivered through SysProcAttr.CmdLine, not through
-	// exec.Cmd.Args, and the quotes around each path are why.
+	// The script is delivered through SysProcAttr.CmdLine, not exec.Cmd.Args,
+	// and each path is quoted.
 	//
 	// os/exec builds a Windows command line by escaping each Arg with
 	// CommandLineToArgvW rules, so an embedded `"` becomes `\"`. cmd.exe does
 	// not understand that escape: it hands rmdir the literal `\"C:\...\0\"`,
 	// which is not a valid path, `&&` short-circuits, and the plant step
 	// fails with "The filename, directory name, or volume label syntax is
-	// incorrect" — a failure unrelated to the property under test. This is
-	// the documented os/exec exception for cmd.exe, and it is invisible to
-	// go vet, to compilation and to -test.list; only running it finds it.
+	// incorrect", unrelated to the property under test. This is the documented
+	// os/exec exception for cmd.exe.
 	//
-	// Dropping the quotes instead (the shape the other cmd /c calls in this
-	// file use, e.g. "dir "+dir) works only while no path contains a space.
-	// These are t.TempDir() paths rooted at os.TempDir(), which is SYSTEM's
-	// %TEMP% under this tier — normally C:\Windows\TEMP, but it is a host
-	// setting, not an invariant, and an unquoted space would fail the plant
-	// step for a second reason having nothing to do with containment. Quoting
-	// costs nothing here and removes the question.
+	// Without quotes (as the other cmd /c calls in this file use, e.g.
+	// "dir "+dir) the command works only while no path contains a space. These
+	// are t.TempDir() paths rooted at os.TempDir(), which is SYSTEM's %TEMP%
+	// under this tier, normally C:\Windows\TEMP but a host setting. Quoting
+	// keeps a space from failing the plant step for a reason unrelated to
+	// containment.
 	//
-	// cmd's own /S is what makes the stripping deterministic: it strips
-	// exactly the first and last quote after /C and passes the rest through
-	// verbatim, instead of cmd's conditional rule (which only applies when
-	// there are exactly two quotes and no & < > ( ) @ ^ | between them — not
-	// this string). CmdLine includes the program name, and exec ignores Args
-	// entirely when it is set.
+	// cmd's /S strips exactly the first and last quote after /C and passes the
+	// rest through verbatim, instead of cmd's conditional rule, which applies
+	// only when there are exactly two quotes and none of & < > ( ) @ ^ |
+	// between them. This string has more quotes. CmdLine includes the program
+	// name, and exec ignores Args entirely when it is set.
 	//
-	// isolation.Apply only sets SysProcAttr.Token, allocating the struct when
-	// it is nil, so a caller-set CmdLine survives it (see isolation/apply_windows.go).
+	// isolation.Apply sets only SysProcAttr.Token, allocating the struct when
+	// it is nil, so a caller-set CmdLine survives it (see
+	// isolation/apply_windows.go).
 	cmd := exec.CommandContext(context.Background(), "cmd")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CmdLine: `cmd /s /c "rmdir /s /q "` + stagedDir + `" && mklink /J "` + stagedDir + `" "` + secretDir + `""`,
@@ -864,21 +832,20 @@ func TestIsolationWindowsSystem_StageOutRefusesPlantedJunction(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("the isolated task could not plant the junction, so this test "+
-			"proves nothing about the refusal below: %v: %s", err, out)
+		t.Fatalf("the isolated task could not plant the junction, so the "+
+			"refusal below is not tested: %v: %s", err, out)
 	}
 	if _, err := os.Stat(filepath.Join(stagedDir, "render.exr")); err != nil {
 		t.Fatalf("junction is not live: %v", err)
 	}
 
-	// Pin the REASON, not merely that something went wrong. Asserting err !=
-	// nil alone leaves a vacuous-pass channel wide open: a denied
-	// os.OpenRoot, a sharing violation, or a malformed path all satisfy it
-	// while proving nothing about containment. errStageOutEscape is
+	// Check the reason for the refusal as well as that StageOut failed: a
+	// denied os.OpenRoot, a sharing violation or a malformed path also yield
+	// an error and say nothing about containment. errStageOutEscape is
 	// unexported and unreachable from this package, so match the
-	// operator-facing message the way the
-	// unit-tier twin (TestStageOut_RefusesJunctionedScratchSubdir) matches it
-	// alongside its errors.Is check.
+	// operator-facing message, as the unit-tier test
+	// TestStageOut_RefusesJunctionedScratchSubdir does alongside its errors.Is
+	// check.
 	stageOutErr := s.StageOut(context.Background(), scratchDir, entries)
 	if stageOutErr == nil {
 		t.Error("StageOut accepted a source reached through a task-planted junction")
@@ -893,13 +860,13 @@ func TestIsolationWindowsSystem_StageOutRefusesPlantedJunction(t *testing.T) {
 }
 
 // TestIsolationWindowsSystem_TaskStartsSuspendedAsTargetUser drives the
-// executor's own start path for an isolated task: the process is created
+// executor's start path for an isolated task: the process is created
 // suspended under the target account's logon token, assigned to its job
 // object, and resumed by the worker, which refuses a process that was not
 // suspended. The task fails if the suspended flag does not reach
 // CreateProcessAsUser or the worker cannot resume a thread of another
-// account's process. The other tests here start their processes without the
-// executor.
+// account's process. The other tests in this file start their processes
+// without the executor.
 func TestIsolationWindowsSystem_TaskStartsSuspendedAsTargetUser(t *testing.T) {
 	requireHarness(t)
 	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
