@@ -420,7 +420,7 @@ func evalName(n *Name, ec evalCtx) (Value, error) {
 	if !ok {
 		// Name the longest candidate: it is what the author wrote, and a
 		// shorter prefix would misreport which part is unknown.
-		return Value{}, errorAt(ec.src, n.Offset, "unknown symbol %q", n.String())
+		return Value{}, nowhereAt(ec.src, n.Offset, "unknown symbol %q", n.String())
 	}
 	return evalProperties(r.Val, r.Rest, ec, n.Offset)
 }
@@ -498,6 +498,9 @@ func evalCompare(n *Compare, ec evalCtx, depth int) (Value, error) {
 		// spurious error from a branch that may never run.
 		if out.IsUnresolved() {
 			ec.m.release(right) // rule 2: the chain stops here; right is discarded too
+			if err := checkSkippedOperands(n.Operands[i+2:], ec, depth); err != nil {
+				return Value{}, err
+			}
 			return Unresolved(TBool), nil
 		}
 		if out.Type.Code != CodeBool {
@@ -530,11 +533,16 @@ func evalLogical(n *Logical, ec evalCtx, target Type, depth int) (Value, error) 
 	if left.IsUnresolved() {
 		right, err := evalNode(n.R, ec, target, depth)
 		if err != nil {
+			if resolvesNowhere(err) {
+				return Value{}, err
+			}
 			// The left operand is still reachable at runtime, so the expression
 			// as a whole can still produce a value: report its type rather than
-			// an error from a branch that may never be taken.
-			ec.m.release(left)                // rule 2: consumed to build the placeholder result below, not returned itself
-			return Unresolved(left.Type), nil //nolint:nilerr // deliberate suppression: the right operand's error can never surface at runtime when the left is still reachable
+			// an error from a branch that may never be taken. A name that
+			// resolves nowhere is the exception (above): every run that
+			// reaches the right operand fails on it.
+			ec.m.release(left) // rule 2: consumed to build the placeholder result below, not returned itself
+			return Unresolved(left.Type), nil
 		}
 		ec.m.release(left)  // rule 2: consumed to build the union placeholder result
 		ec.m.release(right) // rule 2: same
@@ -624,6 +632,25 @@ func evalCond(n *Cond, ec evalCtx, target Type, depth int) (Value, error) {
 	return branch, nil
 }
 
+// checkSkippedOperands evaluates the operands of a comparison chain after a
+// link whose value is not known, which a run may never reach. Their failures are
+// suppressed, as a skipped part's are, except a name that resolves nowhere
+// (RFC 0005's "Names that Resolve Nowhere"), which every run reaching it fails
+// on.
+func checkSkippedOperands(operands []Node, ec evalCtx, depth int) error {
+	for _, op := range operands {
+		v, err := evalNode(op, ec, TAny, depth)
+		if err != nil {
+			if resolvesNowhere(err) {
+				return err
+			}
+			continue
+		}
+		ec.m.release(v) // rule 2: evaluated only to check its names
+	}
+	return nil
+}
+
 // condResult evaluates both branches of a conditional whose condition is not yet
 // known, per the spec's "Conditional Expressions with Unknown Conditions" rule.
 //
@@ -642,6 +669,15 @@ func condResult(n *Cond, ec evalCtx, target Type, depth int) (Value, error) {
 	}
 	if elseErr == nil {
 		ec.m.release(elseVal)
+	}
+	// A branch failure is suppressed unless it names something that does not
+	// exist: every run taking that branch fails on it (RFC 0005's "Names that
+	// Resolve Nowhere").
+	switch {
+	case thenErr != nil && resolvesNowhere(thenErr):
+		return Value{}, thenErr
+	case elseErr != nil && resolvesNowhere(elseErr):
+		return Value{}, elseErr
 	}
 	switch {
 	case thenErr == nil && elseErr == nil:

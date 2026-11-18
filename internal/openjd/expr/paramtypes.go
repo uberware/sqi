@@ -133,23 +133,26 @@ func TaskParamType(declared string) Type {
 func ValueFromText(t Type, raw string, pathFlavor PathFormat) Value {
 	switch t.Code {
 	case CodeInt:
-		n, err := strconv.ParseInt(raw, 10, 64)
+		n, err := strconv.ParseInt(TrimNumericSpace(raw), 10, 64)
 		if err != nil {
 			return Unresolved(t)
 		}
 		return Int(n)
 	case CodeFloat:
-		f, err := strconv.ParseFloat(raw, 64)
+		// The white space around a numeric string is not part of its original
+		// text (Template Schemas §7.5), so " 3.500 " keeps "3.500".
+		text := TrimNumericSpace(raw)
+		f, err := strconv.ParseFloat(text, 64)
 		if err != nil {
 			return Unresolved(t)
 		}
-		return FloatText(f, raw)
+		return FloatText(f, text)
 	case CodeString:
 		return String(raw)
 	case CodePath:
 		return Path(raw, pathFlavor)
 	case CodeRangeExpr:
-		v, err := RangeExpr(raw)
+		v, err := rangeExprAsWritten(raw)
 		if err != nil {
 			return Unresolved(t)
 		}

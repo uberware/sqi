@@ -4,6 +4,8 @@ package openjd
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -177,9 +179,52 @@ func TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged(t *testing.T) {
 	}
 }
 
-// TestIntRangeHasOverlap_NonMaterializing covers the overlap detector,
-// including stepped ranges that must NOT be reported as overlapping, and a
-// huge range that must be evaluated without OOM.
+// TestIntRangeHasOverlap_ScalesToManySubRanges pins that the detector is not a
+// pairwise scan. 200,000 single-value sub-ranges is about 1.3 MB of template,
+// well inside the request body limit; a pairwise comparison of them is 2·10^10
+// steps, so this returning promptly is the property under test.
+func TestIntRangeHasOverlap_ScalesToManySubRanges(t *testing.T) {
+	const n = 200_000
+	var b strings.Builder
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		// Written in DESCENDING order so a detector that only compares
+		// neighbors in written order cannot pass by accident.
+		fmt.Fprintf(&b, "%d", 2*(n-i))
+	}
+	disjoint := b.String()
+	for _, tc := range []struct {
+		expr string
+		want bool
+	}{
+		{disjoint, false},
+		{disjoint + ",4", true},
+	} {
+		done := make(chan struct{})
+		var overlap bool
+		var err error
+		go func() {
+			defer close(done)
+			overlap, err = intRangeHasOverlap(tc.expr)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("intRangeHasOverlap over %d sub-ranges did not return promptly", n)
+		}
+		if err != nil || overlap != tc.want {
+			t.Errorf("intRangeHasOverlap(%d sub-ranges) = %v, %v; want %v", n, overlap, err, tc.want)
+		}
+	}
+}
+
+// TestIntRangeHasOverlap_Internal covers the overlap detector. Template Schemas
+// §3.4.1.1.1 measures overlap on each element's SPAN — smallest to largest
+// value in its set, not its written endpoints — so interleaved stepped ranges
+// that share no value still overlap, and a written end past the last value
+// does not. A huge range must be evaluated without OOM.
 func TestIntRangeHasOverlap_Internal(t *testing.T) {
 	cases := []struct {
 		expr        string
@@ -190,11 +235,22 @@ func TestIntRangeHasOverlap_Internal(t *testing.T) {
 		{"1-5,5-10", true, false}, // share endpoint 5
 		{"1-5,6-10", false, false},
 		{"1,2,3,2", true, false},        // duplicate single value
-		{"1-10:2,2-10:2", false, false}, // stepped, disjoint despite overlapping intervals
-		{"1-10:2,1-10:2", true, false},  // identical stepped ranges
-		{"1-10:2,3-12:2", true, false},  // stepped, same step but different alignment, shares 3,5,7,9
-		{"{{Param.N}}", false, false},   // format ref skipped
-		{"1-2000000000", false, false},  // huge but disjoint single element: no overlap, no OOM
+		{"1-10:2,2-10:2", true, false},  // interleaved: no shared value, but the spans 1-9 and 2-10 meet
+		{"1-9:2,2-10:2", true, false},   // the specification's own interleaved example
+		{"1-10:4,10-15", false, false},  // span of 1-10:4 is 1-9, so its written end 10 is free
+		{"1-10:4,9-15", true, false},    // span 1-9 meets 9
+		{"19-23:5,20-25", false, false}, // span of 19-23:5 is the single value 19
+		{"10-15,1-10:4", false, false},  // order of the elements does not matter
+		// The span arithmetic must not overflow when an element covers most of
+		// int64: end - start is past MaxInt64 here.
+		// The span of the first element ends at 9223372036854775805; 804 is
+		// inside it (but not in its set) and 806 is past it.
+		{"-9223372036854775807-9223372036854775807:4,9223372036854775804", true, false},
+		{"-9223372036854775807-9223372036854775807:4,9223372036854775806", false, false},
+		{"1-10:2,1-10:2", true, false}, // identical stepped ranges
+		{"1-10:2,3-12:2", true, false}, // stepped, same step but different alignment, shares 3,5,7,9
+		{"{{Param.N}}", false, false},  // format ref skipped
+		{"1-2000000000", false, false}, // huge but disjoint single element: no overlap, no OOM
 		{"bad-", false, true},
 	}
 	for _, tc := range cases {

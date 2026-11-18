@@ -57,7 +57,10 @@ steps:
 	assertValidationContains(t, tmpl, "/steps/0/script")
 }
 
-func TestValidate_EnvironmentOnEnterRequired(t *testing.T) {
+// TestValidate_EnvironmentOnExitOnlyIsValid pins Template Schemas §3.5:
+// onEnter and onExit are each optional, subject to at least one being given, so
+// an environment whose only action is a teardown is valid.
+func TestValidate_EnvironmentOnExitOnlyIsValid(t *testing.T) {
 	yaml := `
 specificationVersion: jobtemplate-2023-09
 name: OnExitOnlyJob
@@ -69,13 +72,48 @@ jobEnvironments:
           command: cleanup.sh
 steps:
   - name: Step1
+    stepEnvironments:
+      - name: StepTeardown
+        script:
+          actions:
+            onExit:
+              command: cleanup.sh
     script:
       actions:
         onRun:
           command: echo
 `
 	tmpl := mustParse(t, yaml)
-	assertValidationContains(t, tmpl, "/jobEnvironments/0/script/actions/onEnter")
+	if errs := openjd.Validate(tmpl); len(errs) != 0 {
+		t.Fatalf("Validate() = %v, want no errors", errs)
+	}
+}
+
+// TestValidate_EnvironmentNeedsAnAction pins the other half of §3.5's rule: a
+// script with neither onEnter nor onExit is an error, reported at both
+// environment levels.
+func TestValidate_EnvironmentNeedsAnAction(t *testing.T) {
+	yaml := `
+specificationVersion: jobtemplate-2023-09
+name: NoActionJob
+jobEnvironments:
+  - name: Nothing
+    script:
+      actions: {}
+steps:
+  - name: Step1
+    stepEnvironments:
+      - name: AlsoNothing
+        script:
+          actions: {}
+    script:
+      actions:
+        onRun:
+          command: echo
+`
+	tmpl := mustParse(t, yaml)
+	assertValidationContains(t, tmpl, "/jobEnvironments/0/script/actions: at least one of onEnter or onExit must be provided")
+	assertValidationContains(t, tmpl, "/steps/0/stepEnvironments/0/script/actions: at least one of onEnter or onExit must be provided")
 }
 
 func TestValidate_EnvironmentNeedsScriptOrVariables(t *testing.T) {

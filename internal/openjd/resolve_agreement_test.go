@@ -458,9 +458,10 @@ func TestRangeCheckerResolverAgreement_PerType(t *testing.T) {
 			wholeReject: "{{ 5 }}",
 			entryAccept: "{{ 'a' }}",
 			// Symmetric to the whole-field case: nothing type-mismatches a
-			// STRING entry, so its rejection is the wrong SHAPE -- a list
-			// where a scalar belongs.
-			entryReject: "{{ ['a', 'b'] }}",
+			// STRING entry, so its rejection is the wrong SHAPE. A list of
+			// strings is a legal list item (it flattens, §1.3.12); a list of
+			// lists is not.
+			entryReject: "{{ [['a', 'b']] }}",
 		},
 		{
 			name: "PATH", typ: TaskParamTypePath,
@@ -607,12 +608,12 @@ func TestRangeCheckerResolverAgreement_NonLoneRangeString(t *testing.T) {
 // defect: the reorder is deliberate and must stay pinned, not be "fixed".
 //
 // {{ range_expr("10-15:2,1-5") }},7 composes to the literal text
-// "10-15:2,1-5,7": Value.String() renders the embedded range_expr value back
-// to ITS OWN <IntRangeExpr> text, and the
-// COMPOSED result is ordinary base-spec range syntax a human could have typed
-// by hand -- so it is parsed by internal/openjd's OWN parseIntRangeExpr
-// (first-seen order), not internal/openjd/expr's (increasing order). This is
-// intentionally the OPPOSITE result from
+// "1-5,10-14:2,7": Value.String() renders the embedded range_expr value in its
+// canonical form (Template Schemas §3.4.1.1.1), and the COMPOSED result is
+// ordinary base-spec range syntax a human could have typed by hand -- so it is
+// parsed by internal/openjd's OWN parseIntRangeExpr (first-seen order), not
+// internal/openjd/expr's (increasing order), and the trailing 7 lands last.
+// This is intentionally a different result from
 // TestRangeCheckerResolverAgreement_LoneRangeExprPolicy's identical range
 // text, because here the expression is EMBEDDED rather than the WHOLE field.
 func TestRangeCheckerResolverAgreement_EmbeddedRangeExprReorder(t *testing.T) {
@@ -620,10 +621,10 @@ func TestRangeCheckerResolverAgreement_EmbeddedRangeExprReorder(t *testing.T) {
 	resolved, rows := assertRowAccepted(t, tmpl, nil)
 
 	def := resolved.TaskParameterDefinitions[0]
-	if def.RangeExpr == nil || *def.RangeExpr != "10-15:2,1-5,7" {
-		t.Fatalf("RangeExpr = %v, want \"10-15:2,1-5,7\"", def.RangeExpr)
+	if def.RangeExpr == nil || *def.RangeExpr != "1-5,10-14:2,7" {
+		t.Fatalf("RangeExpr = %v, want \"1-5,10-14:2,7\"", def.RangeExpr)
 	}
-	want := []string{"10", "12", "14", "1", "2", "3", "4", "5", "7"}
+	want := []string{"1", "2", "3", "4", "5", "10", "12", "14", "7"}
 	if len(rows) != len(want) {
 		t.Fatalf("expanded %d rows, want %d: %v", len(rows), len(want), rows)
 	}

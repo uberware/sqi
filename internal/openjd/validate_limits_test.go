@@ -210,9 +210,15 @@ func TestValidate_Limits_Gated(t *testing.T) {
 			wantPtr: "/steps/0/parameterSpace/taskParameterDefinitions",
 		},
 
-		// ── per-task-parameter value count: 1–1024 ──
+		// ── per-task-parameter value count: 1–1024 for the LIST form only ──
+		//
+		// §3.4: the number of values an <IntRangeExpr> expands to is not
+		// constrained by the specification, and the 1024 maximum §3.4.1.1
+		// places on an <IntRangeList> does not apply to it. A step's size is
+		// bounded by the task-count limits instead (maxTasksPerStep,
+		// maxTasksPerJob).
 		{
-			name: "task param 1024 values ok",
+			name: "task param range expression of 1024 values ok",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
 					TaskParameterDefinitions: []openjd.TaskParamDefinition{
@@ -222,15 +228,14 @@ func TestValidate_Limits_Gated(t *testing.T) {
 			},
 		},
 		{
-			name: "task param 1025 values error",
+			name: "task param range expression of 5000 values ok",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
 					TaskParameterDefinitions: []openjd.TaskParamDefinition{
-						{Name: "F", Type: openjd.TaskParamTypeInt, RangeExpr: new("1-1025")},
+						{Name: "F", Type: openjd.TaskParamTypeInt, RangeExpr: new("1-5000")},
 					},
 				}
 			},
-			wantPtr: "/steps/0/parameterSpace/taskParameterDefinitions/0/range",
 		},
 		{
 			name: "task param 1025 list values error",
@@ -246,6 +251,7 @@ func TestValidate_Limits_Gated(t *testing.T) {
 		{
 			name: "task param range with template ref skips value-count",
 			mutate: func(t *openjd.JobTemplate) {
+				t.ParameterDefinitions = []openjd.JobParameter{{Name: "N", Type: openjd.JobParamTypeInt}}
 				t.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
 					TaskParameterDefinitions: []openjd.TaskParamDefinition{
 						{Name: "F", Type: openjd.TaskParamTypeInt, RangeExpr: new("1-{{Param.N}}")},
@@ -378,6 +384,7 @@ func TestValidate_Limits_Gated(t *testing.T) {
 		{
 			name: "int range overlap with template ref skipped",
 			mutate: func(t *openjd.JobTemplate) {
+				t.ParameterDefinitions = []openjd.JobParameter{{Name: "N", Type: openjd.JobParamTypeInt}}
 				t.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
 					TaskParameterDefinitions: []openjd.TaskParamDefinition{
 						{Name: "F", Type: openjd.TaskParamTypeInt, RangeExpr: new("1-5,{{Param.N}}")},

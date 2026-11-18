@@ -1083,7 +1083,6 @@ func TestListEqualityAndOrdering(t *testing.T) {
 		{"[[1]] < [[]]", "false"},
 		{"[[1]] > [[]]", "true"},
 		{"[[]] <= [[1]]", "true"},
-		{"[[[1]]] < [[[]]]", "false"},
 		{"[1] < []", "false"},
 		{"[1] > []", "true"},
 		{"[] < []", "false"},
@@ -1431,35 +1430,28 @@ func TestPathOperators_Windows(t *testing.T) {
 	}
 }
 
-// TestPathJoin_URIAuthorityIsNeverInheritedAsADrive pins the guard
-// anchorParts's own doc comment names as the thing that "must never happen",
-// and which nothing else exercises: a URI's
-// scheme+authority is reported as a ROOT, never as a drive, because pathJoin
-// lets a rootless child INHERIT its parent's drive.
+// TestPathJoin_SingleLetterSchemeIsADrive pins RFC 0006's two-character
+// minimum on a URI scheme (^[a-zA-Z][a-zA-Z0-9+.-]+://). "C://b" is a valid
+// Windows absolute path — a drive followed by a doubled separator — so it is a
+// filesystem path under every path_format, and a join keeps it one: under
+// Windows the drive and root survive and the doubled separator collapses, under
+// POSIX "C:" is an ordinary first component. Expectations are CPython's
+// PureWindowsPath and PurePosixPath.
 //
-// Dropping the "p.isURI ||" clause stays green everywhere else. Under
-// PathWindows, path('C://b') / 'x' then runs the authority "C://b" through
-// splitRootWindows, which reads "C:" as a drive, and the join answers "C:/x" —
-// the bucket gone, replaced by a drive letter that came from the scheme.
-//
-// The only way to reach a URI whose authority is ALSO drive-shaped is the
-// one-letter scheme the specification's own grammar admits
-// (^[a-zA-Z][a-zA-Z0-9+.-]*:// — a star, not a plus). That behavior is settled
-// and stays; see splitURI. The point here is that the settled behavior is what
-// makes the guard reachable at all, so it is exactly the case worth pinning.
-func TestPathJoin_URIAuthorityIsNeverInheritedAsADrive(t *testing.T) {
+// A multi-letter scheme is still a URI, whose scheme+authority is a ROOT that
+// a rootless child never re-reads as a drive (anchorParts's p.isURI guard).
+func TestPathJoin_SingleLetterSchemeIsADrive(t *testing.T) {
 	tests := []struct {
 		src    string
 		flavor PathFormat
 		want   string
 	}{
-		{`path('C://b') / 'x'`, PathWindows, "C://b/x"},
-		{`path('C://b') / 'x'`, PathPOSIX, "C://b/x"},
-		{`path('C://b/d') / 'x'`, PathWindows, "C://b/d/x"},
-		// A multi-letter scheme reaches the same arm — kept so
-		// the drive-shaped row above is visibly the SAME rule and not a
-		// special case.
+		{`path('C://b') / 'x'`, PathWindows, `C:\b\x`},
+		{`path('C://b') / 'x'`, PathPOSIX, "C:/b/x"},
+		{`path('C://b/d') / 'x'`, PathWindows, `C:\b\d\x`},
+		{`path('x://b/d')`, PathPOSIX, "x:/b/d"},
 		{`path('s3://b') / 'x'`, PathWindows, "s3://b/x"},
+		{`path('ab://b') / 'x'`, PathPOSIX, "ab://b/x"},
 	}
 	for _, tc := range tests {
 		t.Run(fmt.Sprintf("%s under %v", tc.src, tc.flavor), func(t *testing.T) {

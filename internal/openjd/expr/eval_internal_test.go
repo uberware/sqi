@@ -836,9 +836,10 @@ func TestEval_RecursionWithinTheBoundStillEvaluates(t *testing.T) {
 		t.Errorf("Eval of a %d-deep addition chain = %d, want %d", n, got.AsInt(), n+1)
 	}
 	// Source nesting is capped far below maxEvalDepth by the parser's own guard,
-	// so the deepest legal NESTED expression must evaluate too.
-	if _, err := evalSrc(t, strings.Repeat("[", 50)+"1"+strings.Repeat("]", 50), nil); err != nil {
-		t.Errorf("Eval of a 50-deep list literal = %v, want it to evaluate", err)
+	// so a deeply NESTED expression must evaluate too. Nested calls rather than
+	// nested list literals, which RFC 0005 §1.2.1 caps at two levels.
+	if _, err := evalSrc(t, strings.Repeat("abs(", 50)+"1"+strings.Repeat(")", 50), nil); err != nil {
+		t.Errorf("Eval of 50 nested calls = %v, want it to evaluate", err)
 	}
 }
 

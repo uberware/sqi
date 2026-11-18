@@ -799,7 +799,7 @@ func toInt(v Value) (Value, error) {
 		}
 		return Int(i), nil
 	case CodeString:
-		i, err := strconv.ParseInt(v.AsStr(), 10, 64)
+		i, err := strconv.ParseInt(TrimNumericSpace(v.AsStr()), 10, 64)
 		if err != nil {
 			return Value{}, fmt.Errorf("the string %q cannot be represented as an int", v.AsStr())
 		}
@@ -816,7 +816,7 @@ func toFloat(v Value) (Value, error) {
 	case CodeInt:
 		return floatValue(float64(v.AsInt()))
 	case CodeString:
-		f, err := strconv.ParseFloat(v.AsStr(), 64)
+		f, err := strconv.ParseFloat(TrimNumericSpace(v.AsStr()), 64)
 		if err != nil {
 			return Value{}, fmt.Errorf("the string %q cannot be parsed as a float", v.AsStr())
 		}

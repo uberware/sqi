@@ -277,7 +277,7 @@ func TestListAndRangeExpr(t *testing.T) {
 	}{
 		{"list expands a range_expr", "list(Param.R)", "[1, 3, 5]", "list[int]"},
 		{"range_expr parses text", `range_expr("1-3")`, "1-3", "range_expr"},
-		{"range_expr parses a comma form", `range_expr("1,3,5-7")`, "1,3,5-7", "range_expr"},
+		{"range_expr parses a comma form", `range_expr("1,3,5-7")`, "1-5:2,6,7", "range_expr"},
 		{"round trip through list", `list(range_expr("1-3"))`, "[1, 2, 3]", "list[int]"},
 		{"range_expr from a contiguous list", "range_expr([1, 2, 3])", "1-3", "range_expr"},
 		{"range_expr from a stepped list", "range_expr([1, 3, 5])", "1-5:2", "range_expr"},

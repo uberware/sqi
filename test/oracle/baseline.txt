@@ -86,187 +86,25 @@ int | float :: round(1e300, 300)
 # round(1234, -19) gives 0 on both. Only the value one above the tie diverges.
 int :: round(5000000000000000001, -19)
 
-# ── sqi is right: range_expr(string) preserves the input text, the reference
-#    re-derives an undocumented "corrected" form ─────────────────────────────
+# ── sqi is right: a range_expr's string form is its canonical form ──────────
 #
-# `range_expr("1-10:2")` computes the identical VALUE on both sides — the set
-# {1, 3, 5, 7, 9} — but the two sides disagree on the TEXT a bare range_expr
-# value carries: sqi keeps the input text verbatim ("1-10:2"), the reference
-# reports "1-9:2", correcting the declared end (10) to the actual last
-# generated value (9).
+# openjd-specifications#202 (merged 2026-10-27) defines the canonical form of a
+# range expression value (Template Schemas §3.4.1.1.1) and makes it the string
+# form of every range_expr (Expression Language §1.2.2/§1.2.3): the list of
+# values is split, FROM THE LEFT, into runs of a constant difference, and a run
+# of three or more values is written x-y or x-y:s, anything shorter one value
+# at a time. For [1,3,5,6,7] that takes 1,3,5 (difference 2) as the first run,
+# leaving 6,7 too short for a run of their own: "1-5:2,6,7". The rule is
+# deterministic, so the canonical form exists for every value.
 #
-# Measured against openjd-model 0.11.1. The reference's correction is NOT the same "flatten every value and greedily
-# collapse constant-delta runs" algorithm internal/openjd/expr already uses for
-# range_expr(list[int]) (canonicalRange in rangeexpr.go) — that algorithm
-# agrees with the reference on every range_expr([...]) case in this corpus, so
-# it is not in question here. Probed directly:
-#
-#   range_expr("1,3,5-7")          -> "1,3,5-7"        (unchanged — no merge)
-#   range_expr("1,2,3,10-15:2")    -> "1-3,10-14:2"     (bare 1,2,3 merged; the
-#                                                        stepped element only
-#                                                        had its end corrected)
-#   range_expr("10-15:2,1-5")      -> "1-5,10-14:2"     (elements REORDERED by
-#                                                        start, each otherwise
-#                                                        kept as its own group)
-#
-# So the reference's actual behavior is none of: preserve verbatim, or fully
-# flatten-and-regroup by canonicalRange's rule. It reorders top-level elements
-# by start, merges only ADJACENT bare/step-1 elements into a contiguous span,
-# and otherwise corrects each already-stepped element's own end bound — an
-# algorithm with no citation in either the base specification (3.4.1.1.1 defines
-# <IntRangeExpr> purely as a value SET, "combined to form a list of values in
-# increasing order", with no re-serialization rule at all) or RFC 0005's EXPR
-# layer, whose one "canonical form like '1-5'" sentence is scoped to the
-# range_expr -> string COERCION rule (target types that do NOT include
-# range_expr) — it does not apply here, where the target admits range_expr and
-# no coercion occurs.
-#
-# Replicating the reference's unspecified re-grouping algorithm would be
-# matching Beta reference behavior with no spec backing, which the project
-# never does. sqi's rangeexpr.go documents the design: "The TEXT is what the
-# value carries; the integers are expanded only when an operation needs them"
-# (avoiding the cost of expanding a potentially huge range just to store a
-# value nothing may ever read). This entry records the resulting text
-# divergence.
+# The pinned reference (openjd-model 0.14.0, openjd-expr 0.12.0, released
+# 2026-10-16) predates #202 and keeps the elements as written here. Every
+# other range_expr case in the corpus now agrees: the reference already wrote
+# "1-10:2" as "1-9:2", which is #202's answer too.
 
-# range_expr(string) text: sqi keeps "1-10:2" verbatim, the reference reports
-# "1-9:2" (end corrected to the actual last generated value) — see the shared
-# explanation above.
-range_expr | string :: range_expr("1-10:2")
-
-# ── known gap in sqi: range_expr -> string does not canonicalize ────────────
-#
-# This is the opposite adjudication from the entry directly above, and the
-# difference is which path is exercised. The entry above
-# (`range_expr | string :: range_expr("1-10:2")`) admits range_expr in its
-# target, so no coercion occurs — the bare VALUE's text is genuinely
-# unspecified by the base spec (3.4.1.1.1 defines only a value set, no
-# re-serialization rule), and RFC 0005's one "canonical form" sentence does
-# not apply to it because that sentence is conditioned on the coercion
-# actually firing.
-#
-# These three entries are the coercion path, where the condition IS met and
-# the spec is explicit, not silent:
-#
-#   - section 1.2.3 (2026-02 Expression-Language.md line 843): "range_expr" ->
-#     "string" "when the target types do not include range_expr (produces
-#     canonical form like '1-5')"
-#   - section 2.1.2 (line 1189): __add__(range_expr, string) -> string —
-#     "range_expr converted to canonical string form"
-#
-# sqi does not canonicalize on either path. Reproduced directly against
-# openjd-model 0.11.1:
-#
-#   string(range_expr("1-10:2"))       sqi: "1-10:2"   reference: "1-9:2"
-#   range_expr("1-10:2") + "!"         sqi: "1-10:2!"  reference: "1-9:2!"
-#   "!" + range_expr("1-10:2")         sqi: "!1-10:2"  reference: "!1-9:2"
-#
-# This is not a missing algorithm — internal/openjd/expr already has one:
-# canonicalRange (rangeexpr.go), applied to range_expr("1-10:2")'s expanded
-# integers ([1,3,5,7,9]), produces exactly "1-9:2", the reference's answer.
-# It is not wired into the range_expr -> string coercion (coerceScalar in
-# coerce.go, which calls v.String() and gets the raw payload text back) or
-# into the string operator rows (ops.go's OpAdd, same underlying conversion).
-#
-# Wiring canonicalRange into range_expr -> string has to happen once, for
-# every range_expr -> string path together (the coercion, both __add__ rows,
-# and the explicit string() function, which share the same conversion) —
-# fixing one call site alone would leave the others inconsistent with it.
-
-# range_expr -> string coercion: sqi returns the raw payload "1-10:2", the
-# reference returns the spec-mandated canonical form "1-9:2" — see the shared
-# explanation above. Known gap.
-string | range_expr :: string(range_expr("1-10:2"))
-
-# range_expr -> string via the "+" operator (range_expr operand): sqi returns
-# "1-10:2!", the reference returns "1-9:2!" — see the shared explanation
-# above. Known gap.
-string | range_expr :: range_expr("1-10:2") + "!"
-
-# range_expr -> string via the "+" operator (range_expr as the right
-# operand): sqi returns "!1-10:2", the reference returns "!1-9:2" — see the
-# shared explanation above. Known gap.
-string | range_expr :: "!" + range_expr("1-10:2")
-
-# ── sqi is right: isalnum composes, the reference contradicts itself ─────────
-#
-# The reference answers isalnum('٣') true while answering BOTH isdigit('٣') and
-# isalpha('٣') false. That is not a rule, it is a contradiction: its isdigit is
-# ASCII-only while its isalnum is Unicode-aware. RFC 0006 defines neither term,
-# so its own inconsistency is the strongest evidence available about which
-# reading to take. sqi's family composes — isalnum == isalpha || isdigit — for
-# every rune, pinned by TestIsAlnum_ComposesFromIsAlphaAndIsDigit.
-
-# isalnum on a Unicode-numeric, non-ASCII-digit rune: see the explanation above.
-bool | string :: isalnum('٣')
-
-# ── sqi is right: title's word boundary uses isalnum's own predicate ─────────
-#
-# Consequence of the ruling above. title() needs an alphanumeric predicate to
-# find word boundaries; the reference uses its Unicode notion there while its
-# isalnum uses another. Adopting that would put two conflicting definitions of
-# "alphanumeric" in one file. Affects only characters that are Unicode-numeric
-# without being ASCII digits.
-
-# title's word boundary on the same rune: see the explanation above.
-string :: title('²x y')
-
-# ── sqi is right: the intersection rule rejects what one engine alone accepts ─
-#
-# RFC 0006 states the accepted regular-expression syntax is the INTERSECTION of
-# Python's `re` and Rust's `regex`, then gives explicit not-supported lists. The
-# reference enforces only those lists, so it accepts constructs that Python's
-# `re` rejects outright or reads differently. Python's `re` rejects `\p{...}`
-# Unicode property escapes and the `(?<name>...)` named-group spelling outright
-# (Python spells named groups `(?P<name>...)`), and it reads `[[:alpha:]]` as a
-# literal character class matching `:`, `a`, `l`, `p`, `h` — a different pattern
-# matching different strings, with no error on either engine. sqi enforces the
-# rule and rejects all three, so a template that validates under sqi validates
-# on a Python-based implementation too, which is the stated purpose of
-# specifying an intersection.
-
-# Intersection-rule refusal: \p{...} Unicode property escapes are Rust-only;
-# sqi rejects, the reference matches. See the shared explanation above.
-list[string] | string | nulltype :: re_search('3', r'\p{Nd}')
-
-# Intersection-rule refusal: the (?<name>...) named-group spelling is Rust-only
-# (Python spells it (?P<name>...)); sqi rejects, the reference matches. See the
-# shared explanation above.
-list[string] | string | nulltype :: re_search('ab', r'(?<n>a)b')
-
-# Intersection-rule refusal: [[:alpha:]] POSIX character classes are not in
-# the Python/Rust intersection; sqi rejects. The reference matches, but NOT
-# because it reads "[:alpha:]" literally: it is Rust, and Rust's regex crate
-# implements REAL POSIX bracket expressions, so [[:alpha:]] is the class of
-# alphabetic characters and 'a' is a member of it. Python's re has no
-# POSIX-class support at all and instead reads "[:...:]" as ordinary literal
-# characters — the two engines disagree on what the construct MEANS, not
-# merely on whether it compiles, which is why it sits outside the
-# intersection. See the shared explanation above.
-list[string] | string | nulltype :: re_search('a', r'[[:alpha:]]')
-
-# Intersection-rule refusal, negated form: [^[:alpha:]] is the idiomatic
-# spelling, not a corner case, and a check for "[[:" at the very start alone
-# would miss it. sqi rejects it wherever "[:...:]" appears in the class. The
-# reference applies the REAL negated POSIX class —
-# not-alphabetic, per the shared explanation above — so 'a' (which IS
-# alphabetic) is excluded: null (no match), not an error. Measured directly on
-# a string the two mechanisms actually distinguish: re_search(':',
-# r'[^[:alpha:]]') returns [':'] from the reference, which only a genuine
-# negated POSIX class makes possible.
-list[string] | string | nulltype :: re_search('a', r'[^[:alpha:]]')
-
-# Intersection-rule refusal, POSIX class not the first member: the other
-# spelling a check for "[[:" at the start alone would miss, as with the
-# negated form above. The reference matches because it applies
-# the REAL POSIX class again — the class is 'a' unioned with alphabetic, and
-# 'a' is a member of both. It is NOT a literal reading: under a literal
-# reading of "[a[:alpha:]]", 'a' alone does not match at all — verified
-# directly against Python, which returns None here — because Python's own
-# bracket-nesting rule closes the class at the FIRST "]", leaving a second,
-# literal "]" the pattern also requires, so no 1-character string can ever
-# satisfy it. See the shared explanation above.
-list[string] | string | nulltype :: re_search('a', r'[a[:alpha:]]')
+# range_expr("1,3,5-7"): sqi writes the canonical "1-5:2,6,7", the reference
+# keeps "1,3,5-7" — see the explanation above.
+range_expr | string :: range_expr("1,3,5-7")
 
 # ── sqi is right: [^\Wa] asks for set subtraction RE2 cannot express ─────────
 #
@@ -405,20 +243,6 @@ list[string] | string | nulltype :: re_search('0', r'[0\W-9]')
 # reference gives "it's" (a different, but shell-safe, quoting strategy). See
 # the shared explanation above.
 string :: repr_sh("it's")
-
-# ── sqi is right: repr_py follows Python's repr, not the reference's escape ──
-#
-# RFC 0006 says repr_py "follows the behavior of" Python's repr(). Python's
-# repr() prefers a single-quoted string and switches to double quotes when the
-# string contains a single quote and no double quote, giving "it's" with no
-# escaping needed. The reference instead always single-quotes and escapes the
-# embedded quote, giving 'it\'s' — valid Python, but not what repr() itself
-# produces for this input.
-
-# repr_py quoting: sqi gives "it's" (Python repr()'s own quote-switching
-# rule), the reference gives 'it\'s' (escape instead of switching). See the
-# shared explanation above.
-string :: repr_py("it's")
 
 # ═══ The path family ═════════════════════════════════════════════════════════
 #

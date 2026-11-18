@@ -5,6 +5,7 @@ package expr
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -52,6 +53,9 @@ func evalListLit(n *ListLit, ec evalCtx, target Type, depth int) (Value, error) 
 	if err := checkElementCount(len(vals)); err != nil {
 		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
+	if listNestsTooDeep(elem) {
+		return Value{}, errorAt(ec.src, n.Offset, "%s", errThreeLevels)
+	}
 	// An element with no value means the list has no complete payload, so the
 	// whole literal is a placeholder of the inferred type. Its elements were
 	// still type-checked above, which is the point.
@@ -88,6 +92,24 @@ func evalListLit(n *ListLit, ec evalCtx, target Type, depth int) (Value, error) 
 		ec.m.release(v)
 	}
 	return List(elem, out), nil
+}
+
+// errThreeLevels is the message for a list value that would nest three levels.
+const errThreeLevels = "lists cannot nest three levels deep"
+
+// listNestsTooDeep reports whether a list whose elements have type elem would
+// nest lists three levels deep. RFC 0005 §1.2.1: the T of list[T] can be
+// list[S], but S cannot be a list. A union element nests too deep when any of
+// its members does.
+func listNestsTooDeep(elem Type) bool {
+	elem = unwrapUnresolved(elem)
+	if elem.Code == CodeUnion {
+		return slices.ContainsFunc(elem.Params, listNestsTooDeep)
+	}
+	if elem.Code != CodeList || len(elem.Params) != 1 {
+		return false
+	}
+	return includes(unwrapUnresolved(elem.Params[0]), CodeList)
 }
 
 // listElemTarget returns the element type a list literal should coerce its

@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
-	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/intrange"
 )
@@ -20,19 +18,69 @@ import (
 // operation needs them. That is the point of section 1.2.2 giving CHUNK[INT] the
 // type range_expr rather than list[int] — a frame range need not be expanded to
 // be passed around — and it is what lets range_expr -> string (section 1.2.3)
-// answer without materializing anything.
+// answer without materializing anything: the canonical text is computed from
+// the elements' arithmetic, not from their values.
 //
 // This constructor is also what the language's own range_expr(string) function
 // calls (funcsconv.go), the way an expression can produce a range_expr with no
 // symbol table involved. A caller's symbol table binding a name to a value
 // built by calling this function directly (a CHUNK[INT] task parameter, via
 // ValueFromText) is the other.
+//
+// The value is written in its CANONICAL form (Template Schemas §3.4.1.1.1, as
+// RFC 0005 §1.2.2 makes it a range_expr's string form): a range_expr's value
+// is its list of values, so how the text spelled it — element order, how the
+// values were split into elements, white space — is not kept.
+// range_expr("1-10:2") is written "1-9:2", and range_expr("1,2,3") equals
+// range_expr("1-3") down to its text. The one value that keeps the text it was
+// given is a CHUNK[INT] task parameter's, bound through ValueFromText: its
+// string form is the chunk's own (see rangeExprAsWritten).
 func RangeExpr(text string) (Value, error) {
+	if _, err := intrange.Parse(text); err != nil {
+		return Value{}, fmt.Errorf("invalid range expression %q: %w", text, err)
+	}
+	return Value{Type: TRangeExpr, s: canonicalRangeExprText(text)}, nil
+}
+
+// rangeExprAsWritten is RangeExpr without canonicalization, for a value whose
+// string form is the text it was given. That is a CHUNK[INT] task parameter
+// (RFC 0005 §1.2.2: "<N>-<M>" for a CONTIGUOUS chunk even with one or two
+// values, the canonical form for a NONCONTIGUOUS one, which internal/openjd
+// already writes it in) and a RANGE_EXPR job parameter, canonicalized when it
+// is bound at submission. ValueFromText is its one caller.
+func rangeExprAsWritten(text string) (Value, error) {
 	if _, err := intrange.Parse(text); err != nil {
 		return Value{}, fmt.Errorf("invalid range expression %q: %w", text, err)
 	}
 	return Value{Type: TRangeExpr, s: text}, nil
 }
+
+// canonicalRangeExprText rewrites valid range expression text in its
+// canonical form, from its elements' arithmetic and without listing the
+// values (intrange.Canonical). Elements whose spans overlap need the values,
+// so they are listed within the package's element bound; text whose overlap is
+// too large to list keeps the form it was written in.
+func canonicalRangeExprText(text string) string {
+	rs, err := intrange.Parse(text)
+	if err != nil {
+		return text
+	}
+	if c, ok := intrange.Canonical(rs); ok {
+		return c
+	}
+	ints, err := rangeInts(Value{Type: TRangeExpr, s: text})
+	if err != nil {
+		return text
+	}
+	return canonicalRange(ints)
+}
+
+// CanonicalRangeExpr writes a range expression in its canonical form (Template
+// Schemas §3.4.1.1.1). It is the one implementation internal/openjd uses for a
+// RANGE_EXPR job parameter's value and a NONCONTIGUOUS chunk, so every place a
+// range expression value is written as text agrees. Text that does not parse
+// is returned unchanged; validation reports it.
+func CanonicalRangeExpr(text string) string { return canonicalRangeExprText(text) }
 
 // AsRangeExpr returns the range expression text. It panics if v is not a
 // range_expr.
@@ -420,34 +468,16 @@ func expandRanges(ranges []intrange.Range, total int) []int64 {
 //
 // A run must be at least three values long to be worth collapsing: "1,4" and
 // "1-4:3" describe the same pair, and the comma form is what a reader expects.
+//
+// ints must be sorted and de-duplicated. This is the canonical form of
+// Template Schemas §3.4.1.1.1, through the same intrange.Canonical every other
+// range_expr is written with; distinct values never overlap, so it always
+// succeeds.
 func canonicalRange(ints []int64) string {
-	if len(ints) == 0 {
-		return ""
+	rs := make([]intrange.Range, len(ints))
+	for i, n := range ints {
+		rs[i] = intrange.Range{Start: int(n), End: int(n), Step: 1}
 	}
-	var parts []string
-	for i := 0; i < len(ints); {
-		if i+2 < len(ints) {
-			delta := ints[i+1] - ints[i]
-			if delta != 0 && ints[i+2]-ints[i+1] == delta {
-				j := i + 2
-				for j+1 < len(ints) && ints[j+1]-ints[j] == delta {
-					j++
-				}
-				parts = append(parts, runText(ints[i], ints[j], delta))
-				i = j + 1
-				continue
-			}
-		}
-		parts = append(parts, strconv.FormatInt(ints[i], 10))
-		i++
-	}
-	return strings.Join(parts, ",")
-}
-
-// runText renders one collapsed run, omitting a step of 1.
-func runText(start, end, delta int64) string {
-	if delta == 1 {
-		return fmt.Sprintf("%d-%d", start, end)
-	}
-	return fmt.Sprintf("%d-%d:%d", start, end, delta)
+	c, _ := intrange.Canonical(rs)
+	return c
 }

@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/uberware/sqi/internal/openjd/intrange"
 )
 
 // ExpandParameterSpace materializes a step's parameter space into the concrete
@@ -354,48 +357,25 @@ func formatContiguousChunk(vals []int) string {
 	return strconv.Itoa(vals[0]) + "-" + strconv.Itoa(vals[len(vals)-1])
 }
 
-// formatNoncontiguousChunk spells a chunk as the compact <IntRangeExpr> the
-// reference implementation produces, as the TASK_CHUNKING conformance fixtures
-// require ("1-8" at 3 is "1-3", "4-6", "7,8"). Scanning left to right, the
-// longest run with one constant positive step is written as a range when it
-// holds at least three values ("1-5", "1-9:2"); a shorter run is written as its
-// first two values, and the scan carries on after them. So a run of two stays
-// a list ("7,8"), and "1,3,5,6,7,8" is "1-5:2,6-8".
+// formatNoncontiguousChunk spells a NONCONTIGUOUS chunk in the canonical form
+// of Template Schemas §3.4.1.1.1, which §3.4.1.5 requires: the chunk's values,
+// ascending, are split from the left into runs of a constant difference; a run
+// of three or more is written "x-y" or "x-y:s" and a shorter run one value at
+// a time. So "1-8" at 3 is "1-3", "4-6", "7,8", and [1,2,4,6] is "1,2-6:2".
 //
-// The values keep the order expansion gave them, which for a range such as
-// "10-15:2,1-5" is first-seen rather than increasing. A step that is not
-// positive never forms a range, because internal/openjd's own parser rejects
-// "a-b" with a > b, so a descending or repeated pair is written value by value.
+// The canonical form is determined by the chunk's values alone, so values that
+// came out of a first-seen range such as "10-15:2,1-5" in another order are
+// written ascending: [10,12,14,1] is "1,10-14:2".
 func formatNoncontiguousChunk(vals []int) string {
-	var parts []string
-	for i := 0; i < len(vals); {
-		if i+1 == len(vals) {
-			parts = append(parts, strconv.Itoa(vals[i]))
-			break
-		}
-		step := vals[i+1] - vals[i]
-		if step <= 0 {
-			parts = append(parts, strconv.Itoa(vals[i]))
-			i++
-			continue
-		}
-		j := i + 1
-		for j+1 < len(vals) && vals[j+1]-vals[j] == step {
-			j++
-		}
-		switch {
-		case j-i+1 < 3:
-			parts = append(parts, strconv.Itoa(vals[i]), strconv.Itoa(vals[i+1]))
-			i += 2
-			continue
-		case step == 1:
-			parts = append(parts, strconv.Itoa(vals[i])+"-"+strconv.Itoa(vals[j]))
-		default:
-			parts = append(parts, strconv.Itoa(vals[i])+"-"+strconv.Itoa(vals[j])+":"+strconv.Itoa(step))
-		}
-		i = j + 1
+	sorted := slices.Clone(vals)
+	slices.Sort(sorted)
+	sorted = slices.Compact(sorted)
+	rs := make([]intrange.Range, len(sorted))
+	for i, v := range sorted {
+		rs[i] = intrange.Range{Start: v, End: v, Step: 1}
 	}
-	return strings.Join(parts, ",")
+	c, _ := intrange.Canonical(rs) // distinct values never overlap
+	return c
 }
 
 // DeriveChunkBounds adds "<name>.Start" and "<name>.End" keys to every row in

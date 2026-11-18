@@ -17,7 +17,7 @@
 # never scored — it cannot regress or go stale, so it has no baseline entry.
 #
 # The three EXPR/job_templates entries below are scored by
-# TestConformance_Templates like every other live directory: 206/209 pass,
+# TestConformance_Templates like every other live directory: 230/233 pass,
 # 3 baselined.
 #
 # All three fail for the same underlying reason, and it is not EXPR's: each
@@ -58,29 +58,3 @@ EXPR/job_templates/3.6--let-host-context-symbols.yaml
 # first step, which references Job.Name and Step.Name from <StepTemplate>.let
 # and <StepScript>.let, is accepted; only the SimpleAction half is unreachable.
 EXPR/job_templates/7.3.1--job-step-name-in-step-let.yaml
-
-# Added upstream by openjd-specifications PR #172 ("do not cap <IntRangeExpr>
-# expansion at the list-form limit"), which also rewrote 3.4--max-range-items.yaml
-# and 3.4--too-many-range-items.invalid.yaml to use explicit LISTS of 1024 / 1025
-# values (both pass here — only the range-EXPRESSION case fails).
-#
-# The change is a base-spec acceptance widening: §3.4's "at most 1024 values"
-# bounds the LIST form only, so `range: "1-5000"` — one <IntRangeExpr> naming
-# 5000 values — is valid. The normative sentence behind it is at
-# wiki/2023-09-Template-Schemas.md:1155: the number of values an <IntRangeExpr>
-# expands to "is not constrained by this specification", and an implementation
-# needing to bound Step size "is expected to do so with its own limit on the
-# Task count, not by constraining this expression". sqi has those count limits
-# — maxTasksPerStep and maxTasksPerJob — so the fix is tractable, but it is a
-# policy decision. sqi applies the cap to BOTH forms: taskParamValueCount
-# (validate.go) counts a RangeExpr arithmetically and hands the same
-# maxTaskParamValues (1024) gate the count, so the fixture is rejected on
-# `/steps/0/parameterSpace/taskParameterDefinitions/0/range: at most 1024
-# values are allowed per task parameter (got 5000)` — MEASURED, not inferred.
-#
-# Not fixed here. Lifting the cap for the expression form is an acceptance
-# change in internal/openjd — templates rejected today would start producing
-# tasks — and it lands on the same policy surface as maxTasksPerStep and
-# maxTasksPerJob, the same reasoning that keeps internal/openjd's three
-# integer-range divergences from the spec. It needs its own decision.
-base/job_templates/3.4--wide-int-range-expression.yaml

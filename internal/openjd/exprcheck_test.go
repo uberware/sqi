@@ -634,13 +634,14 @@ func TestCheckTemplateExpressions_RangeExprListValuedAccepted(t *testing.T) {
 // position's own JSON pointer -- at BOTH the whole-field RangeExpr position
 // and a RangeList entry, since the two positions have different targets
 // (rangeExprFieldType -- a list, or for INT/CHUNK[INT] a range_expr -- versus
-// rangeExprElemType -- a bare scalar).
+// rangeListItemType -- §1.3.2's list item, T? | list[T]).
 //
 // The shape-mismatch reject case at each position is built from the SAME
 // expression as the accept case, wrapped or unwrapped in a list literal: a
-// RangeList entry (scalar target) rejects the whole-field's own accepted
-// list, and a whole-field RangeExpr (list/range_expr target) rejects the
-// entry's own accepted scalar.
+// whole-field RangeExpr (list/range_expr target) rejects the entry's own
+// accepted scalar, and a RangeList entry rejects the whole-field's own
+// accepted list wrapped in ONE MORE list. The whole-field list itself is
+// legal at an entry, where it flattens (§1.3.12).
 //
 // entryReject is a SECOND, narrower reject case at the entry position only,
 // present for every type except STRING: a value of the WRONG scalar type
@@ -791,12 +792,18 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 					t.Fatalf("%s entry %q: want accepted, got %v", tc.typ, tc.entryAccept, errs)
 				}
 			})
+			t.Run("entry accepted (a list flattens)", func(t *testing.T) {
+				if errs := checkRangeEntry(tc.typ, tc.wholeAccept); len(errs) != 0 {
+					t.Fatalf("%s entry %q: want accepted, got %v", tc.typ, tc.wholeAccept, errs)
+				}
+			})
 			t.Run("entry rejected (wrong shape)", func(t *testing.T) {
-				// The list literal that the whole-field position accepts is
-				// not a bare scalar -- the shape a RangeList entry requires.
-				errs := checkRangeEntry(tc.typ, tc.wholeAccept)
+				// A list of lists: a list item flattens one level, not two.
+				inner := strings.TrimSuffix(strings.TrimPrefix(tc.wholeAccept, "{{ "), " }}")
+				body := "{{ [" + inner + "] }}"
+				errs := checkRangeEntry(tc.typ, body)
 				wantPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range/0"
-				assertRejectedAt(t, errs, wantPtr, tc.wholeAccept)
+				assertRejectedAt(t, errs, wantPtr, body)
 			})
 			if tc.entryReject != "" {
 				t.Run("entry rejected (wrong scalar type)", func(t *testing.T) {

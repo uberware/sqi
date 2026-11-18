@@ -596,6 +596,9 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 		errs = append(errs, validateStep(s, i, stepNames, exprDeclared)...)
 		errs = append(errs, validateStepEnvCollisions(s, i, t.JobEnvironments)...)
 		errs = append(errs, validateUnknownStepFields(t, s, i)...)
+		if !exprDeclared {
+			errs = append(errs, validateJobCreationRefsDeclared(s, i, t.ParameterDefinitions)...)
+		}
 	}
 
 	// ── acyclicity ────────────────────────────────────────────────────────
@@ -690,6 +693,106 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	}
 
 	return errs, walkBudget.deadline()
+}
+
+// validateJobCreationRefsDeclared checks, for a template without EXPR, that
+// every Param.* and RawParam.* reference in a step's positions resolved at Job
+// creation — the task-parameter ranges (each range-list element, a range
+// expression, a CHUNK[INT] definition's sizing fields) and the host
+// requirements (names, amount bounds, attribute values) — names a declared
+// job parameter. Template Schemas §7.3: a format string may only reference
+// variables defined at its location. With EXPR the expression checker reports
+// such a reference as an unknown symbol.
+//
+// Those are the positions resolved against the bound job parameters, where an
+// undeclared reference can never resolve. The other format-string positions
+// still rely on the prefix check of [validateFormatString] alone.
+func validateJobCreationRefsDeclared(s StepTemplate, i int, params []JobParameter) ValidationErrors {
+	declared := make(map[string]bool, len(params))
+	for _, p := range params {
+		declared[p.Name] = true
+	}
+	var errs ValidationErrors
+	for _, pos := range jobCreationPositions(s, i) {
+		refs, err := fmtstring.References(pos.text)
+		if err != nil {
+			continue // a malformed format string is reported by validateFormatString
+		}
+		for _, r := range refs {
+			name, ok := strings.CutPrefix(r, "Param.")
+			if !ok {
+				name, ok = strings.CutPrefix(r, "RawParam.")
+			}
+			if ok && !declared[name] {
+				errs = append(errs, ValidationError{
+					Pointer: pos.ptr,
+					Message: fmt.Sprintf("reference %q names no declared job parameter", r),
+				})
+			}
+		}
+	}
+	return errs
+}
+
+// fmtPosition is one format-string field of a template and its JSON pointer.
+type fmtPosition struct{ text, ptr string }
+
+// jobCreationPositions lists a step's format-string fields that are resolved
+// at Job creation: its host requirements and its task-parameter ranges.
+func jobCreationPositions(s StepTemplate, i int) []fmtPosition {
+	var out []fmtPosition
+	if s.HostRequirements != nil {
+		out = hostRequirementPositions(*s.HostRequirements, fmt.Sprintf("/steps/%d/hostRequirements", i), out)
+	}
+	if s.ParameterSpace != nil {
+		out = parameterSpacePositions(*s.ParameterSpace, fmt.Sprintf("/steps/%d/parameterSpace", i), out)
+	}
+	return out
+}
+
+func hostRequirementPositions(hr HostRequirements, base string, out []fmtPosition) []fmtPosition {
+	for j, a := range hr.Amounts {
+		ptr := fmt.Sprintf("%s/amounts/%d", base, j)
+		out = append(out, fmtPosition{a.Name, ptr + "/name"})
+		if a.Min != nil {
+			out = append(out, fmtPosition{*a.Min, ptr + "/min"})
+		}
+		if a.Max != nil {
+			out = append(out, fmtPosition{*a.Max, ptr + "/max"})
+		}
+	}
+	for j, a := range hr.Attributes {
+		ptr := fmt.Sprintf("%s/attributes/%d", base, j)
+		out = append(out, fmtPosition{a.Name, ptr + "/name"})
+		for k, v := range a.AnyOf {
+			out = append(out, fmtPosition{v, fmt.Sprintf("%s/anyOf/%d", ptr, k)})
+		}
+		for k, v := range a.AllOf {
+			out = append(out, fmtPosition{v, fmt.Sprintf("%s/allOf/%d", ptr, k)})
+		}
+	}
+	return out
+}
+
+func parameterSpacePositions(ps StepParameterSpace, base string, out []fmtPosition) []fmtPosition {
+	for j, tp := range ps.TaskParameterDefinitions {
+		ptr := fmt.Sprintf("%s/taskParameterDefinitions/%d", base, j)
+		for k, v := range tp.RangeList {
+			out = append(out, fmtPosition{v, fmt.Sprintf("%s/range/%d", ptr, k)})
+		}
+		if tp.RangeExpr != nil {
+			out = append(out, fmtPosition{*tp.RangeExpr, ptr + "/range"})
+		}
+		if c := tp.Chunks; c != nil {
+			if c.DefaultTaskCountExpr != nil {
+				out = append(out, fmtPosition{*c.DefaultTaskCountExpr, ptr + "/chunks/defaultTaskCount"})
+			}
+			if c.TargetRuntimeSecondsExpr != nil {
+				out = append(out, fmtPosition{*c.TargetRuntimeSecondsExpr, ptr + "/chunks/targetRuntimeSeconds"})
+			}
+		}
+	}
+	return out
 }
 
 // ─── reserved-name tables ─────────────────────────────────────────────────────
@@ -1023,13 +1126,11 @@ func validateEnvNameLimits(envs []Environment, base string) ValidationErrors {
 // [ValidateWithOptions] runs it on every EXPR-declaring template regardless of
 // opts.EnforceLimits (see the call site), so an expensive check here would add
 // cost to the path it exists to protect.
-// [validateParameterSpaceLimits] also runs [intRangeHasOverlap], an O(n^2)
-// pairwise scan over an INT range's sub-ranges (range.go) with no early exit
-// once a count cap has already fired. Reusing it here would make this guard
-// itself a source of unbounded cost when EnforceLimits is false.
-// taskParamValueCount's INT/CHUNK[INT] branch (intRangeExprCount) is O(n): it
-// sums each sub-range's arithmetic count and never compares sub-ranges
-// pairwise, so this function uses it instead.
+// [validateParameterSpaceLimits] also runs [intRangeHasOverlap], which parses
+// and sorts an INT range's sub-ranges (range.go) with no early exit once a
+// count cap has already fired. Reusing it here would add that work to the path
+// this guard protects when EnforceLimits is false. listFormValueCount is O(1),
+// so this function uses it instead.
 //
 // An overlap-only violation (e.g. "1-5,3-8", which has no count problem) is
 // not detected here and does not silence the walk. Overlap makes the
@@ -1054,7 +1155,7 @@ func parameterSpaceOverCaps(t *JobTemplate) bool {
 			return true
 		}
 		for _, tp := range s.ParameterSpace.TaskParameterDefinitions {
-			if n, counted := taskParamValueCount(tp); counted && n > maxTaskParamValues {
+			if n, counted := listFormValueCount(tp); counted && n > maxTaskParamValues {
 				return true
 			}
 		}
@@ -1078,7 +1179,7 @@ func validateParameterSpaceLimits(ps StepParameterSpace, base string) Validation
 		ptr := fmt.Sprintf("%s/taskParameterDefinitions/%d/range", base, j)
 
 		// Number of values the parameter expands to.
-		if n, counted := taskParamValueCount(tp); counted && n > maxTaskParamValues {
+		if n, counted := listFormValueCount(tp); counted && n > maxTaskParamValues {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("at most %d values are allowed per task parameter (got %d)", maxTaskParamValues, n),
@@ -1100,20 +1201,19 @@ func validateParameterSpaceLimits(ps StepParameterSpace, base string) Validation
 	return errs
 }
 
-// taskParamValueCount returns the number of values a task parameter expands to
-// and whether that count could be determined. INT/CHUNK[INT] range expressions
-// that contain a format-string reference ("{{") cannot be counted before
-// resolution and report counted=false.
-func taskParamValueCount(tp TaskParamDefinition) (count int, counted bool) {
-	if tp.RangeExpr != nil && (tp.Type == TaskParamTypeInt || tp.Type == TaskParamTypeChunkInt) {
-		if strings.Contains(*tp.RangeExpr, "{{") {
-			return 0, false
-		}
-		// Count arithmetically, without materializing the integers. An
-		// unparseable expression (or one exceeding the hard resource-exhaustion
-		// bound) is reported by the structural parse check; do not double-report
-		// here.
-		return intRangeExprCount(*tp.RangeExpr)
+// listFormValueCount returns the number of values an <IntRangeList> (the LIST
+// form of a task parameter's range) holds, the count maxTaskParamValues caps.
+// counted is false for an <IntRangeExpr>: §3.4 leaves the number of values it
+// expands to unconstrained — the 1024 maximum of §3.4.1.1 does not apply to
+// that form, which exists to express long frame ranges — so a step's size is
+// bounded by maxTasksPerStep and maxTasksPerJob instead. Leaving the
+// expression uncounted here does not open a cost gap in the EXPR walk
+// parameterSpaceOverCaps guards: an expression is ONE format-string position
+// however many values it names, while each list element is a position of its
+// own.
+func listFormValueCount(tp TaskParamDefinition) (count int, counted bool) {
+	if tp.RangeExpr != nil {
+		return 0, false
 	}
 	return len(tp.RangeList), true
 }
@@ -1135,14 +1235,20 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 		})
 	}
 
+	// A name that is a format string is measured once it is resolved, at Job
+	// creation (§3.3: the constraints apply after resolution).
 	for i, a := range hr.Amounts {
 		ptr := fmt.Sprintf("%s/amounts/%d/name", base, i)
-		errs = append(errs, validateCapabilityNameLength(a.Name, ptr)...)
+		if !strings.Contains(a.Name, "{{") {
+			errs = append(errs, validateCapabilityNameLength(a.Name, ptr)...)
+		}
 	}
 
 	for i, a := range hr.Attributes {
 		ptr := fmt.Sprintf("%s/attributes/%d", base, i)
-		errs = append(errs, validateCapabilityNameLength(a.Name, ptr+"/name")...)
+		if !strings.Contains(a.Name, "{{") {
+			errs = append(errs, validateCapabilityNameLength(a.Name, ptr+"/name")...)
+		}
 
 		if len(a.AnyOf) > maxAttributeValues {
 			errs = append(errs, ValidationError{
@@ -1205,31 +1311,21 @@ func validateHostRequirements(hr HostRequirements, base string, exprDeclared boo
 	// Capability names are case-insensitive (spec §3.3.1.1/§3.3.2.1), so two
 	// entries differing only in case name the same capability. Declaring both
 	// is a contradiction the scheduler cannot resolve.
-	seenAmounts := make(map[string]struct{}, len(hr.Amounts))
-	for i, a := range hr.Amounts {
-		ptr := fmt.Sprintf("%s/amounts/%d/name", base, i)
-		errs = append(errs, validateCapabilityNameRequired(a.Name, ptr)...)
-		errs = append(errs, validateCapabilityPrefix(a.Name, "amount.", ptr)...)
-		errs = append(errs, validateReservedScope(a.Name, "amount.", ptr)...)
-		if a.Name != "" {
-			key := strings.ToLower(a.Name)
-			if _, dup := seenAmounts[key]; dup {
-				errs = append(errs, ValidationError{
-					Pointer: ptr,
-					Message: fmt.Sprintf("duplicate amount capability name %q (names are case-insensitive)", a.Name),
-				})
-			}
-			seenAmounts[key] = struct{}{}
-		}
-	}
+	//
+	// A name may be a format string (§3.3), and then the name constraints —
+	// prefix, reserved scope, and uniqueness — apply to what it resolves to,
+	// which only Job creation knows (resolveHostRequirements).
+	errs = append(errs, validateAmountNames(hr.Amounts, base)...)
 
 	seenAttrs := make(map[string]struct{}, len(hr.Attributes))
 	for i, a := range hr.Attributes {
 		ptr := fmt.Sprintf("%s/attributes/%d", base, i)
 		errs = append(errs, validateCapabilityNameRequired(a.Name, ptr+"/name")...)
-		errs = append(errs, validateCapabilityPrefix(a.Name, "attr.", ptr+"/name")...)
-		errs = append(errs, validateReservedScope(a.Name, "attr.", ptr+"/name")...)
-		if a.Name != "" {
+		if !strings.Contains(a.Name, "{{") {
+			errs = append(errs, validateCapabilityPrefix(a.Name, "attr.", ptr+"/name")...)
+			errs = append(errs, validateReservedScope(a.Name, "attr.", ptr+"/name")...)
+		}
+		if a.Name != "" && !strings.Contains(a.Name, "{{") {
 			key := strings.ToLower(a.Name)
 			if _, dup := seenAttrs[key]; dup {
 				errs = append(errs, ValidationError{
@@ -1276,6 +1372,32 @@ func validateHostRequirements(hr HostRequirements, base string, exprDeclared boo
 	return errs
 }
 
+// validateAmountNames checks every amount's name: present, and — once it is
+// not a format string still to be resolved — correctly prefixed, outside a
+// reserved scope the specification does not define, and unique.
+func validateAmountNames(amounts []AmountRequirement, base string) ValidationErrors {
+	var errs ValidationErrors
+	seen := make(map[string]struct{}, len(amounts))
+	for i, a := range amounts {
+		ptr := fmt.Sprintf("%s/amounts/%d/name", base, i)
+		errs = append(errs, validateCapabilityNameRequired(a.Name, ptr)...)
+		if a.Name == "" || strings.Contains(a.Name, "{{") {
+			continue
+		}
+		errs = append(errs, validateCapabilityPrefix(a.Name, "amount.", ptr)...)
+		errs = append(errs, validateReservedScope(a.Name, "amount.", ptr)...)
+		key := strings.ToLower(a.Name)
+		if _, dup := seen[key]; dup {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: fmt.Sprintf("duplicate amount capability name %q (names are case-insensitive)", a.Name),
+			})
+		}
+		seen[key] = struct{}{}
+	}
+	return errs
+}
+
 // validateHostRequirementFormatStrings checks that every amount min/max and
 // attribute anyOf/allOf value is a well-scoped format string (ScopeJob --
 // host requirements are resolved at submission time, before any session or
@@ -1292,6 +1414,7 @@ func validateHostRequirementFormatStrings(hr HostRequirements, base string) Vali
 	var errs ValidationErrors
 	for i, a := range hr.Amounts {
 		amtPtr := fmt.Sprintf("%s/amounts/%d", base, i)
+		errs = append(errs, validateFormatString(a.Name, amtPtr+"/name", ScopeJob, nil)...)
 		if a.Min != nil {
 			errs = append(errs, validateFormatString(*a.Min, amtPtr+"/min", ScopeJob, nil)...)
 		}
@@ -1301,6 +1424,7 @@ func validateHostRequirementFormatStrings(hr HostRequirements, base string) Vali
 	}
 	for i, a := range hr.Attributes {
 		attrPtr := fmt.Sprintf("%s/attributes/%d", base, i)
+		errs = append(errs, validateFormatString(a.Name, attrPtr+"/name", ScopeJob, nil)...)
 		for k, v := range a.AnyOf {
 			errs = append(errs, validateFormatString(v, fmt.Sprintf("%s/anyOf/%d", attrPtr, k), ScopeJob, nil)...)
 		}
@@ -1369,7 +1493,7 @@ func parseAmountBound(val *string, ptr string) (value float64, ok bool, errs Val
 	if val == nil || strings.Contains(*val, "{{") {
 		return 0, false, nil
 	}
-	v, err := strconv.ParseFloat(*val, 64)
+	v, err := parseFloatString(*val)
 	if err != nil {
 		return 0, false, ValidationErrors{{
 			Pointer: ptr,
@@ -1779,14 +1903,14 @@ func validateParamValueInBounds(p JobParameter, v, ptr string) ValidationErrors 
 // [validateParamValueInBounds], split out to keep the switch's complexity down.
 func validateNumericValueInBounds(p JobParameter, v, ptr string) ValidationErrors {
 	if p.Type == JobParamTypeInt {
-		if _, err := strconv.ParseInt(v, 10, 64); err != nil {
+		if _, err := parseIntString(v); err != nil {
 			return ValidationErrors{{
 				Pointer: ptr,
 				Message: fmt.Sprintf("value %q is not a valid integer", v),
 			}}
 		}
 	}
-	f, err := strconv.ParseFloat(v, 64)
+	f, err := parseFloatString(v)
 	if err != nil {
 		return ValidationErrors{{
 			Pointer: ptr,
@@ -1817,7 +1941,7 @@ func parseNumericBound(b *string) (float64, bool) {
 	if b == nil || strings.Contains(*b, "{{") {
 		return 0, false
 	}
-	f, err := strconv.ParseFloat(*b, 64)
+	f, err := parseFloatString(*b)
 	return f, err == nil
 }
 
@@ -2280,7 +2404,7 @@ func validateIntParamConstraints(p JobParameter, ptr string) ValidationErrors {
 	var minOK, maxOK bool
 
 	if p.MinValue != nil {
-		v, err := strconv.ParseInt(*p.MinValue, 10, 64)
+		v, err := parseIntString(*p.MinValue)
 		if err != nil {
 			errs = append(errs, ValidationError{
 				Pointer: ptr + "/minValue",
@@ -2292,7 +2416,7 @@ func validateIntParamConstraints(p JobParameter, ptr string) ValidationErrors {
 	}
 
 	if p.MaxValue != nil {
-		v, err := strconv.ParseInt(*p.MaxValue, 10, 64)
+		v, err := parseIntString(*p.MaxValue)
 		if err != nil {
 			errs = append(errs, ValidationError{
 				Pointer: ptr + "/maxValue",
@@ -2311,7 +2435,7 @@ func validateIntParamConstraints(p JobParameter, ptr string) ValidationErrors {
 	}
 
 	for j, av := range p.AllowedValues {
-		if _, err := strconv.ParseInt(av, 10, 64); err != nil {
+		if _, err := parseIntString(av); err != nil {
 			errs = append(errs, ValidationError{
 				Pointer: fmt.Sprintf("%s/allowedValues/%d", ptr, j),
 				Message: fmt.Sprintf("allowedValues[%d] %q is not a valid INT", j, av),
@@ -2327,7 +2451,7 @@ func validateIntParamConstraints(p JobParameter, ptr string) ValidationErrors {
 // constraint field label used in error messages (e.g. "minValue").
 // Returns (value, true, nil) on success, or (0, false, errors) on failure.
 func parseFloatBound(rawVal, boundPtr, field string) (v float64, ok bool, errs ValidationErrors) {
-	v, err := strconv.ParseFloat(rawVal, 64)
+	v, err := parseFloatString(rawVal)
 	if err != nil {
 		return 0, false, ValidationErrors{{
 			Pointer: boundPtr,
@@ -2722,12 +2846,15 @@ func validateEnvironments(envs []Environment, base string, scope Scope, exprDecl
 
 		if e.Script != nil {
 			envFiles := embeddedFileNames(e.Script.EmbeddedFiles)
-			if e.Script.Actions.OnEnter == nil {
+			// §3.5: onEnter and onExit are each optional, but at least one of
+			// them must be given.
+			if e.Script.Actions.OnEnter == nil && e.Script.Actions.OnExit == nil {
 				errs = append(errs, ValidationError{
-					Pointer: ptr + "/script/actions/onEnter",
-					Message: "required",
+					Pointer: ptr + "/script/actions",
+					Message: "at least one of onEnter or onExit must be provided",
 				})
-			} else {
+			}
+			if e.Script.Actions.OnEnter != nil {
 				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", scope, envFiles, exprDeclared)...)
 			}
 			if e.Script.Actions.OnExit != nil {
@@ -3031,14 +3158,14 @@ func validateRangeListValues(tp TaskParamDefinition, base string, exprDeclared b
 		}
 		switch tp.Type {
 		case TaskParamTypeInt, TaskParamTypeChunkInt:
-			if _, err := strconv.ParseInt(v, 10, 64); err != nil {
+			if _, err := parseIntString(v); err != nil {
 				errs = append(errs, ValidationError{
 					Pointer: vptr,
 					Message: fmt.Sprintf("value %q is not a valid integer", v),
 				})
 			}
 		case TaskParamTypeFloat:
-			if _, err := strconv.ParseFloat(v, 64); err != nil {
+			if _, err := parseFloatString(v); err != nil {
 				errs = append(errs, ValidationError{
 					Pointer: vptr,
 					Message: fmt.Sprintf("value %q is not a valid number", v),

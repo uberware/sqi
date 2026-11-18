@@ -66,7 +66,7 @@ func evalProperty(recv Value, attr string, ec evalCtx, offset int) (Value, error
 	v, err := callFunction(ec, propertyFuncName(attr), []Value{recv}, true)
 	if err != nil {
 		if errors.Is(err, errUnknownFunction) {
-			return Value{}, errorAt(ec.src, offset, "unknown property %q on %s", attr, recv.Type)
+			return Value{}, nowhereAt(ec.src, offset, "unknown property %q on %s", attr, recv.Type)
 		}
 		return Value{}, wrapAt(ec.src, offset, err)
 	}

@@ -5,6 +5,7 @@ package expr
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 )
 
@@ -309,13 +310,18 @@ func floatToInt(f float64) (int64, error) {
 	return int64(f), nil
 }
 
-// roundToDigits implements round(float, int).
+// roundToDigits implements round(float, int): half to even on the EXACT value
+// of f, as Python's round does (RFC 0006 §2.2.3). A float literal is rarely the
+// decimal it is written as — 2.675 is stored a little below 2.675 — so
+// scaling in float64 and rounding the product would round a value f never had.
+// The rounding is done on f's exact rational value instead.
 //
 // A positive ndigits returns a FLOAT carrying its own rendered form, because
 // RFC 0006 requires round(3.5, 2) to render "3.50" — strconv's 'f' format with
-// an explicit precision is exactly that text, and it is what the reference
-// produces. A non-positive ndigits returns an INT, per RFC 0006's signature
-// table, so there is nothing to carry.
+// an explicit precision is exactly that text. The float is the double nearest
+// the exactly rounded decimal, as CPython's is. A non-positive ndigits returns
+// an INT, per RFC 0006's signature table, and an int outside int64 is an
+// integer overflow.
 func roundToDigits(f float64, ndigits int64) (Value, error) {
 	if ndigits > 0 {
 		// ndigits is an arbitrary int and the rendered form is proportional to
@@ -326,52 +332,76 @@ func roundToDigits(f float64, ndigits int64) (Value, error) {
 			return Value{}, fmt.Errorf("%w: %d decimal places exceeds the limit of %d",
 				errTooLarge, ndigits, maxStringBytes)
 		}
-		// Scaling is only usable while both the scale and the scaled value stay
-		// finite. math.Pow(10, ndigits) is +Inf from ndigits 309 up, and below
-		// that f*scale can still overflow on its own for a large enough f — so
-		// the unusable window depends on f's magnitude, not on ndigits alone
-		// (round(2.0, 308) and round(1e300, 300) both land in it).
-		//
-		// Past that point the rounding is the IDENTITY, and that is the answer
-		// rather than an error: no float64 carries enough precision for a
-		// rounding at 1e-308 resolution to change it, so f is already its own
-		// round-to-even at that place. round(2.0, 307) returns 2.000…0 and
-		// there is no mathematical discontinuity at 308 — only an artifact of
-		// the multiply. Computing it directly is the same move the negative
-		// branch below makes, for the same reason.
-		rounded := f
-		if scale := math.Pow(10, float64(ndigits)); !math.IsInf(scale, 0) {
-			if scaled := f * scale; !math.IsInf(scaled, 0) {
-				rounded = math.RoundToEven(scaled) / scale
-			}
-		}
-		out, err := floatValue(rounded)
+		out, err := floatValue(roundFloatToPlaces(f, ndigits))
 		if err != nil {
 			return Value{}, err
 		}
 		return floatRendered(out.AsFloat(), strconv.FormatFloat(out.AsFloat(), 'f', int(ndigits), 64)), nil
 	}
-	// Built the same bounded way roundIntToDigits builds its own scale below,
-	// rather than math.Pow(10, float64(-ndigits)): for a large enough
-	// -ndigits (round(3.5, -400)) Pow overflows to +Inf, f/Inf is 0, and
-	// 0*Inf is NaN — which int64(NaN) then narrows to 0 on arm64 but
-	// math.MinInt64 on amd64, sqi's primary deployment arch, silently. The
-	// loop catches the same condition before it ever produces an Inf: past
-	// that point f/scale is 0 for any representable f, which is round-to-even
-	// at that resolution's actual answer, computed directly rather than
-	// discovered via NaN.
-	scale := 1.0
-	for range -ndigits {
-		if scale > math.MaxFloat64/10 {
-			return Int(0), nil
+	return roundFloatToInt(f, -ndigits)
+}
+
+// maxRoundPlaces is the most decimal places at which rounding a float64 can
+// still change it, CPython's NDIGITS_MAX: a double's exact value has at most
+// (53 - (-1021)) * log10(2) ≈ 323 significant fractional decimal digits, so
+// rounding at any finer place is the identity.
+const maxRoundPlaces = 323
+
+// maxRoundScale is the coarsest place, as a power of ten, at which rounding a
+// float64 can give anything but 0. No finite double reaches half of 10^309, so
+// every coarser place rounds to 0 — CPython's NDIGITS_MIN.
+const maxRoundScale = 308
+
+// roundFloatToPlaces rounds f half to even at 10^-places on its exact value and
+// returns the double nearest the result.
+func roundFloatToPlaces(f float64, places int64) float64 {
+	if places > maxRoundPlaces || math.IsInf(f, 0) || math.IsNaN(f) {
+		return f
+	}
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(places), nil)
+	exact := new(big.Rat).SetFloat64(f)
+	n := roundRatHalfEven(new(big.Rat).Mul(exact, new(big.Rat).SetInt(scale)))
+	out, _ := new(big.Rat).SetFrac(n, scale).Float64()
+	if out == 0 && math.Signbit(f) {
+		return math.Copysign(0, -1)
+	}
+	return out
+}
+
+// roundFloatToInt rounds f half to even at 10^places on its exact value,
+// returning an int, or an integer overflow when the exact result is outside
+// int64.
+func roundFloatToInt(f float64, places int64) (Value, error) {
+	if math.IsInf(f, 0) || math.IsNaN(f) {
+		return Value{}, errIntOverflow
+	}
+	if places > maxRoundScale {
+		return Int(0), nil
+	}
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(places), nil)
+	exact := new(big.Rat).SetFloat64(f)
+	q := roundRatHalfEven(exact.Quo(exact, new(big.Rat).SetInt(scale)))
+	out := q.Mul(q, scale)
+	if !out.IsInt64() {
+		return Value{}, errIntOverflow
+	}
+	return Int(out.Int64()), nil
+}
+
+// roundRatHalfEven rounds r to the nearest integer, a tie going to the even
+// neighbor.
+func roundRatHalfEven(r *big.Rat) *big.Int {
+	num, den := r.Num(), r.Denom()
+	q, m := new(big.Int).DivMod(num, den, new(big.Int)) // floor division: 0 <= m < den
+	switch new(big.Int).Lsh(m, 1).Cmp(den) {
+	case 1:
+		q.Add(q, big.NewInt(1))
+	case 0:
+		if q.Bit(0) == 1 {
+			q.Add(q, big.NewInt(1))
 		}
-		scale *= 10
 	}
-	n, err := floatToInt(math.RoundToEven(f/scale) * scale)
-	if err != nil {
-		return Value{}, err
-	}
-	return Int(n), nil
+	return q
 }
 
 // roundIntBeyondScale answers round(n, -places) for a places whose scale,

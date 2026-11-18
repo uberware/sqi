@@ -2,7 +2,10 @@
 
 package expr
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Error is a syntax or evaluation error in an expression. It carries the byte
 // offset in the source text at which the problem was found, together with the
@@ -73,4 +76,24 @@ func (e *Error) Unwrap() error { return e.err }
 // produced it. The cause is preserved so errors.Is still matches.
 func wrapAt(src string, offset int, err error) *Error {
 	return &Error{Msg: err.Error(), Offset: offset, Src: src, err: err}
+}
+
+// errResolvesNowhere marks an error that names something that does not exist:
+// an undefined symbol, or a property no type has. RFC 0005's "Names that
+// Resolve Nowhere" makes such an error the one failure static type checking
+// does NOT suppress in a part of an expression a run may skip, because
+// whether a name exists does not depend on any value. errUnknownFunction (an
+// unknown function or method name) belongs to the same class; see
+// resolvesNowhere.
+var errResolvesNowhere = errors.New("name resolves nowhere")
+
+// nowhereAt is errorAt for a name that resolves nowhere.
+func nowhereAt(src string, offset int, format string, args ...any) *Error {
+	return &Error{Msg: fmt.Sprintf(format, args...), Offset: offset, Src: src, err: errResolvesNowhere}
+}
+
+// resolvesNowhere reports whether err names something that does not exist, and
+// so must be reported even from a part of an expression a run may skip.
+func resolvesNowhere(err error) bool {
+	return errors.Is(err, errResolvesNowhere) || errors.Is(err, errUnknownFunction)
 }

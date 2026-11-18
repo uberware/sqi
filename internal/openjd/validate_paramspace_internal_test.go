@@ -11,7 +11,7 @@ import (
 
 // bigNonOverlappingIntRangeExpr returns a range expression of n
 // non-overlapping single-value sub-ranges ("0-0,1-1,2-2,...") -- large
-// enough that [intRangeHasOverlap]'s O(n^2) pairwise scan (range.go) is
+// enough that [intRangeHasOverlap]'s parse and sort (range.go) are
 // visible in allocation volume, deliberately worth exactly n values so the
 // package's count caps never fire on their own.
 func bigNonOverlappingIntRangeExpr(n int) string {
@@ -27,14 +27,12 @@ func bigNonOverlappingIntRangeExpr(n int) string {
 
 // TestParameterSpaceOverCaps_DoesNotRunOverlapScan is a white-box test that
 // [parameterSpaceOverCaps] does not call [validateParameterSpaceLimits]
-// wholesale, which also runs [intRangeHasOverlap] -- an O(n^2) pairwise scan
-// over an INT range's sub-ranges, with no early exit once a count cap has
-// already fired. A caller that reaches both parameterSpaceOverCaps (gating
-// the expression walk, unconditionally) AND validateLimits (under
-// EnforceLimits: true) would pay that scan TWICE. Measured that way:
-// 8,000 non-overlapping sub-ranges go from 84ms to 148ms under
-// EnforceLimits: true (roughly 2x), and 32,000 sub-ranges (186 KB) go from
-// ~0 to ~1.97s under EnforceLimits: false, where nothing else runs here.
+// wholesale, which also runs [intRangeHasOverlap] -- a parse and sort of an
+// INT range's sub-ranges, with no early exit once a count cap has already
+// fired. A caller that reaches both parameterSpaceOverCaps (gating the
+// expression walk, unconditionally) AND validateLimits (under EnforceLimits:
+// true) would pay that work TWICE, and under EnforceLimits: false it would
+// pay it where nothing else runs here at all.
 //
 // Asserts an ALLOCATION ratio, not a wall-clock threshold -- this package's
 // own established technique for a cost property that must not flake on
@@ -80,8 +78,8 @@ func TestParameterSpaceOverCaps_DoesNotRunOverlapScan(t *testing.T) {
 	// A regression to the wholesale shape (parameterSpaceOverCaps calling
 	// validateParameterSpaceLimits wholesale, paying the parse-and-scan
 	// twice per caller) would make overCapAlloc close to fullAlloc. The
-	// narrowed shape -- two O(n) count checks, one parse via
-	// taskParamValueCount -- should cost a small fraction of
+	// narrowed shape -- count checks that never parse a range expression
+	// (listFormValueCount) -- should cost a small fraction of
 	// validateParameterSpaceLimits' own allocation (one parse for the same
 	// count check, PLUS a second parse and scan for intRangeHasOverlap),
 	// since it never reaches the overlap scan's own parse at all.

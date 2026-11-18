@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/openjd/fmtstring"
@@ -1660,8 +1661,8 @@ func checkHostRequirementExpressions(b *templateBudget, hr HostRequirements, bas
 // checkHostRequirementExpressions to keep that function's cyclomatic
 // complexity within the repo's lint budget.
 func checkHostRequirementAmount(b *templateBudget, a AmountRequirement, amtPtr string, syms expr.MapSymbols) ValidationErrors {
-	var errs ValidationErrors
-	if a.Min != nil {
+	errs := checkCapabilityName(b, a.Name, amtPtr+"/name", syms)
+	if a.Min != nil && b.ok() {
 		minPtr := amtPtr + "/min"
 		if b.chargePositions(1, minPtr) {
 			errs = append(errs, checkFormatString(
@@ -1683,7 +1684,7 @@ func checkHostRequirementAmount(b *templateBudget, a AmountRequirement, amtPtr s
 // checkHostRequirementAttribute checks one attribute's anyOf/allOf entries --
 // extracted for the same reason as checkHostRequirementAmount, above.
 func checkHostRequirementAttribute(b *templateBudget, a AttributeRequirement, attrPtr string, syms expr.MapSymbols) ValidationErrors {
-	var errs ValidationErrors
+	errs := checkCapabilityName(b, a.Name, attrPtr+"/name", syms)
 	for k, v := range a.AnyOf {
 		if !b.ok() {
 			break
@@ -1707,6 +1708,16 @@ func checkHostRequirementAttribute(b *templateBudget, a AttributeRequirement, at
 		}
 	}
 	return errs
+}
+
+// checkCapabilityName checks an amount's or attribute's name, a format string
+// (Template Schemas §3.3). A name with no expression in it is not charged a
+// position: there is nothing to evaluate.
+func checkCapabilityName(b *templateBudget, name, ptr string, syms expr.MapSymbols) ValidationErrors {
+	if !strings.Contains(name, "{{") || !b.chargePositions(1, ptr) {
+		return nil
+	}
+	return checkFormatString(b, name, ptr, ScopeJob, syms, TargetString)
 }
 
 // checkParameterSpaceExpressions checks a step's task-parameter range
@@ -1741,7 +1752,7 @@ func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, ba
 			break
 		}
 		ptr := fmt.Sprintf("%s/taskParameterDefinitions/%d", base, i)
-		elemType := rangeExprElemType(tp.Type)
+		elemType := rangeListItemType(tp.Type)
 		for j, v := range tp.RangeList {
 			p := fmt.Sprintf("%s/range/%d", ptr, j)
 			if !b.chargePositions(1, p) {

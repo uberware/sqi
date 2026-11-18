@@ -3,15 +3,19 @@
 package expr
 
 import (
-	"fmt"
 	"testing"
 )
 
 // TestCaseTransforms covers the four case functions. The non-ASCII rows are why
 // this package depends on golang.org/x/text/cases: Go's stdlib strings.ToUpper
-// is SIMPLE case mapping and answers "STRAßE", while the specification's
-// reference implementation and Python both apply FULL case mapping and answer
-// "STRASSE". Every expectation below was produced by openjd-model 0.11.1.
+// is SIMPLE case mapping and answers "STRAßE", while the specification and
+// Python both apply FULL case mapping and answer "STRASSE".
+//
+// title() and capitalize() have exactly the semantics of Python's str.title and
+// str.capitalize (RFC 0006 §2.2.4's case mapping note), so every expectation for
+// them was produced by CPython 3.14: a word starts after any UNCASED character,
+// a word-start character takes its full TITLECASE mapping, and lowercasing
+// applies the Final_Sigma context rule across the whole string.
 func TestCaseTransforms(t *testing.T) {
 	tests := []struct {
 		name string
@@ -26,30 +30,34 @@ func TestCaseTransforms(t *testing.T) {
 		{"upper maps a digraph", `upper('ǳ')`, "Ǳ"},
 		{"capitalize lowers the rest", `capitalize('hELLO')`, "Hello"},
 		{"capitalize on empty", `capitalize('')`, ""},
-		{"capitalize expands a ligature", `capitalize('ﬁne day')`, "FIne day"},
+		{"capitalize titlecases a ligature", `capitalize('ﬁne day')`, "Fine day"},
+		{"capitalize titlecases the sharp s", `capitalize('ßx')`, "Ssx"},
+		{"capitalize titlecases a digraph", `capitalize('ǳa')`, "ǲa"},
 		{"capitalize an accented letter", `capitalize('éA')`, "Éa"},
+		{"capitalize keeps a dotted capital", `capitalize('İX')`, "İx"},
+		{"capitalize titlecase differs from upper", `capitalize('ᾳ')`, "ᾼ"},
+		{"capitalize applies final sigma", `capitalize('ΑΣ')`, "Ας"},
+		{"capitalize a lone sigma", `capitalize('Σ')`, "Σ"},
 		{"title two words", `title('hello world')`, "Hello World"},
 		{"title breaks on an apostrophe", `title("they're ok")`, "They'Re Ok"},
-		{"title keeps a digit in-word", `title('a1b c')`, "A1b C"},
-		{"title starting with a digit", `title('1st place')`, "1st Place"},
+		{"title breaks on a digit", `title('a1b c')`, "A1B C"},
+		{"title starting with a digit", `title('1st place')`, "1St Place"},
 		{"title breaks on an underscore", `title('a_b c')`, "A_B C"},
-		{"title breaks on a hyphen", `title('3d-max shot')`, "3d-Max Shot"},
+		{"title breaks on a hyphen", `title('3d-max shot')`, "3D-Max Shot"},
+		{"title after an uncased numeric", `title('²x y')`, "²X Y"},
 		{"title lowers the rest", `title('HELLO WORLD')`, "Hello World"},
 		{"title mixed case", `title('mcDONALD')`, "Mcdonald"},
 		{"title on empty", `title('')`, ""},
-		// The case that discriminates per-rune casing (what titleString does)
-		// from casing a whole word run in one transform: Greek sigma is
-		// context-sensitive full-Unicode case mapping. Lowering "Σ" in
-		// isolation (per rune, no preceding cased letter in view) answers
-		// medial sigma "σ"; lowering it as part of a wider substring — e.g.
-		// the two-rune "ΒΣ" — answers final sigma "ς" instead, because "Σ" is
-		// then preceded by a cased letter and at the end of the input. The
-		// reference implementation (openjd-model 0.11.1) answers title('ΑΒΣ')
-		// = "Αβσ" — medial — so per-rune casing is not just faster than a
-		// substring rewrite here, it is the only reading that matches the
-		// reference. If this ever flips to "Αβς", titleString was rewritten
-		// to case whole word runs and changed behavior.
-		{"title final sigma stays medial", `title('ΑΒΣ')`, "Αβσ"},
+		{"title titlecases a digraph", `title('ǆab')`, "ǅab"},
+		{"title treats an Other_Uppercase symbol as cased", `title('ⓐⓑ')`, "Ⓐⓑ"},
+		{"title titlecase differs from upper", `title('x ᾳ')`, "X ᾼ"},
+		// Final_Sigma looks across the whole string, past case-ignorable
+		// characters, not at a one-rune or one-word window.
+		{"title final sigma at the end", `title('ΑΒΣ')`, "Αβς"},
+		{"title final sigma before a space", `title('OΣ K')`, "Oς K"},
+		{"title sigma starting a word is titlecased", `title('ΣΑ')`, "Σα"},
+		{"title sigma before an ignorable dot then a letter", `title('ΑΣ.Β')`, "Ασ.Β"},
+		{"title sigma before an ignorable apostrophe then a letter", `title("ΑΣ'Β")`, "Ασ'Β"},
 		{"method form", `'hello world'.title()`, "Hello World"},
 		{"a path argument coerces in function position", `upper(Param.Dir)`, "/FOO/BAR"},
 	}
@@ -70,18 +78,10 @@ func TestCaseTransforms(t *testing.T) {
 	}
 }
 
-// TestClassificationPredicates covers RFC 0006's seven is*() functions.
-//
-// Two rows encode deliberate divergences from the reference implementation and
-// must not be "fixed" to match it:
-//
-//   - isalnum('٣') is FALSE here and true there. The reference answers
-//     isdigit('٣') false and isalpha('٣') false while answering isalnum('٣')
-//     true, which is not a rule, it is a contradiction. Ours composes:
-//     isalnum == isalpha || isdigit, always.
-//   - isdigit is ASCII-only, matching the reference and preserving the
-//     guard-then-convert idiom — under a Unicode definition isdigit('٣') would
-//     be true while int('٣') still fails.
+// TestClassificationPredicates covers RFC 0006's seven is*() functions. The six
+// that are not isascii have exactly the semantics of the Python str methods of
+// the same name over the Unicode Character Database (§2.2.4's classification
+// note), so every expectation below was produced by CPython 3.14.
 func TestClassificationPredicates(t *testing.T) {
 	tests := []struct {
 		name string
@@ -89,27 +89,44 @@ func TestClassificationPredicates(t *testing.T) {
 		want string
 	}{
 		{"isdigit ascii", `isdigit('123')`, "true"},
-		{"isdigit rejects a superscript", `isdigit('²')`, "false"},
-		{"isdigit rejects an arabic-indic digit", `isdigit('٣')`, "false"},
+		{"isdigit accepts a superscript", `isdigit('²')`, "true"},
+		{"isdigit accepts an arabic-indic digit", `isdigit('٣')`, "true"},
+		{"isdigit accepts a circled digit", `isdigit('①')`, "true"},
+		{"isdigit accepts superscripts", `isdigit('¹²³')`, "true"},
+		{"isdigit rejects a fraction", `isdigit('½')`, "false"},
+		{"isdigit rejects a roman numeral", `isdigit('Ⅻ')`, "false"},
 		{"isdigit rejects mixed", `isdigit('12a')`, "false"},
 		{"isdigit rejects empty", `isdigit('')`, "false"},
 		{"isalpha letters", `isalpha('abc')`, "true"},
 		{"isalpha accepts an accent", `isalpha('é')`, "true"},
+		{"isalpha accepts a modifier letter", `isalpha('ʰ')`, "true"},
+		{"isalpha rejects a combining mark", `isalpha('\u0345')`, "false"},
+		{"isalpha rejects a fraction", `isalpha('½')`, "false"},
 		{"isalpha rejects a digit", `isalpha('a1')`, "false"},
 		{"isalpha rejects empty", `isalpha('')`, "false"},
 		{"isalnum letters and digits", `isalnum('a1')`, "true"},
-		{"isalnum diverges from the reference", `isalnum('٣')`, "false"},
+		{"isalnum accepts an arabic-indic digit", `isalnum('٣')`, "true"},
+		{"isalnum accepts a fraction", `isalnum('a½')`, "true"},
+		{"isalnum accepts a roman numeral", `isalnum('Ⅻ')`, "true"},
 		{"isalnum rejects punctuation", `isalnum('a_b')`, "false"},
 		{"isalnum rejects empty", `isalnum('')`, "false"},
 		{"isspace spaces and tabs", `isspace('  \t')`, "true"},
+		{"isspace accepts the information separators", `isspace('\u001c\u001d\u001e\u001f')`, "true"},
+		{"isspace accepts a no-break space", `isspace('\u00a0\u0085')`, "true"},
+		{"isspace rejects a zero-width space", `isspace('\u200b')`, "false"},
 		{"isspace rejects a letter", `isspace(' a ')`, "false"},
 		{"isspace rejects empty", `isspace('')`, "false"},
 		{"isupper all upper", `isupper('ABC')`, "true"},
 		{"isupper ignores an uncased digit", `isupper('ABC1')`, "true"},
 		{"isupper needs a cased rune", `isupper('1')`, "false"},
 		{"isupper rejects titlecase", `isupper('ǲ')`, "false"},
+		{"isupper accepts an Other_Uppercase symbol", `isupper('ⒶB')`, "true"},
+		{"isupper rejects an Other_Lowercase letter", `isupper('ª')`, "false"},
 		{"islower all lower", `islower('abc1')`, "true"},
 		{"islower accepts a digraph", `islower('ǳ')`, "true"},
+		{"islower accepts an Other_Lowercase letter", `islower('ªʰ')`, "true"},
+		{"islower accepts an Other_Lowercase symbol", `islower('ⓐ')`, "true"},
+		{"islower rejects titlecase", `islower('aǅ')`, "false"},
 		{"islower rejects empty", `islower('')`, "false"},
 		{"isascii plain", `isascii('a b')`, "true"},
 		{"isascii rejects non-ascii", `isascii('é')`, "false"},
@@ -129,37 +146,5 @@ func TestClassificationPredicates(t *testing.T) {
 				t.Errorf("Eval(%q) typed %s, want bool", tc.src, got)
 			}
 		})
-	}
-}
-
-// TestIsAlnum_ComposesFromIsAlphaAndIsDigit pins the invariant the divergence
-// above preserves. It is asserted over runes rather than by spot-checking, and
-// it evaluates isalpha(), isdigit() and isalnum() THROUGH the registry with
-// Eval — not by reimplementing the predicates' logic locally — so a future
-// edit to any one of the SHIPPED predicates cannot break the relation without
-// failing here.
-//
-// Comparing isAlnumRune against local copies of the predicates would only
-// compare isAlnumRune against itself. Changing the registered isdigit
-// predicate (strCaseFuncs["isdigit"]) to unicode.IsDigit makes isdigit('٣')
-// true while isalpha('٣') and isAlnumRune stay false, breaking the
-// isalnum == isalpha || isdigit invariant; this test fails under that
-// mutation, and a test using local copies would not.
-func TestIsAlnum_ComposesFromIsAlphaAndIsDigit(t *testing.T) {
-	predicate := func(t *testing.T, fn string, r rune) bool {
-		t.Helper()
-		v, err := Eval(fmt.Sprintf("%s(%q)", fn, string(r)), MapSymbols{}, TAny)
-		if err != nil {
-			t.Fatalf("Eval(%s(%q)) failed: %v", fn, r, err)
-		}
-		return v.AsBool()
-	}
-	for _, r := range []rune{'a', 'Z', '0', '9', '²', '٣', '_', ' ', 'é', '½', '①'} {
-		alpha := predicate(t, "isalpha", r)
-		digit := predicate(t, "isdigit", r)
-		alnum := predicate(t, "isalnum", r)
-		if alnum != (alpha || digit) {
-			t.Errorf("isalnum(%q) = %v, want %v (isalpha=%v isdigit=%v)", r, alnum, alpha || digit, alpha, digit)
-		}
 	}
 }

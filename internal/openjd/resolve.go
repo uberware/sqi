@@ -4,7 +4,6 @@ package openjd
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/expr"
@@ -330,7 +329,7 @@ func resolveRangeListDefinition(
 	b *templateBudget, exprEnabled bool, i int, def TaskParamDefinition, syms expr.MapSymbols, scope fmtstring.Scope,
 ) ([]string, ValidationErrors) {
 	var errs ValidationErrors
-	newList := make([]string, len(def.RangeList))
+	newList := make([]string, 0, len(def.RangeList))
 	for j, entry := range def.RangeList {
 		if exprEnabled && !b.ok() {
 			break
@@ -338,6 +337,20 @@ func resolveRangeListDefinition(
 		eptr := fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range/%d", i, j)
 		if exprEnabled && !b.chargePositions(1, eptr) {
 			break
+		}
+		// Under EXPR an element that is exactly "{{<expr>}}" is a LIST ITEM
+		// (§1.3.12, §1.3.2): it resolves to zero, one or several elements.
+		if body, ok := fmtstring.LoneRef(entry); ok && exprEnabled {
+			items, err := resolveRangeListItem(body, def.Type, syms, b.limits)
+			if err != nil {
+				if b.recordDeadline(err) {
+					return newList, errs
+				}
+				errs = append(errs, ValidationError{Pointer: eptr, Message: err.Error()})
+				continue
+			}
+			newList = append(newList, items...)
+			continue
 		}
 		resolved, err := resolveRangeListEntry(exprEnabled, entry, def.Type, syms, scope, b.limits)
 		if err != nil {
@@ -352,12 +365,68 @@ func resolveRangeListDefinition(
 				return newList, errs
 			}
 			errs = append(errs, ValidationError{Pointer: eptr, Message: err.Error()})
-			newList[j] = entry // placeholder; result discarded on error
-		} else {
-			newList[j] = resolved
+			continue // result discarded on error
 		}
+		newList = append(newList, resolved)
+	}
+	// A range list must still hold at least one element once dropped and
+	// flattened items are resolved (§1.3.12: the list's element-count limits
+	// apply again after resolution; the maximum is re-checked with the other
+	// parameter-space limits on the resolved space).
+	if len(errs) == 0 && len(def.RangeList) > 0 && len(newList) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range", i),
+			Message: "range list is empty once its null elements are dropped",
+		})
 	}
 	return newList, errs
+}
+
+// rangeListItemType is the target of a range-list element that is exactly
+// "{{<expr>}}" (§1.3.12): the list-item type T? | list[T] of §1.3.2, where T
+// is the parameter's element type — int for INT and CHUNK[INT], string,
+// path — so a null result drops the element and a list result flattens. FLOAT
+// also admits int, float? | int | list[float], so an int result is kept as
+// written, as the <floatstring> it stands for would be, while a list's members
+// are converted to float. exprcheck.go checks the same position against this
+// same type, so the checker and the resolver cannot disagree about it.
+func rangeListItemType(typ TaskParamType) expr.Type {
+	elem := rangeExprElemType(typ)
+	if typ == TaskParamTypeFloat {
+		return expr.UnionOf(expr.OptionalOf(elem), expr.TInt, expr.ListOf(elem))
+	}
+	return expr.UnionOf(expr.OptionalOf(elem), expr.ListOf(elem))
+}
+
+// resolveRangeListItem evaluates one lone range-list expression against its
+// list-item type and returns the elements it contributes: none for null, one
+// per member for a list, and one otherwise.
+func resolveRangeListItem(body string, typ TaskParamType, syms expr.MapSymbols, lim ExprLimits) ([]string, error) {
+	e, err := expr.Parse(body)
+	if err != nil {
+		return nil, err
+	}
+	v, err := e.Eval(syms, rangeListItemType(typ), lim.evalOptions()...)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case v.IsUnresolved():
+		return nil, errUnresolvedRangeValue(v)
+	case v.IsNull():
+		return nil, nil
+	case v.Type.Code == expr.CodeList:
+		elems := v.AsList()
+		out := make([]string, len(elems))
+		for k, elem := range elems {
+			if elem.IsUnresolved() {
+				return nil, errUnresolvedRangeValue(elem)
+			}
+			out[k] = elem.String()
+		}
+		return out, nil
+	}
+	return []string{v.String()}, nil
 }
 
 // resolveRangeExprField resolves one task-parameter definition's whole-field
@@ -406,16 +475,15 @@ func resolveRangeListDefinition(
 // own doc comment. An embedded reference here CAN legitimately
 // evaluate to a genuine range_expr-typed value — "{{ range_expr(\"10-15:2,1-5\") }},7"
 // is a real, reachable input, and Value.String() renders a range_expr value
-// back to ITS OWN <IntRangeExpr> text (rangeexpr.go: the value's payload IS
-// the text range_expr() was called with, unmodified). Pinned by
+// in its canonical form (Template Schemas §3.4.1.1.1). Pinned by
 // TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue:
 // resolving "{{ range_expr(\"10-15:2,1-5\") }},7" produces RangeExpr
-// "10-15:2,1-5,7", which ExpandParameterSpace's parseIntRangeExpr then
+// "1-5,10-14:2,7", which ExpandParameterSpace's parseIntRangeExpr then
 // expands under internal/openjd's OWN first-seen policy to
-// [10,12,14,1,2,3,4,5,7] — the SPEC's own ascending, deduplicated order
+// [1,2,3,4,5,10,12,14,7] — the SPEC's own ascending, deduplicated order
 // (section 3.4.1.1.1) for that same composed text would be
-// [1,2,3,4,5,7,10,12,14], so this really does reorder relative to the
-// expression language.
+// [1,2,3,4,5,7,10,12,14], so this still reorders relative to the expression
+// language, across the literal that follows the embedded value.
 //
 // This behavior is correct, not a defect. The no-re-parse rule is scoped
 // to the LONE whole-field form, where the expression IS the range and
@@ -819,10 +887,11 @@ func resolveChunkInt(
 		}
 		return 0, false, ValidationErrors{{Pointer: ptr, Message: err.Error()}}
 	}
-	n, convErr := strconv.Atoi(text)
+	n64, convErr := parseIntString(text)
 	if convErr != nil {
 		return 0, false, ValidationErrors{{Pointer: ptr, Message: fmt.Sprintf("resolved to %q, which is not an integer", text)}}
 	}
+	n = int(n64)
 	if n < minimum {
 		return 0, false, ValidationErrors{{Pointer: ptr, Message: fmt.Sprintf("resolved to %d; must be at least %d", n, minimum)}}
 	}

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -462,7 +461,23 @@ func (s *Submitter) buildStepWithTasks(
 		stepStatus = store.StepStatusPending
 	}
 
-	hostReqs, computeLoc := toStoreHostRequirements(stepTmpl.HostRequirements)
+	// Host requirements are resolved at Job creation, like the parameter
+	// space: the scheduler matches what is stored here.
+	resolvedHR, hrErrs := resolveHostRequirements(resolverBudget, tmpl, &stepTmpl, stepIdx, boundParams, s.enforceLimits)
+	if err := resolverBudget.deadline(); err != nil {
+		return store.Step{}, nil, fmt.Errorf("openjd: submit: resolve step %q host requirements: %w", stepTmpl.Name, err)
+	}
+	if len(hrErrs) > 0 {
+		return store.Step{}, nil, &SubmitValidationError{
+			Cause: fmt.Errorf("openjd: submit: resolve step %q host requirements: %w", stepTmpl.Name, hrErrs),
+		}
+	}
+	if errs := resolverBudget.errs(); len(errs) > 0 {
+		return store.Step{}, nil, &SubmitValidationError{
+			Cause: fmt.Errorf("openjd: submit: resolve step %q host requirements: %w", stepTmpl.Name, errs),
+		}
+	}
+	hostReqs, computeLoc := toStoreHostRequirements(resolvedHR)
 
 	step = store.Step{
 		ID:               uuid.NewString(),
@@ -935,7 +950,7 @@ func requiredCoresFromAmounts(amts []store.StepAmountRequirement) *int {
 			n := 1 // spec default: reserved minimum for amount.worker.vcpu
 			return &n
 		}
-		f, err := strconv.ParseFloat(*a.Min, 64)
+		f, err := parseFloatString(*a.Min)
 		if err != nil || f <= 0 {
 			return nil
 		}

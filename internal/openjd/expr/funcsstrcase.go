@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -14,7 +13,7 @@ import (
 
 // strCaseFuncs is the first of the four string-function groups: RFC 0006
 // section 2.2.4's case transforms and its classification predicates. The two
-// share this file because they share isAlnumRune and the casers below.
+// share this file because they share the rune predicates and casers below.
 //
 // Section 1.3.10 rule 3: every row in this file declares Cost{ArgBytes:
 // []int{0}} -- the RECEIVER's own byte length, not the produced result's.
@@ -40,34 +39,24 @@ var strCaseFuncs = map[string][]Shape{
 	"lower":      {caseShape(lowerString)},
 	"capitalize": {caseShape(capitalizeString)},
 	"title":      {caseShape(titleString)},
-	// RFC 0006 says only "True if all characters are digits and string is
-	// non-empty", so the digit set is undefined by the specification and every
-	// candidate answers differently: Python's isdigit is Unicode ('²' is a
-	// digit), Go's unicode.IsDigit is category Nd ('٣' is, '²' is not), and the
-	// reference implementation is ASCII-only.
-	//
-	// ASCII wins for a reason beyond matching the reference: it preserves the
-	// obvious idiom. Under a Unicode definition isdigit('٣') is true while
-	// int('٣') still fails, so guarding a conversion with isdigit would
-	// silently stop working on exactly the inputs the guard exists for.
-	"isdigit": {runePredShape(allRunes, func(r rune) bool { return r >= '0' && r <= '9' })},
+	// The six predicates below other than isascii have exactly the semantics of
+	// the Python str methods of the same name over the Unicode Character
+	// Database (RFC 0006 §2.2.4's classification note). isdigit is Unicode
+	// Numeric_Type Decimal or Digit, so isdigit('٣') and isdigit('²') are true
+	// even though int() accepts neither; isalnum is broader than isalpha ||
+	// isdigit, because it admits ANY Numeric_Type ('½' is alphanumeric but
+	// neither alphabetic nor a digit).
+	"isdigit": {runePredShape(allRunes, isDigitRune)},
 	"isalpha": {runePredShape(allRunes, unicode.IsLetter)},
-	// isalnum COMPOSES from isalpha and isdigit, and that is a deliberate
-	// divergence from the reference implementation, which answers
-	// isalnum('٣') true while answering both isdigit('٣') and isalpha('٣')
-	// false. RFC 0006 defines none of the three, so the reference's own
-	// self-contradiction is the strongest evidence available about which
-	// reading to take: a family that composes is defensible, one that does not
-	// is a bug. Baselined in test/oracle/baseline.txt with that reason.
 	"isalnum": {runePredShape(allRunes, isAlnumRune)},
-	"isspace": {runePredShape(allRunes, unicode.IsSpace)},
-	// isupper and islower are NOT allRunes over IsUpper/IsLower. RFC 0006
+	"isspace": {runePredShape(allRunes, isSpaceRune)},
+	// isupper and islower are NOT allRunes over a case predicate. RFC 0006
 	// defines them over CASED characters — "all cased characters are uppercase
 	// and there is at least one cased character" — so an uncased rune neither
 	// satisfies nor breaks the test. isupper("ABC1") is true because a digit is
 	// uncased; isupper("1") is false because nothing in it is cased at all.
-	"isupper": {runePredShape(allCased, unicode.IsUpper)},
-	"islower": {runePredShape(allCased, unicode.IsLower)},
+	"isupper": {runePredShape(allCased, isUpperRune)},
+	"islower": {runePredShape(allCased, isLowerRune)},
 	// isascii is the ONE predicate RFC 0006 declares true on the empty string:
 	// "all characters are ASCII (U+0000-U+007F), OR string is empty". The other
 	// six require non-empty. That asymmetry is the specification's, not a slip.
@@ -158,95 +147,184 @@ func upperString(s string) string { return cases.Upper(language.Und).String(s) }
 
 func lowerString(s string) string { return cases.Lower(language.Und).String(s) }
 
-// capitalizeString implements RFC 0006's "Capitalize first character,
-// lowercase rest" literally: uppercase the first rune, lowercase everything
-// after it.
-//
-// The literal reading has a surprising consequence, and it is the reference
-// implementation's behavior rather than an accident here:
-// capitalize("ﬁne day") is "FIne day", because full case mapping expands the
-// ﬁ ligature to two uppercase letters. Python answers "Fine day" because it
-// TITLECASES the first character instead of uppercasing it. RFC 0006 says
-// "Capitalize", not "titlecase", so we uppercase. doc.go records this.
+// capitalizeString is Python's str.capitalize (3.8 and later): the first rune
+// takes its full TITLECASE mapping and every later rune its full lowercase
+// mapping. Titlecase is not uppercase: capitalize("ﬁne day") is "Fine day", not
+// "FIne day", and capitalize("ßx") is "Ssx".
 func capitalizeString(s string) string {
 	if s == "" {
 		return ""
 	}
-	_, size := utf8.DecodeRuneInString(s)
-	return upperString(s[:size]) + lowerString(s[size:])
-}
-
-// titleString uppercases the first rune of each maximal run of alphanumerics
-// and lowercases the remainder of each run.
-//
-// The word-boundary rule was derived by running the reference implementation,
-// not assumed: "they're ok" -> "They'Re Ok" (an apostrophe breaks a word),
-// "a1b c" -> "A1b C" and "1st place" -> "1st Place" (a digit does NOT),
-// "a_b c" -> "A_B C" (an underscore DOES), "3d-max shot" -> "3d-Max Shot",
-// "HELLO WORLD" -> "Hello World" (the rest of a word is lowercased).
-//
-// Go's strings.Title reproduces most of that but treats "_" as part of a word,
-// so it answers "A_b C" and is unusable here even setting aside its
-// deprecation.
-//
-// The alphanumeric predicate is isAlnumRune — the SAME one the isalnum()
-// function uses — on purpose. The reference uses a Unicode notion here while
-// its own isdigit() is ASCII-only, which is the self-contradiction the design
-// rules against; adopting it for word boundaries alone would put two
-// conflicting definitions of "alphanumeric" in this one file. The cost is a
-// single divergence, title("²x y"), recorded in test/oracle/baseline.txt.
-//
-// Each rune is cased INDIVIDUALLY — a fresh one-rune context every call —
-// rather than casing a whole word run in one transform, because full Unicode
-// case mapping is CONTEXT-SENSITIVE, and Greek sigma shows it. Lowering the
-// isolated rune "Σ" answers medial sigma "σ" (there is no preceding cased
-// letter in a one-rune context, so the Final_Sigma rule cannot fire), while
-// lowering the two-rune substring "ΒΣ" in one transform answers final sigma "ς"
-// (now "Σ" IS preceded by a cased letter and at the end of the input, so
-// Final_Sigma fires). Run against the reference implementation (openjd-model
-// 0.11.1), title('ΑΒΣ') is "Αβσ" — MEDIAL sigma — confirming the reference
-// itself cases the run rune by rune rather than as one contiguous lowercase
-// transform; lower('ΑΒΣ') on the same string, by contrast, is "Αβς" with final
-// sigma, because lower() has no word-boundary splitting and cases the whole
-// string in one transform. So per-rune casing here is the ONLY reading that
-// reproduces the reference's own title() output — a substring-based rewrite for
-// speed would silently change title()'s behavior on Greek text. See
-// TestCaseTransforms/title_final_sigma_stays_medial for the pinned case.
-//
-// Per-rune casing costs allocations, so the two Casers are still hoisted out
-// of the loop (see upperString's doc comment) rather than reaching for the
-// package-level upperString/lowerString helpers, which would build a new
-// Caser on every rune.
-func titleString(s string) string {
+	rs := []rune(s)
 	var b strings.Builder
 	b.Grow(len(s))
-	upperCaser := cases.Upper(language.Und)
+	titleCaser := cases.Title(language.Und, cases.NoLower)
 	lowerCaser := cases.Lower(language.Und)
-	inWord := false
-	for _, r := range s {
-		switch {
-		case !isAlnumRune(r):
-			inWord = false
-			b.WriteRune(r)
-		case !inWord:
-			inWord = true
-			b.WriteString(upperCaser.String(string(r)))
-		default:
-			b.WriteString(lowerCaser.String(string(r)))
-		}
+	b.WriteString(titleCaser.String(string(rs[0])))
+	for i := 1; i < len(rs); i++ {
+		writeLowerRune(&b, lowerCaser, rs, i)
 	}
 	return b.String()
 }
 
-// isAlnumRune is the alphanumeric predicate shared by isalnum() and by
-// titleString's word boundary. A letter by Unicode's definition, or an ASCII
-// digit.
+// titleString is Python's str.title. A rune preceded by a CASED rune takes its
+// full lowercase mapping; any other rune takes its full titlecase mapping. So a
+// word starts after anything uncased — a digit, punctuation, an uncased letter
+// — and title("1st place") is "1St Place", title("a1b") is "A1B".
 //
-// The ASCII restriction on digits is isdigit()'s ruling, argued in full at
-// isdigit's registration in this file. The point of sharing one predicate is
-// that "alphanumeric" means exactly one thing in this package.
+// Each rune is cased individually, but sigma is not cased in isolation: Python
+// lowercases a capital sigma by the Unicode Final_Sigma rule over the whole
+// string (writeLowerRune), so title("ΑΒΣ") is "Αβς".
+//
+// The Casers are hoisted out of the loop. Building one per rune — as calling
+// upperString/lowerString per rune would — measured ~2.5x slower on
+// len(title('ab ' * 3333333)).
+func titleString(s string) string {
+	rs := []rune(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	titleCaser := cases.Title(language.Und, cases.NoLower)
+	lowerCaser := cases.Lower(language.Und)
+	prevCased := false
+	for i, r := range rs {
+		if prevCased {
+			writeLowerRune(&b, lowerCaser, rs, i)
+		} else {
+			b.WriteString(titleCaser.String(string(r)))
+		}
+		prevCased = isCasedRune(r)
+	}
+	return b.String()
+}
+
+// writeLowerRune appends the full lowercase mapping of rs[i], deciding a capital
+// sigma's form the way CPython does: final "ς" when a cased rune precedes it and
+// no cased rune follows it, skipping case-ignorable runes in both directions;
+// medial "σ" otherwise. Any other rune is lowered on its own, which is exact
+// because sigma is the only rune whose full lowercase mapping in the root
+// locale depends on context.
+func writeLowerRune(b *strings.Builder, lowerCaser cases.Caser, rs []rune, i int) {
+	if rs[i] != capitalSigma {
+		b.WriteString(lowerCaser.String(string(rs[i])))
+		return
+	}
+	if isFinalSigma(rs, i) {
+		b.WriteRune(finalSigma)
+	} else {
+		b.WriteRune(smallSigma)
+	}
+}
+
+const (
+	capitalSigma = 'Σ' // U+03A3
+	smallSigma   = 'σ' // U+03C3
+	finalSigma   = 'ς' // U+03C2
+)
+
+// isFinalSigma is the Unicode Final_Sigma condition for the sigma at rs[i].
+//
+// The scan stops at the first rune that is not case-ignorable in each
+// direction, so a long run of case-ignorable runes costs time proportional to
+// the run; across a whole string every rune is scanned at most once per
+// adjacent sigma.
+func isFinalSigma(rs []rune, i int) bool {
+	j := i - 1
+	for j >= 0 && isCaseIgnorableRune(rs[j]) {
+		j--
+	}
+	if j < 0 || !isCasedRune(rs[j]) {
+		return false
+	}
+	j = i + 1
+	for j < len(rs) && isCaseIgnorableRune(rs[j]) {
+		j++
+	}
+	return j == len(rs) || !isCasedRune(rs[j])
+}
+
+// isDigitRune is Python's str.isdigit for one rune: Unicode Numeric_Type
+// Decimal (exactly general category Nd) or Digit.
+func isDigitRune(r rune) bool {
+	return unicode.Is(unicode.Nd, r) || unicode.Is(numericTypeDigit, r)
+}
+
+// numericTypeDigit is every code point whose Unicode Numeric_Type is Digit:
+// digits that are not decimal digits, such as superscripts and circled digits.
+// The Go standard library has no Numeric_Type table. Every member is general
+// category No. Derived from CPython 3.14 (Unicode 16.0) as the code points for
+// which str.isdigit() is true and str.isdecimal() is false.
+var numericTypeDigit = &unicode.RangeTable{
+	R16: []unicode.Range16{
+		{Lo: 0x00B2, Hi: 0x00B3, Stride: 1},
+		{Lo: 0x00B9, Hi: 0x00B9, Stride: 1},
+		{Lo: 0x1369, Hi: 0x1371, Stride: 1},
+		{Lo: 0x19DA, Hi: 0x19DA, Stride: 1},
+		{Lo: 0x2070, Hi: 0x2070, Stride: 1},
+		{Lo: 0x2074, Hi: 0x2079, Stride: 1},
+		{Lo: 0x2080, Hi: 0x2089, Stride: 1},
+		{Lo: 0x2460, Hi: 0x2468, Stride: 1},
+		{Lo: 0x2474, Hi: 0x247C, Stride: 1},
+		{Lo: 0x2488, Hi: 0x2490, Stride: 1},
+		{Lo: 0x24EA, Hi: 0x24EA, Stride: 1},
+		{Lo: 0x24F5, Hi: 0x24FD, Stride: 1},
+		{Lo: 0x24FF, Hi: 0x24FF, Stride: 1},
+		{Lo: 0x2776, Hi: 0x277E, Stride: 1},
+		{Lo: 0x2780, Hi: 0x2788, Stride: 1},
+		{Lo: 0x278A, Hi: 0x2792, Stride: 1},
+	},
+	R32: []unicode.Range32{
+		{Lo: 0x10A40, Hi: 0x10A43, Stride: 1},
+		{Lo: 0x10E60, Hi: 0x10E68, Stride: 1},
+		{Lo: 0x11052, Hi: 0x1105A, Stride: 1},
+		{Lo: 0x1F100, Hi: 0x1F10A, Stride: 1},
+	},
+}
+
+// isAlnumRune is Python's str.isalnum for one rune: alphabetic (general
+// category L) or any Unicode Numeric_Type. In CPython's data every code point
+// with a Numeric_Type is in general category N or L, so category N covers the
+// numeric half exactly.
 func isAlnumRune(r rune) bool {
-	return unicode.IsLetter(r) || (r >= '0' && r <= '9')
+	return unicode.IsLetter(r) || unicode.IsNumber(r)
+}
+
+// isSpaceRune is Python's str.isspace for one rune: general category Zs, Zl or
+// Zp, or bidirectional class WS, B or S. That is Unicode White_Space, which
+// unicode.IsSpace tests, plus the four information separators U+001C–U+001F
+// (bidirectional class B and S, but not White_Space).
+func isSpaceRune(r rune) bool {
+	return unicode.IsSpace(r) || (r >= 0x1C && r <= 0x1F)
+}
+
+// isUpperRune and isLowerRune are the Unicode Uppercase and Lowercase derived
+// properties — general category Lu or Ll plus Other_Uppercase or
+// Other_Lowercase — which Python's case predicates use. Category alone misses
+// "Ⓐ" (So, Other_Uppercase) and "ª" (Lo, Other_Lowercase).
+func isUpperRune(r rune) bool {
+	return unicode.IsUpper(r) || unicode.Is(unicode.Other_Uppercase, r)
+}
+
+func isLowerRune(r rune) bool {
+	return unicode.IsLower(r) || unicode.Is(unicode.Other_Lowercase, r)
+}
+
+// isCasedRune is the Unicode Cased property: Uppercase, Lowercase or general
+// category Lt.
+func isCasedRune(r rune) bool {
+	return isUpperRune(r) || isLowerRune(r) || unicode.IsTitle(r)
+}
+
+// isCaseIgnorableRune is the Unicode Case_Ignorable property, which the Go
+// standard library does not provide: general category Mn, Me, Cf, Lm or Sk, or
+// Word_Break MidLetter, MidNumLet or Single_Quote. The Word_Break members are
+// listed explicitly from Unicode's WordBreakProperty.txt.
+func isCaseIgnorableRune(r rune) bool {
+	switch r {
+	case '\'', '.', ':', 0x00B7, 0x0387, 0x055F, 0x05F4, 0x2018, 0x2019, 0x2024,
+		0x2027, 0xFE13, 0xFE52, 0xFE55, 0xFF07, 0xFF0E, 0xFF1A:
+		return true
+	}
+	return unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf, unicode.Lm, unicode.Sk)
 }
 
 // caseMapWorstCaseExpansion is the largest byte-length ratio between one
@@ -315,11 +393,11 @@ func allRunes(s string, pred func(rune) bool) bool {
 //
 // "Cased" includes titlecase, which is why isupper("ǲ") is false rather than
 // true: U+01F2 is a cased rune that is not uppercase, so it fails pred instead
-// of being skipped. Confirmed against the reference implementation.
+// of being skipped.
 func allCased(s string, pred func(rune) bool) bool {
 	seen := false
 	for _, r := range s {
-		if !unicode.IsUpper(r) && !unicode.IsLower(r) && !unicode.IsTitle(r) {
+		if !isCasedRune(r) {
 			continue
 		}
 		seen = true

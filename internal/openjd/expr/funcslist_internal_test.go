@@ -27,7 +27,6 @@ func TestRangeAndFlatten(t *testing.T) {
 		{"flatten of a flat list is the identity", "flatten([1, 2])", "[1, 2]", "list[int]"},
 		{"flatten of an empty list", "flatten([])", "[]", "list[nulltype]"},
 		{"flatten of strings", `flatten([["a"], ["b"]])`, `["a", "b"]`, "list[string]"},
-		{"flatten only removes one level", "flatten([[[1]], [[2]]])", "[[1], [2]]", "list[list[int]]"},
 		{"the comprehension idiom from the spec", `flatten([["-e", e] for e in ["A=1", "B=2"]])`, `["-e", "A=1", "-e", "B=2"]`, "list[string]"},
 		// The outer list's own element type is list[int] (a slice preserves
 		// its receiver's element type at zero length — slice.go), so the

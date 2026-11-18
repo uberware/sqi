@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/uberware/sqi/internal/openjd/expr"
 )
 
 // This file validates the job-parameter types RFC 0007 (the EXPR extension's
@@ -269,6 +271,11 @@ func validateListElement(v any, elem JobParamType, c *ItemConstraint, ptr string
 		return errs
 	}
 	text, _ := scalarElemText(v) // type already verified above
+	if elem == JobParamTypeInt || elem == JobParamTypeFloat {
+		// An item given as an <intstring> or <floatstring> is its number;
+		// the white space around it is not part of it (Template Schemas §7.5).
+		text = expr.TrimNumericSpace(text)
+	}
 	return validateElemAgainstConstraint(text, elem, c, ptr)
 }
 
@@ -317,7 +324,11 @@ func validateInnerList(v any, c *ItemConstraint, ptr string) ValidationErrors {
 // declares LIST[PATH] with default [123, 456], and a text-based check would
 // accept those -- every number renders as a perfectly good path string. RFC
 // 0007's schemas say <string> for LIST[STRING] and LIST[PATH] and <integer>
-// for LIST[INT], so the JSON type is what the spec actually constrains.
+// for LIST[INT], so the JSON type is what the spec actually constrains. A
+// numeric element may ALSO be a string holding a number — an <intstring> for
+// INT, a <floatstring> for FLOAT, white space around it allowed — since
+// Template Schemas §2.13, §2.14 and §2.16 accept either in a default and in a
+// value given when a Job is created.
 //
 // BOOL is the deliberate exception. RFC 0007 gives a LIST[BOOL] item the same
 // accepted-values table as a BOOL parameter -- true, 1, 1.0, "yes", "on" --
@@ -342,6 +353,9 @@ func validateElemType(v any, elem JobParamType, ptr string) ValidationErrors {
 			return bad("a path (a string)")
 		}
 	case JobParamTypeInt:
+		if s, ok := v.(string); ok {
+			return numericStringElem(s, elem, bad)
+		}
 		f, ok := v.(float64)
 		if !ok {
 			return bad("an integer")
@@ -350,6 +364,9 @@ func validateElemType(v any, elem JobParamType, ptr string) ValidationErrors {
 			return bad("an integer")
 		}
 	case JobParamTypeFloat:
+		if s, ok := v.(string); ok {
+			return numericStringElem(s, elem, bad)
+		}
 		if _, ok := v.(float64); !ok {
 			return bad("a number")
 		}
@@ -361,6 +378,21 @@ func validateElemType(v any, elem JobParamType, ptr string) ValidationErrors {
 		if _, ok := parseBoolParamValue(text); !ok {
 			return bad("a boolean; use true/false, 1/0, 1.0/0.0, yes/no, or on/off")
 		}
+	}
+	return nil
+}
+
+// numericStringElem checks an INT or FLOAT element given as a string: it must
+// be an <intstring> or a finite <floatstring> (Template Schemas §7.5).
+func numericStringElem(s string, elem JobParamType, bad func(string) ValidationErrors) ValidationErrors {
+	if elem == JobParamTypeInt {
+		if _, err := parseIntString(s); err != nil {
+			return bad("an integer")
+		}
+		return nil
+	}
+	if f, err := parseFloatString(s); err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return bad("a number")
 	}
 	return nil
 }
@@ -394,6 +426,22 @@ func scalarElemText(v any) (string, bool) {
 	return "", false
 }
 
+// elemInAllowed reports whether an element is one of item.allowedValues. A
+// numeric element is compared as a number, as a scalar INT or FLOAT parameter's
+// allowedValues are (bind.go), so " 1 " and "1", or "1.0" and "1.00", match;
+// any other element is compared as text.
+func elemInAllowed(text string, elem JobParamType, allowed []string) bool {
+	switch elem {
+	case JobParamTypeInt:
+		n, err := parseIntString(text)
+		return err == nil && intInAllowed(n, allowed)
+	case JobParamTypeFloat:
+		f, err := parseFloatString(text)
+		return err == nil && floatInAllowed(f, allowed)
+	}
+	return slices.Contains(allowed, text)
+}
+
 // validateElemAgainstConstraint applies the item: block for this level to one
 // element. Which constraints are LEGAL here was already settled by
 // validateItemConstraintLegality, so this only applies them.
@@ -405,7 +453,7 @@ func validateElemAgainstConstraint(
 	}
 	var errs ValidationErrors
 
-	if len(c.AllowedValues) > 0 && !slices.Contains(c.AllowedValues, text) {
+	if len(c.AllowedValues) > 0 && !elemInAllowed(text, elem, c.AllowedValues) {
 		errs = append(errs, ValidationError{
 			Pointer: ptr,
 			Message: fmt.Sprintf("%q is not one of item.allowedValues", text),
@@ -441,7 +489,7 @@ func validateElemAgainstConstraint(
 // comparison keeps this from needing an int and a float branch that must be
 // kept in step.
 func validateElemBounds(text string, c *ItemConstraint, ptr string) ValidationErrors {
-	f, err := strconv.ParseFloat(text, 64)
+	f, err := parseFloatString(text)
 	if err != nil {
 		// Deliberately swallowed: validateElemType already rejected this
 		// element as not-a-number and reported it with this same pointer.
@@ -452,7 +500,7 @@ func validateElemBounds(text string, c *ItemConstraint, ptr string) ValidationEr
 
 	var errs ValidationErrors
 	if c.MinValue != nil {
-		if lo, err := strconv.ParseFloat(*c.MinValue, 64); err == nil && f < lo {
+		if lo, err := parseFloatString(*c.MinValue); err == nil && f < lo {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("%s is below item.minValue %s", text, *c.MinValue),
@@ -460,7 +508,7 @@ func validateElemBounds(text string, c *ItemConstraint, ptr string) ValidationEr
 		}
 	}
 	if c.MaxValue != nil {
-		if hi, err := strconv.ParseFloat(*c.MaxValue, 64); err == nil && f > hi {
+		if hi, err := parseFloatString(*c.MaxValue); err == nil && f > hi {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("%s is above item.maxValue %s", text, *c.MaxValue),

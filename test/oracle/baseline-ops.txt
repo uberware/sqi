@@ -1045,6 +1045,23 @@ list[string] :: unique(["a", "b", "a"])
 # header for round above.
 int | float :: round(2.0, 309)
 
+# ── sqi is right: "+" with a range_expr operand is string concatenation ─────
+#
+# __add__(range_expr, string) and __add__(string, range_expr) are "a + b
+# concatenation" of the range's string form (RFC 0006 §2.1.2), and section
+# 1.3.10 rule 3 names string concatenation (+) among the functions that add
+# the string's length divided by 256, rounded up. sqi charges range_expr()'s
+# call (1), the "+" call (1) and that length term (1) — 3. The reference
+# charges 2, leaving the length term out for these two rows while charging it
+# for string + string. These became comparable only once #202's canonical form
+# made the two sides' VALUES agree.
+
+# range_expr + string: rule 3's concatenation length term, which the reference omits (see section header).
+string | range_expr :: range_expr("1-10:2") + "!"
+
+# string + range_expr: the same, with the range_expr on the right (see section header).
+string | range_expr :: "!" + range_expr("1-10:2")
+
 # ── sqi is right: padding charges ONE length term; the reference charges two ──
 #
 # Reference behavior since openjd-expr 0.3.0 (openjd-model 0.11.3+).

@@ -3,6 +3,7 @@
 package expr
 
 import (
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ func TestRound(t *testing.T) {
 		{"negative ties round to even", "round(-1.5)", "-2", "int"},
 		{"positive ndigits gives a float", "round(3.14159, 2)", "3.14", "float"},
 		{"positive ndigits preserves trailing zeros", "round(3.5, 2)", "3.50", "float"},
-		{"positive ndigits with one place", "round(3.55, 1)", "3.6", "float"},
+		{"positive ndigits rounds the exact value", "round(3.55, 1)", "3.5", "float"},
 		{"zero ndigits gives an int", "round(3.7, 0)", "4", "int"},
 		{"negative ndigits gives an int", "round(1234.5, -1)", "1230", "int"},
 		{"negative ndigits, two places", "round(1234.5, -2)", "1200", "int"},
@@ -41,6 +42,68 @@ func TestRound(t *testing.T) {
 			}
 			if got := v.Type.String(); got != tc.wantType {
 				t.Errorf("Eval(%q) typed %s, want %s", tc.src, got, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestRound_RoundsTheExactValue pins RFC 0006 §2.2.3: rounding is half to even
+// on the EXACT value of x, as Python's round does, and an int result outside
+// int64 is an error. A float literal is rarely the decimal it is written as —
+// 2.675 is stored a little below 2.675, 1.05 a little above, 5e300 a little
+// above 5e300 — so scaling in float64 and rounding the product rounds a value
+// the float never had. The rows are the conformance fixture
+// expr2.2.2--round-exact plus CPython 3.14's answers for the same calls.
+func TestRound_RoundsTheExactValue(t *testing.T) {
+	tests := []struct {
+		src      string
+		want     string
+		wantType string
+	}{
+		{"round(2.675, 2)", "2.67", "float"},
+		{"round(-2.675, 2)", "-2.67", "float"},
+		{"round(1.05, 1)", "1.1", "float"},
+		{"round(0.125, 2)", "0.12", "float"},
+		{"round(9.3e18, -18)", "9000000000000000000", "int"},
+		{"round(3550693609029500000, -6)", "3550693609030000000", "int"},
+		{"round(9223372036854775804, -1)", "9223372036854775800", "int"},
+		{"round(3.5506936090295e18, -6)", "3550693609029000000", "int"},
+		{"round(4e300, -301)", "0", "int"},
+		{"round(15.5, -1)", "20", "int"},
+		{"round(25.0, -1)", "20", "int"},
+		{"round(5e-324, 323)", "0." + strings.Repeat("0", 323), "float"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %s, want %s", tc.src, got, tc.want)
+			}
+			if got := v.Type.String(); got != tc.wantType {
+				t.Errorf("Eval(%q) typed %s, want %s", tc.src, got, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestRound_ExactResultOutsideInt64Overflows pins the error half of the same
+// rule. 5e300 is stored above 5·10^300, so rounding it to a multiple of 10^301
+// gives 10^301 — not 0, which is what rounding a float64 quotient that has
+// already lost the excess would give.
+func TestRound_ExactResultOutsideInt64Overflows(t *testing.T) {
+	for _, src := range []string{
+		"round(5e300, -301)",
+		"round(1.7976931348623157e308, -308)",
+		"round(9.3e18, -17)",
+		"round(9223372036854775807, -1)",
+	} {
+		t.Run(src, func(t *testing.T) {
+			_, err := Eval(src, MapSymbols{}, TAny)
+			if !errors.Is(err, errIntOverflow) {
+				t.Errorf("Eval(%q) error = %v, want errIntOverflow", src, err)
 			}
 		})
 	}
@@ -466,7 +529,7 @@ func TestRoundToDigits_PositiveNdigitsRoundsBelowTheOverflow(t *testing.T) {
 	}{
 		{"rounds at two places", "round(3.14159, 2)", "3.14"},
 		{"keeps a trailing zero", "round(3.5, 2)", "3.50"},
-		{"rounds half to even at one place", "round(3.55, 1)", "3.6"},
+		{"rounds the exact value at one place", "round(3.55, 1)", "3.5"},
 		{"the largest usable scale still renders", "round(2.0, 307)", "2." + strings.Repeat("0", 307)},
 	}
 	for _, tc := range tests {

@@ -119,7 +119,7 @@ func (*Call) nameTarget(callee *Name, ec evalCtx) (name string, recv Value, meth
 			}
 			return fn, Value{}, false, nil
 		}
-		return "", Value{}, false, errorAt(ec.src, callee.Offset, "unknown symbol %q", callee.String())
+		return "", Value{}, false, nowhereAt(ec.src, callee.Offset, "unknown symbol %q", callee.String())
 	}
 	if len(r.Rest) == 0 {
 		// The whole name is a symbol, and no value in this language is

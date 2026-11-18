@@ -3,8 +3,10 @@
 package openjd
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/intrange"
@@ -84,21 +86,6 @@ func parseIntRangeExpr(expr string) ([]int, error) {
 	return result, nil
 }
 
-// intRangeExprCount returns the number of values an INT/CHUNK[INT] range
-// expression expands to, computed arithmetically (sum of each element's
-// [intRange.count]) WITHOUT materializing the integers. ok is false when the
-// expression is unparseable or its arithmetic count exceeds [maxRangeValues]
-// (the latter is reported by the structural parse check, so callers avoid
-// double-reporting). The summed count may exceed the de-duplicated count when
-// sub-ranges overlap; overlap is flagged separately by [intRangeHasOverlap].
-func intRangeExprCount(expr string) (count int, ok bool) {
-	ranges, err := parseIntRangeElements(expr)
-	if err != nil {
-		return 0, false
-	}
-	return sumRangeCounts(ranges)
-}
-
 // sumRangeCounts sums the arithmetic value counts of every sub-range, returning
 // ok=false (and total 0) as soon as any single range — or the running total —
 // exceeds maxRangeValues. It never materializes the integers, so it is the
@@ -137,17 +124,17 @@ func validateIntRangeExpr(expr string) error {
 	return nil
 }
 
-// intRangeHasOverlap reports whether an OpenJD INT/CHUNK[INT] range expression
-// produces the same integer from more than one element (i.e. overlapping
-// sub-ranges or duplicate values). The OpenJD jobtemplate-2023-09 spec forbids
-// overlapping sub-ranges; [parseIntRangeExpr] silently de-duplicates for
-// expansion, so this is a separate detection used only by validation.
+// intRangeHasOverlap reports whether two elements of an OpenJD INT/CHUNK[INT]
+// range expression overlap. Template Schemas §3.4.1.1.1 measures overlap on an
+// element's SPAN — the interval from the smallest to the largest value in its
+// set, not its written endpoints — and two elements overlap when their spans
+// share an integer, even when their sets share no value: "1-9:2,2-10:2" is an
+// error, while "1-10:4,10-15" is not, since the span of "1-10:4" ends at 9.
+// [parseIntRangeExpr] silently de-duplicates for expansion, so this is a
+// separate detection used only by validation.
 //
-// Detection is performed by pairwise arithmetic intersection of the sub-ranges'
-// arithmetic progressions (start, end, step) via the CRT — it never
-// materializes the integers, so it is safe for arbitrarily large ranges. Two
-// stepped ranges that share an interval but no common value (e.g. "1-10:2" and
-// "2-10:2") are correctly reported as non-overlapping.
+// Each span is computed arithmetically from (start, end, step), so the
+// integers are never materialized and arbitrarily large ranges are safe.
 //
 // Expressions containing a format string ("{{") cannot be counted before
 // resolution and report no overlap. A parse error is returned to the caller,
@@ -162,92 +149,37 @@ func intRangeHasOverlap(expr string) (overlap bool, err error) {
 		return false, perr
 	}
 
-	for i := range ranges {
-		for j := i + 1; j < len(ranges); j++ {
-			if rangesIntersect(ranges[i], ranges[j]) {
-				return true, nil
-			}
+	// Sorted by start, a span overlaps an earlier one exactly when it starts at
+	// or before the furthest end seen so far, so one sort and one pass find any
+	// overlap — O(n log n) in the number of elements, where comparing every
+	// pair would be O(n^2) on an expression that can hold hundreds of
+	// thousands of them.
+	spans := make([][2]int, 0, len(ranges))
+	for _, r := range ranges {
+		if r.Start <= r.End {
+			spans = append(spans, [2]int{r.Start, spanEnd(r)})
 		}
+	}
+	slices.SortFunc(spans, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
+	for i := 1; i < len(spans); i++ {
+		if spans[i][0] <= spans[i-1][1] {
+			return true, nil
+		}
+		spans[i][1] = max(spans[i][1], spans[i-1][1])
 	}
 	return false, nil
 }
 
-// rangesIntersect reports whether two stepped integer ranges share at least one
-// value. It treats each range as an arithmetic progression and solves for a
-// common term using the Chinese Remainder Theorem; no integers are
-// materialized.
-func rangesIntersect(a, b intRange) bool {
-	if a.Step <= 0 {
-		a.Step = 1
+// spanEnd is the largest value r produces: its written end, rounded down to
+// the step grid that starts at r.Start. The distance is taken in uint64, where
+// it always fits (End >= Start), because End - Start can pass MaxInt64.
+func spanEnd(r intRange) int {
+	if r.Step <= 1 {
+		return r.End
 	}
-	if b.Step <= 0 {
-		b.Step = 1
-	}
-	if a.Start > a.End || b.Start > b.End {
-		return false
-	}
-
-	lo := max(a.Start, b.Start)
-	hi := min(a.End, b.End)
-	if lo > hi {
-		return false // disjoint intervals
-	}
-
-	// Solve v ≡ a.Start (mod a.Step) and v ≡ b.Start (mod b.Step).
-	g := gcd(a.Step, b.Step)
-	diff := b.Start - a.Start
-	if diff%g != 0 {
-		return false // congruences are incompatible: no common value
-	}
-
-	lcm := a.Step / g * b.Step
-	m := b.Step / g
-	inv := modInverse((a.Step/g)%m, m)
-	t := mod(mod(diff/g, m)*inv, m)
-	x0 := a.Start + a.Step*t // a particular common solution, mod lcm
-
-	// Smallest v ≥ lo with v ≡ x0 (mod lcm).
-	v := lo + mod(x0-lo, lcm)
-	return v <= hi
-}
-
-// mod returns a mod m normalized to [0, m).
-func mod(a, m int) int {
-	r := a % m
-	if r < 0 {
-		r += m
-	}
-	return r
-}
-
-// gcd returns the (non-negative) greatest common divisor of a and b.
-func gcd(a, b int) int {
-	for b != 0 {
-		a, b = b, a%b
-	}
-	if a < 0 {
-		a = -a
-	}
-	return a
-}
-
-// modInverse returns the modular multiplicative inverse of a modulo m, assuming
-// gcd(a, m) == 1. For m == 1 the inverse is 0 by convention.
-func modInverse(a, m int) int {
-	if m == 1 {
-		return 0
-	}
-	_, x, _ := extGCD(mod(a, m), m)
-	return mod(x, m)
-}
-
-// extGCD returns g = gcd(a, b) and Bézout coefficients x, y with a*x + b*y = g.
-func extGCD(a, b int) (g, x, y int) {
-	if b == 0 {
-		return a, 1, 0
-	}
-	g, x1, y1 := extGCD(b, a%b)
-	return g, y1, x1 - (a/b)*y1
+	width := uint64(r.End) - uint64(r.Start) //nolint:gosec // two's-complement span, exact because End >= Start
+	step := uint64(r.Step)
+	return int(uint64(r.Start) + width/step*step) //nolint:gosec // the result is a value of r, in range
 }
 
 // parseIntRangeElements parses an INT range expression into its sub-ranges
