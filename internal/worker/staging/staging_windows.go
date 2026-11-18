@@ -89,7 +89,7 @@ func hasExtraHardlinks(f *os.File) (bool, error) {
 //
 // The sharing cases are the reason this is a per-platform helper at all: a
 // task's background child that outlives it (nothing kills a task's process
-// group on a SUCCESSFUL exit — see executor.processTree.release) can still
+// group on a SUCCESSFUL exit — see proctree.Tree.Release) can still
 // hold the staged output open with a restrictive share mode, and NTFS answers
 // the daemon's open with ERROR_SHARING_VIOLATION. Go maps neither that nor
 // ERROR_LOCK_VIOLATION to fs.ErrPermission, so without naming them a mundane

@@ -319,7 +319,7 @@ func TestStageOut_OrdinaryFileUnaffected(t *testing.T) {
 // be reported as a containment breach.
 //
 // This is not hypothetical on Windows. Nothing kills a task's process group on
-// a SUCCESSFUL exit (see executor.processTree.release), so a background child
+// a SUCCESSFUL exit (see proctree.Tree.Release), so a background child
 // that outlives its task can still hold the staged output open with a
 // restrictive share mode; NTFS then answers the daemon's open with
 // ERROR_SHARING_VIOLATION. Go maps that to neither fs.ErrPermission nor

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// configureTestProcessGroup mirrors executor.configureProcessGroup: it sets
+// configureTestProcessGroup mirrors proctree.Configure: it sets
 // Setpgid on cmd's SysProcAttr, the same field the real executor sets before
 // calling isolation.Apply. Apply must preserve it.
 func configureTestProcessGroup(cmd *exec.Cmd) {

@@ -21,6 +21,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/procout"
+	"github.com/uberware/sqi/internal/worker/proctree"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
 )
@@ -627,13 +628,13 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// Start the task in its own process group so a timeout or cancel
 	// terminates the task and every child it spawns, and so procout keeps
 	// waiting for output while any process of the group runs. On Windows the
-	// group is the job object superviseTree creates after Start.
-	configureProcessGroup(cmd)
+	// group is the job object proctree.Supervise creates after Start.
+	proctree.Configure(cmd)
 
 	// The task's OnRun action is job-supplied code, and this is one of the two
 	// launch sites that must carry a credential (the other is the OpenJD
 	// environment onEnter/onExit action in session.go's runAction). It is
-	// applied after configureProcessGroup because isolation.Apply keeps the
+	// applied after proctree.Configure because isolation.Apply keeps the
 	// SysProcAttr fields already set, such as Setpgid, and would not see ones
 	// set later.
 	if err := applyCredential(cmd, sess.Credential()); err != nil {
@@ -678,14 +679,14 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// Place the process (and, on Windows, everything it spawns) under
 	// supervision immediately after Start so killAndWait reaches the full
 	// tree, including a grandchild orphaned before the kill, which
-	// "taskkill /F /T" would miss. release(), deferred below, does not kill
-	// processes still in the tree, matching POSIX; see procgroup_windows.go.
-	tree, err := superviseTree(cmd)
+	// "taskkill /F /T" would miss. Release, deferred below, does not kill
+	// processes still in the tree, matching POSIX; see internal/worker/proctree.
+	tree, err := proctree.Supervise(cmd)
 	if err != nil {
 		// The process exists (on Windows still suspended, or already killed
 		// by closing its job), but nothing has registered it for cleanup yet
 		// (run.pid, sess.AddTask, the output readers) and there is no tree to
-		// call sendKILL on. Kill and reap it here so a superviseTree failure
+		// call Kill on. Kill and reap it here so a Supervise failure
 		// (resource exhaustion, restrictive policy, or a run-as-user
 		// permission problem) does not leave an unmanaged process behind.
 		if killErr := cmd.Process.Kill(); killErr != nil {
@@ -698,7 +699,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		return processResult{Err: fmt.Errorf("supervise task process tree: %w", err)}
 	}
 	defer func() {
-		if relErr := tree.release(); relErr != nil {
+		if relErr := tree.Release(); relErr != nil {
 			// context.Background(), not ctx: this defer can run after ctx is
 			// canceled (task done, worker shutting down), and the warning
 			// should still be logged, as in flushTaskLogs.
@@ -736,7 +737,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// line read reaches the handler before the result is reported.
 	waitDone := make(chan error, 1)
 	go func() {
-		stillOpen, waitErr := out.Wait(tree.alive)
+		stillOpen, waitErr := out.Wait(tree.Alive)
 		readWg.Wait()
 		if stillOpen {
 			e.logger.WarnContext(ctx,
@@ -767,7 +768,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 // must be forcibly terminated.
 func (e *Executor) waitForCompletion(
 	ctx context.Context,
-	tree *processTree,
+	tree *proctree.Tree,
 	run *taskRun,
 	waitDone <-chan error,
 	startedAt time.Time,
@@ -788,7 +789,7 @@ func (e *Executor) waitForCompletion(
 // terminated (on timeout or cancellation).
 func (e *Executor) waitWithTimeout(
 	ctx context.Context,
-	tree *processTree,
+	tree *proctree.Tree,
 	run *taskRun,
 	waitDone <-chan error,
 	startedAt time.Time,
@@ -828,9 +829,6 @@ const (
 	// otherwise" default applies only to non-run actions, which are out of scope
 	// here).
 	defaultNotifyPeriod = 120 * time.Second
-	// maxNotifyPeriod is the OpenJD maximum allowed notify period; larger values
-	// are clamped down to this ceiling.
-	maxNotifyPeriod = 600 * time.Second
 )
 
 // terminationMode resolves the effective cancelation mode and, for
@@ -842,17 +840,12 @@ const (
 // than NOTIFY_THEN_TERMINATE is likewise treated as TERMINATE.
 //
 // For NOTIFY_THEN_TERMINATE the notify period is NotifyPeriodSeconds when > 0,
-// otherwise the 120 s default, clamped to a 600 s maximum.
+// otherwise the 120 s default, clamped to a 600 s maximum
+// (proctree.MaxNotifyPeriod).
 func terminationMode(c *protocol.CancelationMethod) (mode string, notifyPeriod time.Duration) {
-	if c == nil || c.Mode != modeNotifyThenTerminate {
+	notify, period := proctree.Resolve(c, defaultNotifyPeriod)
+	if !notify {
 		return modeTerminate, 0
-	}
-	period := defaultNotifyPeriod
-	if c.NotifyPeriodSeconds > 0 {
-		period = time.Duration(c.NotifyPeriodSeconds) * time.Second
-	}
-	if period > maxNotifyPeriod {
-		period = maxNotifyPeriod
 	}
 	return modeNotifyThenTerminate, period
 }
@@ -879,7 +872,7 @@ func terminationMode(c *protocol.CancelationMethod) (mode string, notifyPeriod t
 // terminal status for a task and ignores later ones.
 func (e *Executor) killAndWait(
 	ctx context.Context,
-	tree *processTree,
+	tree *proctree.Tree,
 	run *taskRun,
 	waitDone <-chan error,
 	startedAt time.Time,
@@ -921,7 +914,7 @@ func (e *Executor) killAndWait(
 
 	// TERMINATE (default): SIGKILL immediately — no SIGTERM, no grace period.
 	if !notify {
-		if killErr := tree.sendKILL(); killErr != nil {
+		if killErr := tree.Kill(); killErr != nil {
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),
@@ -935,7 +928,7 @@ func (e *Executor) killAndWait(
 	}
 
 	// NOTIFY_THEN_TERMINATE (or worker shutdown): SIGTERM first.
-	if err := tree.sendTERM(); err != nil {
+	if err := tree.Notify(); err != nil {
 		e.logger.WarnContext(
 			ctx, "executor: SIGTERM failed — escalating to SIGKILL immediately",
 			slog.String("task_id", run.taskID),
@@ -943,7 +936,7 @@ func (e *Executor) killAndWait(
 			slog.Int("pid", pid),
 			slog.Any("error", err),
 		)
-		if killErr := tree.sendKILL(); killErr != nil {
+		if killErr := tree.Kill(); killErr != nil {
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),
@@ -972,7 +965,7 @@ func (e *Executor) killAndWait(
 			slog.Int("pid", pid),
 			slog.Duration("grace_period", gracePeriod),
 		)
-		if killErr := tree.sendKILL(); killErr != nil {
+		if killErr := tree.Kill(); killErr != nil {
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),

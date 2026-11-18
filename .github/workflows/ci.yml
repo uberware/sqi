@@ -1450,9 +1450,9 @@ jobs:
   # executes them: cross-platform-runtime skips pull requests, and
   # cross-compile's `GOOS=windows go vet` only type-checks. The package list
   # is every package with GOOS-conditional behavior. internal/worker/isolation,
-  # internal/worker/executor, internal/worker/staging, cmd/sqi-worker and the
-  # Windows service packages (internal/winsvc, internal/secretin, internal/log,
-  # cmd/sqi-server) carry _windows.go or _windows_test.go files.
+  # internal/worker/executor, internal/worker/proctree, internal/worker/staging,
+  # cmd/sqi-worker and the Windows service packages (internal/winsvc,
+  # internal/secretin, internal/log, cmd/sqi-server) carry _windows.go or _windows_test.go files.
   # internal/worker/envutil and internal/worker/session branch on
   # runtime.GOOS in their tests, so only a Windows run executes the Windows
   # branch. internal/worker/procout reads a task's output through OS pipes,
@@ -1501,6 +1501,7 @@ jobs:
           go test -count=1 -v \
             ./internal/worker/isolation/... \
             ./internal/worker/executor/... \
+            ./internal/worker/proctree/... \
             ./internal/worker/procout/... \
             ./internal/worker/envutil/... \
             ./internal/worker/session/... \

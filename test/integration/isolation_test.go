@@ -217,8 +217,8 @@ func newUnisolatedSession(t *testing.T, dataDir string) *session.Session {
 	return sess
 }
 
-// configureProcessGroupForTest mirrors internal/worker/executor's
-// configureProcessGroup (kill_unix.go) exactly: Setpgid must be set BEFORE
+// configureProcessGroupForTest mirrors internal/worker/proctree's
+// Configure (tree_unix.go) exactly: Setpgid must be set BEFORE
 // isolation.Apply so Apply's contract ("MUST preserve any SysProcAttr fields
 // the caller already set") is exercised the same way production does.
 func configureProcessGroupForTest(cmd *exec.Cmd) {

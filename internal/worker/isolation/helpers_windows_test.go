@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// configureTestProcessGroup mirrors executor.configureProcessGroup, which on
+// configureTestProcessGroup mirrors proctree.Configure, which on
 // Windows sets CREATE_SUSPENDED in cmd's SysProcAttr.CreationFlags before
 // calling isolation.Apply. Apply must keep that flag when it attaches the
 // logon token, the same property the unix test proves for Setpgid. The
