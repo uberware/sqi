@@ -1,0 +1,281 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//go:build unix
+
+package session
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/fmtres"
+	"github.com/uberware/sqi/internal/worker/isolation"
+	"github.com/uberware/sqi/internal/worker/protocol"
+)
+
+// childRecorder is a runAction line handler that records each `child=<pid>`
+// line and kills every recorded process when the test ends.
+type childRecorder struct {
+	mu   sync.Mutex
+	pids []int
+	seen chan int
+}
+
+func newChildRecorder(t *testing.T) *childRecorder {
+	t.Helper()
+	r := &childRecorder{seen: make(chan int, 16)}
+	t.Cleanup(func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for _, pid := range r.pids {
+			syscall.Kill(pid, syscall.SIGKILL) //nolint:errcheck // best-effort cleanup; the process is usually already gone
+		}
+	})
+	return r
+}
+
+func (r *childRecorder) handle(_, line string) string {
+	if s, ok := strings.CutPrefix(line, "child="); ok {
+		if pid, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+			r.mu.Lock()
+			r.pids = append(r.pids, pid)
+			r.mu.Unlock()
+			select {
+			case r.seen <- pid:
+			default:
+			}
+		}
+	}
+	return line
+}
+
+// pid returns the one child the action reported.
+func (r *childRecorder) pid(t *testing.T) int {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.pids) != 1 {
+		t.Fatalf("the action reported children %v, want exactly one", r.pids)
+	}
+	return r.pids[0]
+}
+
+// processGone reports whether pid no longer exists within d.
+func processGone(pid int, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// shAction is an environment action running script under sh -c.
+func shAction(script string, timeout int, cancelation *protocol.CancelationMethod) *protocol.Action {
+	return &protocol.Action{Command: "sh", Args: []string{"-c", script}, TimeoutSeconds: timeout, Cancelation: cancelation}
+}
+
+const backgroundSleep = "sleep 300 & echo child=$!; wait"
+
+// TestRunAction_TimeoutKillsTheWholeTree: an action's own timeout stops every
+// process it started, not only the one it ran, and says it timed out.
+func TestRunAction_TimeoutKillsTheWholeTree(t *testing.T) {
+	lowerDrainDelay(t)
+	rec := newChildRecorder(t)
+	err := awaitRunAction(t, runActionAsync(context.Background(), t, shAction(backgroundSleep, 1, nil), rec.handle), 10*time.Second)
+	wantTimedOut(t, err)
+	if pid := rec.pid(t); !processGone(pid, 5*time.Second) {
+		t.Errorf("background child %d survived the action's timeout", pid)
+	}
+}
+
+// TestRunAction_CancelKillsTheWholeTree: canceling the session's context
+// stops every process the action started.
+func TestRunAction_CancelKillsTheWholeTree(t *testing.T) {
+	lowerDrainDelay(t)
+	rec := newChildRecorder(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := runActionAsync(ctx, t, shAction(backgroundSleep, 0, nil), rec.handle)
+	select {
+	case <-rec.seen:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the action never reported its child")
+	}
+	cancel()
+	err := awaitRunAction(t, result, 10*time.Second)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("runAction error = %v, want one wrapping context.Canceled", err)
+	}
+	if pid := rec.pid(t); !processGone(pid, 5*time.Second) {
+		t.Errorf("background child %d survived the cancel", pid)
+	}
+}
+
+// TestRunAction_NotifyThenTerminate: an action whose cancelation is
+// NOTIFY_THEN_TERMINATE gets SIGTERM across its whole tree, and SIGKILL once
+// the notify period has passed with any of it still running.
+func TestRunAction_NotifyThenTerminate(t *testing.T) {
+	notifyFor := func(seconds int) *protocol.CancelationMethod {
+		return &protocol.CancelationMethod{Mode: "NOTIFY_THEN_TERMINATE", NotifyPeriodSeconds: seconds}
+	}
+
+	t.Run("exits on notify", func(t *testing.T) {
+		lowerDrainDelay(t)
+		marker := filepath.Join(t.TempDir(), "marker")
+		script := "trap 'touch \"" + marker + "\"; exit 0' TERM; echo ready; while :; do sleep 0.1; done"
+		start := time.Now()
+		err := awaitRunAction(t, runActionAsync(context.Background(), t, shAction(script, 1, notifyFor(10)), nil), 10*time.Second)
+		wantTimedOut(t, err)
+		if elapsed := time.Since(start); elapsed >= 5*time.Second {
+			t.Errorf("runAction took %v: it waited out the notify period after the action exited", elapsed)
+		}
+		if _, statErr := os.Stat(marker); statErr != nil {
+			t.Errorf("the action's TERM trap never ran: %v", statErr)
+		}
+	})
+
+	t.Run("ignores notify", func(t *testing.T) {
+		lowerDrainDelay(t)
+		rec := newChildRecorder(t)
+		script := "trap '' TERM; echo child=$$; while :; do sleep 0.1; done"
+		start := time.Now()
+		err := awaitRunAction(t, runActionAsync(context.Background(), t, shAction(script, 1, notifyFor(1)), rec.handle), 15*time.Second)
+		elapsed := time.Since(start)
+		wantTimedOut(t, err)
+		if elapsed < 2*time.Second || elapsed >= 10*time.Second {
+			t.Errorf("runAction took %v, want the 1s timeout plus the 1s notify period (2s to 10s)", elapsed)
+		}
+		if pid := rec.pid(t); !processGone(pid, 5*time.Second) {
+			t.Errorf("action %d that ignored SIGTERM survived the notify period", pid)
+		}
+	})
+
+	t.Run("leader exits, child ignores TERM", func(t *testing.T) {
+		lowerDrainDelay(t)
+		rec := newChildRecorder(t)
+		script := "(trap '' TERM; exec sleep 300) & echo child=$!; trap 'exit 0' TERM; while :; do sleep 0.1; done"
+		err := awaitRunAction(t, runActionAsync(context.Background(), t, shAction(script, 1, notifyFor(1)), rec.handle), 15*time.Second)
+		wantTimedOut(t, err)
+		if pid := rec.pid(t); !processGone(pid, 5*time.Second) {
+			t.Errorf("child %d that ignored SIGTERM survived its leader's exit and the notify period", pid)
+		}
+	})
+}
+
+// backgroundService leaves a process holding the action's output after the
+// action itself exits 0, as an onEnter that starts a service does.
+const backgroundService = "(exec sleep 300) & echo child=$!; exit 0"
+
+// wantServiceRunning fails the test unless the action succeeded and the
+// service it left running is still alive.
+func wantServiceRunning(t *testing.T, err error, rec *childRecorder) {
+	t.Helper()
+	if err != nil {
+		t.Errorf("runAction error = %v, want nil: the action exited 0 before any stop", err)
+	}
+	if pid := rec.pid(t); syscall.Kill(pid, 0) != nil {
+		t.Errorf("service %d the action left running was killed after the action exited", pid)
+	}
+}
+
+// TestRunAction_ExitBeforeTimeoutLeavesServiceRunning: an action that exits
+// before its timeout is not stopped when the timeout passes while its output
+// is still draining, so the service it started keeps running and the action
+// succeeds.
+func TestRunAction_ExitBeforeTimeoutLeavesServiceRunning(t *testing.T) {
+	setDrainDelay(t, 2*time.Second) // outlasts the 1s timeout
+	rec := newChildRecorder(t)
+	err := awaitRunAction(t, runActionAsync(context.Background(), t, shAction(backgroundService, 1, nil), rec.handle), 10*time.Second)
+	wantServiceRunning(t, err, rec)
+}
+
+// TestRunAction_CancelAfterExitLeavesServiceRunning: a cancel that arrives
+// after the action exited, while its output is still draining, stops
+// nothing.
+func TestRunAction_CancelAfterExitLeavesServiceRunning(t *testing.T) {
+	setDrainDelay(t, 2*time.Second) // outlasts the cancel below
+	rec := newChildRecorder(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := runActionAsync(ctx, t, shAction(backgroundService, 0, nil), rec.handle)
+	select {
+	case <-rec.seen:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the action never reported its child")
+	}
+	// Long enough for the shell to have exited and short enough to land inside
+	// the 2s drain, with 1s of margin on each side.
+	time.Sleep(time.Second)
+	cancel()
+	wantServiceRunning(t, awaitRunAction(t, result, 10*time.Second), rec)
+}
+
+// TestRunAction_CanceledContextStartsNothing: an action whose session is
+// already canceled is not started at all.
+func TestRunAction_CanceledContextStartsNothing(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "marker")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := runAction(ctx, shAction("touch \""+marker+"\"", 0, nil), t.TempDir(), nil, nil, nopLogger(), nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("runAction error = %v, want one wrapping context.Canceled", err)
+	}
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Error("the action ran although its context was already canceled")
+	}
+}
+
+// TestManagerCreate_StoppedEntryStillRunsOnExit: when the context Create runs
+// under is canceled while an environment is being entered, the environments
+// already entered are still exited.
+func TestManagerCreate_StoppedEntryStillRunsOnExit(t *testing.T) {
+	dir := t.TempDir()
+	aIn, aOut, bIn := filepath.Join(dir, "a-in"), filepath.Join(dir, "a-out"), filepath.Join(dir, "b-in")
+	mgr := NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
+	msg := &protocol.AssignMsg{
+		TaskID:    "task-1",
+		AttemptID: "attempt-1",
+		JobID:     "job-1",
+		Environments: []protocol.AssignEnvironment{
+			{Name: "A", OnEnter: shAction("touch \""+aIn+"\"", 0, nil), OnExit: shAction("touch \""+aOut+"\"", 0, nil)},
+			{Name: "B", OnEnter: shAction("touch \""+bIn+"\"; sleep 300", 0, nil)},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		s, err := mgr.Create(ctx, msg)
+		if s != nil {
+			mgr.Cleanup(context.Background(), s, false)
+		}
+		result <- err
+	}()
+
+	if !waitForFile(bIn, 10*time.Second) {
+		t.Fatal("environment B's onEnter never started")
+	}
+	cancel()
+
+	if err := awaitRunAction(t, result, 10*time.Second); err == nil {
+		t.Fatal("Create returned nil; want the stopped entry's error")
+	}
+	if _, err := os.Stat(aOut); err != nil {
+		t.Errorf("environment A's onExit did not run after B's entry was stopped: %v", err)
+	}
+}

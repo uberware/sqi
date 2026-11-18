@@ -16,7 +16,7 @@ sqi produces two kinds of log output, with different purposes and flows.
 | **What** | stdout/stderr of a task process running under a worker | sqi-server's and sqi-worker's own structured `slog` output |
 | **Who writes** | The task's child process | The sqi binaries themselves |
 | **Transport** | NATS JetStream `task.logs.<workerID>.<taskID>` | Core NATS `worker.diag.<workerID>` (best-effort); server logs go in-process |
-| **Persistence** | Durable; retained ~96 h in JetStream, also written to SQLite | In-memory ring buffer on the server; lost on server restart |
+| **Persistence** | Durable; retained ~96 h in JetStream, also written to the state store | In-memory ring buffer on the server; lost on server restart |
 | **Where to read** | Task detail → log tab in the web UI | Worker detail panel, Admin → Server log, or REST/WS API |
 | **Disable** | Not configurable (always streamed for running tasks) | Server: `SQI_DIAGNOSTICS_BUFFER_SIZE=0`; worker: `SQI_DIAGNOSTICS_ENABLED=false` |
 
@@ -24,7 +24,7 @@ sqi produces two kinds of log output, with different purposes and flows.
 
 When a worker executes a task it captures the process's stdout and stderr
 through a `logstreamer` and publishes them in chunks to the JetStream subject
-`task.logs.<workerID>.<taskID>`. The server's consumer writes each chunk to SQLite and
+`task.logs.<workerID>.<taskID>`. The server's consumer writes each chunk to the state store and
 fans it out over WebSocket so the task log page updates live. Because JetStream
 retains messages, you can reload the log page and still see all output.
 
@@ -36,9 +36,15 @@ group can keep the output open after the task exits, such as a daemon that
 called `setsid`, or Unreal Editor's UnrealTraceServer. The task then ends 5
 seconds after its process group has exited, and the worker logs a warning.
 That process is not killed, but later output is not captured. An OpenJD
-environment's `onEnter` or `onExit` action has no process group of its own,
-so its 5 seconds count from its exit: a service it starts in the background
-keeps running, and its later output is dropped.
+environment's `onEnter` or `onExit` action runs in a process group of its own
+(on Windows, a job object), as a task does, and its 5 seconds count from its
+own exit. A service it starts in the background keeps running after a normal
+exit, for the session's tasks, and its later output is dropped. A `timeout:`
+on the action, or a cancel, stops everything the action started, by the
+action's `cancelation:` method: `TERMINATE` (the default) kills it at once;
+`NOTIFY_THEN_TERMINATE` notifies it, waits until it has exited or the notify
+period has passed (30 seconds when the action names none), then kills it.
+Ending the session kills nothing.
 
 ### Task progress
 
@@ -208,7 +214,7 @@ timeout (30 s, `AssignedTaskTimeout`; not a config key) to the
 `ready` queue. The 30 s are counted up to the point the server has applied
 the workers' status reports, not up to now, so a backlog of reports does not
 make running tasks look stuck (see [Ingest lag and liveness](#ingest-lag-and-liveness)).
-If the task's job is now idle (no other tasks in flight), the job is demoted
+If the task's job is then idle (no other tasks in flight), the job is demoted
 from `running` back to `pending` so it does not appear stuck.
 
 Frequent reaper activity on a particular worker means the worker is taking
@@ -345,7 +351,7 @@ mismatch rather than a capacity shortfall.
 The `worker EXPR limits are tighter…` reason is a configuration mismatch,
 not a capacity one. The scheduler withholds EXPR work from any worker whose
 advertised `expr.*` caps undercut the limits this server accepts templates
-under, and it names both numbers and both config keys. Two cases:
+under, and it names both numbers and both config keys. Three things to know:
 
 - A job with a recorded extension list gets an exact answer. The gate reads
   the extension list recorded on the job row at submission, so a job flagged
@@ -375,7 +381,7 @@ serve different questions:
 | | Durable failure reason | Diagnostics ring buffer |
 |---|---|---|
 | **What** | A short, human-readable string on the task itself (`failure_reason`) explaining the *last* terminal failure/cancel | Deep operational log lines (scheduler decisions, worker executor errors, NATS/DB issues) |
-| **Survives a restart?** | Yes: stored in SQLite on the task row | No: in-memory ring buffer, lost on server restart |
+| **Survives a restart?** | Yes: stored in the state store on the task row | No: in-memory ring buffer, lost on server restart |
 | **Where** | `GET /api/v1/tasks/{id}` `failure_reason` field, the job detail's `failure_summary`, and the web UI (per-task reason string + job-level failure banner on `JobDetail`) | Worker diagnostics panel, Admin → Server log, `GET /api/v1/diagnostics/logs` |
 | **Look here first** | Yes, for "which reason, how many tasks" | Only when the reason string isn't enough context |
 

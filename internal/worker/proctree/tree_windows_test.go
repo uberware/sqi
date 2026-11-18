@@ -1,0 +1,223 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//go:build windows
+
+package proctree
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"testing"
+	"time"
+
+	"golang.org/x/sys/windows"
+)
+
+// spawnDetachedGrandchild starts, via "cmd /c start /b <script.bat>", a
+// background batch file that pings for pingSeconds and then writes marker.
+// The returned *exec.Cmd is the immediate ("cmd /c start /b ...") process,
+// configured as the executor configures a task (Configure). The batch file it
+// launches is a separate process it does not wait for, so it is orphaned once
+// its starter exits: the case "taskkill /F /T" cannot reach.
+//
+// The script is a .bat file rather than an inline "cmd /c \"...\" & exit"
+// one-liner because Go's os/exec quotes arguments by the CommandLineToArgvW
+// convention and cmd.exe does not parse its command-line tail that way:
+// nested double quotes arrive corrupted and the background process never
+// starts, which a test asserting the marker is absent cannot detect. The .bat
+// path is passed as one unquoted argument (TempDir paths contain no spaces).
+func spawnDetachedGrandchild(t *testing.T, pingSeconds int) (cmd *exec.Cmd, marker string) {
+	t.Helper()
+	dir := t.TempDir()
+	marker = filepath.Join(dir, "marker.txt")
+	bat := filepath.Join(dir, "grandchild.bat")
+	script := "@echo off\r\nping -n " + strconv.Itoa(pingSeconds) + " 127.0.0.1 > nul\r\necho alive > \"" + marker + "\"\r\n"
+	if err := os.WriteFile(bat, []byte(script), 0o700); err != nil {
+		t.Fatalf("write grandchild.bat: %v", err)
+	}
+	cmd = exec.CommandContext(t.Context(), "cmd", "/c", "start", "/b", bat)
+	Configure(cmd)
+	return cmd, marker
+}
+
+// TestTree_RefusesAProcessNotStartedSuspended: Supervise checks the start it
+// depends on. A process that was already running when it was assigned may
+// have started children outside the job, so supervision fails, and closing
+// the job kills the process.
+func TestTree_RefusesAProcessNotStartedSuspended(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "ping", "-n", "30", "127.0.0.1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() {
+		cmd.Process.Kill() //nolint:errcheck // best-effort cleanup if an assertion fails first
+		cmd.Wait()         //nolint:errcheck // reaps the process; its exit status is not under test
+	})
+	tree, err := Supervise(cmd)
+	if err == nil {
+		tree.Release() //nolint:errcheck // best-effort close of the job handle
+		t.Fatal("Supervise accepted a process that was not started suspended")
+	}
+	done := make(chan struct{})
+	go func() {
+		cmd.Wait() //nolint:errcheck // only its return is awaited
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the refused process was still running 10s later; closing its job should kill it")
+	}
+}
+
+// TestTree_HoldsAGrandchildStartedBeforeSupervision: a grandchild the task
+// starts is inside its job, however long Supervise takes after Start, because
+// the task process does not run until Supervise has assigned it. The wait
+// gives a starter that is not held suspended time to start the grandchild and
+// exit, which would leave the grandchild outside the job.
+func TestTree_HoldsAGrandchildStartedBeforeSupervision(t *testing.T) {
+	cmd, _ := spawnDetachedGrandchild(t, 30)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	time.Sleep(2 * time.Second)
+	tree, err := Supervise(cmd)
+	if err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+	t.Cleanup(func() {
+		tree.Kill()    //nolint:errcheck // best-effort cleanup if an assertion fails first
+		tree.Release() //nolint:errcheck // best-effort close of the job handle
+	})
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for parent: %v", err)
+	}
+	if !tree.Alive() {
+		t.Fatal("Alive = false: the grandchild was started outside the job")
+	}
+}
+
+// TestTree_KillReapsOrphanedGrandchild is the Windows counterpart of
+// tree_unix_test.go's TestKill_TerminatesProcessGroup.
+//
+// "taskkill /F /T" walks the parent-PID tree at the moment of the call, so a
+// grandchild whose parent has already exited is orphaned and survives it.
+// Under run-as-user isolation that survivor runs as the target account after
+// its task ends, holding its license and file handles. A job object reaches
+// it.
+func TestTree_KillReapsOrphanedGrandchild(t *testing.T) {
+	// The grandchild waits, then writes the marker. The parent starts it
+	// detached and exits immediately, so the grandchild is already orphaned
+	// by the time the kill runs: the case taskkill /T misses.
+	cmd, marker := spawnDetachedGrandchild(t, 30)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	tree, err := Supervise(cmd)
+	if err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for parent: %v", err)
+	}
+
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+
+	// The grandchild would write its marker several seconds from now if it
+	// were still alive; give it long enough to prove it is not.
+	time.Sleep(3 * time.Second)
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("orphaned grandchild survived the kill and wrote its marker; the job object did not reap it")
+	}
+}
+
+// TestTree_ReleaseLeavesSurvivorsAlone: Release matches POSIX. A background
+// child still running after a successful exit keeps running, which
+// internal/worker/staging's stage-out checks (staging.go, openStageOutSource)
+// allow for. Release() must clear JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE before
+// closing the handle.
+func TestTree_ReleaseLeavesSurvivorsAlone(t *testing.T) {
+	cmd, marker := spawnDetachedGrandchild(t, 3)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	tree, err := Supervise(cmd)
+	if err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for parent: %v", err)
+	}
+
+	if err := tree.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	time.Sleep(5 * time.Second)
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("Release() killed a surviving background child; POSIX leaves it running: %v", err)
+	}
+}
+
+// TestTree_ReleaseClosesHandleEvenIfSetKillOnCloseFails: Release() does not
+// leak the job handle when clearing KILL_ON_JOB_CLOSE fails. An invalid handle
+// makes setKillOnClose (SetInformationJobObject) fail; Release must still
+// close the handle (best-effort) and zero t.job, so a second Release() call
+// is a no-op.
+func TestTree_ReleaseClosesHandleEvenIfSetKillOnCloseFails(t *testing.T) {
+	tree := &Tree{job: windows.Handle(0xDEADBEEF)}
+
+	if err := tree.Release(); err == nil {
+		t.Fatal("Release: expected an error from an invalid job handle, got nil")
+	}
+	if tree.job != 0 {
+		t.Errorf("Release: t.job = %#x, want 0 (must be zeroed even when setKillOnClose/CloseHandle fail)", tree.job)
+	}
+
+	// Idempotent: once zeroed, a second call must be a no-op, not a second
+	// attempt to operate on the stale handle value.
+	if err := tree.Release(); err != nil {
+		t.Errorf("Release: second call on an already-released tree returned %v, want nil", err)
+	}
+}
+
+// TestTree_AliveCountsTheJobsProcesses: Alive keeps the output drain from
+// starting while a task's job still holds a process, here a grandchild whose
+// parent has already exited, and lets it start once the job is empty. It reads
+// JOBOBJECT_BASIC_ACCOUNTING_INFORMATION through a struct of its own layout,
+// and this test is the only check of that layout.
+func TestTree_AliveCountsTheJobsProcesses(t *testing.T) {
+	cmd, _ := spawnDetachedGrandchild(t, 30)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	tree, err := Supervise(cmd)
+	if err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+	t.Cleanup(func() {
+		tree.Kill()    //nolint:errcheck // best-effort cleanup if an assertion fails first
+		tree.Release() //nolint:errcheck // best-effort close of the job handle
+	})
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for parent: %v", err)
+	}
+
+	if !tree.Alive() {
+		t.Fatal("Alive = false while the job still holds the grandchild")
+	}
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for tree.Alive() {
+		if time.Now().After(deadline) {
+			t.Fatal("Alive = true 10s after the job was killed")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

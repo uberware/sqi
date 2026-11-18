@@ -27,35 +27,30 @@ import (
 // os.Lstat reports a junction as fs.ModeIrregular rather than fs.ModeSymlink,
 // and filepath.EvalSymlinks does not resolve it.
 
-// There is deliberately NO Windows test asserting that the copy layer itself
-// refuses a reparse-point source, and a reader must not assume one exists.
-// The stage-out copy layer takes an already-open, already-validated
+// No Windows test asserts that the copy layer itself refuses a reparse-point
+// source. The stage-out copy layer takes an already-open, already-validated
 // descriptor (copyFromFile), so there is no path for a junction to be planted
-// at — the refusal lives entirely in openStageOutSource, which every test
-// below drives. copyFile, the by-path opener, is the STAGE-IN path only; its
-// O_NOFOLLOW guard is a no-op on Windows (noFollowFlag is 0 there), and the
-// two primitives that would exercise it are unavailable: a junction is
-// directory-only, so opening one by path fails ERROR_ACCESS_DENIED rather
-// than exercising any reparse check, and an NTFS FILE symlink needs
+// at; the refusal lives in openStageOutSource, which every test below drives.
+// copyFile, the by-path opener, is the stage-in path only. Its O_NOFOLLOW
+// guard is a no-op on Windows (noFollowFlag is 0 there), and the two
+// primitives that would exercise it are unavailable: a junction is
+// directory-only, so opening one by path fails ERROR_ACCESS_DENIED rather than
+// exercising any reparse check, and an NTFS file symlink needs
 // SeCreateSymbolicLinkPrivilege, which an ordinary task does not hold and
-// this suite therefore never creates. A test named for the copy layer that
-// actually called openStageOutSource would duplicate
-// TestStageOut_RefusesJunctionedScratchSubdir under a name claiming coverage
-// it does not provide.
+// this suite never creates.
 
 // TestStageOut_RefusesJunctionedScratchSubdir is the primary junction-escape
-// regression test.
+// test.
 //
 // A task owns its per-entry scratch subdirectory (StageIn's ChownRecursive
-// hands it over, and on Windows isolation genuinely ACL-secures it to the
-// target account). So it can delete that subdirectory and replace it with a
-// junction pointing anywhere on the volume. Stage-out then reads
-// <scratchDir>/<i>/<basename> — which now resolves through the junction —
-// and the ELEVATED daemon copies those bytes to the job's real output path.
+// hands it over, and on Windows isolation ACL-secures it to the target
+// account). So it can delete that subdirectory and replace it with a junction
+// pointing anywhere on the volume. Stage-out then reads
+// <scratchDir>/<i>/<basename>, which resolves through the junction, and the
+// elevated daemon would copy those bytes to the job's real output path.
 //
-// This is not a race and needs no privilege: it is one-shot and
-// deterministic. Without the guard this test fails by finding the secret's
-// contents at outOrig.
+// The attack needs no privilege and no race. Without the guard this test fails
+// by finding the secret's contents at outOrig.
 func TestStageOut_RefusesJunctionedScratchSubdir(t *testing.T) {
 	scratch := t.TempDir()
 	s := New(scratch, builtinSentinel, false, discardLogger())
@@ -78,8 +73,8 @@ func TestStageOut_RefusesJunctionedScratchSubdir(t *testing.T) {
 	}
 
 	// The task deletes the scratch subdirectory it owns and junctions it at
-	// the secret directory. Asserting mklink SUCCEEDED matters: a test that
-	// passes because the attack setup failed proves nothing.
+	// the secret directory. The junction must be live, or a pass would only
+	// mean the attack setup failed.
 	stagedDir := filepath.Join(scratchDir, "0")
 	if err := os.RemoveAll(stagedDir); err != nil {
 		t.Fatal(err)
@@ -93,17 +88,16 @@ func TestStageOut_RefusesJunctionedScratchSubdir(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error refusing a stage-out source reached through a junction")
 	}
-	// Assert the SPECIFIC branch, not just that the word "junction" appears
-	// somewhere. The junction here is an INTERMEDIATE component of rel, so
-	// root.Lstat fails on it and the advisory block is skipped entirely — the
-	// refusal comes from the kernel-enforced open. Both messages mention a
-	// junction, so a substring assertion would pass either way and could not
-	// see the two branches being confused for one another.
+	// Assert the specific branch, not that the word "junction" appears. The
+	// junction here is an intermediate component of rel, so root.Lstat fails
+	// on it and the advisory block is skipped; the refusal comes from the
+	// kernel-enforced open. Both messages mention a junction, so a substring
+	// assertion would pass either way.
 	if !errors.Is(err, errStageOutEscape) {
 		t.Errorf("err = %v, want errStageOutEscape (the kernel-enforced open refused the lookup)", err)
 	}
 	if errors.Is(err, errStageOutReparse) {
-		t.Errorf("err = %v, want the OPEN to have refused this, not the advisory Lstat", err)
+		t.Errorf("err = %v, want the open to have refused this, not the advisory Lstat", err)
 	}
 	if !strings.Contains(err.Error(), "outside scratch") {
 		t.Errorf("err = %v, want the operator-facing message to name the scratch boundary", err)
@@ -113,17 +107,15 @@ func TestStageOut_RefusesJunctionedScratchSubdir(t *testing.T) {
 	}
 }
 
-// TestStageOut_RefusesJunctionAtFinalComponent covers the ADVISORY Lstat
+// TestStageOut_RefusesJunctionAtFinalComponent covers the advisory Lstat
 // branch, which no other test reaches.
 //
 // TestStageOut_RefusesJunctionedScratchSubdir above plants its junction at an
 // intermediate component, so root.Lstat itself errors and the advisory block
-// is skipped — every junction refusal in this package actually came from the
-// open. Planting the junction at the FINAL component instead is what makes
-// root.Lstat succeed and report fs.ModeIrregular (Go surfaces a
-// IO_REPARSE_TAG_MOUNT_POINT that way, never as ModeSymlink), so the advisory
-// branch is the one that answers. Without this test, deleting that whole
-// block would leave the package green.
+// is skipped; that refusal comes from the open. A junction at the final
+// component makes root.Lstat succeed and report fs.ModeIrregular (Go surfaces
+// an IO_REPARSE_TAG_MOUNT_POINT that way, never as ModeSymlink), so the
+// advisory branch answers.
 func TestStageOut_RefusesJunctionAtFinalComponent(t *testing.T) {
 	scratch := t.TempDir()
 	stagedDir := filepath.Join(scratch, "0")
@@ -147,8 +139,8 @@ func TestStageOut_RefusesJunctionAtFinalComponent(t *testing.T) {
 
 	rel := filepath.Join("0", "render.exr")
 
-	// Assert the setup actually put the advisory branch in play: a test that
-	// passed because Lstat failed would be testing the open again.
+	// Assert the setup puts the advisory branch in play: if Lstat failed, the
+	// test would exercise the open again.
 	li, err := root.Lstat(rel)
 	if err != nil {
 		t.Fatalf("Lstat on a final-component junction: %v; this test would prove nothing", err)
@@ -171,15 +163,13 @@ func TestStageOut_RefusesJunctionAtFinalComponent(t *testing.T) {
 }
 
 // TestStageOut_RefusesHardlinkedSourceOnWindows is the Windows half of
-// TestStager_StageOut_RefusesHardlinkedSource, which never runs here: that
-// test drives StageOut with the fakeSync fixture, a POSIX "#!/bin/sh" script
-// Windows cannot execute, so it skips and Windows link-count coverage on the
-// stage-out path was zero. NTFS supports hardlinks and os.Link needs no
-// privilege, so the primitive itself is fully available to a task.
+// TestStager_StageOut_RefusesHardlinkedSource, which skips on Windows: it
+// drives StageOut with the fakeSync fixture, a POSIX "#!/bin/sh" script
+// Windows cannot execute. NTFS supports hardlinks and os.Link needs no
+// privilege, so a task can create one.
 //
-// It drives openStageOutSource directly, the way the swap test below does —
-// no sync command is needed to exercise the check, which runs upstream of
-// both transfer mechanisms.
+// It drives openStageOutSource directly, as the swap test below does. No sync
+// command is needed, because the check runs before either transfer mechanism.
 func TestStageOut_RefusesHardlinkedSourceOnWindows(t *testing.T) {
 	scratch := t.TempDir()
 	stagedDir := filepath.Join(scratch, "0")
@@ -187,8 +177,8 @@ func TestStageOut_RefusesHardlinkedSourceOnWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A file outside scratch, and a second NAME for it inside scratch. The
-	// staged entry is an ordinary regular file with one inode and two links —
+	// A file outside scratch, and a second name for it inside scratch. The
+	// staged entry is an ordinary regular file with one inode and two links, so
 	// it passes every other check in openStageOutSource.
 	outside := filepath.Join(t.TempDir(), "secret.txt")
 	if err := os.WriteFile(outside, []byte("daemon-only-contents"), 0o600); err != nil {
@@ -218,21 +208,19 @@ func TestStageOut_RefusesHardlinkedSourceOnWindows(t *testing.T) {
 	}
 }
 
-// TestStageOut_SwapAfterValidateIsRefused proves the stage-out TOCTOU is
-// CLOSED, not merely narrowed.
+// TestStageOut_SwapAfterValidateIsRefused: a swap of the source between
+// validation and the copy cannot change what is copied.
 //
-// Nothing kills a task's process group on a SUCCESSFUL exit (see
+// The process tree is not killed when a task exits successfully (see
 // executor.runTask / killAndWait), so a background child that outlives its
 // task still owns the scratch subdirectory and can swap the source out after
-// validation and before the copy. This drives that window deterministically:
-// the two halves are called in sequence with the swap performed between them.
-// No sleep, no goroutine, no timing dependence — a flaky race test would get
-// marked flaky and disabled, and the gap would reopen silently.
+// validation and before the copy. The test drives that window
+// deterministically: the two halves are called in sequence with the swap
+// performed between them, with no sleep, goroutine or timing dependence.
 //
-// The property under test is that copyFromFile reads the DESCRIPTOR
-// openStageOutSource validated, so a swap at the path cannot change what is
-// copied. The post-swap check (a fresh path read yields the attacker's
-// bytes) is what stops this test from being vacuous.
+// copyFromFile reads the descriptor openStageOutSource validated, not the
+// path. The post-swap check (a fresh path read yields the attacker's bytes)
+// confirms the swap took effect.
 func TestStageOut_SwapAfterValidateIsRefused(t *testing.T) {
 	scratch := t.TempDir()
 	stagedDir := filepath.Join(scratch, "0")
@@ -257,9 +245,9 @@ func TestStageOut_SwapAfterValidateIsRefused(t *testing.T) {
 	}
 	defer f.Close()
 
-	// THE SWAP — the window between validation and the read. NTFS frees the
+	// The swap, in the window between validation and the read. NTFS frees the
 	// name immediately because os.Root opens with FILE_SHARE_DELETE, so this
-	// works with our handle still open.
+	// works with the handle still open.
 	if err := os.Rename(src, src+".moved"); err != nil {
 		t.Fatalf("swap step 1 (rename away): %v", err)
 	}
@@ -280,16 +268,14 @@ func TestStageOut_SwapAfterValidateIsRefused(t *testing.T) {
 		t.Fatalf("read dest: %v", err)
 	}
 	if string(got) != "legit-task-output" {
-		t.Errorf("dest = %q, want %q — the copy followed the PATH and read the "+
+		t.Errorf("dest = %q, want %q: the copy followed the path and read the "+
 			"post-swap file instead of the validated descriptor", got, "legit-task-output")
 	}
 }
 
-// TestStageOut_OrdinaryFileUnaffected is the named default-configuration
-// regression test for stage-out: the adversarial checks must not cost the normal
-// path anything. An ordinary staged output still copies back byte for byte
-// with the built-in copy, which is what a worker with no staging
-// configuration uses.
+// TestStageOut_OrdinaryFileUnaffected is the default-configuration test for
+// stage-out: an ordinary staged output copies back byte for byte with the
+// built-in copy, which is what a worker with no staging configuration uses.
 func TestStageOut_OrdinaryFileUnaffected(t *testing.T) {
 	scratch := t.TempDir()
 	s := New(scratch, builtinSentinel, false, discardLogger())
@@ -315,17 +301,16 @@ func TestStageOut_OrdinaryFileUnaffected(t *testing.T) {
 }
 
 // TestStageOut_SharingViolationIsNotReportedAsEscape covers the access-error
-// branch: a stage-out source the daemon cannot open right now must not
-// be reported as a containment breach.
+// branch: a stage-out source the daemon cannot open right now must not be
+// reported as a containment breach.
 //
-// This is not hypothetical on Windows. Nothing kills a task's process group on
-// a SUCCESSFUL exit (see executor.processTree.release), so a background child
-// that outlives its task can still hold the staged output open with a
-// restrictive share mode; NTFS then answers the daemon's open with
-// ERROR_SHARING_VIOLATION. Go maps that to neither fs.ErrPermission nor
-// fs.ErrNotExist, so before the classification split it fell through to the
-// escape wording and told the operator their task had tried to break out of
-// scratch. Failing closed is right and unchanged — only the story is.
+// The process tree is not killed when a task exits successfully (see
+// proctree.Tree.Release), so a background child that outlives its task can
+// still hold the staged output open with a restrictive share mode; NTFS then
+// answers the daemon's open with ERROR_SHARING_VIOLATION. Go maps that to
+// neither fs.ErrPermission nor fs.ErrNotExist, so the classifier names it
+// explicitly. Stage-out fails closed either way; only the reported cause
+// differs.
 func TestStageOut_SharingViolationIsNotReportedAsEscape(t *testing.T) {
 	scratch := t.TempDir()
 	stagedDir := filepath.Join(scratch, "0")
@@ -355,21 +340,16 @@ func TestStageOut_SharingViolationIsNotReportedAsEscape(t *testing.T) {
 	}
 	defer root.Close()
 
-	// The deny-all handle above is only a PRECONDITION, and on the CI runner it
-	// does not hold: CreateFile(dwShareMode: 0) returns a handle there and a
-	// second open of the same path then succeeds anyway -- measured through
-	// os.Root AND through a plain os.Open, so it is not about
-	// FILE_OPEN_FOR_BACKUP_INTENT or about privilege. That host simply does not
-	// enforce the share mode. No sharing violation can be provoked there, so
-	// there is nothing for the classifier to classify, and failing would report
-	// a missing OS behavior as an sqi defect.
+	// The deny-all handle above is a precondition that some hosts do not
+	// honor: there, CreateFile(dwShareMode: 0) returns a handle and a second
+	// open of the same path still succeeds, through os.Root and through a plain
+	// os.Open alike. No sharing violation can be provoked on such a host, so
+	// the test skips rather than report a missing OS behavior as a defect.
 	//
-	// Probed with a plain open, which shares no code with the path under test,
-	// so the probe cannot mask a defect in openStageOutSource itself. The
-	// classification is proven unconditionally on every host by
-	// TestClassifyStageOutOpenError_SharingViolationIsUnreadable below -- that
-	// is the one CI requires by name; this test adds the end-to-end proof
-	// wherever the OS makes it possible.
+	// The probe is a plain open, which shares no code with openStageOutSource.
+	// TestClassifyStageOutOpenError_SharingViolationIsUnreadable below proves
+	// the classification on every host; this test adds the end-to-end check
+	// where the OS makes it possible.
 	if probe, probeErr := os.Open(staged); probeErr == nil {
 		probe.Close()
 		t.Skip("this host does not enforce the deny-all share mode: a plain open of the " +
@@ -385,36 +365,32 @@ func TestStageOut_SharingViolationIsNotReportedAsEscape(t *testing.T) {
 		t.Errorf("err = %v, want errStageOutUnreadable (an access failure, not an attack)", err)
 	}
 	if errors.Is(err, errStageOutEscape) {
-		t.Errorf("err = %v, want it NOT classified as a containment breach", err)
+		t.Errorf("err = %v, want it not classified as a containment breach", err)
 	}
 	if strings.Contains(err.Error(), "outside scratch") {
 		t.Errorf("err = %v, want the operator-facing message not to allege an escape", err)
 	}
 }
 
-// TestCopyFile_RefusesHardlinkedStageInSourceOnWindows pins a deliberate
-// Windows STAGE-IN behavior.
+// TestCopyFile_RefusesHardlinkedStageInSourceOnWindows pins the Windows
+// stage-in behavior.
 //
-// hasExtraHardlinks applies the link-count refusal to BOTH its callers —
-// openStageOutSource, which is adversarial, and copyFile, which is the
-// built-in stage-in copy and is not adversarial at all. So a job INPUT asset
-// that happens to carry a second NTFS hardlink is refused on Windows:
-// content-addressed and dedup asset stores, and "rsync --link-dest"-style
-// delivery, all produce multiply linked files routinely. The refusal is
-// deliberate and is POSIX parity — if this test ever has to change, that
-// decision comes first, not a quiet edit to the check.
+// hasExtraHardlinks applies the link-count refusal to both its callers:
+// openStageOutSource, and copyFile, which is the built-in stage-in copy. So a
+// job input asset that carries a second NTFS hardlink is refused on Windows,
+// as on POSIX. Content-addressed and dedup asset stores, and
+// "rsync --link-dest"-style delivery, produce multiply linked files routinely.
 //
-// Deliberately distinct from TestCopyFile_RefusesSourceWithExtraHardlink in
+// This differs from TestCopyFile_RefusesSourceWithExtraHardlink in
 // staging_copy_test.go, which frames the same check as a TOCTOU defense and
-// calls copyFile directly. This one drives builtinCopy — the actual stage-in
-// entry point Stager.transfer reaches — with a wholly legitimate input, which
-// is the scenario an operator will actually hit.
+// calls copyFile directly. This test drives builtinCopy, the stage-in entry
+// point Stager.transfer reaches, with a legitimate input.
 func TestCopyFile_RefusesHardlinkedStageInSourceOnWindows(t *testing.T) {
 	dir := t.TempDir()
 
 	// The asset store's object, and the delivered job input that shares its
-	// inode. Nothing here is an attack: this is what `rsync --link-dest` or a
-	// content-addressed store produces on a normal, successful delivery.
+	// inode. This is what `rsync --link-dest` or a content-addressed store
+	// produces on an ordinary delivery.
 	object := filepath.Join(dir, "cas-object")
 	if err := os.WriteFile(object, []byte("input-asset-bytes"), 0o600); err != nil {
 		t.Fatal(err)
@@ -434,24 +410,22 @@ func TestCopyFile_RefusesHardlinkedStageInSourceOnWindows(t *testing.T) {
 		t.Errorf("err = %v, want the operator-facing message to name the hardlink refusal", err)
 	}
 	if strings.Contains(err.Error(), "outside scratch") {
-		t.Errorf("err = %v, want the hardlink refusal NOT to borrow the containment refusal's wording", err)
+		t.Errorf("err = %v, want the hardlink refusal not to borrow the containment refusal's wording", err)
 	}
 	if _, statErr := os.Stat(dest); statErr == nil {
 		t.Error("dest must not exist: stage-in must refuse before copying any bytes")
 	}
 }
 
-// TestClassifyStageOutOpenError_SharingViolationIsUnreadable proves the
-// property the test above can only demonstrate where the OS cooperates: an
-// ERROR_SHARING_VIOLATION is an ACCESS failure, and must never be reported as
-// a containment breach.
+// TestClassifyStageOutOpenError_SharingViolationIsUnreadable: an
+// ERROR_SHARING_VIOLATION is an access failure and is never reported as a
+// containment breach.
 //
-// It feeds the classifier the errno the kernel really produces instead of
-// provoking one, so it holds on every Windows host -- including the CI runner,
-// which does not enforce a deny-all share mode and therefore cannot produce the
-// error at all. The distinction is operator-facing: the escape wording tells an
-// operator their task tried to break out of its scratch directory, which is an
-// accusation, and a background child still holding a render open is not that.
+// It feeds the classifier the errno the kernel produces instead of provoking
+// one, so it holds on every Windows host, including those that do not enforce
+// a deny-all share mode. The distinction is operator-facing: the escape
+// wording says a task tried to break out of its scratch directory, and a
+// background child still holding a render open is not that.
 func TestClassifyStageOutOpenError_SharingViolationIsUnreadable(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -469,7 +443,7 @@ func TestClassifyStageOutOpenError_SharingViolationIsUnreadable(t *testing.T) {
 				t.Errorf("err = %v, want errStageOutUnreadable (an access failure, not an attack)", err)
 			}
 			if errors.Is(err, errStageOutEscape) {
-				t.Errorf("err = %v, want it NOT classified as a containment breach", err)
+				t.Errorf("err = %v, want it not classified as a containment breach", err)
 			}
 			if !errors.Is(err, tc.errno) {
 				t.Errorf("err = %v, want the underlying errno still unwrappable", err)

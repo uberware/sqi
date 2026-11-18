@@ -15,10 +15,10 @@ import (
 )
 
 // launcherForwardsSignalExit runs the launcher directly, in its own process
-// group exactly as the POSIX executor starts a task (kill_unix.go), and signals
-// the group with SIGTERM as cancellation does. The child traps SIGTERM and
-// exits 42; the launcher must survive the same signal and exit 42 too, rather
-// than dying first and losing the child's code.
+// group as the POSIX executor starts a task (proctree's tree_unix.go), and
+// signals the group with SIGTERM as cancelation does. The child traps SIGTERM
+// and exits 42; the launcher must survive the same signal and exit 42 too, so
+// the child's code is not lost.
 func launcherForwardsSignalExit(t *testing.T, python, launcher string) {
 	t.Helper()
 	dir := t.TempDir()
