@@ -74,11 +74,11 @@ func TestProcessTree_RefusesAProcessNotStartedSuspended(t *testing.T) {
 	}
 }
 
-// TestProcessTree_HoldsAGrandchildStartedBeforeSupervision pins that nothing
-// a task starts can escape its job, however long superviseTree takes after
-// Start: the task process does not run until superviseTree has assigned it.
-// The wait gives an unheld starter time to start the grandchild and exit, so
-// without that the grandchild would be outside the job.
+// TestProcessTree_HoldsAGrandchildStartedBeforeSupervision pins that a
+// grandchild the task starts is inside its job, however long superviseTree
+// takes after Start: the task process does not run until superviseTree has
+// assigned it. The wait gives a starter that is not held suspended time to
+// start the grandchild and exit, leaving the grandchild outside the job.
 func TestProcessTree_HoldsAGrandchildStartedBeforeSupervision(t *testing.T) {
 	cmd, _ := spawnDetachedGrandchild(t, 30)
 	if err := cmd.Start(); err != nil {
