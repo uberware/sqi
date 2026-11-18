@@ -355,6 +355,11 @@ type Scheduler struct {
 	// leaseSub is the core-NATS subscription for worker lease requests,
 	// stopped during shutdown once every request it took is answered.
 	leaseSub *bus.LeaseSubscription
+	// leaseReplies ends once leaseSub has stopped taking requests at
+	// shutdown; until then a reply produced while stopping is held back (see
+	// [Scheduler.answerLease]). Set by Run before leaseSub.
+	leaseReplies        context.Context
+	releaseLeaseReplies context.CancelFunc
 
 	// waiters parks long-poll lease requests per queue; woken by wake triggers.
 	waiters *waiterRegistry
@@ -700,8 +705,10 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	// A core-NATS request-reply subscriber that handles worker lease requests.
 	// Workers ask for work; handleLeaseRequest selects a batch or parks until
 	// new work appears (long-poll) and then replies.
-	leaseSub, err := s.bus.SubscribeLease(s.handleLeaseRequest)
+	s.leaseReplies, s.releaseLeaseReplies = context.WithCancel(context.WithoutCancel(ctx))
+	leaseSub, err := s.bus.SubscribeLease(s.answerLease)
 	if err != nil {
+		s.releaseLeaseReplies()
 		return fmt.Errorf("scheduler: start lease subscriber: %w", err)
 	}
 	s.leaseSub = leaseSub
@@ -751,18 +758,35 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	return nil
 }
 
-// stopLeaseSub stops the lease subscriber, if active, once every request it
-// took has been answered. ctx has ended, so every parked request has already
-// woken to answer empty; the server closes the bus after Run returns, and a
-// reply sent after that would leave its worker waiting out its whole request
-// timeout (H13f11).
+// answerLease is the lease subscriber's handler: [Scheduler.handleLeaseRequest],
+// except that a reply produced once the scheduler is stopping is held back
+// until the subscriber has stopped taking requests. A stopping scheduler
+// answers every request empty and at once, parked ones included, and a worker
+// asks again the moment a reply arrives; answered before the broker stops
+// routing here, that next request can be forwarded by another cluster node
+// and dropped, leaving the worker to wait out its whole request timeout
+// (H13f11). Held back, the reply leaves after the interest removal, and the
+// next request finds no responder.
+func (s *Scheduler) answerLease(workerID, queueID string, data []byte) []byte {
+	reply := s.handleLeaseRequest(workerID, queueID, data)
+	if s.ctx.Err() != nil {
+		<-s.leaseReplies.Done()
+	}
+	return reply
+}
+
+// stopLeaseSub stops the lease subscriber, if active, and releases the
+// replies held back while stopping once it no longer takes requests. It
+// returns when every request it took has been answered: the server closes the
+// bus after Run returns, and a reply sent after that is lost.
 func (s *Scheduler) stopLeaseSub(ctx context.Context) {
 	if s.leaseSub == nil {
+		s.releaseLeaseReplies()
 		return
 	}
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), leaseStopTimeout)
 	defer cancel()
-	if err := s.leaseSub.Stop(stopCtx); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+	if err := s.leaseSub.Stop(stopCtx, s.releaseLeaseReplies); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
 		s.logger.WarnContext(ctx, "scheduler: lease subscriber stop failed", slog.Any("error", err))
 	}
 }

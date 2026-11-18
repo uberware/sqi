@@ -32,32 +32,45 @@ type LeaseSubscription struct {
 	inFlight sync.WaitGroup
 }
 
-// Unsubscribe removes the subscription without waiting for the requests it
-// has taken to be answered.
+// Unsubscribe removes the subscription at once, without waiting for the
+// requests it has taken to be answered. Tests use it for cleanup; a server
+// stops with [LeaseSubscription.Stop].
 func (l *LeaseSubscription) Unsubscribe() error {
 	return l.sub.Unsubscribe()
 }
 
-// Stop stops taking requests and returns once every request already taken
-// has been answered, or when ctx ends. The subscription is drained, not
-// unsubscribed: the broker stops routing to it before the client lets it go,
-// so a request is either delivered here and answered or finds no responder,
-// and the worker sending it retries at once rather than waiting out its
-// request timeout on a reply that was never going to come. Waiting for the
-// handlers matters because the server closes its connection right after the
-// scheduler stops, and a reply sent after that is lost the same way.
+// Stop stops taking requests, then calls wake, then returns once every
+// request already taken has been answered, or when ctx ends. wake is called
+// exactly once, whatever Stop returns, and is where the caller releases the
+// replies it holds back while stopping (see below).
 //
-// The caller wakes parked handlers (by ending their context) before calling
-// Stop, or Stop waits for their hold to end.
-func (l *LeaseSubscription) Stop(ctx context.Context) error {
+// The subscription is drained, not unsubscribed, so the client keeps
+// delivering until the broker node it is connected to has stopped routing
+// here: until then a request is delivered and answered, and after it one
+// sent to that node finds no responder, and the worker retries after its
+// brief backoff rather than waiting out its whole request timeout. On a
+// cluster, a node that has not yet learnt the interest is gone still
+// forwards a request, which is then dropped. The caller narrows that window
+// by sending no reply while stopping until wake: a reply then follows the
+// interest removal over the same route, so the requester's node has seen it
+// go before the requester can ask again. Waiting for the handlers matters
+// because the server closes its connection right after the scheduler stops,
+// and a reply sent after that is lost too.
+func (l *LeaseSubscription) Stop(ctx context.Context, wake func()) error {
+	woken := false
+	defer func() {
+		if !woken {
+			wake()
+		}
+	}()
 	if err := l.sub.Drain(); err != nil {
 		return err
 	}
 	tick := time.NewTicker(leaseDrainPoll)
 	defer tick.Stop()
-	// The client removes a drained subscription only once every message it
-	// delivered has returned from the callback, which is where each one was
-	// counted, so the count is complete before it is waited on.
+	// The client removes a drained subscription only after a flush that
+	// follows the unsubscribe, and once every message it delivered has
+	// returned from the callback, which is where each one was counted.
 	for l.sub.IsValid() {
 		if l.nc.IsClosed() {
 			return nats.ErrConnectionClosed // nothing taken can be answered now
@@ -68,6 +81,13 @@ func (l *LeaseSubscription) Stop(ctx context.Context) error {
 		case <-tick.C:
 		}
 	}
+	// A closed connection also invalidates the subscription, with a callback
+	// possibly still counting a request; nothing could be answered anyway.
+	if l.nc.IsClosed() {
+		return nats.ErrConnectionClosed
+	}
+	woken = true
+	wake()
 	answered := make(chan struct{})
 	go func() {
 		l.inFlight.Wait()

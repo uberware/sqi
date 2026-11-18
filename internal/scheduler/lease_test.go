@@ -414,3 +414,43 @@ func TestHandleLeaseRequest_EmptyTimesOut(t *testing.T) {
 		t.Errorf("assignments = %d, want 0", len(got.Assignments))
 	}
 }
+
+// TestAnswerLease_HoldsAStoppingReplyUntilReleased pins H13f11's ordering at
+// the scheduler: while running, a lease reply goes out at once; once the
+// scheduler is stopping, it is held until the lease subscriber has stopped
+// taking requests, so the worker's next request cannot race the broker's
+// removal of the interest.
+func TestAnswerLease_HoldsAStoppingReplyUntilReleased(t *testing.T) {
+	s := newTestScheduler(newCheckedFake(t), &recordBus{})
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	s.ctx = ctx
+	s.leaseReplies, s.releaseLeaseReplies = context.WithCancel(context.Background())
+	defer s.releaseLeaseReplies()
+	// A request with no identity is answered empty at once, touching nothing.
+	answer := func() <-chan []byte {
+		got := make(chan []byte, 1)
+		go func() { got <- s.answerLease("w1", "q1", []byte(`{}`)) }()
+		return got
+	}
+
+	select {
+	case <-answer():
+	case <-time.After(5 * time.Second):
+		t.Fatal("a running scheduler held its reply")
+	}
+
+	stop()
+	held := answer()
+	select {
+	case <-held:
+		t.Fatal("a stopping scheduler replied before the lease subscriber stopped taking requests")
+	case <-time.After(100 * time.Millisecond):
+	}
+	s.releaseLeaseReplies()
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the held reply was not sent once released")
+	}
+}
