@@ -34,8 +34,8 @@ export const PAUSABLE_JOB_STATUSES: ReadonlySet<JobStatus> = new Set(['pending',
 export const RESUMABLE_JOB_STATUSES: ReadonlySet<JobStatus> = new Set(['paused'])
 
 /**
- * Task statuses a retry re-queues (`POST /jobs/{id}/retry` and
- * `POST /tasks/{id}/retry`): the store's `RetryTasks`.
+ * Task statuses the server retries, for a whole job (`POST /jobs/{id}/retry`)
+ * or a single task (`POST /tasks/{id}/retry`).
  */
 export const RETRYABLE_TASK_STATUSES: ReadonlySet<TaskStatus> = new Set(['failed', 'canceled'])
 

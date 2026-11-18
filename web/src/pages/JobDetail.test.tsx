@@ -2004,7 +2004,7 @@ describe('JobDetail', () => {
       canceled: 0,
     }
 
-    /** Serves `job` for every GET and records nothing else. */
+    /** Serves `job`, empty task and worker lists, and `job` again for every mutation. */
     function renderJob(job: JobDetailType) {
       fetchMock.mockImplementation((input, init) => {
         const url = String(input)

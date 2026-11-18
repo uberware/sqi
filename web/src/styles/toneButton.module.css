@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
 /*
- * Outlined buttons coloured by a tone, for actions on jobs, workers and the
+ * Outlined buttons colored by a tone, for actions on jobs, workers and the
  * like. A page composes a shape (`toneBtn` for a labelled button, `toneIconBtn`
  * for an icon-only one) with a tone class, which sets `--tone` and
  * `--tone-muted`:
@@ -9,8 +9,8 @@
  *   .pauseBtn { composes: toneBtn info from '../styles/toneButton.module.css'; }
  *
  * The bundle may emit this file after the page stylesheets, so a page rule
- * that overrides a property set here must be more specific than it, not just
- * later.
+ * that overrides a property set here must outrank it by specificity; source
+ * order cannot be relied on.
  */
 
 /* ── Tones ─────────────────────────────────────────────────────────────────── */

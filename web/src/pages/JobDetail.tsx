@@ -750,7 +750,7 @@ function JobActions({ job, action }: { job: JobDetailType; action: ActionRunner<
     void action.run('Delete', [job.id], async (id) => {
       await jobActions.Delete(id)
       showToast(`Job "${job.name}" deleted`, 'success')
-      // Replace: Back must not return to a job that no longer exists.
+      // Replace: Back must not return to the deleted job.
       void navigate('/jobs', { replace: true })
     })
   }
