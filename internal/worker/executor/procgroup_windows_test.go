@@ -17,8 +17,8 @@ import (
 
 // spawnDetachedGrandchild starts, via "cmd /c start /b <script.bat>", a
 // background batch file that pings for pingSeconds and then writes marker.
-// The returned *exec.Cmd is the immediate ("cmd /c starter.bat") process,
-// which starts the batch file with "start /b".
+// The returned *exec.Cmd is the immediate ("cmd /c start /b ...") process,
+// configured as the executor configures a task (configureProcessGroup).
 // The batch file it launches is a separate process it does not wait for, so
 // it is orphaned once its starter exits: the case "taskkill /F /T" cannot
 // reach.
@@ -39,15 +39,66 @@ func spawnDetachedGrandchild(t *testing.T, pingSeconds int) (cmd *exec.Cmd, mark
 	if err := os.WriteFile(bat, []byte(script), 0o700); err != nil {
 		t.Fatalf("write grandchild.bat: %v", err)
 	}
-	// The starter waits about a second before it starts the grandchild, so
-	// superviseTree has put it in the job by then: assignment follows Start,
-	// and a grandchild started first would be outside the job.
-	starter := filepath.Join(dir, "starter.bat")
-	if err := os.WriteFile(starter, []byte("@echo off\r\nping -n 2 127.0.0.1 > nul\r\nstart /b "+bat+"\r\n"), 0o700); err != nil {
-		t.Fatalf("write starter.bat: %v", err)
-	}
-	cmd = exec.CommandContext(t.Context(), "cmd", "/c", starter)
+	cmd = exec.CommandContext(t.Context(), "cmd", "/c", "start", "/b", bat)
+	configureProcessGroup(cmd)
 	return cmd, marker
+}
+
+// TestProcessTree_RefusesAProcessNotStartedSuspended pins that superviseTree
+// checks the start it depends on: a process that was already running when it
+// was assigned may have started children outside the job, so supervision
+// fails, and closing the job kills the process.
+func TestProcessTree_RefusesAProcessNotStartedSuspended(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "ping", "-n", "30", "127.0.0.1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() {
+		cmd.Process.Kill() //nolint:errcheck // best-effort cleanup if an assertion fails first
+		cmd.Wait()         //nolint:errcheck // reaps the process; its exit status is not under test
+	})
+	tree, err := superviseTree(cmd)
+	if err == nil {
+		tree.release() //nolint:errcheck // best-effort close of the job handle
+		t.Fatal("superviseTree accepted a process that was not started suspended")
+	}
+	done := make(chan struct{})
+	go func() {
+		cmd.Wait() //nolint:errcheck // only its return is awaited
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the refused process was still running 10s later; closing its job should kill it")
+	}
+}
+
+// TestProcessTree_HoldsAGrandchildStartedBeforeSupervision pins that a
+// grandchild the task starts is inside its job, however long superviseTree
+// takes after Start: the task process does not run until superviseTree has
+// assigned it. The wait gives a starter that is not held suspended time to
+// start the grandchild and exit, leaving the grandchild outside the job.
+func TestProcessTree_HoldsAGrandchildStartedBeforeSupervision(t *testing.T) {
+	cmd, _ := spawnDetachedGrandchild(t, 30)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	time.Sleep(2 * time.Second)
+	tree, err := superviseTree(cmd)
+	if err != nil {
+		t.Fatalf("superviseTree: %v", err)
+	}
+	t.Cleanup(func() {
+		tree.sendKILL() //nolint:errcheck // best-effort cleanup if an assertion fails first
+		tree.release()  //nolint:errcheck // best-effort close of the job handle
+	})
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for parent: %v", err)
+	}
+	if !tree.alive() {
+		t.Fatal("alive = false: the grandchild was started outside the job")
+	}
 }
 
 // TestProcessTree_KillReapsOrphanedGrandchild is the Windows counterpart of

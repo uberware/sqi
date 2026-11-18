@@ -8,25 +8,26 @@ import (
 	"os/exec"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
-// configureTestProcessGroup mirrors executor.configureProcessGroup, whose
-// unix implementation sets Setpgid on cmd's SysProcAttr before calling
-// isolation.Apply. Windows has no process-group concept and no equivalent
-// SysProcAttr field, so HideWindow stands in as an arbitrary pre-existing
-// field that Apply must not clobber when it attaches the logon token — the
-// same property the unix test proves for Setpgid.
+// configureTestProcessGroup mirrors executor.configureProcessGroup, which on
+// Windows sets CREATE_SUSPENDED in cmd's SysProcAttr.CreationFlags before
+// calling isolation.Apply. Apply must keep that flag when it attaches the
+// logon token, the same property the unix test proves for Setpgid. The
+// command is never started.
 func configureTestProcessGroup(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	cmd.SysProcAttr.HideWindow = true
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
 }
 
-// assertProcessGroupStillSet fails the test if Apply cleared HideWindow.
+// assertProcessGroupStillSet fails the test if Apply cleared CREATE_SUSPENDED.
 func assertProcessGroupStillSet(t *testing.T, cmd *exec.Cmd) {
 	t.Helper()
-	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.HideWindow {
+	if cmd.SysProcAttr == nil || cmd.SysProcAttr.CreationFlags&windows.CREATE_SUSPENDED == 0 {
 		t.Error("Apply must preserve pre-existing SysProcAttr fields on Windows too")
 	}
 }
