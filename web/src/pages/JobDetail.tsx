@@ -735,6 +735,9 @@ function JobActions({ job, action }: { job: JobDetailType; action: ActionRunner<
   const navigate = useNavigate()
   const { showToast } = useToast()
 
+  // Nothing else may run against a job that is being deleted.
+  const deleting = action.isBusy('Delete', job.id)
+
   const run = (verb: JobAction) => {
     if (verb !== 'Delete') {
       void action.run(verb, [job.id], jobActions[verb])
@@ -747,7 +750,8 @@ function JobActions({ job, action }: { job: JobDetailType; action: ActionRunner<
     void action.run('Delete', [job.id], async (id) => {
       await jobActions.Delete(id)
       showToast(`Job "${job.name}" deleted`, 'success')
-      void navigate('/jobs')
+      // Replace: Back must not return to a job that no longer exists.
+      void navigate('/jobs', { replace: true })
     })
   }
 
@@ -805,6 +809,7 @@ function JobActions({ job, action }: { job: JobDetailType; action: ActionRunner<
             label={label}
             className={className}
             busy={action.isBusy(verb, job.id)}
+            disabled={deleting}
             onClick={() => run(verb)}
           >
             {text}
@@ -816,10 +821,16 @@ function JobActions({ job, action }: { job: JobDetailType; action: ActionRunner<
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function JobDetail() {
+/**
+ * The job page, remounted per job: moving from one job to another (an upstream
+ * link) starts with no action failures, task selections or search carried over.
+ */
+export default function JobDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const jobId = id ?? ''
+  return <JobDetail key={id} jobId={id ?? ''} />
+}
 
+function JobDetail({ jobId }: { jobId: string }) {
   const { principal } = useAuth()
   const canWrite = can(principal, 'jobs.write')
 

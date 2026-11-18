@@ -46,8 +46,8 @@ describe('job action rules', () => {
     expect(statusesWhere(canResumeJob)).toEqual(['paused'])
   })
 
-  it('offers cancel for pending, running and paused jobs', () => {
-    expect(statusesWhere(canCancelJob)).toEqual(['pending', 'running', 'paused'])
+  it('offers cancel for every job that has not finished', () => {
+    expect(statusesWhere(canCancelJob)).toEqual(['pending', 'running', 'paused', 'blocked'])
   })
 
   it('counts failed and canceled tasks as retryable', () => {

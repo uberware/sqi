@@ -536,6 +536,15 @@ describe('JobList', () => {
       expect(screen.getByLabelText('Cancel job Running Job')).toBeInTheDocument()
     })
 
+    it('shows Cancel for a job blocked on another job', async () => {
+      const job = makeJob({ status: 'blocked', name: 'Blocked Job' })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
+
+      render(<JobList />, { wrapper: Wrapper })
+
+      expect(await screen.findByLabelText('Cancel job Blocked Job')).toBeInTheDocument()
+    })
+
     it('does not show Cancel for terminal jobs', async () => {
       const job = makeJob({ status: 'completed', name: 'Done Job' })
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
@@ -1420,7 +1429,7 @@ describe('JobList', () => {
     })
   })
 
-  // ── Per-row retry ─────────────────────────────────────────────────────────────
+  // ── Per-row pause and resume ──────────────────────────────────────────────────
 
   describe('per-row pause and resume', () => {
     /** The PATCH request sent to /jobs/{id}, or undefined when none was sent. */
@@ -1531,6 +1540,8 @@ describe('JobList', () => {
       expect(screen.queryByRole('button', { name: 'Resume job Paused' })).not.toBeInTheDocument()
     })
   })
+
+  // ── Per-row retry ─────────────────────────────────────────────────────────────
 
   describe('per-row retry', () => {
     /** Build a full TaskCounts with defaults of 0 for unspecified fields. */

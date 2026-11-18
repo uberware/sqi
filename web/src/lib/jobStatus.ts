@@ -10,14 +10,15 @@ export const TERMINAL_JOB_STATUSES: ReadonlySet<string> = new Set([
 ])
 
 /**
- * Job statuses the server cancels (`POST /jobs/{id}/cancel`): `cancelJob` in
- * `internal/api/jobs.go` refuses completed and failed jobs, and a canceled one
- * is already done.
+ * Job statuses the server cancels (`POST /jobs/{id}/cancel`): every unfinished
+ * one. `cancelJob` in `internal/api/jobs.go` refuses completed and failed jobs,
+ * and a canceled one is already done.
  */
 export const CANCELABLE_JOB_STATUSES: ReadonlySet<JobStatus> = new Set([
   'pending',
   'running',
   'paused',
+  'blocked',
 ])
 
 /**

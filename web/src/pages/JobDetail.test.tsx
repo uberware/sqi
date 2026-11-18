@@ -2039,6 +2039,13 @@ describe('JobDetail', () => {
       expect(screen.queryByRole('button', { name: 'Resume job' })).not.toBeInTheDocument()
     })
 
+    it('offers Cancel but not Pause for a job blocked on another job', async () => {
+      renderJob(makeJob({ status: 'blocked', task_counts: NO_FAILURES }))
+
+      expect(await screen.findByRole('button', { name: 'Cancel job' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Pause job' })).not.toBeInTheDocument()
+    })
+
     it('offers Resume in place of Pause for a paused job', async () => {
       renderJob(makeJob({ status: 'paused', task_counts: NO_FAILURES }))
 
@@ -2171,6 +2178,43 @@ describe('JobDetail', () => {
         'DELETE',
         undefined,
       ])
+    })
+
+    it('locks every job action while the delete is in flight', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      renderJob(makeJob({ status: 'running' }))
+      const del = await screen.findByRole('button', { name: 'Delete job' })
+      fetchMock.mockImplementationOnce(() => new Promise<Response>(() => undefined))
+
+      fireEvent.click(del)
+
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Delete job' })).toBeDisabled())
+      for (const name of ['Pause job', 'Cancel job', 'Re-run failed tasks']) {
+        expect(screen.getByRole('button', { name })).toBeDisabled()
+      }
+    })
+
+    it("does not carry one job's action failure onto another job's page", async () => {
+      const upstream = makeJob({ id: 'job-upstream', name: 'Upstream Job' })
+      const job = makeJob({ depends_on: ['job-upstream'] })
+      fetchMock.mockImplementation((input, init) => {
+        const url = String(input)
+        if (init?.method === 'PATCH') {
+          return Promise.resolve(problemJson(409, 'job cannot be paused'))
+        }
+        if (url.includes('/tasks')) return Promise.resolve(okJson(makeTaskListResponse([])))
+        if (url.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+        return Promise.resolve(okJson(url.includes('job-upstream') ? upstream : job))
+      })
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Pause job' }))
+      expect(await screen.findByText(/Pause failed: job cannot be paused/)).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('link', { name: 'job-upstream' }))
+
+      expect(await screen.findByText('Upstream Job')).toBeInTheDocument()
+      expect(screen.queryByText(/Pause failed/)).not.toBeInTheDocument()
     })
 
     it('does not delete when the confirmation is dismissed', async () => {

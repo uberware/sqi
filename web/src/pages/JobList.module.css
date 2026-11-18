@@ -151,7 +151,8 @@
 }
 
 tr:hover .actionsCell > button,
-tr.rowSelected .actionsCell > button {
+tr.rowSelected .actionsCell > button,
+.actionsCell > button:focus-visible {
   opacity: 1;
 }
 
@@ -177,14 +178,14 @@ tr.rowSelected .actionsCell > button {
 /* ── Actions cell ────────────────────────────────────────────────────────────── */
 
 /*
- * Reserve room for three buttons side by side (Pause or Resume, Cancel, Delete
- * — what an active job shows) so the column width does not shift as rows
- * change status or as the buttons fade in on hover. The buttons fade via
- * opacity, which keeps them in layout, so only rows with fewer buttons need
- * this floor.
+ * Reserve room for the most buttons a row shows (Pause or Resume, Cancel,
+ * Retry, Delete: an active job with failed tasks) so the column width does not
+ * shift as rows change status or as the buttons fade in on hover. The buttons
+ * fade via opacity, which keeps them in layout, so only rows with fewer
+ * buttons need this floor.
  */
 .actionsCell {
-  min-width: 6.5rem;
+  min-width: 7.5rem;
   white-space: nowrap;
 }
 

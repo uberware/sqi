@@ -7,6 +7,10 @@
  * `--tone-muted`:
  *
  *   .pauseBtn { composes: toneBtn info from '../styles/toneButton.module.css'; }
+ *
+ * The bundle may emit this file after the page stylesheets, so a page rule
+ * that overrides a property set here must be more specific than it, not just
+ * later.
  */
 
 /* ── Tones ─────────────────────────────────────────────────────────────────── */

@@ -141,7 +141,8 @@
 }
 
 tr:hover .toggleBtn,
-tr.rowSelected .toggleBtn {
+tr.rowSelected .toggleBtn,
+.toggleBtn:focus-visible {
   opacity: 1;
 }
 
