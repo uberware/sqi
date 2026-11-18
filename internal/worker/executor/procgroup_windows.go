@@ -27,10 +27,12 @@ type processTree struct {
 }
 
 // superviseTree places cmd's already-started process into a fresh job object
-// and then lets it run. configureProcessGroup starts the process suspended,
-// so nothing it starts can be outside the job: a child it created before the
-// assignment would escape it. A process started without that flag is
-// assigned while running, and resuming it does nothing.
+// and then lets it run. The process must have been started suspended
+// (configureProcessGroup), so every process it or its descendants create
+// starts inside the job; superviseTree refuses one that was already running,
+// which may have created a child before the assignment. A process a system
+// service starts at the task's request (Task Scheduler, WMI, an
+// out-of-process COM server) is the service's child and outside the job.
 //
 // KILL_ON_JOB_CLOSE kills the whole tree if the worker process exits while
 // the task is running: the server reclaims that task and runs it elsewhere,
@@ -67,9 +69,11 @@ func superviseTree(cmd *exec.Cmd) (*processTree, error) {
 	return &processTree{proc: cmd, job: job}, nil
 }
 
-// resumeThreads resumes every thread of process pid. A process created
-// suspended has one, its initial thread; Go closes its handle once the
-// process is created, so it is found by listing the system's threads.
+// resumeThreads resumes the suspended threads of process pid and fails
+// unless one of them was suspended. A process created suspended has one, its
+// initial thread; Go closes its handle once the process is created, so it is
+// found by listing the system's threads. A thread that exits before it is
+// opened is skipped.
 func resumeThreads(pid uint32) error {
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
 	if err != nil {
@@ -82,31 +86,39 @@ func resumeThreads(pid uint32) error {
 		if entry.OwnerProcessID != pid {
 			continue
 		}
-		if err := resumeThread(entry.ThreadID); err != nil {
-			return err
+		was, rerr := resumeThread(entry.ThreadID)
+		if rerr != nil {
+			return rerr
 		}
-		resumed++
+		if was {
+			resumed++
+		}
 	}
 	if !errors.Is(err, windows.ERROR_NO_MORE_FILES) {
 		return fmt.Errorf("list threads: %w", err)
 	}
 	if resumed == 0 {
-		return errors.New("the process has no thread")
+		return errors.New("the process was not started suspended")
 	}
 	return nil
 }
 
-// resumeThread decrements thread id's suspend count once.
-func resumeThread(id uint32) error {
+// resumeThread decrements thread id's suspend count once, and reports whether
+// it was suspended. A thread that no longer exists reports false.
+func resumeThread(id uint32) (suspended bool, err error) {
 	h, err := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, id)
+	if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+		return false, nil // exited since the snapshot
+	}
 	if err != nil {
-		return fmt.Errorf("open thread %d: %w", id, err)
+		return false, fmt.Errorf("open thread %d: %w", id, err)
 	}
 	defer windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
-	if _, err := windows.ResumeThread(h); err != nil {
-		return fmt.Errorf("resume thread %d: %w", id, err)
+	prev, err := windows.ResumeThread(h)
+	if err != nil {
+		return false, fmt.Errorf("resume thread %d: %w", id, err)
 	}
-	return nil
+	return prev > 0, nil
 }
 
 // setKillOnClose sets or clears JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.

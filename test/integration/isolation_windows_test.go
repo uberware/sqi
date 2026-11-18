@@ -895,9 +895,11 @@ func TestIsolationWindowsSystem_StageOutRefusesPlantedJunction(t *testing.T) {
 // TestIsolationWindowsSystem_TaskStartsSuspendedAsTargetUser drives the
 // executor's own start path for an isolated task: the process is created
 // suspended under the target account's logon token, assigned to its job
-// object, and resumed by the worker. A worker that could not resume a thread
-// of another account's process would leave every isolated task hung, and the
-// other tests here start their processes without the executor.
+// object, and resumed by the worker, which refuses a process that was not
+// suspended. The task fails if the suspended flag does not reach
+// CreateProcessAsUser or the worker cannot resume a thread of another
+// account's process. The other tests here start their processes without the
+// executor.
 func TestIsolationWindowsSystem_TaskStartsSuspendedAsTargetUser(t *testing.T) {
 	requireHarness(t)
 	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
@@ -926,9 +928,13 @@ func TestIsolationWindowsSystem_TaskStartsSuspendedAsTargetUser(t *testing.T) {
 	if err := ex.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	got := statuses.waitTerminal(t, time.Minute)
+	// The session's cleanup (directory removal, profile unload) runs after
+	// the terminal status, so wait for the task goroutine before the test's
+	// temporary directories are removed.
+	t.Cleanup(func() { ex.DrainAndShutdown(30 * time.Second) })
+	got, reason := statuses.waitTerminal(t, time.Minute)
 	if got != "succeeded" {
-		t.Fatalf("task ended %q, want succeeded; output: %q", got, lines.all())
+		t.Fatalf("task ended %q (%s), want succeeded; output: %q", got, reason, lines.all())
 	}
 	var identity string
 	for _, l := range lines.all() {
@@ -945,35 +951,39 @@ func TestIsolationWindowsSystem_TaskStartsSuspendedAsTargetUser(t *testing.T) {
 }
 
 // statusRecorder is the NATS side of a [status.Publisher]: it keeps each
-// status a task reports.
+// status a task reports, with its message.
 type statusRecorder struct {
 	mu       sync.Mutex
-	statuses []string
+	statuses []reportedStatus
+}
+
+type reportedStatus struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
 }
 
 func (r *statusRecorder) Publish(_ string, data []byte) error {
-	var m struct {
-		Status string `json:"status"`
-	}
+	var m reportedStatus
 	if err := json.Unmarshal(data, &m); err != nil {
 		return err
 	}
 	r.mu.Lock()
-	r.statuses = append(r.statuses, m.Status)
+	r.statuses = append(r.statuses, m)
 	r.mu.Unlock()
 	return nil
 }
 
-// waitTerminal returns the first terminal status reported within timeout.
-func (r *statusRecorder) waitTerminal(t *testing.T, timeout time.Duration) string {
+// waitTerminal returns the first terminal status reported within timeout,
+// and its message.
+func (r *statusRecorder) waitTerminal(t *testing.T, timeout time.Duration) (status, message string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		r.mu.Lock()
 		for _, s := range r.statuses {
-			if s == "succeeded" || s == "failed" || s == "canceled" {
+			if s.Status == "succeeded" || s.Status == "failed" || s.Status == "canceled" {
 				r.mu.Unlock()
-				return s
+				return s.Status, s.Message
 			}
 		}
 		r.mu.Unlock()
@@ -982,7 +992,7 @@ func (r *statusRecorder) waitTerminal(t *testing.T, timeout time.Duration) strin
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	t.Fatalf("no terminal status within %s; saw %v", timeout, r.statuses)
-	return ""
+	return "", ""
 }
 
 // lineRecorder is an [executor.OutputHandler] that keeps a task's output.

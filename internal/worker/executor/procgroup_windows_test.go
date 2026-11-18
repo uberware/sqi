@@ -44,6 +44,36 @@ func spawnDetachedGrandchild(t *testing.T, pingSeconds int) (cmd *exec.Cmd, mark
 	return cmd, marker
 }
 
+// TestProcessTree_RefusesAProcessNotStartedSuspended pins that superviseTree
+// checks the start it depends on: a process that was already running when it
+// was assigned may have started children outside the job, so supervision
+// fails, and closing the job kills the process.
+func TestProcessTree_RefusesAProcessNotStartedSuspended(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "ping", "-n", "30", "127.0.0.1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() {
+		cmd.Process.Kill() //nolint:errcheck // best-effort cleanup if an assertion fails first
+		cmd.Wait()         //nolint:errcheck // reaps the process; its exit status is not under test
+	})
+	tree, err := superviseTree(cmd)
+	if err == nil {
+		tree.release() //nolint:errcheck // best-effort close of the job handle
+		t.Fatal("superviseTree accepted a process that was not started suspended")
+	}
+	done := make(chan struct{})
+	go func() {
+		cmd.Wait() //nolint:errcheck // only its return is awaited
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the refused process was still running 10s later; closing its job should kill it")
+	}
+}
+
 // TestProcessTree_HoldsAGrandchildStartedBeforeSupervision pins that nothing
 // a task starts can escape its job, however long superviseTree takes after
 // Start: the task process does not run until superviseTree has assigned it.

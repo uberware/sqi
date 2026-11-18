@@ -682,11 +682,12 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// processes still in the tree, matching POSIX; see procgroup_windows.go.
 	tree, err := superviseTree(cmd)
 	if err != nil {
-		// The process is running, but nothing has registered it for cleanup
-		// yet (run.pid, sess.AddTask, the output readers) and there is no
-		// tree to call sendKILL on. Kill and reap it here so a superviseTree
-		// failure (resource exhaustion, restrictive policy, or a run-as-user
-		// permission problem) does not leave an unmanaged process running.
+		// The process exists (on Windows still suspended, or already killed
+		// by closing its job), but nothing has registered it for cleanup yet
+		// (run.pid, sess.AddTask, the output readers) and there is no tree to
+		// call sendKILL on. Kill and reap it here so a superviseTree failure
+		// (resource exhaustion, restrictive policy, or a run-as-user
+		// permission problem) does not leave an unmanaged process behind.
 		if killErr := cmd.Process.Kill(); killErr != nil {
 			e.logger.WarnContext(context.Background(), "executor: kill process after supervise failure", slog.Any("error", killErr))
 		}

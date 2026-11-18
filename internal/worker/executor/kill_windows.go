@@ -40,7 +40,7 @@ import (
 // configureProcessGroup starts the task process suspended. A job object can
 // only be assigned to a process that exists, so superviseTree
 // (procgroup_windows.go) assigns it after Start and only then lets it run:
-// nothing the task starts can be outside its job.
+// every process the task or its descendants create starts inside its job.
 func configureProcessGroup(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
