@@ -585,6 +585,11 @@ SIGKILL a third of the grace period later, and are reported as
 `worker_shutdown`, which the server treats as a reclaim: the task returns to
 `ready` and runs again from the start, with no retry consumed and no failure
 counted. So the longest a drain can take is the grace period plus a third of it.
+Environments add to that: an environment still being entered when the grace
+period ends is stopped by its own `cancelation:` method (a notify period of
+30 s unless the template sets one, 600 s at most), and the environments already
+entered then run their `onExit`, bounded only by each action's own `timeout:`,
+so a hook for jobs that use environments allows for both.
 
 Set `shutdown_grace_period` to your longest render, and set the autoscaler's
 termination hook timeout (below) to at least `grace + grace / 3` plus a margin

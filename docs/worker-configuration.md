@@ -679,6 +679,11 @@ fails or is stopped, every environment already entered still runs its
 heartbeating throughout the drain, so a long grace period does not cost it its
 tasks. On machines an autoscaler terminates, set the autoscaler's termination hook to at least the
 grace period plus a third of it ([Capacity groups](capacity.md#draining-and-shutdown_grace_period)).
+An environment still being entered when the grace period ends is stopped by its
+own `cancelation:` method (a notify period of 30 s unless the template sets
+one, 600 s at most), and the environments already entered then run their
+`onExit`, bounded only by each action's own `timeout:`, so a hook for jobs that
+use environments allows for both.
 Must be `> 0`.
 
 ```yaml
