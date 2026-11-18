@@ -36,9 +36,15 @@ group can keep the output open after the task exits, such as a daemon that
 called `setsid`, or Unreal Editor's UnrealTraceServer. The task then ends 5
 seconds after its process group has exited, and the worker logs a warning.
 That process is not killed, but later output is not captured. An OpenJD
-environment's `onEnter` or `onExit` action has no process group of its own,
-so its 5 seconds count from its exit: a service it starts in the background
-keeps running, and its later output is dropped.
+environment's `onEnter` or `onExit` action runs in a process group of its own
+(on Windows, a job object), as a task does, and its 5 seconds count from its
+own exit. A service it starts in the background keeps running after a normal
+exit, for the session's tasks, and its later output is dropped. A `timeout:`
+on the action, or a cancel, stops everything the action started, by the
+action's `cancelation:` method: `TERMINATE` (the default) kills it at once;
+`NOTIFY_THEN_TERMINATE` notifies it, waits until it has exited or the notify
+period has passed (30 seconds when the action names none), then kills it.
+Ending the session kills nothing.
 
 ### Task progress
 

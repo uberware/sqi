@@ -669,9 +669,15 @@ window receive SIGTERM, then SIGKILL a third of this period later, and are
 reported as `worker_shutdown`, which the server treats as a reclaim: the task
 returns to `ready` and runs again from the start, with no retry consumed and no
 failure counted. On workers you restart while they are busy, set it to
-your longest expected task duration. The worker keeps heartbeating throughout
-the drain, so a long grace period does not cost it its tasks. On machines an
-autoscaler terminates, set the autoscaler's termination hook to at least the
+your longest expected task duration. A task whose environment is still being
+entered counts as in flight: its `onEnter` actions get the same grace, and one
+still running at the end of it is stopped by its `cancelation:` method and the
+task is reported as `worker_shutdown`. A job or task cancel likewise reaches an
+`onEnter` in progress, and the task is reported as `canceled`. When an `onEnter`
+fails or is stopped, every environment already entered still runs its
+`onExit`, bounded only by that action's own `timeout:`. The worker keeps
+heartbeating throughout the drain, so a long grace period does not cost it its
+tasks. On machines an autoscaler terminates, set the autoscaler's termination hook to at least the
 grace period plus a third of it ([Capacity groups](capacity.md#draining-and-shutdown_grace_period)).
 Must be `> 0`.
 
@@ -1172,6 +1178,20 @@ system service starts at the task's request (Task Scheduler, WMI, an
 out-of-process COM server) is the service's child, outside the job. This applies
 to every Windows worker, isolated or not: a running task is terminated when
 the worker process exits, including on a graceful service restart.
+
+An environment's `onEnter` and `onExit` actions are contained the same way:
+each is started suspended, assigned to a job object, and then resumed, and a
+process that was not started suspended is refused, which fails the action. While the action
+runs, its job is kill-on-close, so the action's processes are terminated if
+the worker process exits. When the action exits on its own, its job is
+released and a service it started keeps running for the session's tasks. On
+POSIX each action runs in its own process group. A `timeout:` on the action,
+or a cancel, stops the action's whole tree by the action's `cancelation:`
+method. `TERMINATE` (the default) kills it at once. `NOTIFY_THEN_TERMINATE`
+notifies it (SIGTERM to the process group; on Windows `taskkill /T`, falling
+back to terminating the job), waits until the tree has exited or the notify
+period has passed (30 seconds when the action names none; 120 for a task's
+`onRun`; at most 600), then kills it.
 
 > An isolated task controls its session directory. The ACL grants the
 > target account full access, so the task can replace anything under its

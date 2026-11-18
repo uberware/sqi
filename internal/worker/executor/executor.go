@@ -577,8 +577,9 @@ func (e *Executor) Cancel(taskID, attemptID string) bool {
 			stop = append(stop, run.cancelFunc)
 			continue
 		}
-		// cancelFunc not yet set: the runTask goroutine hasn't initialized its
-		// per-task context yet.  Flag the run so runTask handles it on startup.
+		// cancelFunc not yet set: Dispatch has registered the run (addActiveTask)
+		// but not yet created its context (applyCancelFunc). Flag the run so
+		// applyCancelFunc cancels it as soon as it stores the function.
 		run.cancelRequested = true
 	}
 	e.mu.Unlock()

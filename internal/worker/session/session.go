@@ -1259,12 +1259,12 @@ const envActionDefaultNotifyPeriod = 30 * time.Second
 // internal/worker/proctree), so the tree includes every process it starts.
 // When ctx is canceled or action.TimeoutSeconds elapses while the action's
 // own process is still running, the whole tree is stopped by the action's own
-// cancelation method: killed at once for
-// TERMINATE (the default), or notified and killed once the notify period
-// (envActionDefaultNotifyPeriod when the action gives none) has passed for
-// NOTIFY_THEN_TERMINATE. runAction then waits for the process and reads the
-// rest of its output, for at most procout.DrainDelay after the exit when a
-// process it started still holds it open, and returns only after that.
+// cancelation method: killed at once for TERMINATE (the default), or notified
+// and killed once the notify period (envActionDefaultNotifyPeriod when the
+// action gives none) has passed for NOTIFY_THEN_TERMINATE. runAction then
+// waits for the process and reads the rest of its output, for at most
+// procout.DrainDelay after the exit when a process it started still holds it
+// open, and returns only after that.
 // A stop for ctx returns an error wrapping ctx.Err(); a stop for the timeout
 // returns one saying it timed out.
 //
