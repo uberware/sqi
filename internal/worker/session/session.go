@@ -1253,8 +1253,9 @@ const envActionDefaultNotifyPeriod = 30 * time.Second
 // The action runs contained, as a task does: in its own process group on
 // POSIX, and in a job object on Windows that it joins before it runs (see
 // internal/worker/proctree), so the tree includes every process it starts.
-// When ctx is canceled or action.TimeoutSeconds elapses, the whole tree is
-// stopped by the action's own cancelation method: killed at once for
+// When ctx is canceled or action.TimeoutSeconds elapses while the action's
+// own process is still running, the whole tree is stopped by the action's own
+// cancelation method: killed at once for
 // TERMINATE (the default), or notified and killed once the notify period
 // (envActionDefaultNotifyPeriod when the action gives none) has passed for
 // NOTIFY_THEN_TERMINATE. runAction then waits for the process and reads the
@@ -1265,7 +1266,8 @@ const envActionDefaultNotifyPeriod = 30 * time.Second
 //
 // When the action exits on its own, processes it started are released, not
 // killed: a service an onEnter starts in the background keeps running for the
-// session's tasks.
+// session's tasks, even when the timeout passes or ctx ends while its output
+// is still draining.
 //
 // stdout and stderr are read concurrently (to avoid pipe-buffer deadlocks)
 // and logged at debug level, so operators can diagnose environment setup
@@ -1299,7 +1301,7 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 
 	done := make(chan actionOutcome, 1)
 	go func() { done <- readAction(out, lineHandler) }()
-	res, stopErr := awaitAction(ctx, action, tree, done, logger)
+	res, stopErr := awaitAction(ctx, action, tree, out.Exited(), done, logger)
 	logActionOutcome(ctx, logger, action.Command, res)
 	if stopErr != nil {
 		return stopErr
@@ -1408,12 +1410,17 @@ func readAction(out *procout.Output, lineHandler func(stream, line string) strin
 }
 
 // awaitAction waits for the action to finish, delivered on done. If
-// action.TimeoutSeconds elapses or ctx ends first, it stops the action's
-// whole tree by the action's cancelation method, waits for the action to
-// finish, and returns the reason for the stop as stopErr. A timer, not a
-// derived context, measures the timeout, so a timeout stays distinguishable
-// from a cancel of ctx.
-func awaitAction(ctx context.Context, action *protocol.Action, tree *proctree.Tree, done <-chan actionOutcome, logger *slog.Logger) (res actionOutcome, stopErr error) {
+// action.TimeoutSeconds elapses or ctx ends while the action's own process
+// is still running, it stops the action's whole tree by the action's
+// cancelation method, waits for the action to finish, and returns the reason
+// for the stop as stopErr. A timer, not a derived context, measures the
+// timeout, so a timeout stays distinguishable from a cancel of ctx.
+//
+// The stop is decided on exited, closed when the process exits, not on done,
+// which arrives only after the output drain: an action that has exited is
+// never stopped, so a timeout or cancel during the drain, or at the same
+// moment as the exit, cannot kill a service the action left running.
+func awaitAction(ctx context.Context, action *protocol.Action, tree *proctree.Tree, exited <-chan struct{}, done <-chan actionOutcome, logger *slog.Logger) (res actionOutcome, stopErr error) {
 	var timeout <-chan time.Time
 	if action.TimeoutSeconds > 0 {
 		timer := time.NewTimer(time.Duration(action.TimeoutSeconds) * time.Second)
@@ -1421,12 +1428,19 @@ func awaitAction(ctx context.Context, action *protocol.Action, tree *proctree.Tr
 		timeout = timer.C
 	}
 	select {
-	case res = <-done:
-		return res, nil
+	case <-exited:
+		return <-done, nil
 	case <-timeout:
 		stopErr = fmt.Errorf("command %q: timed out after %ds", action.Command, action.TimeoutSeconds)
 	case <-ctx.Done():
 		stopErr = fmt.Errorf("command %q: %w", action.Command, ctx.Err())
+	}
+	// select chooses at random among ready cases, so the exit may have come
+	// first even though the timer or ctx was chosen.
+	select {
+	case <-exited:
+		return <-done, nil
+	default:
 	}
 	notify, period := proctree.Resolve(action.Cancelation, envActionDefaultNotifyPeriod)
 	if err := tree.Stop(notify, period); err != nil {

@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 )
 
@@ -44,6 +45,8 @@ type Output struct {
 	cmd            *exec.Cmd
 	streams        [2]*stream
 	done           chan struct{} // closed once both streams reach EOF
+	exited         chan struct{} // closed once Wait has seen the process exit
+	exitedOnce     sync.Once
 }
 
 // stream copies one OS pipe into the reader the caller is given.
@@ -57,7 +60,7 @@ type stream struct {
 // Output's readers. The caller reads both, or calls Discard, and then calls
 // Wait.
 func Start(cmd *exec.Cmd) (*Output, error) {
-	o := &Output{cmd: cmd, done: make(chan struct{})}
+	o := &Output{cmd: cmd, done: make(chan struct{}), exited: make(chan struct{})}
 	var childEnds []*os.File
 	closeAll := func() {
 		for _, f := range childEnds {
@@ -138,6 +141,15 @@ func (o *Output) Discard() {
 	}
 }
 
+// Exited returns a channel that is closed once Wait has seen the process
+// exit, before Wait waits for the output to close. A caller that must not act
+// on a process that has already exited, while its output is still being
+// drained, selects on it. It is closed only by Wait, so it never closes for a
+// caller that does not call Wait.
+func (o *Output) Exited() <-chan struct{} {
+	return o.exited
+}
+
 // Wait waits for the process to exit, then for its output to close, and
 // returns the process's exit error. groupAlive reports whether any process of
 // the child's own group (its process group, or its job object on Windows) is
@@ -148,6 +160,7 @@ func (o *Output) Discard() {
 // caller's readers then reach EOF after what was delivered.
 func (o *Output) Wait(groupAlive func() bool) (stillOpen bool, err error) {
 	err = o.cmd.Wait()
+	o.exitedOnce.Do(func() { close(o.exited) })
 	if groupAlive != nil {
 		tick := time.NewTicker(groupPoll)
 		defer tick.Stop()

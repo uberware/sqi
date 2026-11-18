@@ -24,8 +24,14 @@ import (
 // descendant survives it returns quickly enough to be measured.
 func lowerDrainDelay(t *testing.T) {
 	t.Helper()
+	setDrainDelay(t, 200*time.Millisecond)
+}
+
+// setDrainDelay sets procout.DrainDelay to d for the test.
+func setDrainDelay(t *testing.T, d time.Duration) {
+	t.Helper()
 	orig := procout.DrainDelay
-	procout.DrainDelay = 200 * time.Millisecond
+	procout.DrainDelay = d
 	t.Cleanup(func() { procout.DrainDelay = orig })
 }
 
@@ -216,6 +222,52 @@ func TestRunAction_NotifyThenTerminate(t *testing.T) {
 			t.Errorf("child %d that ignored SIGTERM survived its leader's exit and the notify period", pid)
 		}
 	})
+}
+
+// backgroundService leaves a process holding the action's output after the
+// action itself exits 0, as an onEnter that starts a service does.
+const backgroundService = "(exec sleep 300) & echo child=$!; exit 0"
+
+// wantServiceRunning fails the test unless the action succeeded and the
+// service it left running is still alive.
+func wantServiceRunning(t *testing.T, err error, rec *childRecorder) {
+	t.Helper()
+	if err != nil {
+		t.Errorf("runAction error = %v, want nil: the action exited 0 before any stop", err)
+	}
+	if pid := rec.pid(t); syscall.Kill(pid, 0) != nil {
+		t.Errorf("service %d the action left running was killed after the action exited", pid)
+	}
+}
+
+// TestRunAction_ExitBeforeTimeoutLeavesServiceRunning: an action that exits
+// before its timeout is not stopped when the timeout passes while its output
+// is still draining, so the service it started keeps running and the action
+// succeeds.
+func TestRunAction_ExitBeforeTimeoutLeavesServiceRunning(t *testing.T) {
+	setDrainDelay(t, 3*time.Second)
+	rec := newChildRecorder(t)
+	err := awaitRunAction(t, runActionAsync(context.Background(), t, shAction(backgroundService, 1, nil), rec.handle), 10*time.Second)
+	wantServiceRunning(t, err, rec)
+}
+
+// TestRunAction_CancelAfterExitLeavesServiceRunning: a cancel that arrives
+// after the action exited, while its output is still draining, stops
+// nothing.
+func TestRunAction_CancelAfterExitLeavesServiceRunning(t *testing.T) {
+	setDrainDelay(t, 3*time.Second)
+	rec := newChildRecorder(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := runActionAsync(ctx, t, shAction(backgroundService, 0, nil), rec.handle)
+	select {
+	case <-rec.seen:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the action never reported its child")
+	}
+	time.Sleep(time.Second)
+	cancel()
+	wantServiceRunning(t, awaitRunAction(t, result, 10*time.Second), rec)
 }
 
 // TestRunAction_CanceledContextStartsNothing: an action whose session is
