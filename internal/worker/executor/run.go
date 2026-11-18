@@ -70,15 +70,17 @@ func (r processResult) duration() time.Duration {
 
 // runTask is the goroutine that drives the full lifecycle of a single task:
 //
-//  1. Validate OnRun action.
-//  2. Build env and start the OS process.
-//  3. Publish "running" status.
-//  4. Read stdout/stderr concurrently, forwarding to the OutputHandler.
-//  5. Honor per-task timeout and context cancellation.
-//  6. Publish terminal status (succeeded/failed/canceled).
-//  7. Update metrics.
-//  8. Remove from active-tasks and release the held attempt.
-//  9. Clean up the session.
+//  1. Stop at once, starting nothing, if a cancel or the shutdown drain
+//     already stopped the run.
+//  2. Validate OnRun action.
+//  3. Build env and start the OS process.
+//  4. Publish "running" status.
+//  5. Read stdout/stderr concurrently, forwarding to the OutputHandler.
+//  6. Honor per-task timeout and context cancellation.
+//  7. Publish terminal status (succeeded/failed/canceled).
+//  8. Update metrics.
+//  9. Remove from active-tasks and release the held attempt.
+//  10. Clean up the session.
 //
 // runTask is launched by [Executor.Dispatch] and runs independently until the
 // task terminates. Dispatch registered run and made its context, taskCtx,
@@ -132,32 +134,14 @@ func (e *Executor) runTask(
 	defer func() { e.sessionMgr.Cleanup(context.Background(), sess, failed) }()
 	defer e.removeActiveTask(run)
 
-	// ── Nil-action guard ──────────────────────────────────────────────────────
-	if msg.OnRun == nil {
-		e.logger.WarnContext(
-			ctx, "executor: assignment has no OnRun action — treating as succeeded",
-			slog.String("task_id", msg.TaskID),
-			slog.String("attempt_id", msg.AttemptID),
-		)
-		e.statusPub.Running(context.Background(), msg, sess.ID, nil, time.Now())
-		zero := 0
-		e.statusPub.Terminal(context.Background(), msg, sess.ID, "succeeded", &zero, "", nil, time.Now())
-		e.m.TasksTotal.WithLabelValues("succeeded").Inc()
+	// ── Stopped before it started ─────────────────────────────────────────────
+	// The deferred session cleanup still exits the environments.
+	if e.stoppedBeforeStart(ctx, msg, sess.ID, taskCtx, &failed) {
 		return
 	}
 
-	// ── Validate command ──────────────────────────────────────────────────────
-	if msg.OnRun.Command == "" {
-		e.logger.ErrorContext(
-			ctx, "executor: OnRun.Command is empty — failing task",
-			slog.String("task_id", msg.TaskID),
-		)
-		failed = true
-		e.statusPub.Running(context.Background(), msg, sess.ID, nil, time.Now())
-		minusOne := -1
-		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &minusOne,
-			"task has an empty command", nil, time.Now())
-		e.m.TasksTotal.WithLabelValues("failed").Inc()
+	// ── Nil-action guard and command validation ─────────────────────────────────
+	if e.endedByOnRunGuard(ctx, msg, sess.ID, &failed) {
 		return
 	}
 
@@ -350,6 +334,62 @@ func (e *Executor) runTask(
 		// Successful completion: copy outputs back before publishing terminal status.
 		e.completeSucceeded(ctx, msg, sess.ID, scratchDir, result, lp, &failed)
 	}
+}
+
+// endedByOnRunGuard reports whether the assignment's OnRun action ended the
+// task before anything was staged: no action is treated as succeeded, an empty
+// command fails the task and sets *failed.
+func (e *Executor) endedByOnRunGuard(ctx context.Context, msg *protocol.AssignMsg, sessID string, failed *bool) bool {
+	if msg.OnRun == nil {
+		e.logger.WarnContext(
+			ctx, "executor: assignment has no OnRun action — treating as succeeded",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+		)
+		e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
+		zero := 0
+		e.statusPub.Terminal(context.Background(), msg, sessID, "succeeded", &zero, "", nil, time.Now())
+		e.m.TasksTotal.WithLabelValues("succeeded").Inc()
+		return true
+	}
+
+	if msg.OnRun.Command == "" {
+		e.logger.ErrorContext(
+			ctx, "executor: OnRun.Command is empty — failing task",
+			slog.String("task_id", msg.TaskID),
+		)
+		*failed = true
+		e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
+		minusOne := -1
+		e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &minusOne,
+			"task has an empty command", nil, time.Now())
+		e.m.TasksTotal.WithLabelValues("failed").Inc()
+		return true
+	}
+	return false
+}
+
+// stoppedBeforeStart reports whether a cancel or the shutdown drain stopped the
+// run after its environments were entered and before its task started. If so,
+// it publishes the outcome the canceled branch of runTask would, without
+// staging or starting anything, and sets *failed.
+func (e *Executor) stoppedBeforeStart(
+	ctx context.Context, msg *protocol.AssignMsg, sessID string, taskCtx context.Context, failed *bool,
+) bool {
+	if taskCtx.Err() == nil {
+		return false
+	}
+	*failed = true
+	status, reason := e.stopOutcome()
+	e.logger.InfoContext(
+		ctx, "executor: task stopped before it started",
+		slog.String("task_id", msg.TaskID),
+		slog.String("attempt_id", msg.AttemptID),
+		slog.String("session_id", sessID),
+		slog.String("status", status),
+	)
+	e.publishStopped(msg, sessID, status, reason)
+	return true
 }
 
 // installLogProgress compiles msg.LogProgress against the task's frames and
@@ -586,12 +626,26 @@ func (e *Executor) publishSetupFailure(msg *protocol.AssignMsg, runCtx context.C
 		e.publishPreExecFailure(msg, "", err.Error())
 		return
 	}
-	status, reason := "canceled", ""
+	status, reason := e.stopOutcome()
+	e.publishStopped(msg, "", status, reason)
+}
+
+// stopOutcome returns the terminal status and reason for a run whose context
+// was canceled: "failed" with [protocol.MessageWorkerShutdown] when the
+// shutdown drain stopped it, "canceled" with no reason when a cancel did.
+func (e *Executor) stopOutcome() (status, reason string) {
 	if e.shuttingDown.Load() {
-		status, reason = "failed", protocol.MessageWorkerShutdown
+		return "failed", protocol.MessageWorkerShutdown
 	}
-	e.statusPub.Running(context.Background(), msg, "", nil, time.Now())
-	e.statusPub.Terminal(context.Background(), msg, "", status, nil, reason, nil, time.Now())
+	return "canceled", ""
+}
+
+// publishStopped publishes "running" then status with reason and no exit code
+// for a run stopped before its process started, and records it in the task
+// metrics under status.
+func (e *Executor) publishStopped(msg *protocol.AssignMsg, sessID, status, reason string) {
+	e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
+	e.statusPub.Terminal(context.Background(), msg, sessID, status, nil, reason, nil, time.Now())
 	e.m.TasksTotal.WithLabelValues(status).Inc()
 }
 

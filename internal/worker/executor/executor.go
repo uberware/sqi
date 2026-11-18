@@ -339,7 +339,15 @@ func New(
 // created, so the whole of session setup is part of the run: a [Executor.Cancel]
 // stops an environment being entered, the shutdown drain waits for it within
 // its grace period and stops it after, and the run's context, derived from
-// e.execCtx, governs it. ctx, the lease loop's, is used only for logging.
+// e.execCtx, governs it. ctx, the lease loop's, is the worker's root context:
+// it is used for logging and to tell whether the worker is stopping.
+//
+// An assignment dispatched once ctx is done (the worker received SIGINT or
+// SIGTERM, a service stop, or a preemption notice) is not started: no
+// environment is entered and nothing runs, the attempt is reported "failed"
+// with [protocol.MessageWorkerShutdown] so the server reclaims it, and an error
+// is returned. The lease loop dispatches a whole batch in turn, so without this
+// the rest of a batch would enter its environments during the drain.
 //
 // If session creation fails — e.g. run-as-user credential resolution,
 // ancestor validation, working-directory setup or an environment's onEnter —
@@ -355,6 +363,10 @@ func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error 
 	// here every return that does not start runTask must release the attempt;
 	// runTask releases it on the paths that do.
 	e.Hold(msg.AttemptID)
+
+	if ctx.Err() != nil {
+		return e.refuseStopping(ctx, msg)
+	}
 
 	run := &taskRun{
 		taskID:    msg.TaskID,
@@ -388,7 +400,7 @@ func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error 
 
 	// Launch the task goroutine.  ctx is used only for log call context; task
 	// execution is gated on runCtx.
-	go e.runTask(ctx, msg, sess, run, runCtx, runCancel) //nolint:gosec // G118: ctx used only for logging; runCtx governs task lifetime
+	go e.runTask(ctx, msg, sess, run, runCtx, runCancel)
 
 	return nil
 }
@@ -417,6 +429,23 @@ func (e *Executor) failSetup(
 	runCancel()
 	e.wg.Done()
 	return wrapped
+}
+
+// refuseStopping ends an assignment dispatched after the worker was told to
+// stop, before anything of it is registered or started: it publishes "running"
+// then "failed" with [protocol.MessageWorkerShutdown], releases the held
+// attempt, and returns an error for Dispatch to return.
+func (e *Executor) refuseStopping(ctx context.Context, msg *protocol.AssignMsg) error {
+	err := fmt.Errorf("executor: worker is stopping: %w", context.Cause(ctx))
+	e.logger.InfoContext(
+		ctx, "executor: worker is stopping — not starting task",
+		slog.String("task_id", msg.TaskID),
+		slog.String("attempt_id", msg.AttemptID),
+	)
+	e.publishStopped(msg, "", "failed", protocol.MessageWorkerShutdown)
+	// Released only after the status is published, as failSetup does.
+	e.release(msg.AttemptID)
+	return err
 }
 
 // Hold records attemptID as held by this worker from now until its task ends
@@ -646,7 +675,10 @@ func (e *Executor) DrainAndShutdown(gracePeriod time.Duration) (completed, kille
 	killed = len(e.activeTasks)
 	e.mu.Unlock()
 
-	completed = initial - killed
+	// A run Dispatch registers after the initial snapshot (one it began just
+	// before the worker's context was canceled) can be among the survivors, so
+	// killed may exceed initial; no run then finished naturally.
+	completed = max(initial-killed, 0)
 
 	e.shuttingDown.Store(true)
 	e.execCancel() // cancels all task execution contexts → SIGTERM → SIGKILL

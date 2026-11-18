@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/worker/executor"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -104,13 +105,104 @@ func TestDispatch_CancelDuringOnEnterReportsCanceled(t *testing.T) {
 	started := filepath.Join(t.TempDir(), "started")
 	msg := setupAssign(touchEnv("A", touchAction(started, "300s"), nil))
 
+	held := watchHeld(nc, exec, msg.AttemptID)
+
 	result := dispatchAsync(t, exec, msg)
 	waitForMarker(t, started, 10*time.Second)
+	if !slices.Contains(exec.ActiveAttemptIDs(), msg.AttemptID) {
+		t.Fatal("the attempt is not held while its environment is being entered")
+	}
 	if !exec.Cancel(msg.TaskID, msg.AttemptID) {
 		t.Fatal("Cancel did not find the task whose environment is being entered")
 	}
 	if err := awaitDispatch(t, result, 10*time.Second); err == nil {
 		t.Fatal("Dispatch returned nil; want the stopped entry's error")
+	}
+	if got := nc.statuses(); !slices.Equal(got, []string{"running", "canceled"}) {
+		t.Fatalf("statuses = %v, want [running canceled]", got)
+	}
+	// Held at the terminal publish, released by the time Dispatch returns.
+	held.require(t)
+	if ids := exec.ActiveAttemptIDs(); len(ids) != 0 {
+		t.Fatalf("held after Dispatch returned = %v, want none", ids)
+	}
+}
+
+// TestDispatch_RefusesAssignmentOnceWorkerIsStopping: an assignment dispatched
+// after the worker was told to stop enters no environment and runs nothing; it
+// is reported as a worker shutdown and released.
+func TestDispatch_RefusesAssignmentOnceWorkerIsStopping(t *testing.T) {
+	exec, nc, _ := newTestExecutor(t, nil)
+	t.Cleanup(func() { exec.DrainAndShutdown(0) })
+	entered := filepath.Join(t.TempDir(), "entered")
+	msg := setupAssign(touchEnv("A", touchAction(entered, ""), nil))
+	held := watchHeld(nc, exec, msg.AttemptID)
+	exec.Hold(msg.AttemptID)
+
+	stopping, stop := context.WithCancel(context.Background())
+	stop()
+	if err := exec.Dispatch(stopping, msg); err == nil {
+		t.Fatal("Dispatch returned nil; want an error for a worker that is stopping")
+	}
+
+	time.Sleep(2 * time.Second)
+	if _, err := os.Stat(entered); err == nil {
+		t.Error("the environment's onEnter ran on a worker that is stopping")
+	}
+	msgs := nc.statusMsgs()
+	got := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		got = append(got, m.Status)
+	}
+	if !slices.Equal(got, []string{"running", "failed"}) {
+		t.Fatalf("statuses = %v, want [running failed]", got)
+	}
+	if last := msgs[len(msgs)-1]; last.Message != protocol.MessageWorkerShutdown {
+		t.Errorf("terminal message = %q, want %q", last.Message, protocol.MessageWorkerShutdown)
+	}
+	held.require(t)
+	if ids := exec.ActiveAttemptIDs(); len(ids) != 0 {
+		t.Errorf("held after Dispatch returned = %v, want none", ids)
+	}
+	if n := exec.ActiveTaskCount(); n != 0 {
+		t.Errorf("ActiveTaskCount = %d, want 0", n)
+	}
+}
+
+// cancelOnRegister is an output handler whose TaskLifecycleHook cancels the
+// attempt as it is registered, which is after its session exists and before
+// anything of the task is staged or started.
+type cancelOnRegister struct {
+	exec *executor.Executor
+}
+
+func (*cancelOnRegister) HandleLine(context.Context, string, string, string, string, string) {}
+
+func (c *cancelOnRegister) RegisterTask(attemptID, taskID, _, _ string, _ context.CancelFunc) {
+	c.exec.Cancel(taskID, attemptID)
+}
+
+func (*cancelOnRegister) Deregister(string) {}
+
+func (*cancelOnRegister) TakeFailReason(string) (string, bool) { return "", false }
+
+// TestDispatch_CancelAfterSetupStartsNoProcess: a cancel that lands after the
+// environments are entered and before the task starts is reported canceled,
+// and no attempt is made to start the task's process. The task's command does
+// not exist, so an attempt to start it would be reported failed.
+func TestDispatch_CancelAfterSetupStartsNoProcess(t *testing.T) {
+	hook := &cancelOnRegister{}
+	exec, nc, _ := newTestExecutorHandler(t, hook, fmtres.ExprLimits{})
+	hook.exec = exec
+	msg := setupAssign(touchEnv("A", nil, nil))
+	msg.OnRun = &protocol.Action{Command: filepath.Join(t.TempDir(), "no-such-command")}
+
+	result := dispatchAsync(t, exec, msg)
+	if err := awaitDispatch(t, result, 10*time.Second); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if ids := waitForNoAttempts(exec, 10*time.Second); len(ids) != 0 {
+		t.Fatalf("held after the task ended = %v, want none", ids)
 	}
 	if got := nc.statuses(); !slices.Equal(got, []string{"running", "canceled"}) {
 		t.Fatalf("statuses = %v, want [running canceled]", got)
@@ -201,5 +293,46 @@ func TestDispatch_StoppedEntryRunsEarlierOnExit(t *testing.T) {
 	}
 	if _, err := os.Stat(aOut); err != nil {
 		t.Errorf("environment A's onExit did not run after B's entry was stopped: %v", err)
+	}
+}
+
+// TestDispatch_DrainStopsEntryAndRunsEarlierOnExit: when the shutdown drain
+// stops an environment being entered, the environments already entered are
+// exited before the drain returns, and the task is reported as a worker
+// shutdown.
+func TestDispatch_DrainStopsEntryAndRunsEarlierOnExit(t *testing.T) {
+	exec, nc, _ := newTestExecutor(t, nil)
+	dir := t.TempDir()
+	aIn, aOut, bIn := filepath.Join(dir, "a-in"), filepath.Join(dir, "a-out"), filepath.Join(dir, "b-in")
+	msg := setupAssign(
+		touchEnv("A", touchAction(aIn, ""), touchAction(aOut, "")),
+		touchEnv("B", touchAction(bIn, "300s"), nil),
+	)
+
+	result := dispatchAsync(t, exec, msg)
+	waitForMarker(t, bIn, 10*time.Second)
+
+	done := make(chan struct{})
+	go func() {
+		exec.DrainAndShutdown(500 * time.Millisecond)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("DrainAndShutdown did not return within 15s")
+	}
+	if _, err := os.Stat(aOut); err != nil {
+		t.Errorf("environment A's onExit had not run when the drain returned: %v", err)
+	}
+	msgs := nc.statusMsgs()
+	if len(msgs) == 0 {
+		t.Fatal("no status was published before DrainAndShutdown returned")
+	}
+	if last := msgs[len(msgs)-1]; last.Status != "failed" || last.Message != protocol.MessageWorkerShutdown {
+		t.Errorf("terminal status = %q (%q), want failed (%q)", last.Status, last.Message, protocol.MessageWorkerShutdown)
+	}
+	if err := awaitDispatch(t, result, 5*time.Second); err == nil {
+		t.Error("Dispatch returned nil; want the stopped entry's error")
 	}
 }

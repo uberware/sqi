@@ -2009,22 +2009,12 @@ func TestExecutor_ReleasesAnAttemptOnlyAfterItsTerminalStatus(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec; run-as-user failure is Unix-specific")
 	}
-	// watch records, at each terminal publish, whether the attempt was held.
-	watch := func(nc *stubNATS, exec *executor.Executor, attemptID string) *atomicHeld {
-		h := &atomicHeld{}
-		nc.onStatus = func(m protocol.TaskStatusMsg) {
-			if m.Status == "succeeded" || m.Status == "failed" || m.Status == "canceled" {
-				h.record(slices.Contains(exec.ActiveAttemptIDs(), attemptID))
-			}
-		}
-		return h
-	}
 
 	t.Run("task ran", func(t *testing.T) {
 		exec, nc, _ := newTestExecutor(t, nil)
 		msg := makeAssign("stdout", nil)
 		msg.AttemptID = "attempt-ran"
-		held := watch(nc, exec, msg.AttemptID)
+		held := watchHeld(nc, exec, msg.AttemptID)
 		if err := exec.Dispatch(context.Background(), msg); err != nil {
 			t.Fatal(err)
 		}
@@ -2045,7 +2035,7 @@ func TestExecutor_ReleasesAnAttemptOnlyAfterItsTerminalStatus(t *testing.T) {
 		msg := makeAssign("stdout", nil)
 		msg.AttemptID = "attempt-doomed"
 		msg.Isolation = &protocol.IsolationSpec{User: "render-svc"}
-		held := watch(nc, exec, msg.AttemptID)
+		held := watchHeld(nc, exec, msg.AttemptID)
 		exec.Hold(msg.AttemptID)
 		if err := exec.Dispatch(context.Background(), msg); err == nil {
 			t.Fatal("Dispatch: want error, got nil")
@@ -2055,6 +2045,18 @@ func TestExecutor_ReleasesAnAttemptOnlyAfterItsTerminalStatus(t *testing.T) {
 		}
 		held.require(t)
 	})
+}
+
+// watchHeld records, at each terminal publish on nc, whether exec held
+// attemptID.
+func watchHeld(nc *stubNATS, exec *executor.Executor, attemptID string) *atomicHeld {
+	h := &atomicHeld{}
+	nc.onStatus = func(m protocol.TaskStatusMsg) {
+		if m.Status == "succeeded" || m.Status == "failed" || m.Status == "canceled" {
+			h.record(slices.Contains(exec.ActiveAttemptIDs(), attemptID))
+		}
+	}
+	return h
 }
 
 // atomicHeld collects, across terminal publishes, whether the attempt was
