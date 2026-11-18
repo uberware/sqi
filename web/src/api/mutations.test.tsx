@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { renderHook, act, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import {
   fetchSubmitJob,
   fetchCancelJob,
@@ -24,6 +24,7 @@ import {
   useDeleteJob,
   useResumeJob,
   usePauseJob,
+  useJobActions,
   useSetJobEstimate,
   fetchCreateStorageLocation,
   fetchUpdateStorageLocation,
@@ -349,18 +350,33 @@ describe('useCancelJob', () => {
 })
 
 describe('useDeleteJob', () => {
-  it('invalidates jobs on success', async () => {
+  it('refreshes the other job queries but not the deleted job, which is gone', async () => {
     const client = makeClient()
-    const spy = vi.spyOn(client, 'invalidateQueries')
+    const deletedFn = vi.fn(() => Promise.resolve({ id: 'job-1' }))
+    const otherFn = vi.fn(() => Promise.resolve({ id: 'job-2' }))
+    const listFn = vi.fn(() => Promise.resolve({ items: [] }))
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
 
-    const { result } = renderHook(() => useDeleteJob(), { wrapper: wrapper(client) })
+    const { result } = renderHook(
+      () => {
+        useQuery({ queryKey: queryKeys.jobs.detail('job-1'), queryFn: deletedFn })
+        useQuery({ queryKey: queryKeys.jobs.detail('job-2'), queryFn: otherFn })
+        useQuery({ queryKey: queryKeys.jobs.list({}), queryFn: listFn })
+        return useDeleteJob()
+      },
+      { wrapper: wrapper(client) },
+    )
+    await waitFor(() => expect(listFn).toHaveBeenCalledTimes(1))
 
     await act(async () => {
       await result.current.mutateAsync('job-1')
     })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.jobs.all })
+    await waitFor(() => expect(otherFn).toHaveBeenCalledTimes(2))
+    expect(listFn).toHaveBeenCalledTimes(2)
+    expect(deletedFn).toHaveBeenCalledTimes(1)
+    // Stale, so a later visit asks the server again rather than showing it.
+    expect(client.getQueryState(queryKeys.jobs.detail('job-1'))?.isInvalidated).toBe(true)
   })
 
   it('issues DELETE /jobs/{id}', async () => {
@@ -422,6 +438,26 @@ describe('usePauseJob', () => {
     })
 
     expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.jobs.all })
+  })
+})
+
+describe('useJobActions', () => {
+  it.each([
+    ['Pause', '/api/v1/jobs/job-1', 'PATCH'],
+    ['Resume', '/api/v1/jobs/job-1', 'PATCH'],
+    ['Cancel', '/api/v1/jobs/job-1/cancel', 'POST'],
+    ['Retry', '/api/v1/jobs/job-1/retry', 'POST'],
+    ['Delete', '/api/v1/jobs/job-1', 'DELETE'],
+  ] as const)('%s calls %s with %s', async (verb, url, method) => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'job-1' }))
+    const { result } = renderHook(() => useJobActions(), { wrapper: wrapper(makeClient()) })
+
+    await act(async () => {
+      await result.current[verb]('job-1')
+    })
+
+    expect(calledUrl()).toBe(url)
+    expect(calledInit().method).toBe(method)
   })
 })
 
