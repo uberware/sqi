@@ -725,8 +725,9 @@ func TestIsolation_EnvironmentActionTimeoutReapsPrivilegeDroppedChild(t *testing
 		result <- created{sess, err}
 	}()
 
-	pid := waitForPID(t, pidFile, time.Second)
-	// Read while the action is still running: its timeout is two seconds away.
+	pid := waitForPID(t, pidFile, 10*time.Second)
+	// Read while the action is still running: its two-second timeout starts
+	// only once it is running, and the pid file appears as soon as it is.
 	if got, want := realUID(t, pid), target.Uid; got != want {
 		t.Errorf("environment action's real uid = %s, want %s (%s)", got, want, renderAUser)
 	}
