@@ -681,9 +681,9 @@ tasks.
 
 On machines an autoscaler terminates, set the autoscaler's termination hook to
 at least the grace period plus a third of it, plus, for jobs that use
-environments, an entering environment's notify period (30 s unless the template
-sets one, 600 s at most) and the `onExit` timeouts of the environments already
-entered ([Capacity groups](capacity.md#draining-and-shutdown_grace_period)).
+environments, the notify period of an entering environment whose
+`cancelation:` is `NOTIFY_THEN_TERMINATE` (30 s unless the template sets one,
+600 s at most) and the `onExit` timeouts of the environments already entered ([Capacity groups](capacity.md#draining-and-shutdown_grace_period)).
 Must be `> 0`.
 
 ```yaml
