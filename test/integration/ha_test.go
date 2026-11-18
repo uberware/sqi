@@ -310,13 +310,17 @@ func newHAGroupOn(t *testing.T, rig *haRig, n int, dsn, prefix string) *haGroup 
 // newNode makes a server's directory, proxies and config file.
 func (g *haGroup) newNode(name string) *haNode {
 	t := g.t
-	n := &haNode{name: name, dir: t.TempDir(), httpAddr: fmt.Sprintf("127.0.0.1:%d", freePort(t))}
+	n := &haNode{name: name, dir: t.TempDir()}
 	urls := make([]string, 0, len(g.rig.urls))
 	for _, u := range g.rig.urls {
 		p := newTCPProxy(t, strings.TrimPrefix(u, "tls://"))
 		n.proxies = append(n.proxies, p)
 		urls = append(urls, strconv.Quote("tls://"+p.addr()))
 	}
+	// Drawn while the proxies hold their ports: a proxy listens on port 0,
+	// which freePort does not track, so drawn first the HTTP port could be
+	// handed to a proxy.
+	n.httpAddr = fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	c := g.rig
 	cfg := fmt.Sprintf(`http:
   addr: %q
