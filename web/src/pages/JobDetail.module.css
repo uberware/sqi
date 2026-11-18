@@ -6,39 +6,67 @@
   height: 100%;
 }
 
-/* ── Auto-park banner (rendered via the shared ErrorBanner, warning variant) ──── */
+/* ── Job name and job actions ────────────────────────────────────────────────── */
 
-.resumeBtn {
+.jobNameArea {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  background: var(--color-surface);
+  padding: var(--space-2) var(--space-8) var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.jobActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.jobActionBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-warning);
+  border: 1px solid var(--action-tone);
+  border-radius: var(--radius-md);
   background: transparent;
-  color: var(--color-warning);
+  color: var(--action-tone);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
 }
 
-.resumeBtn:hover:not(:disabled) {
-  background: var(--color-warning);
-  color: var(--color-text-inverse);
+.jobActionBtn:hover:not(:disabled) {
+  background: var(--action-tone-muted);
 }
 
-.resumeBtn:disabled {
+.jobActionBtn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.resumeError {
-  color: var(--color-error);
+.pauseBtn {
+  --action-tone: var(--color-info);
+  --action-tone-muted: var(--color-info-muted);
 }
 
-/* ── Job name (rendered below the block-font header in default font) ─────────── */
+.resumeJobBtn {
+  --action-tone: var(--color-success);
+  --action-tone-muted: var(--color-success-muted);
+}
 
-.jobNameArea {
-  background: var(--color-surface);
-  padding: var(--space-2) var(--space-8) var(--space-4);
-  border-bottom: 1px solid var(--color-border-subtle);
+.rerunBtn {
+  --action-tone: var(--color-warning);
+  --action-tone-muted: var(--color-warning-muted);
+}
+
+.cancelJobBtn,
+.deleteJobBtn {
+  --action-tone: var(--color-error);
+  --action-tone-muted: var(--color-error-muted);
 }
 
 .jobName {

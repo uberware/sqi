@@ -240,6 +240,7 @@ function Wrapper({
       <MemoryRouter initialEntries={[`/jobs/${jobId}`]}>
         <WebSocketProvider url="ws://test">
           <Routes>
+            <Route path="/jobs" element={<div>Job list</div>} />
             <Route path="/jobs/:id" element={children} />
             <Route path="/jobs/:id/tasks/:taskId/logs" element={<div>Log viewer</div>} />
             <Route path="/workers/:id" element={<div>Worker detail</div>} />
@@ -1224,26 +1225,25 @@ describe('JobDetail', () => {
 
     it('hides the Resume control for a read-only principal on a parked job', async () => {
       setPrincipal(READONLY_PRINCIPAL)
-      const job = makeJob({ park_reason: 'failure limit reached' })
+      const job = makeJob({ status: 'paused', park_reason: 'failure limit reached' })
       fetchMock.mockResolvedValueOnce(okJson(job))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
 
       render(<JobDetail />, { wrapper: Wrapper })
 
       await waitFor(() => screen.getByText(/Auto-parked/))
-      expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument()
     })
 
     it('shows the Resume control for an operator principal on a parked job', async () => {
       setPrincipal(OPERATOR_PRINCIPAL)
-      const job = makeJob({ park_reason: 'failure limit reached' })
+      const job = makeJob({ status: 'paused', park_reason: 'failure limit reached' })
       fetchMock.mockResolvedValueOnce(okJson(job))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
 
       render(<JobDetail />, { wrapper: Wrapper })
 
-      await waitFor(() => screen.getByRole('button', { name: 'Resume' }))
-      expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
+      expect(await screen.findByRole('button', { name: 'Resume job' })).toBeInTheDocument()
     })
   })
 
@@ -1982,6 +1982,211 @@ describe('JobDetail', () => {
 
       await waitFor(() => screen.getByText(/job is not paused/i))
       expect(screen.getByText(/job is not paused/i)).toBeInTheDocument()
+    })
+  })
+
+  // ── Job actions ─────────────────────────────────────────────────────────────
+
+  describe('job actions', () => {
+    const NO_FAILURES = {
+      total: 3,
+      pending: 0,
+      ready: 0,
+      assigned: 0,
+      running: 0,
+      succeeded: 3,
+      failed: 0,
+      canceled: 0,
+    }
+
+    /** Serves `job` for every GET and records nothing else. */
+    function renderJob(job: JobDetailType) {
+      fetchMock.mockImplementation((input, init) => {
+        const url = String(input)
+        if (init?.method !== undefined && init.method !== 'GET') {
+          return Promise.resolve(okJson(job))
+        }
+        if (url.includes('/tasks')) return Promise.resolve(okJson(makeTaskListResponse([])))
+        if (url.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+        return Promise.resolve(okJson(job))
+      })
+      render(<JobDetail />, { wrapper: Wrapper })
+    }
+
+    /** The first non-GET request, as [url, method, parsed body]. */
+    function mutation(): [string, string, unknown] | undefined {
+      for (const [input, init] of fetchMock.mock.calls) {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET') continue
+        const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined
+        return [String(input), method, body]
+      }
+      return undefined
+    }
+
+    it('offers Pause, Cancel, Re-run failed and Delete for a running job with failed tasks', async () => {
+      renderJob(makeJob({ status: 'running' }))
+
+      expect(await screen.findByRole('button', { name: 'Pause job' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Cancel job' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Re-run failed tasks' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Delete job' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Resume job' })).not.toBeInTheDocument()
+    })
+
+    it('offers Resume in place of Pause for a paused job', async () => {
+      renderJob(makeJob({ status: 'paused', task_counts: NO_FAILURES }))
+
+      expect(await screen.findByRole('button', { name: 'Resume job' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Pause job' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Cancel job' })).toBeInTheDocument()
+    })
+
+    it('offers only Re-run failed and Delete for a failed job', async () => {
+      renderJob(makeJob({ status: 'failed' }))
+
+      expect(await screen.findByRole('button', { name: 'Re-run failed tasks' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Delete job' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Pause job' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Resume job' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Cancel job' })).not.toBeInTheDocument()
+    })
+
+    it('offers only Delete for a completed job with nothing to re-run', async () => {
+      renderJob(makeJob({ status: 'completed', task_counts: NO_FAILURES }))
+
+      expect(await screen.findByRole('button', { name: 'Delete job' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Pause job' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Cancel job' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Re-run failed tasks' })).not.toBeInTheDocument()
+    })
+
+    it('hides every job action for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      renderJob(makeJob({ status: 'running' }))
+
+      await screen.findByText('Test Render Job')
+      for (const name of [
+        'Pause job',
+        'Resume job',
+        'Cancel job',
+        'Re-run failed tasks',
+        'Delete job',
+      ]) {
+        expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+      }
+    })
+
+    it('pauses the job', async () => {
+      const job = makeJob({ status: 'running' })
+      renderJob(job)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Pause job' }))
+
+      await waitFor(() =>
+        expect(mutation()).toEqual([
+          expect.stringMatching(new RegExp(`/jobs/${job.id}$`)),
+          'PATCH',
+          { action: 'pause' },
+        ]),
+      )
+    })
+
+    it('resumes the job', async () => {
+      const job = makeJob({ status: 'paused' })
+      renderJob(job)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Resume job' }))
+
+      await waitFor(() =>
+        expect(mutation()).toEqual([
+          expect.stringMatching(new RegExp(`/jobs/${job.id}$`)),
+          'PATCH',
+          { action: 'resume' },
+        ]),
+      )
+    })
+
+    it('cancels the job', async () => {
+      const job = makeJob({ status: 'running' })
+      renderJob(job)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Cancel job' }))
+
+      await waitFor(() =>
+        expect(mutation()).toEqual([
+          expect.stringContaining(`/jobs/${job.id}/cancel`),
+          'POST',
+          undefined,
+        ]),
+      )
+    })
+
+    it('re-runs the failed tasks', async () => {
+      const job = makeJob({ status: 'failed' })
+      renderJob(job)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Re-run failed tasks' }))
+
+      await waitFor(() =>
+        expect(mutation()).toEqual([
+          expect.stringContaining(`/jobs/${job.id}/retry`),
+          'POST',
+          undefined,
+        ]),
+      )
+    })
+
+    it('reports a failed action', async () => {
+      renderJob(makeJob({ status: 'running' }))
+      const pause = await screen.findByRole('button', { name: 'Pause job' })
+      fetchMock.mockImplementationOnce(() =>
+        Promise.resolve(problemJson(409, 'job cannot be paused in its current state')),
+      )
+
+      fireEvent.click(pause)
+
+      expect(
+        await screen.findByText(/Pause failed: job cannot be paused in its current state/),
+      ).toBeInTheDocument()
+    })
+
+    it('deletes the job after confirmation and returns to the job list', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const job = makeJob({ status: 'completed', task_counts: NO_FAILURES })
+      renderJob(job)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Delete job' }))
+
+      expect(await screen.findByText('Job list')).toBeInTheDocument()
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('Test Render Job'))
+      expect(mutation()).toEqual([
+        expect.stringMatching(new RegExp(`/jobs/${job.id}$`)),
+        'DELETE',
+        undefined,
+      ])
+    })
+
+    it('does not delete when the confirmation is dismissed', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(false)
+      renderJob(makeJob({ status: 'completed', task_counts: NO_FAILURES }))
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Delete job' }))
+
+      expect(mutation()).toBeUndefined()
+      expect(screen.getByText('Test Render Job')).toBeInTheDocument()
+    })
+
+    it('stays on the page and reports a failed delete', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      renderJob(makeJob({ status: 'completed', task_counts: NO_FAILURES }))
+      const del = await screen.findByRole('button', { name: 'Delete job' })
+      fetchMock.mockImplementationOnce(() => Promise.resolve(problemJson(500, 'disk on fire')))
+
+      fireEvent.click(del)
+
+      expect(await screen.findByText(/Delete failed: disk on fire/)).toBeInTheDocument()
+      expect(screen.queryByText('Job list')).not.toBeInTheDocument()
     })
   })
 

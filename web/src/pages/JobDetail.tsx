@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
-import { Link, useParams } from 'react-router'
+import type { ReactNode } from 'react'
+import { Link, useNavigate, useParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import SearchInput from '@/components/SearchInput'
@@ -9,20 +10,34 @@ import IconButton from '@/components/IconButton'
 import StatusBadge from '@/components/StatusBadge'
 import UnschedulableBadge from '@/components/UnschedulableBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
-import { Document, Rotate, X, ChevronDown } from '@/components/icons'
+import { Document, Rotate, X, ChevronDown, Pause, Play, Spinner, Trash } from '@/components/icons'
 import ErrorBanner from '@/components/ErrorBanner'
 import BulkBar from '@/components/BulkBar'
 import CopyableId from '@/components/CopyableId'
 import RefreshControls from '@/components/RefreshControls'
 import { useGetJob, useListTasks, useListWorkers, useTaskAttempts, queryKeys } from '@/api/queries'
-import { useRetryTask, useCancelTask, useResumeJob } from '@/api/mutations'
+import {
+  useRetryTask,
+  useCancelTask,
+  useCancelJob,
+  useDeleteJob,
+  usePauseJob,
+  useResumeJob,
+  useRetryJob,
+} from '@/api/mutations'
+import { useBulkAction } from '@/hooks/useBulkAction'
 import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import RemainingTime from '@/components/RemainingTime'
 import EstimateField from '@/components/EstimateField'
-import { TERMINAL_JOB_STATUSES } from '@/lib/jobStatus'
+import {
+  CANCELABLE_JOB_STATUSES,
+  PAUSABLE_JOB_STATUSES,
+  RESUMABLE_JOB_STATUSES,
+  TERMINAL_JOB_STATUSES,
+} from '@/lib/jobStatus'
 import TaskRunProgress from '@/components/TaskRunProgress'
 import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
@@ -705,6 +720,65 @@ function StepSection({
   )
 }
 
+// ── Job actions ───────────────────────────────────────────────────────────────
+
+/** Job-level actions; each reports its failures in a banner. */
+type JobAction = 'Pause' | 'Resume' | 'Cancel' | 'Re-run' | 'Delete'
+
+interface JobActionsProps {
+  job: JobDetailType
+  isBusy: (verb: JobAction) => boolean
+  onAction: (verb: Exclude<JobAction, 'Delete'>) => void
+  onDelete: () => void
+}
+
+/**
+ * The job's Pause/Resume, Cancel, Re-run failed and Delete buttons. Each is
+ * offered only in the states the server accepts it in, mirroring the job list.
+ */
+function JobActions({ job, isBusy, onAction, onDelete }: JobActionsProps) {
+  const rerunnable = (job.task_counts?.failed ?? 0) + (job.task_counts?.canceled ?? 0) > 0
+  const button = (
+    verb: JobAction,
+    label: string,
+    text: string,
+    icon: ReactNode,
+    className: string | undefined,
+    onClick: () => void,
+  ) => (
+    <button
+      type="button"
+      className={`${styles.jobActionBtn ?? ''} ${className ?? ''}`}
+      onClick={onClick}
+      disabled={isBusy(verb)}
+      aria-label={label}
+      title={label}
+    >
+      {isBusy(verb) ? <Spinner /> : icon}
+      {text}
+    </button>
+  )
+  return (
+    <div className={styles.jobActions} role="group" aria-label="Job actions">
+      {PAUSABLE_JOB_STATUSES.has(job.status) &&
+        button('Pause', 'Pause job', 'Pause', <Pause />, styles.pauseBtn, () => onAction('Pause'))}
+      {RESUMABLE_JOB_STATUSES.has(job.status) &&
+        button('Resume', 'Resume job', 'Resume', <Play />, styles.resumeJobBtn, () =>
+          onAction('Resume'),
+        )}
+      {CANCELABLE_JOB_STATUSES.has(job.status) &&
+        button('Cancel', 'Cancel job', 'Cancel', <X />, styles.cancelJobBtn, () =>
+          onAction('Cancel'),
+        )}
+      {rerunnable &&
+        button('Re-run', 'Re-run failed tasks', 'Re-run failed', <Rotate />, styles.rerunBtn, () =>
+          onAction('Re-run'),
+        )}
+      {button('Delete', 'Delete job', 'Delete', <Trash />, styles.deleteJobBtn, onDelete)}
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function JobDetail() {
@@ -713,6 +787,7 @@ export default function JobDetail() {
 
   const { principal } = useAuth()
   const canWrite = can(principal, 'jobs.write')
+  const navigate = useNavigate()
 
   const { data: job, isLoading, isError, error, dataUpdatedAt: jobUpdatedAt } = useGetJob(jobId)
   const {
@@ -740,8 +815,12 @@ export default function JobDetail() {
   const cancelTask = useCancelTask()
   const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
   const [cancelErrors, setCancelErrors] = useState<Map<string, string>>(new Map())
-  const resumeJob = useResumeJob()
-  const [resumeError, setResumeError] = useState<string | undefined>(undefined)
+  const { mutateAsync: pauseJob } = usePauseJob()
+  const { mutateAsync: resumeJob } = useResumeJob()
+  const { mutateAsync: cancelJob } = useCancelJob()
+  const { mutateAsync: retryJob } = useRetryJob()
+  const { mutateAsync: deleteJob } = useDeleteJob()
+  const jobAction = useBulkAction<JobAction>('jobs')
 
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set())
   const [taskSearch, setTaskSearch] = useState('')
@@ -967,16 +1046,31 @@ export default function JobDetail() {
     [cancelTask],
   )
 
-  // ── Resume (manual pause or auto-park) ──────────────────────────────────────
+  // ── Job actions ─────────────────────────────────────────────────────────────
 
-  const handleResume = useCallback(async () => {
-    setResumeError(undefined)
-    try {
-      await resumeJob.mutateAsync(jobId)
-    } catch (err) {
-      setResumeError(err instanceof Error ? err.message : 'Resume failed')
-    }
-  }, [resumeJob, jobId])
+  const { run: runJobAction } = jobAction
+  const handleJobAction = useCallback(
+    (verb: Exclude<JobAction, 'Delete'>) => {
+      const mutate = { Pause: pauseJob, Resume: resumeJob, Cancel: cancelJob, 'Re-run': retryJob }[
+        verb
+      ]
+      void runJobAction(verb, [jobId], mutate)
+    },
+    [runJobAction, jobId, pauseJob, resumeJob, cancelJob, retryJob],
+  )
+
+  // The job is gone once the delete lands, so return to the list; a failed
+  // delete stays here and reports itself like any other action.
+  const handleDeleteJob = useCallback(
+    (name: string) => {
+      if (!window.confirm(`Delete job "${name}" and all its data? This cannot be undone.`)) return
+      void runJobAction('Delete', [jobId], async (id) => {
+        await deleteJob(id)
+        void navigate('/jobs')
+      })
+    },
+    [runJobAction, jobId, deleteJob, navigate],
+  )
 
   // ── Bulk selection ────────────────────────────────────────────────────────
 
@@ -1069,24 +1163,23 @@ export default function JobDetail() {
       {job.park_reason !== undefined && job.park_reason !== '' && (
         <ErrorBanner variant="warning">
           <span>Auto-parked — {job.park_reason}</span>
-          {canWrite && (
-            <button
-              type="button"
-              className={styles.resumeBtn ?? ''}
-              onClick={() => void handleResume()}
-              disabled={resumeJob.isPending}
-            >
-              {resumeJob.isPending ? 'Resuming…' : 'Resume'}
-            </button>
-          )}
-          {resumeError !== undefined && (
-            <span className={styles.resumeError ?? ''}>{resumeError}</span>
-          )}
         </ErrorBanner>
       )}
 
+      {[...jobAction.errors].map(([verb, message]) => (
+        <ErrorBanner key={verb}>{message}</ErrorBanner>
+      ))}
+
       <div className={styles.jobNameArea}>
         <h2 className={styles.jobName}>{job.name}</h2>
+        {canWrite && (
+          <JobActions
+            job={job}
+            isBusy={(verb) => jobAction.isBusy(verb, jobId)}
+            onAction={handleJobAction}
+            onDelete={() => handleDeleteJob(job.name)}
+          />
+        )}
       </div>
 
       <MetadataCard

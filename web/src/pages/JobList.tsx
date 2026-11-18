@@ -598,6 +598,26 @@ export default function JobList() {
                   <td>{formatTime(job.created_at)}</td>
                   <td>{formatTimespan(job.started_at, job.completed_at, now)}</td>
                   <td className={styles.actionsCell}>
+                    {canWrite && canPause(job) && (
+                      <IconButton
+                        icon={<Pause />}
+                        className={styles.pauseBtn}
+                        onClick={() => void action.run('Pause', [job.id], pauseJob)}
+                        busy={action.isBusy('Pause', job.id)}
+                        title="Pause"
+                        label={`Pause job ${job.name}`}
+                      />
+                    )}
+                    {canWrite && canResume(job) && (
+                      <IconButton
+                        icon={<Play />}
+                        className={styles.resumeBtn}
+                        onClick={() => void action.run('Resume', [job.id], resumeJob)}
+                        busy={action.isBusy('Resume', job.id)}
+                        title="Resume"
+                        label={`Resume job ${job.name}`}
+                      />
+                    )}
                     {canWrite && canCancel(job) && !isCanceling && (
                       <IconButton
                         icon={<X />}
