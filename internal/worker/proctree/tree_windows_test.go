@@ -102,7 +102,7 @@ func TestTree_HoldsAGrandchildStartedBeforeSupervision(t *testing.T) {
 }
 
 // TestTree_KillReapsOrphanedGrandchild is the Windows counterpart of
-// kill_unix_test.go's process-group reaping test.
+// tree_unix_test.go's TestKill_TerminatesProcessGroup.
 //
 // "taskkill /F /T" walks the parent-PID tree at the moment of the call, so a
 // grandchild whose parent has already exited is orphaned and survives it.

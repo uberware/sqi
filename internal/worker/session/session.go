@@ -72,6 +72,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/procout"
+	"github.com/uberware/sqi/internal/worker/proctree"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -1236,19 +1237,35 @@ func (s *Session) scrubRedacted(line string) string {
 
 // ── Action execution ──────────────────────────────────────────────────────────
 
+// envActionDefaultNotifyPeriod is the notify period of an environment action
+// whose cancelation is NOTIFY_THEN_TERMINATE without notifyPeriodInSeconds:
+// the OpenJD default for an environment's onEnter and onExit actions. A
+// task's onRun has its own, longer default.
+const envActionDefaultNotifyPeriod = 30 * time.Second
+
 // runAction starts action.Command as a child process and waits for it to exit.
 //
 // The process runs under cred (via isolation.Apply; a nil cred applies
 // nothing) with env as its complete process environment, already built by
 // the caller (see Session.buildActionEnv). workDir is the process working
-// directory.
+// directory. An action whose ctx is already done is not started.
 //
-// If action.TimeoutSeconds > 0, a deadline is applied via a derived context.
-// When ctx is canceled or the deadline elapses, exec.CommandContext kills the
-// child process. runAction then waits for the process and reads the rest of
-// its output, for at most procout.DrainDelay after the exit when a descendant
-// still holds it open, and returns only after that, so it returns shortly
-// after context cancellation rather than at once.
+// The action runs contained, as a task does: in its own process group on
+// POSIX, and in a job object on Windows that it joins before it runs (see
+// internal/worker/proctree), so the tree includes every process it starts.
+// When ctx is canceled or action.TimeoutSeconds elapses, the whole tree is
+// stopped by the action's own cancelation method: killed at once for
+// TERMINATE (the default), or notified and killed once the notify period
+// (envActionDefaultNotifyPeriod when the action gives none) has passed for
+// NOTIFY_THEN_TERMINATE. runAction then waits for the process and reads the
+// rest of its output, for at most procout.DrainDelay after the exit when a
+// process it started still holds it open, and returns only after that.
+// A stop for ctx returns an error wrapping ctx.Err(); a stop for the timeout
+// returns one saying it timed out.
+//
+// When the action exits on its own, processes it started are released, not
+// killed: a service an onEnter starts in the background keeps running for the
+// session's tasks.
 //
 // stdout and stderr are read concurrently (to avoid pipe-buffer deadlocks)
 // and logged at debug level, so operators can diagnose environment setup
@@ -1265,22 +1282,49 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 	if action == nil || action.Command == "" {
 		return nil
 	}
-
-	// Apply per-action timeout if specified.
-	if action.TimeoutSeconds > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(action.TimeoutSeconds)*time.Second)
-		defer cancel()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("command %q: not started: %w", action.Command, err)
 	}
 
-	cmd := exec.CommandContext(ctx, action.Command, action.Args...) //nolint:gosec // command comes from the server-signed assignment
+	out, tree, err := startContainedAction(action, workDir, env, cred, logger)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if relErr := tree.Release(); relErr != nil {
+			logger.WarnContext(context.Background(), "session: release environment action process tree",
+				slog.String("command", action.Command), slog.Any("error", relErr))
+		}
+	}()
+
+	done := make(chan actionOutcome, 1)
+	go func() { done <- readAction(out, lineHandler) }()
+	res, stopErr := awaitAction(ctx, action, tree, done, logger)
+	logActionOutcome(ctx, logger, action.Command, res)
+	if stopErr != nil {
+		return stopErr
+	}
+	return res.err(action.Command)
+}
+
+// startContainedAction starts action contained in its own process tree. It
+// follows the executor's start sequence for a task: the tree is configured
+// before the credential is applied, because isolation.Apply keeps the
+// SysProcAttr fields already set and would not see ones set later, and the
+// process is supervised straight after Start, before it runs on Windows.
+func startContainedAction(action *protocol.Action, workDir string, env []string, cred *isolation.Credential, logger *slog.Logger) (*procout.Output, *proctree.Tree, error) {
+	// exec.Command, not exec.CommandContext (noctx): CommandContext kills only
+	// the direct process, with a fixed signal, bypassing the action's
+	// cancelation method; awaitAction stops the whole tree by that method.
+	cmd := exec.Command(action.Command, action.Args...) //nolint:gosec,noctx // command comes from the server-signed assignment; context handled by awaitAction
 	cmd.Dir = workDir
+	proctree.Configure(cmd)
 	// This is job-supplied code (an OpenJD environment onEnter/onExit action)
 	// and must run under the session's credential, not the daemon's. onEnter
 	// runs before any task, so a missed credential here would run job code
 	// privileged while every task around it looked isolated.
 	if err := applyCredential(cmd, cred); err != nil {
-		return fmt.Errorf("apply run-as-user credential: %w", err)
+		return nil, nil, fmt.Errorf("apply run-as-user credential: %w", err)
 	}
 	cmd.Env = env
 
@@ -1289,71 +1333,135 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 	// in the background.
 	out, err := procout.Start(cmd)
 	if err != nil {
-		return fmt.Errorf("start %q: %w", action.Command, err)
+		return nil, nil, fmt.Errorf("start %q: %w", action.Command, err)
 	}
+	tree, err := proctree.Supervise(cmd)
+	if err != nil {
+		// Nothing has registered the process for cleanup and there is no tree
+		// to stop, so kill and reap it here rather than leave it unmanaged.
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			logger.WarnContext(context.Background(), "session: kill environment action after supervise failure",
+				slog.String("command", action.Command), slog.Any("error", killErr))
+		}
+		// Nothing reads the output yet, so drop it rather than leave Wait to
+		// the drain delay.
+		out.Discard()
+		out.Wait(nil) //nolint:errcheck // best-effort reap after a forced kill; the supervise error below is what the caller sees
+		return nil, nil, fmt.Errorf("supervise %q process tree: %w", action.Command, err)
+	}
+	return out, tree, nil
+}
 
-	// Read stdout and stderr concurrently: read one after the other, a
-	// process that fills one stream while the other is unread blocks both
-	// sides. Lines are scanned individually so OpenJD environment directives
-	// are intercepted, and secrets redacted, before the output is logged.
+// actionOutcome is what an environment action's process and output yielded.
+type actionOutcome struct {
+	stdoutText, stderrText string
+	stdoutErr, stderrErr   error
+	waitErr                error
+	stillOpen              bool
+}
+
+// err is the action's result. The wait error is authoritative (non-zero
+// exit, signal kill). Read errors are reported only when the wait succeeds,
+// since a process kill closes the write end of the pipe and can produce a
+// read error that would obscure the real cause.
+func (o actionOutcome) err(command string) error {
+	if o.waitErr != nil {
+		return fmt.Errorf("command %q: %w", command, o.waitErr)
+	}
+	if o.stdoutErr != nil {
+		return fmt.Errorf("command %q: read stdout: %w", command, o.stdoutErr)
+	}
+	if o.stderrErr != nil {
+		return fmt.Errorf("command %q: read stderr: %w", command, o.stderrErr)
+	}
+	return nil
+}
+
+// readAction reads the action's stdout and stderr and waits for it to exit.
+//
+// The streams are read concurrently: read one after the other, a process
+// that fills one stream while the other is unread blocks both sides. Lines
+// are scanned individually so OpenJD environment directives are
+// intercepted, and secrets redacted, before the output is logged.
+//
+// The drain counts from the action's own exit, not from its tree emptying
+// (Wait(nil), not Wait(tree.Alive)): a service an onEnter starts in the
+// background outlives the action and keeps running, and the action must
+// still finish.
+func readAction(out *procout.Output, lineHandler func(stream, line string) string) actionOutcome {
 	var (
-		stdoutText string
-		stderrText string
-		stdoutErr  error
-		stderrErr  error
-		readWg     sync.WaitGroup
+		res    actionOutcome
+		readWg sync.WaitGroup
 	)
 	readWg.Add(2)
 	go func() {
 		defer readWg.Done()
-		stdoutText, stdoutErr = scanActionStream(out.Stdout, "stdout", lineHandler)
+		res.stdoutText, res.stdoutErr = scanActionStream(out.Stdout, "stdout", lineHandler)
 	}()
 	go func() {
 		defer readWg.Done()
-		stderrText, stderrErr = scanActionStream(out.Stderr, "stderr", lineHandler)
+		res.stderrText, res.stderrErr = scanActionStream(out.Stderr, "stderr", lineHandler)
 	}()
-	// No process group is tracked for an environment action, so the drain
-	// counts from its exit: a service it starts in the background outlives it
-	// and keeps running.
-	stillOpen, waitErr := out.Wait(nil)
+	res.stillOpen, res.waitErr = out.Wait(nil)
 	readWg.Wait()
-	if stillOpen {
+	return res
+}
+
+// awaitAction waits for the action to finish, delivered on done. If
+// action.TimeoutSeconds elapses or ctx ends first, it stops the action's
+// whole tree by the action's cancelation method, waits for the action to
+// finish, and returns the reason for the stop as stopErr. A timer, not a
+// derived context, measures the timeout, so a timeout stays distinguishable
+// from a cancel of ctx.
+func awaitAction(ctx context.Context, action *protocol.Action, tree *proctree.Tree, done <-chan actionOutcome, logger *slog.Logger) (res actionOutcome, stopErr error) {
+	var timeout <-chan time.Time
+	if action.TimeoutSeconds > 0 {
+		timer := time.NewTimer(time.Duration(action.TimeoutSeconds) * time.Second)
+		defer timer.Stop()
+		timeout = timer.C
+	}
+	select {
+	case res = <-done:
+		return res, nil
+	case <-timeout:
+		stopErr = fmt.Errorf("command %q: timed out after %ds", action.Command, action.TimeoutSeconds)
+	case <-ctx.Done():
+		stopErr = fmt.Errorf("command %q: %w", action.Command, ctx.Err())
+	}
+	notify, period := proctree.Resolve(action.Cancelation, envActionDefaultNotifyPeriod)
+	if err := tree.Stop(notify, period); err != nil {
+		// context.Background(), not ctx: ctx may be the reason for the stop,
+		// and the warning should still be logged.
+		logger.WarnContext(context.Background(), "session: stop environment action",
+			slog.String("command", action.Command), slog.Any("error", err))
+	}
+	return <-done, stopErr
+}
+
+// logActionOutcome logs the action's output at debug level, and warns when a
+// process the action started still held the output after the drain delay.
+func logActionOutcome(ctx context.Context, logger *slog.Logger, command string, res actionOutcome) {
+	if res.stillOpen {
 		logger.WarnContext(ctx,
 			"session: an environment action exited but a process it started still holds the output; output after the drain delay is not captured",
-			slog.String("command", action.Command), slog.Duration("waited", procout.DrainDelay))
+			slog.String("command", command), slog.Duration("waited", procout.DrainDelay))
 	}
-
-	if stdoutText != "" {
+	if res.stdoutText != "" {
 		logger.DebugContext(
 			ctx,
 			"session: env action stdout",
-			slog.String("command", action.Command),
-			slog.String("output", stdoutText),
+			slog.String("command", command),
+			slog.String("output", res.stdoutText),
 		)
 	}
-	if stderrText != "" {
+	if res.stderrText != "" {
 		logger.DebugContext(
 			ctx,
 			"session: env action stderr",
-			slog.String("command", action.Command),
-			slog.String("output", stderrText),
+			slog.String("command", command),
+			slog.String("output", res.stderrText),
 		)
 	}
-
-	// The wait error is the authoritative result (non-zero exit, signal kill,
-	// timeout). Read errors are reported only when the wait succeeds, since a
-	// process kill closes the write end of the pipe and can produce a read
-	// error that would obscure the real cause.
-	if waitErr != nil {
-		return fmt.Errorf("command %q: %w", action.Command, waitErr)
-	}
-	if stdoutErr != nil {
-		return fmt.Errorf("command %q: read stdout: %w", action.Command, stdoutErr)
-	}
-	if stderrErr != nil {
-		return fmt.Errorf("command %q: read stderr: %w", action.Command, stderrErr)
-	}
-	return nil
 }
 
 // scanActionStream reads r line by line, passes each line through lineHandler
