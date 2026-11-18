@@ -2,7 +2,7 @@
 
 //go:build unix
 
-package executor
+package proctree
 
 import (
 	"bufio"
@@ -13,19 +13,19 @@ import (
 	"time"
 )
 
-// TestSendKILL_TerminatesProcessGroup reproduces the per-task timeout hang:
-// a shell forks a `sleep` child that outlives it and inherits the stdout
-// pipe. Killing only the direct child (the old proc.Kill behavior) leaves the
-// grandchild alive holding the pipe write-end, so a reader never sees EOF and
-// killAndWait blocks on <-waitDone until the sleep exits naturally. Terminating
-// the whole process group kills the grandchild too, closing the pipe promptly.
-func TestSendKILL_TerminatesProcessGroup(t *testing.T) {
+// TestKill_TerminatesProcessGroup: a shell forks a `sleep` child that
+// outlives it and inherits the stdout pipe. Killing only the direct child
+// would leave the grandchild alive holding the pipe write-end, so a reader
+// would never see EOF and the caller would block until the sleep exits.
+// Terminating the whole process group kills the grandchild too, closing the
+// pipe promptly.
+func TestKill_TerminatesProcessGroup(t *testing.T) {
 	// Background the sleep so it is a distinct child that outlives the shell,
 	// then echo a marker and wait. Reading the marker guarantees the `sleep`
-	// grandchild already exists before we kill — otherwise the kill could race
-	// the fork and trivially "pass".
+	// grandchild exists before the kill; otherwise the kill could race the fork
+	// and pass trivially.
 	cmd := exec.CommandContext(t.Context(), "sh", "-c", "sleep 30 & echo started; wait")
-	configureProcessGroup(cmd)
+	Configure(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -41,12 +41,12 @@ func TestSendKILL_TerminatesProcessGroup(t *testing.T) {
 		t.Fatalf("marker read = %q, err = %v; want %q", line, err, "started")
 	}
 
-	tree, err := superviseTree(cmd)
+	tree, err := Supervise(cmd)
 	if err != nil {
-		t.Fatalf("superviseTree: %v", err)
+		t.Fatalf("Supervise: %v", err)
 	}
-	if err := tree.sendKILL(); err != nil {
-		t.Fatalf("sendKILL: %v", err)
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
 	}
 
 	// With the whole group dead, every inherited pipe write-end is closed, so
@@ -61,7 +61,7 @@ func TestSendKILL_TerminatesProcessGroup(t *testing.T) {
 
 	select {
 	case <-done:
-		// EOF reached promptly — the process group was terminated.
+		// EOF reached promptly: the process group was terminated.
 	case <-time.After(5 * time.Second):
 		t.Fatal("stdout did not reach EOF within 5s: grandchild process survived the kill")
 	}

@@ -11,11 +11,11 @@
 //
 // # Interfaces
 //
-// Executor implements both [pull.TaskDispatcher] and [pull.StateSource] so it
-// can be wired directly into the pull loop.  It also satisfies
-// [heartbeat.StateSource] by exposing [Executor.ActiveTaskCount],
-// [Executor.ActiveTaskIDs], and [Executor.LastAssignmentAt], and
-// [heartbeat.AttemptSource] by exposing [Executor.ActiveAttemptIDs].
+// Executor implements [lease.Dispatcher], so it can be wired directly into the
+// lease loop.  It also satisfies [heartbeat.StateSource] by exposing
+// [Executor.ActiveTaskCount], [Executor.ActiveTaskIDs], and
+// [Executor.LastAssignmentAt], and [heartbeat.AttemptSource] by exposing
+// [Executor.ActiveAttemptIDs].
 //
 // # Concurrency
 //
@@ -32,9 +32,9 @@
 //
 // # Root-user check
 //
-// [CheckRootUser] should be called before creating an Executor.  It returns
-// an error if the worker process is running as root on Linux/macOS and
-// [Config.AllowRoot] is false (see docs/worker-configuration.md, "worker.allow_root").
+// Call [CheckRootUser] before creating an Executor.  It returns an error if the
+// worker process is running as root on Linux/macOS and [Config.AllowRoot] is
+// false (see docs/worker-configuration.md, "worker.allow_root").
 package executor
 
 import (
@@ -77,8 +77,8 @@ type OutputHandler interface {
 // If the configured OutputHandler also implements LogFlusher, the executor
 // calls FlushLogs immediately after the task process exits and before
 // publishing the terminal "succeeded", "failed", or "canceled" status.
-// This guarantees complete log delivery to the server before the task
-// transitions to a terminal state.
+// The server therefore has the complete log before the task reaches a terminal
+// state.
 type LogFlusher interface {
 	// FlushLogs drains all remaining buffered lines for the given
 	// (taskID, attemptID) pair and blocks until the drain is complete.
@@ -130,7 +130,7 @@ type ProgressPatternHook interface {
 }
 
 // DiscardOutput is an [OutputHandler] that silently drops every line.
-// Use it in tests or when output logging is intentionally disabled.
+// Use it in tests or when output logging is disabled.
 type DiscardOutput struct{}
 
 // HandleLine discards the output line.
@@ -164,8 +164,8 @@ type Config struct {
 	// worker force-shutdown (DrainAndShutdown). Defaults to 10 s when zero or
 	// negative.
 	//
-	// Note: per-task timeout and per-task cancellation do not use this value;
-	// they follow the assignment's OpenJD Action.cancelation method (TERMINATE =
+	// Per-task timeout and per-task cancellation do not use this value; they
+	// follow the assignment's OpenJD Action.cancelation method (TERMINATE =
 	// immediate SIGKILL; NOTIFY_THEN_TERMINATE = SIGTERM then the action's notify
 	// period). KillGracePeriod governs only the worker-shutdown grace window.
 	KillGracePeriod time.Duration
@@ -188,16 +188,14 @@ type Config struct {
 	// to staging.New; when false an unconfigured stage_locally job fails hard.
 	StagingDefaults bool
 
-	// StagingIsolationCapable records, once per worker, whether this worker is
-	// capable of run-as-user isolation at all — the identical boolean
-	// cmd/sqi-worker's effectiveSessionRoot already uses to decide the
-	// session root's mode (there: isRoot(); the same value belongs here).
-	// Passed to staging.New via staging.WithIsolationCapable so the shared
-	// scratch base/job directory are created traversable-from-birth (0711)
-	// on a capable worker regardless of which job type's assignment happens
-	// to land first on a fresh scratch base, and stay at the narrower 0750 on
-	// a worker that can never isolate. See staging.WithIsolationCapable's doc
-	// for why this must be a per-worker, not per-assignment, decision.
+	// StagingIsolationCapable records, once per worker, whether this worker can
+	// run-as-user isolate at all. cmd/sqi-worker sets it from
+	// executor.IsRunningAsRoot. Passed to staging.New via
+	// staging.WithIsolationCapable so the shared scratch base and job directory
+	// are created traversable (0711) on a capable worker whichever job type's
+	// assignment arrives first, and stay at the narrower 0750 on a worker that
+	// can never isolate. See staging.WithIsolationCapable's doc for why this is
+	// a per-worker, not per-assignment, decision.
 	StagingIsolationCapable bool
 }
 
@@ -205,10 +203,12 @@ type Config struct {
 
 // taskRun holds the in-memory runtime state of an executing task.  It is
 // stored in [Executor.activeTasks], keyed by attempt ID, from Dispatch until
-// the task goroutine exits.
+// the task goroutine exits, or until Dispatch fails to create its session.
 type taskRun struct {
 	taskID    string
 	attemptID string
+	// sessionID is empty until the session is created. Protected by
+	// Executor.mu.
 	sessionID string
 	jobID     string
 
@@ -217,15 +217,14 @@ type taskRun struct {
 	// startedAt is the wall-clock time of os.Process.Start().
 	startedAt time.Time
 
-	// cancelFunc is the per-task context cancellation function, set by
-	// runTask after creating taskCtx.  External Cancel() calls use it to
-	// interrupt the running process via SIGTERM → SIGKILL escalation.
-	// Protected by Executor.mu; nil until runTask sets it.
+	// cancelFunc is the per-run context cancellation function, set by
+	// Dispatch after creating the run's context, before session setup.
+	// External Cancel() calls use it to stop session setup or the running
+	// process. Protected by Executor.mu; nil until Dispatch sets it.
 	cancelFunc context.CancelFunc
 
 	// cancelRequested is true when Cancel() was called before cancelFunc was
-	// set (i.e., the task goroutine hasn't initialized its context yet).
-	// Protected by Executor.mu; checked by runTask on startup.
+	// set. Protected by Executor.mu; checked by applyCancelFunc.
 	cancelRequested bool
 }
 
@@ -261,22 +260,25 @@ type Executor struct {
 	// flight. Protected by mu.
 	held map[string]struct{}
 
-	// execCtx / execCancel control the lifetime of all task goroutines.
-	// Task goroutines derive their taskCtx from execCtx rather than from the
-	// worker's signal context, so they survive a SIGINT/SIGTERM and are only
-	// killed when DrainAndShutdown cancels execCtx after the shutdown grace
-	// period expires.
+	// execCtx / execCancel control the lifetime of every run, session setup
+	// included. Dispatch derives each run's context from execCtx rather than
+	// from the worker's signal context, so runs survive a SIGINT/SIGTERM and
+	// are only stopped when DrainAndShutdown cancels execCtx after the
+	// shutdown grace period expires.
 	execCtx    context.Context
 	execCancel context.CancelFunc
 
 	// shuttingDown is set to true immediately before execCancel() is called in
-	// DrainAndShutdown.  runTask checks this flag in the result.Canceled branch
-	// to distinguish a force-shutdown kill (publish "failed"/"worker_shutdown")
-	// from a normal per-task server cancel (publish "canceled").
+	// DrainAndShutdown.  runTask (in the result.Canceled branch) and
+	// publishSetupFailure check it to distinguish a force-shutdown stop
+	// (publish "failed"/"worker_shutdown") from a normal per-task server cancel
+	// (publish "canceled").
 	shuttingDown atomic.Bool
 
-	// wg tracks active task goroutines so DrainAndShutdown can block until all
-	// have published their terminal statuses and exited.
+	// wg tracks every run, from Dispatch registering it (before its session is
+	// created) until its task goroutine exits or Dispatch fails it, so
+	// DrainAndShutdown can block until all have published their terminal
+	// statuses.
 	wg sync.WaitGroup
 }
 
@@ -322,68 +324,114 @@ func New(
 	}
 }
 
-// ── pull.TaskDispatcher ───────────────────────────────────────────────────────
+// ── lease.Dispatcher ──────────────────────────────────────────────────────────
 
-// Dispatch implements [pull.TaskDispatcher].
+// Dispatch implements [lease.Dispatcher].
 //
-// It creates a session and launches a goroutine that executes the task
-// process.  Dispatch itself returns quickly; the task goroutine runs
-// independently.  The server gates concurrency by CPU cores; the worker
-// runs whatever it is leased.
+// It creates a session synchronously, which enters the assignment's
+// environments, then runs the task process on its own goroutine. The run is
+// registered, with its context derived from e.execCtx, before the session is
+// created, so a [Executor.Cancel] and the shutdown drain reach an environment
+// being entered. ctx, the worker's root context, is used for logging and to
+// tell whether the worker is stopping.
 //
-// If session creation itself fails — e.g. run-as-user credential resolution,
-// ancestor validation, or working-directory setup, all of which happen
-// inside sessionMgr.Create before any taskRun exists — the failure is
-// published as a terminal task-status message (running→failed, carrying the
-// error text) rather than only logged and returned. Without this, the lease
-// loop's caller only logs the error and the task is left in "assigned" until
-// the server's heartbeat/lease sweep eventually reclaims and retries it,
-// surfacing as a bare timeout instead of the actual operator-actionable
-// reason. The returned error is preserved so the lease loop's own logging is
-// unchanged.
+// Once ctx is done (SIGINT/SIGTERM, a service stop, a preemption notice), an
+// assignment is not started: it is reported "failed" with
+// [protocol.MessageWorkerShutdown] so the server reclaims it. Otherwise the rest
+// of a leased batch would enter its environments during the drain.
+//
+// A failed session setup is published as a terminal status (see
+// [Executor.publishSetupFailure]), so the server sees the actual reason rather
+// than a lease timeout. Both cases also return an error for the lease loop to
+// log.
 func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error {
 	// Idempotent: the lease loop normally held the whole batch already. From
 	// here every return that does not start runTask must release the attempt;
 	// runTask releases it on the paths that do.
 	e.Hold(msg.AttemptID)
 
-	// Create the session.
-	sess, err := e.sessionMgr.Create(ctx, msg)
-	if err != nil {
-		wrapped := fmt.Errorf("executor: create session: %w", err)
-		e.logger.ErrorContext(
-			ctx, "executor: dispatch failed before task execution — failing task",
-			slog.String("task_id", msg.TaskID),
-			slog.String("attempt_id", msg.AttemptID),
-			slog.Any("error", wrapped),
-		)
-		e.publishPreExecFailure(msg, "", wrapped.Error())
-		// Release only after the failure is published: a heartbeat that stops
-		// reporting the attempt before its terminal status lands would invite
-		// the server to reclaim an attempt this worker is still failing.
-		e.release(msg.AttemptID)
-		return wrapped
+	if ctx.Err() != nil {
+		return e.refuseStopping(ctx, msg)
 	}
 
 	run := &taskRun{
 		taskID:    msg.TaskID,
 		attemptID: msg.AttemptID,
-		sessionID: sess.ID,
 		jobID:     msg.JobID,
 	}
 
 	// wg.Add(1) before addActiveTask closes the TOCTOU window: if DrainAndShutdown
 	// polls activeTasks and sees this task, the WaitGroup counter is already ≥1,
-	// so wg.Wait() will not return prematurely.
+	// so wg.Wait() will not return prematurely. Both happen before the session
+	// is created so the drain waits for (and counts) a run still entering its
+	// environments.
 	e.wg.Add(1)
 	e.addActiveTask(run)
 
-	// Launch the task goroutine.  ctx is the worker's signal context used only
-	// for log call context; task execution is gated on e.execCtx, which
-	// DrainAndShutdown cancels after the shutdown grace period.
-	go e.runTask(ctx, msg, sess, run) //nolint:gosec // G118: ctx used only for logging; e.execCtx governs task lifetime
+	// The run's context, derived from e.execCtx (not from ctx) so session setup
+	// and the task survive SIGINT/SIGTERM and are stopped only by a per-task
+	// cancel or by DrainAndShutdown canceling execCtx after the grace period.
+	// applyCancelFunc fires it at once if Cancel already flagged the run.
+	runCtx, runCancel := context.WithCancel(e.execCtx)
+	e.applyCancelFunc(run, runCancel)
+
+	sess, err := e.sessionMgr.Create(runCtx, msg)
+	if err != nil {
+		return e.failSetup(ctx, msg, run, runCtx, runCancel, err)
+	}
+
+	e.mu.Lock()
+	run.sessionID = sess.ID
+	e.mu.Unlock()
+
+	// Launch the task goroutine.  ctx is used only for log call context; task
+	// execution is gated on runCtx.
+	go e.runTask(ctx, msg, sess, run, runCtx, runCancel)
 
 	return nil
+}
+
+// failSetup ends a run whose session could not be created: it publishes the
+// failure, then unregisters the run, releases the held attempt and signals the
+// WaitGroup, and returns the wrapped error for Dispatch to return.
+func (e *Executor) failSetup(
+	ctx context.Context, msg *protocol.AssignMsg, run *taskRun,
+	runCtx context.Context, runCancel context.CancelFunc, err error,
+) error {
+	wrapped := fmt.Errorf("executor: create session: %w", err)
+	e.logger.ErrorContext(
+		ctx, "executor: dispatch failed before task execution — failing task",
+		slog.String("task_id", msg.TaskID),
+		slog.String("attempt_id", msg.AttemptID),
+		slog.Any("error", wrapped),
+	)
+	e.publishSetupFailure(msg, runCtx, wrapped)
+	// Release only after the failure is published: a heartbeat that stops
+	// reporting the attempt before its terminal status lands would invite
+	// the server to reclaim an attempt this worker is still failing. wg.Done
+	// last, so the drain returns only once all of this is done.
+	e.removeActiveTask(run)
+	e.release(msg.AttemptID)
+	runCancel()
+	e.wg.Done()
+	return wrapped
+}
+
+// refuseStopping ends an assignment dispatched after the worker was told to
+// stop, before anything of it is registered or started: it publishes "running"
+// then "failed" with [protocol.MessageWorkerShutdown], releases the held
+// attempt, and returns an error for Dispatch to return.
+func (e *Executor) refuseStopping(ctx context.Context, msg *protocol.AssignMsg) error {
+	err := fmt.Errorf("executor: worker is stopping: %w", context.Cause(ctx))
+	e.logger.InfoContext(
+		ctx, "executor: worker is stopping — not starting task",
+		slog.String("task_id", msg.TaskID),
+		slog.String("attempt_id", msg.AttemptID),
+	)
+	e.publishEnded(msg, "", "failed", nil, protocol.MessageWorkerShutdown)
+	// Released only after the status is published, as failSetup does.
+	e.release(msg.AttemptID)
+	return err
 }
 
 // Hold records attemptID as held by this worker from now until its task ends
@@ -411,10 +459,11 @@ func (e *Executor) ActiveAttemptIDs() []string {
 	return slices.Sorted(maps.Keys(e.held))
 }
 
-// ── pull.StateSource / heartbeat.StateSource ──────────────────────────────────
+// ── heartbeat.StateSource ─────────────────────────────────────────────────────
 
-// ActiveTaskCount returns the number of task processes currently executing.
-// Implements both [pull.StateSource] and [heartbeat.StateSource].
+// ActiveTaskCount returns the number of runs in progress, from Dispatch
+// registering a run until its goroutine exits.
+// Implements [heartbeat.StateSource].
 func (e *Executor) ActiveTaskCount() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -435,7 +484,7 @@ func (e *Executor) ActiveTaskIDs() []string {
 }
 
 // LastAssignmentAt returns the time of the most recent task assignment
-// dispatched to this executor, or nil if no task has been dispatched yet.
+// dispatched to this executor, or nil if none has been dispatched.
 // Implements [heartbeat.StateSource].
 func (e *Executor) LastAssignmentAt() *time.Time {
 	e.mu.Lock()
@@ -468,7 +517,7 @@ func (e *Executor) removeActiveTask(run *taskRun) {
 }
 
 // applyCancelFunc stores taskCancel in run (under e.mu) and calls it
-// immediately if Cancel() was called before runTask set up the context
+// immediately if Cancel() was called before Dispatch made the run's context
 // (cancelRequested flag path).
 func (e *Executor) applyCancelFunc(run *taskRun, taskCancel context.CancelFunc) {
 	e.mu.Lock()
@@ -497,9 +546,8 @@ func (e *Executor) lastProgress(attemptID string) *int {
 }
 
 // finishProgress flushes the output handler's pending progress snapshot for
-// attemptID and stops later ones, if it supports that, and returns the last
-// progress seen.  Falls back
-// to [Executor.lastProgress] for handlers without FinishProgress.
+// attemptID, stops later ones, and returns the last progress seen.  Handlers
+// without FinishProgress fall back to [Executor.lastProgress].
 func (e *Executor) finishProgress(attemptID string) *int {
 	type progressFinisher interface {
 		FinishProgress(string) *int
@@ -512,13 +560,15 @@ func (e *Executor) finishProgress(attemptID string) *int {
 
 // Cancel requests cancellation of the task identified by taskID.
 //
-// If the task is actively executing its per-task context is canceled,
-// triggering termination per the assignment's OpenJD Action.cancelation method
-// (TERMINATE by default → immediate SIGKILL; NOTIFY_THEN_TERMINATE → SIGTERM
-// then SIGKILL after the notify period).
-// If the task is known but its process has not yet started (race between
-// Dispatch and goroutine scheduling), the cancel is noted and takes effect
-// as soon as runTask initializes its context.
+// A run is known from the moment Dispatch registers it, before its session is
+// created, so a cancel reaches session setup as well as the task. Its per-run
+// context is canceled: an environment being entered is stopped by that
+// action's cancelation method, the task never starts, and the attempt is
+// reported canceled; a running task process is terminated per the
+// assignment's OpenJD Action.cancelation method (TERMINATE by default →
+// immediate SIGKILL; NOTIFY_THEN_TERMINATE → SIGTERM then SIGKILL after the
+// notify period). If the run is known but its context does not exist yet, the
+// cancel is noted and takes effect as soon as Dispatch makes it.
 //
 // A non-empty attemptID limits the cancel to that attempt
 // ([protocol.TaskCancelMsg.AttemptID]); a run of another attempt is left
@@ -542,8 +592,9 @@ func (e *Executor) Cancel(taskID, attemptID string) bool {
 			stop = append(stop, run.cancelFunc)
 			continue
 		}
-		// cancelFunc not yet set: the runTask goroutine hasn't initialized its
-		// per-task context yet.  Flag the run so runTask handles it on startup.
+		// cancelFunc not yet set: Dispatch has registered the run (addActiveTask)
+		// but not yet created its context (applyCancelFunc). Flag the run so
+		// applyCancelFunc cancels it as soon as it stores the function.
 		run.cancelRequested = true
 	}
 	e.mu.Unlock()
@@ -559,8 +610,12 @@ func (e *Executor) Cancel(taskID, attemptID string) bool {
 // naturally.  If tasks are still running when the grace period expires, it
 // sets the shuttingDown flag (so goroutines publish "failed"/"worker_shutdown"
 // rather than "canceled") and cancels the shared execCtx, triggering
-// SIGTERM → SIGKILL escalation in each runTask goroutine.  It then blocks
-// until all goroutines have published their terminal statuses and exited.
+// SIGTERM → SIGKILL escalation in each runTask goroutine and stopping each
+// environment still being entered by its action's cancelation method.  It then
+// blocks until every run has published its terminal status and ended.
+//
+// A run counts from the moment Dispatch registers it, before its session is
+// created, so a run still entering its environments is waited for and counted.
 //
 // Returns (completed, killed): the number of tasks that finished naturally
 // during the grace period vs the number that were force-terminated.
@@ -606,7 +661,10 @@ func (e *Executor) DrainAndShutdown(gracePeriod time.Duration) (completed, kille
 	killed = len(e.activeTasks)
 	e.mu.Unlock()
 
-	completed = initial - killed
+	// A run Dispatch registers after the initial snapshot (one it began just
+	// before the worker's context was canceled) can be among the survivors, so
+	// killed may exceed initial; no run then finished naturally.
+	completed = max(initial-killed, 0)
 
 	e.shuttingDown.Store(true)
 	e.execCancel() // cancels all task execution contexts → SIGTERM → SIGKILL
@@ -619,14 +677,13 @@ func (e *Executor) DrainAndShutdown(gracePeriod time.Duration) (completed, kille
 // FlushShutdownStatuses publishes a "failed"/"worker_shutdown" status for
 // every task currently in the active-tasks map.
 //
-// This must be called before draining the NATS connection during worker
-// shutdown so the server learns about task failures immediately rather than
-// waiting for the heartbeat-timeout sweep.  Each task goroutine will also
-// publish its own terminal status as it exits; the server must handle
-// duplicate terminal statuses gracefully (accept the first, ignore subsequent).
+// Call it before draining the NATS connection during worker shutdown so the
+// server learns about task failures without waiting for the heartbeat-timeout
+// sweep.  Each task goroutine also publishes its own terminal status as it
+// exits; the server accepts the first terminal status and ignores later ones.
 //
 // The total flush is bounded by a 5-second deadline so that a saturated NATS
-// connection does not stall the shutdown sequence indefinitely.
+// connection cannot stall the shutdown sequence.
 func (e *Executor) FlushShutdownStatuses() {
 	e.mu.Lock()
 	tasks := make([]status.ShutdownTask, 0, len(e.activeTasks))

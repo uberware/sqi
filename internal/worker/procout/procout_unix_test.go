@@ -198,3 +198,32 @@ func TestStart_ReturnsTheStartError(t *testing.T) {
 		t.Fatal("Start of a missing program succeeded")
 	}
 }
+
+// TestExited_ClosesAtTheExitBeforeTheDrain: Exited closes as soon as the
+// process has exited, while a descendant still holds the output and Wait is
+// still draining it.
+func TestExited_ClosesAtTheExitBeforeTheDrain(t *testing.T) {
+	shortDrain(t, 3*time.Second)
+	out := startGroup(t, "sleep 60 & echo child=$!; exit 0")
+	lines := readAll(out)
+	waited := make(chan struct{})
+	go func() {
+		out.Wait(nil) //nolint:errcheck // only the timing of the return matters
+		close(waited)
+	}()
+	t.Cleanup(func() {
+		<-waited
+		killChild(<-lines)
+	})
+
+	select {
+	case <-out.Exited():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Exited did not close within 2s of a process that exits at once")
+	}
+	select {
+	case <-waited:
+		t.Error("Wait had already returned when Exited closed: Exited waited for the drain")
+	default:
+	}
+}

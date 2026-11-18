@@ -2,12 +2,12 @@
 
 // Package session manages the lifecycle of OpenJD sessions on the worker.
 //
-// A Session is the ephemeral execution context within which one or more
-// tasks from the same job step run. It provides:
+// A Session is the ephemeral execution context in which the task of one
+// assignment runs. It provides:
 //   - An isolated working directory under <session_root>/<session_id>/
 //   - Ordered environment entry (OnEnter actions run in declaration order)
 //   - Ordered environment exit (OnExit actions run in reverse order)
-//   - Safe concurrent task tracking via AddTask / RemoveTask
+//   - Concurrency-safe tracking of running tasks via AddTask / RemoveTask
 //
 // # Session identity
 //
@@ -20,8 +20,8 @@
 // # Scope
 //
 // Sessions are worker-side runtime state, not database rows. The server
-// records the session ID only on task_attempts. There is no sessions table
-// (for session-reuse scheduling), and a session runs exactly one task; see
+// records the session ID only on task_attempts. There is no sessions table,
+// and a session runs exactly one task, so sessions are never reused; see
 // docs/architecture.md ("SQLite schema overview").
 //
 // # Usage
@@ -72,6 +72,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/procout"
+	"github.com/uberware/sqi/internal/worker/proctree"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -83,12 +84,11 @@ var applyCredential = isolation.Apply
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
-// Session is the ephemeral execution context for one or more tasks from the
-// same job step. Obtain one via [Manager.Create]; end it by calling
+// Session is the ephemeral execution context for the task of one assignment.
+// Obtain one via [Manager.Create]; end it by calling
 // [Session.ExitEnvironments] followed by [Manager.Cleanup].
 //
-// Session is safe for concurrent use. Multiple tasks may execute within a
-// single session simultaneously.
+// Session is safe for concurrent use.
 type Session struct {
 	// ID is the worker-generated unique identifier for this session.
 	// Callers include this in every [protocol.TaskStatusMsg] (as
@@ -122,17 +122,15 @@ type Session struct {
 	hasPathMap bool
 
 	// msg is the assignment that created this session, and the only task
-	// dispatched into it: sessions are not reused across tasks (see the
-	// package comment). resolveEnvParts reads msg.EXPR to choose between the
-	// base-spec fmtres.EnvScope/ResolveAction path and the phase-3
-	// fmtres.EnvSymbols/ResolveActionExpr path, and reads msg.PathMap for the
-	// EXPR path's metering and path-mapping options. Never mutated after
-	// Create, so it is read without the mu lock, like
+	// dispatched into it (see the package comment). resolveEnvParts reads
+	// msg.EXPR to choose between the base-spec fmtres.EnvScope/ResolveAction
+	// path and the phase-3 fmtres.EnvSymbols/ResolveActionExpr path, and reads
+	// msg.PathMap for the EXPR path's metering and path-mapping options. Never
+	// mutated after Create, so it is read without the mu lock, like
 	// jobParams/pathMapFile/hasPathMap above.
 	//
-	// Non-nil for every Session: Manager.Create dereferences msg
-	// (msg.Isolation) before it builds one, so resolveEnvParts reads s.msg
-	// without a nil check.
+	// Non-nil for every Session: Manager.Create dereferences msg before it
+	// builds one.
 	msg *protocol.AssignMsg
 
 	// exprBudget is the one [fmtres.AssignmentBudget] shared by every live,
@@ -140,11 +138,10 @@ type Session struct {
 	// it before enterEnvironments runs, so every environment table built
 	// during session creation shares it, and the executor's task-table
 	// resolution (internal/worker/executor's resolveAssignmentExpr, via
-	// [Session.ExprBudget]) reuses it. One budget per session, not per table
-	// and not per worker process, bounds an assignment's total entry-time
-	// phase-3 retained bytes and resolved positions across every table it
-	// builds; see fmtres.AssignmentBudget's doc comment for the choice of
-	// scope and how worker concurrency affects its size.
+	// [Session.ExprBudget]) reuses it. It bounds an assignment's total
+	// entry-time phase-3 retained bytes and resolved positions across every
+	// table it builds; see fmtres.AssignmentBudget's doc comment for how
+	// worker concurrency affects its size.
 	//
 	// The teardown path (resolveEnvAction, reached only via
 	// ExitEnvironments) does not charge this budget; see that method's doc
@@ -185,12 +182,11 @@ type Session struct {
 
 	// cred is the run-as-user identity every action runs under, or nil.
 	//
-	// Sessions are not reused (see the package comment). Any session reuse
-	// must not cross run-as-user identities, so a reuse key must include
-	// cred's identity: a session accumulates environment state (static
-	// Environment.variables and dynamic openjd_env exports) for its lifetime,
-	// and reusing it across identities hands one user's exported secrets to
-	// another user's tasks.
+	// Sessions are not reused (see the package comment). A session accumulates
+	// environment state (static Environment.variables and dynamic openjd_env
+	// exports) for its lifetime, so reusing one across run-as-user identities
+	// would hand one user's exported secrets to another user's tasks; a reuse
+	// key would have to include cred's identity.
 	cred *isolation.Credential
 
 	// baseEnv is the daemon environment already filtered by the worker's
@@ -215,7 +211,7 @@ type Session struct {
 //
 // Both places that start job-supplied commands call this: the executor for a
 // task's onRun and runAction's callers for an environment's onEnter/onExit.
-// Any new launch site must call it too, or it ignores the operator's mapping.
+// A new launch site must call it too, or it ignores the operator's mapping.
 func (s *Session) ResolveAction(a *protocol.Action) *protocol.Action {
 	if a == nil {
 		return nil
@@ -309,11 +305,16 @@ func (s *Session) ActiveTaskIDs() []string {
 // from individual OnExit actions are logged as warnings and the first one is
 // returned.
 //
+// Each onExit runs even when ctx is canceled (by a cancel or the shutdown
+// drain): teardown uses a context without ctx's cancellation, so only the
+// action's own timeout bounds it.
+//
 // ExitEnvironments is idempotent: the first call clears the
 // entered-environments list, so later calls are no-ops. [Manager.Cleanup]
 // always calls ExitEnvironments, so a caller that calls it beforehand (e.g.
 // on the cancellation path) still calls Cleanup.
 func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) error {
+	ctx = context.WithoutCancel(ctx)
 	s.mu.Lock()
 	envs := make([]protocol.AssignEnvironment, len(s.enteredEnvs))
 	copy(envs, s.enteredEnvs)
@@ -380,11 +381,11 @@ type Manager struct {
 	sessionRoot string
 	// sessionRootMode is the mode sessionRoot is created at when it does not
 	// already exist (os.MkdirAll never changes an existing directory's mode;
-	// see prepareSessionsDir). Defaults to 0711, traversable from creation,
-	// unless overridden via WithSessionRootMode. cmd/sqi-worker's
-	// effectiveSessionRoot passes 0750 for the non-root fallback under
-	// data_dir: run-as-user isolation needs root whatever the directory
-	// permissions, so that location gains nothing from 0711.
+	// see prepareSessionsDir). Defaults to 0711 unless overridden via
+	// WithSessionRootMode. cmd/sqi-worker's effectiveSessionRoot passes 0750
+	// for the non-root fallback under data_dir: run-as-user isolation needs
+	// root whatever the directory permissions, so that location gains nothing
+	// from 0711.
 	sessionRootMode    os.FileMode
 	keepFailedSessions bool
 	// provider resolves run-as-user credentials for isolated assignments.
@@ -523,17 +524,15 @@ func closeCredential(ctx context.Context, cred *isolation.Credential, sessionID 
 
 // prepareSessionsDir ensures m.sessionRoot (and any missing parent) exists,
 // validates its ancestors when the assignment is isolated, and returns it
-// unchanged for Create to build <sessionID> under. It is a
-// separate function to keep Create within the cyclomatic-complexity limit.
+// unchanged for Create to build <sessionID> under.
 //
 // The directory is created at m.sessionRootMode (0711 by default: search for
 // everyone, nothing readable or writable beyond the owner; see
-// WithSessionRootMode) rather than created narrow and widened afterward.
-// os.MkdirAll never changes the mode of a directory that already exists, so
-// this affects only a directory this call creates; an existing directory's
-// mode is never widened to make it traversable. m.sessionRoot is never
-// the worker's data_dir or an ancestor shared with the persistent worker-id
-// file; see cmd/sqi-worker's effectiveSessionRoot and
+// WithSessionRootMode). os.MkdirAll never changes the mode of a directory that
+// already exists, so this affects only a directory this call creates; an
+// existing directory's mode is never widened. m.sessionRoot is never the
+// worker's data_dir or an ancestor shared with the persistent worker-id file;
+// see cmd/sqi-worker's effectiveSessionRoot and
 // workerconfig.LoadOrCreateWorkerID.
 //
 // Ownership stays with the daemon (root): many run-as-user identities share
@@ -579,19 +578,17 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	}
 
 	// WorkDir must be absolute: it becomes cmd.Dir for every action and the base
-	// for Task.File.* / Env.File.* paths. A relative session root (e.g. under the
-	// Makefile's ./.run/workers) would otherwise yield a relative command path
-	// that the child resolves against cmd.Dir, doubling the path and failing
-	// with "no such file or directory".
+	// for Task.File.* / Env.File.* paths. A relative session root would yield a
+	// relative command path that the child resolves against cmd.Dir, doubling
+	// the path and failing with "no such file or directory".
 	workDir, err := filepath.Abs(filepath.Join(sessionsDir, sessionID))
 	if err != nil {
 		return nil, fmt.Errorf("session %s: resolve absolute working directory: %w", sessionID, err)
 	}
 	// A workDir that will run job code under a different OS identity is
-	// created 0700 (owner-only) rather than narrowed afterward. Unlike
-	// sessionsDir, this directory belongs to one session and one target user
-	// and must stay private; SecureWorkDir (called via resolveCredential
-	// below) then chowns it to cred's uid/gid.
+	// created 0700 (owner-only). Unlike sessionsDir, this directory belongs to
+	// one session and one target user and must stay private; SecureWorkDir
+	// (called via resolveCredential below) then chowns it to cred's uid/gid.
 	workDirMode := os.FileMode(0o750)
 	if msg.Isolation != nil {
 		workDirMode = 0o700
@@ -601,9 +598,8 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	}
 
 	// Resolve the OS identity before any job-supplied code runs. onEnter is
-	// job code, one of the two launch sites that must carry a credential (the
-	// executor's task-process launch is the other), and must never run as the
-	// daemon while looking isolated.
+	// job code and is one of the two launch sites that must carry a credential
+	// (the executor's task-process launch is the other).
 	cred, err := m.resolveCredential(ctx, msg, sessionID, workDir)
 	if err != nil {
 		return nil, err
@@ -624,8 +620,7 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		// unwritable to them, and DCCs write configs wherever these point.
 		// The resolved identity can have no home directory (NSS resolution can
 		// come back empty; see isolation.unixProvider.resolveIdentityViaNSS),
-		// and keeping envutil.BaseEnv's inherited HOME would then hand the
-		// task the daemon's home (typically /root), which this identity cannot
+		// and the inherited HOME (typically /root) is one this identity cannot
 		// write. Fall back to the session's working directory, which
 		// SecureWorkDir (called by resolveCredential above) made cred's own.
 		home := cred.Home
@@ -656,10 +651,9 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 
 	// Write the OpenJD path-mapping file once, at session creation, so that
 	// both environment actions (entered below) and the task action (run later
-	// by the executor) find a real file at Session.PathMappingRulesFile. The
-	// executor does not write it. It is written only when the
-	// translation_file delivery is enabled; an assignment with no deliveries
-	// set gets it whenever it carries rules.
+	// by the executor) find a real file at Session.PathMappingRulesFile. It is
+	// written only when the translation_file delivery is enabled; an
+	// assignment with no deliveries set gets it whenever it carries rules.
 	hasPathMap := len(msg.PathMap) > 0 && translationFileEnabled(msg.PathDeliveries)
 	var pathMapFile string
 	if hasPathMap {
@@ -739,11 +733,10 @@ func (m *Manager) Cleanup(ctx context.Context, s *Session, failed bool) {
 		)
 	}
 
-	// The session's run-as-user credential (if any) is not needed after the
-	// session ends; this is where the normal path closes it, as Create's
-	// error paths do. It is closed even when keepFailedSessions retains the
-	// working directory below: files kept for inspection do not need the
-	// credential handle.
+	// The session's run-as-user credential (if any) is closed here on the
+	// normal path, as Create's error paths close it on theirs. It is closed
+	// even when keepFailedSessions retains the working directory below: files
+	// kept for inspection do not need the credential handle.
 	closeCredential(ctx, s.cred, s.ID, m.logger)
 
 	// Retain the working directory on failure when the debug flag is set.
@@ -776,7 +769,7 @@ func (m *Manager) Cleanup(ctx context.Context, s *Session, failed bool) {
 
 // enterEnvironments enters each environment in envs in declaration order.
 // If any OnEnter action fails, already-entered environments are torn down
-// in reverse order before the error is returned.
+// in reverse order before the error is returned, also when ctx was canceled.
 func (s *Session) enterEnvironments(ctx context.Context, envs []protocol.AssignEnvironment, logger *slog.Logger) error {
 	for _, env := range envs {
 		if err := s.enterOne(ctx, env, logger); err != nil {
@@ -890,7 +883,7 @@ type envFileResolver func([]protocol.EmbeddedFile) ([]protocol.EmbeddedFile, err
 // at entry, an onExit referencing a step-template binding would fail as an
 // unknown symbol, and [Session.ExitEnvironments] logs such a failure as a
 // warning and continues. Any OpenJD Template Schemas §3.6.2 ordering
-// constraint belongs here.
+// constraint is implemented here.
 //
 // s.msg.EXPR selects the resolution family. A base-spec assignment (EXPR
 // false, the zero value) takes the
@@ -1236,19 +1229,37 @@ func (s *Session) scrubRedacted(line string) string {
 
 // ── Action execution ──────────────────────────────────────────────────────────
 
+// envActionDefaultNotifyPeriod is the notify period of an environment action
+// whose cancelation is NOTIFY_THEN_TERMINATE without notifyPeriodInSeconds:
+// the OpenJD default for an environment's onEnter and onExit actions. A
+// task's onRun has its own, longer default.
+const envActionDefaultNotifyPeriod = 30 * time.Second
+
 // runAction starts action.Command as a child process and waits for it to exit.
 //
 // The process runs under cred (via isolation.Apply; a nil cred applies
 // nothing) with env as its complete process environment, already built by
 // the caller (see Session.buildActionEnv). workDir is the process working
-// directory.
+// directory. An action whose ctx is already done is not started.
 //
-// If action.TimeoutSeconds > 0, a deadline is applied via a derived context.
-// When ctx is canceled or the deadline elapses, exec.CommandContext kills the
-// child process. runAction then waits for the process and reads the rest of
-// its output, for at most procout.DrainDelay after the exit when a descendant
-// still holds it open, and returns only after that, so it returns shortly
-// after context cancellation rather than at once.
+// The action runs contained, as a task does: in its own process group on
+// POSIX, and in a job object on Windows that it joins before it runs (see
+// internal/worker/proctree), so the tree includes every process it starts.
+// When ctx is canceled or action.TimeoutSeconds elapses while the action's
+// own process is still running, the whole tree is stopped by the action's own
+// cancelation method: killed at once for TERMINATE (the default), or notified
+// and killed once the notify period (envActionDefaultNotifyPeriod when the
+// action gives none) has passed for NOTIFY_THEN_TERMINATE. runAction then
+// waits for the process and reads the rest of its output, for at most
+// procout.DrainDelay after the exit when a process it started still holds it
+// open, and returns only after that.
+// A stop for ctx returns an error wrapping ctx.Err(); a stop for the timeout
+// returns one saying it timed out.
+//
+// When the action exits on its own, processes it started are released, not
+// killed: a service an onEnter starts in the background keeps running for the
+// session's tasks, even when the timeout passes or ctx ends while its output
+// is still draining.
 //
 // stdout and stderr are read concurrently (to avoid pipe-buffer deadlocks)
 // and logged at debug level, so operators can diagnose environment setup
@@ -1265,22 +1276,47 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 	if action == nil || action.Command == "" {
 		return nil
 	}
-
-	// Apply per-action timeout if specified.
-	if action.TimeoutSeconds > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(action.TimeoutSeconds)*time.Second)
-		defer cancel()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("command %q: not started: %w", action.Command, err)
 	}
 
-	cmd := exec.CommandContext(ctx, action.Command, action.Args...) //nolint:gosec // command comes from the server-signed assignment
+	out, tree, err := startContainedAction(action, workDir, env, cred, logger)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if relErr := tree.Release(); relErr != nil {
+			logger.WarnContext(context.Background(), "session: release environment action process tree",
+				slog.String("command", action.Command), slog.Any("error", relErr))
+		}
+	}()
+
+	done := make(chan actionOutcome, 1)
+	go func() { done <- readAction(out, lineHandler) }()
+	res, stopErr := awaitAction(ctx, action, tree, out.Exited(), done, logger)
+	logActionOutcome(ctx, logger, action.Command, res)
+	if stopErr != nil {
+		return stopErr
+	}
+	return res.err(action.Command)
+}
+
+// startContainedAction starts action contained in its own process tree. It
+// follows the executor's start sequence for a task: the tree is configured
+// before the credential is applied, because isolation.Apply keeps the
+// SysProcAttr fields already set and would not see ones set later, and the
+// process is supervised straight after Start, before it runs on Windows.
+func startContainedAction(action *protocol.Action, workDir string, env []string, cred *isolation.Credential, logger *slog.Logger) (*procout.Output, *proctree.Tree, error) {
+	// exec.Command, not exec.CommandContext (noctx): CommandContext kills only
+	// the direct process, with a fixed signal, bypassing the action's
+	// cancelation method; awaitAction stops the whole tree by that method.
+	cmd := exec.Command(action.Command, action.Args...) //nolint:gosec,noctx // command comes from the server-signed assignment; context handled by awaitAction
 	cmd.Dir = workDir
+	proctree.Configure(cmd)
 	// This is job-supplied code (an OpenJD environment onEnter/onExit action)
-	// and must run under the session's credential, not the daemon's. onEnter
-	// runs before any task, so a missed credential here would run job code
-	// privileged while every task around it looked isolated.
+	// and must run under the session's credential, not the daemon's.
 	if err := applyCredential(cmd, cred); err != nil {
-		return fmt.Errorf("apply run-as-user credential: %w", err)
+		return nil, nil, fmt.Errorf("apply run-as-user credential: %w", err)
 	}
 	cmd.Env = env
 
@@ -1289,71 +1325,143 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 	// in the background.
 	out, err := procout.Start(cmd)
 	if err != nil {
-		return fmt.Errorf("start %q: %w", action.Command, err)
+		return nil, nil, fmt.Errorf("start %q: %w", action.Command, err)
 	}
+	tree, err := proctree.Supervise(cmd)
+	if err != nil {
+		// Nothing has registered the process for cleanup and there is no tree
+		// to stop, so kill and reap it here rather than leave it unmanaged.
+		if killErr := out.Abort(); killErr != nil {
+			logger.WarnContext(context.Background(), "session: kill environment action after supervise failure",
+				slog.String("command", action.Command), slog.Any("error", killErr))
+		}
+		return nil, nil, fmt.Errorf("supervise %q process tree: %w", action.Command, err)
+	}
+	return out, tree, nil
+}
 
-	// Read stdout and stderr concurrently: read one after the other, a
-	// process that fills one stream while the other is unread blocks both
-	// sides. Lines are scanned individually so OpenJD environment directives
-	// are intercepted, and secrets redacted, before the output is logged.
+// actionOutcome is what an environment action's process and output yielded.
+type actionOutcome struct {
+	stdoutText, stderrText string
+	stdoutErr, stderrErr   error
+	waitErr                error
+	stillOpen              bool
+}
+
+// err is the action's result. The wait error is authoritative (non-zero
+// exit, signal kill). Read errors are reported only when the wait succeeds,
+// since a process kill closes the write end of the pipe and can produce a
+// read error that would obscure the real cause.
+func (o actionOutcome) err(command string) error {
+	if o.waitErr != nil {
+		return fmt.Errorf("command %q: %w", command, o.waitErr)
+	}
+	if o.stdoutErr != nil {
+		return fmt.Errorf("command %q: read stdout: %w", command, o.stdoutErr)
+	}
+	if o.stderrErr != nil {
+		return fmt.Errorf("command %q: read stderr: %w", command, o.stderrErr)
+	}
+	return nil
+}
+
+// readAction reads the action's stdout and stderr and waits for it to exit.
+//
+// The streams are read concurrently: read one after the other, a process
+// that fills one stream while the other is unread blocks both sides. Lines
+// are scanned individually so OpenJD environment directives are
+// intercepted, and secrets redacted, before the output is logged.
+//
+// The drain counts from the action's own exit, not from its tree emptying
+// (Wait(nil), not Wait(tree.Alive)): a service an onEnter starts in the
+// background outlives the action and keeps running, and the action must
+// still finish.
+func readAction(out *procout.Output, lineHandler func(stream, line string) string) actionOutcome {
 	var (
-		stdoutText string
-		stderrText string
-		stdoutErr  error
-		stderrErr  error
-		readWg     sync.WaitGroup
+		res    actionOutcome
+		readWg sync.WaitGroup
 	)
 	readWg.Add(2)
 	go func() {
 		defer readWg.Done()
-		stdoutText, stdoutErr = scanActionStream(out.Stdout, "stdout", lineHandler)
+		res.stdoutText, res.stdoutErr = scanActionStream(out.Stdout, "stdout", lineHandler)
 	}()
 	go func() {
 		defer readWg.Done()
-		stderrText, stderrErr = scanActionStream(out.Stderr, "stderr", lineHandler)
+		res.stderrText, res.stderrErr = scanActionStream(out.Stderr, "stderr", lineHandler)
 	}()
-	// No process group is tracked for an environment action, so the drain
-	// counts from its exit: a service it starts in the background outlives it
-	// and keeps running.
-	stillOpen, waitErr := out.Wait(nil)
+	res.stillOpen, res.waitErr = out.Wait(nil)
 	readWg.Wait()
-	if stillOpen {
+	return res
+}
+
+// awaitAction waits for the action to finish, delivered on done. If
+// action.TimeoutSeconds elapses or ctx ends while the action's own process
+// is still running, it stops the action's whole tree by the action's
+// cancelation method, waits for the action to finish, and returns the reason
+// for the stop as stopErr. A timer, not a derived context, measures the
+// timeout, so a timeout stays distinguishable from a cancel of ctx.
+//
+// The stop is decided on exited, closed when the process exits, not on done,
+// which arrives only after the output drain: an action that has exited is
+// never stopped, so a timeout or cancel during the drain, or at the same
+// moment as the exit, cannot kill a service the action left running.
+func awaitAction(ctx context.Context, action *protocol.Action, tree *proctree.Tree, exited <-chan struct{}, done <-chan actionOutcome, logger *slog.Logger) (res actionOutcome, stopErr error) {
+	var timeout <-chan time.Time
+	if action.TimeoutSeconds > 0 {
+		timer := time.NewTimer(time.Duration(action.TimeoutSeconds) * time.Second)
+		defer timer.Stop()
+		timeout = timer.C
+	}
+	select {
+	case <-exited:
+		return <-done, nil
+	case <-timeout:
+		stopErr = fmt.Errorf("command %q: timed out after %ds", action.Command, action.TimeoutSeconds)
+	case <-ctx.Done():
+		stopErr = fmt.Errorf("command %q: %w", action.Command, ctx.Err())
+	}
+	// select chooses at random among ready cases, so the exit may have come
+	// first even though the timer or ctx was chosen.
+	select {
+	case <-exited:
+		return <-done, nil
+	default:
+	}
+	notify, period := proctree.Resolve(action.Cancelation, envActionDefaultNotifyPeriod)
+	if err := tree.Stop(notify, period); err != nil {
+		// context.Background(), not ctx: ctx may be the reason for the stop,
+		// and the warning should still be logged.
+		logger.WarnContext(context.Background(), "session: stop environment action",
+			slog.String("command", action.Command), slog.Any("error", err))
+	}
+	return <-done, stopErr
+}
+
+// logActionOutcome logs the action's output at debug level, and warns when a
+// process the action started still held the output after the drain delay.
+func logActionOutcome(ctx context.Context, logger *slog.Logger, command string, res actionOutcome) {
+	if res.stillOpen {
 		logger.WarnContext(ctx,
 			"session: an environment action exited but a process it started still holds the output; output after the drain delay is not captured",
-			slog.String("command", action.Command), slog.Duration("waited", procout.DrainDelay))
+			slog.String("command", command), slog.Duration("waited", procout.DrainDelay))
 	}
-
-	if stdoutText != "" {
+	if res.stdoutText != "" {
 		logger.DebugContext(
 			ctx,
 			"session: env action stdout",
-			slog.String("command", action.Command),
-			slog.String("output", stdoutText),
+			slog.String("command", command),
+			slog.String("output", res.stdoutText),
 		)
 	}
-	if stderrText != "" {
+	if res.stderrText != "" {
 		logger.DebugContext(
 			ctx,
 			"session: env action stderr",
-			slog.String("command", action.Command),
-			slog.String("output", stderrText),
+			slog.String("command", command),
+			slog.String("output", res.stderrText),
 		)
 	}
-
-	// The wait error is the authoritative result (non-zero exit, signal kill,
-	// timeout). Read errors are reported only when the wait succeeds, since a
-	// process kill closes the write end of the pipe and can produce a read
-	// error that would obscure the real cause.
-	if waitErr != nil {
-		return fmt.Errorf("command %q: %w", action.Command, waitErr)
-	}
-	if stdoutErr != nil {
-		return fmt.Errorf("command %q: read stdout: %w", action.Command, stdoutErr)
-	}
-	if stderrErr != nil {
-		return fmt.Errorf("command %q: read stderr: %w", action.Command, stderrErr)
-	}
-	return nil
 }
 
 // scanActionStream reads r line by line, passes each line through lineHandler
@@ -1362,7 +1470,7 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 // lets the session intercept OpenJD environment directives and redact secrets
 // before any output reaches the logger.
 //
-// The scanner's per-token buffer is raised from the default 64 KB to 4 MB so
+// The scanner's per-token buffer is 4 MB rather than bufio's default 64 KB, so
 // that environment-action commands that emit long log lines (e.g. compiler
 // output, base64-encoded payloads) do not trigger bufio.ErrTooLong and fail an
 // otherwise-successful action. Directives are short, so this limit does not
@@ -1375,7 +1483,6 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 func scanActionStream(r io.Reader, stream string, lineHandler func(stream, line string) string) (string, error) {
 	var buf strings.Builder
 	scanner := bufio.NewScanner(r)
-	// Raise the per-token limit from the default 64 KB to 4 MB.
 	const maxLineBytes = 4 * 1024 * 1024
 	scanner.Buffer(make([]byte, 64*1024), maxLineBytes)
 	for scanner.Scan() {
@@ -1429,9 +1536,8 @@ func writeEmbeddedFiles(workDir string, files []protocol.EmbeddedFile, cred *iso
 // write. The mode (0640, or 0750 when Runnable) has no "other" bits, so
 // without the chown an isolated task, being neither the owner nor in the
 // group, could neither read a data file nor execute a runnable one. The mode
-// is never
-// widened to world-readable: these files can carry job data, and the chown
-// makes them usable by the one identity that needs them.
+// is not widened to world-readable: these files can carry job data, and the
+// chown makes them usable by the one identity that needs them.
 //
 // Step embedded files are written after job code has already run as the
 // target uid (the environment onEnter action runs first), at a predictable
