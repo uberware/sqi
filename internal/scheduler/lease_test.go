@@ -415,7 +415,7 @@ func TestHandleLeaseRequest_EmptyTimesOut(t *testing.T) {
 	}
 }
 
-// TestAnswerLease_HoldsAStoppingReplyUntilReleased pins H13f11's ordering at
+// TestAnswerLease_HoldsAStoppingReplyUntilReleased pins the shutdown order at
 // the scheduler: while running, a lease reply goes out at once; once the
 // scheduler is stopping, it is held until the lease subscriber has stopped
 // taking requests, so the worker's next request cannot race the broker's

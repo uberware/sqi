@@ -764,9 +764,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 // answers every request empty and at once, parked ones included, and a worker
 // asks again the moment a reply arrives; answered before the broker stops
 // routing here, that next request can be forwarded by another cluster node
-// and dropped, leaving the worker to wait out its whole request timeout
-// (H13f11). Held back, the reply leaves after the interest removal, and the
-// next request finds no responder.
+// and dropped, leaving the worker to wait out its whole request timeout.
+// Held back, the reply leaves after the interest removal, and the next
+// request finds no responder.
 func (s *Scheduler) answerLease(workerID, queueID string, data []byte) []byte {
 	reply := s.handleLeaseRequest(workerID, queueID, data)
 	if s.ctx.Err() != nil {
@@ -791,10 +791,10 @@ func (s *Scheduler) stopLeaseSub(ctx context.Context) {
 	}
 }
 
-// leaseStopTimeout bounds waiting for the lease subscriber to answer the
-// requests it took at shutdown. Each handler returns as soon as the
-// scheduler's context ends, so this is reached only when the broker is not
-// answering.
+// leaseStopTimeout bounds stopping the lease subscriber at shutdown: the
+// drain, then answering the requests it took. Once the scheduler's context
+// has ended, each handler answers as soon as the drain completes, so this is
+// reached only when the broker is not answering.
 const leaseStopTimeout = time.Second
 
 // stopDiag unsubscribes the core-NATS diagnostic-log subscriber if active.

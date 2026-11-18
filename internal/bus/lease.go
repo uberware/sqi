@@ -44,18 +44,18 @@ func (l *LeaseSubscription) Unsubscribe() error {
 // exactly once, whatever Stop returns, and is where the caller releases the
 // replies it holds back while stopping (see below).
 //
-// The subscription is drained, not unsubscribed, so the client keeps
-// delivering until the broker node it is connected to has stopped routing
-// here: until then a request is delivered and answered, and after it one
-// sent to that node finds no responder, and the worker retries after its
-// brief backoff rather than waiting out its whole request timeout. On a
+// The subscription is drained, so the client keeps delivering until the
+// broker node it is connected to has stopped routing here: until then a
+// request is delivered and answered, and after it one sent to that node
+// finds no responder, and the worker retries after its brief backoff rather
+// than waiting out its whole request timeout. On a
 // cluster, a node that has not yet learnt the interest is gone still
 // forwards a request, which is then dropped. The caller narrows that window
 // by sending no reply while stopping until wake: a reply then follows the
 // interest removal over the same route, so the requester's node has seen it
-// go before the requester can ask again. Waiting for the handlers matters
-// because the server closes its connection right after the scheduler stops,
-// and a reply sent after that is lost too.
+// go before the requester can ask again. Stop waits for the handlers because
+// the server closes its connection right after the scheduler stops, and a
+// reply sent after that is lost too.
 func (l *LeaseSubscription) Stop(ctx context.Context, wake func()) error {
 	woken := false
 	defer func() {

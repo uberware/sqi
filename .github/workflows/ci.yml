@@ -2218,9 +2218,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1 libegl1 libxkbcommon0 libsm6
 
-      # download.blender.org refuses some runner requests (a 403 failed a main
-      # push once), so the tarball is fetched once per pinned checksum and
-      # cached, and a fetch retries.
+      # download.blender.org can refuse a runner's request, so the tarball is
+      # cached per pinned checksum and the download retries.
       - name: Cache the Blender ${{ env.BLENDER_VERSION }} tarball
         id: blender-cache
         uses: actions/cache@v6

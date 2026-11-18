@@ -97,7 +97,7 @@ func TestSubscribeLease_IgnoresUnparsableSubject(t *testing.T) {
 }
 
 // TestLeaseSubscription_StopAnswersEveryRequestItTook pins a graceful stop's
-// lease handover (H13f11). A parked request is answered once Stop wakes it,
+// lease handover. A parked request is answered once Stop wakes it,
 // and the worker re-requests the moment a reply arrives. Every request the
 // subscription took must be answered before Stop returns, since the server
 // closes its connection right after; once the interest is gone a request
