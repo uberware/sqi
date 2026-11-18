@@ -154,6 +154,30 @@ func TestMain(m *testing.M) {
 		time.Sleep(dur)
 		os.Exit(0)
 
+	case "touch":
+		// Create the (empty) file named by a marker=<path> argument, if any, then
+		// sleep for a sleep=<duration> argument (default 0) and exit 0, so a test
+		// can see that an action started and keep it running.
+		var sleep time.Duration
+		for _, arg := range os.Args[1:] {
+			if p, ok := strings.CutPrefix(arg, "marker="); ok {
+				if err := os.WriteFile(p, nil, 0o600); err != nil {
+					fmt.Fprintln(os.Stderr, "touch:", err)
+					os.Exit(1)
+				}
+			}
+			if s, ok := strings.CutPrefix(arg, "sleep="); ok {
+				d, err := time.ParseDuration(s)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "touch:", err)
+					os.Exit(1)
+				}
+				sleep = d
+			}
+		}
+		time.Sleep(sleep)
+		os.Exit(0)
+
 	case "env":
 		// Print the value of SQI_TEST_ENV_KEY from the process environment.
 		fmt.Println(os.Getenv("SQI_TEST_ENV_KEY"))

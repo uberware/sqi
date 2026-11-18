@@ -777,7 +777,7 @@ func (m *Manager) Cleanup(ctx context.Context, s *Session, failed bool) {
 
 // enterEnvironments enters each environment in envs in declaration order.
 // If any OnEnter action fails, already-entered environments are torn down
-// in reverse order before the error is returned.
+// in reverse order before the error is returned, also when ctx was canceled.
 func (s *Session) enterEnvironments(ctx context.Context, envs []protocol.AssignEnvironment, logger *slog.Logger) error {
 	for _, env := range envs {
 		if err := s.enterOne(ctx, env, logger); err != nil {
@@ -788,7 +788,11 @@ func (s *Session) enterEnvironments(ctx context.Context, envs []protocol.AssignE
 				slog.String("failed_env", env.Name),
 				slog.Any("error", err),
 			)
-			if teardownErr := s.ExitEnvironments(ctx, logger); teardownErr != nil {
+			// The entry may have failed because ctx was canceled (a cancel or
+			// the worker's shutdown drain), and runAction starts nothing under
+			// a done context, so the earlier environments' onExit actions run
+			// under one that is not canceled, as they do in Manager.Cleanup.
+			if teardownErr := s.ExitEnvironments(context.WithoutCancel(ctx), logger); teardownErr != nil {
 				logger.WarnContext(
 					ctx, "session: teardown after failed entry encountered additional errors",
 					slog.String("session_id", s.ID),

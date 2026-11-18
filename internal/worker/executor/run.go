@@ -81,8 +81,14 @@ func (r processResult) duration() time.Duration {
 //  9. Clean up the session.
 //
 // runTask is launched by [Executor.Dispatch] and runs independently until the
-// task terminates.
-func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun) {
+// task terminates. Dispatch registered run and made its context, taskCtx,
+// before creating the session, and has already handed taskCancel to run, so a
+// cancel and the shutdown drain reach it at every stage; runTask cancels
+// taskCtx when it returns. ctx is used only for logging.
+func (e *Executor) runTask(
+	ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun,
+	taskCtx context.Context, taskCancel context.CancelFunc,
+) {
 	// Signal the WaitGroup when this goroutine exits so DrainAndShutdown can
 	// block until all goroutines have published their terminal statuses.
 	// Registered first so it runs last in LIFO order, after all other cleanup
@@ -97,14 +103,8 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// failed controls the keepFailedSessions behavior in Cleanup.
 	failed := false
 
-	// Per-task derived context for execution control.  Derived from e.execCtx
-	// (not from the worker's signal ctx) so the task goroutine survives
-	// SIGINT/SIGTERM and is only killed when DrainAndShutdown cancels execCtx
-	// after the shutdown grace period expires.
-	//
 	// openjd_fail and per-task server cancels call taskCancel directly, which
 	// only cancels this specific task without touching other tasks or execCtx.
-	taskCtx, taskCancel := context.WithCancel(e.execCtx)
 	defer taskCancel()
 
 	// Register the per-task cancel with the OpenJD interceptor, when the output
@@ -117,11 +117,6 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// Hand the step's SQI_LOG_PROGRESS matcher to the interceptor, if both are
 	// present. Never fails the task.
 	e.installLogProgress(ctx, msg)
-
-	// ── Store cancel function ───────────────────────────────────────
-	// applyCancelFunc stores taskCancel and fires it immediately if Cancel() was
-	// called before this goroutine reached here.
-	e.applyCancelFunc(run, taskCancel)
 
 	// LIFO defers — registration order (first→last) and execution order (last→first):
 	//   Registered 1st → runs last:        wg.Done
@@ -556,12 +551,9 @@ func (e *Executor) failPreExec(msg *protocol.AssignMsg, sessID string, failed *b
 
 // publishPreExecFailure publishes the running→failed transition for a
 // pre-execution failure (exit code -1) and records the failure metric. It is
-// the part of failPreExec that has nothing to do with an existing taskRun,
-// factored out so [Executor.Dispatch] can reuse it for a failure that occurs
-// before any session — and therefore any taskRun — exists (e.g. run-as-user
-// credential resolution, ancestor validation, or working-directory setup
-// failing inside session.Manager.Create). Unlike failPreExec it does not flag
-// a *bool: Dispatch's caller has no session to clean up on the
+// the part of failPreExec that does not flag a *bool, so
+// [Executor.publishSetupFailure] can reuse it for a failure that occurs before
+// any session exists: Dispatch has no session to clean up on the
 // keepFailedSessions path, because session creation is exactly what failed.
 //
 // Publishing the failure itself never blocks or panics the caller: Running
@@ -572,6 +564,35 @@ func (e *Executor) publishPreExecFailure(msg *protocol.AssignMsg, sessID, reason
 	minusOne := -1
 	e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &minusOne, reason, nil, time.Now())
 	e.m.TasksTotal.WithLabelValues("failed").Inc()
+}
+
+// publishSetupFailure publishes the outcome of a run whose session could not be
+// created (e.g. run-as-user credential resolution, ancestor validation,
+// working-directory setup or an environment's onEnter failing inside
+// session.Manager.Create), as "running" then a terminal status, and records it
+// in the task metrics under that status. The terminal status follows the rule
+// runTask applies to a canceled process:
+//
+//   - runCtx stopped by the shutdown drain: "failed" with
+//     [protocol.MessageWorkerShutdown] and no exit code;
+//   - runCtx stopped by a cancel: "canceled" with no exit code or reason;
+//   - otherwise: "failed" with exit code -1 and err's text, as
+//     [Executor.publishPreExecFailure] publishes.
+//
+// "running" comes first so the server sees assigned → running → terminal, the
+// arrows runTask uses. No session exists, so the messages carry no session ID.
+func (e *Executor) publishSetupFailure(msg *protocol.AssignMsg, runCtx context.Context, err error) {
+	if runCtx.Err() == nil {
+		e.publishPreExecFailure(msg, "", err.Error())
+		return
+	}
+	status, reason := "canceled", ""
+	if e.shuttingDown.Load() {
+		status, reason = "failed", protocol.MessageWorkerShutdown
+	}
+	e.statusPub.Running(context.Background(), msg, "", nil, time.Now())
+	e.statusPub.Terminal(context.Background(), msg, "", status, nil, reason, nil, time.Now())
+	e.m.TasksTotal.WithLabelValues(status).Inc()
 }
 
 // failResolution publishes the running→failed transition for a task that could

@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/fmtres"
+	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/procout"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
@@ -282,5 +285,53 @@ func TestRunAction_CanceledContextStartsNothing(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); statErr == nil {
 		t.Error("the action ran although its context was already canceled")
+	}
+}
+
+// TestManagerCreate_StoppedEntryStillRunsOnExit: when the context Create runs
+// under is canceled while an environment is being entered, the environments
+// already entered are still exited.
+func TestManagerCreate_StoppedEntryStillRunsOnExit(t *testing.T) {
+	dir := t.TempDir()
+	aIn, aOut, bIn := filepath.Join(dir, "a-in"), filepath.Join(dir, "a-out"), filepath.Join(dir, "b-in")
+	mgr := NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
+	msg := &protocol.AssignMsg{
+		TaskID:    "task-1",
+		AttemptID: "attempt-1",
+		JobID:     "job-1",
+		Environments: []protocol.AssignEnvironment{
+			{Name: "A", OnEnter: shAction("touch \""+aIn+"\"", 0, nil), OnExit: shAction("touch \""+aOut+"\"", 0, nil)},
+			{Name: "B", OnEnter: shAction("touch \""+bIn+"\"; sleep 300", 0, nil)},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		s, err := mgr.Create(ctx, msg)
+		if s != nil {
+			mgr.Cleanup(context.Background(), s, false)
+		}
+		result <- err
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(bIn); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("environment B's onEnter never started")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+
+	if err := awaitRunAction(t, result, 10*time.Second); err == nil {
+		t.Fatal("Create returned nil; want the stopped entry's error")
+	}
+	if _, err := os.Stat(aOut); err != nil {
+		t.Errorf("environment A's onExit did not run after B's entry was stopped: %v", err)
 	}
 }
