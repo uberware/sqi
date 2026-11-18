@@ -68,10 +68,12 @@ package integration
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -668,6 +670,122 @@ func TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild(t *testing.T)
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Errorf("a descendant of pid %d survived SIGKILL to its process group — Setpgid may have been clobbered by isolation.Apply", pid)
+}
+
+// TestIsolation_EnvironmentActionTimeoutReapsPrivilegeDroppedChild proves an
+// environment action runs contained as the target account: its process group
+// survives isolation.Apply, so a timeout stops the whole tree and not just the
+// shell. The onEnter action backgrounds a sleep and waits on it; the sleep is
+// a grandchild of the session manager, running as render-a, and must be gone
+// once Create has failed on the timeout. While it still runs, its real uid is
+// read from /proc to show the action did run as the target account.
+func TestIsolation_EnvironmentActionTimeoutReapsPrivilegeDroppedChild(t *testing.T) {
+	requireRoot(t)
+	target, err := user.Lookup(renderAUser)
+	if err != nil {
+		t.Fatalf("look up %s: %v", renderAUser, err)
+	}
+	dataDir := isolatedDataDir(t)
+	provider := newRealProvider(t)
+	mgr := session.NewManager(filepath.Join(dataDir, "sessions"), false, provider,
+		workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, testLogger())
+
+	// The action runs as render-a and writes the pid where the test can read it.
+	pidDir := t.TempDir()
+	if err := os.Chmod(pidDir, 0o777); err != nil {
+		t.Fatalf("make the pid directory writable by the target account: %v", err)
+	}
+	if err := os.Chmod(filepath.Dir(pidDir), 0o711); err != nil {
+		t.Fatalf("make the pid directory traversable: %v", err)
+	}
+	pidFile := filepath.Join(pidDir, "child.pid")
+
+	msg := &protocol.AssignMsg{
+		JobID:     "job-" + t.Name(),
+		TaskID:    "task-1",
+		AttemptID: "attempt-1",
+		Isolation: &protocol.IsolationSpec{User: renderAUser},
+		Environments: []protocol.AssignEnvironment{{
+			Name: "slow-env",
+			OnEnter: &protocol.Action{
+				Command:        "sh",
+				Args:           []string{"-c", "sleep 300 & echo $! > " + pidFile + "; wait"},
+				TimeoutSeconds: 2,
+			},
+		}},
+	}
+
+	type created struct {
+		sess *session.Session
+		err  error
+	}
+	result := make(chan created, 1)
+	go func() {
+		sess, err := mgr.Create(context.Background(), msg)
+		result <- created{sess, err}
+	}()
+
+	pid := waitForPID(t, pidFile, time.Second)
+	// Read while the action is still running: its timeout is two seconds away.
+	if got, want := realUID(t, pid), target.Uid; got != want {
+		t.Errorf("environment action's real uid = %s, want %s (%s)", got, want, renderAUser)
+	}
+
+	select {
+	case r := <-result:
+		if r.sess != nil {
+			mgr.Cleanup(context.Background(), r.sess, true)
+			t.Fatal("Create returned a session although the onEnter action timed out")
+		}
+		if r.err == nil || !strings.Contains(r.err.Error(), "timed out") {
+			t.Errorf("Create error = %v, want one naming the timeout", r.err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Create did not return after the onEnter action's timeout")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Errorf("process %d, started by the timed-out onEnter action, survived: the action's process tree was not stopped", pid)
+}
+
+// waitForPID polls file until it holds a pid and returns it.
+func waitForPID(t *testing.T, file string, timeout time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(file); err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(b))); convErr == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s did not receive a pid within %s: the onEnter action did not run", file, timeout)
+	return 0
+}
+
+// realUID returns the real uid of process pid, from /proc.
+func realUID(t *testing.T, pid int) string {
+	t.Helper()
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		t.Fatalf("read the status of process %d: %v", pid, err)
+	}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		if rest, ok := strings.CutPrefix(line, "Uid:"); ok {
+			if f := strings.Fields(rest); len(f) > 0 {
+				return f[0]
+			}
+		}
+	}
+	t.Fatalf("no Uid line in /proc/%d/status", pid)
+	return ""
 }
 
 // TestIsolation_NoRunAsUserBehaviorUnchanged pins the no-isolation default:

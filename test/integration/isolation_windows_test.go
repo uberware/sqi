@@ -950,6 +950,69 @@ func TestIsolationWindowsSystem_TaskStartsSuspendedAsTargetUser(t *testing.T) {
 	}
 }
 
+// TestIsolationWindowsSystem_EnvironmentActionStartsSuspendedAsTargetUser
+// drives an environment's onEnter action through the executor for an isolated
+// task. The action starts suspended under the target account's logon token,
+// joins its job object and is resumed by the worker, as a task's process does.
+// An environment action's output is not task output, so the action writes the
+// account it ran as to a file in the session directory and the task prints it.
+func TestIsolationWindowsSystem_EnvironmentActionStartsSuspendedAsTargetUser(t *testing.T) {
+	requireHarness(t)
+	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+	logger := slog.New(slog.DiscardHandler)
+
+	provider, err := isolation.NewProvider(isolation.Config{Provider: "logon_user", CredentialStore: harnessStore(t)})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, provider,
+		workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
+	statuses := &statusRecorder{}
+	lines := &lineRecorder{}
+	ex := executor.New(status.New(statuses, status.Config{WorkerID: "w-isolation"}, logger),
+		mgr, metrics.New(), lines, executor.Config{KillGracePeriod: time.Second}, logger)
+
+	msg := &protocol.AssignMsg{
+		Version:   protocol.ProtocolVersion,
+		Type:      protocol.TypeAssign,
+		JobID:     "job-isolated-env",
+		TaskID:    "task-isolated-env",
+		AttemptID: "attempt-1",
+		Environments: []protocol.AssignEnvironment{{
+			Name: "identity-env",
+			OnEnter: &protocol.Action{
+				Command: "cmd",
+				Args:    []string{"/c", "whoami > identity.txt"},
+			},
+		}},
+		OnRun:     &protocol.Action{Command: "cmd", Args: []string{"/c", "type identity.txt"}},
+		Isolation: &protocol.IsolationSpec{User: user},
+	}
+	if err := ex.Dispatch(context.Background(), msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	// The session's cleanup (directory removal, profile unload) runs after
+	// the terminal status, so wait for the task goroutine before the test's
+	// temporary directories are removed.
+	t.Cleanup(func() { ex.DrainAndShutdown(30 * time.Second) })
+	got, reason := statuses.waitTerminal(t, time.Minute)
+	if got != "succeeded" {
+		t.Fatalf("task ended %q (%s), want succeeded; output: %q", got, reason, lines.all())
+	}
+	var identity string
+	for _, l := range lines.all() {
+		if s := strings.TrimSpace(l); s != "" {
+			identity = s
+		}
+	}
+	if i := strings.LastIndex(identity, `\`); i != -1 {
+		identity = identity[i+1:]
+	}
+	if !strings.EqualFold(identity, user) {
+		t.Errorf("environment action reported identity %q, want %q", identity, user)
+	}
+}
+
 // statusRecorder is the NATS side of a [status.Publisher]: it keeps each
 // status a task reports, with its message.
 type statusRecorder struct {

@@ -832,7 +832,7 @@ jobs:
   #
   # `make test-isolation` exits 0 with a message when Docker is unavailable,
   # so the job does not trust its exit code: it fails if that message appears
-  # or if any of the 11 TestIsolation_ tests is not confirmed PASS.
+  # or if any of the 12 TestIsolation_ tests is not confirmed PASS.
   isolation-integration:
     name: Isolation integration (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -856,7 +856,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Fails on a Docker-unavailable skip or unless all 11 TestIsolation_
+      # Fails on a Docker-unavailable skip or unless all 12 TestIsolation_
       # tests report PASS; see the job comment.
       - name: Run isolation integration tests
         run: |
@@ -871,7 +871,7 @@ jobs:
           fi
 
           pass_count=$(grep -c '^--- PASS: TestIsolation_' isolation-output.log || true)
-          expected=11
+          expected=12
           if [ "$status" -ne 0 ] || [ "$pass_count" -ne "$expected" ]; then
             echo "::error::Expected $expected TestIsolation_ tests to pass (exit=$status, found=$pass_count)."
             exit 1
@@ -1670,8 +1670,8 @@ jobs:
             -File scripts/test-isolation-windows.ps1 2>&1 | Tee-Object -FilePath isolation-windows.log
 
       # The script exits 0 when not elevated, so this fails on that message
-      # and requires all 18 tests to PASS by name: 8 TestIsolationWindows_*
-      # (elevated admin) and 10 TestIsolationWindowsSystem_* (SYSTEM).
+      # and requires all 19 tests to PASS by name: 8 TestIsolationWindows_*
+      # (elevated admin) and 11 TestIsolationWindowsSystem_* (SYSTEM).
       - name: Assert the suite actually ran
         shell: bash
         run: |
@@ -1693,6 +1693,7 @@ jobs:
             TestIsolationWindowsSystem_ChildRunsAsTargetUser
             TestIsolationWindowsSystem_CrossUserSessionDirDenied
             TestIsolationWindowsSystem_DaemonEnvNotInherited
+            TestIsolationWindowsSystem_EnvironmentActionStartsSuspendedAsTargetUser
             TestIsolationWindowsSystem_NoIsolationUnchanged
             TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser
             TestIsolationWindowsSystem_RunsAsSystem
@@ -1710,7 +1711,7 @@ jobs:
             fi
           done
           if [ "$missing" -eq 0 ]; then
-            echo "Confirmed all ${#expected[@]}/18 named isolation tests passed."
+            echo "Confirmed all ${#expected[@]}/19 named isolation tests passed."
           fi
           exit $missing
 
