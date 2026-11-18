@@ -1,0 +1,81 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/*
+ * Outlined buttons colored by a tone, for actions on jobs, workers and the
+ * like. A page composes a shape (`toneBtn` for a labelled button, `toneIconBtn`
+ * for an icon-only one) with a tone class, which sets `--tone` and
+ * `--tone-muted`:
+ *
+ *   .pauseBtn { composes: toneBtn info from '../styles/toneButton.module.css'; }
+ *
+ * The bundle may emit this file after the page stylesheets, so a page rule
+ * that overrides a property set here must outrank it by specificity; source
+ * order cannot be relied on.
+ */
+
+/* ── Tones ─────────────────────────────────────────────────────────────────── */
+
+.info {
+  --tone: var(--color-info);
+  --tone-muted: var(--color-info-muted);
+}
+
+.success {
+  --tone: var(--color-success);
+  --tone-muted: var(--color-success-muted);
+}
+
+.warning {
+  --tone: var(--color-warning);
+  --tone-muted: var(--color-warning-muted);
+}
+
+.error {
+  --tone: var(--color-error);
+  --tone-muted: var(--color-error-muted);
+}
+
+/* ── Shapes ────────────────────────────────────────────────────────────────── */
+
+.toneBtn,
+.toneIconBtn {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--tone, var(--color-border));
+  background: transparent;
+  color: var(--tone, var(--color-text-secondary));
+  cursor: pointer;
+}
+
+.toneBtn {
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  transition: background var(--transition-base);
+}
+
+.toneIconBtn {
+  justify-content: center;
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  transition:
+    opacity var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.toneBtn:hover:not(:disabled),
+.toneIconBtn:hover:not(:disabled) {
+  background: var(--tone-muted, var(--color-surface-raised));
+}
+
+.toneBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toneIconBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

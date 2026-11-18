@@ -2,8 +2,11 @@
 
 import { useCallback, useRef, useState } from 'react'
 
-/** State and runner for a list page's per-row and bulk actions. */
-export interface BulkAction<V extends string> {
+/**
+ * State and runner for named actions on one or more items: a list page's
+ * per-row and bulk actions, or a detail page's actions on its one item.
+ */
+export interface ActionRunner<V extends string> {
   /**
    * Runs `action` for each id in turn. A failure does not stop the rest; once
    * all have settled, the verb's entry in `errors` reports how many failed and
@@ -30,7 +33,8 @@ interface Tally {
 }
 
 /**
- * Runs one action per id and keeps each verb's failures in its own state.
+ * Runs one action per id and keeps each verb's failures and in-flight ids in
+ * its own state.
  *
  * Failures are counted here rather than read from a TanStack mutation's
  * `isError`, which the next success resets, so a failure early in a batch
@@ -39,10 +43,10 @@ interface Tally {
  * @param noun plural name of the items, for messages ("jobs", "workers").
  * @param onSettled called for each id once its action finishes, either way.
  */
-export function useBulkAction<V extends string>(
+export function useActionRunner<V extends string>(
   noun: string,
   onSettled?: (id: string) => void,
-): BulkAction<V> {
+): ActionRunner<V> {
   const [errors, setErrors] = useState<ReadonlyMap<V, string>>(new Map())
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set())
   const tallies = useRef(new Map<V, Tally>())

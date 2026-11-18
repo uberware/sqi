@@ -15,7 +15,7 @@ import CopyableId from '@/components/CopyableId'
 import RefreshControls from '@/components/RefreshControls'
 import { useListWorkers, queryKeys } from '@/api/queries'
 import { useDisableWorker, useEnableWorker, useRemoveWorker } from '@/api/mutations'
-import { useBulkAction } from '@/hooks/useBulkAction'
+import { useActionRunner } from '@/hooks/useActionRunner'
 import { useListFilters } from '@/hooks/useListFilters'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { useWebSocket } from '@/ws/context'
@@ -207,7 +207,7 @@ export default function WorkerList() {
   const { mutateAsync: disableWorker } = useDisableWorker()
   const { mutateAsync: enableWorker } = useEnableWorker()
   const { mutateAsync: removeWorker } = useRemoveWorker()
-  const action = useBulkAction<WorkerAction>('workers')
+  const action = useActionRunner<WorkerAction>('workers')
 
   // ── Multi-select state ──────────────────────────────────────────
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())

@@ -6,8 +6,13 @@ import { Spinner } from '@/components/icons'
 interface IconButtonProps {
   /** Icon shown in the resting state. */
   icon: ReactNode
-  /** Accessible name — icon-only buttons carry no visible text. */
+  /**
+   * Accessible name. An icon-only button carries no visible text; with
+   * `children` it must include that text.
+   */
   label: string
+  /** Optional visible text, shown after the icon. */
+  children?: ReactNode
   onClick?: () => void
   /** When true, shows a spinner in place of the icon and disables the button. */
   busy?: boolean
@@ -21,13 +26,15 @@ interface IconButtonProps {
 }
 
 /**
- * A label-less button whose only content is an icon, swapped for a spinner
- * while an async action is in flight. Centralizes the busy/disabled/tooltip/
- * accessible-name contract shared by every row action across the list pages.
+ * A button led by an icon, swapped for a spinner while an async action is in
+ * flight, with optional visible text after it. Centralizes the busy/disabled/
+ * tooltip/accessible-name contract shared by the row actions across the list
+ * pages and the actions on detail pages.
  */
 export default function IconButton({
   icon,
   label,
+  children,
   onClick,
   busy = false,
   disabled = false,
@@ -45,6 +52,7 @@ export default function IconButton({
       aria-label={label}
     >
       {busy ? <Spinner /> : icon}
+      {children}
     </button>
   )
 }

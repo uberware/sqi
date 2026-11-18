@@ -536,6 +536,15 @@ describe('JobList', () => {
       expect(screen.getByLabelText('Cancel job Running Job')).toBeInTheDocument()
     })
 
+    it('shows Cancel for a job blocked on another job', async () => {
+      const job = makeJob({ status: 'blocked', name: 'Blocked Job' })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
+
+      render(<JobList />, { wrapper: Wrapper })
+
+      expect(await screen.findByLabelText('Cancel job Blocked Job')).toBeInTheDocument()
+    })
+
     it('does not show Cancel for terminal jobs', async () => {
       const job = makeJob({ status: 'completed', name: 'Done Job' })
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
@@ -1417,6 +1426,118 @@ describe('JobList', () => {
         },
         { timeout: 3000 },
       )
+    })
+  })
+
+  // ── Per-row pause and resume ──────────────────────────────────────────────────
+
+  describe('per-row pause and resume', () => {
+    /** The PATCH request sent to /jobs/{id}, or undefined when none was sent. */
+    function patchFor(id: string): { action: unknown } | undefined {
+      for (const [url, init] of fetchMock.mock.calls) {
+        if (typeof url === 'string' && url.endsWith(`/jobs/${id}`) && init?.method === 'PATCH') {
+          return JSON.parse(init.body as string) as { action: unknown }
+        }
+      }
+      return undefined
+    }
+
+    it('offers Pause for pending and running jobs and Resume for paused ones', async () => {
+      fetchMock.mockResolvedValueOnce(
+        okJson(
+          makeListResponse([
+            makeJob({ id: 'jr', name: 'Running', status: 'running' }),
+            makeJob({ id: 'jp', name: 'Pending', status: 'pending' }),
+            makeJob({ id: 'jz', name: 'Paused', status: 'paused' }),
+          ]),
+        ),
+      )
+      render(<JobList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('link', { name: 'Running' }))
+      expect(screen.getByRole('button', { name: 'Pause job Running' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Pause job Pending' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Resume job Paused' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Resume job Running' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Pause job Paused' })).not.toBeInTheDocument()
+    })
+
+    it.each(['completed', 'failed', 'canceled', 'blocked'] as const)(
+      'offers neither Pause nor Resume for a %s job',
+      async (status) => {
+        fetchMock.mockResolvedValueOnce(
+          okJson(makeListResponse([makeJob({ name: 'Idle', status })])),
+        )
+        render(<JobList />, { wrapper: Wrapper })
+
+        await waitFor(() => screen.getByRole('link', { name: 'Idle' }))
+        expect(screen.queryByRole('button', { name: 'Pause job Idle' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Resume job Idle' })).not.toBeInTheDocument()
+      },
+    )
+
+    it('pauses the job when Pause is clicked', async () => {
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) })
+      fetchMock.mockResolvedValueOnce(
+        okJson(makeListResponse([makeJob({ id: 'jr', name: 'Running', status: 'running' })])),
+      )
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByRole('button', { name: 'Pause job Running' }))
+      fetchMock.mockResolvedValue(okJson(makeJob({ id: 'jr', status: 'paused' })))
+
+      await user.click(screen.getByRole('button', { name: 'Pause job Running' }))
+
+      await waitFor(() => expect(patchFor('jr')).toEqual({ action: 'pause' }))
+    })
+
+    it('resumes the job when Resume is clicked', async () => {
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) })
+      fetchMock.mockResolvedValueOnce(
+        okJson(makeListResponse([makeJob({ id: 'jz', name: 'Paused', status: 'paused' })])),
+      )
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByRole('button', { name: 'Resume job Paused' }))
+      fetchMock.mockResolvedValue(okJson(makeJob({ id: 'jz', status: 'pending' })))
+
+      await user.click(screen.getByRole('button', { name: 'Resume job Paused' }))
+
+      await waitFor(() => expect(patchFor('jz')).toEqual({ action: 'resume' }))
+    })
+
+    it('reports a failed pause', async () => {
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) })
+      fetchMock.mockResolvedValueOnce(
+        okJson(makeListResponse([makeJob({ id: 'jr', name: 'Running', status: 'running' })])),
+      )
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByRole('button', { name: 'Pause job Running' }))
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ status: 409, title: 'job cannot be paused in its current state' }),
+          { status: 409, headers: { 'Content-Type': 'application/problem+json' } },
+        ),
+      )
+
+      await user.click(screen.getByRole('button', { name: 'Pause job Running' }))
+
+      expect(await screen.findByText(/Pause failed/i)).toBeInTheDocument()
+    })
+
+    it('hides Pause and Resume for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      fetchMock.mockResolvedValueOnce(
+        okJson(
+          makeListResponse([
+            makeJob({ id: 'jr', name: 'Running', status: 'running' }),
+            makeJob({ id: 'jz', name: 'Paused', status: 'paused' }),
+          ]),
+        ),
+      )
+      render(<JobList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('link', { name: 'Running' }))
+      expect(screen.queryByRole('button', { name: 'Pause job Running' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Resume job Paused' })).not.toBeInTheDocument()
     })
   })
 

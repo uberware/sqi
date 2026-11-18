@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { hashKey, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import { queryKeys } from './queries'
 import { evictAllExceptAuthMe } from './queryEviction'
+import type { JobAction } from '@/lib/jobStatus'
 import type {
   ApiKeyCreated,
   CapacityGroup,
@@ -217,13 +218,21 @@ export function useRetryJob() {
   })
 }
 
-/** Hard-delete a job and all its data. Invalidates all job queries on success. */
+/**
+ * Hard-delete a job and all its data. Invalidates all job queries on success,
+ * refetching every one except the deleted job's own, which could only 404.
+ */
 export function useDeleteJob() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => fetchDeleteJob(id),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
+    onSuccess: (_data, id) => {
+      const deleted = queryKeys.jobs.detail(id)
+      void queryClient.invalidateQueries({ queryKey: deleted, exact: true, refetchType: 'none' })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.jobs.all,
+        predicate: (query) => query.queryHash !== hashKey(deleted),
+      })
     },
   })
 }
@@ -251,6 +260,16 @@ export function useResumeJob() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
     },
   })
+}
+
+/** Each job action's mutation, keyed by the verb the UI names it with. */
+export function useJobActions(): Record<JobAction, (id: string) => Promise<unknown>> {
+  const { mutateAsync: Pause } = usePauseJob()
+  const { mutateAsync: Resume } = useResumeJob()
+  const { mutateAsync: Cancel } = useCancelJob()
+  const { mutateAsync: Retry } = useRetryJob()
+  const { mutateAsync: Delete } = useDeleteJob()
+  return { Pause, Resume, Cancel, Retry, Delete }
 }
 
 /** Set or clear a job's estimate. Invalidates all job queries and the queue timing figures on success. */

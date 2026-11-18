@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
-import { Link, useParams } from 'react-router'
+import type { ReactNode } from 'react'
+import { Link, useNavigate, useParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import SearchInput from '@/components/SearchInput'
@@ -9,20 +10,31 @@ import IconButton from '@/components/IconButton'
 import StatusBadge from '@/components/StatusBadge'
 import UnschedulableBadge from '@/components/UnschedulableBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
-import { Document, Rotate, X, ChevronDown } from '@/components/icons'
+import { Document, Rotate, X, ChevronDown, Pause, Play, Trash } from '@/components/icons'
 import ErrorBanner from '@/components/ErrorBanner'
+import { useToast } from '@/components/Toast'
 import BulkBar from '@/components/BulkBar'
 import CopyableId from '@/components/CopyableId'
 import RefreshControls from '@/components/RefreshControls'
 import { useGetJob, useListTasks, useListWorkers, useTaskAttempts, queryKeys } from '@/api/queries'
-import { useRetryTask, useCancelTask, useResumeJob } from '@/api/mutations'
+import { useRetryTask, useCancelTask, useJobActions } from '@/api/mutations'
+import { useActionRunner } from '@/hooks/useActionRunner'
+import type { ActionRunner } from '@/hooks/useActionRunner'
 import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import RemainingTime from '@/components/RemainingTime'
 import EstimateField from '@/components/EstimateField'
-import { TERMINAL_JOB_STATUSES } from '@/lib/jobStatus'
+import {
+  canCancelJob,
+  canPauseJob,
+  canResumeJob,
+  canRetryJob,
+  RETRYABLE_TASK_STATUSES,
+  TERMINAL_JOB_STATUSES,
+} from '@/lib/jobStatus'
+import type { JobAction } from '@/lib/jobStatus'
 import TaskRunProgress from '@/components/TaskRunProgress'
 import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
@@ -50,9 +62,6 @@ import type {
 import styles from './JobDetail.module.css'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-
-/** Task statuses that can be retried. */
-const RETRYABLE: ReadonlySet<TaskStatus> = new Set(['failed', 'canceled'])
 
 /** Task statuses that can be canceled (all non-terminal). */
 const CANCELABLE: ReadonlySet<TaskStatus> = new Set(['pending', 'ready', 'assigned', 'running'])
@@ -416,7 +425,7 @@ function TaskRow({
 }: TaskRowProps) {
   // While a retry is in-flight, show pending to signal the task is queued.
   const displayStatus: TaskStatus = isRetrying ? 'pending' : task.status
-  const canRetry = RETRYABLE.has(task.status) && !isRetrying && depsSatisfied
+  const canRetry = RETRYABLE_TASK_STATUSES.has(task.status) && !isRetrying && depsSatisfied
   const canCancel = CANCELABLE.has(task.status) && !isCanceling
   const endTime = isTerminalTask(task.status) ? task.updated_at : undefined
   const attemptText = attemptLabel(task)
@@ -450,7 +459,8 @@ function TaskRow({
         </td>
         <td className={styles.checkCell}>
           {canWrite &&
-            (CANCELABLE.has(task.status) || (RETRYABLE.has(task.status) && depsSatisfied)) && (
+            (CANCELABLE.has(task.status) ||
+              (RETRYABLE_TASK_STATUSES.has(task.status) && depsSatisfied)) && (
               <input
                 type="checkbox"
                 aria-label={`Select task ${task.name}`}
@@ -617,7 +627,7 @@ function StepSection({
   const counts = stepCountsFromTasks(tasks)
   const deps = step.depends_on ?? []
   const selectableInStep = tasks.filter(
-    (t) => CANCELABLE.has(t.status) || (RETRYABLE.has(t.status) && depsSatisfied),
+    (t) => CANCELABLE.has(t.status) || (RETRYABLE_TASK_STATUSES.has(t.status) && depsSatisfied),
   )
 
   return (
@@ -705,12 +715,122 @@ function StepSection({
   )
 }
 
+// ── Job actions ───────────────────────────────────────────────────────────────
+
+interface JobActionButton {
+  verb: JobAction
+  show: boolean
+  label: string
+  text: string
+  icon: ReactNode
+  className: string | undefined
+}
+
+/**
+ * The job's Pause/Resume, Cancel, Re-run failed and Delete buttons, each
+ * offered only in the states `lib/jobStatus` says the server accepts it in.
+ */
+function JobActions({ job, action }: { job: JobDetailType; action: ActionRunner<JobAction> }) {
+  const jobActions = useJobActions()
+  const navigate = useNavigate()
+  const { showToast } = useToast()
+
+  // Nothing else may run against a job that is being deleted.
+  const deleting = action.isBusy('Delete', job.id)
+
+  const run = (verb: JobAction) => {
+    if (verb !== 'Delete') {
+      void action.run(verb, [job.id], jobActions[verb])
+      return
+    }
+    if (!window.confirm(`Delete job "${job.name}" and all its data? This cannot be undone.`)) return
+    // The job is gone once the delete lands, so return to the list and say
+    // so there; a failed delete stays here and reports itself like any other
+    // action.
+    void action.run('Delete', [job.id], async (id) => {
+      await jobActions.Delete(id)
+      showToast(`Job "${job.name}" deleted`, 'success')
+      // Replace: Back must not return to the deleted job.
+      void navigate('/jobs', { replace: true })
+    })
+  }
+
+  const buttons: JobActionButton[] = [
+    {
+      verb: 'Pause',
+      show: canPauseJob(job),
+      label: 'Pause job',
+      text: 'Pause',
+      icon: <Pause />,
+      className: styles.jobPauseBtn,
+    },
+    {
+      verb: 'Resume',
+      show: canResumeJob(job),
+      label: 'Resume job',
+      text: 'Resume',
+      icon: <Play />,
+      className: styles.jobResumeBtn,
+    },
+    {
+      verb: 'Cancel',
+      show: canCancelJob(job),
+      label: 'Cancel job',
+      text: 'Cancel',
+      icon: <X />,
+      className: styles.jobCancelBtn,
+    },
+    {
+      verb: 'Retry',
+      show: canRetryJob(job),
+      label: 'Re-run failed tasks',
+      text: 'Re-run failed',
+      icon: <Rotate />,
+      className: styles.jobRetryBtn,
+    },
+    {
+      verb: 'Delete',
+      show: true,
+      label: 'Delete job',
+      text: 'Delete',
+      icon: <Trash />,
+      className: styles.jobDeleteBtn,
+    },
+  ]
+
+  return (
+    <div className={styles.jobActions} role="group" aria-label="Job actions">
+      {buttons
+        .filter((b) => b.show)
+        .map(({ verb, label, text, icon, className }) => (
+          <IconButton
+            key={verb}
+            icon={icon}
+            label={label}
+            className={className}
+            busy={action.isBusy(verb, job.id)}
+            disabled={deleting}
+            onClick={() => run(verb)}
+          >
+            {text}
+          </IconButton>
+        ))}
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function JobDetail() {
+/**
+ * The job page, remounted per job: moving from one job to another (an upstream
+ * link) starts with no action failures, task selections or search carried over.
+ */
+export default function JobDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const jobId = id ?? ''
+  return <JobDetail key={id} jobId={id ?? ''} />
+}
 
+function JobDetail({ jobId }: { jobId: string }) {
   const { principal } = useAuth()
   const canWrite = can(principal, 'jobs.write')
 
@@ -740,8 +860,7 @@ export default function JobDetail() {
   const cancelTask = useCancelTask()
   const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
   const [cancelErrors, setCancelErrors] = useState<Map<string, string>>(new Map())
-  const resumeJob = useResumeJob()
-  const [resumeError, setResumeError] = useState<string | undefined>(undefined)
+  const jobAction = useActionRunner<JobAction>('jobs')
 
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set())
   const [taskSearch, setTaskSearch] = useState('')
@@ -967,17 +1086,6 @@ export default function JobDetail() {
     [cancelTask],
   )
 
-  // ── Resume (manual pause or auto-park) ──────────────────────────────────────
-
-  const handleResume = useCallback(async () => {
-    setResumeError(undefined)
-    try {
-      await resumeJob.mutateAsync(jobId)
-    } catch (err) {
-      setResumeError(err instanceof Error ? err.message : 'Resume failed')
-    }
-  }, [resumeJob, jobId])
-
   // ── Bulk selection ────────────────────────────────────────────────────────
 
   const selectedTasks = useMemo(
@@ -991,7 +1099,7 @@ export default function JobDetail() {
   const selectedRetryable = useMemo(
     () =>
       selectedTasks.filter(
-        (t) => RETRYABLE.has(t.status) && (depsSatisfiedByTaskId.get(t.id) ?? true),
+        (t) => RETRYABLE_TASK_STATUSES.has(t.status) && (depsSatisfiedByTaskId.get(t.id) ?? true),
       ),
     [selectedTasks, depsSatisfiedByTaskId],
   )
@@ -1004,7 +1112,7 @@ export default function JobDetail() {
       selectedTasks.filter(
         (t) =>
           CANCELABLE.has(t.status) ||
-          (RETRYABLE.has(t.status) && (depsSatisfiedByTaskId.get(t.id) ?? true)),
+          (RETRYABLE_TASK_STATUSES.has(t.status) && (depsSatisfiedByTaskId.get(t.id) ?? true)),
       ).length,
     [selectedTasks, depsSatisfiedByTaskId],
   )
@@ -1069,24 +1177,16 @@ export default function JobDetail() {
       {job.park_reason !== undefined && job.park_reason !== '' && (
         <ErrorBanner variant="warning">
           <span>Auto-parked — {job.park_reason}</span>
-          {canWrite && (
-            <button
-              type="button"
-              className={styles.resumeBtn ?? ''}
-              onClick={() => void handleResume()}
-              disabled={resumeJob.isPending}
-            >
-              {resumeJob.isPending ? 'Resuming…' : 'Resume'}
-            </button>
-          )}
-          {resumeError !== undefined && (
-            <span className={styles.resumeError ?? ''}>{resumeError}</span>
-          )}
         </ErrorBanner>
       )}
 
+      {[...jobAction.errors].map(([verb, message]) => (
+        <ErrorBanner key={verb}>{message}</ErrorBanner>
+      ))}
+
       <div className={styles.jobNameArea}>
         <h2 className={styles.jobName}>{job.name}</h2>
+        {canWrite && <JobActions job={job} action={jobAction} />}
       </div>
 
       <MetadataCard
@@ -1134,7 +1234,8 @@ export default function JobDetail() {
           const depsSatisfied = depsSatisfiedByStepId.get(step.id) ?? true
           // select-all is scoped to the tasks visible under the active search filter
           const selectable = visibleTasks.filter(
-            (t) => CANCELABLE.has(t.status) || (RETRYABLE.has(t.status) && depsSatisfied),
+            (t) =>
+              CANCELABLE.has(t.status) || (RETRYABLE_TASK_STATUSES.has(t.status) && depsSatisfied),
           )
           const allSelected =
             selectable.length > 0 && selectable.every((t) => selectedTaskIds.has(t.id))

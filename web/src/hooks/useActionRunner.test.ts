@@ -2,7 +2,7 @@
 
 import { describe, it, expect, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { useBulkAction } from './useBulkAction'
+import { useActionRunner } from './useActionRunner'
 
 type Verb = 'Cancel' | 'Retry'
 
@@ -11,11 +11,11 @@ function failFor(...failing: string[]) {
     failing.includes(id) ? Promise.reject(new Error(`no ${id}`)) : Promise.resolve()
 }
 
-describe('useBulkAction', () => {
+describe('useActionRunner', () => {
   it('runs the action for every id in order and settles each one', async () => {
     const onSettled = vi.fn()
     const seen: string[] = []
-    const { result } = renderHook(() => useBulkAction<Verb>('jobs', onSettled))
+    const { result } = renderHook(() => useActionRunner<Verb>('jobs', onSettled))
 
     await act(() =>
       result.current.run('Cancel', ['a', 'b', 'c'], (id) => {
@@ -31,7 +31,7 @@ describe('useBulkAction', () => {
 
   it('keeps going past a failure and reports it even when a later id succeeds', async () => {
     const onSettled = vi.fn()
-    const { result } = renderHook(() => useBulkAction<Verb>('jobs', onSettled))
+    const { result } = renderHook(() => useActionRunner<Verb>('jobs', onSettled))
 
     await act(() => result.current.run('Cancel', ['a', 'b', 'c'], failFor('b')))
 
@@ -40,7 +40,7 @@ describe('useBulkAction', () => {
   })
 
   it('reports the last failure message when several fail', async () => {
-    const { result } = renderHook(() => useBulkAction<Verb>('jobs'))
+    const { result } = renderHook(() => useActionRunner<Verb>('jobs'))
 
     await act(() => result.current.run('Cancel', ['a', 'b', 'c'], failFor('a', 'c')))
 
@@ -48,7 +48,7 @@ describe('useBulkAction', () => {
   })
 
   it('reports a single-id failure without a count', async () => {
-    const { result } = renderHook(() => useBulkAction<Verb>('jobs'))
+    const { result } = renderHook(() => useActionRunner<Verb>('jobs'))
 
     await act(() => result.current.run('Cancel', ['a'], failFor('a')))
 
@@ -56,7 +56,7 @@ describe('useBulkAction', () => {
   })
 
   it('reports a non-Error rejection as an unknown error', async () => {
-    const { result } = renderHook(() => useBulkAction<Verb>('jobs'))
+    const { result } = renderHook(() => useActionRunner<Verb>('jobs'))
 
     await act(() =>
       result.current.run('Cancel', ['a'], () => Promise.reject(new Error('x').message)),
@@ -66,7 +66,7 @@ describe('useBulkAction', () => {
   })
 
   it("clears a verb's failure on its next run and leaves other verbs' failures", async () => {
-    const { result } = renderHook(() => useBulkAction<Verb>('jobs'))
+    const { result } = renderHook(() => useActionRunner<Verb>('jobs'))
 
     await act(() => result.current.run('Cancel', ['a'], failFor('a')))
     await act(() => result.current.run('Retry', ['a'], failFor('a')))
@@ -77,7 +77,7 @@ describe('useBulkAction', () => {
 
   it('keeps both failures when two runs of one verb overlap', async () => {
     let releaseBulk = () => {}
-    const { result } = renderHook(() => useBulkAction<Verb>('jobs'))
+    const { result } = renderHook(() => useActionRunner<Verb>('jobs'))
 
     // A bulk run on a, b is in flight when a per-row run on d starts and fails.
     let bulk: Promise<void> = Promise.resolve()
@@ -98,7 +98,7 @@ describe('useBulkAction', () => {
   })
 
   it('starts counting afresh once no run of the verb is in flight', async () => {
-    const { result } = renderHook(() => useBulkAction<Verb>('jobs'))
+    const { result } = renderHook(() => useActionRunner<Verb>('jobs'))
 
     await act(() => result.current.run('Cancel', ['a', 'b'], failFor('a')))
     await act(() => result.current.run('Cancel', ['c'], failFor('c')))
@@ -108,7 +108,7 @@ describe('useBulkAction', () => {
 
   it('marks an id busy and its verb running only while its action is in flight', async () => {
     let release = () => {}
-    const { result } = renderHook(() => useBulkAction<Verb>('jobs'))
+    const { result } = renderHook(() => useActionRunner<Verb>('jobs'))
 
     let done: Promise<void> = Promise.resolve()
     act(() => {
