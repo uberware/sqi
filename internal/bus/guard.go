@@ -41,9 +41,15 @@ var (
 	guardRefresh = 10 * time.Second
 )
 
-// jsErrWrongLastSequence is nats-server's code for a KV write whose expected
-// revision does not match the key's (server/jetstream_errors_generated.go).
-const jsErrWrongLastSequence jetstream.ErrorCode = 10071
+// nats-server's codes for a KV write refused for its expected revision
+// (server/jetstream_errors_generated.go): jsErrWrongLastSequence when the key
+// is at another revision, and jsErrWrongLastSequenceInFlight when a replicated
+// bucket's leader refuses it because another write to the key is proposed but
+// not yet applied.
+const (
+	jsErrWrongLastSequence         jetstream.ErrorCode = 10071
+	jsErrWrongLastSequenceInFlight jetstream.ErrorCode = 10164
+)
 
 // ErrGuardHeld is returned, wrapped with the holder, when another sqi-server
 // already holds the broker account.
@@ -574,18 +580,34 @@ func (g *Guard) deleteOwnKey(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, guardOpTimeout)
 	defer cancel()
-	err := g.kv.Delete(ctx, guardKey, jetstream.LastRevision(rev))
-	if err == nil || !isWrongRevision(err) {
-		return wrapRelease(err)
+	for {
+		err := g.kv.Delete(ctx, guardKey, jetstream.LastRevision(rev))
+		if err == nil || !isWrongRevision(err) {
+			return wrapRelease(err)
+		}
+		// The refresh the release aborted can land after its revision was
+		// recorded, and on a replicated bucket a delete is refused while that
+		// write is still being applied, when a read can still show the old
+		// revision. Delete the key at its current revision while it is still
+		// this server's, until the write has landed.
+		entry, gerr := g.kv.Get(ctx, guardKey)
+		if gerr != nil || !g.ownedBy(entry.Value()) {
+			return nil
+		}
+		if entry.Revision() == rev {
+			select {
+			case <-ctx.Done():
+				return wrapRelease(err)
+			case <-time.After(guardReleaseRetry):
+			}
+		}
+		rev = entry.Revision()
 	}
-	// An aborted refresh can have landed after the revision was recorded.
-	// Delete the key if it is still this server's.
-	entry, gerr := g.kv.Get(ctx, guardKey)
-	if gerr != nil || !g.ownedBy(entry.Value()) {
-		return nil
-	}
-	return wrapRelease(g.kv.Delete(ctx, guardKey, jetstream.LastRevision(entry.Revision())))
 }
+
+// guardReleaseRetry is how long a release waits before deleting the key
+// again when a write to it is still being applied.
+const guardReleaseRetry = 50 * time.Millisecond
 
 func wrapRelease(err error) error {
 	if err == nil {
@@ -607,7 +629,8 @@ func valueOwnedBy(value []byte, instanceID string) bool {
 
 func isWrongRevision(err error) bool {
 	var apiErr *jetstream.APIError
-	return errors.Is(err, jetstream.ErrKeyExists) || (errors.As(err, &apiErr) && apiErr.ErrorCode == jsErrWrongLastSequence)
+	return errors.Is(err, jetstream.ErrKeyExists) || (errors.As(err, &apiErr) &&
+		(apiErr.ErrorCode == jsErrWrongLastSequence || apiErr.ErrorCode == jsErrWrongLastSequenceInFlight))
 }
 
 // refreshLoop keeps the key alive until ctx ends or the guard is lost.
@@ -677,7 +700,16 @@ func (g *Guard) reconcile(ctx context.Context) bool {
 	case entry == nil:
 		return g.retakeExpired(ctx)
 	case g.ownedBy(entry.Value()):
-		g.refreshed(entry.Revision())
+		// A refresh that landed after it was abandoned moved the key on, and
+		// counts. At the same revision nothing was refreshed: the write the
+		// server refused this one for is still in flight and may be another
+		// server's, which the next refresh finds.
+		g.mu.Lock()
+		same := entry.Revision() == g.revision
+		g.mu.Unlock()
+		if !same {
+			g.refreshed(entry.Revision())
+		}
 		return false
 	default:
 		g.markLost(ctx, entry.Value())

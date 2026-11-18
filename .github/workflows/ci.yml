@@ -2218,11 +2218,27 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1 libegl1 libxkbcommon0 libsm6
 
-      - name: Install Blender ${{ env.BLENDER_VERSION }}
+      # download.blender.org can refuse a runner's request, so the tarball is
+      # cached per pinned checksum and the download retries.
+      - name: Cache the Blender ${{ env.BLENDER_VERSION }} tarball
+        id: blender-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/sqi-blender
+          key: blender-linux-x64-${{ env.BLENDER_SHA256 }}
+
+      - name: Download Blender ${{ env.BLENDER_VERSION }}
+        if: steps.blender-cache.outputs.cache-hit != 'true'
         run: |
           series="${BLENDER_VERSION%.*}"
-          curl -fsSL -o "$RUNNER_TEMP/blender.tar.xz" \
+          mkdir -p ~/.cache/sqi-blender
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 \
+            -o ~/.cache/sqi-blender/blender.tar.xz \
             "https://download.blender.org/release/Blender${series}/blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+
+      - name: Install Blender ${{ env.BLENDER_VERSION }}
+        run: |
+          cp ~/.cache/sqi-blender/blender.tar.xz "$RUNNER_TEMP/blender.tar.xz"
           echo "${BLENDER_SHA256}  $RUNNER_TEMP/blender.tar.xz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/blender"
           tar -xJf "$RUNNER_TEMP/blender.tar.xz" -C "$RUNNER_TEMP/blender" --strip-components=1

@@ -56,7 +56,7 @@ func (*stubBus) SubscribeWorkerDiag(_ func(subject string, data []byte)) (*nats.
 	return nil, nil
 }
 
-func (*stubBus) SubscribeLease(_ func(string, string, []byte) []byte) (*nats.Subscription, error) {
+func (*stubBus) SubscribeLease(_ func(string, string, []byte) []byte) (*bus.LeaseSubscription, error) {
 	return nil, nil
 }
 

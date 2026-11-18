@@ -150,7 +150,7 @@ func newSyncBus() *syncBus {
 	return &syncBus{leaseHandler: make(chan func(string, string, []byte) []byte, 1)}
 }
 
-func (b *syncBus) SubscribeLease(h func(string, string, []byte) []byte) (*nats.Subscription, error) {
+func (b *syncBus) SubscribeLease(h func(string, string, []byte) []byte) (*bus.LeaseSubscription, error) {
 	b.leaseHandler <- h
 	return nil, nil
 }

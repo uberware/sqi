@@ -17,7 +17,8 @@ import (
 
 // spawnDetachedGrandchild starts, via "cmd /c start /b <script.bat>", a
 // background batch file that pings for pingSeconds and then writes marker.
-// The returned *exec.Cmd is the immediate ("cmd /c start /b ...") process.
+// The returned *exec.Cmd is the immediate ("cmd /c starter.bat") process,
+// which starts the batch file with "start /b".
 // The batch file it launches is a separate process it does not wait for, so
 // it is orphaned once its starter exits: the case "taskkill /F /T" cannot
 // reach.
@@ -38,7 +39,14 @@ func spawnDetachedGrandchild(t *testing.T, pingSeconds int) (cmd *exec.Cmd, mark
 	if err := os.WriteFile(bat, []byte(script), 0o700); err != nil {
 		t.Fatalf("write grandchild.bat: %v", err)
 	}
-	cmd = exec.CommandContext(t.Context(), "cmd", "/c", "start", "/b", bat)
+	// The starter waits about a second before it starts the grandchild, so
+	// superviseTree has put it in the job by then: assignment follows Start,
+	// and a grandchild started first would be outside the job.
+	starter := filepath.Join(dir, "starter.bat")
+	if err := os.WriteFile(starter, []byte("@echo off\r\nping -n 2 127.0.0.1 > nul\r\nstart /b "+bat+"\r\n"), 0o700); err != nil {
+		t.Fatalf("write starter.bat: %v", err)
+	}
+	cmd = exec.CommandContext(t.Context(), "cmd", "/c", starter)
 	return cmd, marker
 }
 

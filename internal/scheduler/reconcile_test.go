@@ -32,8 +32,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	nats "github.com/nats-io/nats.go"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/storetest"
@@ -158,7 +158,7 @@ func newLeaseGateBus(st store.Store) *leaseGateBus {
 	return &leaseGateBus{st: st, leasing: make(chan struct{}, 1)}
 }
 
-func (b *leaseGateBus) SubscribeLease(_ func(string, string, []byte) []byte) (*nats.Subscription, error) {
+func (b *leaseGateBus) SubscribeLease(_ func(string, string, []byte) []byte) (*bus.LeaseSubscription, error) {
 	stuck, err := b.st.ListStuckSteps(context.Background())
 	b.stuckAtLease, b.stuckErr = len(stuck), err
 	select {

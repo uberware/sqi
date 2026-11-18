@@ -4,23 +4,63 @@ package netfault
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// echoServer echoes every connection until closed. accepted counts connections.
+// echoServer echoes every connection until closed. accepted counts
+// connections, and received records what each one sent.
 type echoServer struct {
 	ln       net.Listener
 	accepted atomic.Int64
 	wg       sync.WaitGroup
+
+	mu       sync.Mutex
+	received []*lockedBuffer
+}
+
+// lockedBuffer is a bytes.Buffer safe to write on one goroutine and read on
+// another.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// carrying counts the connections whose data so far starts with prefix. Any
+// process on the host can connect to a test's loopback port, so a count of
+// the connections a test made itself must be told apart by what they carry.
+func (s *echoServer) carrying(prefix string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, r := range s.received {
+		if strings.HasPrefix(r.String(), prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 func listenEcho(t *testing.T, addr string) *echoServer {
@@ -37,9 +77,13 @@ func listenEcho(t *testing.T, addr string) *echoServer {
 				return
 			}
 			s.accepted.Add(1)
+			rec := &lockedBuffer{}
+			s.mu.Lock()
+			s.received = append(s.received, rec)
+			s.mu.Unlock()
 			s.wg.Go(func() {
 				defer c.Close()
-				_, _ = io.Copy(c, c) //nolint:errcheck // ends when the peer closes
+				_, _ = io.Copy(c, io.TeeReader(c, rec)) //nolint:errcheck // ends when the peer closes
 			})
 		}
 	})
@@ -183,8 +227,10 @@ func TestProxy_BlackholeAcceptsThenDialsOnHeal(t *testing.T) {
 	if string(got) != "early" {
 		t.Fatalf("delivered %q, want early", got)
 	}
-	if n := e.accepted.Load(); n != 1 {
-		t.Fatalf("target saw %d connections, want 1", n)
+	// Counted by content: a client of another test process that reaches the
+	// proxy's port while it is blackholed is dialed on Heal too.
+	if n := e.carrying("early"); n != 1 {
+		t.Fatalf("the held data reached the target on %d connections, want 1", n)
 	}
 }
 

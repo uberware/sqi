@@ -321,7 +321,7 @@ type busClient interface {
 	ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
 	PublishTaskCancel(ctx context.Context, workerID string, data []byte) error
 	SubscribeWorkerDiag(handler func(subject string, data []byte)) (*nats.Subscription, error)
-	SubscribeLease(handler func(workerID, queueID string, data []byte) []byte) (*nats.Subscription, error)
+	SubscribeLease(handler func(workerID, queueID string, data []byte) []byte) (*bus.LeaseSubscription, error)
 	RequestWorkerControl(ctx context.Context, workerID string, data []byte) ([]byte, error)
 	PublishIngestMarkers(ctx context.Context, timeout time.Duration) error
 	ConsumerAckFloor(ctx context.Context, consumer bus.IngestConsumer) (uint64, error)
@@ -353,8 +353,13 @@ type Scheduler struct {
 	diagSub *nats.Subscription
 
 	// leaseSub is the core-NATS subscription for worker lease requests,
-	// unsubscribed during shutdown.
-	leaseSub *nats.Subscription
+	// stopped during shutdown once every request it took is answered.
+	leaseSub *bus.LeaseSubscription
+	// leaseReplies ends once leaseSub has stopped taking requests at
+	// shutdown; until then a reply produced while stopping is held back (see
+	// [Scheduler.answerLease]). Set by Run before leaseSub.
+	leaseReplies        context.Context
+	releaseLeaseReplies context.CancelFunc
 
 	// waiters parks long-poll lease requests per queue; woken by wake triggers.
 	waiters *waiterRegistry
@@ -700,8 +705,10 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	// A core-NATS request-reply subscriber that handles worker lease requests.
 	// Workers ask for work; handleLeaseRequest selects a batch or parks until
 	// new work appears (long-poll) and then replies.
-	leaseSub, err := s.bus.SubscribeLease(s.handleLeaseRequest)
+	s.leaseReplies, s.releaseLeaseReplies = context.WithCancel(context.WithoutCancel(ctx))
+	leaseSub, err := s.bus.SubscribeLease(s.answerLease)
 	if err != nil {
+		s.releaseLeaseReplies()
 		return fmt.Errorf("scheduler: start lease subscriber: %w", err)
 	}
 	s.leaseSub = leaseSub
@@ -727,12 +734,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	s.stopDiag(ctx)
 
-	// Unsubscribe the core-NATS lease subscriber if active.
-	if s.leaseSub != nil {
-		if err := s.leaseSub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
-			s.logger.WarnContext(ctx, "scheduler: lease subscriber unsubscribe failed", slog.Any("error", err))
-		}
-	}
+	s.stopLeaseSub(ctx)
 
 	s.wg.Wait()
 
@@ -755,6 +757,45 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "scheduler: stopped")
 	return nil
 }
+
+// answerLease is the lease subscriber's handler: [Scheduler.handleLeaseRequest],
+// except that a reply produced once the scheduler is stopping is held back
+// until the subscriber has stopped taking requests. A stopping scheduler
+// answers every request empty and at once, parked ones included, and a worker
+// asks again the moment a reply arrives; answered before the broker stops
+// routing here, that next request can be forwarded by another cluster node
+// and dropped, leaving the worker to wait out its whole request timeout.
+// Held back, the reply leaves after the interest removal, and the next
+// request finds no responder.
+func (s *Scheduler) answerLease(workerID, queueID string, data []byte) []byte {
+	reply := s.handleLeaseRequest(workerID, queueID, data)
+	if s.ctx.Err() != nil {
+		<-s.leaseReplies.Done()
+	}
+	return reply
+}
+
+// stopLeaseSub stops the lease subscriber, if active, and releases the
+// replies held back while stopping once it no longer takes requests. It
+// returns when every request it took has been answered: the server closes the
+// bus after Run returns, and a reply sent after that is lost.
+func (s *Scheduler) stopLeaseSub(ctx context.Context) {
+	if s.leaseSub == nil {
+		s.releaseLeaseReplies()
+		return
+	}
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), leaseStopTimeout)
+	defer cancel()
+	if err := s.leaseSub.Stop(stopCtx, s.releaseLeaseReplies); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+		s.logger.WarnContext(ctx, "scheduler: lease subscriber stop failed", slog.Any("error", err))
+	}
+}
+
+// leaseStopTimeout bounds stopping the lease subscriber at shutdown: the
+// drain, then answering the requests it took. Once the scheduler's context
+// has ended, each handler answers as soon as the drain completes, so this is
+// reached only when the broker is not answering.
+const leaseStopTimeout = time.Second
 
 // stopDiag unsubscribes the core-NATS diagnostic-log subscriber if active.
 func (s *Scheduler) stopDiag(ctx context.Context) {
