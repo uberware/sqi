@@ -22,9 +22,11 @@ import (
 // in it running, as POSIX leaves a finished script's process group.
 //
 // The job is assigned just after the start, so a child the script starts in
-// that sub-millisecond window escapes it; the worker's executor accepts the
-// same window (see internal/worker/executor's superviseTree). A job that
-// cannot be made leaves cancellation killing the script alone.
+// that sub-millisecond window escapes it. The script is the operator's own;
+// the worker's executor, which runs job-supplied code, starts a task
+// suspended to close the window (see internal/worker/executor's
+// superviseTree). A job that cannot be made leaves cancellation killing the
+// script alone.
 func startTree(cmd *exec.Cmd, logger *slog.Logger) (release func(), err error) {
 	var job atomic.Uintptr
 	cmd.Cancel = func() error {

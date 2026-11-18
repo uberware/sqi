@@ -32,14 +32,21 @@ import (
 	"fmt"
 	"os/exec"
 	"strconv"
+	"syscall"
 
 	"golang.org/x/sys/windows"
 )
 
-// configureProcessGroup is a no-op on Windows: containment is established
-// after Start by superviseTree (procgroup_windows.go), because a job object
-// can only be assigned to a process that already exists.
-func configureProcessGroup(*exec.Cmd) {}
+// configureProcessGroup starts the task process suspended. A job object can
+// only be assigned to a process that exists, so superviseTree
+// (procgroup_windows.go) assigns it after Start and only then lets it run:
+// nothing the task starts can be outside its job.
+func configureProcessGroup(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+}
 
 // sendTERM makes a best-effort graceful request via "taskkill /T" (without
 // /F), which lets a GUI process handle WM_CLOSE. It deliberately does NOT

@@ -25,6 +25,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -32,17 +33,25 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 
 	"github.com/uberware/sqi/internal/fsutil/fsutiltest"
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/envutil"
+	"github.com/uberware/sqi/internal/worker/executor"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
+	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/worker/session"
 	"github.com/uberware/sqi/internal/worker/staging"
+	"github.com/uberware/sqi/internal/worker/status"
 )
 
 // requireHarness skips unless the PowerShell harness set up the throwaway
@@ -881,4 +890,115 @@ func TestIsolationWindowsSystem_StageOutRefusesPlantedJunction(t *testing.T) {
 		t.Fatal("outOrig exists: a task running as a separate account made the " +
 			"elevated daemon copy a file from outside its scratch directory")
 	}
+}
+
+// TestIsolationWindowsSystem_TaskStartsSuspendedAsTargetUser drives the
+// executor's own start path for an isolated task: the process is created
+// suspended under the target account's logon token, assigned to its job
+// object, and resumed by the worker. A worker that could not resume a thread
+// of another account's process would leave every isolated task hung, and the
+// other tests here start their processes without the executor.
+func TestIsolationWindowsSystem_TaskStartsSuspendedAsTargetUser(t *testing.T) {
+	requireHarness(t)
+	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+	logger := slog.New(slog.DiscardHandler)
+
+	provider, err := isolation.NewProvider(isolation.Config{Provider: "logon_user", CredentialStore: harnessStore(t)})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, provider,
+		workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
+	statuses := &statusRecorder{}
+	lines := &lineRecorder{}
+	ex := executor.New(status.New(statuses, status.Config{WorkerID: "w-isolation"}, logger),
+		mgr, metrics.New(), lines, executor.Config{KillGracePeriod: time.Second}, logger)
+
+	msg := &protocol.AssignMsg{
+		Version:   protocol.ProtocolVersion,
+		Type:      protocol.TypeAssign,
+		JobID:     "job-isolated",
+		TaskID:    "task-isolated",
+		AttemptID: "attempt-1",
+		OnRun:     &protocol.Action{Command: "whoami"},
+		Isolation: &protocol.IsolationSpec{User: user},
+	}
+	if err := ex.Dispatch(context.Background(), msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	got := statuses.waitTerminal(t, time.Minute)
+	if got != "succeeded" {
+		t.Fatalf("task ended %q, want succeeded; output: %q", got, lines.all())
+	}
+	var identity string
+	for _, l := range lines.all() {
+		if s := strings.TrimSpace(l); s != "" {
+			identity = s
+		}
+	}
+	if i := strings.LastIndex(identity, `\`); i != -1 {
+		identity = identity[i+1:]
+	}
+	if !strings.EqualFold(identity, user) {
+		t.Errorf("task reported identity %q, want %q", identity, user)
+	}
+}
+
+// statusRecorder is the NATS side of a [status.Publisher]: it keeps each
+// status a task reports.
+type statusRecorder struct {
+	mu       sync.Mutex
+	statuses []string
+}
+
+func (r *statusRecorder) Publish(_ string, data []byte) error {
+	var m struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.statuses = append(r.statuses, m.Status)
+	r.mu.Unlock()
+	return nil
+}
+
+// waitTerminal returns the first terminal status reported within timeout.
+func (r *statusRecorder) waitTerminal(t *testing.T, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		for _, s := range r.statuses {
+			if s == "succeeded" || s == "failed" || s == "canceled" {
+				r.mu.Unlock()
+				return s
+			}
+		}
+		r.mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t.Fatalf("no terminal status within %s; saw %v", timeout, r.statuses)
+	return ""
+}
+
+// lineRecorder is an [executor.OutputHandler] that keeps a task's output.
+type lineRecorder struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *lineRecorder) HandleLine(_ context.Context, _, _, _, _, line string) {
+	r.mu.Lock()
+	r.lines = append(r.lines, line)
+	r.mu.Unlock()
+}
+
+func (r *lineRecorder) all() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.lines...)
 }

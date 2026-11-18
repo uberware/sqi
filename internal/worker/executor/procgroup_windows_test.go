@@ -17,8 +17,8 @@ import (
 
 // spawnDetachedGrandchild starts, via "cmd /c start /b <script.bat>", a
 // background batch file that pings for pingSeconds and then writes marker.
-// The returned *exec.Cmd is the immediate ("cmd /c starter.bat") process,
-// which starts the batch file with "start /b".
+// The returned *exec.Cmd is the immediate ("cmd /c start /b ...") process,
+// configured as the executor configures a task (configureProcessGroup).
 // The batch file it launches is a separate process it does not wait for, so
 // it is orphaned once its starter exits: the case "taskkill /F /T" cannot
 // reach.
@@ -39,15 +39,36 @@ func spawnDetachedGrandchild(t *testing.T, pingSeconds int) (cmd *exec.Cmd, mark
 	if err := os.WriteFile(bat, []byte(script), 0o700); err != nil {
 		t.Fatalf("write grandchild.bat: %v", err)
 	}
-	// The starter waits about a second before it starts the grandchild, so
-	// superviseTree has put it in the job by then: assignment follows Start,
-	// and a grandchild started first would be outside the job.
-	starter := filepath.Join(dir, "starter.bat")
-	if err := os.WriteFile(starter, []byte("@echo off\r\nping -n 2 127.0.0.1 > nul\r\nstart /b "+bat+"\r\n"), 0o700); err != nil {
-		t.Fatalf("write starter.bat: %v", err)
-	}
-	cmd = exec.CommandContext(t.Context(), "cmd", "/c", starter)
+	cmd = exec.CommandContext(t.Context(), "cmd", "/c", "start", "/b", bat)
+	configureProcessGroup(cmd)
 	return cmd, marker
+}
+
+// TestProcessTree_HoldsAGrandchildStartedBeforeSupervision pins that nothing
+// a task starts can escape its job, however long superviseTree takes after
+// Start: the task process does not run until superviseTree has assigned it.
+// The wait gives an unheld starter time to start the grandchild and exit, so
+// without that the grandchild would be outside the job.
+func TestProcessTree_HoldsAGrandchildStartedBeforeSupervision(t *testing.T) {
+	cmd, _ := spawnDetachedGrandchild(t, 30)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	time.Sleep(2 * time.Second)
+	tree, err := superviseTree(cmd)
+	if err != nil {
+		t.Fatalf("superviseTree: %v", err)
+	}
+	t.Cleanup(func() {
+		tree.sendKILL() //nolint:errcheck // best-effort cleanup if an assertion fails first
+		tree.release()  //nolint:errcheck // best-effort close of the job handle
+	})
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for parent: %v", err)
+	}
+	if !tree.alive() {
+		t.Fatal("alive = false: the grandchild was started outside the job")
+	}
 }
 
 // TestProcessTree_KillReapsOrphanedGrandchild is the Windows counterpart of

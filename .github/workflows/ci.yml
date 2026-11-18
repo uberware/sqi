@@ -1669,8 +1669,8 @@ jobs:
             -File scripts/test-isolation-windows.ps1 2>&1 | Tee-Object -FilePath isolation-windows.log
 
       # The script exits 0 when not elevated, so this fails on that message
-      # and requires all 17 tests to PASS by name: 8 TestIsolationWindows_*
-      # (elevated admin) and 9 TestIsolationWindowsSystem_* (SYSTEM).
+      # and requires all 18 tests to PASS by name: 8 TestIsolationWindows_*
+      # (elevated admin) and 10 TestIsolationWindowsSystem_* (SYSTEM).
       - name: Assert the suite actually ran
         shell: bash
         run: |
@@ -1696,6 +1696,7 @@ jobs:
             TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser
             TestIsolationWindowsSystem_RunsAsSystem
             TestIsolationWindowsSystem_StageOutRefusesPlantedJunction
+            TestIsolationWindowsSystem_TaskStartsSuspendedAsTargetUser
           )
           missing=0
           for name in "${expected[@]}"; do
@@ -1708,7 +1709,7 @@ jobs:
             fi
           done
           if [ "$missing" -eq 0 ]; then
-            echo "Confirmed all ${#expected[@]}/17 named isolation tests passed."
+            echo "Confirmed all ${#expected[@]}/18 named isolation tests passed."
           fi
           exit $missing
 

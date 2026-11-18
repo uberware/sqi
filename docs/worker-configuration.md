@@ -1165,7 +1165,9 @@ mapped drive, or authenticated license server fails as `ANONYMOUS` inside the
 task.
 
 Process containment: Windows task processes run inside a job object, so a
-grandchild orphaned before a cancel or timeout is still reaped. This applies
+grandchild orphaned before a cancel or timeout is still reaped. A task's
+process is started suspended and runs only once it is in the job, so
+nothing it starts is outside it. This applies
 to every Windows worker, isolated or not: a running task is terminated when
 the worker process exits, including on a graceful service restart.
 
