@@ -25,48 +25,24 @@
   gap: var(--space-2);
 }
 
-.jobActionBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--action-tone);
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--action-tone);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
+.jobPauseBtn {
+  composes: toneBtn info from '../styles/toneButton.module.css';
 }
 
-.jobActionBtn:hover:not(:disabled) {
-  background: var(--action-tone-muted);
+.jobResumeBtn {
+  composes: toneBtn success from '../styles/toneButton.module.css';
 }
 
-.jobActionBtn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.jobRetryBtn {
+  composes: toneBtn warning from '../styles/toneButton.module.css';
 }
 
-.pauseBtn {
-  --action-tone: var(--color-info);
-  --action-tone-muted: var(--color-info-muted);
+.jobCancelBtn {
+  composes: toneBtn error from '../styles/toneButton.module.css';
 }
 
-.resumeJobBtn {
-  --action-tone: var(--color-success);
-  --action-tone-muted: var(--color-success-muted);
-}
-
-.rerunBtn {
-  --action-tone: var(--color-warning);
-  --action-tone-muted: var(--color-warning-muted);
-}
-
-.cancelJobBtn,
-.deleteJobBtn {
-  --action-tone: var(--color-error);
-  --action-tone-muted: var(--color-error-muted);
+.jobDeleteBtn {
+  composes: toneBtn error from '../styles/toneButton.module.css';
 }
 
 .jobName {
@@ -407,39 +383,11 @@
 }
 
 .retryBtn {
-  padding: var(--space-1);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-warning);
-  background: transparent;
-  color: var(--color-warning);
-  cursor: pointer;
-}
-
-.retryBtn:hover:not(:disabled) {
-  background: var(--color-warning-muted);
-}
-
-.retryBtn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  composes: toneIconBtn warning from '../styles/toneButton.module.css';
 }
 
 .cancelBtn {
-  padding: var(--space-1);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-error);
-  background: transparent;
-  color: var(--color-error);
-  cursor: pointer;
-}
-
-.cancelBtn:hover:not(:disabled) {
-  background: var(--color-error-muted);
-}
-
-.cancelBtn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  composes: toneIconBtn error from '../styles/toneButton.module.css';
 }
 
 .logsLink {
@@ -605,42 +553,12 @@
 
 /* ── Bulk action bar ─────────────────────────────────────────────────────────── */
 
-.bulkCancelBtn,
-.bulkRetryBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-md);
-  background: transparent;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-  transition: background var(--transition-base);
-}
-
 .bulkCancelBtn {
-  border: 1px solid var(--color-error);
-  color: var(--color-error);
+  composes: toneBtn error from '../styles/toneButton.module.css';
 }
 
 .bulkRetryBtn {
-  border: 1px solid var(--color-warning);
-  color: var(--color-warning);
-}
-
-.bulkCancelBtn:hover:not(:disabled) {
-  background: var(--color-error-muted);
-}
-
-.bulkRetryBtn:hover:not(:disabled) {
-  background: var(--color-warning-muted);
-}
-
-.bulkCancelBtn:disabled,
-.bulkRetryBtn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+  composes: toneBtn warning from '../styles/toneButton.module.css';
 }
 
 /* ── Task search ──────────────────────────────────────────────────────────────── */

@@ -390,16 +390,21 @@ its scope.
 The bulk toolbar also offers **Pause M** (selected `pending` or `running` jobs)
 and **Resume M** (selected `paused` jobs), backed by `PATCH /api/v1/jobs/{id}`
 with `{ "action": "pause" }` or `{ "action": "resume" }`. The statuses each job
-action applies to live in `src/lib/jobStatus.ts`; the pause and resume sets
-mirror `resolveAction` in `internal/api/jobs.go`.
+action applies to live in `src/lib/jobStatus.ts`, as `canPauseJob`,
+`canResumeJob`, `canCancelJob` and `canRetryJob`; the pause and resume sets
+mirror `resolveAction` in `internal/api/jobs.go`. `useJobActions`
+(`src/api/mutations.ts`) returns each action's mutation keyed by its verb.
+`JobList` rows and the `JobDetail` action bar both use these, so the two pages
+offer the same actions in the same states.
 
-Per-row and bulk actions on `JobList` and `WorkerList` run through the
-`useBulkAction` hook (`src/hooks/useBulkAction.ts`). It runs the action for
-each selected item in turn, tracks which rows are busy, and keeps one failure
-message per action, such as "Cancel failed for 2 of 5 jobs: …", that a later
-success in the same batch cannot clear. Do not drive a bulk action's error banner from
-a mutation's `isError`: the next success resets it and hides the failure. Use
-the hook for any new list page with bulk actions.
+Per-row and bulk actions on `JobList` and `WorkerList`, and the job actions on
+`JobDetail`, run through the `useActionRunner` hook
+(`src/hooks/useActionRunner.ts`). It runs the action for each item in turn,
+tracks which items are busy, and keeps one failure message per action, such as
+"Cancel failed for 2 of 5 jobs: …", that a later success in the same batch
+cannot clear. Do not drive an action's error banner from a mutation's
+`isError`: the next success resets it and hides the failure. Use the hook for
+any new page with item actions.
 
 The `jobs` subject carries a synthetic `status: "removed"` event when a job is
 hard-deleted — either by a per-row or bulk **Delete** action in `JobList`, or

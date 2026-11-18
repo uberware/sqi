@@ -12,6 +12,25 @@ describe('IconButton', () => {
     expect(screen.getByTestId('icon')).toBeInTheDocument()
   })
 
+  it('shows visible text after the icon, keeping it while busy', () => {
+    const { rerender } = render(
+      <IconButton icon={<svg data-testid="icon" />} label="Pause job">
+        Pause
+      </IconButton>,
+    )
+    const btn = screen.getByRole('button', { name: 'Pause job' })
+    expect(btn).toHaveTextContent('Pause')
+    expect(screen.getByTestId('icon')).toBeInTheDocument()
+
+    rerender(
+      <IconButton icon={<svg data-testid="icon" />} label="Pause job" busy>
+        Pause
+      </IconButton>,
+    )
+    expect(btn).toHaveTextContent('Pause')
+    expect(screen.queryByTestId('icon')).not.toBeInTheDocument()
+  })
+
   it('calls onClick when clicked', () => {
     const onClick = vi.fn()
     render(<IconButton icon={<svg />} label="Delete" onClick={onClick} />)

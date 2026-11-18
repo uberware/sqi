@@ -26,8 +26,8 @@ import BulkBar from '@/components/BulkBar'
 import CopyableId from '@/components/CopyableId'
 import RefreshControls from '@/components/RefreshControls'
 import { useListJobs, queryKeys } from '@/api/queries'
-import { useCancelJob, useDeleteJob, usePauseJob, useResumeJob, useRetryJob } from '@/api/mutations'
-import { useBulkAction } from '@/hooks/useBulkAction'
+import { useJobActions } from '@/api/mutations'
+import { useActionRunner } from '@/hooks/useActionRunner'
 import { useListFilters } from '@/hooks/useListFilters'
 import type { SortDirection } from '@/hooks/useListFilters'
 import { useLiveNow } from '@/hooks/useLiveNow'
@@ -40,11 +40,8 @@ import {
   JOB_CHANGE_ESTIMATE,
   JOB_REMOVED_STATUS,
 } from '@/ws/events'
-import {
-  CANCELABLE_JOB_STATUSES,
-  PAUSABLE_JOB_STATUSES,
-  RESUMABLE_JOB_STATUSES,
-} from '@/lib/jobStatus'
+import { canCancelJob, canPauseJob, canResumeJob, canRetryJob } from '@/lib/jobStatus'
+import type { JobAction } from '@/lib/jobStatus'
 import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import type { Job, JobStatus, TaskCounts, TaskStatus, ListResponse } from '@/api/types'
@@ -56,21 +53,6 @@ type JobSortField = 'name' | 'priority' | 'created_at' | 'status'
 
 const JOB_STATUSES = new Set(['pending', 'running', 'paused', 'completed', 'failed', 'canceled'])
 const JOB_SORT_FIELDS = new Set(['name', 'priority', 'created_at', 'status'])
-
-/** Job actions that report their failures in a banner. */
-type JobAction = 'Cancel' | 'Delete' | 'Pause' | 'Resume' | 'Retry'
-
-/** Number of a job's tasks eligible for retry (failed or canceled). */
-function retryableCount(job: Job): number {
-  const c = job.task_counts
-  if (!c) return 0
-  return c.failed + c.canceled
-}
-
-const canCancel = (job: Job) => CANCELABLE_JOB_STATUSES.has(job.status)
-const canRetry = (job: Job) => retryableCount(job) > 0
-const canPause = (job: Job) => PAUSABLE_JOB_STATUSES.has(job.status)
-const canResume = (job: Job) => RESUMABLE_JOB_STATUSES.has(job.status)
 
 /** Status filter groups shown above the table. */
 const STATUS_FILTERS: { label: string; value: JobStatus | '' }[] = [
@@ -265,11 +247,7 @@ export default function JobList() {
   const total = data?.total ?? 0
 
   const queryClient = useQueryClient()
-  const { mutateAsync: cancelJob } = useCancelJob()
-  const { mutateAsync: deleteJob } = useDeleteJob()
-  const { mutateAsync: retryJob } = useRetryJob()
-  const { mutateAsync: pauseJob } = usePauseJob()
-  const { mutateAsync: resumeJob } = useResumeJob()
+  const jobActions = useJobActions()
   // Pending confirmation: either a single job id or the selected-bulk set.
   const [confirm, setConfirm] = useState<{ ids: string[]; bulk: boolean } | null>(null)
 
@@ -286,7 +264,7 @@ export default function JobList() {
     })
   }, [])
   // Every action deselects each job as it finishes.
-  const action = useBulkAction<JobAction>('jobs', deselect)
+  const action = useActionRunner<JobAction>('jobs', deselect)
 
   // ── WS-driven in-place updates ───────────────────────────────────
 
@@ -397,14 +375,14 @@ export default function JobList() {
 
   const selectedWhere = (pred: (job: Job) => boolean) =>
     jobs.filter((j) => selectedIds.has(j.id) && pred(j)).map((j) => j.id)
-  const selectedCancelable = selectedWhere(canCancel)
-  const selectedRetryable = selectedWhere(canRetry)
-  const selectedPausable = selectedWhere(canPause)
-  const selectedResumable = selectedWhere(canResume)
+  const selectedCancelable = selectedWhere(canCancelJob)
+  const selectedRetryable = selectedWhere(canRetryJob)
+  const selectedPausable = selectedWhere(canPauseJob)
+  const selectedResumable = selectedWhere(canResumeJob)
 
   // A job is selectable if any bulk action applies to it. Every pausable or
   // resumable status is also cancelable, so pause and resume add nothing here.
-  const selectableJobs = jobs.filter((j) => canCancel(j) || canRetry(j))
+  const selectableJobs = jobs.filter((j) => canCancelJob(j) || canRetryJob(j))
 
   const toggleRow = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -428,7 +406,7 @@ export default function JobList() {
     if (!confirm) return
     const ids = confirm.ids
     setConfirm(null)
-    await action.run('Delete', ids, deleteJob)
+    await action.run('Delete', ids, jobActions.Delete)
   }
 
   // ── Sort handler ──────────────────────────────────────────────────────────
@@ -598,40 +576,40 @@ export default function JobList() {
                   <td>{formatTime(job.created_at)}</td>
                   <td>{formatTimespan(job.started_at, job.completed_at, now)}</td>
                   <td className={styles.actionsCell}>
-                    {canWrite && canPause(job) && (
+                    {canWrite && canPauseJob(job) && (
                       <IconButton
                         icon={<Pause />}
                         className={styles.pauseBtn}
-                        onClick={() => void action.run('Pause', [job.id], pauseJob)}
+                        onClick={() => void action.run('Pause', [job.id], jobActions.Pause)}
                         busy={action.isBusy('Pause', job.id)}
                         title="Pause"
                         label={`Pause job ${job.name}`}
                       />
                     )}
-                    {canWrite && canResume(job) && (
+                    {canWrite && canResumeJob(job) && (
                       <IconButton
                         icon={<Play />}
                         className={styles.resumeBtn}
-                        onClick={() => void action.run('Resume', [job.id], resumeJob)}
+                        onClick={() => void action.run('Resume', [job.id], jobActions.Resume)}
                         busy={action.isBusy('Resume', job.id)}
                         title="Resume"
                         label={`Resume job ${job.name}`}
                       />
                     )}
-                    {canWrite && canCancel(job) && !isCanceling && (
+                    {canWrite && canCancelJob(job) && !isCanceling && (
                       <IconButton
                         icon={<X />}
                         className={styles.cancelBtn}
-                        onClick={() => void action.run('Cancel', [job.id], cancelJob)}
+                        onClick={() => void action.run('Cancel', [job.id], jobActions.Cancel)}
                         title="Cancel"
                         label={`Cancel job ${job.name}`}
                       />
                     )}
-                    {canWrite && canRetry(job) && (
+                    {canWrite && canRetryJob(job) && (
                       <IconButton
                         icon={<Rotate />}
                         className={styles.retryBtn}
-                        onClick={() => void action.run('Retry', [job.id], retryJob)}
+                        onClick={() => void action.run('Retry', [job.id], jobActions.Retry)}
                         busy={action.isBusy('Retry', job.id)}
                         title="Retry failed and canceled tasks"
                         label={`Retry job ${job.name}`}
@@ -679,7 +657,7 @@ export default function JobList() {
             className={styles.bulkCancelBtn}
             count={selectedCancelable.length}
             running={action.isRunning('Cancel')}
-            onClick={() => void action.run('Cancel', selectedCancelable, cancelJob)}
+            onClick={() => void action.run('Cancel', selectedCancelable, jobActions.Cancel)}
           />
           <BulkButton
             verb="Retry"
@@ -687,7 +665,7 @@ export default function JobList() {
             className={styles.bulkRetryBtn}
             count={selectedRetryable.length}
             running={action.isRunning('Retry')}
-            onClick={() => void action.run('Retry', selectedRetryable, retryJob)}
+            onClick={() => void action.run('Retry', selectedRetryable, jobActions.Retry)}
           />
           <BulkButton
             verb="Pause"
@@ -695,7 +673,7 @@ export default function JobList() {
             className={styles.bulkPauseBtn}
             count={selectedPausable.length}
             running={action.isRunning('Pause')}
-            onClick={() => void action.run('Pause', selectedPausable, pauseJob)}
+            onClick={() => void action.run('Pause', selectedPausable, jobActions.Pause)}
           />
           <BulkButton
             verb="Resume"
@@ -703,7 +681,7 @@ export default function JobList() {
             className={styles.bulkResumeBtn}
             count={selectedResumable.length}
             running={action.isRunning('Resume')}
-            onClick={() => void action.run('Resume', selectedResumable, resumeJob)}
+            onClick={() => void action.run('Resume', selectedResumable, jobActions.Resume)}
           />
           <BulkButton
             verb="Delete"

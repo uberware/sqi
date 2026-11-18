@@ -35,50 +35,28 @@
 
 /* ── Bulk action bar ─────────────────────────────────────────────────────────── */
 
-/* Base for every bulk action button; each action class below sets its tone. */
 .bulkBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--bulk-tone);
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--bulk-tone);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-  transition: background var(--transition-base);
+  composes: toneBtn from '../styles/toneButton.module.css';
 }
 
-.bulkBtn:hover:not(:disabled) {
-  background: var(--bulk-tone-muted);
+.bulkCancelBtn {
+  composes: error from '../styles/toneButton.module.css';
 }
 
-.bulkBtn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.bulkCancelBtn,
 .bulkDeleteBtn {
-  --bulk-tone: var(--color-error);
-  --bulk-tone-muted: var(--color-error-muted);
+  composes: error from '../styles/toneButton.module.css';
 }
 
 .bulkRetryBtn {
-  --bulk-tone: var(--color-warning);
-  --bulk-tone-muted: var(--color-warning-muted);
+  composes: warning from '../styles/toneButton.module.css';
 }
 
 .bulkPauseBtn {
-  --bulk-tone: var(--color-info);
-  --bulk-tone-muted: var(--color-info-muted);
+  composes: info from '../styles/toneButton.module.css';
 }
 
 .bulkResumeBtn {
-  --bulk-tone: var(--color-success);
-  --bulk-tone-muted: var(--color-success-muted);
+  composes: success from '../styles/toneButton.module.css';
 }
 
 /* ── Table wrapper ───────────────────────────────────────────────────────────── */
@@ -148,82 +126,33 @@
 
 /* ── Row action buttons (visible on hover) ───────────────────────────────────── */
 
-.pauseBtn,
-.resumeBtn,
-.cancelBtn,
-.retryBtn,
-.deleteBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-1);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity var(--transition-fast),
-    background var(--transition-fast);
-}
-
 .pauseBtn {
-  border: 1px solid var(--color-info);
-  color: var(--color-info);
+  composes: toneIconBtn info from '../styles/toneButton.module.css';
 }
 
 .resumeBtn {
-  border: 1px solid var(--color-success);
-  color: var(--color-success);
+  composes: toneIconBtn success from '../styles/toneButton.module.css';
 }
 
-.cancelBtn,
-.deleteBtn {
-  border: 1px solid var(--color-error);
-  color: var(--color-error);
+.cancelBtn {
+  composes: toneIconBtn error from '../styles/toneButton.module.css';
 }
 
 .retryBtn {
-  border: 1px solid var(--color-warning);
-  color: var(--color-warning);
+  composes: toneIconBtn warning from '../styles/toneButton.module.css';
 }
 
-tr:hover .pauseBtn,
-tr:hover .resumeBtn,
-tr:hover .cancelBtn,
-tr:hover .retryBtn,
-tr:hover .deleteBtn,
-tr.rowSelected .pauseBtn,
-tr.rowSelected .resumeBtn,
-tr.rowSelected .cancelBtn,
-tr.rowSelected .retryBtn,
-tr.rowSelected .deleteBtn {
+.deleteBtn {
+  composes: toneIconBtn error from '../styles/toneButton.module.css';
+}
+
+.actionsCell > button {
+  opacity: 0;
+}
+
+tr:hover .actionsCell > button,
+tr.rowSelected .actionsCell > button {
   opacity: 1;
-}
-
-.pauseBtn:hover:not(:disabled) {
-  background: var(--color-info-muted);
-}
-
-.resumeBtn:hover:not(:disabled) {
-  background: var(--color-success-muted);
-}
-
-.cancelBtn:hover:not(:disabled),
-.deleteBtn:hover:not(:disabled) {
-  background: var(--color-error-muted);
-}
-
-.retryBtn:hover:not(:disabled) {
-  background: var(--color-warning-muted);
-}
-
-.pauseBtn:disabled,
-.resumeBtn:disabled,
-.cancelBtn:disabled,
-.retryBtn:disabled,
-.deleteBtn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 
 /* ── Empty / error / loading ─────────────────────────────────────────────────── */

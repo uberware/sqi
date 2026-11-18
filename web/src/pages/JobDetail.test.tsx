@@ -8,6 +8,7 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import JobDetail from './JobDetail'
 import { WebSocketProvider } from '@/ws/context'
+import { ToastProvider } from '@/components/Toast'
 import { queryKeys } from '@/api/queries'
 import type { JobDetail as JobDetailType, ListResponse, Principal, Task, Worker } from '@/api/types'
 
@@ -237,16 +238,18 @@ function Wrapper({
   const [client] = useState(makeClient)
   return (
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[`/jobs/${jobId}`]}>
-        <WebSocketProvider url="ws://test">
-          <Routes>
-            <Route path="/jobs" element={<div>Job list</div>} />
-            <Route path="/jobs/:id" element={children} />
-            <Route path="/jobs/:id/tasks/:taskId/logs" element={<div>Log viewer</div>} />
-            <Route path="/workers/:id" element={<div>Worker detail</div>} />
-          </Routes>
-        </WebSocketProvider>
-      </MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter initialEntries={[`/jobs/${jobId}`]}>
+          <WebSocketProvider url="ws://test">
+            <Routes>
+              <Route path="/jobs" element={<div>Job list</div>} />
+              <Route path="/jobs/:id" element={children} />
+              <Route path="/jobs/:id/tasks/:taskId/logs" element={<div>Log viewer</div>} />
+              <Route path="/workers/:id" element={<div>Worker detail</div>} />
+            </Routes>
+          </WebSocketProvider>
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>
   )
 }
@@ -801,13 +804,15 @@ describe('JobDetail', () => {
       return function ClientWrapper({ children }: { children: ReactNode }) {
         return (
           <QueryClientProvider client={client}>
-            <MemoryRouter initialEntries={['/jobs/job-aabbccdd-eeff']}>
-              <WebSocketProvider url="ws://test">
-                <Routes>
-                  <Route path="/jobs/:id" element={children} />
-                </Routes>
-              </WebSocketProvider>
-            </MemoryRouter>
+            <ToastProvider>
+              <MemoryRouter initialEntries={['/jobs/job-aabbccdd-eeff']}>
+                <WebSocketProvider url="ws://test">
+                  <Routes>
+                    <Route path="/jobs/:id" element={children} />
+                  </Routes>
+                </WebSocketProvider>
+              </MemoryRouter>
+            </ToastProvider>
           </QueryClientProvider>
         )
       }
@@ -2159,6 +2164,7 @@ describe('JobDetail', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Delete job' }))
 
       expect(await screen.findByText('Job list')).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('Job "Test Render Job" deleted')
       expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('Test Render Job'))
       expect(mutation()).toEqual([
         expect.stringMatching(new RegExp(`/jobs/${job.id}$`)),
@@ -2187,6 +2193,7 @@ describe('JobDetail', () => {
 
       expect(await screen.findByText(/Delete failed: disk on fire/)).toBeInTheDocument()
       expect(screen.queryByText('Job list')).not.toBeInTheDocument()
+      expect(screen.getByRole('status')).not.toHaveTextContent(/deleted/)
     })
   })
 
