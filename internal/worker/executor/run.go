@@ -679,7 +679,8 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// SysProcAttr fields already set, such as Setpgid, and would not see ones
 	// set later.
 	if err := applyCredential(cmd, sess.Credential()); err != nil {
-		return processResult{Err: fmt.Errorf("apply run-as-user credential: %w", err)}
+		now := time.Now()
+		return processResult{Err: fmt.Errorf("apply run-as-user credential: %w", err), StartedAt: now, EndedAt: now}
 	}
 
 	// Merge the session's dynamic environment (accumulated from openjd_env /
@@ -733,7 +734,11 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		if killErr := out.Abort(); killErr != nil {
 			e.logger.WarnContext(context.Background(), "executor: kill process after supervise failure", slog.Any("error", killErr))
 		}
-		return processResult{Err: fmt.Errorf("supervise task process tree: %w", err)}
+		return processResult{
+			Err:       fmt.Errorf("supervise task process tree: %w", err),
+			StartedAt: startedAt,
+			EndedAt:   time.Now(),
+		}
 	}
 	defer func() {
 		if relErr := tree.Release(); relErr != nil {

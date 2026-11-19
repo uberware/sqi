@@ -203,7 +203,8 @@ func (p *Publisher) Running(msg *protocol.AssignMsg, sessionID string, at time.T
 // giving the attempt back. lastProgress is the most-recently seen
 // openjd_progress value, or nil. endedAt is when the task ended; it must keep
 // its monotonic clock reading (do not pass it through UTC, Round or JSON),
-// since ended_ago_ms is measured from it on every try.
+// since ended_ago_ms is measured from it on every try. A zero endedAt is
+// taken as the time of the call.
 func (p *Publisher) Terminal(
 	msg *protocol.AssignMsg,
 	sessionID, status string,
@@ -212,6 +213,9 @@ func (p *Publisher) Terminal(
 	lastProgress *int,
 	endedAt time.Time,
 ) {
+	if endedAt.IsZero() {
+		endedAt = time.Now() // no end recorded: report it as now, not ~292 years ago
+	}
 	kind := status
 	if status == "failed" && failureReason == protocol.MessageWorkerShutdown {
 		kind = kindShutdown

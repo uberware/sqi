@@ -4,13 +4,17 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/fmtres"
@@ -182,5 +186,105 @@ func TestTaskActionsCarryCredential(t *testing.T) {
 	}
 	if cred != sess.Credential() {
 		t.Error("applyCredential was called with a credential other than the session's own")
+	}
+}
+
+// ackRecorder is a status.Transport that acknowledges every report and keeps
+// it.
+type ackRecorder struct {
+	mu   sync.Mutex
+	msgs []protocol.TaskStatusMsg
+}
+
+func (r *ackRecorder) PublishAcked(_ context.Context, _ string, data []byte, _ string) error {
+	var m protocol.TaskStatusMsg
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.msgs = append(r.msgs, m)
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *ackRecorder) terminal() (protocol.TaskStatusMsg, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.msgs {
+		if m.Status != "running" {
+			return m, true
+		}
+	}
+	return protocol.TaskStatusMsg{}, false
+}
+
+// TestCredentialFailureReportsItsEnd checks that a task whose run-as-user
+// credential cannot be applied reports a real end: its processResult used to
+// carry no EndedAt, so the terminal status's ended_ago_ms measured from the
+// zero time.
+func TestCredentialFailureReportsItsEnd(t *testing.T) {
+	orig := applyCredential
+	applyCredential = func(*exec.Cmd, *isolation.Credential) error { return errors.New("no such account") }
+	defer func() { applyCredential = orig }()
+
+	logger := slog.New(slog.DiscardHandler)
+	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil),
+		workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
+	rec := &ackRecorder{}
+	e := New(status.New(rec, status.Config{WorkerID: "test-worker"}, logger), mgr, metrics.New(), DiscardOutput{}, Config{}, logger)
+	t.Cleanup(func() { e.DrainAndShutdown(0) })
+
+	msg := &protocol.AssignMsg{
+		Version: protocol.ProtocolVersion, Type: protocol.TypeAssign,
+		JobID: "job-1", TaskID: "task-1", AttemptID: "attempt-1",
+		OnRun: &protocol.Action{Command: "never-started"},
+	}
+	if err := e.Dispatch(context.Background(), msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if m, ok := rec.terminal(); ok {
+			if m.Status != "failed" || !strings.Contains(m.Message, "apply run-as-user credential") {
+				t.Fatalf("terminal = %q %q, want failed on the credential", m.Status, m.Message)
+			}
+			if m.EndedAgoMs < 0 || m.EndedAgoMs > 60_000 {
+				t.Errorf("EndedAgoMs = %d, want the few milliseconds since the failure", m.EndedAgoMs)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no terminal status")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestCredentialFailureResultHasTimes checks the processResult itself: the
+// terminal publish takes its end from EndedAt.
+func TestCredentialFailureResultHasTimes(t *testing.T) {
+	orig := applyCredential
+	applyCredential = func(*exec.Cmd, *isolation.Credential) error { return errors.New("no such account") }
+	defer func() { applyCredential = orig }()
+
+	logger := slog.New(slog.DiscardHandler)
+	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil),
+		workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
+	msg := &protocol.AssignMsg{JobID: "job-1", TaskID: "task-1", AttemptID: "attempt-1"}
+	sess, err := mgr.Create(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("session Create: %v", err)
+	}
+	defer mgr.Cleanup(context.Background(), sess, false)
+	e := New(status.New(discardNATS{}, status.Config{WorkerID: "test-worker"}, logger), mgr, metrics.New(), DiscardOutput{}, Config{}, logger)
+
+	run := &taskRun{taskID: msg.TaskID, attemptID: msg.AttemptID, sessionID: sess.ID, jobID: msg.JobID}
+	result := e.execProcess(context.Background(), msg, sess, run, nil, &protocol.Action{Command: "never-started"}, nil, e.outputHandler)
+	if result.Err == nil {
+		t.Fatal("execProcess: want the credential error")
+	}
+	if result.StartedAt.IsZero() || result.EndedAt.IsZero() || result.EndedAt.Before(result.StartedAt) {
+		t.Errorf("result times = %v .. %v, want both set, in order", result.StartedAt, result.EndedAt)
 	}
 }

@@ -357,6 +357,23 @@ func TestPublisher_NegativeAgeIsZero(t *testing.T) {
 	}
 }
 
+func TestPublisher_ZeroEndedAtIsNow(t *testing.T) {
+	tr := &stubTransport{}
+	p, _ := newPub(tr)
+	before := time.Now()
+
+	code := -1
+	p.Terminal(assign("a1"), "", "failed", &code, "boom", nil, time.Time{})
+
+	m := tr.snapshot()[0].msg
+	if m.EndedAgoMs != 0 {
+		t.Errorf("EndedAgoMs = %d, want 0 for a zero endedAt", m.EndedAgoMs)
+	}
+	if m.At.Before(before.Round(0).Truncate(time.Second)) {
+		t.Errorf("At = %v, want about now", m.At)
+	}
+}
+
 func TestPublisher_MsgIDPerKind(t *testing.T) {
 	code := 1
 	tests := []struct {
