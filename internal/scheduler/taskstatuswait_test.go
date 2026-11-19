@@ -3,7 +3,9 @@
 package scheduler
 
 // Tests for deferring a deregister's reclaim until the task-status consumer
-// has applied SQI_TASK up to the deregister's broker stamp.
+// has applied SQI_TASK up to the deregister's broker stamp, and for the
+// delivery budget that wait shares with a restart registration
+// (registerwait_test.go).
 
 import (
 	"errors"
@@ -19,19 +21,19 @@ import (
 
 const deregisterWarn = "scheduler: deregister applied before the task-status consumer caught up"
 
-// deregisterWaitFixture is a membership fixture with one registered worker
+// taskWaitFixture is a membership fixture with one registered worker
 // w1 (instance inst-1) holding the running task t1, a scheduler clock the
 // test sets, and trackers that have processed no marker.
-type deregisterWaitFixture struct {
+type taskWaitFixture struct {
 	membershipFixture
 
 	clock   *testClock
 	attempt store.TaskAttempt
-	// stamp is the deregister message's broker stamp.
+	// stamp is the broker stamp of the deregister or registration under test.
 	stamp time.Time
 }
 
-func newDeregisterWaitFixture(t *testing.T) deregisterWaitFixture {
+func newTaskWaitFixture(t *testing.T) taskWaitFixture {
 	t.Helper()
 	f := newMembershipFixture(t, false)
 	f.register(t, "w1", "inst-1", "")
@@ -43,12 +45,12 @@ func newDeregisterWaitFixture(t *testing.T) deregisterWaitFixture {
 	clock := &testClock{t: stamp.Add(time.Second)}
 	f.s.now = clock.now
 	noIngestMarker(f.s)
-	return deregisterWaitFixture{membershipFixture: f, clock: clock, attempt: attempts["t1"], stamp: stamp}
+	return taskWaitFixture{membershipFixture: f, clock: clock, attempt: attempts["t1"], stamp: stamp}
 }
 
 // deregisterMsg is the first delivery of w1's deregister for instance,
 // stamped by the broker at the fixture's stamp.
-func (f deregisterWaitFixture) deregisterMsg(t *testing.T, instance string) *fakeJSMsg {
+func (f taskWaitFixture) deregisterMsg(t *testing.T, instance string) *fakeJSMsg {
 	t.Helper()
 	return &fakeJSMsg{
 		subject:   bus.WorkerDeregisterSubject("w1"),
@@ -61,21 +63,19 @@ func (f deregisterWaitFixture) deregisterMsg(t *testing.T, instance string) *fak
 	}
 }
 
-// requireDeferred fails unless msg was handed back for a re-check in
-// deregisterRecheckDelay, unacknowledged, with w1 online and t1 running.
-func (f deregisterWaitFixture) requireDeferred(t *testing.T, msg *fakeJSMsg) {
+// requireHeldBack fails unless msg was handed back for a re-check in
+// taskWaitRecheckDelay, unacknowledged, with t1 still running on its open
+// attempt.
+func (f taskWaitFixture) requireHeldBack(t *testing.T, msg *fakeJSMsg) {
 	t.Helper()
 	if msg.acked {
-		t.Fatal("deferred deregister was acknowledged")
+		t.Fatal("deferred message was acknowledged")
 	}
-	if !msg.nacked || msg.nakDelay != deregisterRecheckDelay {
-		t.Fatalf("deregister nak = %v delay %v, want a nak with delay %v", msg.nacked, msg.nakDelay, deregisterRecheckDelay)
-	}
-	if w := f.worker(t, "w1"); w.Status != store.WorkerStatusOnline {
-		t.Fatalf("w1 status = %q while the deregister is deferred, want online", w.Status)
+	if !msg.nacked || msg.nakDelay != taskWaitRecheckDelay {
+		t.Fatalf("nak = %v delay %v, want a nak with delay %v", msg.nacked, msg.nakDelay, taskWaitRecheckDelay)
 	}
 	if got := mustTaskOf(t, f.st, "t1").Status; got != store.TaskStatusRunning {
-		t.Fatalf("t1 = %s while the deregister is deferred, want running", got)
+		t.Fatalf("t1 = %s while the message is deferred, want running", got)
 	}
 	f.requireAttemptOpen(t)
 	// The deferral is not an ingest failure: nothing waits in the worker
@@ -85,27 +85,35 @@ func (f deregisterWaitFixture) requireDeferred(t *testing.T, msg *fakeJSMsg) {
 	}
 }
 
-func (f deregisterWaitFixture) requireAttemptOpen(t *testing.T) {
+// requireDeferred is requireHeldBack for a deregister, with w1 still online.
+func (f taskWaitFixture) requireDeferred(t *testing.T, msg *fakeJSMsg) {
 	t.Helper()
-	a, err := f.st.GetTaskAttempt(t.Context(), f.attempt.ID)
-	if err != nil {
-		t.Fatalf("GetTaskAttempt: %v", err)
+	f.requireHeldBack(t, msg)
+	if w := f.worker(t, "w1"); w.Status != store.WorkerStatusOnline {
+		t.Fatalf("w1 status = %q while the deregister is deferred, want online", w.Status)
 	}
-	if a.EndedAt != nil {
+}
+
+// requireAckedOnly fails unless msg was acknowledged without a nak.
+func requireAckedOnly(t *testing.T, msg *fakeJSMsg) {
+	t.Helper()
+	if !msg.acked || msg.nacked {
+		t.Fatalf("message acked %v nak'd %v (delay %v), want acked only", msg.acked, msg.nacked, msg.nakDelay)
+	}
+}
+
+func (f taskWaitFixture) requireAttemptOpen(t *testing.T) {
+	t.Helper()
+	if a := mustAttemptOf(t, f.st, f.attempt.ID); a.EndedAt != nil {
 		t.Fatalf("attempt ended at %v, want it open", a.EndedAt)
 	}
 }
 
 // requireApplied fails unless msg was acknowledged without a nak and w1 is
 // offline.
-func (f deregisterWaitFixture) requireApplied(t *testing.T, msg *fakeJSMsg) {
+func (f taskWaitFixture) requireApplied(t *testing.T, msg *fakeJSMsg) {
 	t.Helper()
-	if !msg.acked {
-		t.Fatal("deregister was not acknowledged")
-	}
-	if msg.nacked {
-		t.Fatalf("deregister was nak'd (delay %v), want it applied", msg.nakDelay)
-	}
+	requireAckedOnly(t, msg)
 	if w := f.worker(t, "w1"); w.Status != store.WorkerStatusOffline {
 		t.Fatalf("w1 status = %q, want offline", w.Status)
 	}
@@ -120,15 +128,37 @@ func redeliver(msg *fakeJSMsg) *fakeJSMsg {
 	}
 }
 
-func TestDeregisterWait_FitsWorkerConsumerDeliveries(t *testing.T) {
-	if deregisterMaxRechecks >= bus.WorkerConsumerMaxDeliver-1 {
-		t.Fatalf("a deferred deregister is applied on delivery %d, want before %d (MaxDeliver %d less one)",
-			deregisterMaxRechecks, bus.WorkerConsumerMaxDeliver-1, bus.WorkerConsumerMaxDeliver)
+// A message deferred until its taskWaitMaxRechecks-th delivery and then nak'd
+// for a store error on every delivery after it keeps redelivering until the
+// stream's MaxAge removes it, as a message that was never deferred does: the
+// worker consumer's MaxDeliver must not end it first, or a restart
+// registration deferred to the bound would survive a shorter store outage
+// than any other registration.
+func TestTaskStatusWait_DeferredMessageKeepsItsStoreOutageRetries(t *testing.T) {
+	var at time.Duration
+	n := 1
+	for ; n < taskWaitMaxRechecks; n++ {
+		at += taskWaitRecheckDelay
+	}
+	for at+nakDelay(uint64(n)) < bus.WorkerStreamMaxAge {
+		at += nakDelay(uint64(n))
+		n++
+	}
+	if n > bus.WorkerConsumerMaxDeliver {
+		t.Fatalf("a deferred message has %d deliveries before MaxAge (%v), the last at %v; MaxDeliver %d ends it first",
+			n, bus.WorkerStreamMaxAge, at, bus.WorkerConsumerMaxDeliver)
+	}
+}
+
+func TestTaskStatusWait_FitsWorkerConsumerDeliveries(t *testing.T) {
+	if taskWaitMaxRechecks >= bus.WorkerConsumerMaxDeliver-1 {
+		t.Fatalf("a deferred message is applied on delivery %d, want before %d (MaxDeliver %d less one)",
+			taskWaitMaxRechecks, bus.WorkerConsumerMaxDeliver-1, bus.WorkerConsumerMaxDeliver)
 	}
 }
 
 func TestDeregister_DefersUntilTaskConsumerCatchesUp(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
+	f := newTaskWaitFixture(t)
 	f.s.ingestTask.marker(f.stamp.Add(-time.Second))
 
 	first := f.deregisterMsg(t, "inst-1")
@@ -142,17 +172,13 @@ func TestDeregister_DefersUntilTaskConsumerCatchesUp(t *testing.T) {
 	if got := mustTaskOf(t, f.st, "t1").Status; got != store.TaskStatusReady {
 		t.Errorf("t1 = %s after the deregister, want ready (reclaimed)", got)
 	}
-	a, err := f.st.GetTaskAttempt(t.Context(), f.attempt.ID)
-	if err != nil {
-		t.Fatalf("GetTaskAttempt: %v", err)
-	}
-	if a.EndedAt == nil {
+	if a := mustAttemptOf(t, f.st, f.attempt.ID); a.EndedAt == nil {
 		t.Error("attempt still open after the deregister was applied")
 	}
 }
 
 func TestDeregister_StatusStoredBeforeDeregisterIsAppliedFirst(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
+	f := newTaskWaitFixture(t)
 	f.s.ingestTask.marker(f.stamp.Add(-time.Second))
 
 	first := f.deregisterMsg(t, "inst-1")
@@ -161,16 +187,7 @@ func TestDeregister_StatusStoredBeforeDeregisterIsAppliedFirst(t *testing.T) {
 
 	// The worker's succeeded report, stored on SQI_TASK before the
 	// deregister, reaches the task-status consumer.
-	exitCode := 0
-	status := &fakeJSMsg{
-		subject: bus.TaskStatusSubject("w1", "j1"),
-		stamp:   f.stamp.Add(-200 * time.Millisecond),
-		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
-			Version: protocol.ProtocolVersion, Type: protocol.TypeTaskStatus,
-			TaskID: "t1", AttemptID: f.attempt.ID, JobID: "j1", WorkerID: "w1",
-			Status: "succeeded", ExitCode: &exitCode, At: f.stamp,
-		}),
-	}
+	status := f.succeededMsg(t, 3, f.stamp.Add(-200*time.Millisecond))
 	f.s.handleTaskStatusMessage(status)
 	if !status.acked {
 		t.Fatal("succeeded report was not acknowledged")
@@ -183,17 +200,13 @@ func TestDeregister_StatusStoredBeforeDeregisterIsAppliedFirst(t *testing.T) {
 	if got := mustTaskOf(t, f.st, "t1").Status; got != store.TaskStatusSucceeded {
 		t.Errorf("t1 = %s, want succeeded: the deregister must not reclaim finished work", got)
 	}
-	a, err := f.st.GetTaskAttempt(t.Context(), f.attempt.ID)
-	if err != nil {
-		t.Fatalf("GetTaskAttempt: %v", err)
-	}
-	if a.Status != store.AttemptStatusSucceeded {
+	if a := mustAttemptOf(t, f.st, f.attempt.ID); a.Status != store.AttemptStatusSucceeded {
 		t.Errorf("attempt status = %q, want succeeded", a.Status)
 	}
 }
 
 func TestDeregister_AppliesAtOnceWhenCaughtUp(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
+	f := newTaskWaitFixture(t)
 	f.s.ingestTask.marker(f.stamp.Add(time.Second))
 
 	msg := f.deregisterMsg(t, "inst-1")
@@ -202,7 +215,7 @@ func TestDeregister_AppliesAtOnceWhenCaughtUp(t *testing.T) {
 }
 
 func TestDeregister_BeforeFirstMarkerDefers(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
+	f := newTaskWaitFixture(t)
 
 	msg := f.deregisterMsg(t, "inst-1")
 	f.s.handleWorkerMessage(msg)
@@ -210,14 +223,14 @@ func TestDeregister_BeforeFirstMarkerDefers(t *testing.T) {
 }
 
 // A deregister the task-status consumer never catches up to is deferred on
-// every delivery before the deregisterMaxRechecks-th and applied, with one
+// every delivery before the taskWaitMaxRechecks-th and applied, with one
 // warning, on that one.
 func TestDeregister_AppliesAtMaxRechecks(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
+	f := newTaskWaitFixture(t)
 	f.s.ingestTask.marker(f.stamp.Add(-time.Second))
 
 	msg := f.deregisterMsg(t, "inst-1")
-	msg.delivered = uint64(deregisterMaxRechecks - 1)
+	msg.delivered = uint64(taskWaitMaxRechecks - 1)
 	f.s.handleWorkerMessage(msg)
 	f.requireDeferred(t, msg)
 	if n := warnCount(f.logs.String(), deregisterWarn); n != 0 {
@@ -230,7 +243,7 @@ func TestDeregister_AppliesAtMaxRechecks(t *testing.T) {
 	if got := mustTaskOf(t, f.st, "t1").Status; got != store.TaskStatusReady {
 		t.Errorf("t1 = %s, want ready (reclaimed)", got)
 	}
-	want := fmt.Sprintf("deliveries=%d", deregisterMaxRechecks)
+	want := fmt.Sprintf("deliveries=%d", taskWaitMaxRechecks)
 	if n := warnCount(f.logs.String(), deregisterWarn, "worker_id=w1", want); n != 1 {
 		t.Errorf("warnings %q naming w1 and %s = %d, want 1:\n%s", deregisterWarn, want, n, f.logs.String())
 	}
@@ -240,9 +253,9 @@ func TestDeregister_AppliesAtMaxRechecks(t *testing.T) {
 // after a server restart or failover, or read by a server whose clock is
 // ahead of the broker's) still waits for the task-status consumer.
 func TestDeregister_OldStampStillDefers(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
+	f := newTaskWaitFixture(t)
 	f.s.ingestTask.marker(f.stamp.Add(-time.Second))
-	f.clock.t = f.stamp.Add(10 * deregisterApplyWait)
+	f.clock.t = f.stamp.Add(10 * taskWaitApplyWait)
 
 	msg := f.deregisterMsg(t, "inst-1")
 	f.s.handleWorkerMessage(msg)
@@ -250,7 +263,7 @@ func TestDeregister_OldStampStillDefers(t *testing.T) {
 }
 
 func TestDeregister_NoBrokerStampAppliesAtOnce(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
+	f := newTaskWaitFixture(t)
 
 	msg := f.deregisterMsg(t, "inst-1")
 	msg.metaErr = errors.New("no metadata")
@@ -263,7 +276,7 @@ func TestDeregister_NoBrokerStampAppliesAtOnce(t *testing.T) {
 // then, by OfflineWorker, so a deferred deregister from a superseded process
 // cannot take its successor offline.
 func TestDeregister_DeferredFromSupersededInstanceLeavesWorkerOnline(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
+	f := newTaskWaitFixture(t)
 	f.s.ingestTask.marker(f.stamp.Add(-time.Second))
 
 	first := f.deregisterMsg(t, "inst-1")
@@ -274,9 +287,7 @@ func TestDeregister_DeferredFromSupersededInstanceLeavesWorkerOnline(t *testing.
 	f.s.ingestTask.marker(f.stamp.Add(500 * time.Millisecond))
 	again := redeliver(first)
 	f.s.handleWorkerMessage(again)
-	if !again.acked || again.nacked {
-		t.Fatalf("superseded deregister acked %v nak'd %v, want acked only", again.acked, again.nacked)
-	}
+	requireAckedOnly(t, again)
 	if w := f.worker(t, "w1"); w.Status != store.WorkerStatusOnline {
 		t.Errorf("w1 status = %q, want online: the deregister came from a replaced process", w.Status)
 	}
@@ -284,7 +295,7 @@ func TestDeregister_DeferredFromSupersededInstanceLeavesWorkerOnline(t *testing.
 
 // succeededMsg is w1's succeeded report for t1, stored on SQI_TASK at stamp
 // with stream sequence seq.
-func (f deregisterWaitFixture) succeededMsg(t *testing.T, seq uint64, stamp time.Time) *fakeJSMsg {
+func (f taskWaitFixture) succeededMsg(t *testing.T, seq uint64, stamp time.Time) *fakeJSMsg {
 	t.Helper()
 	exitCode := 0
 	return &fakeJSMsg{
@@ -300,21 +311,29 @@ func (f deregisterWaitFixture) succeededMsg(t *testing.T, seq uint64, stamp time
 	}
 }
 
-// A terminal status stored before the deregister whose first apply failed
-// waits for redelivery. Markers move the task tracker past the deregister's
-// stamp meanwhile, but the deregister still waits for that status, so the
-// finished attempt is not reclaimed.
-func TestDeregister_DefersWhileWorkerStatusAwaitsRedelivery(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
-	f.s.ingestTask.marker(f.stamp.Add(-time.Second))
-
-	status := f.succeededMsg(t, 7, f.stamp.Add(-200*time.Millisecond))
+// failFirstApply delivers status to the task-status consumer while every
+// store write fails, and requires it nak'd for redelivery, so it waits in the
+// task tracker as a pending message of w1.
+func (f taskWaitFixture) failFirstApply(t *testing.T, status *fakeJSMsg) {
+	t.Helper()
 	f.s.store = failingIngestStore{Store: f.st}
 	f.s.handleTaskStatusMessage(status)
 	f.s.store = f.st
 	if !status.nacked || status.acked {
 		t.Fatalf("status nak'd %v acked %v on a store failure, want nak'd only", status.nacked, status.acked)
 	}
+}
+
+// A terminal status stored before the deregister whose first apply failed
+// waits for redelivery. Markers move the task tracker past the deregister's
+// stamp meanwhile, but the deregister still waits for that status, so the
+// finished attempt is not reclaimed.
+func TestDeregister_DefersWhileWorkerStatusAwaitsRedelivery(t *testing.T) {
+	f := newTaskWaitFixture(t)
+	f.s.ingestTask.marker(f.stamp.Add(-time.Second))
+
+	status := f.succeededMsg(t, 7, f.stamp.Add(-200*time.Millisecond))
+	f.failFirstApply(t, status)
 	if !f.s.ingestTask.pending(f.clock.t).workers["w1"] {
 		t.Fatal("w1 not pending in the task tracker after the failed apply")
 	}
@@ -342,12 +361,10 @@ func TestDeregister_DefersWhileWorkerStatusAwaitsRedelivery(t *testing.T) {
 // the deregister does not hold the deregister back: the worker's shutdown
 // statuses all precede it.
 func TestDeregister_LaterPendingStatusDoesNotDefer(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
+	f := newTaskWaitFixture(t)
 
 	status := f.succeededMsg(t, 9, f.stamp.Add(time.Second))
-	f.s.store = failingIngestStore{Store: f.st}
-	f.s.handleTaskStatusMessage(status)
-	f.s.store = f.st
+	f.failFirstApply(t, status)
 	f.s.ingestTask.marker(f.stamp.Add(2 * time.Second))
 
 	msg := f.deregisterMsg(t, "inst-1")
@@ -356,17 +373,15 @@ func TestDeregister_LaterPendingStatusDoesNotDefer(t *testing.T) {
 }
 
 // A pending status bounds the deferral like a lagging tracker does: the
-// deregisterMaxRechecks-th delivery is applied with the warning.
+// taskWaitMaxRechecks-th delivery is applied with the warning.
 func TestDeregister_PendingStatusAppliesAtMaxRechecks(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
+	f := newTaskWaitFixture(t)
 	status := f.succeededMsg(t, 7, f.stamp.Add(-200*time.Millisecond))
-	f.s.store = failingIngestStore{Store: f.st}
-	f.s.handleTaskStatusMessage(status)
-	f.s.store = f.st
+	f.failFirstApply(t, status)
 	f.s.ingestTask.marker(f.stamp.Add(time.Second))
 
 	msg := f.deregisterMsg(t, "inst-1")
-	msg.delivered = uint64(deregisterMaxRechecks)
+	msg.delivered = uint64(taskWaitMaxRechecks)
 	f.s.handleWorkerMessage(msg)
 	f.requireApplied(t, msg)
 	if n := warnCount(f.logs.String(), deregisterWarn, "worker_id=w1"); n != 1 {
@@ -378,7 +393,7 @@ func TestDeregister_PendingStatusAppliesAtMaxRechecks(t *testing.T) {
 // (neither acked nor nak'd) for the new leader, and the worker's attempt
 // stays open.
 func TestDeregister_DeposedWhileDeferringLeavesMessageAndAttempt(t *testing.T) {
-	f := newDeregisterWaitFixture(t)
+	f := newTaskWaitFixture(t)
 	f.s.ingestTask.marker(f.stamp.Add(-time.Second))
 	f.s.fence.deposed.Store(true)
 

@@ -72,8 +72,16 @@ type statusAckWorker struct {
 // its heartbeat.
 func newStatusAckWorker(t *testing.T, ts *testServer, farmID, queueID string, cpus int) *statusAckWorker {
 	t.Helper()
+	return newStatusAckWorkerAs(t, ts, farmID, queueID, cpus, "")
+}
+
+// newStatusAckWorkerAs is [newStatusAckWorker] for a worker process that
+// registers as instanceID.
+func newStatusAckWorkerAs(t *testing.T, ts *testServer, farmID, queueID string, cpus int, instanceID string) *statusAckWorker {
+	t.Helper()
 	mw := newMockWorker(t, "nats://"+ts.NATSAddr, "worker-statusack-001", farmID, queueID,
 		nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond))
+	mw.instanceID = instanceID
 	w := &statusAckWorker{mockWorker: mw, pub: mw.publisher(), running: map[string]bool{}}
 	w.registerCPUs(cpus)
 	pollWorkerOnline(t, ts, w.id, 10*time.Second)
@@ -329,6 +337,45 @@ func TestStatusAck_DeregisterRightAfterTerminal(t *testing.T) {
 	requireOneSucceededAttempt(t, ts, a.TaskID, time.Time{})
 	if ts.Logs.has("scheduler: deregister applied before the task-status consumer caught up", nil) {
 		t.Error("the deregister was applied before the task-status consumer caught up; want it deferred until then")
+	}
+}
+
+// TestStatusAck_RestartRightAfterTerminal restarts the worker process as soon
+// as one task's terminal status is stored, while the process still runs a
+// second task. The new process's registration reclaims what the previous one
+// held, and the server applies the stored terminal first, so the finished
+// task stays succeeded on its one attempt while the unfinished one goes back
+// to the queue.
+//
+// Like TestStatusAck_DeregisterRightAfterTerminal this covers the end-to-end
+// outcome only; the deferral itself is pinned by the scheduler unit tests
+// TestRegister_RestartStatusStoredBeforeRegistrationIsAppliedFirst and
+// TestRegister_RestartDefersUntilTaskConsumerCatchesUp.
+func TestStatusAck_RestartRightAfterTerminal(t *testing.T) {
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	w := newStatusAckWorkerAs(t, ts, farmID, queueID, 2, "process-1")
+
+	submitJobCustomYAML(t, ts, farmID, queueID, statusAckJobYAML(2))
+	assigns := w.lease(2)
+	done, unfinished := assigns[0], assigns[1]
+	w.reportRunning(unfinished)
+	w.flush(10 * time.Second)
+	pollTaskStatus(t, ts, unfinished.TaskID, []string{"running"}, 10*time.Second)
+
+	w.reportSucceeded(done)
+	w.flush(10 * time.Second)
+	// The process restarts: the new one holds nothing and registers anew.
+	w.mu.Lock()
+	clear(w.running)
+	w.mu.Unlock()
+	w.instanceID = "process-2"
+	w.registerCPUs(2)
+
+	pollTaskStatus(t, ts, unfinished.TaskID, []string{"ready"}, 30*time.Second)
+	requireOneSucceededAttempt(t, ts, done.TaskID, time.Time{})
+	if ts.Logs.has("scheduler: restart registration applied before the task-status consumer caught up", nil) {
+		t.Error("the restart registration was applied before the task-status consumer caught up; want it deferred until then")
 	}
 }
 

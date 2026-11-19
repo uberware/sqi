@@ -2484,7 +2484,11 @@ consumer is held back for longer than that (an ingest hold, a store pause or a
 bus interruption around a server restart), a deregister that arrives in that
 window is applied when its wait runs out, and the server logs `scheduler:
 deregister applied before the task-status consumer caught up` at Warn. That
-Warn around a restart is expected.
+Warn around a restart is expected. A worker restarted while its previous
+process still held tasks waits the same way before its registration is
+applied, and gets no work during that wait; when the wait runs out the server
+logs `scheduler: restart registration applied before the task-status consumer
+caught up` at Warn.
 
 ### A full data volume on the server
 

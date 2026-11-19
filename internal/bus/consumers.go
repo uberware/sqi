@@ -67,7 +67,7 @@ func (c *Client) consumeErrHandler(name string) jetstream.ConsumeErrHandlerFunc 
 const (
 	// WorkerConsumerMaxDeliver and TaskStatusConsumerMaxDeliver are the
 	// delivery attempts the worker and task-status consumers allow a message.
-	WorkerConsumerMaxDeliver     = 10
+	WorkerConsumerMaxDeliver     = 11
 	TaskStatusConsumerMaxDeliver = 10
 
 	// WorkerConsumerAckWait and TaskStatusConsumerAckWait are how long the
@@ -196,15 +196,20 @@ func (c *Client) ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageH
 //   - AckWait 10 s — heartbeats are time-sensitive; a 10 s window is well
 //     within the scheduler's heartbeat-timeout sweep interval (≈30 s) so
 //     delays are caught before workers are incorrectly marked offline.
-//   - MaxDeliver 10 — as the task-status consumer's. The scheduler naks a
-//     failed message with a growing delay (1, 2, 4, 8, 16, 30, 30 s…), so
-//     deliveries land at about 0, 1, 3, 7, 15, 31, 61, 91, 121 and 151 s. The
-//     stream's 2-minute MaxAge removes the message before the ninth, so the
-//     last delivery is the eighth at about 91 s: a message outlives about
-//     1.5 minutes of store outage (a PostgreSQL restart, an HA failover). A
-//     registration needs that, because a worker registers only at start and
-//     after a broker reconnect, and a dropped one leaves its worker idle and
-//     unseen until the next reconnect. A heartbeat that arrives before its
+//   - MaxDeliver 11. The scheduler naks a failed message with a growing
+//     delay (1, 2, 4, 8, 16, 30, 30 s…), so deliveries land at about 0, 1,
+//     3, 7, 15, 31, 61, 91 and 121 s. The stream's 2-minute MaxAge removes
+//     the message before the ninth, so the last delivery is the eighth at
+//     about 91 s: a message outlives about 1.5 minutes of store outage (a
+//     PostgreSQL restart, an HA failover). A registration needs that,
+//     because a worker registers only at start and after a broker reconnect,
+//     and a dropped one leaves its worker idle and unseen until the next
+//     reconnect. A deregister or restart registration waiting for the
+//     task-status consumer is nak'd 2 s apart for up to seven deliveries and
+//     applied on the eighth, at about 14 s; if that apply fails it needs
+//     three more deliveries 30 s apart (at about 44, 74 and 104 s) to
+//     outlive the same outage, hence eleven. MaxAge still ends every other
+//     message at its eighth delivery. A heartbeat that arrives before its
 //     worker's registration is retried a second later. The growing delay
 //     bounds the pile-up of held-back heartbeats, and a held-back heartbeat
 //     is ignored when it lands after a later one was recorded, since

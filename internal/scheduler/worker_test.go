@@ -139,6 +139,9 @@ func TestHandleRegister_UnknownStartTimeFieldIgnored(t *testing.T) {
 				t.Fatal(err)
 			}
 			restart := &fakeJSMsg{subject: bus.WorkerRegisterSubject(workerID), data: raw, stamp: t1.Add(time.Minute)}
+			// The task-status consumer has applied everything up to the
+			// restart, so its reclaim does not wait (taskstatuswait.go).
+			s.ingestTask.marker(restart.stamp)
 			s.handleWorkerMessage(restart)
 
 			if !restart.acked {

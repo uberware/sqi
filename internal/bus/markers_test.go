@@ -19,8 +19,8 @@ func TestMarkerConstants(t *testing.T) {
 	if SubjectMarkerWorker != "sqi.marker.worker" || SubjectMarkerTask != "sqi.marker.task" {
 		t.Errorf("marker subjects = %q, %q", SubjectMarkerWorker, SubjectMarkerTask)
 	}
-	if WorkerConsumerMaxDeliver != 10 || TaskStatusConsumerMaxDeliver != 10 {
-		t.Errorf("MaxDeliver = %d, %d, want 10, 10", WorkerConsumerMaxDeliver, TaskStatusConsumerMaxDeliver)
+	if WorkerConsumerMaxDeliver != 11 || TaskStatusConsumerMaxDeliver != 10 {
+		t.Errorf("MaxDeliver = %d, %d, want 11, 10", WorkerConsumerMaxDeliver, TaskStatusConsumerMaxDeliver)
 	}
 	if WorkerConsumerAckWait != 10*time.Second || TaskStatusConsumerAckWait != 30*time.Second {
 		t.Errorf("AckWait = %v, %v, want 10s, 30s", WorkerConsumerAckWait, TaskStatusConsumerAckWait)
