@@ -1,15 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-server-term
 description: chaos - stop the server gracefully at 1m and start it 10s later, the upgrade path, under steady load (100 workers, about 2.5 tasks/s); no completed work may be redone, 3 min
-# A terminal status a worker publishes around the server's stop can be lost
-# (H13f1): the status is a core NATS publish with no stream acknowledgment, so
-# one still in flight when the embedded broker shuts down is stored by no
-# stream, and the worker, whose publish returned no error, does not retry.
-# The attempt is reclaimed after the restart and the task re-run. How many
-# land in that window varies from run to run and can be none, so the known
-# violation is "may". The entry carries a ceiling of 10 attempts: a graceful
-# restart that redoes more work than that is a different defect and fails the
-# run.
+# A worker publishes a terminal status, and each attempt's first running status,
+# as a JetStream publish that waits for the stream's acknowledgment and retries
+# until it gets one, so a status in flight when the embedded broker stops is
+# stored after the restart. A graceful restart must therefore redo no completed
+# work: max_rework_attempts is 0 and no known violation excuses it.
 duration: 3m
 warmup: 10s
 drain_timeout: 5m
@@ -43,9 +39,3 @@ faults:
 
 expect:
   max_rework_attempts: 0
-  known_violations:
-    - check: rework
-      kind: may
-      max_attempts: 10
-      reason: a terminal status still in flight when the embedded broker shuts down is a core NATS publish no stream stores and the worker does not retry, so the attempt is reclaimed after the restart and the task re-run; how many land in that window varies from run to run
-      tracker: H13f1

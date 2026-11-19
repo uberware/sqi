@@ -38,10 +38,11 @@ var ErrInvalidTransition = errors.New("store: invalid state transition")
 //
 // assigned → succeeded/failed look like skipped states but are reachable in
 // normal operation: a worker publishes "running" before any terminal status,
-// but status.Publisher.publishWithRetry gives up after MaxRetries and returns,
-// so that message can be lost for good while the task still runs to completion.
-// The terminal message then lands on a row still in 'assigned'. Rejecting it
-// would strand finished work until the heartbeat sweep reclaimed it.
+// but that message can still be missing when the terminal one is stored: the
+// worker acks and retries a first "running" in the background, and drops one
+// still pending when the task's terminal status is ready to send. The terminal
+// message then lands on a row still in 'assigned'. Rejecting it would strand
+// finished work until the heartbeat sweep reclaimed it.
 //
 // A transition from a status to itself is not listed here and is not valid:
 // callers that must tolerate duplicate delivery treat same-status writes as a
