@@ -273,6 +273,15 @@ alongside the `*JobTemplate`. (If only the checker saw those names, a
 step-level `let:` plus a range that referenced it would validate at upload and
 then fail at submit with `unknown symbol`.)
 
+**A RangeList entry that is exactly `{{<expr>}}` is a list item** (section
+1.3.12, as section 1.3.2 defines list items): its target is `T? | list[T]` —
+`int` for INT and CHUNK[INT], `float? | int | list[float]` for FLOAT (an `int`
+result is kept as written), `string` or `path` otherwise — so a `null` result
+drops the entry and a list result is flattened into one entry per member.
+`rangeListItemType` (`resolve.go`) is the one definition the checker and the
+resolver share. A list that flattening empties is an error, and so is one that
+would carry the list past the step's task limit.
+
 **Every other RangeList entry or RangeExpr shape — literal text, or a
 `{{...}}` reference embedded in surrounding text — is not a whole-field list
 expression.** For INT/CHUNK[INT], section 1.3.12 says the `RangeString`
@@ -310,13 +319,24 @@ outright by `internal/openjd`'s own stricter `start > end` check, and
 `range_expr("10-15:2,1-5")` comes out ascending — `[1,2,3,4,5,10,12,14]`, the
 spec's own worked example for that text. An **embedded** occurrence
 of the same call — e.g. `"{{ range_expr(\"10-15:2,1-5\") }},7"` — renders to
-its own `<IntRangeExpr>` text (`Value.String()` on a `range_expr` value
-round-trips the text it was constructed from, unmodified) and the *composed*
-result is ordinary base-spec `<RangeString>` text, parsed by
-`internal/openjd`'s own stricter/differently-ordered reader like any other
-literal range string — so the identical `range_expr(...)` call can legally
-produce different orderings, or accept-vs-reject outcomes, depending only on
-whether it is the field's sole content. This is intended — see
+its canonical form (`Value.String()` on a `range_expr` value writes the
+canonical form of Template Schemas §3.4.1.1.1: ascending, positive steps, runs
+of three or more collapsed, so `"1-5,10-14:2"` here) and the *composed* result
+is ordinary base-spec `<RangeString>` text, parsed by `internal/openjd`'s own
+first-seen reader like any other literal range string — so the identical
+`range_expr(...)` call can produce a different ordering depending only on
+whether it is the field's sole content: `[1,2,3,4,5,10,12,14]` as a lone
+expression, `[1,2,3,4,5,10,12,14,7]` here, with the 7 after the values that
+precede it in the text.
+
+The canonical form is computed from the elements' arithmetic, never by listing
+their values, so a range of a billion values costs what a range of three does.
+The one exception is a range expression whose elements overlap: their union is
+settled by listing the values, up to 65,536 of them, and a larger overlapping
+expression keeps the text it was written in. A CHUNK[INT] value keeps its own
+form, `<N>-<M>` for a CONTIGUOUS chunk even with one or two values (section
+1.2.2); a `range_expr` computed from it is canonical. A RANGE_EXPR job
+parameter's value is canonicalized when it is bound, at submission. This is intended — see
 `resolveRangeExprField`'s own doc comment (`resolve.go`) for the reasoning —
 and is pinned by
 `TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue`.

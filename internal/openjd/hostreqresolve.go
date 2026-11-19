@@ -83,6 +83,17 @@ func (r *hostReqResolver) resolve(s, ptr string) string {
 		}
 		return s
 	}
+	// Substitution does not re-read its own output, so text that still looks
+	// like a format string came from a parameter value. It is not a reference
+	// to resolve later, and no capability name or value may contain it; the
+	// constraints below would otherwise take it for one and skip it.
+	if strings.Contains(out, "{{") {
+		r.errs = append(r.errs, ValidationError{
+			Pointer: ptr,
+			Message: fmt.Sprintf("resolved to %q, which still holds a format string", out),
+		})
+		return s
+	}
 	return out
 }
 

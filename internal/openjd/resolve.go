@@ -362,7 +362,7 @@ func resolveRangeListDefinition(
 		if exprEnabled && !b.chargePositions(1, eptr) {
 			break
 		}
-		items, err := resolveRangeListElement(exprEnabled, entry, def.Type, syms, scope, b.limits)
+		items, err := resolveRangeListElement(exprEnabled, entry, def.Type, syms, scope, b.limits, maxTasksPerStep-len(newList))
 		if err != nil {
 			if b.recordDeadline(err) {
 				// Diverted onto the budget for the same reason
@@ -396,11 +396,15 @@ func resolveRangeListDefinition(
 // contributes. Under EXPR an element that is exactly "{{<expr>}}" is a LIST
 // ITEM (§1.3.12, §1.3.2) and contributes zero, one or several; any other
 // element resolves to one string.
+//
+// room is how many more values the list may hold: every value becomes a task,
+// so a list item that would carry the list past maxTasksPerStep is refused
+// before its values are written out.
 func resolveRangeListElement(
-	exprEnabled bool, entry string, typ TaskParamType, syms expr.MapSymbols, scope fmtstring.Scope, lim ExprLimits,
+	exprEnabled bool, entry string, typ TaskParamType, syms expr.MapSymbols, scope fmtstring.Scope, lim ExprLimits, room int,
 ) ([]string, error) {
 	if body, ok := fmtstring.LoneRef(entry); ok && exprEnabled {
-		return resolveRangeListItem(body, typ, syms, lim)
+		return resolveRangeListItem(body, typ, syms, lim, room)
 	}
 	resolved, err := resolveRangeListEntry(exprEnabled, entry, typ, syms, scope, lim)
 	if err != nil {
@@ -428,7 +432,7 @@ func rangeListItemType(typ TaskParamType) expr.Type {
 // resolveRangeListItem evaluates one lone range-list expression against its
 // list-item type and returns the elements it contributes: none for null, one
 // per member for a list, and one otherwise.
-func resolveRangeListItem(body string, typ TaskParamType, syms expr.MapSymbols, lim ExprLimits) ([]string, error) {
+func resolveRangeListItem(body string, typ TaskParamType, syms expr.MapSymbols, lim ExprLimits, room int) ([]string, error) {
 	e, err := expr.Parse(body)
 	if err != nil {
 		return nil, err
@@ -444,6 +448,9 @@ func resolveRangeListItem(body string, typ TaskParamType, syms expr.MapSymbols, 
 		return nil, nil
 	case v.Type.Code == expr.CodeList:
 		elems := v.AsList()
+		if len(elems) > room {
+			return nil, fmt.Errorf("the range list resolves to more than %d values, the most a step may have tasks", maxTasksPerStep)
+		}
 		out := make([]string, len(elems))
 		for k, elem := range elems {
 			if elem.IsUnresolved() {

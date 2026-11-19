@@ -163,3 +163,19 @@ steps:
 		t.Errorf("Validate() = %v, want no errors for declared references", errs)
 	}
 }
+
+// TestRangeListItems_FlatteningIsBoundedByTheTaskLimit pins that flattening
+// stops as soon as the resolved list passes maxTasksPerStep, before the rest
+// of the list is built: each list item is cheap within the expression limits,
+// but together they can name far more values than any step may have tasks.
+func TestRangeListItems_FlatteningIsBoundedByTheTaskLimit(t *testing.T) {
+	entries := make([]string, 101)
+	for i := range entries {
+		entries[i] = `"{{ range(9990) }}"`
+	}
+	rng := "[" + strings.Join(entries, ", ") + "]"
+	_, err := resolveRangeList(t, rangeListTemplate("INT", rng), nil)
+	if err == nil || !strings.Contains(err.Error(), "more than 1000000 values") {
+		t.Fatalf("resolve error = %v, want the task limit reported", err)
+	}
+}

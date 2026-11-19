@@ -199,7 +199,7 @@ func declaredExtensions(tmpl *JobTemplate) []string {
 func (s *Submitter) prepareTemplate(
 	ctx context.Context, rawTemplate string, format store.TemplateFormat, params map[string]string,
 	deadline time.Time,
-) (tmpl *JobTemplate, boundParams map[string]string, resolverBudget *templateBudget, err error) {
+) (tmpl *JobTemplate, boundParams map[string]string, resolverBudget *templateBudget, locCache locRootCache, err error) {
 	// ── 1. Parse ──────────────────────────────────────────────────────────
 	parseFormat := FormatYAML
 	if format == store.TemplateFormatJSON {
@@ -208,7 +208,7 @@ func (s *Submitter) prepareTemplate(
 
 	tmpl, err = Parse([]byte(rawTemplate), parseFormat)
 	if err != nil {
-		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parse: %w", err)}
+		return nil, nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parse: %w", err)}
 	}
 
 	// ── 2. Validate ───────────────────────────────────────────────────────
@@ -225,23 +225,24 @@ func (s *Submitter) prepareTemplate(
 	// ValidationErrors incomplete, and reporting it as the client's fault would
 	// make acceptance depend on machine load.
 	if deadlineErr != nil {
-		return nil, nil, nil, fmt.Errorf("openjd: submit: validation: %w", deadlineErr)
+		return nil, nil, nil, nil, fmt.Errorf("openjd: submit: validation: %w", deadlineErr)
 	}
 	if len(validateErrs) > 0 {
-		return nil, nil, nil, &SubmitValidationError{
+		return nil, nil, nil, nil, &SubmitValidationError{
 			Cause: fmt.Errorf("openjd: submit: validation: %w", validateErrs),
 		}
 	}
 
 	// ── 2b. Validate named storage location coverage ────────────
-	if err := s.validateStorageLocations(ctx, tmpl); err != nil {
-		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %w", err)}
+	locCache, err = s.validateStorageLocations(ctx, tmpl)
+	if err != nil {
+		return nil, nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %w", err)}
 	}
 
 	// ── 2c. Bind job parameters ────────────────────────────────────────────
 	boundParams, bindErrs := BindJobParameters(tmpl.ParameterDefinitions, params)
 	if len(bindErrs) > 0 {
-		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parameter binding: %w", bindErrs)}
+		return nil, nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parameter binding: %w", bindErrs)}
 	}
 
 	// ── 2d. Re-check template expressions with concrete parameters ────────
@@ -262,11 +263,11 @@ func (s *Submitter) prepareTemplate(
 
 	checkerBudget := newTemplateBudget(phase2Limits)
 	if err := checkExpressionsAtSubmit(tmpl, boundParams, checkerBudget); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	resolverBudget = newTemplateBudget(phase2Limits)
-	return tmpl, boundParams, resolverBudget, nil
+	return tmpl, boundParams, resolverBudget, locCache, nil
 }
 
 // ── Submit ────────────────────────────────────────────────────────────────────
@@ -300,7 +301,7 @@ func (s *Submitter) Submit(
 	opts SubmitOptions,
 ) (*SubmitResult, error) {
 	// ── 1-2d. Parse, validate, bind parameters, re-check expressions ──────
-	tmpl, boundParams, resolverBudget, err := s.prepareTemplate(
+	tmpl, boundParams, resolverBudget, locCache, err := s.prepareTemplate(
 		ctx, rawTemplate, format, opts.Parameters, opts.Deadline,
 	)
 	if err != nil {
@@ -378,7 +379,7 @@ func (s *Submitter) Submit(
 	var tasks []store.Task
 	for i, stepTmpl := range tmpl.Steps {
 		step, stepTasks, err := s.buildStepWithTasks(
-			tmpl, job, stepTmpl, i, boundParams, deriveBounds, blocked, now, resolverBudget, jobTasks,
+			tmpl, job, stepTmpl, i, boundParams, deriveBounds, blocked, now, resolverBudget, jobTasks, locCache,
 		)
 		if err != nil {
 			return nil, err
@@ -448,6 +449,7 @@ func (s *Submitter) buildStepWithTasks(
 	now time.Time,
 	resolverBudget *templateBudget,
 	jobTasks *jobTaskBudget,
+	locCache locRootCache,
 ) (step store.Step, tasks []store.Task, err error) {
 	// Collect dependency names from the template.
 	dependsOn := make([]string, 0, len(stepTmpl.Dependencies))
@@ -467,6 +469,9 @@ func (s *Submitter) buildStepWithTasks(
 		return store.Step{}, nil, err
 	}
 	hostReqs, computeLoc := toStoreHostRequirements(resolvedHR)
+	if err := checkResolvedLocCoverage(stepTmpl, stepIdx, computeLoc, locCache); err != nil {
+		return store.Step{}, nil, err
+	}
 
 	step = store.Step{
 		ID:               uuid.NewString(),
@@ -760,10 +765,10 @@ type locRootEntry struct {
 //     or at minimum a "default" root when no affinity is declared.
 //
 // All problems are accumulated and returned as a single error.
-func (s *Submitter) validateStorageLocations(ctx context.Context, tmpl *JobTemplate) error {
+func (s *Submitter) validateStorageLocations(ctx context.Context, tmpl *JobTemplate) (locRootCache, error) {
 	allNames := ExtractTemplateLocRefs(tmpl)
 	if len(allNames) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	cache := s.buildLocRootCache(ctx, allNames)
@@ -774,10 +779,10 @@ func (s *Submitter) validateStorageLocations(ctx context.Context, tmpl *JobTempl
 	errs = append(errs, unreportedCacheErrors(cache, errs)...)
 
 	if len(errs) == 0 {
-		return nil
+		return cache, nil
 	}
 	sort.Strings(errs)
-	return fmt.Errorf("%s", strings.Join(errs, "; "))
+	return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
 }
 
 // buildLocRootCache fetches each referenced location once and returns a cache.
@@ -804,6 +809,9 @@ func (*Submitter) validateStepLocRefs(steps []StepTemplate, cache locRootCache) 
 			continue
 		}
 		_, computeLoc := toStoreHostRequirements(st.HostRequirements)
+		if strings.Contains(computeLoc, "{{") {
+			continue // checked against the resolved value, in buildStepWithTasks
+		}
 		for _, name := range stepNames {
 			errs = append(errs, checkLocRootCoverage(i, name, computeLoc, cache)...)
 		}
@@ -829,6 +837,23 @@ func (*Submitter) validateJobLocRefs(tmpl *JobTemplate, cache locRootCache) []st
 		}
 	}
 	return errs
+}
+
+// checkResolvedLocCoverage checks a step's storage-location roots against its
+// resolved compute location when the template wrote that location as a format
+// string, the case validateStepLocRefs leaves to Job creation.
+func checkResolvedLocCoverage(stepTmpl StepTemplate, stepIdx int, computeLoc string, cache locRootCache) error {
+	if _, written := toStoreHostRequirements(stepTmpl.HostRequirements); !strings.Contains(written, "{{") {
+		return nil
+	}
+	var errs []string
+	for _, name := range ExtractStepLocRefs(stepTmpl) {
+		errs = append(errs, checkLocRootCoverage(stepIdx, name, computeLoc, cache)...)
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %s", strings.Join(errs, "; "))}
 }
 
 // checkLocRootCoverage returns any coverage error for a single location

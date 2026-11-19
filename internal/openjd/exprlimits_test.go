@@ -695,7 +695,7 @@ steps:
 			TemplateRetainedBytes: 111_213,
 		}
 		sub := NewSubmitterWithOptions(fake.New(), SubmitterOptions{EnforceLimits: true, ExprLimits: want})
-		_, _, resolverBudget, err := sub.prepareTemplate(
+		_, _, resolverBudget, _, err := sub.prepareTemplate(
 			context.Background(), tmplYAML, store.TemplateFormatYAML, map[string]string{"S": "small"}, time.Time{},
 		)
 		if err != nil {
@@ -708,7 +708,7 @@ steps:
 
 	t.Run("NewSubmitter defaults", func(t *testing.T) {
 		sub := NewSubmitter(fake.New())
-		_, _, resolverBudget, err := sub.prepareTemplate(
+		_, _, resolverBudget, _, err := sub.prepareTemplate(
 			context.Background(), tmplYAML, store.TemplateFormatYAML, map[string]string{"S": "small"}, time.Time{},
 		)
 		if err != nil {
