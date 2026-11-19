@@ -48,11 +48,11 @@ func TestRound(t *testing.T) {
 }
 
 // TestRound_RoundsTheExactValue pins RFC 0006 §2.2.3: rounding is half to even
-// on the EXACT value of x, as Python's round does, and an int result outside
-// int64 is an error. A float literal is rarely the decimal it is written as —
-// 2.675 is stored a little below 2.675, 1.05 a little above, 5e300 a little
-// above 5e300 — so scaling in float64 and rounding the product rounds a value
-// the float never had. The rows are the conformance fixture
+// on the exact value of x, as Python's round does, and an int result outside
+// int64 is an error. A float is rarely the decimal it is written as (2.675 is
+// stored a little below 2.675, 1.05 a little above, 5e300 a little above
+// 5e300), so scaling in float64 and rounding the product rounds a value the
+// float does not have. The rows are the conformance fixture
 // expr2.2.2--round-exact plus CPython 3.14's answers for the same calls.
 func TestRound_RoundsTheExactValue(t *testing.T) {
 	tests := []struct {
@@ -91,8 +91,8 @@ func TestRound_RoundsTheExactValue(t *testing.T) {
 
 // TestRound_ExactResultOutsideInt64Overflows pins the error half of the same
 // rule. 5e300 is stored above 5·10^300, so rounding it to a multiple of 10^301
-// gives 10^301 — not 0, which is what rounding a float64 quotient that has
-// already lost the excess would give.
+// gives 10^301, which is outside int64. Rounding a float64 quotient would lose
+// the excess and give 0.
 func TestRound_ExactResultOutsideInt64Overflows(t *testing.T) {
 	for _, src := range []string{
 		"round(5e300, -301)",

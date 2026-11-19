@@ -210,22 +210,21 @@
 //     when Param.Name is bound — fails "Param.Name is not a function".)
 //
 //     The six classification predicates other than isascii, and title()
-//     and capitalize(), have exactly the semantics of the Python str methods
-//     of the same name over the Unicode Character Database (RFC 0006
-//     §2.2.4's two notes). Three consequences look like bugs when tried by
-//     hand, and are not. isdigit('٣') and isdigit('²') are true (Numeric_Type
-//     Decimal or Digit) even though int() accepts neither, so isdigit is not
-//     a guard for int(). isalnum is broader than isalpha || isdigit: it
-//     admits any Numeric_Type, so isalnum('½') is true while isalpha('½') and
-//     isdigit('½') are both false. And title() starts a word after ANY
-//     uncased character, so title('a1b c') is "A1B C" and title('1st') is
-//     "1St", and both title() and capitalize() titlecase rather than
-//     uppercase a word's first character: capitalize('ﬁne day') is
-//     "Fine day". The Go standard library has no Numeric_Type or
-//     Case_Ignorable table; funcsstrcase.go carries the small amount of data
-//     it needs, and an exhaustive comparison against CPython 3.14 differed
-//     only on code points whose Unicode 16 data postdates Go's Unicode 15,
-//     which the specification permits.
+//     and capitalize(), have the semantics of the Python str methods of the
+//     same name over the Unicode Character Database (RFC 0006 §2.2.4's two
+//     notes). Three consequences are easy to mistake for bugs. isdigit('٣')
+//     and isdigit('²') are true (Numeric_Type Decimal or Digit) even though
+//     int() accepts neither, so isdigit is not a guard for int(). isalnum is
+//     broader than isalpha || isdigit: it admits any Numeric_Type, so
+//     isalnum('½') is true while isalpha('½') and isdigit('½') are both
+//     false. And title() starts a word after any uncased character, so
+//     title('a1b c') is "A1B C" and title('1st') is "1St", and both title()
+//     and capitalize() titlecase rather than uppercase a word's first
+//     character: capitalize('ﬁne day') is "Fine day". The Go standard
+//     library has no Numeric_Type or Case_Ignorable table; funcsstrcase.go
+//     carries the data it needs. Results can differ from CPython 3.14 on code
+//     points whose Unicode 16 data postdates Go's Unicode 15 tables, which the
+//     specification permits.
 //
 //     Uniform function call syntax (section 1.3.3) makes "x.f(a)" resolve
 //     through the same callFunction as "f(x, a)", with the receiver
@@ -406,18 +405,21 @@
 //
 //   - range_expr has real values, and range_expr() (funcsconv.go) constructs
 //     one. Its value is its list of values, and its string form is the
-//     CANONICAL form of Template Schemas §3.4.1.1.1 (openjd-specifications
+//     canonical form of Template Schemas §3.4.1.1.1 (openjd-specifications
 //     #202): runs of a constant difference taken greedily from the left, so
 //     range_expr("1-10:2") is "1-9:2", range_expr("1,3,5,7") is "1-7:2", and
-//     every path that writes one as text — interpolation, string(), "+", the
-//     repr_* functions — agrees. intrange.Canonical computes it from the
-//     elements' arithmetic progressions, never by listing the values, so a
-//     billion-value range costs what a three-value one does. The one value
-//     that keeps the text it was given is a CHUNK[INT] task parameter's
-//     (TaskParamType types it range_expr): RFC 0005 §1.2.2 gives a chunk its
-//     own string form, "<N>-<M>" for a CONTIGUOUS chunk even with one or two
-//     values, so ValueFromText binds it as written, while a range_expr
-//     computed from it (a slice, range_expr(string(...))) is canonical.
+//     every path that writes one as text (interpolation, string(), "+", the
+//     repr_* functions) agrees. When the elements' spans are disjoint,
+//     intrange.Canonical computes it from their arithmetic progressions
+//     without listing the values, so a billion-value range costs what a
+//     three-value one does. Overlapping elements are listed up to
+//     canonicalOverlapBound values; past that the text keeps its written form
+//     (rangeexpr.go). A CHUNK[INT] task parameter's value also keeps the text
+//     it was given (TaskParamType types it range_expr): RFC 0005 §1.2.2 gives
+//     a chunk its own string form, "<N>-<M>" for a contiguous chunk even with
+//     one or two values, so ValueFromText binds it as written, while a
+//     range_expr computed from it (a slice, range_expr(string(...))) is
+//     canonical.
 //
 //   - THE PATH ENGINE implements three flavors, every path property and
 //     function RFC 0006 defines, and section 2.1.5's "/" and "+" operators.
@@ -576,9 +578,9 @@
 //     server+share pair carries a root here and the join's anchor arm fires.
 //     See pathJoin.
 //
-//     A URI scheme is at least TWO characters, per the specification's
+//     A URI scheme is at least two characters, per the specification's
 //     ^[a-zA-Z][a-zA-Z0-9+.-]+:// , so "C://scenes/a.ma" is a filesystem path
-//     — a Windows drive with a doubled separator — under every path_format,
+//     (a Windows drive with a doubled separator) under every path_format,
 //     never a URI with scheme "c". See splitURI.
 //
 //   - PATH MAPPING. apply_path_mapping runs over a prefix-mapping engine
@@ -1185,15 +1187,16 @@
 //     on a relative_to base, and its treatment of a bare "scheme://" as a
 //     wildcard authority). The baselined value entries include one
 //     canonical-form case the pinned reference predates (range_expr("1,3,5-7"))
-//     and one round() case: sqi returns int for round(x, ndigits) when ndigits <= 0,
+//     and several round() cases. One is the return type: sqi returns int
+//     for round(x, ndigits) when ndigits <= 0,
 //     per RFC 0006's own signature table, while the reference returns a
 //     FLOAT — round(1234.5, -1) is "1230 : int" here and "1230.0 : float"
 //     there. The specification outranks the reference (it is Beta, 0.x,
 //     breaking changes permitted in minor bumps), so this is adjudicated as
 //     the reference's bug and recorded in test/oracle/baseline.txt, not fixed
 //     here to match it. Also included are two of the regex and repr_* rulings
-//     argued above — the [^\W...] set-subtraction gap and repr_sh's textual
-//     difference from the reference — while \d/\w/\s's Unicode semantics are NOT
+//     argued above, the [^\W...] set-subtraction gap and repr_sh's textual
+//     difference from the reference, while \d/\w/\s's Unicode semantics are not
 //     baselined, since they are what the oracle is checking agreement on, and
 //     repr_json's non-ASCII escaping is NOT baselined either, since the
 //     reference matches it exactly. The path rulings above are baselined

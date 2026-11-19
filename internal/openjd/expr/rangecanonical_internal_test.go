@@ -62,7 +62,7 @@ func TestRangeExpr_EqualityIsByValue(t *testing.T) {
 
 // TestRangeExpr_ChunkValueKeepsItsOwnForm pins the one exception: the string
 // form of a CHUNK[INT] value is the chunk's own form, "<N>-<M>" for a
-// CONTIGUOUS chunk even with one or two values, so a value bound from its text
+// contiguous chunk even with one or two values, so a value bound from its text
 // keeps that text. A range_expr computed from it is canonical.
 func TestRangeExpr_ChunkValueKeepsItsOwnForm(t *testing.T) {
 	syms := MapSymbols{

@@ -1148,16 +1148,15 @@ func validateParameterSpaceLimits(ps StepParameterSpace, base string) Validation
 	return errs
 }
 
-// listFormValueCount returns the number of values an <IntRangeList> (the LIST
+// listFormValueCount returns the number of values an <IntRangeList> (the list
 // form of a task parameter's range) holds, the count maxTaskParamValues caps.
-// counted is false for an <IntRangeExpr>: §3.4 leaves the number of values it
-// expands to unconstrained — the 1024 maximum of §3.4.1.1 does not apply to
-// that form, which exists to express long frame ranges — so a step's size is
+// counted is false for an <IntRangeExpr>: §3.4 does not limit the number of
+// values that form expands to (the 1024 maximum of §3.4.1.1 does not apply to
+// it, since it exists to express long frame ranges), so a step's size is
 // bounded by maxTasksPerStep and maxTasksPerJob instead. Leaving the
-// expression uncounted here does not open a cost gap in the EXPR walk
-// parameterSpaceOverCaps guards: an expression is ONE format-string position
-// however many values it names, while each list element is a position of its
-// own.
+// expression uncounted adds no cost to the EXPR walk parameterSpaceOverCaps
+// guards: an expression is one format-string position however many values it
+// names, while each list element is a position of its own.
 func listFormValueCount(tp TaskParamDefinition) (count int, counted bool) {
 	if tp.RangeExpr != nil {
 		return 0, false
@@ -1252,9 +1251,9 @@ func validateHostRequirements(hr HostRequirements, base string, exprDeclared boo
 	// entries differing only in case name the same capability. Declaring both
 	// is a contradiction the scheduler cannot resolve.
 	//
-	// A name may be a format string (§3.3), and then the name constraints —
-	// prefix, reserved scope, and uniqueness — apply to what it resolves to,
-	// which only Job creation knows (resolveHostRequirements).
+	// A name may be a format string (§3.3). The name constraints (prefix,
+	// reserved scope and uniqueness) then apply to what it resolves to, which
+	// is known only at Job creation (resolveHostRequirements).
 	amountNames := make([]string, len(hr.Amounts))
 	for i, a := range hr.Amounts {
 		amountNames[i] = a.Name
@@ -1306,9 +1305,9 @@ func validateHostRequirements(hr HostRequirements, base string, exprDeclared boo
 }
 
 // validateCapabilityNames checks the names of one kind of capability, "amount"
-// or "attr": each present, and — once it is not a format string still to be
-// resolved — correctly prefixed, outside a reserved scope the specification
-// does not define, and unique. base is the array's pointer.
+// or "attr". Each name must be present. A name that is not a format string
+// must also be correctly prefixed, outside any reserved scope the
+// specification does not define, and unique. base is the array's pointer.
 func validateCapabilityNames(names []string, kind, base string) ValidationErrors {
 	noun := map[string]string{"amount": "amount", "attr": "attribute"}[kind]
 	var errs ValidationErrors
@@ -2730,8 +2729,8 @@ type refNames struct {
 }
 
 // check reports a reference naming nothing declared at its position. An
-// undeclared reference resolves to nothing — on the worker, for an action — so
-// the job would be accepted and every task would fail.
+// undeclared reference cannot be resolved (for an action, on the worker), so
+// the job would be accepted and every task would then fail.
 //
 // A parameter is named by the reference's first segment after its prefix, so
 // a name derived from a declared parameter, such as SQI_CHUNK_BOUNDS's

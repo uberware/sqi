@@ -1227,8 +1227,8 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprMetered(t *testing.T) {
 // positive steps, de-duplicated. So the composed text is ordinary base-spec
 // range syntax that internal/openjd's own stricter parser always accepts, even
 // when the expression was written with start > end or a negative step, which
-// that parser would reject as literal text. Only its first-seen ORDER still
-// shows, through the literal that follows the embedded value.
+// that parser would reject as literal text. Its first-seen order shows only
+// through the literal that follows the embedded value.
 //
 // All three cases share one shape: an embedded range_expr(...) call,
 // followed by a literal ",<n>" — deliberately non-lone (fmtstring.LoneRef

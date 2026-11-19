@@ -210,7 +210,7 @@ func TestValidate_Limits_Gated(t *testing.T) {
 			wantPtr: "/steps/0/parameterSpace/taskParameterDefinitions",
 		},
 
-		// ── per-task-parameter value count: 1–1024 for the LIST form only ──
+		// ── per-task-parameter value count: 1–1024 for the list form only ──
 		//
 		// §3.4: the number of values an <IntRangeExpr> expands to is not
 		// constrained by the specification, and the 1024 maximum §3.4.1.1

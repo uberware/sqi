@@ -76,7 +76,7 @@ func TestRangeListItems_LoneExpressionIsAListItem(t *testing.T) {
 		{"text around the expression is one string", "INT", `["{{ Param.N }}0", 5]`, nil, []string{"40", "5"}},
 		{"FLOAT keeps an int as written and converts list members", "FLOAT", `["{{ 2 }}", "{{ [1, 2.5] }}"]`, nil, []string{"2", "1.0", "2.5"}},
 		{"STRING flattens and drops", "STRING", `["a", "{{ ['b', 'c'] }}", "{{ null }}"]`, nil, []string{"a", "b", "c"}},
-		{"CHUNK[INT] is an INT list item", "INT", `["{{ range(2) }}"]`, nil, []string{"0", "1"}},
+		{"a range() result flattens", "INT", `["{{ range(2) }}"]`, nil, []string{"0", "1"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1053,8 +1053,8 @@ int | float :: round(2.0, 309)
 # the string's length divided by 256, rounded up. sqi charges range_expr()'s
 # call (1), the "+" call (1) and that length term (1) — 3. The reference
 # charges 2, leaving the length term out for these two rows while charging it
-# for string + string. These became comparable only once #202's canonical form
-# made the two sides' VALUES agree.
+# for string + string. The counts are comparable because both sides write the
+# range's canonical form (openjd-specifications#202), so the values agree.
 
 # range_expr + string: rule 3's concatenation length term, which the reference omits (see section header).
 string | range_expr :: range_expr("1-10:2") + "!"

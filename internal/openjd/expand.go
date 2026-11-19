@@ -359,9 +359,10 @@ func formatContiguousChunk(vals []int) string {
 
 // formatNoncontiguousChunk spells a NONCONTIGUOUS chunk in the canonical form
 // of Template Schemas §3.4.1.1.1, which §3.4.1.5 requires: the chunk's values,
-// ascending, are split from the left into runs of a constant difference; a run
-// of three or more is written "x-y" or "x-y:s" and a shorter run one value at
-// a time. So "1-8" at 3 is "1-3", "4-6", "7,8", and [1,2,4,6] is "1,2-6:2".
+// ascending and deduplicated, are split from the left into runs of a constant
+// difference; a run of three or more is written "x-y" or "x-y:s" and a shorter
+// run one value at a time. So "1-8" at 3 is "1-3", "4-6", "7,8", and [1,2,4,6]
+// is "1,2-6:2".
 //
 // The canonical form is determined by the chunk's values alone, so values that
 // came out of a first-seen range such as "10-15:2,1-5" in another order are

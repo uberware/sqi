@@ -310,11 +310,11 @@ func floatToInt(f float64) (int64, error) {
 	return int64(f), nil
 }
 
-// roundToDigits implements round(float, int): half to even on the EXACT value
-// of f, as Python's round does (RFC 0006 §2.2.3). A float literal is rarely the
-// decimal it is written as — 2.675 is stored a little below 2.675 — so
-// scaling in float64 and rounding the product would round a value f never had.
-// The rounding is done on f's exact rational value instead.
+// roundToDigits implements round(float, int): half to even on the exact value
+// of f, as Python's round does (RFC 0006 §2.2.3). A float is rarely the decimal
+// it is written as (2.675 is stored a little below 2.675), so the rounding is
+// done on f's exact rational value: scaling in float64 and rounding the product
+// would round a value f does not have.
 //
 // A positive ndigits returns a FLOAT carrying its own rendered form, because
 // RFC 0006 requires round(3.5, 2) to render "3.50" — strconv's 'f' format with
@@ -349,7 +349,7 @@ const maxRoundPlaces = 323
 
 // maxRoundScale is the coarsest place, as a power of ten, at which rounding a
 // float64 can give anything but 0. No finite double reaches half of 10^309, so
-// every coarser place rounds to 0 — CPython's NDIGITS_MIN.
+// every coarser place rounds to 0. This is CPython's NDIGITS_MIN.
 const maxRoundScale = 308
 
 // roundFloatToPlaces rounds f half to even at 10^-places on its exact value and

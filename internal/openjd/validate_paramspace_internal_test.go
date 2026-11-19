@@ -30,8 +30,8 @@ func bigNonOverlappingIntRangeExpr(n int) string {
 // wholesale, which also runs [intRangeHasOverlap] -- a parse and sort of an
 // INT range's sub-ranges, with no early exit once a count cap has already
 // fired. A caller that reaches both parameterSpaceOverCaps (gating the
-// expression walk, unconditionally) AND validateLimits (under EnforceLimits:
-// true) would pay that work TWICE, and under EnforceLimits: false it would
+// expression walk, unconditionally) and validateLimits (under EnforceLimits:
+// true) would pay that work twice, and under EnforceLimits: false it would
 // pay it where nothing else runs here at all.
 //
 // Asserts an ALLOCATION ratio, not a wall-clock threshold -- this package's

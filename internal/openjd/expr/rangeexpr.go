@@ -21,20 +21,21 @@ import (
 // answer without materializing anything: the canonical text is computed from
 // the elements' arithmetic, not from their values.
 //
-// This constructor is also what the language's own range_expr(string) function
+// This constructor is what the language's own range_expr(string) function
 // calls (funcsconv.go), the way an expression can produce a range_expr with no
-// symbol table involved. A caller's symbol table binding a name to a value
-// built by calling this function directly (a CHUNK[INT] task parameter, via
-// ValueFromText) is the other.
+// symbol table involved. A CHUNK[INT] task parameter bound through
+// ValueFromText is built by rangeExprAsWritten instead, so it keeps its text.
 //
-// The value is written in its CANONICAL form (Template Schemas §3.4.1.1.1, as
+// The value is written in its canonical form (Template Schemas §3.4.1.1.1, as
 // RFC 0005 §1.2.2 makes it a range_expr's string form): a range_expr's value
-// is its list of values, so how the text spelled it — element order, how the
-// values were split into elements, white space — is not kept.
+// is its list of values, so how the text spelled it (element order, how the
+// values were split into elements, white space) is not kept.
 // range_expr("1-10:2") is written "1-9:2", and range_expr("1,2,3") equals
-// range_expr("1-3") down to its text. The one value that keeps the text it was
-// given is a CHUNK[INT] task parameter's, bound through ValueFromText: its
-// string form is the chunk's own (see rangeExprAsWritten).
+// range_expr("1-3") down to its text. Text whose elements overlap and name
+// more than canonicalOverlapBound values keeps its written form (see
+// canonicalRangeText). A value bound through ValueFromText, such as a
+// CHUNK[INT] task parameter, keeps the text it was given (see
+// rangeExprAsWritten).
 func RangeExpr(text string) (Value, error) {
 	rs, err := intrange.Parse(text)
 	if err != nil {
@@ -45,10 +46,10 @@ func RangeExpr(text string) (Value, error) {
 
 // rangeExprAsWritten is RangeExpr without canonicalization, for a value whose
 // string form is the text it was given. That is a CHUNK[INT] task parameter
-// (RFC 0005 §1.2.2: "<N>-<M>" for a CONTIGUOUS chunk even with one or two
-// values, the canonical form for a NONCONTIGUOUS one, which internal/openjd
-// already writes it in) and a RANGE_EXPR job parameter, canonicalized when it
-// is bound at submission. ValueFromText is its one caller.
+// (RFC 0005 §1.2.2: "<N>-<M>" for a contiguous chunk even with one or two
+// values, the canonical form for a noncontiguous one, which internal/openjd
+// writes it in) and a RANGE_EXPR job parameter, canonicalized when it is bound
+// at submission. ValueFromText is its one caller.
 func rangeExprAsWritten(text string) (Value, error) {
 	if _, err := intrange.Parse(text); err != nil {
 		return Value{}, fmt.Errorf("invalid range expression %q: %w", text, err)
@@ -77,9 +78,9 @@ func CanonicalRangeExpr(text string) string {
 
 // canonicalOverlapBound is the most values canonicalRangeText lists to settle
 // the canonical form of elements whose spans overlap. Neither call path is
-// metered — range_expr(string) has no Cost row, and a RANGE_EXPR job parameter
-// is bound outside the expression budgets — so the bound is small enough for
-// the listing to be cheap: 65,536 values is about a millisecond.
+// metered (range_expr(string) has no Cost, and a RANGE_EXPR job parameter is
+// bound outside the expression budgets), so the bound must keep the listing
+// cheap.
 const canonicalOverlapBound = 1 << 16
 
 // canonicalRangeText is the canonical form of the parsed elements rs of text,
@@ -117,10 +118,10 @@ func (v Value) AsRangeExpr() string { v.mustBe(CodeRangeExpr); return v.s }
 // instead. That divergence is deliberate and is not changed here — see the
 // intrange package doc.
 //
-// The base spec's own worked table (section 3.4.1.1.1) also lists
-// "1-10:4,10-15" as an error because its sub-ranges overlap. That constraint
-// belongs to <IntTaskParameterDefinition>'s use of the grammar to define a
-// step's task parameter space (enforced separately by
+// The base spec forbids overlapping elements (section 3.4.1.1.1:
+// "1-9:2,2-10:2" is an error, since the elements' spans intersect). That
+// constraint belongs to <IntTaskParameterDefinition>'s use of the grammar to
+// define a step's task parameter space (enforced separately by
 // internal/openjd/validate.go's intRangeHasOverlap) — it is not part of the
 // EXPR language's range_expr type. The EXPR spec (2026-02
 // Expression-Language.md) defines range_expr(s: string) -> range_expr and

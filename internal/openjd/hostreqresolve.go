@@ -9,17 +9,17 @@ import (
 )
 
 // resolveHostRequirements resolves every format string in a step's host
-// requirements — amount and attribute names (Template Schemas §3.3), amount
-// bounds and attribute values — against the step's stepScope, and then
-// applies the host-requirement constraints to the RESOLVED value: a name's
-// prefix, reserved scope and length, no two names alike, an amount bound that
-// is a number.
+// requirements (amount and attribute names, Template Schemas §3.3, amount
+// bounds and attribute values) against the step's stepScope, and then applies
+// the host-requirement constraints to the resolved values: a name's prefix,
+// reserved scope and length, no two names alike, an amount bound that is a
+// number.
 //
 // The scheduler compares what this returns with worker capabilities, so an
 // unresolved "{{Param.Min}}" bound reaching it could never parse and the step
 // could never be scheduled. hr is returned unchanged when it holds no format
 // string, having already been validated as written. enforceLimits gates the
-// size caps (name length, value counts) exactly as validation does.
+// size caps (name length, value counts) as validation does.
 func resolveHostRequirements(
 	b *templateBudget, sc stepScope, hr *HostRequirements, stepIdx int, enforceLimits bool,
 ) (*HostRequirements, ValidationErrors) {
@@ -86,7 +86,8 @@ func (r *hostReqResolver) resolve(s, ptr string) string {
 	// Substitution does not re-read its own output, so text that still looks
 	// like a format string came from a parameter value. It is not a reference
 	// to resolve later, and no capability name or value may contain it; the
-	// constraints below would otherwise take it for one and skip it.
+	// name checks in resolveHostRequirements would otherwise take it for one
+	// and skip it.
 	if strings.Contains(out, "{{") {
 		r.errs = append(r.errs, ValidationError{
 			Pointer: ptr,

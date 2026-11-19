@@ -8,13 +8,13 @@ import (
 
 // TestCaseTransforms covers the four case functions. The non-ASCII rows are why
 // this package depends on golang.org/x/text/cases: Go's stdlib strings.ToUpper
-// is SIMPLE case mapping and answers "STRAßE", while the specification and
-// Python both apply FULL case mapping and answer "STRASSE".
+// is simple case mapping and answers "STRAßE", while the specification and
+// Python both apply full case mapping and answer "STRASSE".
 //
-// title() and capitalize() have exactly the semantics of Python's str.title and
-// str.capitalize (RFC 0006 §2.2.4's case mapping note), so every expectation for
-// them was produced by CPython 3.14: a word starts after any UNCASED character,
-// a word-start character takes its full TITLECASE mapping, and lowercasing
+// title() and capitalize() have the semantics of Python's str.title and
+// str.capitalize (RFC 0006 §2.2.4's case mapping note), so their expectations
+// are CPython 3.14's answers: a word starts after any uncased character, a
+// word-start character takes its full titlecase mapping, and lowercasing
 // applies the Final_Sigma context rule across the whole string.
 func TestCaseTransforms(t *testing.T) {
 	tests := []struct {
@@ -79,9 +79,9 @@ func TestCaseTransforms(t *testing.T) {
 }
 
 // TestClassificationPredicates covers RFC 0006's seven is*() functions. The six
-// that are not isascii have exactly the semantics of the Python str methods of
-// the same name over the Unicode Character Database (§2.2.4's classification
-// note), so every expectation below was produced by CPython 3.14.
+// that are not isascii have the semantics of the Python str methods of the same
+// name over the Unicode Character Database (§2.2.4's classification note), so
+// the expectations below are CPython 3.14's answers.
 func TestClassificationPredicates(t *testing.T) {
 	tests := []struct {
 		name string

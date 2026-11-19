@@ -11,7 +11,7 @@ import (
 // Template Schemas §7.3: a format string may only reference variables defined
 // at its location. In a template without EXPR, a reference to a job parameter
 // that is not declared, or to a task parameter its step does not define, is a
-// template error at every position — not a job whose tasks all fail when a
+// template error at every position, reported at validation instead of when a
 // worker resolves the reference. With EXPR the expression checker reports the
 // same reference as an unknown symbol.
 
@@ -144,8 +144,8 @@ steps:
 }
 
 // TestValidate_DerivedTaskParameterNamesAreDeclared pins that a name derived
-// from a declared task parameter — SQI_CHUNK_BOUNDS's Task.Param.<name>.Start
-// and .End — counts as declared by its parameter.
+// from a declared task parameter (SQI_CHUNK_BOUNDS's Task.Param.<name>.Start
+// and .End) counts as declared by its parameter.
 func TestValidate_DerivedTaskParameterNamesAreDeclared(t *testing.T) {
 	tmpl := mustParse(t, `
 specificationVersion: jobtemplate-2023-09

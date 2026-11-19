@@ -181,8 +181,8 @@ func TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged(t *testing.T) {
 
 // TestIntRangeHasOverlap_ScalesToManySubRanges pins that the detector is not a
 // pairwise scan. 200,000 single-value sub-ranges is about 1.3 MB of template,
-// well inside the request body limit; a pairwise comparison of them is 2·10^10
-// steps, so this returning promptly is the property under test.
+// inside the request body limit; a pairwise comparison of them is 2·10^10
+// steps, so returning promptly is the property under test.
 func TestIntRangeHasOverlap_ScalesToManySubRanges(t *testing.T) {
 	const n = 200_000
 	var b strings.Builder
@@ -190,7 +190,7 @@ func TestIntRangeHasOverlap_ScalesToManySubRanges(t *testing.T) {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		// Written in DESCENDING order so a detector that only compares
+		// Written in descending order so a detector that only compares
 		// neighbors in written order cannot pass by accident.
 		fmt.Fprintf(&b, "%d", 2*(n-i))
 	}
@@ -221,8 +221,8 @@ func TestIntRangeHasOverlap_ScalesToManySubRanges(t *testing.T) {
 }
 
 // TestIntRangeHasOverlap_Internal covers the overlap detector. Template Schemas
-// §3.4.1.1.1 measures overlap on each element's SPAN — smallest to largest
-// value in its set, not its written endpoints — so interleaved stepped ranges
+// §3.4.1.1.1 measures overlap on each element's span (smallest to largest
+// value in its set, not its written endpoints), so interleaved stepped ranges
 // that share no value still overlap, and a written end past the last value
 // does not. A huge range must be evaluated without OOM.
 func TestIntRangeHasOverlap_Internal(t *testing.T) {
@@ -242,9 +242,9 @@ func TestIntRangeHasOverlap_Internal(t *testing.T) {
 		{"19-23:5,20-25", false, false}, // span of 19-23:5 is the single value 19
 		{"10-15,1-10:4", false, false},  // order of the elements does not matter
 		// The span arithmetic must not overflow when an element covers most of
-		// int64: end - start is past MaxInt64 here.
-		// The span of the first element ends at 9223372036854775805; 804 is
-		// inside it (but not in its set) and 806 is past it.
+		// int64: end - start is past MaxInt64 here. The span of the first
+		// element ends at 9223372036854775805; 804 is inside it (but not in its
+		// set) and 806 is past it.
 		{"-9223372036854775807-9223372036854775807:4,9223372036854775804", true, false},
 		{"-9223372036854775807-9223372036854775807:4,9223372036854775806", false, false},
 		{"1-10:2,1-10:2", true, false}, // identical stepped ranges

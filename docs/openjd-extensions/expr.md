@@ -274,10 +274,11 @@ step-level `let:` plus a range that referenced it would validate at upload and
 then fail at submit with `unknown symbol`.)
 
 **A RangeList entry that is exactly `{{<expr>}}` is a list item** (section
-1.3.12, as section 1.3.2 defines list items): its target is `T? | list[T]` —
-`int` for INT and CHUNK[INT], `float? | int | list[float]` for FLOAT (an `int`
-result is kept as written), `string` or `path` otherwise — so a `null` result
-drops the entry and a list result is flattened into one entry per member.
+1.3.12, as section 1.3.2 defines list items). Its target is `T? | list[T]`,
+where `T` is `int` for INT and CHUNK[INT] and `string` or `path` otherwise;
+for FLOAT it is `float? | int | list[float]`, and an `int` result is kept as
+written. A `null` result drops the entry and a list result is flattened into
+one entry per member.
 `rangeListItemType` (`resolve.go`) is the one definition the checker and the
 resolver share. A list that flattening empties is an error, and so is one that
 would carry the list past the step's task limit.
@@ -323,11 +324,14 @@ its canonical form (`Value.String()` on a `range_expr` value writes the
 canonical form of Template Schemas §3.4.1.1.1: ascending, positive steps, runs
 of three or more collapsed, so `"1-5,10-14:2"` here) and the *composed* result
 is ordinary base-spec `<RangeString>` text, parsed by `internal/openjd`'s own
-first-seen reader like any other literal range string — so the identical
-`range_expr(...)` call can produce a different ordering depending only on
-whether it is the field's sole content: `[1,2,3,4,5,10,12,14]` as a lone
-expression, `[1,2,3,4,5,10,12,14,7]` here, with the 7 after the values that
-precede it in the text.
+first-seen reader like any other literal range string. The identical
+`range_expr(...)` call can therefore produce a different ordering depending
+only on whether it is the field's sole content: `[1,2,3,4,5,10,12,14]` as a
+lone expression, `[1,2,3,4,5,10,12,14,7]` here, with the 7 after the values
+that precede it in the text. This is intended — see
+`resolveRangeExprField`'s own doc comment (`resolve.go`) for the reasoning —
+and is pinned by
+`TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue`.
 
 The canonical form is computed from the elements' arithmetic, never by listing
 their values, so a range of a billion values costs what a range of three does.
@@ -336,10 +340,7 @@ settled by listing the values, up to 65,536 of them, and a larger overlapping
 expression keeps the text it was written in. A CHUNK[INT] value keeps its own
 form, `<N>-<M>` for a CONTIGUOUS chunk even with one or two values (section
 1.2.2); a `range_expr` computed from it is canonical. A RANGE_EXPR job
-parameter's value is canonicalized when it is bound, at submission. This is intended — see
-`resolveRangeExprField`'s own doc comment (`resolve.go`) for the reasoning —
-and is pinned by
-`TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue`.
+parameter's value is canonicalized when it is bound, at submission.
 
 **What the checker does *not* judge, and where those errors surface instead.**
 The checker judges an expression's **type**. It never judges the syntax,

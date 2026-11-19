@@ -124,8 +124,8 @@ func validateIntRangeExpr(expr string) error {
 
 // intRangeHasOverlap reports whether two elements of an OpenJD INT/CHUNK[INT]
 // range expression overlap. Template Schemas §3.4.1.1.1 measures overlap on an
-// element's SPAN — the interval from the smallest to the largest value in its
-// set, not its written endpoints — and two elements overlap when their spans
+// element's span (the interval from the smallest to the largest value in its
+// set, not its written endpoints), and two elements overlap when their spans
 // share an integer, even when their sets share no value: "1-9:2,2-10:2" is an
 // error, while "1-10:4,10-15" is not, since the span of "1-10:4" ends at 9.
 // [parseIntRangeExpr] silently de-duplicates for expansion, so this is a

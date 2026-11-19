@@ -750,10 +750,11 @@ func TestSubmitter_Submit_ParamInRangeExpr(t *testing.T) {
 	}
 }
 
-// TestSubmitter_Submit_ParamInRangeExpr_IsNotCappedAt1024 pins §3.4: the
-// number of values an <IntRangeExpr> expands to is not constrained by the
-// specification, so a parameterized range resolving to "1-2000" is accepted
-// and makes 2000 tasks — the 1024 maximum bounds only the <IntRangeList> form.
+// TestSubmitter_Submit_ParamInRangeExpr_IsNotCappedAt1024 pins Template
+// Schemas §3.4: the number of values an <IntRangeExpr> expands to is not
+// constrained by the specification, so a parameterized range resolving to
+// "1-2000" is accepted and makes 2000 tasks. The 1024 maximum bounds only the
+// <IntRangeList> form.
 func TestSubmitter_Submit_ParamInRangeExpr_IsNotCappedAt1024(t *testing.T) {
 	st := fake.New()
 	farmID, queueID := seedSubmitPrereqs(t, st)
@@ -773,7 +774,7 @@ func TestSubmitter_Submit_ParamInRangeExpr_IsNotCappedAt1024(t *testing.T) {
 }
 
 // TestSubmitter_Submit_ParamInRangeExpr_ExceedsTaskLimit verifies that a
-// parameterized range cannot smuggle past the bound that DOES apply to it: the
+// parameterized range cannot smuggle past the bound that does apply to it: the
 // range still contains {{...}} at template-validation time, so the resolved
 // space must be bounded at submission. Start=1, End=2000000 resolves to two
 // million values, past maxTasksPerStep (1,000,000).

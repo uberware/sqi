@@ -522,9 +522,9 @@ func (s *Submitter) buildStepWithTasks(
 	return step, tasks, nil
 }
 
-// resolveStepScope builds the stepScope a step's fields resolved at Job
-// creation share — so its let: block is evaluated and charged once — and
-// resolves its host requirements against it. The scope is built only when
+// resolveStepScope builds the stepScope shared by a step's fields resolved at
+// Job creation, so its let: block is evaluated and charged once, and resolves
+// its host requirements against it. The scope is built only when
 // something needs it: a step with no parameterSpace and no host-requirement
 // format string costs the resolver nothing.
 func (s *Submitter) resolveStepScope(
@@ -582,7 +582,7 @@ func (s *Submitter) expandStepTaskParams(
 	// against the step's stepScope: the job parameters plus, under EXPR, the
 	// step's own let: block (Template Schemas section 3.6.2), which together
 	// are what a section 1.3.12 whole-field range expression is evaluated
-	// against — the same symbol table the checker used.
+	// against: the same symbol table the checker used.
 	//
 	// resolverBudget is shared by every step's resolver call in this submission.
 	// It is a separate object from checkExpressionsAtSubmit's budget; see

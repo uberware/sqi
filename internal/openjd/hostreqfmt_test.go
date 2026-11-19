@@ -87,7 +87,7 @@ func submitHostReqTemplate(t *testing.T, ext, hr string, params map[string]strin
 }
 
 // TestSubmit_HostRequirementFormatStringsAreResolved pins that what reaches
-// the scheduler is the RESOLVED host requirement: names, amount bounds and
+// the scheduler is the resolved host requirement: names, amount bounds and
 // attribute values alike. A bound left as "{{Param.Min}}" could never parse,
 // so the step could never be scheduled.
 func TestSubmit_HostRequirementFormatStringsAreResolved(t *testing.T) {
@@ -152,7 +152,7 @@ func TestSubmit_AmountBoundsAreStoredWithoutWhiteSpace(t *testing.T) {
 }
 
 // TestSubmit_ResolvedHostRequirementsHoldNoFormatStrings pins that what a
-// host-requirement format string resolves to is checked AS resolved: a
+// host-requirement format string resolves to is checked as resolved: a
 // parameter value that itself looks like a format string is not a reference
 // still to be resolved, so it cannot slip past the capability-name and value
 // constraints by looking like one. Neither base-spec nor EXPR substitution
@@ -185,7 +185,7 @@ func TestSubmit_ResolvedHostRequirementsHoldNoFormatStrings(t *testing.T) {
 
 // TestSubmit_StorageLocationCoverageUsesTheResolvedComputeLocation pins that a
 // step's storage-location roots are checked against the compute location it
-// will actually run in: the resolved attr.worker.computelocation, not the
+// will run in: the resolved attr.worker.computelocation, not the
 // format string that produces it.
 func TestSubmit_StorageLocationCoverageUsesTheResolvedComputeLocation(t *testing.T) {
 	template := func(site string) string {

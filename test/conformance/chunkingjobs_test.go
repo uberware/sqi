@@ -25,11 +25,12 @@ import (
 // must and must not print; a ".invalid" fixture is one whose job cannot be
 // created at all.
 //
-// It runs each fixture through sqi's own pipeline rather than modeling it
-// (presettest.Capture): the job is created by openjd.Submitter, and each
-// task's onRun action is resolved exactly as a worker resolves it at run time. Every fixture prints raw Python string literals, so what a task
-// prints is the text of its resolved script, and a listed line matches as a
-// substring of it, the way the fixtures' own runner searches task output.
+// It runs each fixture through sqi's own pipeline (presettest.Capture): the
+// job is created by openjd.Submitter, and each task's onRun action is resolved
+// as a worker resolves it at run time. Every fixture prints raw Python string
+// literals, so what a task prints is the text of its resolved script, and a
+// listed line matches as a substring of it, the way the fixtures' own runner
+// searches task output.
 //
 // A fixture in chunkingJobDivergences must still fail, as a baselined case
 // must in baseline.go's DiffBaseline: one that starts passing is a stale
@@ -76,12 +77,12 @@ var chunkingJobDivergences = map[string]string{
 }
 
 // argStringLineFeed is the reason two fixtures fail: each is a template
-// WITHOUT the EXPR extension whose onRun argument is a YAML "|" block, which
+// without the EXPR extension whose onRun argument is a YAML "|" block, which
 // ends in a line feed. Template Schemas §5.2 allows any character in an
 // <ArgString> except the Cc category, which holds U+000A, and it is the EXPR
 // extension that relaxes that (RFC 0005, "string types must be relaxed to
 // allow line feed"), so sqi rejects the template as written. The fixtures'
-// subject — the canonical form of a NONCONTIGUOUS chunk — is covered by their
+// subject, the canonical form of a NONCONTIGUOUS chunk, is covered by their
 // EXPR twin, noncontiguous-format-canonical-interior-pair-expr.test.yaml, and
 // by internal/openjd's TestExpand_ChunkNoncontiguousIsCompact.
 const argStringLineFeed = "a multi-line <ArgString> in a template without EXPR, which §5.2 forbids"
@@ -145,7 +146,7 @@ func scoreChunkingJob(t *testing.T, fx chunkingJob, invalid bool) []string {
 
 // chunkingJobOutput creates the fixture's job and returns, for each task, the
 // text its resolved onRun action prints. presettest.Capture runs the production
-// pipeline end to end: submission, the scheduler's real assignment, and the
+// pipeline end to end: submission, the scheduler's assignment, and the
 // worker's phase-3 resolution.
 func chunkingJobOutput(t *testing.T, fx chunkingJob) ([]string, error) {
 	t.Helper()

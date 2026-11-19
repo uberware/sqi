@@ -330,7 +330,7 @@ templates other tools may accept:
   it is resolved**, at submission (§3.3): it must then be a well-formed
   capability name, no two names alike, and an amount bound a number.
 
-Two rules accept templates a stricter reading turned away: the 1024-value cap of
+Two rules accept templates a stricter reading would reject: the 1024-value cap of
 §3.4 bounds only the list form of a task parameter's `range`, not an
 `<IntRangeExpr>` such as `"1-5000"` (a step is bounded by its task limit
 instead), and an environment's `script` may give `onExit` alone (§3.5: at least

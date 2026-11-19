@@ -640,7 +640,7 @@ func TestCheckTemplateExpressions_RangeExprListValuedAccepted(t *testing.T) {
 // expression as the accept case, wrapped or unwrapped in a list literal: a
 // whole-field RangeExpr (list/range_expr target) rejects the entry's own
 // accepted scalar, and a RangeList entry rejects the whole-field's own
-// accepted list wrapped in ONE MORE list. The whole-field list itself is
+// accepted list wrapped in one more list. The whole-field list itself is
 // legal at an entry, where it flattens (§1.3.12).
 //
 // entryReject is a SECOND, narrower reject case at the entry position only,

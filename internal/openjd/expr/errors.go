@@ -81,7 +81,7 @@ func wrapAt(src string, offset int, err error) *Error {
 // errResolvesNowhere marks an error that names something that does not exist:
 // an undefined symbol, or a property no type has. RFC 0005's "Names that
 // Resolve Nowhere" makes such an error the one failure static type checking
-// does NOT suppress in a part of an expression a run may skip, because
+// does not suppress in a part of an expression a run may skip, because
 // whether a name exists does not depend on any value. errUnknownFunction (an
 // unknown function or method name) belongs to the same class; see
 // resolvesNowhere.

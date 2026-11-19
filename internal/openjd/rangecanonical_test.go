@@ -11,8 +11,8 @@ import (
 // TestBindJobParameters_RangeExprIsCanonical pins Template Schemas
 // §3.4.1.1.1 as RFC 0007's RANGE_EXPR parameter uses it: a range expression
 // value is its list of values, written in its canonical form wherever it is
-// written as a string, so the value bound for a RANGE_EXPR parameter — given
-// at submission or taken from its default — is canonical.
+// written as a string, so the value bound for a RANGE_EXPR parameter, whether
+// given at submission or taken from its default, is canonical.
 func TestBindJobParameters_RangeExprIsCanonical(t *testing.T) {
 	def := "1,2,3,10-15:2"
 	params := []openjd.JobParameter{

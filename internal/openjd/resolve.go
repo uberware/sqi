@@ -154,9 +154,9 @@ func ResolveParameterSpaceParams(
 	return resolveParameterSpace(b, sc, ps, letErrs)
 }
 
-// stepScope is what a step's fields resolved at Job creation — its
-// parameterSpace and its hostRequirements — are resolved against: under EXPR
-// the phase-2 symbol table, otherwise the base-spec Param./RawParam. scope.
+// stepScope is the scope a step's fields resolved at Job creation (its
+// parameterSpace and its hostRequirements) resolve against: under EXPR the
+// phase-2 symbol table, otherwise the base-spec Param./RawParam. scope.
 // Building it evaluates the step's let: block, so a submission builds it once
 // per step and shares it between the two.
 type stepScope struct {
@@ -168,12 +168,12 @@ type stepScope struct {
 // newStepScope builds a step's stepScope, charging b for its let: block.
 //
 // The symbol table is built only when EXPR is declared, and built by the
-// CHECKER'S OWN two helpers so the two layers cannot disagree about what is in
+// checker's own two helpers so the two layers cannot disagree about what is in
 // scope: ScopeJob's fixed and family symbols (section 1.3.12's range field sits
-// at the same ScopeJob position host requirements do — see exprcheck.go's
-// checkStepExpressions) plus, per section 3.6.2 row 1, the names step's own
-// let: block binds. It is left nil (never read) when EXPR is not declared,
-// which is the point — see resolveRangeExprField.
+// at the same ScopeJob position host requirements do; see exprcheck.go's
+// checkStepExpressions) plus, per section 3.6.2 row 1, the names the step's own
+// let: block binds. It is left nil, and never read, when EXPR is not declared;
+// see resolveRangeExprField.
 func newStepScope(
 	b *templateBudget, tmpl *JobTemplate, step *StepTemplate, jobParams map[string]string,
 ) (stepScope, ValidationErrors) {
@@ -200,9 +200,9 @@ func newStepScope(
 	}
 
 	// Each job-param name → value, exposed as both "Param.<name>" and
-	// "RawParam.<name>". Built unconditionally — every RangeList entry, and
+	// "RawParam.<name>". Built unconditionally: every RangeList entry, and
 	// every RangeExpr that is not a whole-field expression (EXPR-declared or
-	// not), keeps resolving through it.
+	// not), resolves through it.
 	sc.scope = make(fmtstring.MapScope, len(jobParams)*2)
 	for name, value := range jobParams {
 		sc.scope["Param."+name] = value
@@ -379,10 +379,10 @@ func resolveRangeListDefinition(
 		}
 		newList = append(newList, items...)
 	}
-	// A range list must still hold at least one element once dropped and
-	// flattened items are resolved (§1.3.12: the list's element-count limits
-	// apply again after resolution; the maximum is re-checked with the other
-	// parameter-space limits on the resolved space).
+	// A range list must hold at least one element after null items are
+	// dropped and list items flattened (§1.3.12: the list's element-count
+	// limits apply again after resolution; the maximum is re-checked with the
+	// other parameter-space limits on the resolved space).
 	if len(errs) == 0 && len(def.RangeList) > 0 && len(newList) == 0 {
 		errs = append(errs, ValidationError{
 			Pointer: fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range", i),
@@ -393,8 +393,8 @@ func resolveRangeListDefinition(
 }
 
 // resolveRangeListElement resolves one range-list element to the elements it
-// contributes. Under EXPR an element that is exactly "{{<expr>}}" is a LIST
-// ITEM (§1.3.12, §1.3.2) and contributes zero, one or several; any other
+// contributes. Under EXPR an element that is exactly "{{<expr>}}" is a list
+// item (§1.3.12, §1.3.2) and contributes zero, one or several; any other
 // element resolves to one string.
 //
 // room is how many more values the list may hold: every value becomes a task,
@@ -516,7 +516,7 @@ func resolveRangeListItem(body string, typ TaskParamType, syms expr.MapSymbols, 
 // expands under internal/openjd's OWN first-seen policy to
 // [1,2,3,4,5,10,12,14,7] — the SPEC's own ascending, deduplicated order
 // (section 3.4.1.1.1) for that same composed text would be
-// [1,2,3,4,5,7,10,12,14], so this still reorders relative to the expression
+// [1,2,3,4,5,7,10,12,14], so this reorders relative to the expression
 // language, across the literal that follows the embedded value.
 //
 // This behavior is correct, not a defect. The no-re-parse rule is scoped

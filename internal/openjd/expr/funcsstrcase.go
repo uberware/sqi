@@ -40,14 +40,14 @@ var strCaseFuncs = map[string][]Shape{
 	"lower":      {caseShape(lowerString)},
 	"capitalize": {caseShape(capitalizeString)},
 	"title":      {caseShape(titleString)},
-	// The six predicates below other than isascii have exactly the semantics of
-	// the Python str methods of the same name (RFC 0006 §2.2.4); doc.go gives
-	// the consequences that look like bugs when tried by hand.
+	// The six predicates below other than isascii have the semantics of the
+	// Python str methods of the same name (RFC 0006 §2.2.4); doc.go lists the
+	// consequences that are easy to mistake for bugs.
 	"isdigit": {runePredShape(allRunes, isDigitRune)},
 	"isalpha": {runePredShape(allRunes, unicode.IsLetter)},
 	"isalnum": {runePredShape(allRunes, isAlnumRune)},
 	"isspace": {runePredShape(allRunes, isSpaceRune)},
-	// isupper and islower are NOT allRunes over a case predicate. RFC 0006
+	// isupper and islower are not allRunes over a case predicate. RFC 0006
 	// defines them over CASED characters — "all cased characters are uppercase
 	// and there is at least one cased character" — so an uncased rune neither
 	// satisfies nor breaks the test. isupper("ABC1") is true because a digit is
@@ -145,7 +145,7 @@ func upperString(s string) string { return cases.Upper(language.Und).String(s) }
 func lowerString(s string) string { return cases.Lower(language.Und).String(s) }
 
 // capitalizeString is Python's str.capitalize (3.8 and later): the first rune
-// takes its full TITLECASE mapping and every later rune its full lowercase
+// takes its full titlecase mapping and every later rune its full lowercase
 // mapping. Titlecase is not uppercase: capitalize("ﬁne day") is "Fine day", not
 // "FIne day", and capitalize("ßx") is "Ssx".
 //
@@ -171,17 +171,17 @@ func capitalizeString(s string) string {
 	return b.String()
 }
 
-// titleString is Python's str.title. A rune preceded by a CASED rune takes its
+// titleString is Python's str.title. A rune preceded by a cased rune takes its
 // full lowercase mapping; any other rune takes its full titlecase mapping. So a
-// word starts after anything uncased — a digit, punctuation, an uncased letter
-// — and title("1st place") is "1St Place", title("a1b") is "A1B".
+// word starts after anything uncased (a digit, punctuation, an uncased letter):
+// title("1st place") is "1St Place", title("a1b") is "A1B".
 //
 // Each rune is cased individually, but sigma is not cased in isolation: Python
 // lowercases a capital sigma by the Unicode Final_Sigma rule over the whole
 // string (writeLowerRune), so title("ΑΒΣ") is "Αβς".
 //
-// The Casers are hoisted out of the loop rather than built per rune, and an
-// ASCII rune — whose titlecase is its uppercase — skips them altogether.
+// The Casers are built once, outside the loop, and an ASCII rune (whose
+// titlecase is its uppercase) skips them.
 func titleString(s string) string {
 	rs := []rune(s)
 	var b strings.Builder
@@ -261,8 +261,8 @@ func isDigitRune(r rune) bool {
 // numericTypeDigit is every code point whose Unicode Numeric_Type is Digit:
 // digits that are not decimal digits, such as superscripts and circled digits.
 // The Go standard library has no Numeric_Type table. Every member is general
-// category No. Derived from CPython 3.14 (Unicode 16.0) as the code points for
-// which str.isdigit() is true and str.isdecimal() is false.
+// category No. The table is the set of code points for which CPython 3.14
+// (Unicode 16.0) answers str.isdigit() true and str.isdecimal() false.
 var numericTypeDigit = &unicode.RangeTable{
 	R16: []unicode.Range16{
 		{Lo: 0x00B2, Hi: 0x00B3, Stride: 1},
@@ -291,9 +291,9 @@ var numericTypeDigit = &unicode.RangeTable{
 }
 
 // isAlnumRune is Python's str.isalnum for one rune: alphabetic (general
-// category L) or any Unicode Numeric_Type. In CPython's data every code point
-// with a Numeric_Type is in general category N or L, so category N covers the
-// numeric half exactly.
+// category L) or any Unicode Numeric_Type. Every code point with a
+// Numeric_Type is in general category N or L, so category N covers the numeric
+// half exactly.
 func isAlnumRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsNumber(r)
 }
@@ -307,8 +307,8 @@ func isSpaceRune(r rune) bool {
 }
 
 // isUpperRune and isLowerRune are the Unicode Uppercase and Lowercase derived
-// properties — general category Lu or Ll plus Other_Uppercase or
-// Other_Lowercase — which Python's case predicates use. Category alone misses
+// properties (general category Lu or Ll, plus Other_Uppercase or
+// Other_Lowercase), which Python's case predicates use. Category alone misses
 // "Ⓐ" (So, Other_Uppercase) and "ª" (Lo, Other_Lowercase).
 func isUpperRune(r rune) bool {
 	return unicode.IsUpper(r) || unicode.Is(unicode.Other_Uppercase, r)

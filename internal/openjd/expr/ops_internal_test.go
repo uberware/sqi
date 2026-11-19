@@ -1432,14 +1432,14 @@ func TestPathOperators_Windows(t *testing.T) {
 
 // TestPathJoin_SingleLetterSchemeIsADrive pins RFC 0006's two-character
 // minimum on a URI scheme (^[a-zA-Z][a-zA-Z0-9+.-]+://). "C://b" is a valid
-// Windows absolute path — a drive followed by a doubled separator — so it is a
+// Windows absolute path (a drive followed by a doubled separator), so it is a
 // filesystem path under every path_format, and a join keeps it one: under
 // Windows the drive and root survive and the doubled separator collapses, under
 // POSIX "C:" is an ordinary first component. Expectations are CPython's
 // PureWindowsPath and PurePosixPath.
 //
-// A multi-letter scheme is still a URI, whose scheme+authority is a ROOT that
-// a rootless child never re-reads as a drive (anchorParts's p.isURI guard).
+// A multi-letter scheme is a URI, whose scheme+authority is a root that a
+// rootless child never re-reads as a drive (anchorParts's p.isURI guard).
 func TestPathJoin_SingleLetterSchemeIsADrive(t *testing.T) {
 	tests := []struct {
 		src    string

@@ -59,7 +59,7 @@ func CanonicalValues(vals []int) string {
 }
 
 // Overlaps reports whether two elements of a range expression overlap, as
-// Template Schemas §3.4.1.1.1 defines it: an element's SPAN runs from the
+// Template Schemas §3.4.1.1.1 defines it: an element's span runs from the
 // smallest to the largest value in its set, not between its written endpoints,
 // and two elements overlap when their spans share an integer, even when their
 // sets share no value ("1-9:2,2-10:2" overlaps; "1-10:4,10-15" does not). It
@@ -103,7 +103,7 @@ func (p progression) at(k uint64) int { return fromBits(bits(p.start) + k*p.step
 // its span and difference arithmetic in uint64, where End - Start and the
 // difference of two ints are exact even when they exceed the int range, and
 // converts back only values that are themselves in range.
-func bits(n int) uint64 { return uint64(n) } //nolint:gosec // deliberate two's-complement reinterpretation; see doc comment
+func bits(n int) uint64 { return uint64(n) } //nolint:gosec // two's-complement reinterpretation; see doc comment
 
 // fromBits is bits' inverse, for a result the caller knows is in range.
 func fromBits(u uint64) int { return int(u) } //nolint:gosec // inverse of bits, applied only to in-range values

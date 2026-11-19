@@ -206,8 +206,8 @@ func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 }
 
 // TestExpand_ChunkNoncontiguousIsCompact pins the spelling of a NONCONTIGUOUS
-// chunk: the canonical form of Template Schemas §3.4.1.1.1, as #202's rewrite
-// of §3.4.1.5 requires. The list of values is split from the left into runs of
+// chunk: the canonical form of Template Schemas §3.4.1.1.1, which §3.4.1.5
+// requires. The list of values is split from the left into runs of
 // a constant difference, and a run shorter than three is written one value at
 // a time, so [1,2,4,6] is "1,2-6:2" rather than "1,2,4,6". The canonical form
 // is determined by the chunk's values alone, so a chunk whose values came out

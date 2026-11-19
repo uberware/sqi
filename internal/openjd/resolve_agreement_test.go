@@ -458,7 +458,7 @@ func TestRangeCheckerResolverAgreement_PerType(t *testing.T) {
 			wholeReject: "{{ 5 }}",
 			entryAccept: "{{ 'a' }}",
 			// Symmetric to the whole-field case: nothing type-mismatches a
-			// STRING entry, so its rejection is the wrong SHAPE. A list of
+			// STRING entry, so its rejection is the wrong shape. A list of
 			// strings is a legal list item (it flattens, §1.3.12); a list of
 			// lists is not.
 			entryReject: "{{ [['a', 'b']] }}",
@@ -609,13 +609,13 @@ func TestRangeCheckerResolverAgreement_NonLoneRangeString(t *testing.T) {
 //
 // {{ range_expr("10-15:2,1-5") }},7 composes to the literal text
 // "1-5,10-14:2,7": Value.String() renders the embedded range_expr value in its
-// canonical form (Template Schemas §3.4.1.1.1), and the COMPOSED result is
-// ordinary base-spec range syntax a human could have typed by hand -- so it is
-// parsed by internal/openjd's OWN parseIntRangeExpr (first-seen order), not
+// canonical form (Template Schemas §3.4.1.1.1), and the composed result is
+// ordinary base-spec range syntax a human could have typed by hand, so it is
+// parsed by internal/openjd's own parseIntRangeExpr (first-seen order), not
 // internal/openjd/expr's (increasing order), and the trailing 7 lands last.
-// This is intentionally a different result from
-// TestRangeCheckerResolverAgreement_LoneRangeExprPolicy's identical range
-// text, because here the expression is EMBEDDED rather than the WHOLE field.
+// The embedded value's own values keep the order
+// TestRangeCheckerResolverAgreement_LoneRangeExprPolicy gives the identical
+// call as the whole field; only the trailing 7 shows the first-seen order.
 func TestRangeCheckerResolverAgreement_EmbeddedRangeExprReorder(t *testing.T) {
 	tmpl := buildRangeAgreementTemplate(TaskParamTypeInt, nil, new(`{{ range_expr("10-15:2,1-5") }},7`), nil)
 	resolved, rows := assertRowAccepted(t, tmpl, nil)

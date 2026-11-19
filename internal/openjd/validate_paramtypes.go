@@ -319,9 +319,9 @@ func validateInnerList(v any, c *ItemConstraint, ptr string) ValidationErrors {
 // declares LIST[PATH] with default [123, 456], and a text-based check would
 // accept those -- every number renders as a perfectly good path string. RFC
 // 0007's schemas say <string> for LIST[STRING] and LIST[PATH] and <integer>
-// for LIST[INT], so the JSON type is what the spec actually constrains. A
-// numeric element may ALSO be a string holding a number — an <intstring> for
-// INT, a <floatstring> for FLOAT, white space around it allowed — since
+// for LIST[INT], so the JSON type is what the spec constrains. A numeric
+// element may also be a string holding a number (an <intstring> for INT, a
+// <floatstring> for FLOAT, with white space around it allowed), since
 // Template Schemas §2.13, §2.14 and §2.16 accept either in a default and in a
 // value given when a Job is created.
 //

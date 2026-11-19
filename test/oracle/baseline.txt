@@ -88,22 +88,22 @@ int :: round(5000000000000000001, -19)
 
 # ── sqi is right: a range_expr's string form is its canonical form ──────────
 #
-# openjd-specifications#202 (merged 2026-10-27) defines the canonical form of a
-# range expression value (Template Schemas §3.4.1.1.1) and makes it the string
-# form of every range_expr (Expression Language §1.2.2/§1.2.3): the list of
-# values is split, FROM THE LEFT, into runs of a constant difference, and a run
+# openjd-specifications#202 defines the canonical form of a range expression
+# value (Template Schemas §3.4.1.1.1) and makes it the string form of every
+# range_expr (Expression Language §1.2.2/§1.2.3): the list of values is split,
+# from the left, into runs of a constant difference, and a run
 # of three or more values is written x-y or x-y:s, anything shorter one value
 # at a time. For [1,3,5,6,7] that takes 1,3,5 (difference 2) as the first run,
 # leaving 6,7 too short for a run of their own: "1-5:2,6,7". The rule is
 # deterministic, so the canonical form exists for every value.
 #
-# The pinned reference (openjd-model 0.14.0, openjd-expr 0.12.0, released
-# 2026-10-16) predates #202 and keeps the elements as written here. Every
-# other range_expr case in the corpus now agrees: the reference already wrote
-# "1-10:2" as "1-9:2", which is #202's answer too.
+# The pinned reference (openjd-model 0.14.0, openjd-expr 0.12.0) predates #202
+# and keeps the elements as written here. Every other range_expr case in the
+# corpus agrees: the reference writes "1-10:2" as "1-9:2", which is #202's
+# answer too.
 
 # range_expr("1,3,5-7"): sqi writes the canonical "1-5:2,6,7", the reference
-# keeps "1,3,5-7" — see the explanation above.
+# keeps "1,3,5-7"; see the explanation above.
 range_expr | string :: range_expr("1,3,5-7")
 
 # ── sqi is right: [^\Wa] asks for set subtraction RE2 cannot express ─────────

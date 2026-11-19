@@ -635,11 +635,11 @@ func driveColonLen(s string) int {
 // start with an ASCII LETTER per the spec's own grammar — a stricter and
 // unrelated rule that gets its own predicate below.
 //
-// A scheme is at least TWO characters (the regex's "+"). RFC 3986 permits one,
-// but "C://scenes/a.ma" is also a valid Windows absolute path — a drive and a
-// doubled separator — and treating it as a URI would silently bypass path
-// mapping for a local file, so the specification treats a one-letter scheme as
-// a filesystem path under every path_format.
+// A scheme is at least two characters (the regex's "+"). RFC 3986 permits one,
+// but "C://scenes/a.ma" is also a valid Windows absolute path (a drive and a
+// doubled separator), and treating it as a URI would bypass path mapping for a
+// local file, so RFC 0006 treats a one-letter scheme as a filesystem path under
+// every path_format.
 func splitURI(text string) (root, rest string, ok bool) {
 	if text == "" || !isSchemeStart(text[0]) {
 		return "", "", false
