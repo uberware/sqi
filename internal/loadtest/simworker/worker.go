@@ -484,10 +484,6 @@ func (inc *incarnation) onReconnect(*nats.Conn) {
 	}
 }
 
-// statusFlushTimeout bounds how long a graceful stop waits for unacknowledged
-// status reports. It matches sqi-worker's.
-const statusFlushTimeout = 10 * time.Second
-
 // stop is the graceful shutdown behind Worker.Stop.
 func (inc *incarnation) stop(ctx context.Context) {
 	close(inc.ended)
@@ -501,7 +497,7 @@ func (inc *incarnation) stop(ctx context.Context) {
 	// Wait for the reports still unacknowledged while the heartbeat runs and
 	// the connection is open, as sqi-worker does: a deregistration sent first
 	// would let the server reclaim a task that has finished.
-	flushCtx, stopFlushWait := context.WithTimeout(context.Background(), statusFlushTimeout)
+	flushCtx, stopFlushWait := context.WithTimeout(context.Background(), status.DefaultFlushTimeout)
 	inc.disp.FlushStatuses(flushCtx)
 	stopFlushWait()
 	inc.stopHB()
@@ -539,10 +535,8 @@ func (inc *incarnation) crash() {
 	inc.disp.shutdown(endCrashed)
 	inc.disp.wait(context.Background())
 	// A crash does not wait for reports the broker has not acknowledged: it
-	// drops them now, which also stops their retry goroutines before the
+	// abandons them now, which also stops their retry goroutines before the
 	// connection they would retry on is closed.
-	expired, expire := context.WithCancel(context.Background())
-	expire()
-	inc.disp.FlushStatuses(expired)
+	inc.disp.AbandonStatuses()
 	inc.nc.Close()
 }

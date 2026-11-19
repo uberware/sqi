@@ -213,9 +213,7 @@ func (d *Dispatcher) ActiveAttemptIDs() []string {
 	d.mu.Lock()
 	ids := slices.Collect(maps.Keys(d.held))
 	d.mu.Unlock()
-	ids = append(ids, d.st.PendingAttemptIDs()...)
-	slices.Sort(ids)
-	return slices.Compact(ids)
+	return d.st.WithPending(ids)
 }
 
 // LastAssignmentAt returns when the last assignment was dispatched, or nil.
@@ -469,8 +467,12 @@ func (d *Dispatcher) shutdown(reason endReason) {
 
 // FlushStatuses waits until the dispatcher's status publisher has no report
 // pending or ctx ends, then drops what is left and returns how many it
-// dropped. A canceled ctx drops everything at once.
+// dropped.
 func (d *Dispatcher) FlushStatuses(ctx context.Context) int { return d.st.Flush(ctx) }
+
+// AbandonStatuses drops every report the dispatcher's status publisher still
+// has pending, without waiting for any, and returns how many it dropped.
+func (d *Dispatcher) AbandonStatuses() int { return d.st.Abandon() }
 
 // wait blocks until every task goroutine has returned or ctx is done, and
 // reports whether they all returned. Call it only once no Dispatch can start.
