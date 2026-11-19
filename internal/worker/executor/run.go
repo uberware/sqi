@@ -680,8 +680,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// SysProcAttr fields already set, such as Setpgid, and would not see ones
 	// set later.
 	if err := applyCredential(cmd, sess.Credential()); err != nil {
-		now := time.Now()
-		return processResult{Err: fmt.Errorf("apply run-as-user credential: %w", err), StartedAt: now, EndedAt: now}
+		return earlyResult(fmt.Errorf("apply run-as-user credential: %w", err), time.Time{})
 	}
 
 	// Merge the session's dynamic environment (accumulated from openjd_env /
@@ -711,11 +710,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// UnrealTraceServer.
 	out, err := procout.Start(cmd)
 	if err != nil {
-		return processResult{
-			Err:       fmt.Errorf("start %q: %w", action.Command, err),
-			StartedAt: startedAt,
-			EndedAt:   time.Now(),
-		}
+		return earlyResult(fmt.Errorf("start %q: %w", action.Command, err), startedAt)
 	}
 
 	// Place the process (and, on Windows, everything it spawns) under
@@ -734,11 +729,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		if killErr := out.Abort(); killErr != nil {
 			e.logger.WarnContext(context.Background(), "executor: kill process after supervise failure", slog.Any("error", killErr))
 		}
-		return processResult{
-			Err:       fmt.Errorf("supervise task process tree: %w", err),
-			StartedAt: startedAt,
-			EndedAt:   time.Now(),
-		}
+		return earlyResult(fmt.Errorf("supervise task process tree: %w", err), startedAt)
 	}
 	defer func() {
 		if relErr := tree.Release(); relErr != nil {
@@ -982,6 +973,17 @@ func (e *Executor) killAndWait(
 		waitErr := <-waitDone
 		return makeResult(waitErr, pid, startedAt, timedOut, canceled)
 	}
+}
+
+// earlyResult is the result of a run that failed with err before there was a
+// process to wait for. It ends now; startedAt is when the run started, or
+// zero when it failed before that, in which case it starts now too.
+func earlyResult(err error, startedAt time.Time) processResult {
+	endedAt := time.Now()
+	if startedAt.IsZero() {
+		startedAt = endedAt
+	}
+	return processResult{Err: err, StartedAt: startedAt, EndedAt: endedAt}
 }
 
 // makeResult converts a raw cmd.Wait() error into a structured [processResult].

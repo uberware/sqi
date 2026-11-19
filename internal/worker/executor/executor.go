@@ -452,17 +452,13 @@ func (e *Executor) release(attemptID string) {
 }
 
 // ActiveAttemptIDs returns a sorted snapshot of the held attempts together
-// with those whose status report the stream has not yet acknowledged: the
-// server reclaims an open attempt once heartbeats stop listing it, so one whose
-// terminal report is still being retried stays listed.
-// Implements [heartbeat.AttemptSource].
+// with those whose status report the stream has not yet acknowledged
+// ([status.Publisher.WithPending]). Implements [heartbeat.AttemptSource].
 func (e *Executor) ActiveAttemptIDs() []string {
 	e.mu.Lock()
 	ids := slices.Collect(maps.Keys(e.held))
 	e.mu.Unlock()
-	ids = append(ids, e.statusPub.PendingAttemptIDs()...)
-	slices.Sort(ids)
-	return slices.Compact(ids)
+	return e.statusPub.WithPending(ids)
 }
 
 // ── heartbeat.StateSource ─────────────────────────────────────────────────────
