@@ -207,11 +207,15 @@ func (d *Dispatcher) ActiveTaskIDs() []string {
 	return slices.Collect(maps.Keys(ids))
 }
 
-// ActiveAttemptIDs returns the held attempts, sorted.
+// ActiveAttemptIDs returns the held attempts and those whose status report the
+// stream has not yet acknowledged, sorted, as the real worker's executor does.
 func (d *Dispatcher) ActiveAttemptIDs() []string {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	return slices.Sorted(maps.Keys(d.held))
+	ids := slices.Collect(maps.Keys(d.held))
+	d.mu.Unlock()
+	ids = append(ids, d.st.PendingAttemptIDs()...)
+	slices.Sort(ids)
+	return slices.Compact(ids)
 }
 
 // LastAssignmentAt returns when the last assignment was dispatched, or nil.

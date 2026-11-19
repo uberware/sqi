@@ -242,6 +242,10 @@ type stubNATS struct {
 	// published, outside mu, before the message is recorded, so a waiter that
 	// sees a message in msgs (waitForStatus) knows its hook has returned.
 	onStatus func(protocol.TaskStatusMsg)
+
+	// held maps a status message ID ("<attemptID>:<status>") to a channel
+	// PublishAcked refuses that report until it is closed.
+	held map[string]chan struct{}
 }
 
 type stubMsg struct {
@@ -266,8 +270,32 @@ func (s *stubNATS) Publish(subj string, data []byte) error {
 	return nil
 }
 
-// PublishAcked records a status report as Publish does and acknowledges it.
-func (s *stubNATS) PublishAcked(_ context.Context, subj string, data []byte, _ string) error {
+// holdAck makes PublishAcked fail the report with this message ID until the
+// returned function is called.
+func (s *stubNATS) holdAck(msgID string) (release func()) {
+	ch := make(chan struct{})
+	s.mu.Lock()
+	if s.held == nil {
+		s.held = map[string]chan struct{}{}
+	}
+	s.held[msgID] = ch
+	s.mu.Unlock()
+	return sync.OnceFunc(func() { close(ch) })
+}
+
+// PublishAcked records a status report as Publish does and acknowledges it,
+// unless holdAck is refusing it.
+func (s *stubNATS) PublishAcked(_ context.Context, subj string, data []byte, msgID string) error {
+	s.mu.Lock()
+	ch := s.held[msgID]
+	s.mu.Unlock()
+	if ch != nil {
+		select {
+		case <-ch:
+		default:
+			return errors.New("stub: ack held")
+		}
+	}
 	return s.Publish(subj, data)
 }
 
@@ -1865,6 +1893,44 @@ func TestExecutor_ActiveAttemptIDs_FromHoldUntilTheTaskEnds(t *testing.T) {
 	waitForStatus(t, nc, 2, 10*time.Second)
 	if ids := waitForNoAttempts(exec, 5*time.Second); len(ids) != 0 {
 		t.Fatalf("after the task ended = %v, want none", ids)
+	}
+}
+
+// TestExecutor_ActiveAttemptIDsIncludePendingStatus verifies that an attempt
+// whose terminal status is still waiting for the stream's ack stays in the
+// heartbeat after its task has ended, and leaves once the status is stored.
+func TestExecutor_ActiveAttemptIDsIncludePendingStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+	exec, nc, _ := newTestExecutor(t, nil)
+	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
+	msg.AttemptID = "attempt-pending"
+	release := nc.holdAck(msg.AttemptID + ":succeeded")
+	t.Cleanup(release)
+
+	if err := exec.Dispatch(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	// Once the task has ended its run goroutine drops the hold within moments,
+	// leaving only the pending terminal report to keep the attempt listed. Watch
+	// well past that point.
+	deadline := time.Now().Add(10 * time.Second)
+	for exec.ActiveTaskCount() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := exec.ActiveTaskCount(); n != 0 {
+		t.Fatalf("task still running after 10s: %d", n)
+	}
+	for end := time.Now().Add(300 * time.Millisecond); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if ids := exec.ActiveAttemptIDs(); !slices.Equal(ids, []string{"attempt-pending"}) {
+			t.Fatalf("with the terminal status unacked = %v, want [attempt-pending]", ids)
+		}
+	}
+
+	release()
+	if ids := waitForNoAttempts(exec, 10*time.Second); len(ids) != 0 {
+		t.Fatalf("after the status was stored = %v, want none", ids)
 	}
 }
 
