@@ -673,39 +673,3 @@ func (e *Executor) DrainAndShutdown(gracePeriod time.Duration) (completed, kille
 	e.wg.Wait()
 	return
 }
-
-// FlushShutdownStatuses publishes a "failed"/"worker_shutdown" status for
-// every task currently in the active-tasks map.
-//
-// Call it before draining the NATS connection during worker shutdown so the
-// server learns about task failures without waiting for the heartbeat-timeout
-// sweep.  Each task goroutine also publishes its own terminal status as it
-// exits; the server accepts the first terminal status and ignores later ones.
-//
-// The total flush is bounded by a 5-second deadline so that a saturated NATS
-// connection cannot stall the shutdown sequence.
-func (e *Executor) FlushShutdownStatuses() {
-	e.mu.Lock()
-	tasks := make([]status.ShutdownTask, 0, len(e.activeTasks))
-	for _, run := range e.activeTasks {
-		tasks = append(tasks, status.ShutdownTask{
-			TaskID:    run.taskID,
-			AttemptID: run.attemptID,
-			JobID:     run.jobID,
-			SessionID: run.sessionID,
-		})
-	}
-	e.mu.Unlock()
-
-	if len(tasks) == 0 {
-		return
-	}
-	e.logger.InfoContext(
-		context.Background(),
-		"executor: publishing worker_shutdown status for in-flight tasks",
-		slog.Int("count", len(tasks)),
-	)
-	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
-	defer stop()
-	e.statusPub.ShutdownFailed(ctx, tasks)
-}

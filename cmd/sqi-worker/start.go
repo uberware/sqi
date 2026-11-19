@@ -252,62 +252,11 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		return err
 	}
 
-	// ── Isolation provider, session root and session manager ──────
-	sessionMgr, sessionRoot, stagingIsolationCapable, err := newSessionManager(cfg, logger)
+	// ── Session manager, and the task executor with its publishers ──
+	exec, _, sessionRoot, err := newExecutor(nc, workerID, cfg, m, logger)
 	if err != nil {
 		return err
 	}
-
-	// ── Log chunk publisher ────────────────────────────────────
-	//
-	// The logstreamer Publisher buffers task process output lines and batches
-	// them into LogChunkMsg messages published to NATS JetStream. It
-	// implements executor.OutputHandler and executor.LogFlusher so the executor
-	// can flush remaining logs before publishing the terminal task status.
-	// SYNC: logstreamer.Config and workerconfig.LogStreamerConfig have matching
-	// fields. A field added to one must be added to both and mapped here.
-	logPub := logstreamer.New(nc, workerID, logstreamer.Config{
-		MaxLinesPerChunk: cfg.LogStreamer.MaxLinesPerChunk,
-		MaxBytesPerChunk: cfg.LogStreamer.MaxBytesPerChunk,
-		FlushInterval:    cfg.LogStreamer.FlushInterval,
-	}, logger)
-
-	// ── OpenJD progress/status/fail interceptor ────────────────
-	//
-	// The OpenJD interceptor wraps the log publisher and intercepts recognized
-	// OpenJD directive lines (openjd_progress, openjd_status, openjd_fail)
-	// before forwarding everything else downstream. It implements
-	// executor.TaskLifecycleHook (so openjd_fail cancels the task) and
-	// provides LastProgress() for the last_progress field of status messages.
-	openjdInterceptor := openjd.New(logPub, nc, workerID, logger)
-
-	// ── Task status publisher ───────────────────────────────────
-	//
-	// The status Publisher publishes all task state-transition messages
-	// (running, succeeded, failed, canceled) with worker_id and last_progress
-	// fields, and retries with backoff on transient NATS publish failures.
-	statusPub := status.New(nc, status.Config{WorkerID: workerID}, logger)
-
-	// ── Task executor ───────────────────────────────────────────
-	//
-	// The Executor starts OS processes for assigned tasks and reports their
-	// status back to sqi-server via NATS. It implements lease.Dispatcher (via
-	// Dispatch) and heartbeat.StateSource.
-	exec := executor.New(
-		statusPub,
-		sessionMgr,
-		m,
-		openjdInterceptor, // openjd_progress/status/fail interception + log streaming
-		executor.Config{
-			KillGracePeriod:         shutdownKillGrace(cfg.Worker.ShutdownGracePeriod),
-			AllowRoot:               cfg.Worker.AllowRoot,
-			StagingScratchDir:       cfg.Staging.ScratchDir,
-			StagingSyncCommand:      cfg.Staging.SyncCommand,
-			StagingDefaults:         cfg.Staging.Defaults,
-			StagingIsolationCapable: stagingIsolationCapable,
-		},
-		logger,
-	)
 
 	// ── Task cancel subscriber ─────────────────────────────────
 	//
@@ -579,6 +528,77 @@ func shutdownSequence(
 	stopHeartbeat()
 	reg.Deregister("graceful shutdown", kind)
 	return completed, killed
+}
+
+// newExecutor builds the task executor, its session manager (see
+// newSessionManager) and the publishers it reports through: the log chunk
+// publisher, the OpenJD interceptor in front of it, and the task status
+// publisher. It returns the status publisher too, and the session root for the
+// start-up log.
+func newExecutor(
+	nc *nats.Conn, workerID string, cfg workerconfig.WorkerConfig, m *workmetrics.Metrics, logger *slog.Logger,
+) (exec *executor.Executor, statusPub *status.Publisher, sessionRoot string, err error) {
+	// ── Isolation provider, session root and session manager ──────
+	sessionMgr, sessionRoot, stagingIsolationCapable, err := newSessionManager(cfg, logger)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	// ── Log chunk publisher ────────────────────────────────────
+	//
+	// The logstreamer Publisher buffers task process output lines and batches
+	// them into LogChunkMsg messages published to NATS JetStream. It
+	// implements executor.OutputHandler and executor.LogFlusher so the executor
+	// can flush remaining logs before publishing the terminal task status.
+	// SYNC: logstreamer.Config and workerconfig.LogStreamerConfig have matching
+	// fields. A field added to one must be added to both and mapped here.
+	logPub := logstreamer.New(nc, workerID, logstreamer.Config{
+		MaxLinesPerChunk: cfg.LogStreamer.MaxLinesPerChunk,
+		MaxBytesPerChunk: cfg.LogStreamer.MaxBytesPerChunk,
+		FlushInterval:    cfg.LogStreamer.FlushInterval,
+	}, logger)
+
+	// ── OpenJD progress/status/fail interceptor ────────────────
+	//
+	// The OpenJD interceptor wraps the log publisher and intercepts recognized
+	// OpenJD directive lines (openjd_progress, openjd_status, openjd_fail)
+	// before forwarding everything else downstream. It implements
+	// executor.TaskLifecycleHook (so openjd_fail cancels the task) and
+	// provides LastProgress() for the last_progress field of status messages.
+	openjdInterceptor := openjd.New(logPub, nc, workerID, logger)
+
+	// ── Task status publisher ───────────────────────────────────
+	//
+	// The status Publisher sends each attempt's first running and its terminal
+	// status through JetStream and retries each until SQI_TASK acknowledges
+	// it; progress snapshots stay on the interceptor's core publish.
+	statusTransport, err := status.NewJetStreamTransport(nc)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	statusPub = status.New(statusTransport, status.Config{WorkerID: workerID}, logger)
+
+	// ── Task executor ───────────────────────────────────────────
+	//
+	// The Executor starts OS processes for assigned tasks and reports their
+	// status back to sqi-server via NATS. It implements lease.Dispatcher (via
+	// Dispatch) and heartbeat.StateSource.
+	exec = executor.New(
+		statusPub,
+		sessionMgr,
+		m,
+		openjdInterceptor, // openjd_progress/status/fail interception + log streaming
+		executor.Config{
+			KillGracePeriod:         shutdownKillGrace(cfg.Worker.ShutdownGracePeriod),
+			AllowRoot:               cfg.Worker.AllowRoot,
+			StagingScratchDir:       cfg.Staging.ScratchDir,
+			StagingSyncCommand:      cfg.Staging.SyncCommand,
+			StagingDefaults:         cfg.Staging.Defaults,
+			StagingIsolationCapable: stagingIsolationCapable,
+		},
+		logger,
+	)
+	return exec, statusPub, sessionRoot, nil
 }
 
 // newSessionManager resolves the isolation provider and session root and

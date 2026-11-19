@@ -266,6 +266,11 @@ func (s *stubNATS) Publish(subj string, data []byte) error {
 	return nil
 }
 
+// PublishAcked records a status report as Publish does and acknowledges it.
+func (s *stubNATS) PublishAcked(_ context.Context, subj string, data []byte, _ string) error {
+	return s.Publish(subj, data)
+}
+
 // statusMsgs returns every TaskStatusMsg published to the stub NATS, in order.
 func (s *stubNATS) statusMsgs() []protocol.TaskStatusMsg {
 	s.mu.Lock()
@@ -1049,69 +1054,6 @@ func TestExecutor_Dispatch_workerID(t *testing.T) {
 	}
 }
 
-// TestExecutor_FlushShutdownStatuses verifies that FlushShutdownStatuses
-// publishes "failed"/"worker_shutdown" for all active tasks.
-func TestExecutor_FlushShutdownStatuses(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("subprocess test uses Unix-style exec")
-	}
-
-	exec, nc, _ := newTestExecutor(t, nil)
-	// Ensure sleeping subprocesses are force-killed when the test ends.
-	// DrainAndShutdown(0) waits until all goroutines exit before returning,
-	// preventing goroutine leaks and temp-dir races.
-	t.Cleanup(func() { exec.DrainAndShutdown(0) })
-
-	ctx := context.Background()
-
-	// Dispatch two long-running tasks to fill the active-tasks map.
-	for i := range 2 {
-		m := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "60s"})
-		m.TaskID = fmt.Sprintf("flush-task-%d", i)
-		m.AttemptID = fmt.Sprintf("flush-attempt-%d", i)
-		if err := exec.Dispatch(ctx, m); err != nil {
-			t.Fatalf("Dispatch task %d: %v", i, err)
-		}
-	}
-
-	// Wait for both "running" status messages before calling flush.
-	waitForStatus(t, nc, 2, 5*time.Second)
-
-	// Record how many messages exist before flush.
-	nc.mu.Lock()
-	beforeCount := len(nc.msgs)
-	nc.mu.Unlock()
-
-	// Flush shutdown statuses.
-	exec.FlushShutdownStatuses()
-
-	// FlushShutdownStatuses is synchronous; check immediately.
-	nc.mu.Lock()
-	afterCount := len(nc.msgs)
-	msgs := make([]stubMsg, len(nc.msgs))
-	copy(msgs, nc.msgs)
-	nc.mu.Unlock()
-
-	added := afterCount - beforeCount
-	if added != 2 {
-		t.Fatalf("expected 2 additional messages from FlushShutdownStatuses, got %d", added)
-	}
-
-	// Verify the new messages are "failed"/"worker_shutdown".
-	for _, m := range msgs[beforeCount:] {
-		var sm protocol.TaskStatusMsg
-		if err := json.Unmarshal(m.data, &sm); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if sm.Status != "failed" {
-			t.Errorf("FlushShutdownStatuses message Status = %q; want %q", sm.Status, "failed")
-		}
-		if sm.Message != protocol.MessageWorkerShutdown {
-			t.Errorf("FlushShutdownStatuses message Message = %q; want %q", sm.Message, protocol.MessageWorkerShutdown)
-		}
-	}
-}
-
 // ── Cancellation tests ──────────────────────────────────────────────
 
 // TestExecutor_Cancel_canceledStatus verifies that calling Cancel on an
@@ -1693,19 +1635,29 @@ func (f *failingNATS) Publish(_ string, _ []byte) error {
 	return errors.New("stub: publish always fails")
 }
 
+func (f *failingNATS) PublishAcked(_ context.Context, subj string, data []byte, _ string) error {
+	return f.Publish(subj, data)
+}
+
 // TestExecutor_Dispatch_publishFailureDoesNotWedge verifies that when the
 // underlying status publish itself fails (e.g. NATS unreachable), Dispatch
 // still returns promptly with the original dispatch error instead of
-// blocking or panicking: status.Publisher retries transient failures
-// internally and then logs and gives up — status loss is preferred over
-// wedging the caller (the lease loop).
+// blocking or panicking: status.Publisher tries each report once inline and
+// leaves the rest of its retries to the background, so a failing broker never
+// wedges the caller (the lease loop).
 func TestExecutor_Dispatch_publishFailureDoesNotWedge(t *testing.T) {
 	tmpDir := t.TempDir()
 	nc := &failingNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.DiscardHandler)
 	mgr := session.NewManager(filepath.Join(tmpDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
-	statusPub := status.New(nc, status.Config{WorkerID: "test-worker", MaxRetries: 1, RetryDelay: time.Millisecond}, logger)
+	statusPub := status.New(nc, status.Config{WorkerID: "test-worker"}, logger)
+	t.Cleanup(func() {
+		// Stop the background retries of the reports that never land.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		defer cancel()
+		statusPub.Flush(ctx)
+	})
 	exec := executor.New(statusPub, mgr, m, nil, executor.Config{}, logger)
 
 	msg := makeAssign("stdout", nil)

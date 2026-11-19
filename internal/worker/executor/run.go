@@ -440,7 +440,7 @@ func (e *Executor) failLogChecks(ctx context.Context, msg *protocol.AssignMsg, s
 // publishTerminal publishes a task's terminal status and records it in the
 // task metrics under the same status label.
 func (e *Executor) publishTerminal(msg *protocol.AssignMsg, sessID, status string, exitCode *int, reason string, lp *int, result processResult) {
-	e.statusPub.Terminal(context.Background(), msg, sessID, status, exitCode, reason, lp, result.EndedAt)
+	e.statusPub.Terminal(msg, sessID, status, exitCode, reason, lp, result.EndedAt)
 	e.m.TasksTotal.WithLabelValues(status).Inc()
 	e.m.ExecDuration.WithLabelValues(status).Observe(result.duration().Seconds())
 }
@@ -605,12 +605,13 @@ func (e *Executor) stopOutcome() (status, reason string) {
 // exitCode reports none. "running" comes first so the server sees assigned →
 // running → terminal, the arrows runTask uses.
 //
-// It never blocks or panics the caller: Running and Terminal retry transient
-// publish failures and then log a warning and return, because status loss is
-// preferred over wedging the lease loop.
+// It never wedges the caller (the lease loop, for a refused or failed
+// dispatch): Running and Terminal each wait at most one ack timeout and
+// leave a report the stream has not acknowledged to retry in the background.
 func (e *Executor) publishEnded(msg *protocol.AssignMsg, sessID, status string, exitCode *int, reason string) {
-	e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
-	e.statusPub.Terminal(context.Background(), msg, sessID, status, exitCode, reason, nil, time.Now())
+	now := time.Now()
+	e.statusPub.Running(msg, sessID, now)
+	e.statusPub.Terminal(msg, sessID, status, exitCode, reason, nil, now)
 	e.m.TasksTotal.WithLabelValues(status).Inc()
 }
 
@@ -702,7 +703,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// the caller publishes a terminal "failed" immediately after, so the
 	// server always sees a running→failed transition.
 	// The status carries no progress: the process has emitted no output.
-	e.statusPub.Running(context.Background(), msg, sess.ID, nil, startedAt)
+	e.statusPub.Running(msg, sess.ID, startedAt)
 
 	// procout, not StdoutPipe, so the task's exit is seen while a descendant
 	// still holds its output open, such as Unreal Editor's detached
@@ -1290,7 +1291,7 @@ func (e *Executor) stageOutputs(ctx context.Context, msg *protocol.AssignMsg, se
 	)
 	*failed = true
 	minusOne := -1
-	e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &minusOne, soErr.Error(), nil, time.Now())
+	e.statusPub.Terminal(msg, sessID, "failed", &minusOne, soErr.Error(), nil, time.Now())
 	e.m.TasksTotal.WithLabelValues("failed").Inc()
 	return false
 }

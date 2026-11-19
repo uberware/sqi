@@ -311,6 +311,11 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 		nc.Close()
 		return nil, err
 	}
+	tr, err := status.NewJetStreamTransport(nc)
+	if err != nil {
+		nc.Close()
+		return nil, err
+	}
 	inc := &incarnation{w: w, instanceID: reg.InstanceID(), nc: nc, reg: reg, ended: make(chan struct{})}
 	nc.SetReconnectHandler(inc.onReconnect)
 	if err := inc.Register(ctx); err != nil {
@@ -326,10 +331,9 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	wire := func() time.Time { return time.Now().Add(skew) }
 	logCfg := logstreamer.DefaultConfig()
 	logCfg.Now = wire
-	st := status.New(nc, status.Config{WorkerID: id}, w.logger)
+	st := status.New(tr, status.Config{WorkerID: id, WireOffset: skew}, w.logger)
 	logs := logstreamer.New(nc, id, logCfg, w.logger)
 	d := NewDispatcher(id, st, logs, w.behavior, w.ledger, w.rng)
-	d.wireNow = wire
 	d.instanceID = inc.instanceID
 	d.logger = w.logger
 	if _, err := cancel.Subscribe(nc, id, d, w.logger); err != nil {

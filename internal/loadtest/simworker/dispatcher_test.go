@@ -3,6 +3,7 @@
 package simworker_test
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"math/rand/v2"
@@ -43,6 +44,11 @@ func (f *fakeConn) Publish(subj string, data []byte) error {
 		hook(subj, data)
 	}
 	return nil
+}
+
+// PublishAcked records a status report as Publish does and acknowledges it.
+func (f *fakeConn) PublishAcked(_ context.Context, subj string, data []byte, _ string) error {
+	return f.Publish(subj, data)
 }
 
 func (f *fakeConn) setHook(h func(string, []byte)) {

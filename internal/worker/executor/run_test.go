@@ -115,6 +115,8 @@ type discardNATS struct{}
 
 func (discardNATS) Publish(_ string, _ []byte) error { return nil }
 
+func (discardNATS) PublishAcked(context.Context, string, []byte, string) error { return nil }
+
 // TestTaskActionsCarryCredential is the guard test for launch site 2 — the
 // task's OnRun action, started in execProcess. Launch site 1 (the OpenJD
 // environment onEnter/onExit action) is covered by

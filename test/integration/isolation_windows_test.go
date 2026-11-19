@@ -1003,6 +1003,11 @@ func (r *statusRecorder) Publish(_ string, data []byte) error {
 	return nil
 }
 
+// PublishAcked records a status report as Publish does and acknowledges it.
+func (r *statusRecorder) PublishAcked(_ context.Context, subj string, data []byte, _ string) error {
+	return r.Publish(subj, data)
+}
+
 // waitTerminal returns the first terminal status reported within timeout,
 // and its message.
 func (r *statusRecorder) waitTerminal(t *testing.T, timeout time.Duration) (status, message string) {

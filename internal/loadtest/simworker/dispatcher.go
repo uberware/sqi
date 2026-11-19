@@ -82,10 +82,6 @@ type Dispatcher struct {
 	ledger     *Ledger
 	logger     *slog.Logger // the worker sets its own; discard otherwise
 
-	// wireNow stamps the timestamps the dispatcher puts on status messages.
-	// The ledger and every timer keep the real clock.
-	wireNow func() time.Time
-
 	// progress, when set, sits between a progress-writing task's lines and logs,
 	// as the real worker's interceptor does, so its throttle decides which
 	// openjd_progress lines become snapshots. Set it before the first Dispatch.
@@ -126,7 +122,6 @@ func NewDispatcher(
 		ledger:   l,
 		rng:      r,
 		logger:   slog.New(slog.DiscardHandler),
-		wireNow:  time.Now,
 		held:     map[string]struct{}{},
 		active:   map[string]*simTask{},
 	}
@@ -168,7 +163,7 @@ func (d *Dispatcher) Dispatch(_ context.Context, m *protocol.AssignMsg) error {
 	d.mu.Unlock()
 
 	d.record(m, KindLeased, "", 0, time.Time{})
-	go d.run(t) //nolint:gosec // G118: a task outlives the lease request that delivered it; shutdown stops it, not the lease context
+	go d.run(t)
 	return nil
 }
 
@@ -234,7 +229,7 @@ func (d *Dispatcher) run(t *simTask) {
 		d.progress.RegisterTask(m.AttemptID, m.TaskID, m.JobID, "", func() {})
 		defer d.progress.Deregister(m.AttemptID)
 	}
-	d.st.Running(context.Background(), m, "", nil, d.wireNow())
+	d.st.Running(m, "", time.Now())
 	d.record(m, KindRunning, "", 0, time.Time{})
 	if timeout := timeoutOf(m); timeout > 0 {
 		timer := time.AfterFunc(timeout, func() { d.expire(t) })
@@ -404,29 +399,28 @@ func (d *Dispatcher) finish(t *simTask, reason endReason, lines int) {
 	if err := d.logs.FlushLogs(context.Background(), m.TaskID, m.AttemptID); err != nil {
 		d.logger.DebugContext(context.Background(), "simworker: flush logs failed", slog.String("task_id", m.TaskID), slog.Any("error", err))
 	}
-	ctx := context.Background()
 	// The end event is stamped before the publish: once the server has the
 	// status it may lease the freed slot to another worker, whose leased event
 	// must not sort before this attempt's end.
-	now, wire := time.Now(), d.wireNow()
+	now := time.Now()
 	switch reason {
 	case endDone:
 		outcome, code, msg := OutcomeSucceeded, 0, ""
 		if t.plan.Outcome == OutcomeFailed {
 			outcome, code, msg = OutcomeFailed, 1, simulatedFailure
 		}
-		d.st.Terminal(ctx, m, "", outcome, &code, msg, nil, wire)
+		d.st.Terminal(m, "", outcome, &code, msg, nil, now)
 		d.record(m, KindTerminal, outcome, lines, now)
 	case endCanceled:
-		d.st.Terminal(ctx, m, "", "canceled", nil, "", nil, wire)
+		d.st.Terminal(m, "", "canceled", nil, "", nil, now)
 		d.record(m, KindCanceled, "", lines, now)
 	case endTimedOut:
 		code := timeoutExitCode
 		msg := protocol.TimeoutReason(timeoutOf(m))
-		d.st.Terminal(ctx, m, "", OutcomeFailed, &code, msg, nil, wire)
+		d.st.Terminal(m, "", OutcomeFailed, &code, msg, nil, now)
 		d.record(m, KindTerminal, OutcomeFailed, lines, now)
 	case endShutdown:
-		d.st.Terminal(ctx, m, "", "failed", nil, protocol.MessageWorkerShutdown, nil, wire)
+		d.st.Terminal(m, "", "failed", nil, protocol.MessageWorkerShutdown, nil, now)
 		d.record(m, KindTerminal, protocol.MessageWorkerShutdown, lines, now)
 	default: // endCrashed: nothing is published
 		d.record(m, KindCrashed, "", lines, now)
