@@ -247,7 +247,8 @@ func TestStatusAck_RunningSurvivesServerRestart(t *testing.T) {
 // is logged). After the restart every task has succeeded on its one attempt;
 // none is run again.
 func TestStatusAck_TerminalsDuringServerStop(t *testing.T) {
-	ts := startServer(t)
+	// Polling twenty tasks and their attempts exceeds the per-IP API rate limit.
+	ts := startServerWith(t, func(cfg *server.Config) { cfg.DisableRateLimit = true })
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	w := newStatusAckWorker(t, ts, farmID, queueID, statusAckTasks)
 

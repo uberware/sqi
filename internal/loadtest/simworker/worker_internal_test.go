@@ -288,8 +288,10 @@ func TestWorker_StopFlushesStatusesBeforeDeregister(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("Stop did not return after the terminal report could be sent")
 	}
-	if err := spy.Flush(); err != nil {
-		t.Fatalf("flush: %v", err)
+	// The spy's handler runs on its own goroutine, so the deregister can still
+	// be on its way to it when Stop returns.
+	for deadline := time.Now().Add(5 * time.Second); deregisteredAt.Load() == 0 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
 	}
 	stored, dereg := gate.storedAt.Load(), deregisteredAt.Load()
 	if stored == 0 || dereg == 0 || stored > dereg {
