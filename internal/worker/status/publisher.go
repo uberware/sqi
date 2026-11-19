@@ -27,16 +27,16 @@
 // limit on tries, until it is stored or [Publisher.Flush] drops it. Only a
 // failure no retry can cure is logged at Error and dropped at once: a marshal
 // failure, a message over the broker's maximum payload, or a closed
-// connection, which never reopens. A publish the broker denies is not among
-// them: the broker reports the violation asynchronously, so through the
-// JetStream transport it surfaces as an ack timeout and is retried like any
-// other. A terminal report drops a still-pending "running" for the same
-// attempt, since a terminal status is legal on an assigned task and a later
-// "running" would be refused as stale.
+// connection, which never reopens. A publish the broker denies surfaces as an
+// ack timeout and is retried like any other. A terminal report drops a
+// still-pending "running" for the same attempt, since a terminal status is
+// legal on an assigned task and a later "running" would be refused as stale.
 //
 // [Publisher.PendingAttemptIDs] names the attempts with a report still
-// pending, so the worker keeps reporting them as held, and [Publisher.Flush]
-// waits for the pending reports at shutdown.
+// pending, and [Publisher.WithPending] adds them to the attempts a worker
+// holds, so its heartbeats keep listing them. [Publisher.Flush] waits for the
+// pending reports at shutdown, and [Publisher.Abandon] drops them without
+// waiting.
 //
 // # Fields
 //
@@ -68,6 +68,12 @@ import (
 // the inline try of a terminal status a task hands over after the shutdown
 // drain, so it is part of the worker's shutdown budget.
 const DefaultAckTimeout = 2 * time.Second
+
+// DefaultFlushTimeout is how long a worker's graceful shutdown waits in
+// [Publisher.Flush] for the reports still pending after its drain. It is
+// separate from the drain's grace period, which is spent by then, and part
+// of the worker's shutdown budget.
+const DefaultFlushTimeout = 10 * time.Second
 
 const (
 	defaultRetryBase = 250 * time.Millisecond
@@ -126,11 +132,15 @@ type entryKey struct {
 
 // entry is one report waiting for the stream's ack.
 type entry struct {
-	key      entryKey
-	subj     string
-	msg      protocol.TaskStatusMsg
-	terminal bool
-	endedAt  time.Time // terminal only, with its monotonic reading
+	key   entryKey
+	msgID string // the Nats-Msg-Id, "<attemptID>:<kind>"
+	subj  string
+	msg   protocol.TaskStatusMsg
+
+	// endedAt is when a terminal report's task ended, with its monotonic
+	// reading. It is zero exactly for a "running": Terminal replaces a zero
+	// end with the time of the call.
+	endedAt time.Time
 
 	// ctx ends when the entry is acked, dropped or stopped, which aborts a
 	// try in flight.
@@ -138,7 +148,9 @@ type entry struct {
 	cancel context.CancelFunc
 
 	// done is closed when the entry's retry goroutine exits; nil until one
-	// starts. Guarded by Publisher.mu.
+	// starts. It is written under Publisher.mu and only while the entry is
+	// pending ([Publisher.startRetry]), so once the entry has left pending it
+	// no longer changes.
 	done chan struct{}
 
 	// Owned by whichever goroutine is sending the entry: the caller for the
@@ -190,13 +202,7 @@ func New(t Transport, cfg Config, logger *slog.Logger) *Publisher {
 // started. It returns once the stream has stored the report or its first try
 // has failed; a failed report is retried in the background.
 func (p *Publisher) Running(msg *protocol.AssignMsg, sessionID string, at time.Time) {
-	sm := p.base(msg, sessionID, kindRunning)
-	sm.At = at.Add(p.cfg.WireOffset)
-	p.send(&entry{
-		key:  entryKey{attemptID: msg.AttemptID, kind: kindRunning},
-		subj: bus.TaskStatusSubject(p.cfg.WorkerID, msg.JobID),
-		msg:  sm,
-	})
+	p.send(p.newEntry(msg, sessionID, kindRunning, kindRunning, at))
 }
 
 // Terminal reports an attempt's terminal status: "succeeded", "failed", or
@@ -227,18 +233,12 @@ func (p *Publisher) Terminal(
 	if status == "failed" && failureReason == protocol.MessageWorkerShutdown {
 		kind = kindShutdown
 	}
-	sm := p.base(msg, sessionID, status)
-	sm.At = endedAt.Add(p.cfg.WireOffset)
-	sm.Message = failureReason
-	sm.ExitCode = exitCode
-	sm.LastProgress = lastProgress
-	p.send(&entry{
-		key:      entryKey{attemptID: msg.AttemptID, kind: kind},
-		subj:     bus.TaskStatusSubject(p.cfg.WorkerID, msg.JobID),
-		msg:      sm,
-		terminal: true,
-		endedAt:  endedAt,
-	})
+	e := p.newEntry(msg, sessionID, status, kind, endedAt)
+	e.msg.Message = failureReason
+	e.msg.ExitCode = exitCode
+	e.msg.LastProgress = lastProgress
+	e.endedAt = endedAt
+	p.send(e)
 }
 
 // PendingAttemptIDs returns the attempts with a report not yet acknowledged,
@@ -252,6 +252,18 @@ func (p *Publisher) PendingAttemptIDs() []string {
 	p.mu.Unlock()
 	slices.Sort(ids)
 	return slices.Compact(ids)
+}
+
+// WithPending returns held together with the attempts that have a report not
+// yet acknowledged, sorted and de-duplicated: the attempts a worker's
+// heartbeat lists. The server reclaims an open attempt once heartbeats stop
+// listing it, so one whose terminal report is still being retried must stay
+// listed after the worker has released it. WithPending may reuse held's
+// backing array.
+func (p *Publisher) WithPending(held []string) []string {
+	held = append(held, p.PendingAttemptIDs()...)
+	slices.Sort(held)
+	return slices.Compact(held)
 }
 
 // Flush waits until no report is pending or ctx ends. If ctx ends first, it
@@ -275,40 +287,55 @@ func (p *Publisher) Flush(ctx context.Context) (dropped int) {
 	}
 }
 
+// Abandon stops and drops every report still pending without waiting for
+// any, logging one Warn for each, and returns how many it dropped. It is for
+// a worker that ends without finishing its sends. Reports handed over after
+// Abandon returns are sent as usual.
+func (p *Publisher) Abandon() (dropped int) {
+	return p.dropAll(context.Background())
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-// tryResult is how one try ended.
-type tryResult int
-
-const (
-	tryAcked   tryResult = iota // the stream stored the report
-	tryRetry                    // a retryable failure
-	tryDropped                  // a permanent failure, or the entry was stopped
-)
-
-// base builds the fields every report carries.
-func (p *Publisher) base(msg *protocol.AssignMsg, sessionID, status string) protocol.TaskStatusMsg {
-	return protocol.TaskStatusMsg{
-		Version:   protocol.ProtocolVersion,
-		Type:      protocol.TypeTaskStatus,
-		TaskID:    msg.TaskID,
-		AttemptID: msg.AttemptID,
-		JobID:     msg.JobID,
-		Status:    status,
-		SessionID: sessionID,
-		WorkerID:  p.cfg.WorkerID,
+// newEntry builds the report of kind on msg's attempt, with the fields every
+// report carries and its At set to at, moved by [Config.WireOffset].
+func (p *Publisher) newEntry(msg *protocol.AssignMsg, sessionID, status, kind string, at time.Time) *entry {
+	return &entry{
+		key:   entryKey{attemptID: msg.AttemptID, kind: kind},
+		msgID: msg.AttemptID + ":" + kind,
+		subj:  bus.TaskStatusSubject(p.cfg.WorkerID, msg.JobID),
+		msg: protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
+			Type:      protocol.TypeTaskStatus,
+			TaskID:    msg.TaskID,
+			AttemptID: msg.AttemptID,
+			JobID:     msg.JobID,
+			Status:    status,
+			SessionID: sessionID,
+			WorkerID:  p.cfg.WorkerID,
+			At:        at.Add(p.cfg.WireOffset),
+		},
 	}
 }
+
+// terminal reports whether e is a terminal report rather than a "running".
+func (e *entry) terminal() bool { return !e.endedAt.IsZero() }
 
 // send makes e pending, stopping the entries it replaces, then tries it once
 // inline and hands it to a retry goroutine if that try fails.
 func (p *Publisher) send(e *entry) {
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 
+	keys := []entryKey{e.key}
+	if e.terminal() {
+		keys = append(keys, entryKey{attemptID: e.key.attemptID, kind: kindRunning})
+	}
+	var replaced []*entry
 	p.mu.Lock()
-	replaced := p.takeLocked(e.key)
-	if e.terminal {
-		replaced = append(replaced, p.takeLocked(entryKey{attemptID: e.key.attemptID, kind: kindRunning})...)
+	for _, k := range keys {
+		if r := p.takeLocked(k); r != nil {
+			replaced = append(replaced, r)
+		}
 	}
 	p.pending[e.key] = e
 	p.mu.Unlock()
@@ -316,40 +343,34 @@ func (p *Publisher) send(e *entry) {
 		r.stop()
 	}
 
-	switch p.try(e) {
-	case tryAcked, tryDropped:
-		p.finish(e)
-	case tryRetry:
+	if p.try(e) {
 		p.startRetry(e)
+	} else {
+		p.finish(e)
 	}
 }
 
-// takeLocked removes the entry under k from pending and returns it, or
-// nothing when there is none. p.mu must be held.
-func (p *Publisher) takeLocked(k entryKey) []*stopping {
+// takeLocked removes the entry under k from pending and returns it, or nil
+// when there is none. p.mu must be held.
+func (p *Publisher) takeLocked(k entryKey) *entry {
 	e, ok := p.pending[k]
 	if !ok {
 		return nil
 	}
 	delete(p.pending, k)
 	p.notifyLocked()
-	return []*stopping{{e: e, done: e.done}}
+	return e
 }
 
-// stopping is an entry taken out of pending, with its retry goroutine's done
-// channel as it was when it was taken.
-type stopping struct {
-	e    *entry
-	done chan struct{}
-}
-
-// stop aborts the entry's try in flight and waits for its retry goroutine, if
-// it has one, to exit. A goroutine cannot start after the entry has left
-// pending (see startRetry), so a nil done means there is none to wait for.
-func (s *stopping) stop() {
-	s.e.cancel()
-	if s.done != nil {
-		<-s.done
+// stop aborts e's try in flight and waits for its retry goroutine, if it has
+// one, to exit. Call it only once e has left pending: from then on e.done
+// does not change (startRetry starts no goroutine for an entry that is no
+// longer pending), so reading it here needs no lock, and a nil done means
+// there is no goroutine to wait for.
+func (e *entry) stop() {
+	e.cancel()
+	if e.done != nil {
+		<-e.done
 	}
 }
 
@@ -398,7 +419,7 @@ func (p *Publisher) retry(e *entry) {
 			return
 		case <-timer.C:
 		}
-		if p.try(e) != tryRetry {
+		if !p.try(e) {
 			p.finish(e)
 			return
 		}
@@ -406,28 +427,29 @@ func (p *Publisher) retry(e *entry) {
 	}
 }
 
-// try sends e once and classifies the outcome, logging it as the rate limit
-// allows.
-func (p *Publisher) try(e *entry) tryResult {
+// try sends e once, logging the outcome as the rate limit allows, and
+// reports whether e should be tried again: false once it is stored, has
+// failed permanently or has been stopped.
+func (p *Publisher) try(e *entry) (retry bool) {
 	data, err := p.encode(e)
 	if err != nil {
 		p.logger.ErrorContext(e.ctx, "status: marshal failed; report dropped", attrs(e, slog.Any("error", err))...)
-		return tryDropped
+		return false
 	}
 	ctx, cancel := context.WithTimeout(e.ctx, p.cfg.AckTimeout)
-	err = p.t.PublishAcked(ctx, e.subj, data, e.key.attemptID+":"+e.key.kind)
+	err = p.t.PublishAcked(ctx, e.subj, data, e.msgID)
 	cancel()
 	switch {
 	case err == nil:
 		if e.failures > 0 {
 			p.logger.InfoContext(e.ctx, "status: report stored after retrying", attrs(e, slog.Int("failures", e.failures))...)
 		}
-		return tryAcked
+		return false
 	case e.ctx.Err() != nil:
-		return tryDropped // stopped; whoever stopped it logs
+		return false // stopped; whoever stopped it logs
 	case permanent(err):
 		p.logger.ErrorContext(e.ctx, "status: report cannot be sent; dropped", attrs(e, slog.Any("error", err))...)
-		return tryDropped
+		return false
 	}
 	e.failures++
 	if now := time.Now(); e.failures == 1 || now.Sub(e.lastWarn) >= warnEvery {
@@ -435,13 +457,13 @@ func (p *Publisher) try(e *entry) tryResult {
 		p.logger.WarnContext(e.ctx, "status: report not acknowledged; retrying",
 			attrs(e, slog.Int("failures", e.failures), slog.Any("error", err))...)
 	}
-	return tryRetry
+	return true
 }
 
 // encode marshals e's message, measuring a terminal report's age afresh.
 func (p *Publisher) encode(e *entry) ([]byte, error) {
 	msg := e.msg
-	if e.terminal {
+	if e.terminal() {
 		msg.EndedAgoMs = max(0, p.since(e.endedAt).Milliseconds())
 	}
 	return json.Marshal(msg)
@@ -449,13 +471,9 @@ func (p *Publisher) encode(e *entry) ([]byte, error) {
 
 // permanent reports whether err cannot be cured by sending the same report
 // again. A closed connection never reopens, so retrying on it would only keep
-// the report pending until Flush gave up. A permissions violation counts only
-// when a transport returns it directly; the JetStream transport never does
-// (see the package doc).
+// the report pending until Flush gave up.
 func permanent(err error) bool {
-	return errors.Is(err, nats.ErrPermissionViolation) ||
-		errors.Is(err, nats.ErrMaxPayload) ||
-		errors.Is(err, nats.ErrConnectionClosed)
+	return errors.Is(err, nats.ErrMaxPayload) || errors.Is(err, nats.ErrConnectionClosed)
 }
 
 // attrs returns the attributes naming e, followed by extra.
@@ -469,25 +487,24 @@ func attrs(e *entry, extra ...any) []any {
 }
 
 // dropAll stops and drops every pending entry, logging one Warn for each, and
-// returns how many there were.
+// returns how many there were. Every entry is canceled before any is waited
+// for, so their retry goroutines wind down together rather than one by one.
 func (p *Publisher) dropAll(ctx context.Context) int {
 	p.mu.Lock()
-	all := make([]*stopping, 0, len(p.pending))
+	all := make([]*entry, 0, len(p.pending))
 	for k := range p.pending {
-		all = append(all, p.takeLocked(k)...)
+		all = append(all, p.takeLocked(k))
 	}
 	p.mu.Unlock()
-	slices.SortFunc(all, func(a, b *stopping) int {
-		return cmp.Or(cmp.Compare(a.e.key.attemptID, b.e.key.attemptID), cmp.Compare(a.e.key.kind, b.e.key.kind))
+	slices.SortFunc(all, func(a, b *entry) int {
+		return cmp.Or(cmp.Compare(a.key.attemptID, b.key.attemptID), cmp.Compare(a.key.kind, b.key.kind))
 	})
-	for _, s := range all {
-		s.stop()
-		p.logger.WarnContext(
-			ctx, msgDropped,
-			slog.String("task_id", s.e.msg.TaskID),
-			slog.String("attempt_id", s.e.key.attemptID),
-			slog.String("kind", s.e.key.kind),
-		)
+	for _, e := range all {
+		e.cancel()
+	}
+	for _, e := range all {
+		e.stop()
+		p.logger.WarnContext(ctx, msgDropped, attrs(e)...)
 	}
 	return len(all)
 }

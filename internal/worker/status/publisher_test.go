@@ -169,6 +169,14 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// requireNoPending fails the test if p holds any report not yet acknowledged.
+func requireNoPending(t *testing.T, p *status.Publisher) {
+	t.Helper()
+	if ids := p.PendingAttemptIDs(); len(ids) != 0 {
+		t.Errorf("PendingAttemptIDs = %v, want empty", ids)
+	}
+}
+
 // stable fails the test if f's value changes over d.
 func stable(t *testing.T, what string, d time.Duration, f func() int) {
 	t.Helper()
@@ -278,9 +286,7 @@ func TestPublisher_TerminalAckedFirstTry(t *testing.T) {
 	if calls[0].msgID != "a1:succeeded" || calls[0].msg.Status != "succeeded" {
 		t.Errorf("call = %q %q, want a1:succeeded succeeded", calls[0].msgID, calls[0].msg.Status)
 	}
-	if ids := p.PendingAttemptIDs(); len(ids) != 0 {
-		t.Errorf("PendingAttemptIDs = %v, want empty", ids)
-	}
+	requireNoPending(t, p)
 }
 
 func TestPublisher_RetriesUntilAcked(t *testing.T) {
@@ -430,9 +436,7 @@ func TestPublisher_TerminalSupersedesPendingRunning(t *testing.T) {
 	waitUntil(t, "a running retry", func() bool { return tr.countID("a1:running") >= 3 })
 	succeeded(p, "a1")
 
-	if ids := p.PendingAttemptIDs(); len(ids) != 0 {
-		t.Errorf("PendingAttemptIDs = %v, want empty", ids)
-	}
+	requireNoPending(t, p)
 	stable(t, "running calls", 50*time.Millisecond, func() int { return tr.countID("a1:running") })
 }
 
@@ -449,10 +453,12 @@ func TestPublisher_RunTerminalAndShutdownBothSent(t *testing.T) {
 	}
 }
 
+// A failure no retry can cure drops the report at once, so Flush does not wait
+// out its deadline for it. A closed connection is one: it never reopens.
 func TestPublisher_PermanentErrorDropped(t *testing.T) {
 	for _, perm := range []error{
-		nats.ErrPermissionViolation,
 		fmt.Errorf("wrapped: %w", nats.ErrMaxPayload),
+		fmt.Errorf("status: publish a1:succeeded: %w", nats.ErrConnectionClosed),
 	} {
 		t.Run(perm.Error(), func(t *testing.T) {
 			tr := &stubTransport{fail: func(string, int) error { return perm }}
@@ -460,8 +466,15 @@ func TestPublisher_PermanentErrorDropped(t *testing.T) {
 
 			succeeded(p, "a1")
 
-			if ids := p.PendingAttemptIDs(); len(ids) != 0 {
-				t.Errorf("PendingAttemptIDs = %v, want empty", ids)
+			requireNoPending(t, p)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			start := time.Now()
+			if dropped := p.Flush(ctx); dropped != 0 {
+				t.Errorf("Flush dropped %d, want 0 (the report was already dropped)", dropped)
+			}
+			if took := time.Since(start); took > time.Second {
+				t.Errorf("Flush took %v, want it prompt", took)
 			}
 			stable(t, "calls", 20*time.Millisecond, tr.count)
 			if n := tr.count(); n != 1 {
@@ -471,37 +484,6 @@ func TestPublisher_PermanentErrorDropped(t *testing.T) {
 				t.Errorf("Error records = %d, want 1", n)
 			}
 		})
-	}
-}
-
-// A closed connection never reopens, so a report the transport refuses with
-// nats.ErrConnectionClosed is dropped at once, and Flush does not wait out
-// its deadline for it.
-func TestPublisher_ClosedConnectionDropsAndFlushReturns(t *testing.T) {
-	closed := fmt.Errorf("status: publish a1:succeeded: %w", nats.ErrConnectionClosed)
-	tr := &stubTransport{fail: func(string, int) error { return closed }}
-	p, h := newPub(tr)
-
-	succeeded(p, "a1")
-
-	if ids := p.PendingAttemptIDs(); len(ids) != 0 {
-		t.Errorf("PendingAttemptIDs = %v, want empty", ids)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	start := time.Now()
-	if dropped := p.Flush(ctx); dropped != 0 {
-		t.Errorf("Flush dropped %d, want 0 (the report was already dropped)", dropped)
-	}
-	if took := time.Since(start); took > time.Second {
-		t.Errorf("Flush took %v on a closed connection, want it prompt", took)
-	}
-	stable(t, "calls", 20*time.Millisecond, tr.count)
-	if n := tr.count(); n != 1 {
-		t.Errorf("calls = %d, want 1", n)
-	}
-	if n := h.count(slog.LevelError, "a1", ""); n != 1 {
-		t.Errorf("Error records = %d, want 1", n)
 	}
 }
 
@@ -576,9 +558,7 @@ func TestPublisher_FlushDropsEveryPendingEntry(t *testing.T) {
 	if got := h.count(slog.LevelWarn, "", status.MsgDropped); got != n {
 		t.Errorf("drop Warn records = %d, want %d", got, n)
 	}
-	if ids := p.PendingAttemptIDs(); len(ids) != 0 {
-		t.Errorf("PendingAttemptIDs = %v, want empty", ids)
-	}
+	requireNoPending(t, p)
 	stable(t, "calls after Flush", 30*time.Millisecond, tr.count)
 }
 
@@ -599,6 +579,57 @@ func TestPublisher_PendingAttemptIDsSortedAndDeduplicated(t *testing.T) {
 	defer cancel()
 	if dropped := p.Flush(ctx); dropped != 4 {
 		t.Errorf("Flush dropped %d, want 4", dropped)
+	}
+}
+
+func TestPublisher_WithPending(t *testing.T) {
+	tr := &stubTransport{fail: func(msgID string, _ int) error {
+		if msgID == "a2:succeeded" {
+			return nil
+		}
+		return errTimeout
+	}}
+	p, _ := newPub(tr)
+	t.Cleanup(func() { p.Abandon() })
+
+	succeeded(p, "a3")
+	succeeded(p, "a1")
+	succeeded(p, "a2") // acked at once: not pending
+
+	tests := []struct {
+		name string
+		held []string
+		want []string
+	}{
+		{"nothing held", nil, []string{"a1", "a3"}},
+		{"held and pending merged and sorted", []string{"b", "a0"}, []string{"a0", "a1", "a3", "b"}},
+		{"overlap listed once", []string{"a3", "a3", "a1"}, []string{"a1", "a3"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := p.WithPending(slices.Clone(tc.held)); !slices.Equal(got, tc.want) {
+				t.Errorf("WithPending(%v) = %v, want %v", tc.held, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPublisher_AbandonDropsWithoutWaiting(t *testing.T) {
+	tr := &stubTransport{fail: func(string, int) error { return errTimeout }}
+	p, h := newPub(tr)
+
+	succeeded(p, "a1")
+	p.Running(assign("a2"), "", time.Now())
+	if dropped := p.Abandon(); dropped != 2 {
+		t.Errorf("Abandon dropped %d, want 2", dropped)
+	}
+	if got := h.count(slog.LevelWarn, "", status.MsgDropped); got != 2 {
+		t.Errorf("drop Warn records = %d, want 2", got)
+	}
+	requireNoPending(t, p)
+	stable(t, "calls after Abandon", 30*time.Millisecond, tr.count)
+	if dropped := p.Abandon(); dropped != 0 {
+		t.Errorf("second Abandon dropped %d, want 0", dropped)
 	}
 }
 

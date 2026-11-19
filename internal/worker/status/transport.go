@@ -26,6 +26,11 @@ import (
 // stream stores it; the publisher's later tries, built with the right age,
 // are then dropped as duplicates of its message ID, so the server would count
 // the whole outage as run time.
+//
+// The refusal narrows that window but does not close it: the status check and
+// the publish are not atomic, so a try written just before the client notices
+// the connection has dropped is still buffered and sent, with its age, once
+// the connection comes back.
 type jetStreamTransport struct {
 	nc *nats.Conn
 	js jetstream.JetStream
