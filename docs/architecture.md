@@ -481,8 +481,12 @@ background, waiting 250 ms and doubling to 5 s, with no limit on attempts, so a
 status in flight when the server or broker stops is stored after it returns. A
 terminal drops a first `running` that is still pending. A terminal also carries
 `ended_ago_ms`, the worker's monotonic age of the task's end, which is rebuilt
-on every try. Progress snapshots stay plain core publishes with no ack, because
-only the latest matters.
+on every try. A try is not made while the worker's connection is reconnecting:
+the client would hold it in its reconnect buffer and send it on reconnect with
+the age it was built with, and the stream would then drop the correctly aged
+retries as duplicates of its message ID, counting the outage as run time
+(`internal/worker/status/transport.go`). Progress snapshots stay plain core
+publishes with no ack, because only the latest matters.
 
 A worker's heartbeat lists the attempts its executor holds plus the attempts
 the publisher still has a status pending for, so the server's reconciliation
