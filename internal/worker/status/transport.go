@@ -19,7 +19,15 @@ import (
 // to task.status.<workerID>.<job>, and the ack comes back on the connection's
 // reply inbox, which carries the worker's own inbox prefix. It never calls
 // the JetStream API ($JS.API.>): the expected stream travels as a header.
+//
+// It refuses a try while the connection is reconnecting rather than let the
+// client hold it in its reconnect buffer. A buffered try is sent when the
+// connection comes back, carrying the ended_ago_ms it was built with, and the
+// stream stores it; the publisher's later tries, built with the right age,
+// are then dropped as duplicates of its message ID, so the server would count
+// the whole outage as run time.
 type jetStreamTransport struct {
+	nc *nats.Conn
 	js jetstream.JetStream
 }
 
@@ -30,12 +38,17 @@ func NewJetStreamTransport(nc *nats.Conn) (Transport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("status: jetstream context: %w", err)
 	}
-	return &jetStreamTransport{js: js}, nil
+	return &jetStreamTransport{nc: nc, js: js}, nil
 }
 
 // PublishAcked publishes data to subj with msgID as its Nats-Msg-Id and waits
-// for the stream's ack, or for ctx to end.
+// for the stream's ack, or for ctx to end. While the connection is
+// reconnecting it publishes nothing and returns [nats.ErrConnectionReconnecting],
+// which the publisher retries.
 func (t *jetStreamTransport) PublishAcked(ctx context.Context, subj string, data []byte, msgID string) error {
+	if st := t.nc.Status(); st == nats.RECONNECTING || st == nats.CONNECTING {
+		return fmt.Errorf("status: publish %s: %w", msgID, nats.ErrConnectionReconnecting)
+	}
 	_, err := t.js.PublishMsg(
 		ctx, &nats.Msg{Subject: subj, Data: data},
 		jetstream.WithExpectStream(bus.StreamTask),
