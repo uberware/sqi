@@ -18,16 +18,26 @@ func TestTerminalEndedAt(t *testing.T) {
 		stored, received time.Time
 		agoMs            int64
 		want             time.Time
+		// startedAt is the lease; zero means start.
+		startedAt time.Time
 	}{
-		{"no-age", s0, s0.Add(10 * time.Millisecond), 0, s0},
-		{"retried-30s", s0, s0.Add(time.Second), 30_000, s0.Add(-30 * time.Second)},
-		{"age-before-lease-clamped", s0, s0, 10 * 60_000, start},
-		{"ahead-clamped-to-receipt", s0.Add(time.Minute), s0, 0, s0},
-		{"negative-age-is-zero", s0, s0, -5_000, s0},
+		{name: "no-age", stored: s0, received: s0.Add(10 * time.Millisecond), want: s0},
+		{name: "retried-30s", stored: s0, received: s0.Add(time.Second), agoMs: 30_000, want: s0.Add(-30 * time.Second)},
+		{name: "age-before-lease-clamped", stored: s0, received: s0, agoMs: 10 * 60_000, want: start},
+		{name: "ahead-clamped-to-receipt", stored: s0.Add(time.Minute), received: s0, want: s0},
+		{name: "negative-age-is-zero", stored: s0, received: s0, agoMs: -5_000, want: s0},
+		// The lease was stamped by another server whose clock runs ahead of
+		// this one's: the run is dated zero-length rather than ending before
+		// it started.
+		{name: "lease-after-receipt-clamped-to-lease", stored: s0, received: s0, startedAt: s0.Add(time.Second), want: s0.Add(time.Second)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := terminalEndedAt(tt.stored, tt.received, start, tt.agoMs); !got.Equal(tt.want) {
+			started := tt.startedAt
+			if started.IsZero() {
+				started = start
+			}
+			if got := terminalEndedAt(tt.stored, tt.received, started, tt.agoMs); !got.Equal(tt.want) {
 				t.Errorf("terminalEndedAt = %v, want %v", got, tt.want)
 			}
 		})

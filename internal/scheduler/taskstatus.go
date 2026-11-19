@@ -245,16 +245,19 @@ func (s *Scheduler) processTaskStatus(
 // stored is the broker's stamp of the report and received is when this server
 // took it up. The event happened endedAgoMs before the worker built the send,
 // so the end is stored minus that age (a negative age counts as zero). It is
-// never earlier than startedAt, the lease, and never later than received: a
-// stamp or age the worker's clock or a replay pushed outside that window is
-// clamped to its edge.
+// clamped to no later than received, and then to no earlier than startedAt,
+// the lease: a stamp or age the worker's clock or a replay pushed outside that
+// window is moved to its edge. The lease clamp comes last so that ended_at is
+// never before started_at, even when another server's clock, ahead of this
+// one's, put the lease after received (an HA failover); the run is then dated
+// zero-length.
 func terminalEndedAt(stored, received, startedAt time.Time, endedAgoMs int64) time.Time {
 	at := stored.Add(-time.Duration(max(endedAgoMs, 0)) * time.Millisecond)
-	if at.Before(startedAt) {
-		at = startedAt
-	}
 	if at.After(received) {
 		at = received
+	}
+	if at.Before(startedAt) {
+		at = startedAt
 	}
 	return at
 }
