@@ -13,9 +13,7 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"slices"
 	"sync"
 	"testing"
@@ -23,7 +21,6 @@ import (
 
 	nats "github.com/nats-io/nats.go"
 
-	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/server"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/status"
@@ -58,15 +55,6 @@ steps:
 `, n)
 }
 
-// statusAckAttempt is the subset of one item of GET /api/v1/tasks/{id}/attempts
-// these tests read.
-type statusAckAttempt struct {
-	AttemptNumber int        `json:"attempt_number"`
-	Status        string     `json:"status"`
-	StartedAt     time.Time  `json:"started_at"`
-	EndedAt       *time.Time `json:"ended_at"`
-}
-
 // statusAckWorker is a mock worker that reports through a [status.Publisher]
 // and heartbeats the attempts it holds: those it has leased and not yet
 // reported terminal, plus those with a report not yet stored.
@@ -89,7 +77,7 @@ func newStatusAckWorker(t *testing.T, ts *testServer, farmID, queueID string, cp
 	w := &statusAckWorker{mockWorker: mw, pub: mw.publisher(), running: map[string]bool{}}
 	w.registerCPUs(cpus)
 	pollWorkerOnline(t, ts, w.id, 10*time.Second)
-	w.heartbeat(time.Second)
+	w.startHeartbeatHolding(time.Second, w.held)
 	return w
 }
 
@@ -101,42 +89,7 @@ func (w *statusAckWorker) held() []string {
 		ids = append(ids, id)
 	}
 	w.mu.Unlock()
-	ids = append(ids, w.pub.PendingAttemptIDs()...)
-	slices.Sort(ids)
-	return slices.Compact(ids)
-}
-
-// heartbeat publishes a heartbeat listing held() every interval until the
-// test ends. Unlike [mockWorker.startHeartbeatHolding] it keeps going after a
-// failed publish, so heartbeats resume once a restarted server is back.
-func (w *statusAckWorker) heartbeat(interval time.Duration) {
-	ctx, cancel := context.WithCancel(context.Background())
-	w.t.Cleanup(cancel)
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-			data, err := json.Marshal(protocol.HeartbeatMsg{
-				Version:          protocol.ProtocolVersion,
-				Type:             protocol.TypeHeartbeat,
-				WorkerID:         w.id,
-				At:               time.Now().UTC(),
-				AttemptsReported: true,
-				ActiveAttemptIDs: w.held(),
-			})
-			if err != nil {
-				return
-			}
-			pubCtx, pubCancel := context.WithTimeout(ctx, 2*time.Second)
-			_, _ = w.js.Publish(pubCtx, bus.WorkerHeartbeatSubject(w.id), data) //nolint:errcheck // a heartbeat lost while the server is down is replaced by the next
-			pubCancel()
-		}
-	}()
+	return w.pub.WithPending(ids)
 }
 
 // lease pulls assignments until it holds n, and records them as running.
@@ -195,32 +148,6 @@ func (w *statusAckWorker) requirePending(attemptID string) {
 	}
 }
 
-// getStatusAckAttempts fetches a task's attempts.
-func getStatusAckAttempts(t *testing.T, ts *testServer, taskID string) []statusAckAttempt {
-	t.Helper()
-	var resp struct {
-		Items []statusAckAttempt `json:"items"`
-	}
-	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/tasks/"+taskID+"/attempts"), nil, "", http.StatusOK, &resp)
-	return resp.Items
-}
-
-// waitTaskStatus polls a task until it reaches want, failing after timeout.
-func waitTaskStatus(t *testing.T, ts *testServer, taskID, want string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		got := getTaskDetail(t, ts, taskID).Status
-		if got == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("task %s after %s: status %q, want %q", taskID, timeout, got, want)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
 // endedJitter is how far past the instant a terminal was sent its stored
 // ended_at may fall: the server places the end at the broker's stamp minus
 // the age the worker measured, and the two clocks are read a little apart.
@@ -236,7 +163,7 @@ func requireOneSucceededAttempt(t *testing.T, ts *testServer, taskID string, end
 	if got := getTaskDetail(t, ts, taskID).Status; got != "succeeded" {
 		t.Errorf("task %s: status %q, want succeeded", taskID, got)
 	}
-	attempts := getStatusAckAttempts(t, ts, taskID)
+	attempts := getTaskAttempts(t, ts, taskID).Items
 	now := time.Now()
 	if len(attempts) != 1 {
 		t.Errorf("task %s: %d attempts %+v, want exactly 1 (the task was run again)", taskID, len(attempts), attempts)
@@ -274,7 +201,7 @@ func TestStatusAck_TerminalSurvivesServerRestart(t *testing.T) {
 	a := w.lease(1)[0]
 	w.reportRunning(a)
 	w.flush(10 * time.Second)
-	waitTaskStatus(t, ts, a.TaskID, "running", 10*time.Second)
+	pollTaskStatus(t, ts, a.TaskID, []string{"running"}, 10*time.Second)
 
 	ts.Stop(t)
 	w.reportSucceeded(a) // the task ends now, with the server down
@@ -305,9 +232,9 @@ func TestStatusAck_RunningSurvivesServerRestart(t *testing.T) {
 	w.requirePending(a.AttemptID)
 
 	ts = restartServer(t, ts)
-	waitTaskStatus(t, ts, a.TaskID, "running", 30*time.Second)
+	pollTaskStatus(t, ts, a.TaskID, []string{"running"}, 30*time.Second)
 	w.flush(10 * time.Second)
-	attempts := getStatusAckAttempts(t, ts, a.TaskID)
+	attempts := getTaskAttempts(t, ts, a.TaskID).Items
 	if len(attempts) != 1 || attempts[0].Status != "running" {
 		t.Fatalf("task %s attempts: %+v, want exactly one, running", a.TaskID, attempts)
 	}
@@ -331,7 +258,7 @@ func TestStatusAck_TerminalsDuringServerStop(t *testing.T) {
 	}
 	w.flush(10 * time.Second)
 	for _, a := range assigns {
-		waitTaskStatus(t, ts, a.TaskID, "running", 10*time.Second)
+		pollTaskStatus(t, ts, a.TaskID, []string{"running"}, 10*time.Second)
 	}
 
 	// Each terminal starts 10 ms after the one before it, on its own goroutine,
@@ -394,30 +321,13 @@ func TestStatusAck_DeregisterRightAfterTerminal(t *testing.T) {
 	w.flush(10 * time.Second)
 	w.deregister()
 
-	waitWorkerStatus(t, ts, w.id, "offline", 30*time.Second)
+	pollWorkerOffline(t, ts, w.id, 30*time.Second)
 	if final := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, 30*time.Second); final != "completed" {
 		t.Fatalf("job final status: got %q, want completed", final)
 	}
 	requireOneSucceededAttempt(t, ts, a.TaskID, time.Time{})
 	if ts.Logs.has("scheduler: deregister applied before the task-status consumer caught up", nil) {
 		t.Error("the deregister was applied before the task-status consumer caught up; want it deferred until then")
-	}
-}
-
-// waitWorkerStatus polls a worker until it reaches want, failing after timeout.
-func waitWorkerStatus(t *testing.T, ts *testServer, workerID, want string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		var got workerResp
-		mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/workers/"+workerID), nil, "", http.StatusOK, &got)
-		if got.Status == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("worker %s after %s: status %q, want %q", workerID, timeout, got.Status, want)
-		}
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -463,7 +373,7 @@ func TestStatusAck_RunningRetriedAcrossStopIsNotReaped(t *testing.T) {
 	ts = restartServer(t, ts)
 	restartAt := time.Now()
 
-	waitTaskStatus(t, ts, task.TaskID, "running", reapGrace)
+	pollTaskStatus(t, ts, task.TaskID, []string{"running"}, reapGrace)
 	w.flush(10 * time.Second)
 
 	// The reaper may act from reapGrace after the restart. Watch the task
@@ -477,7 +387,9 @@ func TestStatusAck_RunningRetriedAcrossStopIsNotReaped(t *testing.T) {
 		}
 		if !controlReaped && getTaskDetail(t, ts, control.TaskID).Status == "ready" {
 			controlReaped = true
-			watchUntil = latest(watchUntil, time.Now().Add(reapTimeout+2*reapInterval))
+			if later := time.Now().Add(reapTimeout + 2*reapInterval); later.After(watchUntil) {
+				watchUntil = later
+			}
 		}
 		if controlReaped && time.Now().After(watchUntil) {
 			break
@@ -488,16 +400,8 @@ func TestStatusAck_RunningRetriedAcrossStopIsNotReaped(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	attempts := getStatusAckAttempts(t, ts, task.TaskID)
+	attempts := getTaskAttempts(t, ts, task.TaskID).Items
 	if len(attempts) != 1 || attempts[0].Status != "running" {
 		t.Fatalf("task %s attempts: %+v, want exactly one, running", task.TaskID, attempts)
 	}
-}
-
-// latest returns the later of a and b.
-func latest(a, b time.Time) time.Time {
-	if b.After(a) {
-		return b
-	}
-	return a
 }

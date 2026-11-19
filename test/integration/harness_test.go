@@ -818,12 +818,10 @@ func (w *mockWorker) startHeartbeatHolding(interval time.Duration, attempts func
 					return
 				}
 				pubCtx, pubCancel := context.WithTimeout(ctx, 2*time.Second)
-				// Ignore publish errors in the heartbeat loop — the connection
-				// may be closing during test cleanup.
-				if _, pubErr := w.js.Publish(pubCtx, bus.WorkerHeartbeatSubject(w.id), data); pubErr != nil {
-					pubCancel()
-					return
-				}
+				// Ignore publish errors in the heartbeat loop: the connection
+				// may be closing during test cleanup, or the server may be
+				// restarting, and the next beat replaces a lost one.
+				_, _ = w.js.Publish(pubCtx, bus.WorkerHeartbeatSubject(w.id), data) //nolint:errcheck // a lost heartbeat is replaced by the next
 				pubCancel()
 			}
 		}

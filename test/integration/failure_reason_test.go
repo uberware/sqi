@@ -70,9 +70,11 @@ func getJobFailureDetail(t *testing.T, ts *testServer, jobID string) jobFailureD
 // taskAttemptResp is the subset of one item in GET /api/v1/tasks/{id}/attempts'
 // response used by tests (mirrors internal/api/tasks.go's taskAttemptResponse).
 type taskAttemptResp struct {
-	AttemptNumber int    `json:"attempt_number"`
-	Status        string `json:"status"`
-	Message       string `json:"message,omitempty"`
+	AttemptNumber int        `json:"attempt_number"`
+	Status        string     `json:"status"`
+	Message       string     `json:"message,omitempty"`
+	StartedAt     time.Time  `json:"started_at"`
+	EndedAt       *time.Time `json:"ended_at"`
 }
 
 // taskAttemptsResp mirrors internal/api/tasks.go's taskAttemptsResponse.
