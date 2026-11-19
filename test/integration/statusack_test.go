@@ -262,7 +262,9 @@ func requireOneSucceededAttempt(t *testing.T, ts *testServer, taskID string, end
 
 // TestStatusAck_TerminalSurvivesServerRestart sends a terminal status while
 // the server is down. Its first try fails, the publisher retries it, and once
-// the server is back the task succeeds on its one attempt.
+// the server is back the task succeeds on its one attempt. The server stays
+// down for more than endedJitter after the terminal is sent, so an ended_at
+// that counted the retry delay as run time would fall past the bound.
 func TestStatusAck_TerminalSurvivesServerRestart(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -276,14 +278,15 @@ func TestStatusAck_TerminalSurvivesServerRestart(t *testing.T) {
 
 	ts.Stop(t)
 	w.reportSucceeded(a) // the task ends now, with the server down
+	sentBy := time.Now()
 	w.requirePending(a.AttemptID)
 
-	restartAt := time.Now()
+	time.Sleep(2 * time.Second)
 	ts = restartServer(t, ts)
 	if final := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, 60*time.Second); final != "completed" {
 		t.Fatalf("job final status: got %q, want completed", final)
 	}
-	requireOneSucceededAttempt(t, ts, a.TaskID, restartAt)
+	requireOneSucceededAttempt(t, ts, a.TaskID, sentBy)
 }
 
 // TestStatusAck_RunningSurvivesServerRestart sends an attempt's first
