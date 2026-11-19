@@ -485,8 +485,12 @@ on every try. A try is not made while the worker's connection is reconnecting:
 the client would hold it in its reconnect buffer and send it on reconnect with
 the age it was built with, and the stream would then drop the correctly aged
 retries as duplicates of its message ID, counting the outage as run time
-(`internal/worker/status/transport.go`). Progress snapshots stay plain core
-publishes with no ack, because only the latest matters.
+(`internal/worker/status/transport.go`). This narrows that window but does not
+close it: the status check and the publish are not atomic, so a try written
+just before the client notices the connection has dropped can still be
+buffered and sent with its old age once the connection comes back. Progress
+snapshots stay plain core publishes with no ack, because only the latest
+matters.
 
 A worker's heartbeat lists the attempts its executor holds plus the attempts
 the publisher still has a status pending for, so the server's reconciliation
