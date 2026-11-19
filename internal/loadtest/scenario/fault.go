@@ -131,7 +131,7 @@ type KnownViolation struct {
 	// than this fails. Required on a rework entry, an error on any other.
 	MaxAttempts *int   `yaml:"max_attempts,omitempty"`
 	Reason      string `yaml:"reason"`
-	Tracker     string `yaml:"tracker"` // e.g. "H13f1"
+	Tracker     string `yaml:"tracker"` // e.g. "H99x"
 }
 
 // ReworkCheck names the rework budget in a KnownViolation.

@@ -444,8 +444,8 @@ expect:
     - check: rework
       kind: may
       max_attempts: 10
-      reason: a terminal status still in flight when the embedded broker shuts down is lost and the task re-runs
-      tracker: H13f1
+      reason: a task finished during the fault is run again
+      tracker: H99x
 ```
 
 | Field | Meaning |
@@ -455,12 +455,12 @@ expect:
 | `max_attempts` | On a `rework` entry, the most rework it excuses. Required there, and an error on any other check. |
 | `os` | The operating systems (`linux`, `darwin`, `windows`) the entry applies on. Empty means all. On any other system the entry does nothing. |
 | `reason` | What the defect does. Required. |
-| `tracker` | The tracker item, such as `H13f1`. Required. |
+| `tracker` | The tracker item, such as `H99x`. Required. |
 
 How an entry is applied:
 
 - A failed result that an entry names becomes OK. The summary shows it as
-  `known (H13f1)` and keeps its evidence. Several entries for one check join
+  `known (H99x)` and keeps its evidence. Several entries for one check join
   their trackers.
 - A `rework` entry excuses rework only up to its `max_attempts`. Rework above
   the scenario's `max_rework_attempts` and at or under the ceiling is the
@@ -579,7 +579,7 @@ and up to 20 examples.
 
 **Invariants** lists every result as `PASS`, `FAIL`, `UNMEASURED` for a check
 that could not judge (no finding, and no known violation excuses it), or
-`known (H13f1)` for a failure a known violation excused, with its evidence
+`known (H99x)` for a failure a known violation excused, with its evidence
 beneath. A line
 `known:<check>` that fails is a `must` entry whose check held: the defect it
 records may be fixed, and the entry should be removed.
