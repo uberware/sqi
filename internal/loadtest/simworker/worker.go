@@ -116,6 +116,10 @@ type Worker struct {
 	// registerFault, when set, runs before each registration publish and
 	// fails it with its error. A test hook.
 	registerFault atomic.Pointer[func() error]
+
+	// statusWrap, when set, wraps the transport each process publishes its
+	// status reports through. A test hook.
+	statusWrap atomic.Pointer[func(status.Transport) status.Transport]
 }
 
 // NewWorker returns a stopped worker. A nil logger discards.
@@ -316,6 +320,9 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 		nc.Close()
 		return nil, err
 	}
+	if wrap := w.statusWrap.Load(); wrap != nil {
+		tr = (*wrap)(tr)
+	}
 	inc := &incarnation{w: w, instanceID: reg.InstanceID(), nc: nc, reg: reg, ended: make(chan struct{})}
 	nc.SetReconnectHandler(inc.onReconnect)
 	if err := inc.Register(ctx); err != nil {
@@ -477,6 +484,10 @@ func (inc *incarnation) onReconnect(*nats.Conn) {
 	}
 }
 
+// statusFlushTimeout bounds how long a graceful stop waits for unacknowledged
+// status reports. It matches sqi-worker's.
+const statusFlushTimeout = 10 * time.Second
+
 // stop is the graceful shutdown behind Worker.Stop.
 func (inc *incarnation) stop(ctx context.Context) {
 	close(inc.ended)
@@ -487,11 +498,17 @@ func (inc *incarnation) stop(ctx context.Context) {
 		inc.disp.wait(context.Background())
 	}
 	inc.disp.shutdown(endShutdown) // refuses any late dispatch
+	// Wait for the reports still unacknowledged while the heartbeat runs and
+	// the connection is open, as sqi-worker does: a deregistration sent first
+	// would let the server reclaim a task that has finished.
+	flushCtx, stopFlushWait := context.WithTimeout(context.Background(), statusFlushTimeout)
+	inc.disp.FlushStatuses(flushCtx)
+	stopFlushWait()
 	inc.stopHB()
 	<-inc.hbDone
 	inc.ctl.stop()
 	inc.reg.Deregister("graceful shutdown", "") // best effort, logged, as in sqi-worker
-	inc.nc.Close()                              // flushes the deregistration and any terminal statuses
+	inc.nc.Close()                              // flushes the deregistration
 }
 
 // crash is the abrupt end behind Crash and Restart: loops stop, attempts are
@@ -505,6 +522,9 @@ func (inc *incarnation) stop(ctx context.Context) {
 // crash began, and the log lines the log publisher still held, which FlushLogs
 // drains while stopping its per-attempt goroutine. The ledger therefore
 // records no status the server did not get, and misses none it did.
+//
+// A report the broker has not yet acknowledged is dropped, not awaited: a
+// crashed process does not finish sending.
 func (inc *incarnation) crash() {
 	close(inc.ended)
 	inc.stopHB() // also stops the lease loop and a re-registration under way
@@ -513,5 +533,11 @@ func (inc *incarnation) crash() {
 	inc.ctl.stop()
 	inc.disp.shutdown(endCrashed)
 	inc.disp.wait(context.Background())
+	// A crash does not wait for reports the broker has not acknowledged: it
+	// drops them now, which also stops their retry goroutines before the
+	// connection they would retry on is closed.
+	expired, expire := context.WithCancel(context.Background())
+	expire()
+	inc.disp.FlushStatuses(expired)
 	inc.nc.Close()
 }

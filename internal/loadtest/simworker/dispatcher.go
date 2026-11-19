@@ -467,6 +467,11 @@ func (d *Dispatcher) shutdown(reason endReason) {
 	}
 }
 
+// FlushStatuses waits until the dispatcher's status publisher has no report
+// pending or ctx ends, then drops what is left and returns how many it
+// dropped. A canceled ctx drops everything at once.
+func (d *Dispatcher) FlushStatuses(ctx context.Context) int { return d.st.Flush(ctx) }
+
 // wait blocks until every task goroutine has returned or ctx is done, and
 // reports whether they all returned. Call it only once no Dispatch can start.
 func (d *Dispatcher) wait(ctx context.Context) bool {
