@@ -24,10 +24,13 @@
 // that does not answer costs the caller at most one AckTimeout. A report that
 // is not acknowledged stays pending and is retried in the background with
 // exponential backoff from [Config.RetryBase] to [Config.RetryMax], with no
-// limit on tries, until it is stored or [Publisher.Flush] drops it. A
-// permissions violation, a message over the broker's maximum payload or a
-// marshal failure cannot succeed on a retry: it is logged at Error and
-// dropped. A terminal report drops a still-pending "running" for the same
+// limit on tries, until it is stored or [Publisher.Flush] drops it. Only a
+// failure no retry can cure is logged at Error and dropped at once: a marshal
+// failure, a message over the broker's maximum payload, or a closed
+// connection, which never reopens. A publish the broker denies is not among
+// them: the broker reports the violation asynchronously, so through the
+// JetStream transport it surfaces as an ack timeout and is retried like any
+// other. A terminal report drops a still-pending "running" for the same
 // attempt, since a terminal status is legal on an assigned task and a later
 // "running" would be refused as stale.
 //
@@ -441,9 +444,14 @@ func (p *Publisher) encode(e *entry) ([]byte, error) {
 }
 
 // permanent reports whether err cannot be cured by sending the same report
-// again.
+// again. A closed connection never reopens, so retrying on it would only keep
+// the report pending until Flush gave up. A permissions violation counts only
+// when a transport returns it directly; the JetStream transport never does
+// (see the package doc).
 func permanent(err error) bool {
-	return errors.Is(err, nats.ErrPermissionViolation) || errors.Is(err, nats.ErrMaxPayload)
+	return errors.Is(err, nats.ErrPermissionViolation) ||
+		errors.Is(err, nats.ErrMaxPayload) ||
+		errors.Is(err, nats.ErrConnectionClosed)
 }
 
 // attrs returns the attributes naming e, followed by extra.

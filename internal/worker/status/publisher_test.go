@@ -474,6 +474,37 @@ func TestPublisher_PermanentErrorDropped(t *testing.T) {
 	}
 }
 
+// A closed connection never reopens, so a report the transport refuses with
+// nats.ErrConnectionClosed is dropped at once, and Flush does not wait out
+// its deadline for it.
+func TestPublisher_ClosedConnectionDropsAndFlushReturns(t *testing.T) {
+	closed := fmt.Errorf("status: publish a1:succeeded: %w", nats.ErrConnectionClosed)
+	tr := &stubTransport{fail: func(string, int) error { return closed }}
+	p, h := newPub(tr)
+
+	succeeded(p, "a1")
+
+	if ids := p.PendingAttemptIDs(); len(ids) != 0 {
+		t.Errorf("PendingAttemptIDs = %v, want empty", ids)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	if dropped := p.Flush(ctx); dropped != 0 {
+		t.Errorf("Flush dropped %d, want 0 (the report was already dropped)", dropped)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("Flush took %v on a closed connection, want it prompt", took)
+	}
+	stable(t, "calls", 20*time.Millisecond, tr.count)
+	if n := tr.count(); n != 1 {
+		t.Errorf("calls = %d, want 1", n)
+	}
+	if n := h.count(slog.LevelError, "a1", ""); n != 1 {
+		t.Errorf("Error records = %d, want 1", n)
+	}
+}
+
 func TestPublisher_FailureLoggingRateLimited(t *testing.T) {
 	tr := &stubTransport{fail: func(_ string, try int) error {
 		if try <= 20 {
