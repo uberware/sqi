@@ -7,6 +7,7 @@ package scheduler
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -45,13 +46,14 @@ func newDeregisterWaitFixture(t *testing.T) deregisterWaitFixture {
 	return deregisterWaitFixture{membershipFixture: f, clock: clock, attempt: attempts["t1"], stamp: stamp}
 }
 
-// deregisterMsg is w1's deregister for instance, stamped by the broker at
-// the fixture's stamp.
+// deregisterMsg is the first delivery of w1's deregister for instance,
+// stamped by the broker at the fixture's stamp.
 func (f deregisterWaitFixture) deregisterMsg(t *testing.T, instance string) *fakeJSMsg {
 	t.Helper()
 	return &fakeJSMsg{
-		subject: bus.WorkerDeregisterSubject("w1"),
-		stamp:   f.stamp,
+		subject:   bus.WorkerDeregisterSubject("w1"),
+		stamp:     f.stamp,
+		delivered: 1,
 		data: workerMsgJSON(t, protocol.DeregisterMsg{
 			Version: protocol.ProtocolVersion, Type: protocol.TypeDeregister,
 			WorkerID: "w1", InstanceID: instance,
@@ -109,15 +111,18 @@ func (f deregisterWaitFixture) requireApplied(t *testing.T, msg *fakeJSMsg) {
 	}
 }
 
-// redeliver is msg delivered again, with its broker stamp unchanged.
+// redeliver is msg's next delivery, with its broker stamp unchanged.
 func redeliver(msg *fakeJSMsg) *fakeJSMsg {
-	return &fakeJSMsg{subject: msg.subject, data: msg.data, stamp: msg.stamp, metaErr: msg.metaErr}
+	return &fakeJSMsg{
+		subject: msg.subject, data: msg.data, stamp: msg.stamp, metaErr: msg.metaErr,
+		delivered: msg.delivered + 1,
+	}
 }
 
 func TestDeregisterWait_FitsWorkerConsumerDeliveries(t *testing.T) {
-	if n := int(deregisterApplyWait / deregisterRecheckDelay); n >= bus.WorkerConsumerMaxDeliver-1 {
-		t.Fatalf("a deferred deregister can be redelivered %d times, want fewer than %d (MaxDeliver %d less the final delivery)",
-			n, bus.WorkerConsumerMaxDeliver-1, bus.WorkerConsumerMaxDeliver)
+	if deregisterMaxRechecks >= bus.WorkerConsumerMaxDeliver-1 {
+		t.Fatalf("a deferred deregister is applied on delivery %d, want before %d (MaxDeliver %d less one)",
+			deregisterMaxRechecks, bus.WorkerConsumerMaxDeliver-1, bus.WorkerConsumerMaxDeliver)
 	}
 }
 
@@ -203,20 +208,44 @@ func TestDeregister_BeforeFirstMarkerDefers(t *testing.T) {
 	f.requireDeferred(t, msg)
 }
 
-func TestDeregister_ProceedsAfterApplyWait(t *testing.T) {
+// A deregister the task-status consumer never catches up to is deferred
+// through the delivery before deregisterMaxRechecks and applied, with one
+// warning, on that delivery.
+func TestDeregister_AppliesAtMaxRechecks(t *testing.T) {
 	f := newDeregisterWaitFixture(t)
 	f.s.ingestTask.marker(f.stamp.Add(-time.Second))
-	f.clock.t = f.stamp.Add(deregisterApplyWait)
 
 	msg := f.deregisterMsg(t, "inst-1")
+	msg.delivered = uint64(deregisterMaxRechecks - 1)
 	f.s.handleWorkerMessage(msg)
-	f.requireApplied(t, msg)
+	f.requireDeferred(t, msg)
+	if n := warnCount(f.logs.String(), deregisterWarn); n != 0 {
+		t.Fatalf("warnings %q before the last re-check = %d, want 0:\n%s", deregisterWarn, n, f.logs.String())
+	}
+
+	last := redeliver(msg)
+	f.s.handleWorkerMessage(last)
+	f.requireApplied(t, last)
 	if got := mustTaskOf(t, f.st, "t1").Status; got != store.TaskStatusReady {
 		t.Errorf("t1 = %s, want ready (reclaimed)", got)
 	}
-	if n := warnCount(f.logs.String(), deregisterWarn, "worker_id=w1"); n != 1 {
-		t.Errorf("warnings %q naming w1 = %d, want 1:\n%s", deregisterWarn, n, f.logs.String())
+	want := fmt.Sprintf("deliveries=%d", deregisterMaxRechecks)
+	if n := warnCount(f.logs.String(), deregisterWarn, "worker_id=w1", want); n != 1 {
+		t.Errorf("warnings %q naming w1 and %s = %d, want 1:\n%s", deregisterWarn, want, n, f.logs.String())
 	}
+}
+
+// A deregister first delivered long after the broker stored it (replayed
+// after a server restart or failover, or read by a server whose clock is
+// ahead of the broker's) still waits for the task-status consumer.
+func TestDeregister_OldStampStillDefers(t *testing.T) {
+	f := newDeregisterWaitFixture(t)
+	f.s.ingestTask.marker(f.stamp.Add(-time.Second))
+	f.clock.t = f.stamp.Add(10 * deregisterApplyWait)
+
+	msg := f.deregisterMsg(t, "inst-1")
+	f.s.handleWorkerMessage(msg)
+	f.requireDeferred(t, msg)
 }
 
 func TestDeregister_NoBrokerStampAppliesAtOnce(t *testing.T) {

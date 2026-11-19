@@ -15,12 +15,21 @@ const (
 	// it is delivered again and re-checked.
 	deregisterRecheckDelay = 2 * time.Second
 
-	// deregisterApplyWait bounds how long after its broker stamp a deregister
-	// waits for the task-status consumer. Past it the deregister is applied
-	// anyway, so a stalled task consumer cannot keep a departed worker's
-	// attempts open. It must leave the deferral inside the worker consumer's
-	// MaxDeliver budget (TestDeregisterWait_FitsWorkerConsumerDeliveries).
+	// deregisterApplyWait is the nominal time a deregister waits for the
+	// task-status consumer before it is applied anyway, so a stalled task
+	// consumer cannot keep a departed worker's attempts open.
 	deregisterApplyWait = 15 * time.Second
+
+	// deregisterMaxRechecks is the delivery at which a deregister is applied
+	// whether or not the task-status consumer has caught up: the deliveries
+	// before it are nak'd [deregisterRecheckDelay] apart, which spans
+	// [deregisterApplyWait]. The bound counts deliveries rather than comparing
+	// the server's clock with the broker stamp, so neither clock skew nor a
+	// deregister first delivered long after it was stored (a server restart
+	// or failover) can end the wait early. It must stay inside the worker
+	// consumer's MaxDeliver budget
+	// (TestDeregisterWait_FitsWorkerConsumerDeliveries).
+	deregisterMaxRechecks = int(deregisterApplyWait/deregisterRecheckDelay) + 1
 )
 
 // deferDeregister reports whether msg, worker workerID's deregister, was
@@ -38,25 +47,26 @@ const (
 // other workers' messages; the worker stays online meanwhile, which is safe
 // because a deregistering worker has already stopped asking for work.
 //
-// The deferral is bounded by [deregisterApplyWait] from the stamp. A message
-// with no broker stamp is applied at once, as it cannot be compared. The nak
-// does not go through [Scheduler.nakMsg]: a deferral is not an ingest failure,
-// and recording it as pending would hold back the liveness sweep.
+// The deferral is bounded by the message's delivery count: its
+// [deregisterMaxRechecks]th delivery is applied with a warning. A message with
+// no broker metadata or stamp is applied at once, as it cannot be compared.
+// The nak does not go through [Scheduler.nakMsg]: a deferral is not an ingest
+// failure, and recording it as pending would hold back the liveness sweep.
 func (s *Scheduler) deferDeregister(ctx context.Context, msg jetstream.Msg, workerID string) bool {
 	stamp := s.brokerAt(ctx, msg, "worker.deregister", workerID)
 	if stamp == nil {
 		return false
 	}
-	now := s.now()
 	// A zero effective time (no marker processed yet) is before any stamp.
-	if !s.ingestTask.effective(now).Before(*stamp) {
+	if !s.ingestTask.effective(s.now()).Before(*stamp) {
 		return false
 	}
-	if lag := now.Sub(*stamp); lag >= deregisterApplyWait {
+	// brokerAt has read the metadata successfully; a tracked message caches it.
+	if md, err := msg.Metadata(); err == nil && md.NumDelivered >= uint64(deregisterMaxRechecks) {
 		s.logger.WarnContext(
 			ctx, "scheduler: deregister applied before the task-status consumer caught up",
 			slog.String("worker_id", workerID),
-			slog.Duration("lag", lag),
+			slog.Uint64("deliveries", md.NumDelivered),
 		)
 		return false
 	}
