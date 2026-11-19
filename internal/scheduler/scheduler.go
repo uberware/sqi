@@ -1275,12 +1275,14 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	s.ackMsg(ctx, msg)
 }
 
-// brokerAt returns the broker's stream timestamp of a worker's registration or
-// heartbeat message (kind names which, for the log), which orders those
-// messages without regard to any worker's clock: a late redelivery keeps its
-// original stamp, a fresh message carries a current one, whatever the worker's
-// clock reads. Nil when the message has no usable metadata, in which case it is
-// applied unordered.
+// brokerAt returns the broker's stream timestamp of a worker's message (kind
+// names which, for the log): a registration or heartbeat, which it orders, a
+// task status, whose attempt end it dates ([terminalEndedAt]), or a deregister,
+// which waits until the task-status consumer has applied SQI_TASK up to it
+// ([Scheduler.deferDeregister]). The stamp is independent of any worker's
+// clock: a late redelivery keeps its original stamp, a fresh message carries a
+// current one, whatever the worker's clock reads. Nil when the message has no
+// usable metadata; each caller then applies the message without it.
 func (s *Scheduler) brokerAt(ctx context.Context, msg jetstream.Msg, kind, workerID string) *time.Time {
 	meta, err := msg.Metadata()
 	if err != nil {
