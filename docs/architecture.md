@@ -875,10 +875,11 @@ publishes `running` first, but acks and retries it in the background, and drops
 a first `running` still pending when the task's terminal status is handed over,
 so the terminal status can land on a task still `assigned`. A task that ends
 before its process starts (a refused or failed dispatch) sends no `running` at
-all. Rejecting the terminal message would strand finished work. Separately, the auto-retry re-queue described below
-(`running` → `ready` on a transient failure) is a policy-driven store call
-(`RequeueTaskForRetry`) with its own guarded SQL, as are the other paths that
-move tasks for the server's own reasons: `LeaseTask`, `RetryTasks`,
+all. Rejecting the terminal message would strand finished work. Separately,
+the auto-retry re-queue described below (`running` → `ready` on a transient
+failure) is a policy-driven store call (`RequeueTaskForRetry`) with its own
+guarded SQL, as are the other paths that move tasks for the server's own
+reasons: `LeaseTask`, `RetryTasks`,
 `ReleaseStep` / `CancelPendingStep`, `CancelBlockedJob`, `CancelJobExecution` /
 `CancelTaskExecution`, and the reclaim operations (`ReclaimStaleAssignedTasks`,
 `OfflineStaleWorker`, `OfflineWorker`, `ReclaimTaskAttempt`, and the restart
