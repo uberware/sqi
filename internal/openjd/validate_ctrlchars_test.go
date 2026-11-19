@@ -60,10 +60,10 @@ func TestValidateArgStringChars(t *testing.T) {
 func TestValidateAction_ArgNewlinesGatedOnEXPR(t *testing.T) {
 	a := Action{Command: "echo", Args: []string{"line one\nline two"}}
 
-	if errs := validateAction(a, "/a", ScopeStepScript, nil, false); !hasCtrlCharError(errs) {
+	if errs := validateAction(a, "/a", ScopeStepScript, refNames{}, false); !hasCtrlCharError(errs) {
 		t.Errorf("a multi-line argument was accepted without extensions: [EXPR]; errors: %v", errs)
 	}
-	if errs := validateAction(a, "/a", ScopeStepScript, nil, true); hasCtrlCharError(errs) {
+	if errs := validateAction(a, "/a", ScopeStepScript, refNames{}, true); hasCtrlCharError(errs) {
 		t.Errorf("a multi-line argument was rejected under EXPR: %v", errs)
 	}
 }
@@ -78,7 +78,7 @@ func TestValidateAction_CommandIsNotAmended(t *testing.T) {
 	a := Action{Command: "echo\nhello"}
 	for _, exprDeclared := range []bool{false, true} {
 		t.Run(map[bool]string{false: "base spec", true: "EXPR"}[exprDeclared], func(t *testing.T) {
-			errs := validateAction(a, "/a", ScopeStepScript, nil, exprDeclared)
+			errs := validateAction(a, "/a", ScopeStepScript, refNames{}, exprDeclared)
 			if !hasCtrlCharError(errs) {
 				t.Errorf("a newline in the COMMAND was accepted (exprDeclared=%v); "+
 					"EXPR amends <ArgString>, not <CommandString>", exprDeclared)

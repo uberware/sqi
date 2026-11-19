@@ -15,11 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/uberware/sqi/internal/openjd"
-	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
-	"github.com/uberware/sqi/internal/worker/fmtres"
-	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/presettest"
 	"github.com/uberware/sqi/test/conformance"
 )
 
@@ -29,12 +25,9 @@ import (
 // must and must not print; a ".invalid" fixture is one whose job cannot be
 // created at all.
 //
-// It runs each fixture through sqi's own pipeline rather than modeling it:
-// openjd.Submitter creates the job (validation, parameter binding, range and
-// chunk resolution, expansion into tasks), and each task's onRun action is
-// resolved exactly as a worker resolves it at run time (internal/worker/
-// fmtres, with the EXPR symbol table under EXPR and base-spec substitution
-// otherwise). Every fixture prints raw Python string literals, so what a task
+// It runs each fixture through sqi's own pipeline rather than modeling it
+// (presettest.Capture): the job is created by openjd.Submitter, and each
+// task's onRun action is resolved exactly as a worker resolves it at run time. Every fixture prints raw Python string literals, so what a task
 // prints is the text of its resolved script, and a listed line matches as a
 // substring of it, the way the fixtures' own runner searches task output.
 //
@@ -151,47 +144,24 @@ func scoreChunkingJob(t *testing.T, fx chunkingJob, invalid bool) []string {
 }
 
 // chunkingJobOutput creates the fixture's job and returns, for each task, the
-// text its resolved onRun action prints.
+// text its resolved onRun action prints. presettest.Capture runs the production
+// pipeline end to end: submission, the scheduler's real assignment, and the
+// worker's phase-3 resolution.
 func chunkingJobOutput(t *testing.T, fx chunkingJob) ([]string, error) {
 	t.Helper()
 	raw, err := yaml.Marshal(&fx.Template)
 	if err != nil {
 		t.Fatalf("re-serialize template: %v", err)
 	}
-	st := fake.New()
-	farm, err := st.CreateFarm(t.Context(), store.Farm{ID: "farm-1", Name: "farm"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	queue, err := st.CreateQueue(t.Context(), store.Queue{ID: "queue-1", FarmID: farm.ID, Name: "queue"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := openjd.NewSubmitter(st).Submit(t.Context(), string(raw), store.TemplateFormatYAML, openjd.SubmitOptions{
-		FarmID: farm.ID, QueueID: queue.ID, Parameters: submittedParameters(t, fx.Parameters),
-	})
+	snap, err := presettest.Capture(t.Context(), string(raw), presettest.Options{Params: submittedParameters(t, fx.Parameters)})
 	if err != nil {
 		return nil, fmt.Errorf("create job: %w", err)
 	}
-
-	tmpl, err := openjd.Parse(raw, openjd.FormatYAML)
-	if err != nil {
-		t.Fatalf("openjd.Parse: %v", err)
-	}
-	if len(tmpl.Steps) != 1 || tmpl.Steps[0].Script == nil {
-		t.Fatal("fixture template must have exactly one step with an onRun action")
-	}
-	step := tmpl.Steps[0]
-	onRun := protocol.Action{Command: step.Script.Actions.OnRun.Command, Args: step.Script.Actions.OnRun.Args}
-	exprEnabled := slices.Contains(tmpl.Extensions, "EXPR")
-
-	lines := make([]string, 0, len(res.Tasks))
-	for _, task := range res.Tasks {
-		action, err := resolveTaskAction(tmpl, step, onRun, res.BoundParameters, task.Parameters, exprEnabled)
-		if err != nil {
-			return lines, fmt.Errorf("task %s: resolve onRun: %w", task.Name, err)
+	var lines []string
+	for _, step := range snap.Steps {
+		for _, task := range step.Tasks {
+			lines = append(lines, strings.Join(task.Args, " "))
 		}
-		lines = append(lines, strings.Join(action.Args, " "))
 	}
 	return lines, nil
 }
@@ -216,40 +186,6 @@ func submittedParameters(t *testing.T, in map[string]any) map[string]string {
 		}
 	}
 	return out
-}
-
-// resolveTaskAction resolves one task's onRun action the way the worker does.
-// The assignment carries the parameter values and their declared types, which
-// is what the EXPR symbol table is built from.
-func resolveTaskAction(
-	tmpl *openjd.JobTemplate, step openjd.StepTemplate, onRun protocol.Action,
-	jobParams, taskParams map[string]string, exprEnabled bool,
-) (*protocol.Action, error) {
-	const workDir = "/session"
-	if !exprEnabled {
-		return fmtres.ResolveAction(&onRun, fmtres.TaskScope(jobParams, taskParams, workDir, "", false))
-	}
-	msg := protocol.AssignMsg{
-		Parameters:        taskParams,
-		ParameterTypes:    map[string]string{},
-		JobParameters:     jobParams,
-		JobParameterTypes: map[string]string{},
-		JobName:           tmpl.Name,
-		StepName:          step.Name,
-	}
-	if step.ParameterSpace != nil {
-		for _, tp := range step.ParameterSpace.TaskParameterDefinitions {
-			msg.ParameterTypes[tp.Name] = string(tp.Type)
-		}
-	}
-	for _, p := range tmpl.ParameterDefinitions {
-		msg.JobParameterTypes[p.Name] = string(p.Type)
-	}
-	syms, err := fmtres.TaskSymbols(&msg, workDir, "", false, nil)
-	if err != nil {
-		return nil, err
-	}
-	return fmtres.ResolveActionExpr(&onRun, syms, nil, nil)
 }
 
 func containsLine(lines []string, s string) bool {

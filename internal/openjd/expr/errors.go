@@ -89,7 +89,9 @@ var errResolvesNowhere = errors.New("name resolves nowhere")
 
 // nowhereAt is errorAt for a name that resolves nowhere.
 func nowhereAt(src string, offset int, format string, args ...any) *Error {
-	return &Error{Msg: fmt.Sprintf(format, args...), Offset: offset, Src: src, err: errResolvesNowhere}
+	e := errorAt(src, offset, format, args...)
+	e.err = errResolvesNowhere
+	return e
 }
 
 // resolvesNowhere reports whether err names something that does not exist, and

@@ -674,12 +674,10 @@ func condResult(n *Cond, ec evalCtx, target Type, depth int) (Value, error) {
 	// exist: every run taking that branch fails on it (RFC 0005's "Names that
 	// Resolve Nowhere").
 	switch {
-	case thenErr != nil && resolvesNowhere(thenErr):
+	case resolvesNowhere(thenErr):
 		return Value{}, thenErr
-	case elseErr != nil && resolvesNowhere(elseErr):
+	case resolvesNowhere(elseErr):
 		return Value{}, elseErr
-	}
-	switch {
 	case thenErr == nil && elseErr == nil:
 		return Unresolved(UnionOf(thenVal.Type, elseVal.Type)), nil
 	case thenErr == nil:

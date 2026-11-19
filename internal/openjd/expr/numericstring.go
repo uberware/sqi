@@ -3,6 +3,7 @@
 package expr
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -23,3 +24,11 @@ import (
 func TrimNumericSpace(s string) string {
 	return strings.TrimFunc(s, unicode.IsSpace)
 }
+
+// ParseIntString reads an <intstring> (Template Schemas §7.5): a base-10
+// integer with any white space around it ignored.
+func ParseIntString(s string) (int64, error) { return strconv.ParseInt(TrimNumericSpace(s), 10, 64) }
+
+// ParseFloatString reads a <floatstring> (Template Schemas §7.5): a number with
+// any white space around it ignored.
+func ParseFloatString(s string) (float64, error) { return strconv.ParseFloat(TrimNumericSpace(s), 64) }

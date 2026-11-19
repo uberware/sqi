@@ -134,3 +134,18 @@ func TestSubmit_ResolvedCapabilityNamesAreValidated(t *testing.T) {
 		})
 	}
 }
+
+// TestSubmit_AmountBoundsAreStoredWithoutWhiteSpace pins that an amount bound
+// written with the white space Template Schemas §7.5 allows reaches the
+// scheduler as a plain number, whether or not it was a format string: the
+// scheduler compares it with worker capabilities as written.
+func TestSubmit_AmountBoundsAreStoredWithoutWhiteSpace(t *testing.T) {
+	res, err := submitHostReqTemplate(t, "", "      amounts: [{name: amount.custom, min: \" 4 \", max: \"8\\n\"}]", nil)
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	a := res.Steps[0].HostRequirements.Amounts[0]
+	if a.Min == nil || *a.Min != "4" || a.Max == nil || *a.Max != "8" {
+		t.Errorf("stored bounds = %v, %v; want 4 and 8", a.Min, a.Max)
+	}
+}

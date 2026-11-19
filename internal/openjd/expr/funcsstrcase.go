@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -40,12 +41,8 @@ var strCaseFuncs = map[string][]Shape{
 	"capitalize": {caseShape(capitalizeString)},
 	"title":      {caseShape(titleString)},
 	// The six predicates below other than isascii have exactly the semantics of
-	// the Python str methods of the same name over the Unicode Character
-	// Database (RFC 0006 §2.2.4's classification note). isdigit is Unicode
-	// Numeric_Type Decimal or Digit, so isdigit('٣') and isdigit('²') are true
-	// even though int() accepts neither; isalnum is broader than isalpha ||
-	// isdigit, because it admits ANY Numeric_Type ('½' is alphanumeric but
-	// neither alphabetic nor a digit).
+	// the Python str methods of the same name (RFC 0006 §2.2.4); doc.go gives
+	// the consequences that look like bugs when tried by hand.
 	"isdigit": {runePredShape(allRunes, isDigitRune)},
 	"isalpha": {runePredShape(allRunes, unicode.IsLetter)},
 	"isalnum": {runePredShape(allRunes, isAlnumRune)},
@@ -151,16 +148,23 @@ func lowerString(s string) string { return cases.Lower(language.Und).String(s) }
 // takes its full TITLECASE mapping and every later rune its full lowercase
 // mapping. Titlecase is not uppercase: capitalize("ﬁne day") is "Fine day", not
 // "FIne day", and capitalize("ßx") is "Ssx".
+//
+// Without a capital sigma in it, the rest is lowered in one call: sigma is the
+// only rune whose lowercase mapping depends on its neighbors (writeLowerRune).
 func capitalizeString(s string) string {
 	if s == "" {
 		return ""
 	}
+	first, size := utf8.DecodeRuneInString(s)
+	head := cases.Title(language.Und, cases.NoLower).String(string(first))
+	if !strings.ContainsRune(s[size:], capitalSigma) {
+		return head + lowerString(s[size:])
+	}
 	rs := []rune(s)
 	var b strings.Builder
 	b.Grow(len(s))
-	titleCaser := cases.Title(language.Und, cases.NoLower)
+	b.WriteString(head)
 	lowerCaser := cases.Lower(language.Und)
-	b.WriteString(titleCaser.String(string(rs[0])))
 	for i := 1; i < len(rs); i++ {
 		writeLowerRune(&b, lowerCaser, rs, i)
 	}
@@ -176,9 +180,8 @@ func capitalizeString(s string) string {
 // lowercases a capital sigma by the Unicode Final_Sigma rule over the whole
 // string (writeLowerRune), so title("ΑΒΣ") is "Αβς".
 //
-// The Casers are hoisted out of the loop. Building one per rune — as calling
-// upperString/lowerString per rune would — measured ~2.5x slower on
-// len(title('ab ' * 3333333)).
+// The Casers are hoisted out of the loop rather than built per rune, and an
+// ASCII rune — whose titlecase is its uppercase — skips them altogether.
 func titleString(s string) string {
 	rs := []rune(s)
 	var b strings.Builder
@@ -187,9 +190,12 @@ func titleString(s string) string {
 	lowerCaser := cases.Lower(language.Und)
 	prevCased := false
 	for i, r := range rs {
-		if prevCased {
+		switch {
+		case prevCased:
 			writeLowerRune(&b, lowerCaser, rs, i)
-		} else {
+		case r < utf8.RuneSelf:
+			b.WriteRune(unicode.ToUpper(r))
+		default:
 			b.WriteString(titleCaser.String(string(r)))
 		}
 		prevCased = isCasedRune(r)
@@ -204,8 +210,12 @@ func titleString(s string) string {
 // because sigma is the only rune whose full lowercase mapping in the root
 // locale depends on context.
 func writeLowerRune(b *strings.Builder, lowerCaser cases.Caser, rs []rune, i int) {
-	if rs[i] != capitalSigma {
-		b.WriteString(lowerCaser.String(string(rs[i])))
+	switch r := rs[i]; {
+	case r < utf8.RuneSelf:
+		b.WriteRune(unicode.ToLower(r))
+		return
+	case r != capitalSigma:
+		b.WriteString(lowerCaser.String(string(r)))
 		return
 	}
 	if isFinalSigma(rs, i) {

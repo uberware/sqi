@@ -274,7 +274,7 @@ func sliceRangeExpr(ec evalCtx, recv Value, start, stop, step *int64) (Value, er
 	if step != nil && *step < 0 || len(picked) == 0 {
 		return List(TInt, intValues(picked)), nil
 	}
-	return RangeExpr(canonicalRange(picked))
+	return canonicalRangeValue(picked), nil
 }
 
 // sliceIndices resolves a slice's components into the concrete indices it

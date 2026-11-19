@@ -447,10 +447,10 @@ func isTypeNameByte(c byte) bool {
 // unwrap the wrapper first and validate what ListOf will actually place inside
 // the list.
 func checkListElem(elem Type) error {
-	checked := unwrapUnresolved(elem)
-	if checked.Code == CodeList && len(checked.Params) == 1 && checked.Params[0].Code == CodeList {
+	if listNestsTooDeep(elem) {
 		return fmt.Errorf("a list element type may not be nested a third time: list[%s]", elem)
 	}
+	checked := unwrapUnresolved(elem)
 	if checked.Code == CodeUnion && containsType(checked.Params, TNull) {
 		return fmt.Errorf("a list element type may not be optional: list[%s]", elem)
 	}

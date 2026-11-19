@@ -140,32 +140,48 @@ func ResolveParameterSpaceParams(
 		return nil, nil
 	}
 
-	exprEnabled := tmpl != nil && tmpl.hasExtension("EXPR")
 	b := templateBudgetOrFresh(budget)
-
-	var errs ValidationErrors
-
 	// If the resolver's OWN budget (shared across every step's call for this
 	// one submission -- NOT with checkExpressionsAtSubmit's; see this
 	// function's own doc comment) is ALREADY exhausted by an
 	// earlier step's call, stop before doing any of this step's real work --
 	// evaluating its own let: block still costs a real expr.Eval per
 	// binding, and there is nothing left to spend it on.
-	if exprEnabled && !b.ok() {
+	if tmpl != nil && tmpl.hasExtension("EXPR") && !b.ok() {
 		return nil, b.errs()
 	}
+	sc, letErrs := newStepScope(b, tmpl, step, jobParams)
+	return resolveParameterSpace(b, sc, ps, letErrs)
+}
 
-	// The phase-2 symbol table, built only when EXPR is declared, and built by
-	// the CHECKER'S OWN two helpers so the two layers cannot disagree about
-	// what is in scope: ScopeJob's fixed and family symbols (section 1.3.12's
-	// range field sits at the same ScopeJob position host requirements do —
-	// see exprcheck.go's checkStepExpressions) plus, per section 3.6.2 row 1,
-	// the names step's own let: block binds. Left nil (never read) when EXPR
-	// is not declared, which is the point — see resolveRangeExprField.
-	var syms expr.MapSymbols
-	if exprEnabled {
+// stepScope is what a step's fields resolved at Job creation — its
+// parameterSpace and its hostRequirements — are resolved against: under EXPR
+// the phase-2 symbol table, otherwise the base-spec Param./RawParam. scope.
+// Building it evaluates the step's let: block, so a submission builds it once
+// per step and shares it between the two.
+type stepScope struct {
+	exprEnabled bool
+	syms        expr.MapSymbols // nil unless exprEnabled
+	scope       fmtstring.MapScope
+}
+
+// newStepScope builds a step's stepScope, charging b for its let: block.
+//
+// The symbol table is built only when EXPR is declared, and built by the
+// CHECKER'S OWN two helpers so the two layers cannot disagree about what is in
+// scope: ScopeJob's fixed and family symbols (section 1.3.12's range field sits
+// at the same ScopeJob position host requirements do — see exprcheck.go's
+// checkStepExpressions) plus, per section 3.6.2 row 1, the names step's own
+// let: block binds. It is left nil (never read) when EXPR is not declared,
+// which is the point — see resolveRangeExprField.
+func newStepScope(
+	b *templateBudget, tmpl *JobTemplate, step *StepTemplate, jobParams map[string]string,
+) (stepScope, ValidationErrors) {
+	sc := stepScope{exprEnabled: tmpl != nil && tmpl.hasExtension("EXPR")}
+	var errs ValidationErrors
+	if sc.exprEnabled {
 		stepLet, letErrs := stepLetSymbols(b, tmpl, step, jobParams, "")
-		errs = append(errs, letErrs...)
+		errs = letErrs
 
 		// Charged exactly like checkStepExpressions charges the identical
 		// stepLetSymbols call (exprcheck.go): one position per binding
@@ -180,19 +196,27 @@ func ResolveParameterSpaceParams(
 		b.chargePositions(letPositions(letCount), "/let")
 		b.chargeRetainedBytes(templateExprRetainedBytes(stepLet), "/let")
 
-		syms = rangeScopeSymbols(tmpl, stepLet, jobParams)
+		sc.syms = rangeScopeSymbols(tmpl, stepLet, jobParams)
 	}
 
-	// Build a fmtstring scope: each job-param name → value, exposed as both
-	// "Param.<name>" and "RawParam.<name>". Built unconditionally — every
-	// RangeList entry, and every RangeExpr that is not a whole-field
-	// expression (EXPR-declared or not), keeps resolving through it.
-	scope := make(fmtstring.MapScope, len(jobParams)*2)
+	// Each job-param name → value, exposed as both "Param.<name>" and
+	// "RawParam.<name>". Built unconditionally — every RangeList entry, and
+	// every RangeExpr that is not a whole-field expression (EXPR-declared or
+	// not), keeps resolving through it.
+	sc.scope = make(fmtstring.MapScope, len(jobParams)*2)
 	for name, value := range jobParams {
-		scope["Param."+name] = value
-		scope["RawParam."+name] = value
+		sc.scope["Param."+name] = value
+		sc.scope["RawParam."+name] = value
 	}
+	return sc, errs
+}
 
+// resolveParameterSpace is ResolveParameterSpaceParams' body for a step whose
+// stepScope is already built; errs carries any error building it reported.
+func resolveParameterSpace(
+	b *templateBudget, sc stepScope, ps *StepParameterSpace, errs ValidationErrors,
+) (*StepParameterSpace, ValidationErrors) {
+	exprEnabled, syms, scope := sc.exprEnabled, sc.syms, sc.scope
 	newDefs := make([]TaskParamDefinition, len(ps.TaskParameterDefinitions))
 
 	for i, def := range ps.TaskParameterDefinitions {
@@ -338,21 +362,7 @@ func resolveRangeListDefinition(
 		if exprEnabled && !b.chargePositions(1, eptr) {
 			break
 		}
-		// Under EXPR an element that is exactly "{{<expr>}}" is a LIST ITEM
-		// (§1.3.12, §1.3.2): it resolves to zero, one or several elements.
-		if body, ok := fmtstring.LoneRef(entry); ok && exprEnabled {
-			items, err := resolveRangeListItem(body, def.Type, syms, b.limits)
-			if err != nil {
-				if b.recordDeadline(err) {
-					return newList, errs
-				}
-				errs = append(errs, ValidationError{Pointer: eptr, Message: err.Error()})
-				continue
-			}
-			newList = append(newList, items...)
-			continue
-		}
-		resolved, err := resolveRangeListEntry(exprEnabled, entry, def.Type, syms, scope, b.limits)
+		items, err := resolveRangeListElement(exprEnabled, entry, def.Type, syms, scope, b.limits)
 		if err != nil {
 			if b.recordDeadline(err) {
 				// Diverted onto the budget for the same reason
@@ -367,7 +377,7 @@ func resolveRangeListDefinition(
 			errs = append(errs, ValidationError{Pointer: eptr, Message: err.Error()})
 			continue // result discarded on error
 		}
-		newList = append(newList, resolved)
+		newList = append(newList, items...)
 	}
 	// A range list must still hold at least one element once dropped and
 	// flattened items are resolved (§1.3.12: the list's element-count limits
@@ -380,6 +390,23 @@ func resolveRangeListDefinition(
 		})
 	}
 	return newList, errs
+}
+
+// resolveRangeListElement resolves one range-list element to the elements it
+// contributes. Under EXPR an element that is exactly "{{<expr>}}" is a LIST
+// ITEM (§1.3.12, §1.3.2) and contributes zero, one or several; any other
+// element resolves to one string.
+func resolveRangeListElement(
+	exprEnabled bool, entry string, typ TaskParamType, syms expr.MapSymbols, scope fmtstring.Scope, lim ExprLimits,
+) ([]string, error) {
+	if body, ok := fmtstring.LoneRef(entry); ok && exprEnabled {
+		return resolveRangeListItem(body, typ, syms, lim)
+	}
+	resolved, err := resolveRangeListEntry(exprEnabled, entry, typ, syms, scope, lim)
+	if err != nil {
+		return nil, err
+	}
+	return []string{resolved}, nil
 }
 
 // rangeListItemType is the target of a range-list element that is exactly
@@ -887,7 +914,7 @@ func resolveChunkInt(
 		}
 		return 0, false, ValidationErrors{{Pointer: ptr, Message: err.Error()}}
 	}
-	n64, convErr := parseIntString(text)
+	n64, convErr := expr.ParseIntString(text)
 	if convErr != nil {
 		return 0, false, ValidationErrors{{Pointer: ptr, Message: fmt.Sprintf("resolved to %q, which is not an integer", text)}}
 	}

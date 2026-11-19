@@ -23,25 +23,14 @@ import (
 // so the work is proportional to the number of elements however many values
 // they name.
 //
-// ok is false when two elements' spans overlap. Their union is then not a
-// concatenation of progressions, and settling it needs the values; the caller
-// expands within its own bound or keeps the text it has. ok is also false for
-// an empty rs.
+// ok is false when two elements' spans overlap (see [Overlaps]): their union
+// is then not a concatenation of progressions, and settling it needs the
+// values, so the caller decides what to do. ok is also false for an empty rs.
 func Canonical(rs []Range) (string, bool) {
-	ps := make([]progression, 0, len(rs))
-	for _, r := range rs {
-		ps = append(ps, progressionOf(r))
-	}
-	slices.SortFunc(ps, func(a, b progression) int { return cmp.Compare(a.start, b.start) })
-	for i := 1; i < len(ps); i++ {
-		if ps[i].start <= ps[i-1].last() {
-			return "", false
-		}
-	}
-	if len(ps) == 0 {
+	ps, disjoint := sortedProgressions(rs)
+	if !disjoint || len(ps) == 0 {
 		return "", false
 	}
-
 	w := walker{ps: ps}
 	var b strings.Builder
 	pos, more := position{}, true
@@ -52,6 +41,50 @@ func Canonical(rs []Range) (string, bool) {
 		pos, more = w.writeRun(&b, pos)
 	}
 	return b.String(), true
+}
+
+// CanonicalValues returns the canonical form of a set of integers, given in
+// any order and possibly repeated. Distinct values never overlap, so it always
+// has an answer; vals is not modified.
+func CanonicalValues(vals []int) string {
+	sorted := slices.Clone(vals)
+	slices.Sort(sorted)
+	sorted = slices.Compact(sorted)
+	rs := make([]Range, len(sorted))
+	for i, v := range sorted {
+		rs[i] = Range{Start: v, End: v, Step: 1}
+	}
+	c, _ := Canonical(rs)
+	return c
+}
+
+// Overlaps reports whether two elements of a range expression overlap, as
+// Template Schemas §3.4.1.1.1 defines it: an element's SPAN runs from the
+// smallest to the largest value in its set, not between its written endpoints,
+// and two elements overlap when their spans share an integer, even when their
+// sets share no value ("1-9:2,2-10:2" overlaps; "1-10:4,10-15" does not). It
+// sorts once and compares neighbors, so it costs O(n log n) in the number of
+// elements however many values they name.
+func Overlaps(rs []Range) bool {
+	_, disjoint := sortedProgressions(rs)
+	return !disjoint
+}
+
+// sortedProgressions normalizes rs to progressions sorted by start and reports
+// whether their spans are pairwise disjoint. Sorted by start, a span overlaps
+// an earlier one exactly when it meets its immediate predecessor's.
+func sortedProgressions(rs []Range) ([]progression, bool) {
+	ps := make([]progression, len(rs))
+	for i, r := range rs {
+		ps[i] = progressionOf(r)
+	}
+	slices.SortFunc(ps, func(a, b progression) int { return cmp.Compare(a.start, b.start) })
+	for i := 1; i < len(ps); i++ {
+		if ps[i].start <= ps[i-1].last() {
+			return ps, false
+		}
+	}
+	return ps, true
 }
 
 // progression is one element as an ascending arithmetic progression: start,
@@ -121,16 +154,15 @@ func (w walker) next(at position) (position, bool) {
 // starts.
 func (w walker) writeRun(b *strings.Builder, from position) (position, bool) {
 	first := w.value(from)
+	b.WriteString(strconv.Itoa(first))
 	second, ok := w.next(from)
 	if !ok {
-		b.WriteString(strconv.Itoa(first))
 		return position{}, false
 	}
 	// Values ascend, so the difference is positive. It may not fit in 64
 	// signed bits, and then no run of three can have it as its step.
 	d := bits(w.value(second)) - bits(first)
 	if d > math.MaxInt64 {
-		b.WriteString(strconv.Itoa(first))
 		return second, true
 	}
 	last, long := second, false
@@ -147,10 +179,8 @@ func (w walker) writeRun(b *strings.Builder, from position) (position, bool) {
 		last, long = nx, true
 	}
 	if !long {
-		b.WriteString(strconv.Itoa(first))
 		return second, true
 	}
-	b.WriteString(strconv.Itoa(first))
 	b.WriteByte('-')
 	b.WriteString(strconv.Itoa(w.value(last)))
 	if d != 1 {

@@ -2,7 +2,10 @@
 
 package expr
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestRangeExpr_StringFormIsCanonical pins RFC 0005 §1.2.2/§1.2.3 and RFC 0006
 // as restated by openjd-specifications#202: a range_expr's value is its list of
@@ -83,5 +86,32 @@ func TestRangeExpr_ChunkValueKeepsItsOwnForm(t *testing.T) {
 				t.Errorf("Eval(%q) = %q, want %q", src, got, want)
 			}
 		})
+	}
+}
+
+// TestRangeExpr_OverlapCanonicalizationIsBounded pins that elements whose
+// spans overlap are canonicalized by listing their values only up to a small
+// bound: neither range_expr(string) nor a RANGE_EXPR parameter's binding is
+// metered, so a short text must not buy an unbounded expansion. Past the bound
+// the text keeps the form it was written in.
+func TestRangeExpr_OverlapCanonicalizationIsBounded(t *testing.T) {
+	done := make(chan Value)
+	go func() {
+		v, err := RangeExpr("1-9999998,1")
+		if err != nil {
+			t.Error(err)
+		}
+		done <- v
+	}()
+	select {
+	case v := <-done:
+		if got := v.AsRangeExpr(); got != "1-9999998,1" {
+			t.Errorf("AsRangeExpr() = %q, want the text as written", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RangeExpr of a large overlapping text did not return promptly")
+	}
+	if got := CanonicalRangeExpr("1-5,3-7"); got != "1-7" {
+		t.Errorf("CanonicalRangeExpr(1-5,3-7) = %q, want 1-7", got)
 	}
 }

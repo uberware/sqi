@@ -4,76 +4,54 @@ package openjd
 
 import (
 	"fmt"
+	"slices"
 	"strings"
-
-	"github.com/uberware/sqi/internal/openjd/expr"
-	"github.com/uberware/sqi/internal/openjd/fmtstring"
 )
 
 // resolveHostRequirements resolves every format string in a step's host
 // requirements — amount and attribute names (Template Schemas §3.3), amount
-// bounds and attribute values — against the bound job parameters, and then
+// bounds and attribute values — against the step's stepScope, and then
 // applies the host-requirement constraints to the RESOLVED value: a name's
-// prefix, reserved scope and length, no two names alike, an amount bound
-// that is a number.
+// prefix, reserved scope and length, no two names alike, an amount bound that
+// is a number.
 //
 // The scheduler compares what this returns with worker capabilities, so an
 // unresolved "{{Param.Min}}" bound reaching it could never parse and the step
 // could never be scheduled. hr is returned unchanged when it holds no format
-// string, having already been validated as written.
-//
-// Under EXPR each format string is evaluated against the same ScopeJob symbol
-// table the checker uses for these positions (the step's own let: bindings
-// included); otherwise it is base-spec substitution. enforceLimits gates the
+// string, having already been validated as written. enforceLimits gates the
 // size caps (name length, value counts) exactly as validation does.
 func resolveHostRequirements(
-	b *templateBudget, tmpl *JobTemplate, step *StepTemplate, stepIdx int,
-	jobParams map[string]string, enforceLimits bool,
+	b *templateBudget, sc stepScope, hr *HostRequirements, stepIdx int, enforceLimits bool,
 ) (*HostRequirements, ValidationErrors) {
-	hr := step.HostRequirements
-	if hr == nil || !hostRequirementsHaveFormatStrings(hr) {
+	if !hostRequirementsHaveFormatStrings(hr) {
 		return hr, nil
 	}
 	base := fmt.Sprintf("/steps/%d/hostRequirements", stepIdx)
-	r := hostReqResolver{b: b, exprEnabled: tmpl.hasExtension("EXPR")}
-	if r.exprEnabled {
-		stepLet, letErrs := stepLetSymbols(b, tmpl, step, jobParams, "")
-		if len(letErrs) > 0 {
-			return nil, letErrs
-		}
-		r.syms = rangeScopeSymbols(tmpl, stepLet, jobParams)
-	}
-	r.scope = make(fmtstring.MapScope, len(jobParams)*2)
-	for name, value := range jobParams {
-		r.scope["Param."+name] = value
-		r.scope["RawParam."+name] = value
-	}
-
+	r := hostReqResolver{b: b, sc: sc}
 	out := &HostRequirements{
 		Amounts:    make([]AmountRequirement, len(hr.Amounts)),
 		Attributes: make([]AttributeRequirement, len(hr.Attributes)),
 	}
 	for i, a := range hr.Amounts {
 		ptr := fmt.Sprintf("%s/amounts/%d", base, i)
-		ra := a
-		ra.Name = r.resolve(a.Name, ptr+"/name")
-		ra.Min = r.resolvePtr(a.Min, ptr+"/min")
-		ra.Max = r.resolvePtr(a.Max, ptr+"/max")
-		out.Amounts[i] = ra
+		a.Name = r.resolve(a.Name, ptr+"/name")
+		a.Min = r.resolvePtr(a.Min, ptr+"/min")
+		a.Max = r.resolvePtr(a.Max, ptr+"/max")
+		out.Amounts[i] = a
 	}
 	for i, a := range hr.Attributes {
 		ptr := fmt.Sprintf("%s/attributes/%d", base, i)
-		ra := a
-		ra.Name = r.resolve(a.Name, ptr+"/name")
-		ra.AnyOf = r.resolveAll(a.AnyOf, ptr+"/anyOf")
-		ra.AllOf = r.resolveAll(a.AllOf, ptr+"/allOf")
-		out.Attributes[i] = ra
+		a.Name = r.resolve(a.Name, ptr+"/name")
+		a.AnyOf = r.resolveAll(a.AnyOf, ptr+"/anyOf")
+		a.AllOf = r.resolveAll(a.AllOf, ptr+"/allOf")
+		out.Attributes[i] = a
 	}
-	if len(r.errs) > 0 || !b.ok() {
+	r.errs = append(r.errs, b.errs()...)
+	if len(r.errs) > 0 || b.deadline() != nil {
 		return nil, r.errs
 	}
 
-	errs := validateHostRequirements(*out, base, true)
+	errs := validateHostRequirements(*out, base, true, nil)
 	if enforceLimits {
 		errs = append(errs, validateHostRequirementLimits(*out, base)...)
 	}
@@ -86,32 +64,23 @@ func resolveHostRequirements(
 // hostReqResolver resolves the format strings of one step's host requirements,
 // collecting an error per position that fails.
 type hostReqResolver struct {
-	b           *templateBudget
-	exprEnabled bool
-	syms        expr.MapSymbols
-	scope       fmtstring.MapScope
-	errs        ValidationErrors
+	b    *templateBudget
+	sc   stepScope
+	errs ValidationErrors
 }
 
+// resolve resolves one host-requirement string as a string-valued format
+// string, charging one position under EXPR, the way a range-list entry of a
+// STRING task parameter is resolved.
 func (r *hostReqResolver) resolve(s, ptr string) string {
-	if !strings.Contains(s, "{{") {
+	if !strings.Contains(s, "{{") || (r.sc.exprEnabled && !r.b.chargePositions(1, ptr)) {
 		return s
 	}
-	var out string
-	var err error
-	if r.exprEnabled {
-		if !r.b.chargePositions(1, ptr) {
-			return s
-		}
-		out, err = resolveFormatStringExpr(s, r.syms, expr.TString, r.b.limits.evalOptions()...)
-		if err != nil && r.b.recordDeadline(err) {
-			return s
-		}
-	} else {
-		out, err = fmtstring.Resolve(s, r.scope)
-	}
+	out, err := resolveRangeListEntry(r.sc.exprEnabled, s, TaskParamTypeString, r.sc.syms, r.sc.scope, r.b.limits)
 	if err != nil {
-		r.errs = append(r.errs, ValidationError{Pointer: ptr, Message: err.Error()})
+		if !r.b.recordDeadline(err) {
+			r.errs = append(r.errs, ValidationError{Pointer: ptr, Message: err.Error()})
+		}
 		return s
 	}
 	return out
@@ -139,16 +108,10 @@ func (r *hostReqResolver) resolveAll(vs []string, ptr string) []string {
 // hostRequirementsHaveFormatStrings reports whether any name or value of hr
 // holds a format-string reference.
 func hostRequirementsHaveFormatStrings(hr *HostRequirements) bool {
-	has := func(s string) bool { return strings.Contains(s, "{{") }
-	for _, a := range hr.Amounts {
-		if has(a.Name) || (a.Min != nil && has(*a.Min)) || (a.Max != nil && has(*a.Max)) {
-			return true
-		}
+	if hr == nil {
+		return false
 	}
-	for _, a := range hr.Attributes {
-		if has(a.Name) || strings.Contains(strings.Join(a.AnyOf, "\x00"), "{{") || strings.Contains(strings.Join(a.AllOf, "\x00"), "{{") {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(hostRequirementPositions(*hr, "", nil), func(p fmtPosition) bool {
+		return strings.Contains(p.text, "{{")
+	})
 }

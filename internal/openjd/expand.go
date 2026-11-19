@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/openjd/intrange"
 )
 
@@ -61,27 +61,27 @@ func expandParameterSpace(ps *StepParameterSpace, jobBudget *jobTaskBudget) ([]T
 	}
 
 	// Parse or construct the combination expression tree.
-	var expr string
+	var combination string
 	if ps.Combination != nil {
-		expr = *ps.Combination
+		combination = *ps.Combination
 	} else {
 		// Default: all parameters joined with *.
 		names := make([]string, 0, len(ps.TaskParameterDefinitions))
 		for _, tp := range ps.TaskParameterDefinitions {
 			names = append(names, tp.Name)
 		}
-		expr = strings.Join(names, "*")
+		combination = strings.Join(names, "*")
 	}
 
 	// Handle the degenerate case of a single parameter with no operator.
-	if expr == "" {
+	if combination == "" {
 		if err := jobBudget.charge(1); err != nil {
 			return nil, err
 		}
 		return []TaskParams{{}}, nil
 	}
 
-	tree, err := parseCombinationExpr(expr)
+	tree, err := parseCombinationExpr(combination)
 	if err != nil {
 		return nil, fmt.Errorf("openjd: combination expression: %w", err)
 	}
@@ -276,7 +276,7 @@ func expandChunkInt(tp TaskParamDefinition) ([]string, error) {
 		}
 	} else {
 		for _, s := range tp.RangeList {
-			n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+			n, err := expr.ParseIntString(s)
 			if err != nil {
 				return nil, fmt.Errorf("invalid integer %q in range list", s)
 			}
@@ -366,17 +366,7 @@ func formatContiguousChunk(vals []int) string {
 // The canonical form is determined by the chunk's values alone, so values that
 // came out of a first-seen range such as "10-15:2,1-5" in another order are
 // written ascending: [10,12,14,1] is "1,10-14:2".
-func formatNoncontiguousChunk(vals []int) string {
-	sorted := slices.Clone(vals)
-	slices.Sort(sorted)
-	sorted = slices.Compact(sorted)
-	rs := make([]intrange.Range, len(sorted))
-	for i, v := range sorted {
-		rs[i] = intrange.Range{Start: v, End: v, Step: 1}
-	}
-	c, _ := intrange.Canonical(rs) // distinct values never overlap
-	return c
-}
+func formatNoncontiguousChunk(vals []int) string { return intrange.CanonicalValues(vals) }
 
 // DeriveChunkBounds adds "<name>.Start" and "<name>.End" keys to every row in
 // rows for each CHUNK[INT] parameter declared in ps. Each chunk value is a
@@ -426,7 +416,7 @@ func validateIntList(items []string) ([]string, error) {
 	}
 	out := make([]string, len(items))
 	for i, s := range items {
-		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		n, err := expr.ParseIntString(s)
 		if err != nil {
 			return nil, fmt.Errorf("invalid integer %q", s)
 		}
@@ -443,7 +433,7 @@ func validateFloatList(items []string) ([]string, error) {
 	}
 	out := make([]string, len(items))
 	for i, s := range items {
-		f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		f, err := expr.ParseFloatString(s)
 		if err != nil {
 			return nil, fmt.Errorf("invalid float %q", s)
 		}
@@ -487,8 +477,8 @@ func (combAssoc) isCombNode() {}
 // an identifier or a parenthesised, comma-separated list of full
 // sub-expressions (an association group). An association group must contain at
 // least two comma-separated expressions.
-func parseCombinationExpr(expr string) (combNode, error) {
-	p := &combParser{tokens: tokenizeComb(expr)}
+func parseCombinationExpr(combination string) (combNode, error) {
+	p := &combParser{tokens: tokenizeComb(combination)}
 	node, err := p.parseExpr()
 	if err != nil {
 		return nil, err
@@ -503,8 +493,8 @@ func parseCombinationExpr(expr string) (combNode, error) {
 // and the parsed tree, both for use by the validator. The list keeps
 // duplicates; validateCombination reports them. The returned tree lets callers
 // avoid a second parse.
-func combinationIdentifiers(expr string) ([]string, combNode, error) {
-	tree, err := parseCombinationExpr(expr)
+func combinationIdentifiers(combination string) ([]string, combNode, error) {
+	tree, err := parseCombinationExpr(combination)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -638,11 +628,11 @@ func (p *combParser) parseAssocGroup() (combNode, error) {
 
 // tokenizeComb splits a combination expression into tokens:
 // identifiers, '*', '(', ')', ','.  Whitespace is discarded.
-func tokenizeComb(expr string) []string {
+func tokenizeComb(combination string) []string {
 	var tokens []string
 	i := 0
-	for i < len(expr) {
-		c := expr[i]
+	for i < len(combination) {
+		c := combination[i]
 		switch c {
 		case ' ', '\t':
 			i++
@@ -652,7 +642,7 @@ func tokenizeComb(expr string) []string {
 		default:
 			// Identifier: [A-Za-z_][A-Za-z0-9_]*
 			j := i
-			for j < len(expr) && isIdentChar(expr[j]) {
+			for j < len(combination) && isIdentChar(combination[j]) {
 				j++
 			}
 			if j == i {
@@ -661,7 +651,7 @@ func tokenizeComb(expr string) []string {
 				tokens = append(tokens, string(c))
 				i++
 			} else {
-				tokens = append(tokens, expr[i:j])
+				tokens = append(tokens, combination[i:j])
 				i = j
 			}
 		}

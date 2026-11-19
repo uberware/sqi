@@ -271,11 +271,6 @@ func validateListElement(v any, elem JobParamType, c *ItemConstraint, ptr string
 		return errs
 	}
 	text, _ := scalarElemText(v) // type already verified above
-	if elem == JobParamTypeInt || elem == JobParamTypeFloat {
-		// An item given as an <intstring> or <floatstring> is its number;
-		// the white space around it is not part of it (Template Schemas §7.5).
-		text = expr.TrimNumericSpace(text)
-	}
 	return validateElemAgainstConstraint(text, elem, c, ptr)
 }
 
@@ -386,12 +381,12 @@ func validateElemType(v any, elem JobParamType, ptr string) ValidationErrors {
 // be an <intstring> or a finite <floatstring> (Template Schemas §7.5).
 func numericStringElem(s string, elem JobParamType, bad func(string) ValidationErrors) ValidationErrors {
 	if elem == JobParamTypeInt {
-		if _, err := parseIntString(s); err != nil {
+		if _, err := expr.ParseIntString(s); err != nil {
 			return bad("an integer")
 		}
 		return nil
 	}
-	if f, err := parseFloatString(s); err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+	if f, err := expr.ParseFloatString(s); err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 		return bad("a number")
 	}
 	return nil
@@ -433,10 +428,10 @@ func scalarElemText(v any) (string, bool) {
 func elemInAllowed(text string, elem JobParamType, allowed []string) bool {
 	switch elem {
 	case JobParamTypeInt:
-		n, err := parseIntString(text)
+		n, err := expr.ParseIntString(text)
 		return err == nil && intInAllowed(n, allowed)
 	case JobParamTypeFloat:
-		f, err := parseFloatString(text)
+		f, err := expr.ParseFloatString(text)
 		return err == nil && floatInAllowed(f, allowed)
 	}
 	return slices.Contains(allowed, text)
@@ -489,7 +484,7 @@ func validateElemAgainstConstraint(
 // comparison keeps this from needing an int and a float branch that must be
 // kept in step.
 func validateElemBounds(text string, c *ItemConstraint, ptr string) ValidationErrors {
-	f, err := parseFloatString(text)
+	f, err := expr.ParseFloatString(text)
 	if err != nil {
 		// Deliberately swallowed: validateElemType already rejected this
 		// element as not-a-number and reported it with this same pointer.
@@ -500,7 +495,7 @@ func validateElemBounds(text string, c *ItemConstraint, ptr string) ValidationEr
 
 	var errs ValidationErrors
 	if c.MinValue != nil {
-		if lo, err := parseFloatString(*c.MinValue); err == nil && f < lo {
+		if lo, err := expr.ParseFloatString(*c.MinValue); err == nil && f < lo {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("%s is below item.minValue %s", text, *c.MinValue),
@@ -508,7 +503,7 @@ func validateElemBounds(text string, c *ItemConstraint, ptr string) ValidationEr
 		}
 	}
 	if c.MaxValue != nil {
-		if hi, err := parseFloatString(*c.MaxValue); err == nil && f > hi {
+		if hi, err := expr.ParseFloatString(*c.MaxValue); err == nil && f > hi {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("%s is above item.maxValue %s", text, *c.MaxValue),

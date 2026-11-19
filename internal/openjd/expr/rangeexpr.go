@@ -36,10 +36,11 @@ import (
 // given is a CHUNK[INT] task parameter's, bound through ValueFromText: its
 // string form is the chunk's own (see rangeExprAsWritten).
 func RangeExpr(text string) (Value, error) {
-	if _, err := intrange.Parse(text); err != nil {
+	rs, err := intrange.Parse(text)
+	if err != nil {
 		return Value{}, fmt.Errorf("invalid range expression %q: %w", text, err)
 	}
-	return Value{Type: TRangeExpr, s: canonicalRangeExprText(text)}, nil
+	return Value{Type: TRangeExpr, s: canonicalRangeText(rs, text)}, nil
 }
 
 // rangeExprAsWritten is RangeExpr without canonicalization, for a value whose
@@ -55,32 +56,54 @@ func rangeExprAsWritten(text string) (Value, error) {
 	return Value{Type: TRangeExpr, s: text}, nil
 }
 
-// canonicalRangeExprText rewrites valid range expression text in its
-// canonical form, from its elements' arithmetic and without listing the
-// values (intrange.Canonical). Elements whose spans overlap need the values,
-// so they are listed within the package's element bound; text whose overlap is
-// too large to list keeps the form it was written in.
-func canonicalRangeExprText(text string) string {
+// canonicalRangeValue is the range_expr of sorted, de-duplicated integers.
+// Its text is canonical by construction, so nothing is parsed.
+func canonicalRangeValue(ints []int64) Value {
+	return Value{Type: TRangeExpr, s: canonicalRange(ints)}
+}
+
+// CanonicalRangeExpr writes range expression text in its canonical form
+// (Template Schemas §3.4.1.1.1). internal/openjd binds a RANGE_EXPR job
+// parameter's value through it, so the value a worker receives is the one
+// every range_expr is written as here. Text that does not parse is returned
+// unchanged; validation reports it.
+func CanonicalRangeExpr(text string) string {
 	rs, err := intrange.Parse(text)
 	if err != nil {
 		return text
 	}
+	return canonicalRangeText(rs, text)
+}
+
+// canonicalOverlapBound is the most values canonicalRangeText lists to settle
+// the canonical form of elements whose spans overlap. Neither call path is
+// metered — range_expr(string) has no Cost row, and a RANGE_EXPR job parameter
+// is bound outside the expression budgets — so the bound is small enough for
+// the listing to be cheap: 65,536 values is about a millisecond.
+const canonicalOverlapBound = 1 << 16
+
+// canonicalRangeText is the canonical form of the parsed elements rs of text,
+// computed from their arithmetic (intrange.Canonical) when their spans are
+// disjoint. Overlapping elements need their values, which are listed only up
+// to canonicalOverlapBound; past it the text keeps the form it was written in.
+func canonicalRangeText(rs []intrange.Range, text string) string {
 	if c, ok := intrange.Canonical(rs); ok {
 		return c
 	}
-	ints, err := rangeInts(Value{Type: TRangeExpr, s: text})
-	if err != nil {
-		return text
+	total := 0
+	for _, r := range rs {
+		n := r.Count()
+		if n > canonicalOverlapBound-total {
+			return text
+		}
+		total += n
 	}
-	return canonicalRange(ints)
+	vals := make([]int, 0, total)
+	for _, r := range rs {
+		vals = append(vals, r.Iterate()...)
+	}
+	return intrange.CanonicalValues(vals)
 }
-
-// CanonicalRangeExpr writes a range expression in its canonical form (Template
-// Schemas §3.4.1.1.1). It is the one implementation internal/openjd uses for a
-// RANGE_EXPR job parameter's value and a NONCONTIGUOUS chunk, so every place a
-// range expression value is written as text agrees. Text that does not parse
-// is returned unchanged; validation reports it.
-func CanonicalRangeExpr(text string) string { return canonicalRangeExprText(text) }
 
 // AsRangeExpr returns the range expression text. It panics if v is not a
 // range_expr.
@@ -459,25 +482,15 @@ func expandRanges(ranges []intrange.Range, total int) []int64 {
 	return out
 }
 
-// canonicalRange renders integers as range expression text, collapsing runs
-// that share a constant delta.
-//
-// Section 2.1.8 makes a positive-step slice of a range_expr return a range_expr,
-// and the sliced integers have no text of their own, so slicing needs this
-// derivation. range_expr(l: list[int]) (funcsconv.go) reuses it.
-//
-// A run must be at least three values long to be worth collapsing: "1,4" and
-// "1-4:3" describe the same pair, and the comma form is what a reader expects.
-//
-// ints must be sorted and de-duplicated. This is the canonical form of
-// Template Schemas §3.4.1.1.1, through the same intrange.Canonical every other
-// range_expr is written with; distinct values never overlap, so it always
-// succeeds.
+// canonicalRange writes integers as range expression text in the canonical
+// form of Template Schemas §3.4.1.1.1. Section 2.1.8 makes a positive-step
+// slice of a range_expr return a range_expr, and the sliced integers have no
+// text of their own, so slicing needs this; range_expr(l: list[int])
+// (funcsconv.go) reuses it.
 func canonicalRange(ints []int64) string {
-	rs := make([]intrange.Range, len(ints))
+	vals := make([]int, len(ints))
 	for i, n := range ints {
-		rs[i] = intrange.Range{Start: int(n), End: int(n), Step: 1}
+		vals[i] = int(n)
 	}
-	c, _ := intrange.Canonical(rs)
-	return c
+	return intrange.CanonicalValues(vals)
 }

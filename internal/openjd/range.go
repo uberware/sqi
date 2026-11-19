@@ -3,10 +3,8 @@
 package openjd
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/intrange"
@@ -133,8 +131,8 @@ func validateIntRangeExpr(expr string) error {
 // [parseIntRangeExpr] silently de-duplicates for expansion, so this is a
 // separate detection used only by validation.
 //
-// Each span is computed arithmetically from (start, end, step), so the
-// integers are never materialized and arbitrarily large ranges are safe.
+// The spans are computed arithmetically by intrange.Overlaps, so the integers
+// are never materialized and arbitrarily large ranges are safe.
 //
 // Expressions containing a format string ("{{") cannot be counted before
 // resolution and report no overlap. A parse error is returned to the caller,
@@ -149,37 +147,7 @@ func intRangeHasOverlap(expr string) (overlap bool, err error) {
 		return false, perr
 	}
 
-	// Sorted by start, a span overlaps an earlier one exactly when it starts at
-	// or before the furthest end seen so far, so one sort and one pass find any
-	// overlap — O(n log n) in the number of elements, where comparing every
-	// pair would be O(n^2) on an expression that can hold hundreds of
-	// thousands of them.
-	spans := make([][2]int, 0, len(ranges))
-	for _, r := range ranges {
-		if r.Start <= r.End {
-			spans = append(spans, [2]int{r.Start, spanEnd(r)})
-		}
-	}
-	slices.SortFunc(spans, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
-	for i := 1; i < len(spans); i++ {
-		if spans[i][0] <= spans[i-1][1] {
-			return true, nil
-		}
-		spans[i][1] = max(spans[i][1], spans[i-1][1])
-	}
-	return false, nil
-}
-
-// spanEnd is the largest value r produces: its written end, rounded down to
-// the step grid that starts at r.Start. The distance is taken in uint64, where
-// it always fits (End >= Start), because End - Start can pass MaxInt64.
-func spanEnd(r intRange) int {
-	if r.Step <= 1 {
-		return r.End
-	}
-	width := uint64(r.End) - uint64(r.Start) //nolint:gosec // two's-complement span, exact because End >= Start
-	step := uint64(r.Step)
-	return int(uint64(r.Start) + width/step*step) //nolint:gosec // the result is a value of r, in range
+	return intrange.Overlaps(ranges), nil
 }
 
 // parseIntRangeElements parses an INT range expression into its sub-ranges

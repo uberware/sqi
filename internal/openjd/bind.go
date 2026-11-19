@@ -127,7 +127,7 @@ func validateParamValue(p JobParameter, value string) ValidationErrors {
 // validateIntParamValue validates an INT parameter value against its constraints.
 func validateIntParamValue(p JobParameter, value, ptr string) ValidationErrors {
 	var errs ValidationErrors
-	n, err := parseIntString(value)
+	n, err := expr.ParseIntString(value)
 	if err != nil {
 		return ValidationErrors{{
 			Pointer: ptr,
@@ -135,7 +135,7 @@ func validateIntParamValue(p JobParameter, value, ptr string) ValidationErrors {
 		}}
 	}
 	if p.MinValue != nil {
-		if minV, err := parseIntString(*p.MinValue); err == nil && n < minV {
+		if minV, err := expr.ParseIntString(*p.MinValue); err == nil && n < minV {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("value %d is below minimum %d", n, minV),
@@ -143,7 +143,7 @@ func validateIntParamValue(p JobParameter, value, ptr string) ValidationErrors {
 		}
 	}
 	if p.MaxValue != nil {
-		if maxV, err := parseIntString(*p.MaxValue); err == nil && n > maxV {
+		if maxV, err := expr.ParseIntString(*p.MaxValue); err == nil && n > maxV {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("value %d is above maximum %d", n, maxV),
@@ -162,7 +162,7 @@ func validateIntParamValue(p JobParameter, value, ptr string) ValidationErrors {
 // validateFloatParamValue validates a FLOAT parameter value against its constraints.
 func validateFloatParamValue(p JobParameter, value, ptr string) ValidationErrors {
 	var errs ValidationErrors
-	f, err := parseFloatString(value)
+	f, err := expr.ParseFloatString(value)
 	if err != nil {
 		return ValidationErrors{{
 			Pointer: ptr,
@@ -176,7 +176,7 @@ func validateFloatParamValue(p JobParameter, value, ptr string) ValidationErrors
 		}}
 	}
 	if p.MinValue != nil {
-		if minV, err := parseFloatString(*p.MinValue); err == nil && f < minV {
+		if minV, err := expr.ParseFloatString(*p.MinValue); err == nil && f < minV {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("value %v is below minimum %v", f, minV),
@@ -184,7 +184,7 @@ func validateFloatParamValue(p JobParameter, value, ptr string) ValidationErrors
 		}
 	}
 	if p.MaxValue != nil {
-		if maxV, err := parseFloatString(*p.MaxValue); err == nil && f > maxV {
+		if maxV, err := expr.ParseFloatString(*p.MaxValue); err == nil && f > maxV {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("value %v is above maximum %v", f, maxV),
@@ -229,7 +229,7 @@ func validateStringOrPathParamValue(p JobParameter, value, ptr string) Validatio
 // Non-parseable allowed entries are silently skipped.
 func intInAllowed(n int64, allowed []string) bool {
 	for _, av := range allowed {
-		if m, err := parseIntString(av); err == nil && m == n {
+		if m, err := expr.ParseIntString(av); err == nil && m == n {
 			return true
 		}
 	}
@@ -241,7 +241,7 @@ func intInAllowed(n int64, allowed []string) bool {
 // are considered equal. Non-parseable allowed entries are silently skipped.
 func floatInAllowed(f float64, allowed []string) bool {
 	for _, av := range allowed {
-		if g, err := parseFloatString(av); err == nil && g == f {
+		if g, err := expr.ParseFloatString(av); err == nil && g == f {
 			return true
 		}
 	}

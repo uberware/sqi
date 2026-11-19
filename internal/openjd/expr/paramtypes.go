@@ -133,7 +133,7 @@ func TaskParamType(declared string) Type {
 func ValueFromText(t Type, raw string, pathFlavor PathFormat) Value {
 	switch t.Code {
 	case CodeInt:
-		n, err := strconv.ParseInt(TrimNumericSpace(raw), 10, 64)
+		n, err := ParseIntString(raw)
 		if err != nil {
 			return Unresolved(t)
 		}

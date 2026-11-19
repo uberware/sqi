@@ -358,10 +358,7 @@ func roundFloatToPlaces(f float64, places int64) float64 {
 	if places > maxRoundPlaces || math.IsInf(f, 0) || math.IsNaN(f) {
 		return f
 	}
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(places), nil)
-	exact := new(big.Rat).SetFloat64(f)
-	n := roundRatHalfEven(new(big.Rat).Mul(exact, new(big.Rat).SetInt(scale)))
-	out, _ := new(big.Rat).SetFrac(n, scale).Float64()
+	out, _ := roundExact(f, places).Float64()
 	if out == 0 && math.Signbit(f) {
 		return math.Copysign(0, -1)
 	}
@@ -378,14 +375,32 @@ func roundFloatToInt(f float64, places int64) (Value, error) {
 	if places > maxRoundScale {
 		return Int(0), nil
 	}
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(places), nil)
-	exact := new(big.Rat).SetFloat64(f)
-	q := roundRatHalfEven(exact.Quo(exact, new(big.Rat).SetInt(scale)))
-	out := q.Mul(q, scale)
+	out := roundExact(f, -places).Num() // a whole number: its denominator is 1
 	if !out.IsInt64() {
 		return Value{}, errIntOverflow
 	}
 	return Int(out.Int64()), nil
+}
+
+// roundExact is f's exact value rounded half to even at 10^-ndigits; ndigits
+// may be negative, rounding to tens, hundreds and so on.
+func roundExact(f float64, ndigits int64) *big.Rat {
+	k := ndigits
+	if k < 0 {
+		k = -k
+	}
+	scale := new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(k), nil))
+	x := new(big.Rat).SetFloat64(f)
+	if ndigits >= 0 {
+		x.Mul(x, scale)
+	} else {
+		x.Quo(x, scale)
+	}
+	n := new(big.Rat).SetInt(roundRatHalfEven(x))
+	if ndigits >= 0 {
+		return n.Quo(n, scale)
+	}
+	return n.Mul(n, scale)
 }
 
 // roundRatHalfEven rounds r to the nearest integer, a tie going to the even

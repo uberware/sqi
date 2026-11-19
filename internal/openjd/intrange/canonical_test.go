@@ -212,3 +212,42 @@ func canonicalByDefinition(rs []Range) string {
 	}
 	return strings.Join(out, ",")
 }
+
+// TestOverlaps pins §3.4.1.1.1's overlap rule on spans: smallest to largest
+// value of each element's set, not its written endpoints.
+func TestOverlaps(t *testing.T) {
+	for in, want := range map[string]bool{
+		"1-5,3-7":       true,
+		"1-5,5-10":      true,
+		"1-5,6-10":      false,
+		"1-9:2,2-10:2":  true,
+		"1-10:4,10-15":  false,
+		"1-10:4,9-15":   true,
+		"19-23:5,20-25": false,
+		"10-15,1-10:4":  false,
+		"10-1:-1,11":    false,
+		"10-1:-1,5":     true,
+		"1,1":           true,
+		"7":             false,
+	} {
+		rs, err := Parse(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := Overlaps(rs); got != want {
+			t.Errorf("Overlaps(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestCanonicalValues pins the canonical form of a bare set of integers, in
+// any order and with repeats, and that the input is left alone.
+func TestCanonicalValues(t *testing.T) {
+	in := []int{14, 1, 2, 10, 12, 2}
+	if got := CanonicalValues(in); got != "1,2,10-14:2" {
+		t.Errorf("CanonicalValues = %q, want %q", got, "1,2,10-14:2")
+	}
+	if !slices.Equal(in, []int{14, 1, 2, 10, 12, 2}) {
+		t.Errorf("CanonicalValues modified its input: %v", in)
+	}
+}

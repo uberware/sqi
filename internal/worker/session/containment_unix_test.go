@@ -167,7 +167,9 @@ func TestRunAction_NotifyThenTerminate(t *testing.T) {
 	t.Run("leader exits, child ignores TERM", func(t *testing.T) {
 		lowerDrainDelay(t)
 		rec := newChildRecorder(t)
-		script := "(trap '' TERM; exec sleep 300) & echo child=$!; trap 'exit 0' TERM; while :; do sleep 0.1; done"
+		// Both traps are set before the child prints its own pid; announcing
+		// it from the parent ($!) would race the child's trap.
+		script := `trap 'exit 0' TERM; sh -c 'trap "" TERM; echo child=$$; exec sleep 300' & while :; do sleep 0.1; done`
 		err := awaitRunAction(t, runActionAsync(context.Background(), t, shAction(script, 1, notifyFor(1)), rec.handle), 15*time.Second)
 		wantTimedOut(t, err)
 		if pid := rec.pid(t); !processGone(pid, 5*time.Second) {
