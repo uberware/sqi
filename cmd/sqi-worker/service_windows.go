@@ -43,6 +43,9 @@ func workerDrainTimeout(configPath string) (time.Duration, error) {
 // workerDrainBound is how long a worker shutdown can take to drain: up to the
 // grace period for running tasks to finish, then, for any still running,
 // SIGTERM and the kill window ([shutdownKillGrace]) before SIGKILL. What
-// follows — the tasks' final statuses, deregistration and the NATS drain — is
-// normally well under a second and is covered by winsvc.ShutdownMargin.
+// follows is covered by winsvc.ShutdownMargin: the inline try of each task's
+// final status (up to status.DefaultAckTimeout), the wait for the statuses
+// the broker has not yet stored (up to [statusFlushTimeout], normally far
+// less), the deregistration (up to registration.DeregisterFlushTimeout) and
+// the NATS drain. TestShutdownAfterDrainFitsServiceMargin pins the sum.
 func workerDrainBound(grace time.Duration) time.Duration { return grace + shutdownKillGrace(grace) }

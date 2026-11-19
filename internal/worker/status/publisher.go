@@ -64,10 +64,14 @@ import (
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
+// DefaultAckTimeout is [Config.AckTimeout] when it is left zero. It bounds
+// the inline try of a terminal status a task hands over after the shutdown
+// drain, so it is part of the worker's shutdown budget.
+const DefaultAckTimeout = 2 * time.Second
+
 const (
-	defaultAckTimeout = 2 * time.Second
-	defaultRetryBase  = 250 * time.Millisecond
-	defaultRetryMax   = 5 * time.Second
+	defaultRetryBase = 250 * time.Millisecond
+	defaultRetryMax  = 5 * time.Second
 
 	// warnEvery is the shortest spacing between two Warn records for one
 	// report that keeps failing.
@@ -162,7 +166,7 @@ type Publisher struct {
 // Any zero or negative durations in cfg are replaced with defaults before use.
 func New(t Transport, cfg Config, logger *slog.Logger) *Publisher {
 	if cfg.AckTimeout <= 0 {
-		cfg.AckTimeout = defaultAckTimeout
+		cfg.AckTimeout = DefaultAckTimeout
 	}
 	if cfg.RetryBase <= 0 {
 		cfg.RetryBase = defaultRetryBase
