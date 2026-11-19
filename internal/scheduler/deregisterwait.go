@@ -62,12 +62,11 @@ func (s *Scheduler) deferDeregister(ctx context.Context, msg jetstream.Msg, work
 	if s.taskStatusesCaughtUp(workerID, *stamp) {
 		return false
 	}
-	// brokerAt has read the metadata successfully; a tracked message caches it.
-	if md, err := msg.Metadata(); err == nil && md.NumDelivered >= uint64(deregisterMaxRechecks) {
+	if n := deliveries(msg); n >= uint64(deregisterMaxRechecks) {
 		s.logger.WarnContext(
 			ctx, "scheduler: deregister applied before the task-status consumer caught up",
 			slog.String("worker_id", workerID),
-			slog.Uint64("deliveries", md.NumDelivered),
+			slog.Uint64("deliveries", n),
 		)
 		return false
 	}

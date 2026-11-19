@@ -2284,11 +2284,7 @@ func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg, ref ingestRef
 	if s.leftForNewLeader(ctx, msg) {
 		return
 	}
-	var delivered uint64
-	if md, err := msg.Metadata(); err == nil {
-		delivered = md.NumDelivered
-	}
-	if err := msg.NakWithDelay(nakDelay(delivered)); err != nil {
+	if err := msg.NakWithDelay(nakDelay(deliveries(msg))); err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: nak message failed",
 			slog.String("subject", msg.Subject()),
@@ -2298,6 +2294,16 @@ func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg, ref ingestRef
 	// Recorded whether or not the nak reached the broker: either way the
 	// message is unapplied and comes back, after the delay or after AckWait.
 	recordIngestNak(msg, ref)
+}
+
+// deliveries returns how many times msg has been delivered, its
+// NumDelivered, or 0 when it carries no broker metadata.
+func deliveries(msg jetstream.Msg) uint64 {
+	md, err := msg.Metadata()
+	if err != nil {
+		return 0
+	}
+	return md.NumDelivered
 }
 
 // nakBaseDelay and nakMaxDelay bound how long a nak'd message waits to be
