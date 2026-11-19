@@ -20,7 +20,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/status"
 )
 
-// shutdownRecorder is the three collaborators of shutdownSequence in one
+// shutdownRecorder is the collaborators of shutdownSequence in one
 // value, so a test reads the order they were called in from a single log.
 type shutdownRecorder struct {
 	mu      sync.Mutex

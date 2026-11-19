@@ -300,8 +300,8 @@ current worker, a task status it could not deliver while the server was down
 stays pending and is retried until the broker stores it, so the task does not
 run again. A status the worker drops (it crashed, or its shutdown's status
 flush ran out) is recovered by [reconciliation](#reconciliation), at the cost
-of running that task again. Workers from v0.3.0 and earlier send no attempt list and are
-never reconciled: a task whose report such a worker lost stays `running` until
+of running that task again. Workers from v0.3.0 and earlier send no attempt
+list and are never reconciled: a task whose report such a worker lost stays `running` until
 that worker goes offline.
 
 Upgrade the server and its workers together. The server discards the
@@ -2479,10 +2479,10 @@ after the restart. See [Status reports are
 acknowledged](architecture.md#4-worker-execution).
 
 A worker's deregister waits until the server has applied the task statuses
-the worker sent before it, but only for about 16 s. During an ingest hold, a
-store pause or a bus interruption around a server restart, the task-status
-consumer is held back for longer than that, so a deregister that arrives in
-that window is applied when its wait runs out, and the server logs `scheduler:
+the worker sent before it, but only for about 15 s. If the task-status
+consumer is held back for longer than that (an ingest hold, a store pause or a
+bus interruption around a server restart), a deregister that arrives in that
+window is applied when its wait runs out, and the server logs `scheduler:
 deregister applied before the task-status consumer caught up` at Warn. That
 Warn around a restart is expected.
 

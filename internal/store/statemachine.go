@@ -39,11 +39,11 @@ var ErrInvalidTransition = errors.New("store: invalid state transition")
 // assigned → succeeded/failed look like skipped states but are reachable in
 // normal operation: a worker that starts the task's process publishes
 // "running" before the terminal status, but that message can still be missing
-// when the terminal one is stored: the worker acks and retries a first
-// "running" in the background, and drops one still pending when the task's
-// terminal status is ready to send. A task that ends before its process starts
-// (a refused or failed dispatch) sends no "running" at all. The terminal
-// message then lands on a row still in 'assigned'. Rejecting it would strand
+// when the terminal one is stored: the worker retries a first "running" in
+// the background until the stream acknowledges it, and drops one still pending
+// when the task's terminal status is ready to send. A task that ends before
+// its process starts (a refused or failed dispatch) sends no "running" at all.
+// The terminal message then lands on a row still in 'assigned'. Rejecting it would strand
 // finished work until the heartbeat sweep reclaimed it.
 //
 // A transition from a status to itself is not listed here and is not valid:

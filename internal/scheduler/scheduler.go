@@ -1413,8 +1413,8 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 // reclaim the tasks it is running. A deregister the task-status consumer has
 // not yet caught up to is handed back for a later re-check
 // ([Scheduler.deferDeregister]), so the worker's last stored statuses are
-// applied before its attempts are reclaimed. A deregister whose kind is retired or
-// preempted then deletes an ephemeral capacity-group member and revokes its
+// applied before its attempts are reclaimed. A deregister whose kind is
+// retired or preempted then deletes an ephemeral capacity-group member and revokes its
 // credential ([Scheduler.removeDepartedEphemeral]). A member the capacity
 // actuator was retiring then has its retirement finished
 // ([Scheduler.finishRetirementOnDeregister]).

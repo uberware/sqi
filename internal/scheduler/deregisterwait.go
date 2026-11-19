@@ -51,7 +51,9 @@ const (
 //
 // The deferral is bounded by the message's delivery count: its
 // [deregisterMaxRechecks]th delivery is applied with a warning. A message with
-// no broker metadata or stamp is applied at once, as it cannot be compared.
+// no broker metadata or stamp is applied at once, as it cannot be compared. A
+// scheduler that has lost leadership leaves the message untouched for the new
+// leader.
 // The nak does not go through [Scheduler.nakMsg]: a deferral is not an ingest
 // failure, and recording it as pending would hold back the liveness sweep.
 func (s *Scheduler) deferDeregister(ctx context.Context, msg jetstream.Msg, workerID string) bool {

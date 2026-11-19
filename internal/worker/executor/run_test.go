@@ -219,9 +219,9 @@ func (r *ackRecorder) terminal() (protocol.TaskStatusMsg, bool) {
 }
 
 // TestCredentialFailureReportsItsEnd checks that a task whose run-as-user
-// credential cannot be applied reports a real end: its processResult used to
-// carry no EndedAt, so the terminal status's ended_ago_ms measured from the
-// zero time.
+// credential cannot be applied reports a real end: the terminal status's
+// ended_ago_ms is measured from the result's EndedAt, so a result without one
+// would measure from the zero time.
 func TestCredentialFailureReportsItsEnd(t *testing.T) {
 	orig := applyCredential
 	applyCredential = func(*exec.Cmd, *isolation.Credential) error { return errors.New("no such account") }

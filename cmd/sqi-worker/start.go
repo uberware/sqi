@@ -519,13 +519,13 @@ func startPreemptionWatch(
 //     keeps running throughout: a drain may outlast the server's heartbeat
 //     timeout, and a worker that goes quiet is declared offline and loses its
 //     running tasks.
-//  2. Flush: wait up to [status.DefaultFlushTimeout] until the publisher has
-//     stored every status report it still holds. The drain returns once each
-//     task has made its first attempt at a terminal report, which the broker
-//     may not have stored yet; a deregistration sent before it is stored
-//     lets the server reclaim a task that has finished. The heartbeat still
-//     runs, since it lists these attempts as held. Reports still pending when
-//     the wait ends are dropped, and the sequence goes on.
+//  2. Flush: wait up to [status.DefaultFlushTimeout] for the publisher to
+//     store the status reports it still holds. The drain returns once each
+//     task has made its first try at its terminal report, which the broker may
+//     not have stored yet, and a deregistration sent before it is stored would
+//     let the server reclaim a task that has finished. The heartbeat keeps
+//     running and lists these attempts as held. Reports still pending when the
+//     wait ends are dropped and the sequence goes on.
 //  3. Stop the heartbeat, so no further beat is started after the departure
 //     message. stopHeartbeat only cancels the publisher's context and does not wait
 //     for its Run to return, so a beat already being published can still

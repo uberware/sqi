@@ -604,13 +604,13 @@ func (e *Executor) stopOutcome() (status, reason string) {
 // result, and records it in the task metrics under status. A nil exitCode
 // reports none.
 //
-// No "running" goes first: the server moves an assigned task straight to its
-// terminal status (store.ValidateTaskTransition), and the publisher would
-// drop a still-pending first "running" when the terminal is handed over
-// anyway. An inline "running" would only cost the caller (the lease loop, for
-// a refused or failed dispatch) a second ack timeout while JetStream is down.
-// Terminal waits at most one and leaves a report the stream has not
-// acknowledged to retry in the background.
+// No "running" is sent first: the server moves an assigned task straight to
+// its terminal status (store.ValidateTaskTransition), and the publisher drops
+// a still-pending first "running" when the terminal is handed over. An inline
+// "running" would cost the caller (the lease loop, for a refused or failed
+// dispatch) a second ack timeout while JetStream is down. Terminal waits at
+// most one and leaves a report the stream has not acknowledged to retry in the
+// background.
 func (e *Executor) publishEnded(msg *protocol.AssignMsg, sessID, status string, exitCode *int, reason string) {
 	e.statusPub.Terminal(msg, sessID, status, exitCode, reason, nil, time.Now())
 	e.m.TasksTotal.WithLabelValues(status).Inc()

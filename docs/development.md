@@ -1415,8 +1415,8 @@ type StateSource interface {
    it has handed its terminal status to the `status.Publisher` (or `Dispatch`
    fails before running it). The heartbeat then adds
    `Publisher.PendingAttemptIDs()`, so the attempt stays reported until the
-   `SQI_TASK` stream has stored that status. A source without `AttemptSource` sends heartbeats without
-   `attempts_reported`, and the server never reconciles that worker's attempts.
+   `SQI_TASK` stream has stored that status. A source without `AttemptSource`
+   sends heartbeats without `attempts_reported`, and the server never reconciles that worker's attempts.
 
 3. **Publish status messages** — inject `*status.Publisher` and call
    `Running` and `Terminal` (a task interrupted by shutdown reports `failed` with

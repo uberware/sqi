@@ -519,13 +519,13 @@ func (inc *incarnation) stop(ctx context.Context) {
 // drains while stopping its per-attempt goroutine. The ledger misses no
 // status the server got.
 //
-// A report the broker has not yet acknowledged is dropped, not awaited: a
-// crashed process does not finish sending. The ledger records a terminal
-// status once the status publisher's Terminal returns, which it does after
-// one inline try whether or not that try was acknowledged, so a terminal
-// whose inline try failed and that was still waiting for a retry is in the
-// ledger although the server never got it, and the server reclaims that
-// attempt as it does a crashed one.
+// A report the broker has not yet acknowledged is dropped, not awaited, as in
+// a crashed process. The ledger records a terminal status when the status
+// publisher's Terminal returns, which is after one inline try whether or not
+// that try was acknowledged. A terminal whose inline try failed and which was
+// still waiting for a retry is therefore in the ledger although the server
+// never got it, and the server reclaims that attempt as it does a crashed
+// one.
 func (inc *incarnation) crash() {
 	close(inc.ended)
 	inc.stopHB() // also stops the lease loop and a re-registration under way

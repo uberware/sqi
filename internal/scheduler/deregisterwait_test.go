@@ -209,9 +209,9 @@ func TestDeregister_BeforeFirstMarkerDefers(t *testing.T) {
 	f.requireDeferred(t, msg)
 }
 
-// A deregister the task-status consumer never catches up to is deferred
-// through the delivery before deregisterMaxRechecks and applied, with one
-// warning, on that delivery.
+// A deregister the task-status consumer never catches up to is deferred on
+// every delivery before the deregisterMaxRechecks-th and applied, with one
+// warning, on that one.
 func TestDeregister_AppliesAtMaxRechecks(t *testing.T) {
 	f := newDeregisterWaitFixture(t)
 	f.s.ingestTask.marker(f.stamp.Add(-time.Second))

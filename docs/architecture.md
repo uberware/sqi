@@ -488,9 +488,9 @@ retries as duplicates of its message ID, counting the outage as run time
 (`internal/worker/status/transport.go`). This narrows that window but does not
 close it: the status check and the publish are not atomic, so a try written
 just before the client notices the connection has dropped can still be
-buffered and sent with its old age once the connection comes back. Progress
-snapshots stay plain core publishes with no ack, because only the latest
-matters.
+buffered and sent with its old age once the connection comes back. A closed
+connection drops the report. Progress snapshots are plain core publishes with
+no ack, because only the latest matters.
 
 A worker's heartbeat lists the attempts its executor holds plus the attempts
 the publisher still has a status pending for, so the server's reconciliation
@@ -535,7 +535,7 @@ NATS consumer (internal/scheduler/taskstatus.go)
 **An attempt's `ended_at`** is the broker's stamp of the stored terminal status
 minus the report's `ended_ago_ms`, clamped to the range from the attempt's
 `started_at` to the time the server received the message. `TaskStatusMsg.At`,
-the worker's clock, is still sent but no longer drives it, so a worker whose
+the worker's clock, is sent but does not drive it, so a worker whose
 clock runs behind or ahead cannot record an attempt that ends before it
 started or after the server heard of it, and the retry delay of a status that
 needed retries is not counted into the task's run time. A report that carries no
@@ -1515,8 +1515,8 @@ A worker's report dates only the attempt it describes: the attempt's
 `ended_at`, on both the terminal path (`CompleteTaskAttempt`) and the failure
 path (`RecordTaskFailure`), computed from the broker's stamp and the report's
 `ended_ago_ms` rather than from the worker's clock (see
-[Status ingestion](#5-status-ingestion)). A released claim's `released_at` and every task and
-job row's `updated_at` are server time, including the auto-retry requeue and
+[Status ingestion](#5-status-ingestion)). A released claim's `released_at` and
+every task and job row's `updated_at` are server time, including the auto-retry requeue and
 the auto-park, and so is the `updated_at` on the WebSocket event announcing
 each change. The web UI relies on this: it ignores a job or task event older
 than the row it already holds, so a row dated by a fast worker clock would hide
