@@ -569,7 +569,7 @@ func preExecExitCode() *int {
 	return &code
 }
 
-// failPreExec publishes the running→failed transition for a pre-execution
+// failPreExec publishes the terminal "failed" status for a pre-execution
 // failure (exit code -1) and marks the task failed. Callers log their own
 // context-specific message before calling.
 func (e *Executor) failPreExec(msg *protocol.AssignMsg, sessID string, failed *bool, reason string) {
@@ -600,22 +600,23 @@ func (e *Executor) stopOutcome() (status, reason string) {
 	return "canceled", ""
 }
 
-// publishEnded publishes "running" then status for a task that ended without a
-// process result, and records it in the task metrics under status. A nil
-// exitCode reports none. "running" comes first so the server sees assigned →
-// running → terminal, the arrows runTask uses.
+// publishEnded publishes status for a task that ended without a process
+// result, and records it in the task metrics under status. A nil exitCode
+// reports none.
 //
-// It never wedges the caller (the lease loop, for a refused or failed
-// dispatch): Running and Terminal each wait at most one ack timeout and
-// leave a report the stream has not acknowledged to retry in the background.
+// No "running" goes first: the server moves an assigned task straight to its
+// terminal status (store.ValidateTaskTransition), and the publisher would
+// drop a still-pending first "running" when the terminal is handed over
+// anyway. An inline "running" would only cost the caller (the lease loop, for
+// a refused or failed dispatch) a second ack timeout while JetStream is down.
+// Terminal waits at most one and leaves a report the stream has not
+// acknowledged to retry in the background.
 func (e *Executor) publishEnded(msg *protocol.AssignMsg, sessID, status string, exitCode *int, reason string) {
-	now := time.Now()
-	e.statusPub.Running(msg, sessID, now)
-	e.statusPub.Terminal(msg, sessID, status, exitCode, reason, nil, now)
+	e.statusPub.Terminal(msg, sessID, status, exitCode, reason, nil, time.Now())
 	e.m.TasksTotal.WithLabelValues(status).Inc()
 }
 
-// failResolution publishes the running→failed transition for a task that could
+// failResolution publishes the terminal "failed" status for a task that could
 // not have its OpenJD format strings resolved, mirroring the other
 // pre-execution failure paths in runTask.  It sets *failed so the deferred
 // session cleanup honors keepFailedSessions, and records the failure metric.
@@ -701,8 +702,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 
 	// Publish "running" status before Start so the server records the attempt
 	// even if the command is not found or cannot be executed.  If Start fails
-	// the caller publishes a terminal "failed" immediately after, so the
-	// server always sees a running→failed transition.
+	// the caller publishes a terminal "failed" immediately after.
 	// The status carries no progress: the process has emitted no output.
 	e.statusPub.Running(msg, sess.ID, startedAt)
 

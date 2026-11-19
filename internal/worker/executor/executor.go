@@ -418,8 +418,8 @@ func (e *Executor) failSetup(
 }
 
 // refuseStopping ends an assignment dispatched after the worker was told to
-// stop, before anything of it is registered or started: it publishes "running"
-// then "failed" with [protocol.MessageWorkerShutdown], releases the held
+// stop, before anything of it is registered or started: it publishes "failed"
+// with [protocol.MessageWorkerShutdown], releases the held
 // attempt, and returns an error for Dispatch to return.
 func (e *Executor) refuseStopping(ctx context.Context, msg *protocol.AssignMsg) error {
 	err := fmt.Errorf("executor: worker is stopping: %w", context.Cause(ctx))

@@ -51,7 +51,7 @@ func TestExecutor_Dispatch_S3PathWithoutStaging(t *testing.T) {
 	if err := exec.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	waitForStatus(t, nc, 2, 10*time.Second)
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {
@@ -61,8 +61,8 @@ func TestExecutor_Dispatch_S3PathWithoutStaging(t *testing.T) {
 		!strings.Contains(last.Message, "s3://studio-bucket/shows/scene.hip") {
 		t.Errorf("message = %q; want it to name the path and stage_locally", last.Message)
 	}
-	if statuses := nc.statuses(); len(statuses) < 2 || statuses[0] != "running" {
-		t.Errorf("want running→failed transition, got %v", statuses)
+	if statuses := nc.statuses(); !slices.Equal(statuses, []string{"failed"}) {
+		t.Errorf("statuses = %v, want [failed]: a pre-execution failure publishes only the terminal", statuses)
 	}
 }
 
@@ -493,6 +493,24 @@ func waitForStatus(t *testing.T, nc *stubNATS, n int, timeout time.Duration) {
 	got := len(nc.msgs)
 	nc.mu.Unlock()
 	t.Fatalf("timed out waiting for %d NATS status messages; got %d", n, got)
+}
+
+// waitForTerminal polls nc until a terminal status (succeeded, failed or
+// canceled) has been published or the deadline elapses. A run that started
+// its process publishes "running" first; one that ended before it did
+// publishes only the terminal.
+func waitForTerminal(t *testing.T, nc *stubNATS, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for _, st := range nc.statuses() {
+			if st != "running" {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for a terminal status; got %v", nc.statuses())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1336,7 +1354,7 @@ func TestExecutor_Cancel_earlyCancel(t *testing.T) {
 	exec.Cancel(msg.TaskID, "")
 
 	// Regardless of which path fires, the task must reach a terminal state.
-	waitForStatus(t, nc, 2, 10*time.Second)
+	waitForTerminal(t, nc, 10*time.Second)
 
 	last := nc.lastStatus()
 	// Worker context (ctx) is Background — so this must be "canceled", not
@@ -1508,7 +1526,7 @@ func TestExecutor_Dispatch_embeddedFiles_eol(t *testing.T) {
 
 // TestExecutor_Dispatch_embeddedFiles_writeFail verifies that a write failure
 // during step-level embedded-file materialization fails the task cleanly with a
-// running→failed status transition, without panicking.
+// terminal "failed" status, without panicking.
 func TestExecutor_Dispatch_embeddedFiles_writeFail(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses POSIX shell commands")
@@ -1537,8 +1555,8 @@ func TestExecutor_Dispatch_embeddedFiles_writeFail(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	// Pre-execution failures still publish running→failed (2 status messages).
-	waitForStatus(t, nc, 2, 10*time.Second)
+	// A pre-execution failure publishes only the terminal status.
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {
@@ -1622,8 +1640,8 @@ func TestExecutor_Dispatch_credentialResolutionFailure(t *testing.T) {
 	}
 
 	statuses := nc.statuses()
-	if len(statuses) != 2 || statuses[0] != "running" || statuses[1] != "failed" {
-		t.Fatalf("statuses = %v, want [running failed]", statuses)
+	if !slices.Equal(statuses, []string{"failed"}) {
+		t.Fatalf("statuses = %v, want [failed]", statuses)
 	}
 
 	last := nc.lastStatus()
@@ -1637,15 +1655,11 @@ func TestExecutor_Dispatch_credentialResolutionFailure(t *testing.T) {
 		t.Errorf("Message = %q; want it to name the credential-resolution failure and the user", last.Message)
 	}
 
-	// The two statuses published above must form a legal state-machine
-	// transition pair (assigned→running, then running→failed) so the
-	// server's task-status consumer accepts them instead of discarding the
+	// The lone terminal status lands on a task still assigned, so that arrow
+	// must be legal or the server's task-status consumer would discard the
 	// write as store.ErrInvalidTransition — see internal/store/statemachine.go.
-	if err := store.ValidateTaskTransition(store.TaskStatusAssigned, store.TaskStatusRunning); err != nil {
-		t.Errorf("assigned→running must be legal: %v", err)
-	}
-	if err := store.ValidateTaskTransition(store.TaskStatusRunning, store.TaskStatusFailed); err != nil {
-		t.Errorf("running→failed must be legal: %v", err)
+	if err := store.ValidateTaskTransition(store.TaskStatusAssigned, store.TaskStatusFailed); err != nil {
+		t.Errorf("assigned→failed must be legal: %v", err)
 	}
 }
 
@@ -1766,8 +1780,8 @@ func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	// Pre-exec failure publishes running → failed (2 status messages).
-	waitForStatus(t, nc, 2, 10*time.Second)
+	// A pre-execution failure publishes only the terminal status.
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {
@@ -1850,7 +1864,7 @@ func TestExecutor_Dispatch_stageLocallyFailsWithoutStagingDefaults(t *testing.T)
 	if err := exec.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	waitForStatus(t, nc, 2, 10*time.Second)
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {
@@ -1994,8 +2008,8 @@ func TestExecutor_ActiveAttemptIDs_PreExecFailureReleases(t *testing.T) {
 	if ids := exec.ActiveAttemptIDs(); len(ids) != 0 {
 		t.Errorf("after the failed Dispatch = %v, want none", ids)
 	}
-	if statuses := nc.statuses(); len(statuses) != 2 || statuses[1] != "failed" {
-		t.Errorf("statuses = %v, want [running failed]", statuses)
+	if statuses := nc.statuses(); !slices.Equal(statuses, []string{"failed"}) {
+		t.Errorf("statuses = %v, want [failed]", statuses)
 	}
 }
 

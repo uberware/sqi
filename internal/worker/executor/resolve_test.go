@@ -104,7 +104,7 @@ func TestExecutor_Dispatch_TaskFileArg(t *testing.T) {
 
 // TestExecutor_Dispatch_EmbeddedFileDataUnknownVarFails verifies that an
 // unresolvable {{...}} reference in step embedded-file data fails the task
-// cleanly (running→failed, exit -1) naming the offending reference.
+// cleanly (failed, exit -1) naming the offending reference.
 func TestExecutor_Dispatch_EmbeddedFileDataUnknownVarFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses POSIX shell commands")
@@ -130,7 +130,7 @@ func TestExecutor_Dispatch_EmbeddedFileDataUnknownVarFails(t *testing.T) {
 	if err := exec.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	waitForStatus(t, nc, 2, 10*time.Second)
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {
@@ -294,7 +294,7 @@ func TestExecutor_Dispatch_UnknownVariableFailsTask(t *testing.T) {
 	if err := exec.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	waitForStatus(t, nc, 2, 10*time.Second)
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {

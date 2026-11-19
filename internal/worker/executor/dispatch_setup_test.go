@@ -170,8 +170,8 @@ func TestDispatch_CancelDuringOnEnterReportsCanceled(t *testing.T) {
 		t.Fatal("Cancel did not find the task whose environment is being entered")
 	}
 	wantSetupError(t, result, 10*time.Second)
-	if got := nc.statuses(); !slices.Equal(got, []string{"running", "canceled"}) {
-		t.Fatalf("statuses = %v, want [running canceled]", got)
+	if got := nc.statuses(); !slices.Equal(got, []string{"canceled"}) {
+		t.Fatalf("statuses = %v, want [canceled]", got)
 	}
 	// Held at the terminal publish, released by the time Dispatch returns.
 	held.require(t)
@@ -201,8 +201,8 @@ func TestDispatch_RefusesAssignmentOnceWorkerIsStopping(t *testing.T) {
 	if _, err := os.Stat(entered); err == nil {
 		t.Error("the environment's onEnter ran on a worker that is stopping")
 	}
-	if got := nc.statuses(); !slices.Equal(got, []string{"running", "failed"}) {
-		t.Fatalf("statuses = %v, want [running failed]", got)
+	if got := nc.statuses(); !slices.Equal(got, []string{"failed"}) {
+		t.Fatalf("statuses = %v, want [failed]", got)
 	}
 	wantWorkerShutdown(t, nc)
 	held.require(t)
@@ -249,8 +249,8 @@ func TestDispatch_CancelAfterSetupStartsNoProcess(t *testing.T) {
 	if ids := waitForNoAttempts(exec, 10*time.Second); len(ids) != 0 {
 		t.Fatalf("held after the task ended = %v, want none", ids)
 	}
-	if got := nc.statuses(); !slices.Equal(got, []string{"running", "canceled"}) {
-		t.Fatalf("statuses = %v, want [running canceled]", got)
+	if got := nc.statuses(); !slices.Equal(got, []string{"canceled"}) {
+		t.Fatalf("statuses = %v, want [canceled]", got)
 	}
 }
 
