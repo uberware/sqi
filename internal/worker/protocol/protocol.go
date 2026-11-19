@@ -87,7 +87,11 @@ import (
 //     again. The server sends it to a worker it holds offline while the
 //     worker's heartbeats still arrive; a worker that does not know the
 //     command stays offline until its broker connection drops.
-const ProtocolVersion = "7"
+//   - A terminal [TaskStatusMsg] carries [TaskStatusMsg.EndedAgoMs], and the
+//     server dates the attempt's end from the broker's stamp minus that age
+//     rather than from [TaskStatusMsg.At], the worker's own clock. A worker
+//     that sent only At would have its attempt end read from a skewed clock.
+const ProtocolVersion = "8"
 
 // ── Message type constants ────────────────────────────────────────────────────
 
@@ -839,10 +843,15 @@ type TaskStatusMsg struct {
 	// See docs/architecture.md ("SQLite schema overview").
 	SessionID string `json:"session_id,omitempty"`
 
-	// At is the worker's local timestamp for this event.
-	// The server uses this for the attempt's EndedAt; if zero the server clock
-	// is used.
+	// At is the worker's local timestamp for this event. It is a reported time
+	// only: the server does not use it as the attempt's end, which comes from
+	// the broker's stamp and [TaskStatusMsg.EndedAgoMs].
 	At time.Time `json:"at"`
+
+	// EndedAgoMs is the milliseconds between the event and the moment this send
+	// was built, from the worker's monotonic clock. Set on terminal reports
+	// only; zero means the report was sent as the event happened.
+	EndedAgoMs int64 `json:"ended_ago_ms,omitempty"`
 
 	// WorkerID is the ID of the worker that executed (or is executing) this task.
 	// It lets the server correlate status messages with the worker record

@@ -39,7 +39,7 @@ import (
 // sender). The empty case matters most — it is the one a reader assumes is
 // handled and the one an `if version != "" && version != current` gate lets
 // through.
-var mismatchedVersions = []string{"6", "8", ""}
+var mismatchedVersions = []string{"7", "9", ""}
 
 // ── worker.register ───────────────────────────────────────────────────────────
 

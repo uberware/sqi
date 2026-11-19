@@ -123,7 +123,13 @@ func (s *Scheduler) handleTaskStatus(msg jetstream.Msg) {
 		return
 	}
 
-	if err := s.processTaskStatus(ctx, subjectWorkerID, m); err != nil {
+	received := time.Now().UTC()
+	stored := received
+	if at := s.brokerAt(ctx, msg, "task.status", subjectWorkerID); at != nil {
+		stored = *at
+	}
+
+	if err := s.processTaskStatus(ctx, subjectWorkerID, m, stored, received); err != nil {
 		// Fenced: another server leads now. The message is left
 		// unacknowledged, for JetStream to redeliver to it.
 		if s.stopIfFenced(ctx, err) {
@@ -165,7 +171,13 @@ func (s *Scheduler) handleTaskStatus(msg jetstream.Msg) {
 // attempt's recorded WorkerID below; m.WorkerID is not trusted for this
 // decision, since it is asserted by whoever sent the message rather than
 // enforced by the transport.
-func (s *Scheduler) processTaskStatus(ctx context.Context, subjectWorkerID string, m protocol.TaskStatusMsg) error {
+//
+// stored is when the broker recorded the message and received is when this
+// server took it up; a terminal report's attempt end is dated from them by
+// [terminalEndedAt], never from the worker's clock.
+func (s *Scheduler) processTaskStatus(
+	ctx context.Context, subjectWorkerID string, m protocol.TaskStatusMsg, stored, received time.Time,
+) error {
 	// Verify the attempt still exists and is for the right task.
 	attempt, err := s.store.GetTaskAttempt(ctx, m.AttemptID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -207,10 +219,7 @@ func (s *Scheduler) processTaskStatus(ctx context.Context, subjectWorkerID strin
 		return nil
 	}
 
-	at := m.At
-	if at.IsZero() {
-		at = time.Now().UTC()
-	}
+	at := terminalEndedAt(stored, received, attempt.StartedAt, m.EndedAgoMs)
 
 	switch m.Status {
 	case "running":
@@ -229,6 +238,25 @@ func (s *Scheduler) processTaskStatus(ctx context.Context, subjectWorkerID strin
 		)
 		return nil
 	}
+}
+
+// terminalEndedAt dates the end of an attempt on the server's timeline.
+//
+// stored is the broker's stamp of the report and received is when this server
+// took it up. The event happened endedAgoMs before the worker built the send,
+// so the end is stored minus that age (a negative age counts as zero). It is
+// never earlier than startedAt, the lease, and never later than received: a
+// stamp or age the worker's clock or a replay pushed outside that window is
+// clamped to its edge.
+func terminalEndedAt(stored, received, startedAt time.Time, endedAgoMs int64) time.Time {
+	at := stored.Add(-time.Duration(max(endedAgoMs, 0)) * time.Millisecond)
+	if at.Before(startedAt) {
+		at = startedAt
+	}
+	if at.After(received) {
+		at = received
+	}
+	return at
 }
 
 // handleTaskRunning applies a "running" report through

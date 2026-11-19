@@ -520,7 +520,7 @@ func (r *stressRun) report(g, idx, i int) {
 		return
 	}
 	m := stressReport(task, attempt, i)
-	err = r.reportedBy[g].processTaskStatus(ctx, attempt.WorkerID, m)
+	err = r.reportedBy[g].processTaskStatus(ctx, attempt.WorkerID, m, time.Now().UTC(), time.Now().UTC())
 	if errors.Is(err, store.ErrInvalidTransition) {
 		// The task moved on first (reclaimed, canceled, or already terminal):
 		// the scheduler refuses the report and the consumer would ack it.
@@ -646,7 +646,7 @@ func (r *stressRun) sendStaleReport(a store.TaskAttempt, n int) {
 	if n%2 == 0 {
 		m.Status, m.ExitCode, m.Message = "running", nil, ""
 	}
-	err = r.s.processTaskStatus(ctx, a.WorkerID, m)
+	err = r.s.processTaskStatus(ctx, a.WorkerID, m, time.Now().UTC(), time.Now().UTC())
 	if err != nil && !errors.Is(err, store.ErrInvalidTransition) {
 		r.expect("processTaskStatus (stale) "+m.Status, err)
 		return
@@ -684,7 +684,7 @@ func (r *stressRun) shutdownOne(n int) {
 		TaskID: attempt.TaskID, AttemptID: attempt.ID, JobID: r.fx.jobID, At: time.Now().UTC(),
 		Status: "failed", ExitCode: &one, Message: protocol.MessageWorkerShutdown,
 	}
-	if err := r.s.processTaskStatus(ctx, attempt.WorkerID, m); err != nil && !errors.Is(err, store.ErrInvalidTransition) {
+	if err := r.s.processTaskStatus(ctx, attempt.WorkerID, m, time.Now().UTC(), time.Now().UTC()); err != nil && !errors.Is(err, store.ErrInvalidTransition) {
 		r.expect("processTaskStatus (shutdown)", err)
 		return
 	}
