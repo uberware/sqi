@@ -24,6 +24,7 @@ import (
 	nats "github.com/nats-io/nats.go"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/server"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/status"
 )
@@ -32,9 +33,10 @@ import (
 // runs at once.
 const statusAckTasks = 20
 
-// statusAckJobYAML is a job of statusAckTasks one-core tasks, so a worker
-// advertising statusAckTasks cores leases them all at once.
-var statusAckJobYAML = fmt.Sprintf(`specificationVersion: "jobtemplate-2023-09"
+// statusAckJobYAML returns a job of n one-core tasks, so a worker advertising
+// n cores leases them all at once.
+func statusAckJobYAML(n int) string {
+	return fmt.Sprintf(`specificationVersion: "jobtemplate-2023-09"
 name: Status Ack Test
 steps:
   - name: Render
@@ -53,7 +55,8 @@ steps:
           command: echo
           args:
             - "{{Task.Param.Frame}}"
-`, statusAckTasks)
+`, n)
+}
 
 // statusAckAttempt is the subset of one item of GET /api/v1/tasks/{id}/attempts
 // these tests read.
@@ -218,9 +221,17 @@ func waitTaskStatus(t *testing.T, ts *testServer, taskID, want string, timeout t
 	}
 }
 
+// endedJitter is how far past the instant a terminal was sent its stored
+// ended_at may fall: the server places the end at the broker's stamp minus
+// the age the worker measured, and the two clocks are read a little apart.
+const endedJitter = time.Second
+
 // requireOneSucceededAttempt fails the test unless the task succeeded on its
 // one attempt, which ended no earlier than it started and no later than now.
-func requireOneSucceededAttempt(t *testing.T, ts *testServer, taskID string) {
+// A non-zero endedBy is a further bound: the terminal was sent before it, so
+// ended_at must not be later than endedBy plus endedJitter however long the
+// report then took to be stored.
+func requireOneSucceededAttempt(t *testing.T, ts *testServer, taskID string, endedBy time.Time) {
 	t.Helper()
 	if got := getTaskDetail(t, ts, taskID).Status; got != "succeeded" {
 		t.Errorf("task %s: status %q, want succeeded", taskID, got)
@@ -241,6 +252,9 @@ func requireOneSucceededAttempt(t *testing.T, ts *testServer, taskID string) {
 	case a.EndedAt.Before(a.StartedAt) || a.EndedAt.After(now):
 		t.Errorf("task %s attempt %d: started_at %s, ended_at %s, now %s: want started_at <= ended_at <= now",
 			taskID, a.AttemptNumber, a.StartedAt.Format(time.RFC3339Nano), a.EndedAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	case !endedBy.IsZero() && a.EndedAt.After(endedBy.Add(endedJitter)):
+		t.Errorf("task %s attempt %d: ended_at %s, more than %s after its terminal was sent (by %s): the retry delay was counted as run time",
+			taskID, a.AttemptNumber, a.EndedAt.Format(time.RFC3339Nano), endedJitter, endedBy.Format(time.RFC3339Nano))
 	}
 }
 
@@ -261,14 +275,15 @@ func TestStatusAck_TerminalSurvivesServerRestart(t *testing.T) {
 	waitTaskStatus(t, ts, a.TaskID, "running", 10*time.Second)
 
 	ts.Stop(t)
-	w.reportSucceeded(a)
+	w.reportSucceeded(a) // the task ends now, with the server down
 	w.requirePending(a.AttemptID)
 
+	restartAt := time.Now()
 	ts = restartServer(t, ts)
 	if final := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, 60*time.Second); final != "completed" {
 		t.Fatalf("job final status: got %q, want completed", final)
 	}
-	requireOneSucceededAttempt(t, ts, a.TaskID)
+	requireOneSucceededAttempt(t, ts, a.TaskID, restartAt)
 }
 
 // TestStatusAck_RunningSurvivesServerRestart sends an attempt's first
@@ -305,7 +320,7 @@ func TestStatusAck_TerminalsDuringServerStop(t *testing.T) {
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	w := newStatusAckWorker(t, ts, farmID, queueID, statusAckTasks)
 
-	jobID := submitJobCustomYAML(t, ts, farmID, queueID, statusAckJobYAML)
+	jobID := submitJobCustomYAML(t, ts, farmID, queueID, statusAckJobYAML(statusAckTasks))
 	assigns := w.lease(statusAckTasks)
 	for _, a := range assigns {
 		w.reportRunning(a)
@@ -319,7 +334,9 @@ func TestStatusAck_TerminalsDuringServerStop(t *testing.T) {
 	// so one whose first try waits out the ack timeout while the broker is down
 	// does not hold back the rest.
 	var sends sync.WaitGroup
+	dispatched := make(chan struct{})
 	sends.Go(func() {
+		defer close(dispatched)
 		for i, a := range assigns {
 			if i > 0 {
 				time.Sleep(10 * time.Millisecond)
@@ -328,7 +345,13 @@ func TestStatusAck_TerminalsDuringServerStop(t *testing.T) {
 		}
 	})
 	ts.Stop(t)
-	t.Logf("server stopped with %d of %d attempts holding an unstored report", len(w.pub.PendingAttemptIDs()), statusAckTasks)
+	unstored := len(w.pub.PendingAttemptIDs())
+	t.Logf("server stopped with %d of %d attempts holding an unstored report", unstored, statusAckTasks)
+	if unstored == 0 {
+		t.Fatal("every terminal was stored before the server stopped; want some still unstored, so the test covers the stop")
+	}
+	<-dispatched // every task has ended before the restart begins
+	restartAt := time.Now()
 	ts = restartServer(t, ts)
 	sends.Wait()
 
@@ -340,7 +363,7 @@ func TestStatusAck_TerminalsDuringServerStop(t *testing.T) {
 		t.Fatalf("job has %d tasks, want %d", len(ids), statusAckTasks)
 	}
 	for _, id := range ids {
-		requireOneSucceededAttempt(t, ts, id)
+		requireOneSucceededAttempt(t, ts, id, restartAt)
 	}
 }
 
@@ -348,6 +371,12 @@ func TestStatusAck_TerminalsDuringServerStop(t *testing.T) {
 // as its terminal status is stored. The server applies that status before it
 // takes the worker offline and reclaims what it held, so the task stays
 // succeeded on its one attempt.
+//
+// This covers the end-to-end outcome only: it cannot tell a deferred
+// deregister from one that happened to arrive after the status was applied.
+// The deferral itself is pinned by the scheduler unit tests
+// TestDeregister_StatusStoredBeforeDeregisterIsAppliedFirst and
+// TestDeregister_DefersUntilTaskConsumerCatchesUp.
 func TestStatusAck_DeregisterRightAfterTerminal(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -363,7 +392,7 @@ func TestStatusAck_DeregisterRightAfterTerminal(t *testing.T) {
 	if final := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, 30*time.Second); final != "completed" {
 		t.Fatalf("job final status: got %q, want completed", final)
 	}
-	requireOneSucceededAttempt(t, ts, a.TaskID)
+	requireOneSucceededAttempt(t, ts, a.TaskID, time.Time{})
 	if ts.Logs.has("scheduler: deregister applied before the task-status consumer caught up", nil) {
 		t.Error("the deregister was applied before the task-status consumer caught up; want it deferred until then")
 	}
@@ -384,4 +413,85 @@ func waitWorkerStatus(t *testing.T, ts *testServer, workerID, want string, timeo
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// Reaper timing for TestStatusAck_RunningRetriedAcrossStopIsNotReaped.
+const (
+	// reapTimeout is the server's AssignedTaskTimeout: a task assigned for
+	// longer than this with no running applied is returned to the queue.
+	reapTimeout = 3 * time.Second
+	// reapInterval is the server's HeartbeatSweepInterval, which the reaper
+	// runs on.
+	reapInterval = 500 * time.Millisecond
+	// reapGrace is the server's BusReconnectGrace: for this long after a
+	// (re)start the reaper reclaims nothing. The server's default is minutes;
+	// this is the shortest that still covers the publisher's retry backoff
+	// (up to its 5 s RetryMax plus a 2 s ack timeout), as the default does.
+	reapGrace = 15 * time.Second
+)
+
+// TestStatusAck_RunningRetriedAcrossStopIsNotReaped leases two tasks and
+// stops the server. The worker then sends one task's first "running", whose
+// first try fails, and the server stays down for longer than
+// AssignedTaskTimeout. After the restart the retried report lands before the
+// reaper may act, so that task is running on its one attempt and stays so
+// through further reaper sweeps. The other task, never reported running, is
+// reaped: proof the reaper ran over the same window.
+func TestStatusAck_RunningRetriedAcrossStopIsNotReaped(t *testing.T) {
+	ts := startServerWith(t, func(c *server.Config) {
+		c.Scheduler.AssignedTaskTimeout = reapTimeout
+		c.Scheduler.HeartbeatSweepInterval = reapInterval
+		c.Scheduler.BusReconnectGrace = reapGrace
+	})
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	w := newStatusAckWorker(t, ts, farmID, queueID, 4)
+
+	submitJobCustomYAML(t, ts, farmID, queueID, statusAckJobYAML(2))
+	assigns := w.lease(2)
+	task, control := assigns[0], assigns[1]
+
+	ts.Stop(t)
+	w.reportRunning(task)
+	w.requirePending(task.AttemptID)
+	time.Sleep(reapTimeout + time.Second) // the server is down: nothing to poll
+	ts = restartServer(t, ts)
+	restartAt := time.Now()
+
+	waitTaskStatus(t, ts, task.TaskID, "running", reapGrace)
+	w.flush(10 * time.Second)
+
+	// The reaper may act from reapGrace after the restart. Watch the task
+	// until the control has been reaped and a further timeout and sweep have
+	// passed, failing as soon as it leaves running.
+	controlReaped := false
+	watchUntil := restartAt.Add(reapGrace + reapTimeout + 2*reapInterval)
+	for {
+		if got := getTaskDetail(t, ts, task.TaskID).Status; got != "running" {
+			t.Fatalf("task %s: status %q %s after the restart, want running (it was reaped)", task.TaskID, got, time.Since(restartAt).Round(time.Millisecond))
+		}
+		if !controlReaped && getTaskDetail(t, ts, control.TaskID).Status == "ready" {
+			controlReaped = true
+			watchUntil = latest(watchUntil, time.Now().Add(reapTimeout+2*reapInterval))
+		}
+		if controlReaped && time.Now().After(watchUntil) {
+			break
+		}
+		if time.Since(restartAt) > reapGrace+30*time.Second {
+			t.Fatalf("control task %s never reaped (status %q): the reaper did not run", control.TaskID, getTaskDetail(t, ts, control.TaskID).Status)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	attempts := getStatusAckAttempts(t, ts, task.TaskID)
+	if len(attempts) != 1 || attempts[0].Status != "running" {
+		t.Fatalf("task %s attempts: %+v, want exactly one, running", task.TaskID, attempts)
+	}
+}
+
+// latest returns the later of a and b.
+func latest(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
