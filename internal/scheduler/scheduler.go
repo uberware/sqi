@@ -1408,7 +1408,10 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 // store left the row in. A deregister from a process the worker's latest
 // registration has replaced (its instance ID differs from the stored one) is
 // acked and ignored: applying it would take the new process offline and
-// reclaim the tasks it is running. A deregister whose kind is retired or
+// reclaim the tasks it is running. A deregister the task-status consumer has
+// not yet caught up to is handed back for a later re-check
+// ([Scheduler.deferDeregister]), so the worker's last stored statuses are
+// applied before its attempts are reclaimed. A deregister whose kind is retired or
 // preempted then deletes an ephemeral capacity-group member and revokes its
 // credential ([Scheduler.removeDepartedEphemeral]). A member the capacity
 // actuator was retiring then has its retirement finished
@@ -1435,6 +1438,11 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		return
 	}
 	if s.discardOnIdentityMismatch(ctx, msg, subjectWorkerID, m.WorkerID) {
+		return
+	}
+	// Statuses the worker stored on SQI_TASK before leaving are applied
+	// first, so their attempts close normally rather than being reclaimed.
+	if s.deferDeregister(ctx, msg, m.WorkerID) {
 		return
 	}
 
