@@ -296,9 +296,11 @@ cannot share its ports either. A high-availability group is upgraded as
 [Upgrading a group](#upgrading-a-group) describes.
 
 Workers do not need to stop: they reconnect when the server is back. On a
-current worker, a report it could not deliver while the server was down is
-recovered by [reconciliation](#reconciliation), at the cost of running that
-task again. Workers from v0.3.0 and earlier send no attempt list and are
+current worker, a task status it could not deliver while the server was down
+stays pending and is retried until the broker stores it, so the task does not
+run again. A status the worker drops (it crashed, or its shutdown's status
+flush ran out) is recovered by [reconciliation](#reconciliation), at the cost
+of running that task again. Workers from v0.3.0 and earlier send no attempt list and are
 never reconciled: a task whose report such a worker lost stays `running` until
 that worker goes offline.
 
@@ -2475,6 +2477,14 @@ first `running`, as a publish the `SQI_TASK` stream must acknowledge, and
 retries it until it does, so a status in flight when the broker stops is stored
 after the restart. See [Status reports are
 acknowledged](architecture.md#4-worker-execution).
+
+A worker's deregister waits until the server has applied the task statuses
+the worker sent before it, but only for about 16 s. During an ingest hold, a
+store pause or a bus interruption around a server restart, the task-status
+consumer is held back for longer than that, so a deregister that arrives in
+that window is applied when its wait runs out, and the server logs `scheduler:
+deregister applied before the task-status consumer caught up` at Warn. That
+Warn around a restart is expected.
 
 ### A full data volume on the server
 

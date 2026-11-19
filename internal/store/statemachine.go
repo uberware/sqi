@@ -27,8 +27,8 @@ var ErrInvalidTransition = errors.New("store: invalid state transition")
 //	assigned → running    worker confirms execution has started
 //	assigned → ready      reassignment: assigned worker disconnected or timed out
 //	assigned → canceled   task canceled after assignment but before confirmation
-//	assigned → succeeded  worker's "running" message was dropped (see below)
-//	assigned → failed     worker's "running" message was dropped (see below)
+//	assigned → succeeded  no "running" preceded the terminal status (see below)
+//	assigned → failed     no "running" preceded the terminal status (see below)
 //	running  → succeeded  worker reports clean exit (exit code 0)
 //	running  → failed     worker reports non-zero exit or fatal error
 //	running  → ready      reassignment: running worker became unreachable
@@ -37,10 +37,12 @@ var ErrInvalidTransition = errors.New("store: invalid state transition")
 // Terminal states (succeeded, failed, canceled) have no outgoing transitions.
 //
 // assigned → succeeded/failed look like skipped states but are reachable in
-// normal operation: a worker publishes "running" before any terminal status,
-// but that message can still be missing when the terminal one is stored: the
-// worker acks and retries a first "running" in the background, and drops one
-// still pending when the task's terminal status is ready to send. The terminal
+// normal operation: a worker that starts the task's process publishes
+// "running" before the terminal status, but that message can still be missing
+// when the terminal one is stored: the worker acks and retries a first
+// "running" in the background, and drops one still pending when the task's
+// terminal status is ready to send. A task that ends before its process starts
+// (a refused or failed dispatch) sends no "running" at all. The terminal
 // message then lands on a row still in 'assigned'. Rejecting it would strand
 // finished work until the heartbeat sweep reclaimed it.
 //

@@ -531,7 +531,10 @@ the worker's clock, is still sent but no longer drives it, so a worker whose
 clock runs behind or ahead cannot record an attempt that ends before it
 started or after the server heard of it, and the retry delay of a status that
 needed retries is not counted into the task's run time. A report that carries no
-`ended_ago_ms` ends at the broker's stamp.
+`ended_ago_ms` ends at the broker's stamp. The receipt-time bound is applied
+first and the `started_at` bound last, so `ended_at` is never before
+`started_at`: when another server, its clock ahead of this one's, leased the
+attempt (high availability), the run is recorded as zero-length.
 
 A message whose processing fails for any other reason (the store is
 unreachable, say) is Nak'd with a delay: 1 s, doubling with each delivery up
@@ -724,7 +727,7 @@ The diagram shows the happy path only. The complete permitted set
 | `assigned` | `running` | worker confirms execution started |
 | `assigned` | `ready` | reclaim: the assigned worker went offline, restarted or shut down, or the stale-assigned reaper fired |
 | `assigned` | `canceled` | task canceled after assignment, before confirmation |
-| `assigned` | `succeeded` / `failed` | the worker's `running` publish was lost (see below) |
+| `assigned` | `succeeded` / `failed` | the terminal status arrived with no `running` before it (see below) |
 | `running` | `succeeded` | worker reports clean exit (exit code 0) |
 | `running` | `failed` | worker reports non-zero exit or a fatal error |
 | `running` | `ready` | reclaim (worker offline, restarted or shut down) or auto-retry re-queue |
@@ -867,10 +870,12 @@ stops only it, one naming none stops both, and the stale attempt's exit leaves
 the newer one running.
 
 Two arrows need explaining. `assigned` → `succeeded`/`failed` is permitted even
-though it appears to skip `running`: the worker publishes `running` first, but
-that publish is best-effort and gives up after `MaxRetries`, so it can be lost
-while the task still runs to completion. Rejecting the terminal message would
-strand finished work. Separately, the auto-retry re-queue described below
+though it appears to skip `running`: a worker that starts the task's process
+publishes `running` first, but acks and retries it in the background, and drops
+a first `running` still pending when the task's terminal status is handed over,
+so the terminal status can land on a task still `assigned`. A task that ends
+before its process starts (a refused or failed dispatch) sends no `running` at
+all. Rejecting the terminal message would strand finished work. Separately, the auto-retry re-queue described below
 (`running` → `ready` on a transient failure) is a policy-driven store call
 (`RequeueTaskForRetry`) with its own guarded SQL, as are the other paths that
 move tasks for the server's own reasons: `LeaseTask`, `RetryTasks`,
@@ -1444,13 +1449,17 @@ The server treats reports, registrations and cancels as follows.
   consumers, so a terminal status stored before the deregister could otherwise
   find its attempt already closed and its task back in `ready`
   (`internal/scheduler/deregisterwait.go`). While the consumer's effective time
-  is behind the deregister's broker stamp, the whole `OfflineWorker` call waits:
-  the message is Nak'd with a 2 s delay and the worker stays online meanwhile.
+  is behind the deregister's broker stamp, or one of the worker's statuses
+  stored before it failed to apply and waits to be delivered again, the whole
+  `OfflineWorker` call waits: the message is Nak'd with a 2 s delay and the
+  worker stays online meanwhile.
   The wait is bounded by delivery count, not by elapsed time: the eighth
   delivery (below the consumer's ten) is applied anyway with a Warn, so a
   stalled task consumer cannot keep a departed worker's attempts open. A
   deferral is not an ingest failure and does not hold back the liveness sweep.
-  The `instance_id` guard above runs again on each redelivery.
+  The `instance_id` guard above is applied when the deregister is finally
+  applied, inside `OfflineWorker`, so a deferred deregister from a superseded
+  process still cannot take its successor offline.
 - A task interrupted by its worker shutting down (`failed` with the message
   `worker_shutdown`) does not consume a retry or count toward the job's
   failure limit, whichever of the report and the deregister the server sees
