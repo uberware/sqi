@@ -215,6 +215,20 @@ func (t *ingestTracker) pending(now time.Time) pendingNames {
 	return out
 }
 
+// pendingFromWorkerBy reports whether an unapplied message names worker and
+// was stamped at or before by.
+func (t *ingestTracker) pendingFromWorkerBy(worker string, by, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.prune(now)
+	for _, e := range t.pendingMsg {
+		if e.ref.worker == worker && !e.stamp.After(by) {
+			return true
+		}
+	}
+	return false
+}
+
 // pendingCount is the number of unapplied messages.
 func (t *ingestTracker) pendingCount(now time.Time) int {
 	t.mu.Lock()

@@ -42,7 +42,9 @@ const (
 // queue, so a terminal status stored before the deregister but not yet applied
 // would find its attempt already closed, and finished work would run again.
 // The deregister is therefore applied only once the task tracker has applied
-// SQI_TASK up to the deregister's broker stamp. Until then it is nak'd with
+// SQI_TASK up to the deregister's broker stamp and none of the worker's
+// statuses stored by then is waiting to be delivered again after a failed
+// apply ([Scheduler.taskStatusesCaughtUp]). Until then it is nak'd with
 // [deregisterRecheckDelay], which leaves the worker consumer free to handle
 // other workers' messages; the worker stays online meanwhile, which is safe
 // because a deregistering worker has already stopped asking for work.
@@ -57,8 +59,7 @@ func (s *Scheduler) deferDeregister(ctx context.Context, msg jetstream.Msg, work
 	if stamp == nil {
 		return false
 	}
-	// A zero effective time (no marker processed yet) is before any stamp.
-	if !s.ingestTask.effective(s.now()).Before(*stamp) {
+	if s.taskStatusesCaughtUp(workerID, *stamp) {
 		return false
 	}
 	// brokerAt has read the metadata successfully; a tracked message caches it.
@@ -86,4 +87,20 @@ func (s *Scheduler) deferDeregister(ctx context.Context, msg jetstream.Msg, work
 		slog.Duration("recheck_in", deregisterRecheckDelay),
 	)
 	return true
+}
+
+// taskStatusesCaughtUp reports whether the task-status consumer has applied
+// everything worker workerID stored on SQI_TASK up to stamp: its tracker has
+// applied the stream past stamp, and none of the worker's statuses stamped at
+// or before it waits to be delivered again after a failed apply. A marker
+// moves the tracker past a message that is waiting for redelivery, so the
+// first check alone would let the deregister reclaim the attempt that status
+// is about to close.
+func (s *Scheduler) taskStatusesCaughtUp(workerID string, stamp time.Time) bool {
+	now := s.now()
+	// A zero effective time (no marker processed yet) is before any stamp.
+	if s.ingestTask.effective(now).Before(stamp) {
+		return false
+	}
+	return !s.ingestTask.pendingFromWorkerBy(workerID, stamp, now)
 }
