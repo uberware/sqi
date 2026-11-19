@@ -30,6 +30,11 @@ func (c *countingConn) Publish(string, []byte) error {
 	return nil
 }
 
+// PublishAcked counts a status report as Publish does and acknowledges it.
+func (c *countingConn) PublishAcked(_ context.Context, subj string, data []byte, _ string) error {
+	return c.Publish(subj, data)
+}
+
 func (c *countingConn) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

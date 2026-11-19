@@ -51,7 +51,7 @@ func TestExecutor_Dispatch_S3PathWithoutStaging(t *testing.T) {
 	if err := exec.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	waitForStatus(t, nc, 2, 10*time.Second)
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {
@@ -61,8 +61,8 @@ func TestExecutor_Dispatch_S3PathWithoutStaging(t *testing.T) {
 		!strings.Contains(last.Message, "s3://studio-bucket/shows/scene.hip") {
 		t.Errorf("message = %q; want it to name the path and stage_locally", last.Message)
 	}
-	if statuses := nc.statuses(); len(statuses) < 2 || statuses[0] != "running" {
-		t.Errorf("want running→failed transition, got %v", statuses)
+	if statuses := nc.statuses(); !slices.Equal(statuses, []string{"failed"}) {
+		t.Errorf("statuses = %v, want [failed]: a pre-execution failure publishes only the terminal", statuses)
 	}
 }
 
@@ -242,6 +242,10 @@ type stubNATS struct {
 	// published, outside mu, before the message is recorded, so a waiter that
 	// sees a message in msgs (waitForStatus) knows its hook has returned.
 	onStatus func(protocol.TaskStatusMsg)
+
+	// held maps a status message ID ("<attemptID>:<status>") to a channel
+	// PublishAcked refuses that report until it is closed.
+	held map[string]chan struct{}
 }
 
 type stubMsg struct {
@@ -264,6 +268,35 @@ func (s *stubNATS) Publish(subj string, data []byte) error {
 	s.msgs = append(s.msgs, stubMsg{subj: subj, data: cp})
 	s.mu.Unlock()
 	return nil
+}
+
+// holdAck makes PublishAcked fail the report with this message ID until the
+// returned function is called.
+func (s *stubNATS) holdAck(msgID string) (release func()) {
+	ch := make(chan struct{})
+	s.mu.Lock()
+	if s.held == nil {
+		s.held = map[string]chan struct{}{}
+	}
+	s.held[msgID] = ch
+	s.mu.Unlock()
+	return sync.OnceFunc(func() { close(ch) })
+}
+
+// PublishAcked records a status report as Publish does and acknowledges it,
+// unless holdAck is refusing it.
+func (s *stubNATS) PublishAcked(_ context.Context, subj string, data []byte, msgID string) error {
+	s.mu.Lock()
+	ch := s.held[msgID]
+	s.mu.Unlock()
+	if ch != nil {
+		select {
+		case <-ch:
+		default:
+			return errors.New("stub: ack held")
+		}
+	}
+	return s.Publish(subj, data)
 }
 
 // statusMsgs returns every TaskStatusMsg published to the stub NATS, in order.
@@ -460,6 +493,24 @@ func waitForStatus(t *testing.T, nc *stubNATS, n int, timeout time.Duration) {
 	got := len(nc.msgs)
 	nc.mu.Unlock()
 	t.Fatalf("timed out waiting for %d NATS status messages; got %d", n, got)
+}
+
+// waitForTerminal polls nc until a terminal status (succeeded, failed or
+// canceled) has been published or the deadline elapses. A run that started
+// its process publishes "running" first; one that ended before it did
+// publishes only the terminal.
+func waitForTerminal(t *testing.T, nc *stubNATS, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for _, st := range nc.statuses() {
+			if st != "running" {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for a terminal status; got %v", nc.statuses())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1049,69 +1100,6 @@ func TestExecutor_Dispatch_workerID(t *testing.T) {
 	}
 }
 
-// TestExecutor_FlushShutdownStatuses verifies that FlushShutdownStatuses
-// publishes "failed"/"worker_shutdown" for all active tasks.
-func TestExecutor_FlushShutdownStatuses(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("subprocess test uses Unix-style exec")
-	}
-
-	exec, nc, _ := newTestExecutor(t, nil)
-	// Ensure sleeping subprocesses are force-killed when the test ends.
-	// DrainAndShutdown(0) waits until all goroutines exit before returning,
-	// preventing goroutine leaks and temp-dir races.
-	t.Cleanup(func() { exec.DrainAndShutdown(0) })
-
-	ctx := context.Background()
-
-	// Dispatch two long-running tasks to fill the active-tasks map.
-	for i := range 2 {
-		m := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "60s"})
-		m.TaskID = fmt.Sprintf("flush-task-%d", i)
-		m.AttemptID = fmt.Sprintf("flush-attempt-%d", i)
-		if err := exec.Dispatch(ctx, m); err != nil {
-			t.Fatalf("Dispatch task %d: %v", i, err)
-		}
-	}
-
-	// Wait for both "running" status messages before calling flush.
-	waitForStatus(t, nc, 2, 5*time.Second)
-
-	// Record how many messages exist before flush.
-	nc.mu.Lock()
-	beforeCount := len(nc.msgs)
-	nc.mu.Unlock()
-
-	// Flush shutdown statuses.
-	exec.FlushShutdownStatuses()
-
-	// FlushShutdownStatuses is synchronous; check immediately.
-	nc.mu.Lock()
-	afterCount := len(nc.msgs)
-	msgs := make([]stubMsg, len(nc.msgs))
-	copy(msgs, nc.msgs)
-	nc.mu.Unlock()
-
-	added := afterCount - beforeCount
-	if added != 2 {
-		t.Fatalf("expected 2 additional messages from FlushShutdownStatuses, got %d", added)
-	}
-
-	// Verify the new messages are "failed"/"worker_shutdown".
-	for _, m := range msgs[beforeCount:] {
-		var sm protocol.TaskStatusMsg
-		if err := json.Unmarshal(m.data, &sm); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if sm.Status != "failed" {
-			t.Errorf("FlushShutdownStatuses message Status = %q; want %q", sm.Status, "failed")
-		}
-		if sm.Message != protocol.MessageWorkerShutdown {
-			t.Errorf("FlushShutdownStatuses message Message = %q; want %q", sm.Message, protocol.MessageWorkerShutdown)
-		}
-	}
-}
-
 // ── Cancellation tests ──────────────────────────────────────────────
 
 // TestExecutor_Cancel_canceledStatus verifies that calling Cancel on an
@@ -1366,7 +1354,7 @@ func TestExecutor_Cancel_earlyCancel(t *testing.T) {
 	exec.Cancel(msg.TaskID, "")
 
 	// Regardless of which path fires, the task must reach a terminal state.
-	waitForStatus(t, nc, 2, 10*time.Second)
+	waitForTerminal(t, nc, 10*time.Second)
 
 	last := nc.lastStatus()
 	// Worker context (ctx) is Background — so this must be "canceled", not
@@ -1538,7 +1526,7 @@ func TestExecutor_Dispatch_embeddedFiles_eol(t *testing.T) {
 
 // TestExecutor_Dispatch_embeddedFiles_writeFail verifies that a write failure
 // during step-level embedded-file materialization fails the task cleanly with a
-// running→failed status transition, without panicking.
+// terminal "failed" status, without panicking.
 func TestExecutor_Dispatch_embeddedFiles_writeFail(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses POSIX shell commands")
@@ -1567,8 +1555,8 @@ func TestExecutor_Dispatch_embeddedFiles_writeFail(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	// Pre-execution failures still publish running→failed (2 status messages).
-	waitForStatus(t, nc, 2, 10*time.Second)
+	// A pre-execution failure publishes only the terminal status.
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {
@@ -1652,8 +1640,8 @@ func TestExecutor_Dispatch_credentialResolutionFailure(t *testing.T) {
 	}
 
 	statuses := nc.statuses()
-	if len(statuses) != 2 || statuses[0] != "running" || statuses[1] != "failed" {
-		t.Fatalf("statuses = %v, want [running failed]", statuses)
+	if !slices.Equal(statuses, []string{"failed"}) {
+		t.Fatalf("statuses = %v, want [failed]", statuses)
 	}
 
 	last := nc.lastStatus()
@@ -1667,15 +1655,11 @@ func TestExecutor_Dispatch_credentialResolutionFailure(t *testing.T) {
 		t.Errorf("Message = %q; want it to name the credential-resolution failure and the user", last.Message)
 	}
 
-	// The two statuses published above must form a legal state-machine
-	// transition pair (assigned→running, then running→failed) so the
-	// server's task-status consumer accepts them instead of discarding the
+	// The lone terminal status lands on a task still assigned, so that arrow
+	// must be legal or the server's task-status consumer would discard the
 	// write as store.ErrInvalidTransition — see internal/store/statemachine.go.
-	if err := store.ValidateTaskTransition(store.TaskStatusAssigned, store.TaskStatusRunning); err != nil {
-		t.Errorf("assigned→running must be legal: %v", err)
-	}
-	if err := store.ValidateTaskTransition(store.TaskStatusRunning, store.TaskStatusFailed); err != nil {
-		t.Errorf("running→failed must be legal: %v", err)
+	if err := store.ValidateTaskTransition(store.TaskStatusAssigned, store.TaskStatusFailed); err != nil {
+		t.Errorf("assigned→failed must be legal: %v", err)
 	}
 }
 
@@ -1693,19 +1677,29 @@ func (f *failingNATS) Publish(_ string, _ []byte) error {
 	return errors.New("stub: publish always fails")
 }
 
+func (f *failingNATS) PublishAcked(_ context.Context, subj string, data []byte, _ string) error {
+	return f.Publish(subj, data)
+}
+
 // TestExecutor_Dispatch_publishFailureDoesNotWedge verifies that when the
 // underlying status publish itself fails (e.g. NATS unreachable), Dispatch
 // still returns promptly with the original dispatch error instead of
-// blocking or panicking: status.Publisher retries transient failures
-// internally and then logs and gives up — status loss is preferred over
-// wedging the caller (the lease loop).
+// blocking or panicking: status.Publisher tries each report once inline and
+// leaves the rest of its retries to the background, so a failing broker never
+// wedges the caller (the lease loop).
 func TestExecutor_Dispatch_publishFailureDoesNotWedge(t *testing.T) {
 	tmpDir := t.TempDir()
 	nc := &failingNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.DiscardHandler)
 	mgr := session.NewManager(filepath.Join(tmpDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
-	statusPub := status.New(nc, status.Config{WorkerID: "test-worker", MaxRetries: 1, RetryDelay: time.Millisecond}, logger)
+	statusPub := status.New(nc, status.Config{WorkerID: "test-worker"}, logger)
+	t.Cleanup(func() {
+		// Stop the background retries of the reports that never land.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		defer cancel()
+		statusPub.Flush(ctx)
+	})
 	exec := executor.New(statusPub, mgr, m, nil, executor.Config{}, logger)
 
 	msg := makeAssign("stdout", nil)
@@ -1786,8 +1780,8 @@ func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	// Pre-exec failure publishes running → failed (2 status messages).
-	waitForStatus(t, nc, 2, 10*time.Second)
+	// A pre-execution failure publishes only the terminal status.
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {
@@ -1870,7 +1864,7 @@ func TestExecutor_Dispatch_stageLocallyFailsWithoutStagingDefaults(t *testing.T)
 	if err := exec.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	waitForStatus(t, nc, 2, 10*time.Second)
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {
@@ -1913,6 +1907,44 @@ func TestExecutor_ActiveAttemptIDs_FromHoldUntilTheTaskEnds(t *testing.T) {
 	waitForStatus(t, nc, 2, 10*time.Second)
 	if ids := waitForNoAttempts(exec, 5*time.Second); len(ids) != 0 {
 		t.Fatalf("after the task ended = %v, want none", ids)
+	}
+}
+
+// TestExecutor_ActiveAttemptIDsIncludePendingStatus verifies that an attempt
+// whose terminal status is still waiting for the stream's ack stays in the
+// heartbeat after its task has ended, and leaves once the status is stored.
+func TestExecutor_ActiveAttemptIDsIncludePendingStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+	exec, nc, _ := newTestExecutor(t, nil)
+	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
+	msg.AttemptID = "attempt-pending"
+	release := nc.holdAck(msg.AttemptID + ":succeeded")
+	t.Cleanup(release)
+
+	if err := exec.Dispatch(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	// Once the task has ended its run goroutine drops the hold within moments,
+	// leaving only the pending terminal report to keep the attempt listed. Watch
+	// well past that point.
+	deadline := time.Now().Add(10 * time.Second)
+	for exec.ActiveTaskCount() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := exec.ActiveTaskCount(); n != 0 {
+		t.Fatalf("task still running after 10s: %d", n)
+	}
+	for end := time.Now().Add(300 * time.Millisecond); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if ids := exec.ActiveAttemptIDs(); !slices.Equal(ids, []string{"attempt-pending"}) {
+			t.Fatalf("with the terminal status unacked = %v, want [attempt-pending]", ids)
+		}
+	}
+
+	release()
+	if ids := waitForNoAttempts(exec, 10*time.Second); len(ids) != 0 {
+		t.Fatalf("after the status was stored = %v, want none", ids)
 	}
 }
 
@@ -1976,8 +2008,8 @@ func TestExecutor_ActiveAttemptIDs_PreExecFailureReleases(t *testing.T) {
 	if ids := exec.ActiveAttemptIDs(); len(ids) != 0 {
 		t.Errorf("after the failed Dispatch = %v, want none", ids)
 	}
-	if statuses := nc.statuses(); len(statuses) != 2 || statuses[1] != "failed" {
-		t.Errorf("statuses = %v, want [running failed]", statuses)
+	if statuses := nc.statuses(); !slices.Equal(statuses, []string{"failed"}) {
+		t.Errorf("statuses = %v, want [failed]", statuses)
 	}
 }
 

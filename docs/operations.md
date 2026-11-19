@@ -296,10 +296,12 @@ cannot share its ports either. A high-availability group is upgraded as
 [Upgrading a group](#upgrading-a-group) describes.
 
 Workers do not need to stop: they reconnect when the server is back. On a
-current worker, a report it could not deliver while the server was down is
-recovered by [reconciliation](#reconciliation), at the cost of running that
-task again. Workers from v0.3.0 and earlier send no attempt list and are
-never reconciled: a task whose report such a worker lost stays `running` until
+current worker, a task status it could not deliver while the server was down
+stays pending and is retried until the broker stores it, so the task does not
+run again. A status the worker drops (it crashed, or its shutdown's status
+flush ran out) is recovered by [reconciliation](#reconciliation), at the cost
+of running that task again. Workers from v0.3.0 and earlier send no attempt
+list and are never reconciled: a task whose report such a worker lost stays `running` until
 that worker goes offline.
 
 Upgrade the server and its workers together. The server discards the
@@ -2466,6 +2468,24 @@ connections dropped and new ones refused for 30 seconds), no completed work is
 redone, and a submission made while the connections are refused fails with
 500.
 
+### A graceful server stop
+
+`chaos-server-term` stops the server with SIGTERM at 1 minute, the way a
+package upgrade does, and starts it 10 seconds later, under steady load. No
+completed work is redone. A worker sends a terminal status, and each attempt's
+first `running`, as a publish the `SQI_TASK` stream must acknowledge, and
+retries it until it does, so a status in flight when the broker stops is stored
+after the restart. See [Status reports are
+acknowledged](architecture.md#4-worker-execution).
+
+A worker's deregister waits until the server has applied the task statuses
+the worker sent before it, but only for about 15 s. If the task-status
+consumer is held back for longer than that (an ingest hold, a store pause or a
+bus interruption around a server restart), a deregister that arrives in that
+window is applied when its wait runs out, and the server logs `scheduler:
+deregister applied before the task-status consumer caught up` at Warn. That
+Warn around a restart is expected.
+
 ### A full data volume on the server
 
 `chaos-disk-server-full` leaves the server's data volume (512 MB, holding the
@@ -2559,12 +2579,12 @@ group. That message says the worker's tasks are not reconciled until its
 heartbeats arrive in time again. A skewed clock does not affect whether a
 worker stays online.
 
-It does affect what the server records. The server stamps an attempt's start
-with its own clock and takes its end from the worker's status report, so
-attempts of a worker 10 minutes behind are recorded as ended about 10 minutes
-before they started (H13f6). A worker whose clock runs ahead produces no
-out-of-order attempt, but its recorded run times are longer than the real
-ones. Keep worker clocks within `scheduler.heartbeat_timeout` of the server's.
+It does not affect what the server records either. The server dates an
+attempt's end from the broker's stamp of the terminal status minus the
+worker's measured age of the end, never from the worker's clock, so no attempt
+ends before it started and a task's recorded run time is its real one. Keep
+worker clocks within `scheduler.heartbeat_timeout` of the server's, so the
+server keeps reconciling the worker's attempts.
 
 ### A short session lifetime
 

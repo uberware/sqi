@@ -1275,12 +1275,14 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	s.ackMsg(ctx, msg)
 }
 
-// brokerAt returns the broker's stream timestamp of a worker's registration or
-// heartbeat message (kind names which, for the log), which orders those
-// messages without regard to any worker's clock: a late redelivery keeps its
-// original stamp, a fresh message carries a current one, whatever the worker's
-// clock reads. Nil when the message has no usable metadata, in which case it is
-// applied unordered.
+// brokerAt returns the broker's stream timestamp of a worker's message (kind
+// names which, for the log): a registration or heartbeat, which it orders, a
+// task status, whose attempt end it dates ([terminalEndedAt]), or a deregister,
+// which waits until the task-status consumer has applied SQI_TASK up to it
+// ([Scheduler.deferDeregister]). The stamp is independent of any worker's
+// clock: a late redelivery keeps its original stamp, a fresh message carries a
+// current one, whatever the worker's clock reads. Nil when the message has no
+// usable metadata; each caller then applies the message without it.
 func (s *Scheduler) brokerAt(ctx context.Context, msg jetstream.Msg, kind, workerID string) *time.Time {
 	meta, err := msg.Metadata()
 	if err != nil {
@@ -1408,8 +1410,11 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 // store left the row in. A deregister from a process the worker's latest
 // registration has replaced (its instance ID differs from the stored one) is
 // acked and ignored: applying it would take the new process offline and
-// reclaim the tasks it is running. A deregister whose kind is retired or
-// preempted then deletes an ephemeral capacity-group member and revokes its
+// reclaim the tasks it is running. A deregister the task-status consumer has
+// not yet caught up to is handed back for a later re-check
+// ([Scheduler.deferDeregister]), so the worker's last stored statuses are
+// applied before its attempts are reclaimed. A deregister whose kind is
+// retired or preempted then deletes an ephemeral capacity-group member and revokes its
 // credential ([Scheduler.removeDepartedEphemeral]). A member the capacity
 // actuator was retiring then has its retirement finished
 // ([Scheduler.finishRetirementOnDeregister]).
@@ -1435,6 +1440,11 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		return
 	}
 	if s.discardOnIdentityMismatch(ctx, msg, subjectWorkerID, m.WorkerID) {
+		return
+	}
+	// Statuses the worker stored on SQI_TASK before leaving are applied
+	// first, so their attempts close normally rather than being reclaimed.
+	if s.deferDeregister(ctx, msg, m.WorkerID) {
 		return
 	}
 
@@ -2274,11 +2284,7 @@ func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg, ref ingestRef
 	if s.leftForNewLeader(ctx, msg) {
 		return
 	}
-	var delivered uint64
-	if md, err := msg.Metadata(); err == nil {
-		delivered = md.NumDelivered
-	}
-	if err := msg.NakWithDelay(nakDelay(delivered)); err != nil {
+	if err := msg.NakWithDelay(nakDelay(deliveries(msg))); err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: nak message failed",
 			slog.String("subject", msg.Subject()),
@@ -2288,6 +2294,16 @@ func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg, ref ingestRef
 	// Recorded whether or not the nak reached the broker: either way the
 	// message is unapplied and comes back, after the delay or after AckWait.
 	recordIngestNak(msg, ref)
+}
+
+// deliveries returns how many times msg has been delivered, its
+// NumDelivered, or 0 when it carries no broker metadata.
+func deliveries(msg jetstream.Msg) uint64 {
+	md, err := msg.Metadata()
+	if err != nil {
+		return 0
+	}
+	return md.NumDelivered
 }
 
 // nakBaseDelay and nakMaxDelay bound how long a nak'd message waits to be

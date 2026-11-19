@@ -1070,15 +1070,6 @@ worker's heartbeats stop reporting, after `scheduler.reconcile_grace` (default
 2 minutes). `chaos-churn-instant-restart`, whose churn restarts a worker at
 once, is a regression guard for it.
 
-### A graceful server stop can lose a terminal status (H13f1)
-
-A task's terminal status is a core NATS publish with no acknowledgment, and
-the embedded broker stops JetStream before it closes client connections. A
-status in flight when the server stops gracefully is stored by no stream, and
-the worker, whose publish returned no error, does not retry. The attempt is
-reclaimed after the restart and the finished task re-runs.
-`chaos-server-term` records it as a known violation of the rework bound.
-
 ### Killing sqi-worker on Linux leaves its task's processes running (H13f4)
 
 On a bare-process Linux worker, killing `sqi-worker` leaves the process tree of
@@ -1086,14 +1077,6 @@ its task running. A child with no stdout never gets SIGPIPE, outlives the
 worker's restart and keeps writing the task's output while the reclaimed task
 re-runs on a live worker. `chaos-worker-kill-mid-task` records it, where
 `no-orphans` and `single-writer` can fail on Linux.
-
-### A worker's clock sets an attempt's end time (H13f6)
-
-The server stamps an attempt's start with its own clock at the lease but takes
-its end from the time the worker puts on its terminal status. A worker whose
-clock runs behind by more than a task's run time records attempts that end
-before they start, and one that runs ahead inflates run times.
-`chaos-clock-skew` records it, where `attempt-order` fails.
 
 ### A revoked worker can still be given a task (H13f8)
 

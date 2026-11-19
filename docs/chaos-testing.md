@@ -366,7 +366,7 @@ at most 20 entries.
 | `no-orphans` | No process of a real task was seen alive more than 10 seconds after the worker incarnation that started it ended. An incarnation still running is not judged. |
 | `single-writer` | For each task, no two process executions wrote the task's output over overlapping spans of time, the span being from a process's first line to its last. |
 | `reclaims` | Read from the stopped server's store, only with `max_reclaims`: the server took back no more attempts from their workers than the bound (see [Reclaims](#reclaims)). |
-| `attempt-order` | Read from the stopped server's store, on every attempt of every job in the farm: `started_at` is not more than 1 second before `created_at`, and `ended_at` is not more than 1 second before `started_at`. The server stamps `created_at` and `started_at` with its own clock and takes `ended_at` from the worker's status report, so a worker whose clock is wrong can break the order. |
+| `attempt-order` | Read from the stopped server's store, on every attempt of every job in the farm: `started_at` is not more than 1 second before `created_at`, and `ended_at` is not more than 1 second before `started_at`. The server stamps `created_at` and `started_at` with its own clock and dates `ended_at` from the broker's stamp of the terminal status minus the worker's measured age of the end, so a worker whose clock is wrong cannot break the order; the check guards that. |
 | `revoked` | Read from the stopped server's store, only with a `revoke` fault: for each revoked worker, no heartbeat was recorded and no attempt was created for it more than 5 seconds after its credential was revoked. The 5 seconds cover the revoke reaching the broker and the server's own bookkeeping. |
 | `skew-warning` | Read from the server's log, only when a group has a `clock_skew`: for every skewed group, the server logged `scheduler: worker heartbeat delayed or skewed` for at least one of its workers. A log that cannot be read leaves the check unmeasured. |
 | `disk-full` | Read from the stopped server's store, only with a `disk_full` fault on a `workers` volume. For each fault that fired and healed, over the attempts of the real workers: every attempt that failed and ended from the fault's start to 10 seconds after it healed names a cause matching the fault's `reason`, when it sets one; no more than `max_failed` of them failed, when it sets one; and every real worker succeeded at least one attempt that started after the fault healed. A fault that never healed fails the check, and a run with no real worker to judge leaves it unmeasured. The check has no minimum: a run in which no attempt failed in the window passes it. Its summary notes, for each fault, how many attempts failed in the window, so a pass shows whether the fault made a task fail. |
@@ -444,8 +444,8 @@ expect:
     - check: rework
       kind: may
       max_attempts: 10
-      reason: a terminal status still in flight when the embedded broker shuts down is lost and the task re-runs
-      tracker: H13f1
+      reason: a task finished during the fault is run again
+      tracker: H99x
 ```
 
 | Field | Meaning |
@@ -455,12 +455,12 @@ expect:
 | `max_attempts` | On a `rework` entry, the most rework it excuses. Required there, and an error on any other check. |
 | `os` | The operating systems (`linux`, `darwin`, `windows`) the entry applies on. Empty means all. On any other system the entry does nothing. |
 | `reason` | What the defect does. Required. |
-| `tracker` | The tracker item, such as `H13f1`. Required. |
+| `tracker` | The tracker item, such as `H99x`. Required. |
 
 How an entry is applied:
 
 - A failed result that an entry names becomes OK. The summary shows it as
-  `known (H13f1)` and keeps its evidence. Several entries for one check join
+  `known (H99x)` and keeps its evidence. Several entries for one check join
   their trackers.
 - A `rework` entry excuses rework only up to its `max_attempts`. Rework above
   the scenario's `max_rework_attempts` and at or under the ceiling is the
@@ -486,14 +486,12 @@ enforced end to end: it runs `chaos-server-term` with a `must` entry for
 
 ### Recorded defects
 
-The suite records five defects in sqi. Each is also listed under [Known
+The suite records three defects in sqi. Each is also listed under [Known
 server defects](load-testing.md#known-server-defects).
 
 | Tracker | Defect | Recorded in |
 |---|---|---|
-| H13f1 | A worker's terminal status in flight when the server stops gracefully is lost and the finished task re-runs. Task status is a core NATS publish with no acknowledgment, and the embedded broker stops JetStream before it closes client connections. | `chaos-server-term`, `rework`, `may` |
 | H13f4 | Killing `sqi-worker` on Linux leaves its task's process tree running. A silent child, which writes no stdout, never gets SIGPIPE, outlives the worker's restart and writes alongside the re-run. | `chaos-worker-kill-mid-task`, `no-orphans` and `single-writer`, `may`, `os: [linux]` |
-| H13f6 | The server records an attempt's `ended_at` from the worker's clock and its `started_at` from its own, so a worker whose clock runs behind records attempts that end before they start. | `chaos-clock-skew`, `attempt-order`, `must` |
 | H13f8 | A lease request a worker parked before its credential was revoked is still served after the revoke, so the disconnected worker is given a task that waits until the sweep reclaims it. | `chaos-worker-revoke`, `revoked`, `may` |
 | H13f9 | After a write to a broker stream fails because the data volume is full or the server is out of file descriptors, the stream may store nothing more for the rest of the run; whether a restart clears it is not known. With a full volume the server stays ready and answers REST while the volume is full. Every worker is then reclaimed. | `chaos-disk-server-full`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded`, `must`; `chaos-server-fd-exhaustion`, the same checks and `rework` (up to 2500), `may` |
 
@@ -513,7 +511,7 @@ chaos-container`.
 | `chaos-server-kill-20s` | The same, restarted 20s later. **Smoke.** | rework 0 | 3m |
 | `chaos-server-kill-90s` | The same, restarted 90s later: the outage outlasts a worker's reconnect buffer for some of what it publishes. | rework 0 | 3m30s |
 | `chaos-server-kill-mid-submit` | One job of 100,000 tasks, the server killed 2s in, during the write, restarted 10s later. 200 workers; the drain allows 20 minutes. | rework 0 | 3m |
-| `chaos-server-term` | A graceful stop at 1m, restarted 10s later: the upgrade path. | rework 0; H13f1 `may` on `rework`, up to 10 | 3m |
+| `chaos-server-term` | A graceful stop at 1m, restarted 10s later: the upgrade path. | rework 0 | 3m |
 | `chaos-server-stall-short` | SIGSTOP the server for 15s at 3m15s, under `heartbeat_timeout`. POSIX. | rework 0, reclaims 0 | 3m45s |
 | `chaos-server-stall-long` | SIGSTOP for 60s at 3m15s, about twice `heartbeat_timeout`. POSIX. | rework 0 | 4m30s |
 | `chaos-logs-during-restart` | 40 workers, tasks of 5,000 lines of 200 bytes, the server killed at 1m and restarted 20s later: every terminal status must still arrive. | rework 0 | 3m |
@@ -538,7 +536,7 @@ chaos-container`.
 | `chaos-disk-worker-full-mid-render` | Leave the 2 real workers' session volume 1 MiB free for 60s at 1m05s while their tasks write 8 MiB each, so tasks fail partway through. Each failure must name the process's exit, at most 15 may fail, and each real worker must succeed a task afterwards. Container. | rework 0 | 3m |
 | `chaos-server-fd-exhaustion` | Linux. Cut `rack-b`, 30 of 120 workers, for 20s at 3m15s and lower the server's open-file limit for 40s at 3m20s so it can open only 10 more files, so the rack redials into the limit. | rework 30; H13f9 `may` on `terminal`, `outcomes`, `rework` (up to 2500), `single-attempt`, `workers-converge` and `executions-recorded` | 5m |
 | `chaos-worker-revoke` | Broker auth on. Revoke one of 2 real workers' credentials at 3m21s and stop it 60s later, not restarting it. | rework 4; H13f8 `may` on `revoked` | 4m45s |
-| `chaos-clock-skew` | No fault: 20 each of 120 workers run their clocks 10m ahead, 10m behind and a day ahead of the server's. | rework 0, reclaims 0; H13f6 `must` on `attempt-order` | 4m |
+| `chaos-clock-skew` | No fault: 20 each of 120 workers run their clocks 10m ahead, 10m behind and a day ahead of the server's. | rework 0, reclaims 0 | 4m |
 | `chaos-session-expiry` | No fault: broker auth with a 1m session lifetime (`nats.auth.user_ttl`), so each of 100 workers reconnects about four times in a run, with 30 to 90s tasks. | rework 0, reclaims 0 | 4m |
 
 `chaos-server-fd-exhaustion` lowers the limit on the running server while a
@@ -581,7 +579,7 @@ and up to 20 examples.
 
 **Invariants** lists every result as `PASS`, `FAIL`, `UNMEASURED` for a check
 that could not judge (no finding, and no known violation excuses it), or
-`known (H13f1)` for a failure a known violation excused, with its evidence
+`known (H99x)` for a failure a known violation excused, with its evidence
 beneath. A line
 `known:<check>` that fails is a `must` entry whose check held: the defect it
 records may be fixed, and the entry should be removed.

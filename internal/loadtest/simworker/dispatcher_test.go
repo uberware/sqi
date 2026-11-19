@@ -3,7 +3,9 @@
 package simworker_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"slices"
@@ -32,6 +34,10 @@ type fakeConn struct {
 	mu        sync.Mutex
 	msgs      []published
 	onPublish func(subj string, data []byte)
+
+	// held maps a status message ID ("<attemptID>:<status>") to a channel
+	// PublishAcked refuses that report until it is closed.
+	held map[string]chan struct{}
 }
 
 func (f *fakeConn) Publish(subj string, data []byte) error {
@@ -43,6 +49,35 @@ func (f *fakeConn) Publish(subj string, data []byte) error {
 		hook(subj, data)
 	}
 	return nil
+}
+
+// holdAck makes PublishAcked fail the report with this message ID until the
+// returned function is called.
+func (f *fakeConn) holdAck(msgID string) (release func()) {
+	ch := make(chan struct{})
+	f.mu.Lock()
+	if f.held == nil {
+		f.held = map[string]chan struct{}{}
+	}
+	f.held[msgID] = ch
+	f.mu.Unlock()
+	return sync.OnceFunc(func() { close(ch) })
+}
+
+// PublishAcked records a status report as Publish does and acknowledges it,
+// unless holdAck is refusing it.
+func (f *fakeConn) PublishAcked(_ context.Context, subj string, data []byte, msgID string) error {
+	f.mu.Lock()
+	ch := f.held[msgID]
+	f.mu.Unlock()
+	if ch != nil {
+		select {
+		case <-ch:
+		default:
+			return errors.New("fake: ack held")
+		}
+	}
+	return f.Publish(subj, data)
 }
 
 func (f *fakeConn) setHook(h func(string, []byte)) {
@@ -240,6 +275,30 @@ func TestDispatcher_SucceededPath(t *testing.T) {
 	if !slices.Equal(kinds, []string{simworker.KindLeased, simworker.KindRunning, simworker.KindTerminal}) {
 		t.Errorf("ledger kinds = %v", kinds)
 	}
+}
+
+// TestDispatcher_ActiveAttemptIDsIncludePendingStatus verifies that an attempt
+// whose terminal status is still waiting for the stream's ack stays listed
+// after its task has ended, and leaves once the status is stored.
+func TestDispatcher_ActiveAttemptIDsIncludePendingStatus(t *testing.T) {
+	d, conn, l := newTestDispatcher(t, simworker.TaskPlan{
+		Duration: 10 * time.Millisecond, Outcome: simworker.OutcomeSucceeded,
+	})
+	release := conn.holdAck("a1:succeeded")
+	t.Cleanup(release)
+
+	d.Hold("a1")
+	if err := d.Dispatch(t.Context(), assignment("t1", "a1")); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	waitFor(t, 5*time.Second, "task to end", func() bool { return d.ActiveTaskCount() == 0 })
+	waitFor(t, 5*time.Second, "terminal ledger event", func() bool { return ledgerHas(l, "t1", simworker.KindTerminal) })
+	if ids := d.ActiveAttemptIDs(); !slices.Equal(ids, []string{"a1"}) {
+		t.Fatalf("with the terminal status unacked = %v, want [a1]", ids)
+	}
+
+	release()
+	waitFor(t, 10*time.Second, "status stored", func() bool { return len(d.ActiveAttemptIDs()) == 0 })
 }
 
 func TestDispatcher_HangThenCancel(t *testing.T) {

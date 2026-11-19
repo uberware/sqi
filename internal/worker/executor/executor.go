@@ -418,8 +418,8 @@ func (e *Executor) failSetup(
 }
 
 // refuseStopping ends an assignment dispatched after the worker was told to
-// stop, before anything of it is registered or started: it publishes "running"
-// then "failed" with [protocol.MessageWorkerShutdown], releases the held
+// stop, before anything of it is registered or started: it publishes "failed"
+// with [protocol.MessageWorkerShutdown], releases the held
 // attempt, and returns an error for Dispatch to return.
 func (e *Executor) refuseStopping(ctx context.Context, msg *protocol.AssignMsg) error {
 	err := fmt.Errorf("executor: worker is stopping: %w", context.Cause(ctx))
@@ -451,12 +451,14 @@ func (e *Executor) release(attemptID string) {
 	e.mu.Unlock()
 }
 
-// ActiveAttemptIDs returns a sorted snapshot of the held attempts.
-// Implements [heartbeat.AttemptSource].
+// ActiveAttemptIDs returns a sorted snapshot of the held attempts together
+// with those whose status report the stream has not yet acknowledged
+// ([status.Publisher.WithPending]). Implements [heartbeat.AttemptSource].
 func (e *Executor) ActiveAttemptIDs() []string {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	return slices.Sorted(maps.Keys(e.held))
+	ids := slices.Collect(maps.Keys(e.held))
+	e.mu.Unlock()
+	return e.statusPub.WithPending(ids)
 }
 
 // ── heartbeat.StateSource ─────────────────────────────────────────────────────
@@ -672,40 +674,4 @@ func (e *Executor) DrainAndShutdown(gracePeriod time.Duration) (completed, kille
 	// Block until every goroutine has published its terminal status and exited.
 	e.wg.Wait()
 	return
-}
-
-// FlushShutdownStatuses publishes a "failed"/"worker_shutdown" status for
-// every task currently in the active-tasks map.
-//
-// Call it before draining the NATS connection during worker shutdown so the
-// server learns about task failures without waiting for the heartbeat-timeout
-// sweep.  Each task goroutine also publishes its own terminal status as it
-// exits; the server accepts the first terminal status and ignores later ones.
-//
-// The total flush is bounded by a 5-second deadline so that a saturated NATS
-// connection cannot stall the shutdown sequence.
-func (e *Executor) FlushShutdownStatuses() {
-	e.mu.Lock()
-	tasks := make([]status.ShutdownTask, 0, len(e.activeTasks))
-	for _, run := range e.activeTasks {
-		tasks = append(tasks, status.ShutdownTask{
-			TaskID:    run.taskID,
-			AttemptID: run.attemptID,
-			JobID:     run.jobID,
-			SessionID: run.sessionID,
-		})
-	}
-	e.mu.Unlock()
-
-	if len(tasks) == 0 {
-		return
-	}
-	e.logger.InfoContext(
-		context.Background(),
-		"executor: publishing worker_shutdown status for in-flight tasks",
-		slog.Int("count", len(tasks)),
-	)
-	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
-	defer stop()
-	e.statusPub.ShutdownFailed(ctx, tasks)
 }

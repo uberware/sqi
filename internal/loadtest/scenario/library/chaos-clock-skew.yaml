@@ -15,11 +15,10 @@ description: chaos - 60 of 120 simulated workers run their clocks 10m ahead, 10m
 # never reclaimed. Without a fault, the scenario is a chaos run because expect
 # sets bounds.
 #
-# The server stamps an attempt's started_at with its own clock at the lease
-# but takes ended_at from the time the worker puts on its terminal status. A
-# task on a behind-10m worker runs 10-30s, so every attempt one of those 20
-# workers finishes ends about 10 minutes before it started, and attempt-order
-# fails.
+# The server dates an attempt's end from the broker's stamp of the terminal
+# status minus the worker's measured age of the end, never from the worker's
+# clock, so an attempt a behind-10m worker finishes ends after it started and
+# attempt-order passes.
 duration: 4m
 warmup: 10s
 drain_timeout: 5m
@@ -67,8 +66,3 @@ jobs:
 expect:
   max_rework_attempts: 0
   max_reclaims: 0
-  known_violations:
-    - check: attempt-order
-      kind: must
-      reason: the server records an attempt's ended_at from the worker's clock and its started_at from its own, so an attempt a behind-10m worker finishes ends about 10 minutes before it started
-      tracker: H13f6

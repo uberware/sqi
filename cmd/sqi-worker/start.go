@@ -252,62 +252,11 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		return err
 	}
 
-	// ── Isolation provider, session root and session manager ──────
-	sessionMgr, sessionRoot, stagingIsolationCapable, err := newSessionManager(cfg, logger)
+	// ── Session manager, and the task executor with its publishers ──
+	exec, statusPub, sessionRoot, err := newExecutor(nc, workerID, cfg, m, logger)
 	if err != nil {
 		return err
 	}
-
-	// ── Log chunk publisher ────────────────────────────────────
-	//
-	// The logstreamer Publisher buffers task process output lines and batches
-	// them into LogChunkMsg messages published to NATS JetStream. It
-	// implements executor.OutputHandler and executor.LogFlusher so the executor
-	// can flush remaining logs before publishing the terminal task status.
-	// SYNC: logstreamer.Config and workerconfig.LogStreamerConfig have matching
-	// fields. A field added to one must be added to both and mapped here.
-	logPub := logstreamer.New(nc, workerID, logstreamer.Config{
-		MaxLinesPerChunk: cfg.LogStreamer.MaxLinesPerChunk,
-		MaxBytesPerChunk: cfg.LogStreamer.MaxBytesPerChunk,
-		FlushInterval:    cfg.LogStreamer.FlushInterval,
-	}, logger)
-
-	// ── OpenJD progress/status/fail interceptor ────────────────
-	//
-	// The OpenJD interceptor wraps the log publisher and intercepts recognized
-	// OpenJD directive lines (openjd_progress, openjd_status, openjd_fail)
-	// before forwarding everything else downstream. It implements
-	// executor.TaskLifecycleHook (so openjd_fail cancels the task) and
-	// provides LastProgress() for the last_progress field of status messages.
-	openjdInterceptor := openjd.New(logPub, nc, workerID, logger)
-
-	// ── Task status publisher ───────────────────────────────────
-	//
-	// The status Publisher publishes all task state-transition messages
-	// (running, succeeded, failed, canceled) with worker_id and last_progress
-	// fields, and retries with backoff on transient NATS publish failures.
-	statusPub := status.New(nc, status.Config{WorkerID: workerID}, logger)
-
-	// ── Task executor ───────────────────────────────────────────
-	//
-	// The Executor starts OS processes for assigned tasks and reports their
-	// status back to sqi-server via NATS. It implements lease.Dispatcher (via
-	// Dispatch) and heartbeat.StateSource.
-	exec := executor.New(
-		statusPub,
-		sessionMgr,
-		m,
-		openjdInterceptor, // openjd_progress/status/fail interception + log streaming
-		executor.Config{
-			KillGracePeriod:         shutdownKillGrace(cfg.Worker.ShutdownGracePeriod),
-			AllowRoot:               cfg.Worker.AllowRoot,
-			StagingScratchDir:       cfg.Staging.ScratchDir,
-			StagingSyncCommand:      cfg.Staging.SyncCommand,
-			StagingDefaults:         cfg.Staging.Defaults,
-			StagingIsolationCapable: stagingIsolationCapable,
-		},
-		logger,
-	)
 
 	// ── Task cancel subscriber ─────────────────────────────────
 	//
@@ -407,8 +356,8 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		slog.Duration("grace_period", grace),
 	)
 
-	// ── Drain, stop heartbeating, deregister ─────────────────────────
-	completed, killed := shutdownSequence(exec, hbStop, reg, grace, kind)
+	// ── Drain, flush reports, stop heartbeating, deregister ──────────
+	completed, killed := shutdownSequence(exec, statusPub, hbStop, reg, grace, kind)
 
 	// ── Log shutdown outcome ─────────────────────────────────────────
 	logger.InfoContext(
@@ -510,6 +459,11 @@ type drainer interface {
 	DrainAndShutdown(gracePeriod time.Duration) (completed, killed int)
 }
 
+// flusher is the part of *status.Publisher the shutdown sequence uses.
+type flusher interface {
+	Flush(ctx context.Context) (dropped int)
+}
+
 // deregisterer is the part of *registration.Registrar the shutdown sequence uses.
 type deregisterer interface {
 	Deregister(reason string, kind protocol.DeregisterKind)
@@ -561,24 +515,112 @@ func startPreemptionWatch(
 //  1. Drain: stop accepting assignments (the lease loop stopped when the
 //     worker's context was canceled), let in-flight tasks run for up to grace,
 //     force-kill any left after that. DrainAndShutdown blocks until every task
-//     goroutine has published its terminal status, so the server has complete
-//     status information before NATS drains. The heartbeat keeps running
-//     throughout: a drain may outlast the server's heartbeat timeout, and a
-//     worker that goes quiet is declared offline and loses its running tasks.
-//  2. Stop the heartbeat, so no further beat is started after the departure
+//     goroutine has handed its terminal status to the publisher. The heartbeat
+//     keeps running throughout: a drain may outlast the server's heartbeat
+//     timeout, and a worker that goes quiet is declared offline and loses its
+//     running tasks.
+//  2. Flush: wait up to [status.DefaultFlushTimeout] for the publisher to
+//     store the status reports it still holds. The drain returns once each
+//     task has made its first try at its terminal report, which the broker may
+//     not have stored yet, and a deregistration sent before it is stored would
+//     let the server reclaim a task that has finished. The heartbeat keeps
+//     running and lists these attempts as held. Reports still pending when the
+//     wait ends are dropped and the sequence goes on.
+//  3. Stop the heartbeat, so no further beat is started after the departure
 //     message. stopHeartbeat only cancels the publisher's context and does not wait
 //     for its Run to return, so a beat already being published can still
 //     land after the deregister.
-//  3. Deregister, so the server marks the worker offline immediately rather
+//  4. Deregister, so the server marks the worker offline immediately rather
 //     than waiting for the heartbeat-timeout sweep. kind is "" for a restart
 //     and [protocol.DeregisterPreempted] when the machine is being reclaimed.
+//
+// The flush must run while the NATS connection is open: on a closed
+// connection every publish fails at once and nothing pending can be stored.
 func shutdownSequence(
-	exec drainer, stopHeartbeat func(), reg deregisterer, grace time.Duration, kind protocol.DeregisterKind,
+	exec drainer, flush flusher, stopHeartbeat func(), reg deregisterer, grace time.Duration, kind protocol.DeregisterKind,
 ) (completed, killed int) {
 	completed, killed = exec.DrainAndShutdown(grace)
+	flushCtx, stopFlushWait := context.WithTimeout(context.Background(), status.DefaultFlushTimeout)
+	if dropped := flush.Flush(flushCtx); dropped > 0 {
+		// The worker's logger is the process default (sqilog.New installs it).
+		slog.Warn("sqi-worker shutdown left status reports unsent", //nolint:sloglint // shutdownSequence takes no logger; the default is the worker's
+			slog.Int("dropped", dropped), slog.Duration("waited", status.DefaultFlushTimeout))
+	}
+	stopFlushWait()
 	stopHeartbeat()
 	reg.Deregister("graceful shutdown", kind)
 	return completed, killed
+}
+
+// newExecutor builds the task executor, its session manager (see
+// newSessionManager) and the publishers it reports through: the log chunk
+// publisher, the OpenJD interceptor in front of it, and the task status
+// publisher. It returns the status publisher too, and the session root for the
+// start-up log.
+func newExecutor(
+	nc *nats.Conn, workerID string, cfg workerconfig.WorkerConfig, m *workmetrics.Metrics, logger *slog.Logger,
+) (exec *executor.Executor, statusPub *status.Publisher, sessionRoot string, err error) {
+	// ── Isolation provider, session root and session manager ──────
+	sessionMgr, sessionRoot, stagingIsolationCapable, err := newSessionManager(cfg, logger)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	// ── Log chunk publisher ────────────────────────────────────
+	//
+	// The logstreamer Publisher buffers task process output lines and batches
+	// them into LogChunkMsg messages published to NATS JetStream. It
+	// implements executor.OutputHandler and executor.LogFlusher so the executor
+	// can flush remaining logs before publishing the terminal task status.
+	// SYNC: logstreamer.Config and workerconfig.LogStreamerConfig have matching
+	// fields. A field added to one must be added to both and mapped here.
+	logPub := logstreamer.New(nc, workerID, logstreamer.Config{
+		MaxLinesPerChunk: cfg.LogStreamer.MaxLinesPerChunk,
+		MaxBytesPerChunk: cfg.LogStreamer.MaxBytesPerChunk,
+		FlushInterval:    cfg.LogStreamer.FlushInterval,
+	}, logger)
+
+	// ── OpenJD progress/status/fail interceptor ────────────────
+	//
+	// The OpenJD interceptor wraps the log publisher and intercepts recognized
+	// OpenJD directive lines (openjd_progress, openjd_status, openjd_fail)
+	// before forwarding everything else downstream. It implements
+	// executor.TaskLifecycleHook (so openjd_fail cancels the task) and
+	// provides LastProgress() for the last_progress field of status messages.
+	openjdInterceptor := openjd.New(logPub, nc, workerID, logger)
+
+	// ── Task status publisher ───────────────────────────────────
+	//
+	// The status Publisher sends each attempt's first running and its terminal
+	// status through JetStream and retries each until SQI_TASK acknowledges
+	// it; progress snapshots stay on the interceptor's core publish.
+	statusTransport, err := status.NewJetStreamTransport(nc)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	statusPub = status.New(statusTransport, status.Config{WorkerID: workerID}, logger)
+
+	// ── Task executor ───────────────────────────────────────────
+	//
+	// The Executor starts OS processes for assigned tasks and reports their
+	// status back to sqi-server via NATS. It implements lease.Dispatcher (via
+	// Dispatch) and heartbeat.StateSource.
+	exec = executor.New(
+		statusPub,
+		sessionMgr,
+		m,
+		openjdInterceptor, // openjd_progress/status/fail interception + log streaming
+		executor.Config{
+			KillGracePeriod:         shutdownKillGrace(cfg.Worker.ShutdownGracePeriod),
+			AllowRoot:               cfg.Worker.AllowRoot,
+			StagingScratchDir:       cfg.Staging.ScratchDir,
+			StagingSyncCommand:      cfg.Staging.SyncCommand,
+			StagingDefaults:         cfg.Staging.Defaults,
+			StagingIsolationCapable: stagingIsolationCapable,
+		},
+		logger,
+	)
+	return exec, statusPub, sessionRoot, nil
 }
 
 // newSessionManager resolves the isolation provider and session root and

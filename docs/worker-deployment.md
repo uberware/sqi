@@ -608,7 +608,9 @@ that:
 - is given 55 s at the default to drain when Windows shuts down:
   `worker.shutdown_grace_period` (30 s) for running tasks to finish, a third of
   that again (10 s) for any still running to close once asked to before they
-  are killed, and 15 s for the worker to deregister and exit. This is the
+  are killed, and 15 s for what follows: up to 2 s for each task's final
+  status to be sent, up to 10 s more for any the broker has not yet stored
+  (normally far less), and the deregistration and exit. This is the
   service's *PreShutdown* timeout (see [Managing the service](#managing-the-service)).
 
 The flags of `service install`:

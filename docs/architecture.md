@@ -467,8 +467,42 @@ sqi-worker
   ├─ Executes each task (spawns child process, manages lifecycle)
   ├─ Streams log chunks → NATS task.logs.<worker_id>.<task_id>
   └─ Reports status changes → NATS task.status.<worker_id>.<job_id>
-         { task_id, attempt_id, status, exit_code, timestamp }
+         { task_id, attempt_id, status, exit_code, timestamp, ended_ago_ms }
 ```
+
+**Status reports are acknowledged.** A terminal status, and each attempt's
+first `running`, is a JetStream publish that expects stream `SQI_TASK` and
+waits for the stream's ack (`internal/worker/status/publisher.go`). It carries
+the header `Nats-Msg-Id: <attemptID>:<kind>`, where the kind is `running`,
+`succeeded`, `failed`, `canceled` or `shutdown` (a `failed` whose message is
+`worker_shutdown`), so the stream stores a repeated publish once. The first try
+is inline and gives up after a 2 s ack timeout. Retries then run in the
+background, waiting 250 ms and doubling to 5 s, with no limit on attempts, so a
+status in flight when the server or broker stops is stored after it returns. A
+terminal drops a first `running` that is still pending. A terminal also carries
+`ended_ago_ms`, the worker's monotonic age of the task's end, which is rebuilt
+on every try. A try is not made while the worker's connection is reconnecting:
+the client would hold it in its reconnect buffer and send it on reconnect with
+the age it was built with, and the stream would then drop the correctly aged
+retries as duplicates of its message ID, counting the outage as run time
+(`internal/worker/status/transport.go`). This narrows that window but does not
+close it: the status check and the publish are not atomic, so a try written
+just before the client notices the connection has dropped can still be
+buffered and sent with its old age once the connection comes back. A closed
+connection drops the report. Progress snapshots are plain core publishes with
+no ack, because only the latest matters.
+
+A worker's heartbeat lists the attempts its executor holds plus the attempts
+the publisher still has a status pending for, so the server's reconciliation
+does not reclaim an attempt whose terminal status is waiting for the stream.
+
+**Worker shutdown order.** On SIGTERM the worker runs `DrainAndShutdown`
+(waiting up to the drain grace for tasks to finish, then interrupting the rest
+and reporting them `failed` with `worker_shutdown`), then `Flush` of the status
+publisher, then stops the heartbeat, then `Deregister`, then drains the NATS
+connection. `Flush` has its own 10 s budget, separate from the grace; a status
+still pending when it ends is dropped with a Warn naming it, and the task is
+re-run after the server reclaims the attempt.
 
 ### 5. Status ingestion
 
@@ -485,6 +519,7 @@ NATS consumer (internal/scheduler/taskstatus.go)
   │     store.PromoteJobRunning(job_id)            ← only a pending job; never un-pauses or revives one
   ├─ If failed with message "worker_shutdown": store.ReclaimTaskAttempt(...)  ← a reclaim, not a failure:
   │                                           the task goes back to ready, no retry is consumed
+  │                                           (its ended_at is the server's now)
   ├─ If failed: store.RecordTaskFailure(...), then retry, park or go terminal (see Auto-retry below)
   ├─ If terminal (succeeded/failed/canceled):
   │     store.CompleteTaskAttempt(report)   ← one transaction: close the attempt if it is still
@@ -496,6 +531,18 @@ NATS consumer (internal/scheduler/taskstatus.go)
   │     checkStepCompletion: store.FinalizeStep → propagateStepDependencies → store.FinalizeJob
   └─ ack message (a refused transition is acked too; its claims were still released)
 ```
+
+**An attempt's `ended_at`** is the broker's stamp of the stored terminal status
+minus the report's `ended_ago_ms`, clamped to the range from the attempt's
+`started_at` to the time the server received the message. `TaskStatusMsg.At`,
+the worker's clock, is sent but does not drive it, so a worker whose
+clock runs behind or ahead cannot record an attempt that ends before it
+started or after the server heard of it, and the retry delay of a status that
+needed retries is not counted into the task's run time. A report that carries no
+`ended_ago_ms` ends at the broker's stamp. The receipt-time bound is applied
+first and the `started_at` bound last, so `ended_at` is never before
+`started_at`: when another server, its clock ahead of this one's, leased the
+attempt (high availability), the run is recorded as zero-length.
 
 A message whose processing fails for any other reason (the store is
 unreachable, say) is Nak'd with a delay: 1 s, doubling with each delivery up
@@ -688,7 +735,7 @@ The diagram shows the happy path only. The complete permitted set
 | `assigned` | `running` | worker confirms execution started |
 | `assigned` | `ready` | reclaim: the assigned worker went offline, restarted or shut down, or the stale-assigned reaper fired |
 | `assigned` | `canceled` | task canceled after assignment, before confirmation |
-| `assigned` | `succeeded` / `failed` | the worker's `running` publish was lost (see below) |
+| `assigned` | `succeeded` / `failed` | the terminal status arrived with no `running` before it (see below) |
 | `running` | `succeeded` | worker reports clean exit (exit code 0) |
 | `running` | `failed` | worker reports non-zero exit or a fatal error |
 | `running` | `ready` | reclaim (worker offline, restarted or shut down) or auto-retry re-queue |
@@ -831,13 +878,16 @@ stops only it, one naming none stops both, and the stale attempt's exit leaves
 the newer one running.
 
 Two arrows need explaining. `assigned` → `succeeded`/`failed` is permitted even
-though it appears to skip `running`: the worker publishes `running` first, but
-that publish is best-effort and gives up after `MaxRetries`, so it can be lost
-while the task still runs to completion. Rejecting the terminal message would
-strand finished work. Separately, the auto-retry re-queue described below
-(`running` → `ready` on a transient failure) is a policy-driven store call
-(`RequeueTaskForRetry`) with its own guarded SQL, as are the other paths that
-move tasks for the server's own reasons: `LeaseTask`, `RetryTasks`,
+though it appears to skip `running`: a worker that starts the task's process
+publishes `running` first, but acks and retries it in the background, and drops
+a first `running` still pending when the task's terminal status is handed over,
+so the terminal status can land on a task still `assigned`. A task that ends
+before its process starts (a refused or failed dispatch) sends no `running` at
+all. Rejecting the terminal message would strand finished work. Separately,
+the auto-retry re-queue described below (`running` → `ready` on a transient
+failure) is a policy-driven store call (`RequeueTaskForRetry`) with its own
+guarded SQL, as are the other paths that move tasks for the server's own
+reasons: `LeaseTask`, `RetryTasks`,
 `ReleaseStep` / `CancelPendingStep`, `CancelBlockedJob`, `CancelJobExecution` /
 `CancelTaskExecution`, and the reclaim operations (`ReclaimStaleAssignedTasks`,
 `OfflineStaleWorker`, `OfflineWorker`, `ReclaimTaskAttempt`, and the restart
@@ -1402,6 +1452,23 @@ The server treats reports, registrations and cancels as follows.
   is running (the worker would then stay `offline` until its next heartbeat
   made the server ask it to register again). The server acks it and emits no
   event. A deregister with no `instance_id` applies unconditionally.
+- A deregister is applied only after the task-status consumer has applied
+  everything stored before it. The worker publishes its last statuses to
+  `SQI_TASK` and then deregisters on `SQI_WORKER`, two streams with separate
+  consumers, so a terminal status stored before the deregister could otherwise
+  find its attempt already closed and its task back in `ready`
+  (`internal/scheduler/deregisterwait.go`). While the consumer's effective time
+  is behind the deregister's broker stamp, or one of the worker's statuses
+  stored before it failed to apply and waits to be delivered again, the whole
+  `OfflineWorker` call waits: the message is Nak'd with a 2 s delay and the
+  worker stays online meanwhile.
+  The wait is bounded by delivery count, not by elapsed time: the eighth
+  delivery (below the consumer's ten) is applied anyway with a Warn, so a
+  stalled task consumer cannot keep a departed worker's attempts open. A
+  deferral is not an ingest failure and does not hold back the liveness sweep.
+  The `instance_id` guard above is applied when the deregister is finally
+  applied, inside `OfflineWorker`, so a deferred deregister from a superseded
+  process still cannot take its successor offline.
 - A task interrupted by its worker shutting down (`failed` with the message
   `worker_shutdown`) does not consume a retry or count toward the job's
   failure limit, whichever of the report and the deregister the server sees
@@ -1444,10 +1511,12 @@ The server treats reports, registrations and cancels as follows.
   re-checking under the job row's lock that it is still stalled. A sweep that
   fails part-way keeps, and announces, the jobs it already demoted.
 
-A worker's reported time stamps only the attempt it describes: the attempt's
+A worker's report dates only the attempt it describes: the attempt's
 `ended_at`, on both the terminal path (`CompleteTaskAttempt`) and the failure
-path (`RecordTaskFailure`). A released claim's `released_at` and every task and
-job row's `updated_at` are server time, including the auto-retry requeue and
+path (`RecordTaskFailure`), computed from the broker's stamp and the report's
+`ended_ago_ms` rather than from the worker's clock (see
+[Status ingestion](#5-status-ingestion)). A released claim's `released_at` and
+every task and job row's `updated_at` are server time, including the auto-retry requeue and
 the auto-park, and so is the `updated_at` on the WebSocket event announcing
 each change. The web UI relies on this: it ignores a job or task event older
 than the row it already holds, so a row dated by a fast worker clock would hide
@@ -1979,7 +2048,7 @@ registration, which runs the whole registration path and puts it back
   `sqi_scheduler_worker_reregister_requests_total` by `outcome`: `accepted`,
   `refused`, or `error` (no reply, or one that would not decode).
 
-The command needs protocol version `"7"`. The server discards every message
+The command needs protocol version `"8"`. The server discards every message
 from a worker of another version, so a mixed farm is not supported; upgrade
 servers before workers.
 
@@ -2240,7 +2309,7 @@ deregistration.
 | Subject pattern | Transport | Direction | Purpose |
 |---|---|---|---|
 | `work.lease.<worker_id>.<queue>` | Core NATS request/reply | worker → server (request); server → worker (reply) | Worker requests a batch of tasks; server replies with assignments or empty on timeout |
-| `task.status.<worker_id>.<job_id>` | JetStream (`SQI_TASK`, MaxAge 24 h) | worker → server | Terminal and intermediate status updates |
+| `task.status.<worker_id>.<job_id>` | JetStream (`SQI_TASK`, MaxAge 24 h) | worker → server | Terminal and first-`running` reports, published with a stream ack, a `Nats-Msg-Id` of `<attemptID>:<kind>` and retried until acked; progress snapshots are plain publishes |
 | `task.logs.<worker_id>.<task_id>` | JetStream (`SQI_LOGS`, MaxAge 96 h) | worker → server | Log chunk delivery |
 | `task.cancel.<worker_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal for a run the worker holds; the worker interrupts the process. Each worker receives its own on one core subscription made before its first lease request, and nothing reads the stream's copy. An `attempt_id` limits it to that attempt (sent for an attempt the server has closed: in answer to a `running` report, or while heartbeats still list it) |
 | `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks); the broker's timestamp for it orders registrations (one stamped earlier than the recorded one is discarded) |

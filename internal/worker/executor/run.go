@@ -440,7 +440,7 @@ func (e *Executor) failLogChecks(ctx context.Context, msg *protocol.AssignMsg, s
 // publishTerminal publishes a task's terminal status and records it in the
 // task metrics under the same status label.
 func (e *Executor) publishTerminal(msg *protocol.AssignMsg, sessID, status string, exitCode *int, reason string, lp *int, result processResult) {
-	e.statusPub.Terminal(context.Background(), msg, sessID, status, exitCode, reason, lp, result.EndedAt)
+	e.statusPub.Terminal(msg, sessID, status, exitCode, reason, lp, result.EndedAt)
 	e.m.TasksTotal.WithLabelValues(status).Inc()
 	e.m.ExecDuration.WithLabelValues(status).Observe(result.duration().Seconds())
 }
@@ -569,7 +569,7 @@ func preExecExitCode() *int {
 	return &code
 }
 
-// failPreExec publishes the running→failed transition for a pre-execution
+// failPreExec publishes the terminal "failed" status for a pre-execution
 // failure (exit code -1) and marks the task failed. Callers log their own
 // context-specific message before calling.
 func (e *Executor) failPreExec(msg *protocol.AssignMsg, sessID string, failed *bool, reason string) {
@@ -600,21 +600,23 @@ func (e *Executor) stopOutcome() (status, reason string) {
 	return "canceled", ""
 }
 
-// publishEnded publishes "running" then status for a task that ended without a
-// process result, and records it in the task metrics under status. A nil
-// exitCode reports none. "running" comes first so the server sees assigned →
-// running → terminal, the arrows runTask uses.
+// publishEnded publishes status for a task that ended without a process
+// result, and records it in the task metrics under status. A nil exitCode
+// reports none.
 //
-// It never blocks or panics the caller: Running and Terminal retry transient
-// publish failures and then log a warning and return, because status loss is
-// preferred over wedging the lease loop.
+// No "running" is sent first: the server moves an assigned task straight to
+// its terminal status (store.ValidateTaskTransition), and the publisher drops
+// a still-pending first "running" when the terminal is handed over. An inline
+// "running" would cost the caller (the lease loop, for a refused or failed
+// dispatch) a second ack timeout while JetStream is down. Terminal waits at
+// most one and leaves a report the stream has not acknowledged to retry in the
+// background.
 func (e *Executor) publishEnded(msg *protocol.AssignMsg, sessID, status string, exitCode *int, reason string) {
-	e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
-	e.statusPub.Terminal(context.Background(), msg, sessID, status, exitCode, reason, nil, time.Now())
+	e.statusPub.Terminal(msg, sessID, status, exitCode, reason, nil, time.Now())
 	e.m.TasksTotal.WithLabelValues(status).Inc()
 }
 
-// failResolution publishes the running→failed transition for a task that could
+// failResolution publishes the terminal "failed" status for a task that could
 // not have its OpenJD format strings resolved, mirroring the other
 // pre-execution failure paths in runTask.  It sets *failed so the deferred
 // session cleanup honors keepFailedSessions, and records the failure metric.
@@ -678,7 +680,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// SysProcAttr fields already set, such as Setpgid, and would not see ones
 	// set later.
 	if err := applyCredential(cmd, sess.Credential()); err != nil {
-		return processResult{Err: fmt.Errorf("apply run-as-user credential: %w", err)}
+		return earlyResult(fmt.Errorf("apply run-as-user credential: %w", err), time.Time{})
 	}
 
 	// Merge the session's dynamic environment (accumulated from openjd_env /
@@ -699,21 +701,16 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 
 	// Publish "running" status before Start so the server records the attempt
 	// even if the command is not found or cannot be executed.  If Start fails
-	// the caller publishes a terminal "failed" immediately after, so the
-	// server always sees a running→failed transition.
+	// the caller publishes a terminal "failed" immediately after.
 	// The status carries no progress: the process has emitted no output.
-	e.statusPub.Running(context.Background(), msg, sess.ID, nil, startedAt)
+	e.statusPub.Running(msg, sess.ID, startedAt)
 
 	// procout, not StdoutPipe, so the task's exit is seen while a descendant
 	// still holds its output open, such as Unreal Editor's detached
 	// UnrealTraceServer.
 	out, err := procout.Start(cmd)
 	if err != nil {
-		return processResult{
-			Err:       fmt.Errorf("start %q: %w", action.Command, err),
-			StartedAt: startedAt,
-			EndedAt:   time.Now(),
-		}
+		return earlyResult(fmt.Errorf("start %q: %w", action.Command, err), startedAt)
 	}
 
 	// Place the process (and, on Windows, everything it spawns) under
@@ -732,7 +729,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		if killErr := out.Abort(); killErr != nil {
 			e.logger.WarnContext(context.Background(), "executor: kill process after supervise failure", slog.Any("error", killErr))
 		}
-		return processResult{Err: fmt.Errorf("supervise task process tree: %w", err)}
+		return earlyResult(fmt.Errorf("supervise task process tree: %w", err), startedAt)
 	}
 	defer func() {
 		if relErr := tree.Release(); relErr != nil {
@@ -976,6 +973,17 @@ func (e *Executor) killAndWait(
 		waitErr := <-waitDone
 		return makeResult(waitErr, pid, startedAt, timedOut, canceled)
 	}
+}
+
+// earlyResult is the result of a run that failed with err before there was a
+// process to wait for. It ends now; startedAt is when the run started, or
+// zero when it failed before that, in which case it starts now too.
+func earlyResult(err error, startedAt time.Time) processResult {
+	endedAt := time.Now()
+	if startedAt.IsZero() {
+		startedAt = endedAt
+	}
+	return processResult{Err: err, StartedAt: startedAt, EndedAt: endedAt}
 }
 
 // makeResult converts a raw cmd.Wait() error into a structured [processResult].
@@ -1290,7 +1298,7 @@ func (e *Executor) stageOutputs(ctx context.Context, msg *protocol.AssignMsg, se
 	)
 	*failed = true
 	minusOne := -1
-	e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &minusOne, soErr.Error(), nil, time.Now())
+	e.statusPub.Terminal(msg, sessID, "failed", &minusOne, soErr.Error(), nil, time.Now())
 	e.m.TasksTotal.WithLabelValues("failed").Inc()
 	return false
 }

@@ -361,10 +361,10 @@ func TestRevocation_DisconnectsAndReclaims(t *testing.T) {
 
 	workerA.register()
 	workerB.register()
-	// Heartbeat well under the 2s WorkerTimeout configured above. Worker A's
-	// heartbeat loop stops on its own the moment revocation closes its NATS
-	// connection (the publish fails and the loop returns) — nothing here
-	// needs to stop it explicitly.
+	// Heartbeat well under the 2s WorkerTimeout configured above. Once
+	// revocation closes worker A's NATS connection its heartbeat loop keeps
+	// ticking, but every publish fails on the closed connection, so the
+	// server hears nothing more from it; the test's cleanup ends the loop.
 	workerA.startHeartbeat(200 * time.Millisecond)
 	workerB.startHeartbeat(200 * time.Millisecond)
 

@@ -49,11 +49,11 @@ func TestValidateTaskTransition_Legal(t *testing.T) {
 
 // TestValidateTaskTransition_AssignedToTerminal pins the arrows added when
 // store-level enforcement was introduced. A worker publishes "running" before
-// it publishes a terminal status, but status.Publisher.publishWithRetry gives
-// up after MaxRetries and returns — so the "running" message can be dropped
-// permanently while the task still completes. The terminal message then arrives
-// with the task row still in 'assigned'. Rejecting that would strand finished
-// work in 'assigned' until the heartbeat sweep reclaimed it.
+// it publishes a terminal status, but status.Publisher drops a first "running"
+// still pending when the task's terminal status is ready to send, so the
+// terminal message can arrive with the task row still in 'assigned'. Rejecting
+// that would strand finished work in 'assigned' until the heartbeat sweep
+// reclaimed it.
 func TestValidateTaskTransition_AssignedToTerminal(t *testing.T) {
 	t.Parallel()
 

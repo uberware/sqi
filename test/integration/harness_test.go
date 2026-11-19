@@ -48,6 +48,7 @@ import (
 	"github.com/uberware/sqi/internal/store/backend"
 	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/worker/status"
 )
 
 // ── Store selection ───────────────────────────────────────────────────────────
@@ -700,13 +701,19 @@ type mockWorker struct {
 
 // newMockWorker dials the embedded NATS server at natsURL and returns a ready
 // *mockWorker.  The connection is closed via t.Cleanup.
-func newMockWorker(t *testing.T, natsURL, workerID, farmID, queueID string) *mockWorker {
+//
+// The connection gives up after five reconnect attempts; opts, applied after
+// those defaults, override them (a test that restarts the server passes
+// nats.MaxReconnects(-1) so the worker reconnects to its successor).
+func newMockWorker(t *testing.T, natsURL, workerID, farmID, queueID string, opts ...nats.Option) *mockWorker {
 	t.Helper()
 
 	nc, err := nats.Connect(
 		natsURL,
-		nats.MaxReconnects(5),
-		nats.ReconnectWait(200*time.Millisecond),
+		append([]nats.Option{
+			nats.MaxReconnects(5),
+			nats.ReconnectWait(200 * time.Millisecond),
+		}, opts...)...,
 	)
 	if err != nil {
 		t.Fatalf("mockWorker: nats.Connect(%q): %v", natsURL, err)
@@ -738,6 +745,13 @@ func newMockWorker(t *testing.T, natsURL, workerID, farmID, queueID string) *moc
 // server records this worker as online and eligible for task assignment.
 func (w *mockWorker) register() {
 	w.t.Helper()
+	w.registerCPUs(4)
+}
+
+// registerCPUs is [mockWorker.register] for a worker advertising cpuCount
+// cores, so it can lease that many one-core tasks at once.
+func (w *mockWorker) registerCPUs(cpuCount int) {
+	w.t.Helper()
 
 	msg := protocol.RegisterMsg{
 		Version:            protocol.ProtocolVersion,
@@ -747,7 +761,7 @@ func (w *mockWorker) register() {
 		QueueID:            w.queueID,
 		Hostname:           "test-worker",
 		OS:                 "linux",
-		CPUCount:           4,
+		CPUCount:           cpuCount,
 		RAMMb:              8192,
 		MaxConcurrentTasks: 1,
 	}
@@ -804,12 +818,10 @@ func (w *mockWorker) startHeartbeatHolding(interval time.Duration, attempts func
 					return
 				}
 				pubCtx, pubCancel := context.WithTimeout(ctx, 2*time.Second)
-				// Ignore publish errors in the heartbeat loop — the connection
-				// may be closing during test cleanup.
-				if _, pubErr := w.js.Publish(pubCtx, bus.WorkerHeartbeatSubject(w.id), data); pubErr != nil {
-					pubCancel()
-					return
-				}
+				// Ignore publish errors in the heartbeat loop: the connection
+				// may be closing during test cleanup, or the server may be
+				// restarting, and the next beat replaces a lost one.
+				_, _ = w.js.Publish(pubCtx, bus.WorkerHeartbeatSubject(w.id), data) //nolint:errcheck // a lost heartbeat is replaced by the next
 				pubCancel()
 			}
 		}
@@ -822,6 +834,13 @@ func (w *mockWorker) startHeartbeatHolding(interval time.Duration, attempts func
 // the server's long-poll hold so a parked request is never abandoned (which
 // would strand a leased task).
 func (w *mockWorker) pullAssignment(timeout time.Duration) protocol.AssignMsg {
+	w.t.Helper()
+	return w.pullAssignments(timeout)[0]
+}
+
+// pullAssignments is [mockWorker.pullAssignment] returning every assignment
+// in the first non-empty batch.
+func (w *mockWorker) pullAssignments(timeout time.Duration) []protocol.AssignMsg {
 	w.t.Helper()
 
 	reqBytes, err := json.Marshal(struct {
@@ -852,14 +871,58 @@ func (w *mockWorker) pullAssignment(timeout time.Duration) protocol.AssignMsg {
 		if len(rep.Assignments) == 0 {
 			continue // server had no work; ask again
 		}
-		var assign protocol.AssignMsg
-		if err := json.Unmarshal(rep.Assignments[0], &assign); err != nil {
-			w.t.Fatalf("mockWorker.pullAssignment: unmarshal assignment: %v", err)
+		assigns := make([]protocol.AssignMsg, len(rep.Assignments))
+		for i, raw := range rep.Assignments {
+			if err := json.Unmarshal(raw, &assigns[i]); err != nil {
+				w.t.Fatalf("mockWorker.pullAssignment: unmarshal assignment: %v", err)
+			}
 		}
-		return assign
+		return assigns
 	}
 	w.t.Fatalf("mockWorker.pullAssignment: no assignment received within %s", timeout)
-	return protocol.AssignMsg{} // unreachable
+	return nil // unreachable
+}
+
+// publisher returns a [status.Publisher] sending this worker's statuses on
+// its own connection, as a real worker does: each report is stored by
+// SQI_TASK before it counts as sent, and one that is not is retried in the
+// background. Reports still pending when the test ends are dropped.
+func (w *mockWorker) publisher() *status.Publisher {
+	w.t.Helper()
+	tr, err := status.NewJetStreamTransport(w.nc)
+	if err != nil {
+		w.t.Fatalf("mockWorker.publisher: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	p := status.New(tr, status.Config{WorkerID: w.id}, logger)
+	w.t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		p.Flush(ctx)
+	})
+	return p
+}
+
+// deregister publishes a [protocol.DeregisterMsg] to
+// worker.deregister.<workerID> and flushes it, as the real registrar does on
+// a graceful shutdown.
+func (w *mockWorker) deregister() {
+	w.t.Helper()
+	data, err := json.Marshal(protocol.DeregisterMsg{
+		Version:  protocol.ProtocolVersion,
+		Type:     protocol.TypeDeregister,
+		WorkerID: w.id,
+		Reason:   "graceful shutdown",
+	})
+	if err != nil {
+		w.t.Fatalf("mockWorker.deregister: marshal: %v", err)
+	}
+	if err := w.nc.Publish(bus.WorkerDeregisterSubject(w.id), data); err != nil {
+		w.t.Fatalf("mockWorker.deregister: publish: %v", err)
+	}
+	if err := w.nc.FlushTimeout(5 * time.Second); err != nil {
+		w.t.Fatalf("mockWorker.deregister: flush: %v", err)
+	}
 }
 
 // publishStatus publishes a [protocol.TaskStatusMsg] to task.status.<workerID>.<jobID>.

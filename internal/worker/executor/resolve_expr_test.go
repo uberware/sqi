@@ -49,7 +49,7 @@ func TestExecutor_Dispatch_BaseSpec_ExpressionSyntaxStaysMalformed(t *testing.T)
 	if err := exec.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	waitForStatus(t, nc, 2, 10*time.Second)
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {
@@ -191,7 +191,7 @@ func TestExecutor_Dispatch_EXPR_ConfiguredLimitsReachSymbolBuilding(t *testing.T
 	if err := exec.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	waitForStatus(t, nc, 2, 10*time.Second)
+	waitForStatus(t, nc, 1, 10*time.Second)
 
 	last := nc.lastStatus()
 	if last.Status != "failed" {

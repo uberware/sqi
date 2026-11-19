@@ -40,7 +40,7 @@ func runChecked(t *testing.T, msg *protocol.AssignMsg) protocol.TaskStatusMsg {
 	if err := exec.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	waitForStatus(t, nc, 2, 10*time.Second)
+	waitForTerminal(t, nc, 10*time.Second)
 	return nc.lastStatus()
 }
 

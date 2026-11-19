@@ -1412,15 +1412,22 @@ type StateSource interface {
    optional `heartbeat.AttemptSource` (`ActiveAttemptIDs() []string`) and
    `Hold(attemptID string)`. The lease loop calls `Hold` for every assignment
    in a batch before dispatching any of it; the attempt must stay reported until
-   its terminal status has been published (or `Dispatch` fails before running
-   it). A source without `AttemptSource` sends heartbeats without
-   `attempts_reported`, and the server never reconciles that worker's attempts.
+   it has handed its terminal status to the `status.Publisher` (or `Dispatch`
+   fails before running it). The heartbeat then adds
+   `Publisher.PendingAttemptIDs()`, so the attempt stays reported until the
+   `SQI_TASK` stream has stored that status. A source without `AttemptSource`
+   sends heartbeats without `attempts_reported`, and the server never reconciles that worker's attempts.
 
 3. **Publish status messages** — inject `*status.Publisher` and call
-   `Running`, `Terminal`, and (on shutdown) `ShutdownFailed`. Match the
+   `Running` and `Terminal` (a task interrupted by shutdown reports `failed` with
+   the message `protocol.MessageWorkerShutdown`). Each is a JetStream publish
+   that waits for the stream's ack and is retried in the background until it
+   gets one, so neither call blocks past its first try. Match the
    existing executor's publish points:
    - `Running` immediately after the workload starts.
-   - `Terminal` ("succeeded", "failed", "canceled") after it exits.
+   - `Terminal` ("succeeded", "failed", "canceled") after it exits, passing the
+     time the task ended with its monotonic clock reading, so the report can
+     carry `ended_ago_ms`.
 
 4. **Wire it in `cmd/sqi-worker/start.go`** — replace the `executor.New(...)`
    call with your constructor, passing the same status publisher

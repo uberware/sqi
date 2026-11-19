@@ -345,7 +345,7 @@ func (r *Registrar) publishRegister(ctx context.Context, data []byte) error {
 //
 // Deregister is best-effort: failures are logged as warnings since the server
 // will detect the absence via heartbeat timeout regardless. It flushes the
-// connection before it returns, waiting up to deregisterFlushTimeout, so the
+// connection before it returns, waiting up to DeregisterFlushTimeout, so the
 // message is not lost when the caller then stops the process or suspends the
 // machine.
 func (r *Registrar) Deregister(reason string, kind protocol.DeregisterKind) {
@@ -376,7 +376,7 @@ func (r *Registrar) Deregister(reason string, kind protocol.DeregisterKind) {
 	// A publish is buffered. The caller is usually about to stop the process
 	// or suspend the machine, which would lose a message still in the buffer,
 	// so wait for the NATS server to have it.
-	if err := r.nc.FlushTimeout(deregisterFlushTimeout); err != nil {
+	if err := r.nc.FlushTimeout(DeregisterFlushTimeout); err != nil {
 		r.logger.WarnContext(ctx, "registration: deregister may not have reached the server — it will detect absence via heartbeat timeout",
 			slog.String("worker_id", r.workerID),
 			slog.Any("error", err))
@@ -389,9 +389,9 @@ func (r *Registrar) Deregister(reason string, kind protocol.DeregisterKind) {
 	r.logger.InfoContext(ctx, "registration: worker deregistered", attrs...)
 }
 
-// deregisterFlushTimeout bounds how long [Registrar.Deregister] waits for the
+// DeregisterFlushTimeout bounds how long [Registrar.Deregister] waits for the
 // NATS server to receive the message.
-const deregisterFlushTimeout = 2 * time.Second
+const DeregisterFlushTimeout = 2 * time.Second
 
 // SetupReconnectHook installs a NATS reconnect handler that re-publishes the
 // registration message whenever the connection is restored. It replaces any

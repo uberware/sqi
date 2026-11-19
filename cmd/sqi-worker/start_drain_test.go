@@ -17,9 +17,10 @@ import (
 
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/worker/status"
 )
 
-// shutdownRecorder is the three collaborators of shutdownSequence in one
+// shutdownRecorder is the collaborators of shutdownSequence in one
 // value, so a test reads the order they were called in from a single log.
 type shutdownRecorder struct {
 	mu      sync.Mutex
@@ -28,7 +29,12 @@ type shutdownRecorder struct {
 	started chan struct{} // closed when DrainAndShutdown is entered
 	grace   time.Duration
 	reason  string
-	kind    protocol.DeregisterKind
+	// flushDeadline is the deadline of the context Flush was called with.
+	flushDeadline time.Time
+	flushHasDL    bool
+	// flushDropped is what Flush reports it dropped.
+	flushDropped int
+	kind         protocol.DeregisterKind
 }
 
 func newShutdownRecorder() *shutdownRecorder {
@@ -58,6 +64,15 @@ func (r *shutdownRecorder) DrainAndShutdown(grace time.Duration) (completed, kil
 	return 3, 1
 }
 
+func (r *shutdownRecorder) Flush(ctx context.Context) (dropped int) {
+	r.mu.Lock()
+	r.flushDeadline, r.flushHasDL = ctx.Deadline()
+	dropped = r.flushDropped
+	r.mu.Unlock()
+	r.record("flush")
+	return dropped
+}
+
 func (r *shutdownRecorder) Stop() { r.record("heartbeat-stop") }
 
 func (r *shutdownRecorder) Deregister(reason string, kind protocol.DeregisterKind) {
@@ -80,7 +95,7 @@ func TestShutdownSequence_HeartbeatsUntilDrainEnds(t *testing.T) {
 	type result struct{ completed, killed int }
 	done := make(chan result, 1)
 	go func() {
-		c, k := shutdownSequence(rec, rec.Stop, rec, grace, "")
+		c, k := shutdownSequence(rec, rec, rec.Stop, rec, grace, "")
 		done <- result{c, k}
 	}()
 
@@ -106,7 +121,7 @@ func TestShutdownSequence_HeartbeatsUntilDrainEnds(t *testing.T) {
 		t.Fatal("shutdownSequence did not return after the drain was released")
 	}
 
-	want := []string{"drain-start", "drain-end", "heartbeat-stop", "deregister"}
+	want := []string{"drain-start", "drain-end", "flush", "heartbeat-stop", "deregister"}
 	got := rec.snapshot()
 	if len(got) != len(want) {
 		t.Fatalf("events = %v, want %v", got, want)
@@ -127,12 +142,61 @@ func TestShutdownSequence_HeartbeatsUntilDrainEnds(t *testing.T) {
 	}
 }
 
+// TestShutdownSequence_FlushesBeforeHeartbeatAndDeregister pins that the
+// worker waits for its pending status reports after the drain and before the
+// heartbeat stops and the worker deregisters: the heartbeat lists those
+// attempts, so it must still run, and a deregistration sent first would let
+// the server reclaim a task whose terminal status is still on its way. The
+// wait is bounded by status.DefaultFlushTimeout.
+func TestShutdownSequence_FlushesBeforeHeartbeatAndDeregister(t *testing.T) {
+	rec := newShutdownRecorder()
+	close(rec.release)
+
+	before := time.Now()
+	shutdownSequence(rec, rec, rec.Stop, rec, 0, "")
+	after := time.Now()
+
+	want := []string{"drain-start", "drain-end", "flush", "heartbeat-stop", "deregister"}
+	got := rec.snapshot()
+	if len(got) != len(want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %v, want %v", got, want)
+		}
+	}
+	if !rec.flushHasDL {
+		t.Fatal("Flush was called with a context that has no deadline")
+	}
+	if rec.flushDeadline.Before(before.Add(status.DefaultFlushTimeout)) || rec.flushDeadline.After(after.Add(status.DefaultFlushTimeout)) {
+		t.Errorf("flush deadline = %s, want %s after the call (between %s and %s)",
+			rec.flushDeadline, status.DefaultFlushTimeout, before.Add(status.DefaultFlushTimeout), after.Add(status.DefaultFlushTimeout))
+	}
+}
+
+// TestShutdownSequence_DeregistersWhenFlushDropsReports pins that a flush
+// that gave up on reports it could not store still lets the worker stop its
+// heartbeat and deregister, so a dead broker cannot hold the process open.
+func TestShutdownSequence_DeregistersWhenFlushDropsReports(t *testing.T) {
+	rec := newShutdownRecorder()
+	rec.flushDropped = 2
+	close(rec.release)
+
+	shutdownSequence(rec, rec, rec.Stop, rec, 0, "")
+
+	got := rec.snapshot()
+	if n := len(got); n < 2 || got[n-2] != "heartbeat-stop" || got[n-1] != "deregister" {
+		t.Fatalf("events = %v, want the heartbeat stopped and the worker deregistered after a flush that dropped reports", got)
+	}
+}
+
 // TestShutdownSequence_PassesKindToDeregister pins that the departure kind
 // reaches the deregistration, after the drain like any other shutdown.
 func TestShutdownSequence_PassesKindToDeregister(t *testing.T) {
 	rec := newShutdownRecorder()
 	close(rec.release)
-	shutdownSequence(rec, rec.Stop, rec, 0, protocol.DeregisterPreempted)
+	shutdownSequence(rec, rec, rec.Stop, rec, 0, protocol.DeregisterPreempted)
 	if rec.kind != protocol.DeregisterPreempted {
 		t.Errorf("deregister kind = %q, want %q", rec.kind, protocol.DeregisterPreempted)
 	}

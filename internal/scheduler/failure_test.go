@@ -160,7 +160,7 @@ func (h *failureHarness) reportFailedAt(taskID, message string, at time.Time) {
 		Message:   message,
 		At:        at,
 	}
-	if err := h.s.processTaskStatus(h.t.Context(), attempt.WorkerID, msg); err != nil {
+	if err := h.s.processTaskStatus(h.t.Context(), attempt.WorkerID, msg, time.Now().UTC(), time.Now().UTC()); err != nil {
 		h.t.Fatalf("processTaskStatus(failed): %v", err)
 	}
 }
@@ -349,7 +349,7 @@ func TestHandleTaskFailed_RedeliveryCountsOnce(t *testing.T) {
 	}
 
 	// First delivery: one genuine failure → retry, task back to ready.
-	if err := h.s.processTaskStatus(t.Context(), h.current["t1"].WorkerID, msg); err != nil {
+	if err := h.s.processTaskStatus(t.Context(), h.current["t1"].WorkerID, msg, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatalf("first delivery: %v", err)
 	}
 	if got := h.taskFailedAttempts("t1"); got != 1 {
@@ -366,7 +366,7 @@ func TestHandleTaskFailed_RedeliveryCountsOnce(t *testing.T) {
 	// failed, so RecordTaskFailure returns the current counts without
 	// re-incrementing, the retry decision is re-made identically, and the
 	// requeue is re-applied harmlessly.
-	if err := h.s.processTaskStatus(t.Context(), h.current["t1"].WorkerID, msg); err != nil {
+	if err := h.s.processTaskStatus(t.Context(), h.current["t1"].WorkerID, msg, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatalf("redelivery: %v", err)
 	}
 	if got := h.taskFailedAttempts("t1"); got != 1 {
@@ -693,7 +693,7 @@ func TestHandleTaskFailed_SupersededAttempt_LeavesReleasedTaskAlone(t *testing.T
 		ExitCode:  &exitCode,
 		At:        time.Now().UTC(),
 	}
-	if err := h.s.processTaskStatus(ctx, stale.WorkerID, msg); err != nil {
+	if err := h.s.processTaskStatus(ctx, stale.WorkerID, msg, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatalf("processTaskStatus(stale failed): %v", err)
 	}
 
@@ -739,7 +739,7 @@ func TestHandleTaskFailed_StaleReportDoesNotPark(t *testing.T) {
 	err := h.s.processTaskStatus(t.Context(), stale.WorkerID, protocol.TaskStatusMsg{
 		Version: protocol.ProtocolVersion, TaskID: "t1", AttemptID: stale.ID,
 		Status: "failed", ExitCode: &exitCode, At: time.Now().UTC(),
-	})
+	}, time.Now().UTC(), time.Now().UTC())
 
 	if got := h.jobStatus("j1"); got != store.JobStatusRunning {
 		t.Fatalf("stale report changed the job: status = %s, want running", got)
