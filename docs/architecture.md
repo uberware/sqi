@@ -1457,18 +1457,34 @@ The server treats reports, registrations and cancels as follows.
   `SQI_TASK` and then deregisters on `SQI_WORKER`, two streams with separate
   consumers, so a terminal status stored before the deregister could otherwise
   find its attempt already closed and its task back in `ready`
-  (`internal/scheduler/deregisterwait.go`). While the consumer's effective time
+  (`internal/scheduler/taskstatuswait.go`). While the consumer's effective time
   is behind the deregister's broker stamp, or one of the worker's statuses
   stored before it failed to apply and waits to be delivered again, the whole
   `OfflineWorker` call waits: the message is Nak'd with a 2 s delay and the
   worker stays online meanwhile.
   The wait is bounded by delivery count, not by elapsed time: the eighth
-  delivery (below the consumer's ten) is applied anyway with a Warn, so a
-  stalled task consumer cannot keep a departed worker's attempts open. A
-  deferral is not an ingest failure and does not hold back the liveness sweep.
+  delivery is applied anyway with a Warn, so a stalled task consumer cannot
+  keep a departed worker's attempts open. The worker consumer allows eleven
+  deliveries, so a message that waited the whole bound still has the three
+  30 s retries that let it outlive the same store outage as any other
+  message on `SQI_WORKER` (about 1.5 minutes) before the stream's 2-minute
+  MaxAge removes it. A deferral is not an ingest failure and does not hold
+  back the liveness sweep.
   The `instance_id` guard above is applied when the deregister is finally
   applied, inside `OfflineWorker`, so a deferred deregister from a superseded
   process still cannot take its successor offline.
+- A restarted worker's registration waits the same way. A registration whose
+  `instance_id` differs from the stored one reclaims the previous process's
+  assigned and running tasks inside `RegisterWorker`, and a worker restarted
+  quickly can register before the statuses its previous process stored on
+  `SQI_TASK` are applied. While the previous process still holds a task and the
+  task-status consumer has not caught up to the registration's broker stamp,
+  the registration is Nak'd with the same 2 s delay and the same eighth-delivery
+  bound (`scheduler: restart registration applied before the task-status
+  consumer caught up` at Warn), and the new process's lease requests get no
+  work meanwhile. A first registration, a reconnect's re-registration of the
+  same process, a stale registration the write discards, and a restart whose
+  previous process holds nothing are applied at once.
 - A task interrupted by its worker shutting down (`failed` with the message
   `worker_shutdown`) does not consume a retry or count toward the job's
   failure limit, whichever of the report and the deregister the server sees

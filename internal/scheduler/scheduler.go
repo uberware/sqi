@@ -1177,6 +1177,12 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	if s.discardOnIdentityMismatch(ctx, msg, subjectWorkerID, m.WorkerID) {
 		return
 	}
+	// A new process's registration reclaims the previous one's tasks; the
+	// statuses that process stored on SQI_TASK are applied first.
+	stamp := s.brokerAt(ctx, msg, "worker.register", m.WorkerID)
+	if s.deferRestartRegistration(ctx, msg, m, stamp) {
+		return
+	}
 
 	// The two struct conversions below (GPUInfo, ExprLimits) are
 	// compile-checked on field name, type and declaration order, so drift
@@ -1209,7 +1215,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		Status:          store.WorkerStatusOnline,
 		LastHeartbeatAt: &now,
 	}
-	w.RegistrationBrokerAt = s.brokerAt(ctx, msg, "worker.register", m.WorkerID)
+	w.RegistrationBrokerAt = stamp
 
 	// Touches the broker credential when authentication is on, and reads
 	// what capacity-group membership needs (capacitymembership.go).
@@ -1277,9 +1283,10 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 
 // brokerAt returns the broker's stream timestamp of a worker's message (kind
 // names which, for the log): a registration or heartbeat, which it orders, a
-// task status, whose attempt end it dates ([terminalEndedAt]), or a deregister,
-// which waits until the task-status consumer has applied SQI_TASK up to it
-// ([Scheduler.deferDeregister]). The stamp is independent of any worker's
+// task status, whose attempt end it dates ([terminalEndedAt]), or a deregister
+// or restart registration, which waits until the task-status consumer has
+// applied SQI_TASK up to it ([Scheduler.deferDeregister],
+// [Scheduler.deferRestartRegistration]). The stamp is independent of any worker's
 // clock: a late redelivery keeps its original stamp, a fresh message carries a
 // current one, whatever the worker's clock reads. Nil when the message has no
 // usable metadata; each caller then applies the message without it.

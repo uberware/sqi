@@ -367,18 +367,22 @@ func TestPublishTaskCancel(t *testing.T) {
 
 // ── Server consumer redelivery budget ─────────────────────────────────────────
 
-// TestServerConsumers_TenDeliveries pins that every server-side consumer whose
-// handler Naks on a store error allows ten deliveries. The scheduler's growing
-// Nak delay (1, 2, 4, 8, 16, 30 s…) puts them at about 0, 1, 3, 7, 15, 31, 61,
-// 91, 121 and 151 s. For the task-status and task-log consumers that spans
-// about 2.5 minutes. The worker consumer's stream (SQI_WORKER) expires
-// messages after 2 minutes, so its ninth and tenth deliveries never happen and
-// a message survives only about 1.5 minutes of store outage (the eighth
-// delivery, at about 91 s). That consumer is the one this matters most for: a
-// registration dropped after a short store outage (a PostgreSQL restart, an HA
-// failover) leaves its worker idle and unseen until it next reconnects to the
-// broker. The test asserts only the MaxDeliver setting.
-func TestServerConsumers_TenDeliveries(t *testing.T) {
+// TestServerConsumers_DeliveryBudget pins how many deliveries every
+// server-side consumer whose handler Naks on a store error allows. The
+// scheduler's growing Nak delay (1, 2, 4, 8, 16, 30 s…) puts ten at about 0,
+// 1, 3, 7, 15, 31, 61, 91, 121 and 151 s. For the task-status and task-log
+// consumers that spans about 2.5 minutes. The worker consumer's stream
+// (SQI_WORKER) expires messages after 2 minutes, so an ordinary message
+// survives about 1.5 minutes of store outage (the eighth delivery, at about
+// 91 s). That consumer is the one this matters most for: a registration
+// dropped after a short store outage (a PostgreSQL restart, an HA failover)
+// leaves its worker idle and unseen until it next reconnects to the broker.
+// It allows eleven, because a deregister or restart registration first waits
+// up to seven deliveries for the task-status consumer and needs three more to
+// outlive the same outage (the scheduler's
+// TestTaskStatusWait_DeferredMessageKeepsItsStoreOutageRetries). The test
+// asserts only the MaxDeliver setting.
+func TestServerConsumers_DeliveryBudget(t *testing.T) {
 	b := startBroker(t)
 	c := newClient(t, b)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -387,11 +391,12 @@ func TestServerConsumers_TenDeliveries(t *testing.T) {
 	noop := func(jetstream.Msg) {}
 	for _, tc := range []struct {
 		stream, name string
+		want         int
 		consume      func() (jetstream.ConsumeContext, error)
 	}{
-		{StreamTask, taskStatusConsumerName, func() (jetstream.ConsumeContext, error) { return c.ConsumeTaskStatus(ctx, noop) }},
-		{StreamLogs, taskLogsConsumerName, func() (jetstream.ConsumeContext, error) { return c.ConsumeTaskLogs(ctx, noop) }},
-		{StreamWorker, workerConsumerName, func() (jetstream.ConsumeContext, error) { return c.ConsumeWorker(ctx, noop) }},
+		{StreamTask, taskStatusConsumerName, 10, func() (jetstream.ConsumeContext, error) { return c.ConsumeTaskStatus(ctx, noop) }},
+		{StreamLogs, taskLogsConsumerName, 10, func() (jetstream.ConsumeContext, error) { return c.ConsumeTaskLogs(ctx, noop) }},
+		{StreamWorker, workerConsumerName, 11, func() (jetstream.ConsumeContext, error) { return c.ConsumeWorker(ctx, noop) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cc, err := tc.consume()
@@ -403,8 +408,8 @@ func TestServerConsumers_TenDeliveries(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Consumer(%s, %s): %v", tc.stream, tc.name, err)
 			}
-			if got := consumer.CachedInfo().Config.MaxDeliver; got != 10 {
-				t.Fatalf("MaxDeliver = %d, want 10", got)
+			if got := consumer.CachedInfo().Config.MaxDeliver; got != tc.want {
+				t.Fatalf("MaxDeliver = %d, want %d", got, tc.want)
 			}
 		})
 	}

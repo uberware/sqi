@@ -697,6 +697,10 @@ type mockWorker struct {
 	queueID string
 	nc      *nats.Conn
 	js      jetstream.JetStream
+
+	// instanceID is the worker process its registrations name. Empty sends
+	// none, so the server keeps the stored instance ID and reclaims nothing.
+	instanceID string
 }
 
 // newMockWorker dials the embedded NATS server at natsURL and returns a ready
@@ -757,6 +761,7 @@ func (w *mockWorker) registerCPUs(cpuCount int) {
 		Version:            protocol.ProtocolVersion,
 		Type:               protocol.TypeRegister,
 		WorkerID:           w.id,
+		InstanceID:         w.instanceID,
 		FarmID:             w.farmID,
 		QueueID:            w.queueID,
 		Hostname:           "test-worker",
