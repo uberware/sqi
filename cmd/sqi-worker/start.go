@@ -464,11 +464,6 @@ type flusher interface {
 	Flush(ctx context.Context) (dropped int)
 }
 
-// statusFlushTimeout bounds how long shutdown waits for the status reports
-// still pending after the drain. It is separate from the drain's grace
-// period, which is spent by then.
-const statusFlushTimeout = 10 * time.Second
-
 // deregisterer is the part of *registration.Registrar the shutdown sequence uses.
 type deregisterer interface {
 	Deregister(reason string, kind protocol.DeregisterKind)
@@ -524,13 +519,13 @@ func startPreemptionWatch(
 //     keeps running throughout: a drain may outlast the server's heartbeat
 //     timeout, and a worker that goes quiet is declared offline and loses its
 //     running tasks.
-//  2. Flush: wait up to [statusFlushTimeout] until the publisher has stored
-//     every status report it still holds. The drain returns once each task has
-//     made its first attempt at a terminal report, which the broker may not
-//     have stored yet; a deregistration sent before it is stored lets the
-//     server reclaim a task that has finished. The heartbeat still runs, since
-//     it lists these attempts as held. Reports still pending when the wait
-//     ends are dropped, and the sequence goes on.
+//  2. Flush: wait up to [status.DefaultFlushTimeout] until the publisher has
+//     stored every status report it still holds. The drain returns once each
+//     task has made its first attempt at a terminal report, which the broker
+//     may not have stored yet; a deregistration sent before it is stored
+//     lets the server reclaim a task that has finished. The heartbeat still
+//     runs, since it lists these attempts as held. Reports still pending when
+//     the wait ends are dropped, and the sequence goes on.
 //  3. Stop the heartbeat, so no further beat is started after the departure
 //     message. stopHeartbeat only cancels the publisher's context and does not wait
 //     for its Run to return, so a beat already being published can still
@@ -545,11 +540,11 @@ func shutdownSequence(
 	exec drainer, flush flusher, stopHeartbeat func(), reg deregisterer, grace time.Duration, kind protocol.DeregisterKind,
 ) (completed, killed int) {
 	completed, killed = exec.DrainAndShutdown(grace)
-	flushCtx, stopFlushWait := context.WithTimeout(context.Background(), statusFlushTimeout)
+	flushCtx, stopFlushWait := context.WithTimeout(context.Background(), status.DefaultFlushTimeout)
 	if dropped := flush.Flush(flushCtx); dropped > 0 {
 		// The worker's logger is the process default (sqilog.New installs it).
 		slog.Warn("sqi-worker shutdown left status reports unsent", //nolint:sloglint // shutdownSequence takes no logger; the default is the worker's
-			slog.Int("dropped", dropped), slog.Duration("waited", statusFlushTimeout))
+			slog.Int("dropped", dropped), slog.Duration("waited", status.DefaultFlushTimeout))
 	}
 	stopFlushWait()
 	stopHeartbeat()

@@ -16,10 +16,10 @@ import (
 // kill window ends, the wait for the statuses still pending, and the
 // deregistration's flush.
 func TestShutdownAfterDrainFitsServiceMargin(t *testing.T) {
-	after := status.DefaultAckTimeout + statusFlushTimeout + registration.DeregisterFlushTimeout
+	after := status.DefaultAckTimeout + status.DefaultFlushTimeout + registration.DeregisterFlushTimeout
 	if after > winsvc.ShutdownMargin {
 		t.Errorf("shutdown after the drain takes up to %v (ack %v + status flush %v + deregister flush %v), "+
 			"want at most winsvc.ShutdownMargin %v",
-			after, status.DefaultAckTimeout, statusFlushTimeout, registration.DeregisterFlushTimeout, winsvc.ShutdownMargin)
+			after, status.DefaultAckTimeout, status.DefaultFlushTimeout, registration.DeregisterFlushTimeout, winsvc.ShutdownMargin)
 	}
 }

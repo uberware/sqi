@@ -45,7 +45,7 @@ func workerDrainTimeout(configPath string) (time.Duration, error) {
 // SIGTERM and the kill window ([shutdownKillGrace]) before SIGKILL. What
 // follows is covered by winsvc.ShutdownMargin: the inline try of each task's
 // final status (up to status.DefaultAckTimeout), the wait for the statuses
-// the broker has not yet stored (up to [statusFlushTimeout], normally far
-// less), the deregistration (up to registration.DeregisterFlushTimeout) and
-// the NATS drain. TestShutdownAfterDrainFitsServiceMargin pins the sum.
+// the broker has not yet stored (up to status.DefaultFlushTimeout, normally
+// far less), the deregistration (up to registration.DeregisterFlushTimeout)
+// and the NATS drain. TestShutdownAfterDrainFitsServiceMargin pins the sum.
 func workerDrainBound(grace time.Duration) time.Duration { return grace + shutdownKillGrace(grace) }

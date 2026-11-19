@@ -17,6 +17,7 @@ import (
 
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/worker/status"
 )
 
 // shutdownRecorder is the three collaborators of shutdownSequence in one
@@ -146,7 +147,7 @@ func TestShutdownSequence_HeartbeatsUntilDrainEnds(t *testing.T) {
 // heartbeat stops and the worker deregisters: the heartbeat lists those
 // attempts, so it must still run, and a deregistration sent first would let
 // the server reclaim a task whose terminal status is still on its way. The
-// wait is bounded by statusFlushTimeout.
+// wait is bounded by status.DefaultFlushTimeout.
 func TestShutdownSequence_FlushesBeforeHeartbeatAndDeregister(t *testing.T) {
 	rec := newShutdownRecorder()
 	close(rec.release)
@@ -168,9 +169,9 @@ func TestShutdownSequence_FlushesBeforeHeartbeatAndDeregister(t *testing.T) {
 	if !rec.flushHasDL {
 		t.Fatal("Flush was called with a context that has no deadline")
 	}
-	if rec.flushDeadline.Before(before.Add(statusFlushTimeout)) || rec.flushDeadline.After(after.Add(statusFlushTimeout)) {
+	if rec.flushDeadline.Before(before.Add(status.DefaultFlushTimeout)) || rec.flushDeadline.After(after.Add(status.DefaultFlushTimeout)) {
 		t.Errorf("flush deadline = %s, want %s after the call (between %s and %s)",
-			rec.flushDeadline, statusFlushTimeout, before.Add(statusFlushTimeout), after.Add(statusFlushTimeout))
+			rec.flushDeadline, status.DefaultFlushTimeout, before.Add(status.DefaultFlushTimeout), after.Add(status.DefaultFlushTimeout))
 	}
 }
 
