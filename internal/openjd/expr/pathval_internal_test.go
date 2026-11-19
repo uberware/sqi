@@ -560,12 +560,13 @@ func TestParsePath_URITrailingSlashAfterAuthority(t *testing.T) {
 	}
 }
 
-// TestParsePath_URIDetection pins the specification's own regex boundary. A
-// string that merely contains "://" is not a URI, and a scheme must start with
-// a letter.
+// TestParsePath_URIDetection pins the specification's own regex boundary,
+// ^[a-zA-Z][a-zA-Z0-9+.-]+:// . A string that merely contains "://" is not a
+// URI, a scheme must start with a letter, and it must be at least two
+// characters long, so "C://b" and "x://b" are filesystem paths.
 func TestParsePath_URIDetection(t *testing.T) {
-	uris := []string{"s3://b", "https://h", "a+b.c-d://x", "S3://b"}
-	notURIs := []string{"/a/b", "a/b", "://x", "1s://x", "a:/b", "a//b", "/x://y"}
+	uris := []string{"s3://b", "https://h", "a+b.c-d://x", "S3://b", "ab://x", "a1://x"}
+	notURIs := []string{"/a/b", "a/b", "://x", "1s://x", "a:/b", "a//b", "/x://y", "x://b", "C://b", "c://", "C://scenes/a.ma"}
 	for _, s := range uris {
 		if !parsePath(s, PathPOSIX).isURI {
 			t.Errorf("parsePath(%q) should be a URI", s)

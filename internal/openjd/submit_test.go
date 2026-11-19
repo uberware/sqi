@@ -750,19 +750,57 @@ func TestSubmitter_Submit_ParamInRangeExpr(t *testing.T) {
 	}
 }
 
-// TestSubmitter_Submit_ParamInRangeExpr_ExceedsValueLimit verifies that a
-// parameterized range cannot smuggle past the per-parameter value limit: the
-// limit is skipped at template-validation time because the range still contains
-// {{...}}, so it must be re-checked on the resolved space. Here Start=1,End=2000
-// resolves to "1-2000" → 2000 values, exceeding maxTaskParamValues (1024).
-func TestSubmitter_Submit_ParamInRangeExpr_ExceedsValueLimit(t *testing.T) {
+// TestSubmitter_Submit_ParamInRangeExpr_IsNotCappedAt1024 pins Template
+// Schemas §3.4: the number of values an <IntRangeExpr> expands to is not
+// constrained by the specification, so a parameterized range resolving to
+// "1-2000" is accepted and makes 2000 tasks. The 1024 maximum bounds only the
+// <IntRangeList> form.
+func TestSubmitter_Submit_ParamInRangeExpr_IsNotCappedAt1024(t *testing.T) {
 	st := fake.New()
 	farmID, queueID := seedSubmitPrereqs(t, st)
 	sub := openjd.NewSubmitter(st)
 
-	template := `{
+	res, err := sub.Submit(t.Context(), paramRangeTemplate, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:     farmID,
+		QueueID:    queueID,
+		Parameters: map[string]string{"Start": "1", "End": "2000"},
+	})
+	if err != nil {
+		t.Fatalf("Submit() error = %v, want a 2000-value range expression accepted", err)
+	}
+	if len(res.Tasks) != 2000 {
+		t.Errorf("got %d tasks, want 2000", len(res.Tasks))
+	}
+}
+
+// TestSubmitter_Submit_ParamInRangeExpr_ExceedsTaskLimit verifies that a
+// parameterized range cannot smuggle past the bound that does apply to it: the
+// range still contains {{...}} at template-validation time, so the resolved
+// space must be bounded at submission. Start=1, End=2000000 resolves to two
+// million values, past maxTasksPerStep (1,000,000).
+func TestSubmitter_Submit_ParamInRangeExpr_ExceedsTaskLimit(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	_, err := sub.Submit(t.Context(), paramRangeTemplate, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:     farmID,
+		QueueID:    queueID,
+		Parameters: map[string]string{"Start": "1", "End": "2000000"},
+	})
+	if err == nil {
+		t.Fatal("expected SubmitValidationError for a resolved range past the task limit, got nil")
+	}
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
+		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
+	}
+}
+
+// paramRangeTemplate is a one-step job whose INT task parameter's range is
+// built from two job parameters.
+const paramRangeTemplate = `{
   "specificationVersion": "jobtemplate-2023-09",
-  "name": "OverLimitParamJob",
+  "name": "ParamRangeJob",
   "parameterDefinitions": [
     { "name": "Start", "type": "INT" },
     { "name": "End",   "type": "INT" }
@@ -779,21 +817,6 @@ func TestSubmitter_Submit_ParamInRangeExpr_ExceedsValueLimit(t *testing.T) {
     }
   ]
 }`
-	_, err := sub.Submit(t.Context(), template, store.TemplateFormatJSON, openjd.SubmitOptions{
-		FarmID:  farmID,
-		QueueID: queueID,
-		Parameters: map[string]string{
-			"Start": "1",
-			"End":   "2000",
-		},
-	})
-	if err == nil {
-		t.Fatal("expected SubmitValidationError for resolved range exceeding the value limit, got nil")
-	}
-	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
-		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
-	}
-}
 
 // TestSubmitter_Submit_ParamInRangeExpr_UnknownParam verifies that a step
 // whose range expression references an undeclared job parameter produces a

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -264,12 +263,8 @@ var convFuncs = map[string][]Shape{
 			for i, e := range elems {
 				ints[i] = e.AsInt()
 			}
-			// canonicalRange assumes its input is already sorted and
-			// de-duplicated, as an expanded range always is; this caller's
-			// input is not.
-			slices.Sort(ints)
-			ints = slices.Compact(ints)
-			return RangeExpr(canonicalRange(ints))
+			// The canonical form sorts and de-duplicates the values itself.
+			return canonicalRangeValue(ints), nil
 		}},
 	},
 	// fail() needs no special handling anywhere else. With a resolved argument

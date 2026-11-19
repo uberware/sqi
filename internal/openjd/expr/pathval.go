@@ -621,7 +621,7 @@ func driveColonLen(s string) int {
 // splitURI recognizes the specification's URI form and splits off the opaque
 // scheme+authority prefix.
 //
-// The pattern is the spec's own: ^[a-zA-Z][a-zA-Z0-9+.-]*://
+// The pattern is the spec's own: ^[a-zA-Z][a-zA-Z0-9+.-]+://
 //
 // Everything after the authority is kept VERBATIM. Consecutive slashes, "."
 // and ".." segments and a trailing slash all survive, because a URI path
@@ -635,17 +635,11 @@ func driveColonLen(s string) int {
 // start with an ASCII LETTER per the spec's own grammar — a stricter and
 // unrelated rule that gets its own predicate below.
 //
-// A ONE-LETTER SCHEME IS LEGAL under that grammar, and the grammar is applied
-// before any flavor is consulted, so a Windows drive letter followed by "//"
-// is a URI here: path("C:") + "//b" is the URI "C://b", with parts ["C://b"]
-// and is_absolute() true, under EVERY path_format including Windows. This is
-// the spec's own regex read literally — it writes [a-zA-Z][a-zA-Z0-9+.-]*,
-// with a star and not a plus — and the alternative (special-casing a
-// single-letter scheme so a drive wins) would be sqi inventing a rule the
-// specification does not have, on a shape no real template produces: a bare
-// drive appended to a text that starts with two separators. It is left as
-// written, recorded here and in doc.go, rather than "fixed" by guesswork. If
-// upstream ever narrows the scheme grammar, narrow isSchemeStart with it.
+// A scheme is at least two characters (the regex's "+"). RFC 3986 permits one,
+// but "C://scenes/a.ma" is also a valid Windows absolute path (a drive and a
+// doubled separator), and treating it as a URI would bypass path mapping for a
+// local file, so RFC 0006 treats a one-letter scheme as a filesystem path under
+// every path_format.
 func splitURI(text string) (root, rest string, ok bool) {
 	if text == "" || !isSchemeStart(text[0]) {
 		return "", "", false
@@ -654,7 +648,7 @@ func splitURI(text string) (root, rest string, ok bool) {
 	for i < len(text) && isSchemeByte(text[i]) {
 		i++
 	}
-	if !strings.HasPrefix(text[i:], "://") {
+	if i < 2 || !strings.HasPrefix(text[i:], "://") {
 		return "", "", false
 	}
 	authStart := i + 3

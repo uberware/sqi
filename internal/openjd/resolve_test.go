@@ -1222,20 +1222,20 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprMetered(t *testing.T) {
 
 // TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue
 // pins what happens when an embedded reference in a non-lone whole-field
-// RangeExpr evaluates to a genuine range_expr-typed value —
-// range_expr("10-15:2,1-5") — which Value.String() renders back to ITS OWN
-// <IntRangeExpr> text (rangeexpr.go: the value's payload IS the text
-// range_expr() was called with, unmodified). The resulting behavior is
-// correct; see resolveRangeExprField's doc comment for the reasoning,
-// restated briefly in each case's own comment below.
+// RangeExpr evaluates to a genuine range_expr-typed value. Value.String()
+// renders it in its canonical form (Template Schemas §3.4.1.1.1): ascending,
+// positive steps, de-duplicated. So the composed text is ordinary base-spec
+// range syntax that internal/openjd's own stricter parser always accepts, even
+// when the expression was written with start > end or a negative step, which
+// that parser would reject as literal text. Its first-seen order shows only
+// through the literal that follows the embedded value.
 //
 // All three cases share one shape: an embedded range_expr(...) call,
 // followed by a literal ",<n>" — deliberately non-lone (fmtstring.LoneRef
 // requires the ENTIRE field to be one reference; the trailing literal rules
 // that out), so all three exercise the resolveFormatStringExpr/
 // checkFormatString-agreement path, not evalRangeExprField's
-// whole-field-lone path (which avoids the re-parse trap, per its own doc
-// comment, and is untouched by this case).
+// whole-field-lone path.
 func TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
@@ -1245,48 +1245,29 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue(t *t
 		wantExpandRows []string // checked only when wantExpandErr == ""
 	}{
 		{
-			// range_expr("5-1") is legal at the expression layer (section
-			// 3.4.1.1.1 makes "1 - -1" the single value [1], and this repo's
-			// own TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy
-			// pins range_expr("5-1") -> ["5"] when it is the LONE whole-field
-			// form). Spliced into base-spec <IntRangeExpr> text via this
-			// non-lone form, the composed text "5-1,7" is parsed by
-			// internal/openjd's OWN stricter parseIntRangeExpr, which rejects
-			// start > end outright — the same rejection
-			// TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy
-			// already pins for the literal text "5-1" alone.
-			name:          "start > end: resolves, then rejected by internal/openjd's own policy at expand",
-			rangeExprText: `{{ range_expr("5-1") }},7`,
-			wantResolved:  "5-1,7",
-			wantExpandErr: "must be ≤ end",
+			// range_expr("5-1") is the single value 5 (§3.4.1.1.1: the set
+			// always holds its start), written "5".
+			name:           "start > end: the embedded value is written as its one value",
+			rangeExprText:  `{{ range_expr("5-1") }},7`,
+			wantResolved:   "5,7",
+			wantExpandRows: []string{"5", "7"},
 		},
 		{
-			// Same shape, the second of internal/openjd's own two rejecting
-			// divergences (negative step, legal at the expression layer,
-			// rejected by parseIntRangeExpr).
-			name:          "negative step: resolves, then rejected by internal/openjd's own policy at expand",
-			rangeExprText: `{{ range_expr("10-1:-1") }},99`,
-			wantResolved:  "10-1:-1,99",
-			wantExpandErr: "must be a positive integer",
+			// A negative step names the same values as the positive one, and
+			// the canonical form writes them ascending.
+			name:           "negative step: the embedded value is written ascending",
+			rangeExprText:  `{{ range_expr("10-1:-1") }},99`,
+			wantResolved:   "1-10,99",
+			wantExpandRows: []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "99"},
 		},
 		{
-			// The THIRD divergence — first-seen vs. ascending order — does
-			// not reject, it REORDERS, so without this case a change to
-			// ascending order would go unnoticed. range_expr("10-15:2,1-5")
-			// is [1,2,3,4,5,10,12,14] at the expression layer (this repo's
-			// own TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy
-			// pins exactly that for the LONE whole-field form). Spliced into
-			// "10-15:2,1-5,7" and parsed under internal/openjd's first-seen
-			// policy (parseIntRangeExpr, range.go — the same divergence
-			// TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy
-			// pins for the literal text alone), the result is
-			// [10,12,14,1,2,3,4,5,7] — the SPEC's own ascending,
-			// deduplicated order for that same composed text would instead
-			// be [1,2,3,4,5,7,10,12,14].
-			name:           "overlapping sub-ranges: resolves and expands, FIRST-SEEN order (not ascending)",
+			// The embedded value is written in ascending order, but the
+			// composed text is still parsed in internal/openjd's first-seen
+			// order, so the trailing 7 comes after 14.
+			name:           "out-of-order elements: canonical within the value, first-seen across the text",
 			rangeExprText:  `{{ range_expr("10-15:2,1-5") }},7`,
-			wantResolved:   "10-15:2,1-5,7",
-			wantExpandRows: []string{"10", "12", "14", "1", "2", "3", "4", "5", "7"},
+			wantResolved:   "1-5,10-14:2,7",
+			wantExpandRows: []string{"1", "2", "3", "4", "5", "10", "12", "14", "7"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

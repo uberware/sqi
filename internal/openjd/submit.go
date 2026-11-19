@@ -7,12 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/store"
 )
 
@@ -199,7 +199,7 @@ func declaredExtensions(tmpl *JobTemplate) []string {
 func (s *Submitter) prepareTemplate(
 	ctx context.Context, rawTemplate string, format store.TemplateFormat, params map[string]string,
 	deadline time.Time,
-) (tmpl *JobTemplate, boundParams map[string]string, resolverBudget *templateBudget, err error) {
+) (tmpl *JobTemplate, boundParams map[string]string, resolverBudget *templateBudget, locCache locRootCache, err error) {
 	// ── 1. Parse ──────────────────────────────────────────────────────────
 	parseFormat := FormatYAML
 	if format == store.TemplateFormatJSON {
@@ -208,7 +208,7 @@ func (s *Submitter) prepareTemplate(
 
 	tmpl, err = Parse([]byte(rawTemplate), parseFormat)
 	if err != nil {
-		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parse: %w", err)}
+		return nil, nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parse: %w", err)}
 	}
 
 	// ── 2. Validate ───────────────────────────────────────────────────────
@@ -225,23 +225,24 @@ func (s *Submitter) prepareTemplate(
 	// ValidationErrors incomplete, and reporting it as the client's fault would
 	// make acceptance depend on machine load.
 	if deadlineErr != nil {
-		return nil, nil, nil, fmt.Errorf("openjd: submit: validation: %w", deadlineErr)
+		return nil, nil, nil, nil, fmt.Errorf("openjd: submit: validation: %w", deadlineErr)
 	}
 	if len(validateErrs) > 0 {
-		return nil, nil, nil, &SubmitValidationError{
+		return nil, nil, nil, nil, &SubmitValidationError{
 			Cause: fmt.Errorf("openjd: submit: validation: %w", validateErrs),
 		}
 	}
 
 	// ── 2b. Validate named storage location coverage ────────────
-	if err := s.validateStorageLocations(ctx, tmpl); err != nil {
-		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %w", err)}
+	locCache, err = s.validateStorageLocations(ctx, tmpl)
+	if err != nil {
+		return nil, nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %w", err)}
 	}
 
 	// ── 2c. Bind job parameters ────────────────────────────────────────────
 	boundParams, bindErrs := BindJobParameters(tmpl.ParameterDefinitions, params)
 	if len(bindErrs) > 0 {
-		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parameter binding: %w", bindErrs)}
+		return nil, nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parameter binding: %w", bindErrs)}
 	}
 
 	// ── 2d. Re-check template expressions with concrete parameters ────────
@@ -262,11 +263,11 @@ func (s *Submitter) prepareTemplate(
 
 	checkerBudget := newTemplateBudget(phase2Limits)
 	if err := checkExpressionsAtSubmit(tmpl, boundParams, checkerBudget); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	resolverBudget = newTemplateBudget(phase2Limits)
-	return tmpl, boundParams, resolverBudget, nil
+	return tmpl, boundParams, resolverBudget, locCache, nil
 }
 
 // ── Submit ────────────────────────────────────────────────────────────────────
@@ -300,7 +301,7 @@ func (s *Submitter) Submit(
 	opts SubmitOptions,
 ) (*SubmitResult, error) {
 	// ── 1-2d. Parse, validate, bind parameters, re-check expressions ──────
-	tmpl, boundParams, resolverBudget, err := s.prepareTemplate(
+	tmpl, boundParams, resolverBudget, locCache, err := s.prepareTemplate(
 		ctx, rawTemplate, format, opts.Parameters, opts.Deadline,
 	)
 	if err != nil {
@@ -378,7 +379,7 @@ func (s *Submitter) Submit(
 	var tasks []store.Task
 	for i, stepTmpl := range tmpl.Steps {
 		step, stepTasks, err := s.buildStepWithTasks(
-			tmpl, job, stepTmpl, i, boundParams, deriveBounds, blocked, now, resolverBudget, jobTasks,
+			tmpl, job, stepTmpl, i, boundParams, deriveBounds, blocked, now, resolverBudget, jobTasks, locCache,
 		)
 		if err != nil {
 			return nil, err
@@ -448,6 +449,7 @@ func (s *Submitter) buildStepWithTasks(
 	now time.Time,
 	resolverBudget *templateBudget,
 	jobTasks *jobTaskBudget,
+	locCache locRootCache,
 ) (step store.Step, tasks []store.Task, err error) {
 	// Collect dependency names from the template.
 	dependsOn := make([]string, 0, len(stepTmpl.Dependencies))
@@ -462,7 +464,14 @@ func (s *Submitter) buildStepWithTasks(
 		stepStatus = store.StepStatusPending
 	}
 
-	hostReqs, computeLoc := toStoreHostRequirements(stepTmpl.HostRequirements)
+	sc, resolvedHR, err := s.resolveStepScope(tmpl, &stepTmpl, stepIdx, boundParams, resolverBudget)
+	if err != nil {
+		return store.Step{}, nil, err
+	}
+	hostReqs, computeLoc := toStoreHostRequirements(resolvedHR)
+	if err := checkResolvedLocCoverage(stepTmpl, stepIdx, computeLoc, locCache); err != nil {
+		return store.Step{}, nil, err
+	}
 
 	step = store.Step{
 		ID:               uuid.NewString(),
@@ -484,7 +493,7 @@ func (s *Submitter) buildStepWithTasks(
 	}
 
 	// ── Expand parameter space ──────────────────────────────────────────────
-	taskParamList, err := s.expandStepTaskParams(tmpl, stepTmpl, stepIdx, boundParams, deriveBounds, resolverBudget, jobTasks)
+	taskParamList, err := s.expandStepTaskParams(stepTmpl, stepIdx, sc, deriveBounds, resolverBudget, jobTasks)
 	if err != nil {
 		return store.Step{}, nil, err
 	}
@@ -513,6 +522,46 @@ func (s *Submitter) buildStepWithTasks(
 	return step, tasks, nil
 }
 
+// resolveStepScope builds the stepScope shared by a step's fields resolved at
+// Job creation, so its let: block is evaluated and charged once, and resolves
+// its host requirements against it. The scope is built only when
+// something needs it: a step with no parameterSpace and no host-requirement
+// format string costs the resolver nothing.
+func (s *Submitter) resolveStepScope(
+	tmpl *JobTemplate, stepTmpl *StepTemplate, stepIdx int, boundParams map[string]string, b *templateBudget,
+) (stepScope, *HostRequirements, error) {
+	stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
+	invalid := func(errs ValidationErrors) error {
+		for k := range errs {
+			if !strings.HasPrefix(errs[k].Pointer, stepPrefix) {
+				errs[k].Pointer = stepPrefix + errs[k].Pointer
+			}
+		}
+		return &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: resolve step %q: %w", stepTmpl.Name, errs)}
+	}
+	var sc stepScope
+	if stepTmpl.ParameterSpace != nil || hostRequirementsHaveFormatStrings(stepTmpl.HostRequirements) {
+		if tmpl.hasExtension("EXPR") && !b.ok() {
+			return sc, nil, invalid(b.errs())
+		}
+		var letErrs ValidationErrors
+		sc, letErrs = newStepScope(b, tmpl, stepTmpl, boundParams)
+		if len(letErrs) > 0 {
+			return sc, nil, invalid(letErrs)
+		}
+	}
+	hr, errs := resolveHostRequirements(b, sc, stepTmpl.HostRequirements, stepIdx, s.enforceLimits)
+	// A wall-clock stop is not the submitter's fault, so it is never a
+	// SubmitValidationError; see templateBudget.deadline.
+	if err := b.deadline(); err != nil {
+		return sc, nil, fmt.Errorf("openjd: submit: resolve step %q: %w", stepTmpl.Name, err)
+	}
+	if len(errs) > 0 {
+		return sc, nil, invalid(errs)
+	}
+	return sc, hr, nil
+}
+
 // expandStepTaskParams resolves {{Param.*}} / {{RawParam.*}} references in the
 // step's parameter space, re-validates the resolved space's quantitative
 // limits, expands it into one parameter set per task, and derives chunk
@@ -522,25 +571,27 @@ func (s *Submitter) buildStepWithTasks(
 // jobTasks is the [jobTaskBudget] of this submission, shared by every step, so
 // the [maxTasksPerJob] cap sees the whole job's task count.
 func (s *Submitter) expandStepTaskParams(
-	tmpl *JobTemplate,
 	stepTmpl StepTemplate,
 	stepIdx int,
-	boundParams map[string]string,
+	sc stepScope,
 	deriveBounds bool,
 	resolverBudget *templateBudget,
 	jobTasks *jobTaskBudget,
 ) ([]TaskParams, error) {
-	// Resolve {{Param.*}} / {{RawParam.*}} in the parameter space first. tmpl
-	// carries the EXPR declaration and the job-parameter definitions, and
-	// stepTmpl carries the step's own let: block (Template Schemas section
-	// 3.6.2), which together are what ResolveParameterSpaceParams needs to
-	// evaluate a section 1.3.12 whole-field range expression against the same
-	// symbol table the checker used.
+	// Resolve {{Param.*}} / {{RawParam.*}} in the parameter space first,
+	// against the step's stepScope: the job parameters plus, under EXPR, the
+	// step's own let: block (Template Schemas section 3.6.2), which together
+	// are what a section 1.3.12 whole-field range expression is evaluated
+	// against: the same symbol table the checker used.
 	//
 	// resolverBudget is shared by every step's resolver call in this submission.
 	// It is a separate object from checkExpressionsAtSubmit's budget; see
 	// prepareTemplate's doc comment.
-	resolvedPS, resolveErrs := ResolveParameterSpaceParams(tmpl, &stepTmpl, stepTmpl.ParameterSpace, boundParams, resolverBudget)
+	var resolvedPS *StepParameterSpace
+	var resolveErrs ValidationErrors
+	if stepTmpl.ParameterSpace != nil {
+		resolvedPS, resolveErrs = resolveParameterSpace(resolverBudget, sc, stepTmpl.ParameterSpace, nil)
+	}
 	// Checked before resolveErrs and never wrapped in a SubmitValidationError: a
 	// wall-clock stop is not the submitter's fault, and the resolver reports it
 	// through the shared budget. A deadline makes the resolver return (nil, nil),
@@ -714,10 +765,10 @@ type locRootEntry struct {
 //     or at minimum a "default" root when no affinity is declared.
 //
 // All problems are accumulated and returned as a single error.
-func (s *Submitter) validateStorageLocations(ctx context.Context, tmpl *JobTemplate) error {
+func (s *Submitter) validateStorageLocations(ctx context.Context, tmpl *JobTemplate) (locRootCache, error) {
 	allNames := ExtractTemplateLocRefs(tmpl)
 	if len(allNames) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	cache := s.buildLocRootCache(ctx, allNames)
@@ -728,10 +779,10 @@ func (s *Submitter) validateStorageLocations(ctx context.Context, tmpl *JobTempl
 	errs = append(errs, unreportedCacheErrors(cache, errs)...)
 
 	if len(errs) == 0 {
-		return nil
+		return cache, nil
 	}
 	sort.Strings(errs)
-	return fmt.Errorf("%s", strings.Join(errs, "; "))
+	return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
 }
 
 // buildLocRootCache fetches each referenced location once and returns a cache.
@@ -758,6 +809,9 @@ func (*Submitter) validateStepLocRefs(steps []StepTemplate, cache locRootCache) 
 			continue
 		}
 		_, computeLoc := toStoreHostRequirements(st.HostRequirements)
+		if strings.Contains(computeLoc, "{{") {
+			continue // checked against the resolved value, in buildStepWithTasks
+		}
 		for _, name := range stepNames {
 			errs = append(errs, checkLocRootCoverage(i, name, computeLoc, cache)...)
 		}
@@ -783,6 +837,23 @@ func (*Submitter) validateJobLocRefs(tmpl *JobTemplate, cache locRootCache) []st
 		}
 	}
 	return errs
+}
+
+// checkResolvedLocCoverage checks a step's storage-location roots against its
+// resolved compute location when the template wrote that location as a format
+// string, the case validateStepLocRefs leaves to Job creation.
+func checkResolvedLocCoverage(stepTmpl StepTemplate, stepIdx int, computeLoc string, cache locRootCache) error {
+	if _, written := toStoreHostRequirements(stepTmpl.HostRequirements); !strings.Contains(written, "{{") {
+		return nil
+	}
+	var errs []string
+	for _, name := range ExtractStepLocRefs(stepTmpl) {
+		errs = append(errs, checkLocRootCoverage(stepIdx, name, computeLoc, cache)...)
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %s", strings.Join(errs, "; "))}
 }
 
 // checkLocRootCoverage returns any coverage error for a single location
@@ -884,10 +955,12 @@ func toStoreHostRequirements(hr *HostRequirements) (reqs *store.StepHostRequirem
 				shr.UsagePools = append(shr.UsagePools, poolName)
 			}
 		}
+		// Bounds are stored without the white space a numeric string may
+		// carry (Template Schemas §7.5), so the scheduler reads plain numbers.
 		shr.Amounts = append(shr.Amounts, store.StepAmountRequirement{
 			Name: a.Name,
-			Min:  a.Min,
-			Max:  a.Max,
+			Min:  trimmedBound(a.Min),
+			Max:  trimmedBound(a.Max),
 		})
 	}
 
@@ -910,6 +983,15 @@ func toStoreHostRequirements(hr *HostRequirements) (reqs *store.StepHostRequirem
 	}
 
 	return shr, computeLoc
+}
+
+// trimmedBound is an amount bound without surrounding numeric white space.
+func trimmedBound(b *string) *string {
+	if b == nil {
+		return nil
+	}
+	t := expr.TrimNumericSpace(*b)
+	return &t
 }
 
 // hasPrefixFold reports whether s begins with prefix, compared case-insensitively.
@@ -935,7 +1017,7 @@ func requiredCoresFromAmounts(amts []store.StepAmountRequirement) *int {
 			n := 1 // spec default: reserved minimum for amount.worker.vcpu
 			return &n
 		}
-		f, err := strconv.ParseFloat(*a.Min, 64)
+		f, err := expr.ParseFloatString(*a.Min)
 		if err != nil || f <= 0 {
 			return nil
 		}

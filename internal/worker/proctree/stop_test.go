@@ -20,9 +20,12 @@ import (
 // ignores SIGTERM is killed once the notify period has passed.
 func TestStop_KillsAfterPeriodWhenTreeOutlivesNotify(t *testing.T) {
 	// The leader exits on TERM; its child ignores it, so the group outlives
-	// the notify and only the kill after the period ends it.
-	cmd := exec.CommandContext(t.Context(), "sh", "-c",
-		"(trap '' TERM; exec sleep 300) & echo child=$!; trap 'exit 0' TERM; while :; do sleep 0.1; done")
+	// the notify and only the kill after the period ends it. Each process sets
+	// its trap before the line the test waits for is printed, and the child
+	// prints that line itself: announcing the child's pid from the parent
+	// ($!) races the child's own trap, and a TERM that wins the race kills the
+	// whole group early. An ignored signal stays ignored across exec.
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", childIgnoresTermScript)
 	Configure(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -88,6 +91,10 @@ func TestStop_KillOfEmptyTreeIsNotAnError(t *testing.T) {
 		t.Errorf("Stop of an exited, reaped tree = %v, want nil", err)
 	}
 }
+
+// childIgnoresTermScript is a group whose leader exits on SIGTERM and whose
+// child ignores it, printing "child=<pid>" once both traps are in place.
+const childIgnoresTermScript = `trap 'exit 0' TERM; sh -c 'trap "" TERM; echo child=$$; exec sleep 300' & while :; do sleep 0.1; done`
 
 // childGone reports whether pid no longer exists within d.
 func childGone(pid int, d time.Duration) bool {

@@ -339,7 +339,7 @@ type EnvironmentScript struct {
 }
 
 // EnvironmentActions are the lifecycle hooks for an [Environment].
-// OnEnter is required by the OpenJD spec; only OnExit is optional.
+// Each is optional, but a valid template gives at least one (§3.5).
 type EnvironmentActions struct {
 	OnEnter *Action
 	OnExit  *Action

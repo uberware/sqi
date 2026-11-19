@@ -8,6 +8,9 @@ import (
 	"maps"
 	"strconv"
 	"strings"
+
+	"github.com/uberware/sqi/internal/openjd/expr"
+	"github.com/uberware/sqi/internal/openjd/intrange"
 )
 
 // ExpandParameterSpace materializes a step's parameter space into the concrete
@@ -58,27 +61,27 @@ func expandParameterSpace(ps *StepParameterSpace, jobBudget *jobTaskBudget) ([]T
 	}
 
 	// Parse or construct the combination expression tree.
-	var expr string
+	var combination string
 	if ps.Combination != nil {
-		expr = *ps.Combination
+		combination = *ps.Combination
 	} else {
 		// Default: all parameters joined with *.
 		names := make([]string, 0, len(ps.TaskParameterDefinitions))
 		for _, tp := range ps.TaskParameterDefinitions {
 			names = append(names, tp.Name)
 		}
-		expr = strings.Join(names, "*")
+		combination = strings.Join(names, "*")
 	}
 
 	// Handle the degenerate case of a single parameter with no operator.
-	if expr == "" {
+	if combination == "" {
 		if err := jobBudget.charge(1); err != nil {
 			return nil, err
 		}
 		return []TaskParams{{}}, nil
 	}
 
-	tree, err := parseCombinationExpr(expr)
+	tree, err := parseCombinationExpr(combination)
 	if err != nil {
 		return nil, fmt.Errorf("openjd: combination expression: %w", err)
 	}
@@ -273,7 +276,7 @@ func expandChunkInt(tp TaskParamDefinition) ([]string, error) {
 		}
 	} else {
 		for _, s := range tp.RangeList {
-			n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+			n, err := expr.ParseIntString(s)
 			if err != nil {
 				return nil, fmt.Errorf("invalid integer %q in range list", s)
 			}
@@ -354,49 +357,17 @@ func formatContiguousChunk(vals []int) string {
 	return strconv.Itoa(vals[0]) + "-" + strconv.Itoa(vals[len(vals)-1])
 }
 
-// formatNoncontiguousChunk spells a chunk as the compact <IntRangeExpr> the
-// reference implementation produces, as the TASK_CHUNKING conformance fixtures
-// require ("1-8" at 3 is "1-3", "4-6", "7,8"). Scanning left to right, the
-// longest run with one constant positive step is written as a range when it
-// holds at least three values ("1-5", "1-9:2"); a shorter run is written as its
-// first two values, and the scan carries on after them. So a run of two stays
-// a list ("7,8"), and "1,3,5,6,7,8" is "1-5:2,6-8".
+// formatNoncontiguousChunk spells a NONCONTIGUOUS chunk in the canonical form
+// of Template Schemas §3.4.1.1.1, which §3.4.1.5 requires: the chunk's values,
+// ascending and deduplicated, are split from the left into runs of a constant
+// difference; a run of three or more is written "x-y" or "x-y:s" and a shorter
+// run one value at a time. So "1-8" at 3 is "1-3", "4-6", "7,8", and [1,2,4,6]
+// is "1,2-6:2".
 //
-// The values keep the order expansion gave them, which for a range such as
-// "10-15:2,1-5" is first-seen rather than increasing. A step that is not
-// positive never forms a range, because internal/openjd's own parser rejects
-// "a-b" with a > b, so a descending or repeated pair is written value by value.
-func formatNoncontiguousChunk(vals []int) string {
-	var parts []string
-	for i := 0; i < len(vals); {
-		if i+1 == len(vals) {
-			parts = append(parts, strconv.Itoa(vals[i]))
-			break
-		}
-		step := vals[i+1] - vals[i]
-		if step <= 0 {
-			parts = append(parts, strconv.Itoa(vals[i]))
-			i++
-			continue
-		}
-		j := i + 1
-		for j+1 < len(vals) && vals[j+1]-vals[j] == step {
-			j++
-		}
-		switch {
-		case j-i+1 < 3:
-			parts = append(parts, strconv.Itoa(vals[i]), strconv.Itoa(vals[i+1]))
-			i += 2
-			continue
-		case step == 1:
-			parts = append(parts, strconv.Itoa(vals[i])+"-"+strconv.Itoa(vals[j]))
-		default:
-			parts = append(parts, strconv.Itoa(vals[i])+"-"+strconv.Itoa(vals[j])+":"+strconv.Itoa(step))
-		}
-		i = j + 1
-	}
-	return strings.Join(parts, ",")
-}
+// The canonical form is determined by the chunk's values alone, so values that
+// came out of a first-seen range such as "10-15:2,1-5" in another order are
+// written ascending: [10,12,14,1] is "1,10-14:2".
+func formatNoncontiguousChunk(vals []int) string { return intrange.CanonicalValues(vals) }
 
 // DeriveChunkBounds adds "<name>.Start" and "<name>.End" keys to every row in
 // rows for each CHUNK[INT] parameter declared in ps. Each chunk value is a
@@ -446,7 +417,7 @@ func validateIntList(items []string) ([]string, error) {
 	}
 	out := make([]string, len(items))
 	for i, s := range items {
-		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		n, err := expr.ParseIntString(s)
 		if err != nil {
 			return nil, fmt.Errorf("invalid integer %q", s)
 		}
@@ -463,7 +434,7 @@ func validateFloatList(items []string) ([]string, error) {
 	}
 	out := make([]string, len(items))
 	for i, s := range items {
-		f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		f, err := expr.ParseFloatString(s)
 		if err != nil {
 			return nil, fmt.Errorf("invalid float %q", s)
 		}
@@ -507,8 +478,8 @@ func (combAssoc) isCombNode() {}
 // an identifier or a parenthesised, comma-separated list of full
 // sub-expressions (an association group). An association group must contain at
 // least two comma-separated expressions.
-func parseCombinationExpr(expr string) (combNode, error) {
-	p := &combParser{tokens: tokenizeComb(expr)}
+func parseCombinationExpr(combination string) (combNode, error) {
+	p := &combParser{tokens: tokenizeComb(combination)}
 	node, err := p.parseExpr()
 	if err != nil {
 		return nil, err
@@ -523,8 +494,8 @@ func parseCombinationExpr(expr string) (combNode, error) {
 // and the parsed tree, both for use by the validator. The list keeps
 // duplicates; validateCombination reports them. The returned tree lets callers
 // avoid a second parse.
-func combinationIdentifiers(expr string) ([]string, combNode, error) {
-	tree, err := parseCombinationExpr(expr)
+func combinationIdentifiers(combination string) ([]string, combNode, error) {
+	tree, err := parseCombinationExpr(combination)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -658,11 +629,11 @@ func (p *combParser) parseAssocGroup() (combNode, error) {
 
 // tokenizeComb splits a combination expression into tokens:
 // identifiers, '*', '(', ')', ','.  Whitespace is discarded.
-func tokenizeComb(expr string) []string {
+func tokenizeComb(combination string) []string {
 	var tokens []string
 	i := 0
-	for i < len(expr) {
-		c := expr[i]
+	for i < len(combination) {
+		c := combination[i]
 		switch c {
 		case ' ', '\t':
 			i++
@@ -672,7 +643,7 @@ func tokenizeComb(expr string) []string {
 		default:
 			// Identifier: [A-Za-z_][A-Za-z0-9_]*
 			j := i
-			for j < len(expr) && isIdentChar(expr[j]) {
+			for j < len(combination) && isIdentChar(combination[j]) {
 				j++
 			}
 			if j == i {
@@ -681,7 +652,7 @@ func tokenizeComb(expr string) []string {
 				tokens = append(tokens, string(c))
 				i++
 			} else {
-				tokens = append(tokens, expr[i:j])
+				tokens = append(tokens, combination[i:j])
 				i = j
 			}
 		}

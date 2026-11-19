@@ -58,15 +58,16 @@ func TestExpandOneRange_MatchesGeneralPath(t *testing.T) {
 
 func TestRangeExpr_ConstructAndExpand(t *testing.T) {
 	tests := []struct {
-		text string
-		want []int64
+		text      string
+		canonical string
+		want      []int64
 	}{
-		{"1-5", []int64{1, 2, 3, 4, 5}},
-		{"1-5:2", []int64{1, 3, 5}},
-		{"1,5,10", []int64{1, 5, 10}},
-		{"10-15:2,1-5", []int64{1, 2, 3, 4, 5, 10, 12, 14}},
-		{"3,1,2", []int64{1, 2, 3}},
-		{"1-5,3-7", []int64{1, 2, 3, 4, 5, 6, 7}},
+		{"1-5", "1-5", []int64{1, 2, 3, 4, 5}},
+		{"1-5:2", "1-5:2", []int64{1, 3, 5}},
+		{"1,5,10", "1,5,10", []int64{1, 5, 10}},
+		{"10-15:2,1-5", "1-5,10-14:2", []int64{1, 2, 3, 4, 5, 10, 12, 14}},
+		{"3,1,2", "1-3", []int64{1, 2, 3}},
+		{"1-5,3-7", "1-7", []int64{1, 2, 3, 4, 5, 6, 7}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.text, func(t *testing.T) {
@@ -77,8 +78,8 @@ func TestRangeExpr_ConstructAndExpand(t *testing.T) {
 			if v.Type.Code != CodeRangeExpr {
 				t.Fatalf("Type = %s, want range_expr", v.Type)
 			}
-			if got := v.AsRangeExpr(); got != tc.text {
-				t.Fatalf("AsRangeExpr() = %q, want the text verbatim %q", got, tc.text)
+			if got := v.AsRangeExpr(); got != tc.canonical {
+				t.Fatalf("AsRangeExpr() = %q, want the canonical form %q", got, tc.canonical)
 			}
 			got, err := rangeInts(v)
 			if err != nil {

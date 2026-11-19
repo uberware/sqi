@@ -131,7 +131,7 @@ scope-checked, expression-checked at submission with concrete parameters, and
 resolved on the worker at run time. `EXPR/job_templates` is scored by
 `TestConformance_Templates` through the same `openjd.Parse` +
 `openjd.ValidateWithOptions` path as every other live directory. It scores
-**206 / 209 pass, 3 baselined**.
+**230 / 233 pass, 3 baselined**.
 
 **The three baselined fixtures are not EXPR failures.** All three are valid
 templates that `sqi` rejects, and all three do it for the same reason:
@@ -197,22 +197,16 @@ by re-running the pipeline on the side.
 [rfc0004]: https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/rfcs/0004-enhanced-limits-and-capabilities.md
 
 This is why the portability claim in `README.md` and `ROADMAP.md` carries a
-caveat. The gaps fall into three classes:
+caveat. The gaps fall into two classes:
 
 - **Unimplemented extensions**, rejected by name at submission time, as argued
   above. A template hits this only by opting in explicitly. This is what the
   three baselined `EXPR/job_templates` fixtures are: valid templates turned away
   because they *also* declare `FEATURE_BUNDLE_1`.
-- **The 1024-value cap on an `<IntRangeExpr>`.** Section 3.4's "at most 1024
-  values" bounds only the list form of a task parameter's `range`
-  (openjd-specifications#172); `sqi` applies it to the range-expression form as
-  well, so the valid base-spec fixture `3.4--wide-int-range-expression.yaml`
-  (`range: "1-5000"`) is rejected. Lifting the cap is an acceptance change on
-  the same policy surface as the per-step and per-job task limits.
 - **Over-permissiveness** — templates the spec says are *invalid* that `sqi`
   nonetheless accepts. There are none: every `.invalid` template-validation
   fixture in the suite is rejected.
-  `test/conformance/baseline.txt` holds only the four under-permissive cases
+  `test/conformance/baseline.txt` holds only the three under-permissive cases
   above. CI fails if an entry is added for a test that does not fail, or is
   left after its test starts passing or matches nothing.
 
@@ -313,41 +307,78 @@ route is the extension mechanism above, not a parser change:
 opt-in, named, registered and documented, never a bare change to what the base
 spec's syntax means.
 
+## Validation rules that reject templates
+
+A few rules `sqi` applies, because the specification requires them, turn away
+templates other tools may accept:
+
+- **No two elements of an integer range overlap, measured on their spans**
+  (Template Schemas §3.4.1.1.1): an element's span runs from the smallest to
+  the largest value it produces, so `"1-9:2,2-10:2"` is rejected even though the
+  two elements share no value, while `"1-10:4,10-15"` is accepted, since the
+  span of `1-10:4` ends at 9. An interleaved order such as odd frames then even
+  frames has to be written as one range list instead.
+- **Every format-string reference names something declared where it appears**
+  (§7.3): a `{{Param.X}}`, `{{RawParam.X}}`, `{{Task.Param.X}}` or
+  `{{Task.RawParam.X}}` naming no job parameter, or no task parameter of its
+  step, is rejected when the template is validated, with or without `EXPR`.
+  The same holds for `{{Task.File.X}}` and `{{Env.File.X}}` and the script's
+  embedded files.
+- **An `<ArgString>` holds no control character, line feeds included, unless
+  the template declares `EXPR`** (§5.2, RFC 0005).
+- **A host-requirement name or value given as a format string is checked once
+  it is resolved**, at submission (§3.3): it must then be a well-formed
+  capability name, no two names alike, and an amount bound a number.
+
+Two rules accept templates a stricter reading would reject: the 1024-value cap of
+§3.4 bounds only the list form of a task parameter's `range`, not an
+`<IntRangeExpr>` such as `"1-5000"` (a step is bounded by its task limit
+instead), and an environment's `script` may give `onExit` alone (§3.5: at least
+one of `onEnter` and `onExit`).
+
 ## Measured conformance
 
 `sqi` runs the official [OpenJD conformance test
 suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests)
-on every CI build, from a pinned submodule (commit `1e4d49e937a8`). These are the
+on every CI build, from a pinned submodule (commit `3e4a2c3d4160`). These are the
 results:
 
 | Suite | Result |
 |---|---|
-| `base/job_templates` | **449 / 450 pass, 1 baselined** — the `<IntRangeExpr>` value cap, see above |
+| `base/job_templates` | **459 / 459 pass** |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
-| `TASK_CHUNKING/job_templates` | **11 / 11 pass** |
+| `TASK_CHUNKING/job_templates` | **12 / 12 pass** |
+| `TASK_CHUNKING/jobs` | **16 / 18 pass, 2 baselined** — see below |
 | `REDACTED_ENV_VARS` | no template fixtures — the suite ships only `jobs/` (8 job-execution tests), which are out of scope; see Scope below |
-| `EXPR/job_templates` | **206 / 209 pass, 3 baselined** — see [EXPR](#expr) |
+| `EXPR/job_templates` | **230 / 233 pass, 3 baselined** — see [EXPR](#expr) |
 | `EXPR/env_templates` | not applicable — standalone environment templates unsupported (6 tests) |
-| `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (41 tests) |
+| `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (42 tests) |
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
 | `WRAP_ACTIONS/env_templates` | not applicable — extension not registered (9 tests) |
 
-`TASK_CHUNKING` behavior the scored suite does not cover: No
-`job_templates` fixture exercises a format-string `defaultTaskCount` or
-`targetRuntimeSeconds`, `targetRuntimeSeconds: 0` (the documented minimum), or
-a `CONTIGUOUS` range with gaps (`1,10-12` at 10 must be the two chunks `1-1`
-and `10-12`, never one chunk whose bounds enclose 2-9). sqi's own tests in
-`internal/openjd` cover all three.
+`TASK_CHUNKING/jobs` is the one job-execution suite `sqi` scores.
+`TestConformance_TaskChunkingJobOutputs` runs each fixture through the
+production pipeline (`presettest.Capture`: submission, the scheduler's
+assignment, the worker's resolution) and matches the output the fixture expects
+against each task's resolved script, which every fixture writes as raw Python
+string literals. Two fixtures are baselined:
+`noncontiguous-format-canonical.test.yaml` and its `-interior-pair` sibling put
+a multi-line `|` block in `args` in a template without `EXPR`. Template Schemas
+§5.2 forbids the Cc characters a line feed belongs to in an `<ArgString>`, and
+it is the `EXPR` extension that relaxes that (RFC 0005), so `sqi` rejects them
+as written. Their subject, the canonical spelling of a `NONCONTIGUOUS` chunk, is
+covered by the `EXPR` twin of the interior-pair fixture.
 
 The six `EXPR/env_templates` fixtures are `environment-2023-09` documents, a
 top-level format `sqi` does not implement, so they are not applicable whichever
 extension they declare.
 
-769 fixtures collected in total: 666 live passes, 4 baselined failures, 99
-not applicable.
+804 template fixtures collected in total: 701 live passes, 3 baselined
+failures, 100 not applicable.
 
-**Scope.** Only template-validation tests run. The suite's job-execution
-tests require a live session runtime and are not run.
+**Scope.** Template-validation tests run for every directory, and
+job-execution tests for `TASK_CHUNKING` only. The other job-execution suites
+require a live session runtime and are not run.
 
 `env_templates`: `sqi` does not implement standalone `environment-2023-09`
 templates at all — every fixture under any `env_templates/` directory,

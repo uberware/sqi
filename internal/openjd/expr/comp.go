@@ -305,6 +305,10 @@ func buildCompResult(n *ListComp, ec evalCtx, elemTarget Type, out []Value, type
 				"the elements this comprehension produces have incompatible types: %s", joinTypes(types))
 		}
 	}
+	// §1.3.7: "A result that would nest lists three levels deep is an error."
+	if listNestsTooDeep(elem) {
+		return Value{}, errorAt(ec.src, n.Offset, "%s", errThreeLevels)
+	}
 	converted := make([]Value, len(out))
 	for i, v := range out {
 		c, err := coerce(v, elem)

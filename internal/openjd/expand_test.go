@@ -206,13 +206,12 @@ func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 }
 
 // TestExpand_ChunkNoncontiguousIsCompact pins the spelling of a NONCONTIGUOUS
-// chunk. Every row but the last matches the output of the reference
-// implementation (openjd-model's StepParameterSpaceIterator, at the pinned
-// OPENJD_MODEL_VERSION); the first two are also the TASK_CHUNKING conformance
-// fixtures noncontiguous.test.yaml and noncontiguous-format.test.yaml, which
-// test/conformance scores. The last row has no reference equivalent: the
-// reference orders a range's values increasingly where internal/openjd keeps
-// them first-seen, so a chunk can descend, and a descent never forms a range.
+// chunk: the canonical form of Template Schemas §3.4.1.1.1, which §3.4.1.5
+// requires. The list of values is split from the left into runs of
+// a constant difference, and a run shorter than three is written one value at
+// a time, so [1,2,4,6] is "1,2-6:2" rather than "1,2,4,6". The canonical form
+// is determined by the chunk's values alone, so a chunk whose values came out
+// of a first-seen range in another order is written ascending (the last row).
 func TestExpand_ChunkNoncontiguousIsCompact(t *testing.T) {
 	tests := []struct {
 		rangeExpr string
@@ -227,12 +226,13 @@ func TestExpand_ChunkNoncontiguousIsCompact(t *testing.T) {
 		{"1,3", 2, []string{"1,3"}},
 		{"1-3,10", 4, []string{"1-3,10"}},
 		{"1-3,7-8", 5, []string{"1-3,7,8"}},
-		{"1,3,4,5,7", 5, []string{"1,3,4,5,7"}},
+		{"1,3,4,5,7", 5, []string{"1,3-5,7"}},
 		{"1,2,4,5,7,8", 6, []string{"1,2,4,5,7,8"}},
 		{"1,3,5,6,7,8", 6, []string{"1-5:2,6-8"}},
-		{"2,4,5,6,8,10,12", 7, []string{"2,4,5,6,8-12:2"}},
+		{"2,4,5,6,8,10,12", 7, []string{"2,4-6,8-12:2"}},
+		{"1,2,4,6", 4, []string{"1,2-6:2"}},
 		{"1-30:5,31,32,33", 20, []string{"1-31:5,32,33"}},
-		{"10-15:2,1-5", 4, []string{"10-14:2,1", "2-5"}},
+		{"10-15:2,1-5", 4, []string{"1,10-14:2", "2-5"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.rangeExpr, func(t *testing.T) {
@@ -241,12 +241,15 @@ func TestExpand_ChunkNoncontiguousIsCompact(t *testing.T) {
 				t.Fatalf("chunks = %v, want %v", got, tc.want)
 			}
 			// Each chunk must read back, through the same parser a template's
-			// range goes through, as exactly the values it was made from.
+			// range goes through, as exactly the set of values it was made from.
 			var back []string
 			for _, chunk := range got {
 				back = append(back, chunkParam(t, chunk, 1, "NONCONTIGUOUS")...)
 			}
-			if want := chunkParam(t, tc.rangeExpr, 1, "NONCONTIGUOUS"); !slices.Equal(back, want) {
+			want := chunkParam(t, tc.rangeExpr, 1, "NONCONTIGUOUS")
+			slices.Sort(back)
+			slices.Sort(want)
+			if !slices.Equal(back, want) {
 				t.Errorf("chunks %v read back as %v, want %v", got, back, want)
 			}
 		})

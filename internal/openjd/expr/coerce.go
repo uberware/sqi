@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 )
 
 // This file implements section 1.2.3, implicit type coercion, as RFC 0005
@@ -799,7 +798,7 @@ func toInt(v Value) (Value, error) {
 		}
 		return Int(i), nil
 	case CodeString:
-		i, err := strconv.ParseInt(v.AsStr(), 10, 64)
+		i, err := ParseIntString(v.AsStr())
 		if err != nil {
 			return Value{}, fmt.Errorf("the string %q cannot be represented as an int", v.AsStr())
 		}
@@ -816,7 +815,7 @@ func toFloat(v Value) (Value, error) {
 	case CodeInt:
 		return floatValue(float64(v.AsInt()))
 	case CodeString:
-		f, err := strconv.ParseFloat(v.AsStr(), 64)
+		f, err := ParseFloatString(v.AsStr())
 		if err != nil {
 			return Value{}, fmt.Errorf("the string %q cannot be parsed as a float", v.AsStr())
 		}

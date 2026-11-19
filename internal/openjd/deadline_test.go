@@ -638,7 +638,7 @@ steps:
 `
 	want := time.Now().Add(time.Hour)
 	sub := NewSubmitter(fake.New())
-	_, _, resolverBudget, err := sub.prepareTemplate(
+	_, _, resolverBudget, _, err := sub.prepareTemplate(
 		t.Context(), plainTemplate, store.TemplateFormatYAML, nil, want,
 	)
 	if err != nil {

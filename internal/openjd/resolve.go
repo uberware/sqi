@@ -4,7 +4,6 @@ package openjd
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/expr"
@@ -141,32 +140,48 @@ func ResolveParameterSpaceParams(
 		return nil, nil
 	}
 
-	exprEnabled := tmpl != nil && tmpl.hasExtension("EXPR")
 	b := templateBudgetOrFresh(budget)
-
-	var errs ValidationErrors
-
 	// If the resolver's OWN budget (shared across every step's call for this
 	// one submission -- NOT with checkExpressionsAtSubmit's; see this
 	// function's own doc comment) is ALREADY exhausted by an
 	// earlier step's call, stop before doing any of this step's real work --
 	// evaluating its own let: block still costs a real expr.Eval per
 	// binding, and there is nothing left to spend it on.
-	if exprEnabled && !b.ok() {
+	if tmpl != nil && tmpl.hasExtension("EXPR") && !b.ok() {
 		return nil, b.errs()
 	}
+	sc, letErrs := newStepScope(b, tmpl, step, jobParams)
+	return resolveParameterSpace(b, sc, ps, letErrs)
+}
 
-	// The phase-2 symbol table, built only when EXPR is declared, and built by
-	// the CHECKER'S OWN two helpers so the two layers cannot disagree about
-	// what is in scope: ScopeJob's fixed and family symbols (section 1.3.12's
-	// range field sits at the same ScopeJob position host requirements do —
-	// see exprcheck.go's checkStepExpressions) plus, per section 3.6.2 row 1,
-	// the names step's own let: block binds. Left nil (never read) when EXPR
-	// is not declared, which is the point — see resolveRangeExprField.
-	var syms expr.MapSymbols
-	if exprEnabled {
+// stepScope is the scope a step's fields resolved at Job creation (its
+// parameterSpace and its hostRequirements) resolve against: under EXPR the
+// phase-2 symbol table, otherwise the base-spec Param./RawParam. scope.
+// Building it evaluates the step's let: block, so a submission builds it once
+// per step and shares it between the two.
+type stepScope struct {
+	exprEnabled bool
+	syms        expr.MapSymbols // nil unless exprEnabled
+	scope       fmtstring.MapScope
+}
+
+// newStepScope builds a step's stepScope, charging b for its let: block.
+//
+// The symbol table is built only when EXPR is declared, and built by the
+// checker's own two helpers so the two layers cannot disagree about what is in
+// scope: ScopeJob's fixed and family symbols (section 1.3.12's range field sits
+// at the same ScopeJob position host requirements do; see exprcheck.go's
+// checkStepExpressions) plus, per section 3.6.2 row 1, the names the step's own
+// let: block binds. It is left nil, and never read, when EXPR is not declared;
+// see resolveRangeExprField.
+func newStepScope(
+	b *templateBudget, tmpl *JobTemplate, step *StepTemplate, jobParams map[string]string,
+) (stepScope, ValidationErrors) {
+	sc := stepScope{exprEnabled: tmpl != nil && tmpl.hasExtension("EXPR")}
+	var errs ValidationErrors
+	if sc.exprEnabled {
 		stepLet, letErrs := stepLetSymbols(b, tmpl, step, jobParams, "")
-		errs = append(errs, letErrs...)
+		errs = letErrs
 
 		// Charged exactly like checkStepExpressions charges the identical
 		// stepLetSymbols call (exprcheck.go): one position per binding
@@ -181,19 +196,27 @@ func ResolveParameterSpaceParams(
 		b.chargePositions(letPositions(letCount), "/let")
 		b.chargeRetainedBytes(templateExprRetainedBytes(stepLet), "/let")
 
-		syms = rangeScopeSymbols(tmpl, stepLet, jobParams)
+		sc.syms = rangeScopeSymbols(tmpl, stepLet, jobParams)
 	}
 
-	// Build a fmtstring scope: each job-param name → value, exposed as both
-	// "Param.<name>" and "RawParam.<name>". Built unconditionally — every
-	// RangeList entry, and every RangeExpr that is not a whole-field
-	// expression (EXPR-declared or not), keeps resolving through it.
-	scope := make(fmtstring.MapScope, len(jobParams)*2)
+	// Each job-param name → value, exposed as both "Param.<name>" and
+	// "RawParam.<name>". Built unconditionally: every RangeList entry, and
+	// every RangeExpr that is not a whole-field expression (EXPR-declared or
+	// not), resolves through it.
+	sc.scope = make(fmtstring.MapScope, len(jobParams)*2)
 	for name, value := range jobParams {
-		scope["Param."+name] = value
-		scope["RawParam."+name] = value
+		sc.scope["Param."+name] = value
+		sc.scope["RawParam."+name] = value
 	}
+	return sc, errs
+}
 
+// resolveParameterSpace is ResolveParameterSpaceParams' body for a step whose
+// stepScope is already built; errs carries any error building it reported.
+func resolveParameterSpace(
+	b *templateBudget, sc stepScope, ps *StepParameterSpace, errs ValidationErrors,
+) (*StepParameterSpace, ValidationErrors) {
+	exprEnabled, syms, scope := sc.exprEnabled, sc.syms, sc.scope
 	newDefs := make([]TaskParamDefinition, len(ps.TaskParameterDefinitions))
 
 	for i, def := range ps.TaskParameterDefinitions {
@@ -330,7 +353,7 @@ func resolveRangeListDefinition(
 	b *templateBudget, exprEnabled bool, i int, def TaskParamDefinition, syms expr.MapSymbols, scope fmtstring.Scope,
 ) ([]string, ValidationErrors) {
 	var errs ValidationErrors
-	newList := make([]string, len(def.RangeList))
+	newList := make([]string, 0, len(def.RangeList))
 	for j, entry := range def.RangeList {
 		if exprEnabled && !b.ok() {
 			break
@@ -339,7 +362,7 @@ func resolveRangeListDefinition(
 		if exprEnabled && !b.chargePositions(1, eptr) {
 			break
 		}
-		resolved, err := resolveRangeListEntry(exprEnabled, entry, def.Type, syms, scope, b.limits)
+		items, err := resolveRangeListElement(exprEnabled, entry, def.Type, syms, scope, b.limits, maxTasksPerStep-len(newList))
 		if err != nil {
 			if b.recordDeadline(err) {
 				// Diverted onto the budget for the same reason
@@ -352,12 +375,92 @@ func resolveRangeListDefinition(
 				return newList, errs
 			}
 			errs = append(errs, ValidationError{Pointer: eptr, Message: err.Error()})
-			newList[j] = entry // placeholder; result discarded on error
-		} else {
-			newList[j] = resolved
+			continue // result discarded on error
 		}
+		newList = append(newList, items...)
+	}
+	// A range list must hold at least one element after null items are
+	// dropped and list items flattened (§1.3.12: the list's element-count
+	// limits apply again after resolution; the maximum is re-checked with the
+	// other parameter-space limits on the resolved space).
+	if len(errs) == 0 && len(def.RangeList) > 0 && len(newList) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range", i),
+			Message: "range list is empty once its null elements are dropped",
+		})
 	}
 	return newList, errs
+}
+
+// resolveRangeListElement resolves one range-list element to the elements it
+// contributes. Under EXPR an element that is exactly "{{<expr>}}" is a list
+// item (§1.3.12, §1.3.2) and contributes zero, one or several; any other
+// element resolves to one string.
+//
+// room is how many more values the list may hold: every value becomes a task,
+// so a list item that would carry the list past maxTasksPerStep is refused
+// before its values are written out.
+func resolveRangeListElement(
+	exprEnabled bool, entry string, typ TaskParamType, syms expr.MapSymbols, scope fmtstring.Scope, lim ExprLimits, room int,
+) ([]string, error) {
+	if body, ok := fmtstring.LoneRef(entry); ok && exprEnabled {
+		return resolveRangeListItem(body, typ, syms, lim, room)
+	}
+	resolved, err := resolveRangeListEntry(exprEnabled, entry, typ, syms, scope, lim)
+	if err != nil {
+		return nil, err
+	}
+	return []string{resolved}, nil
+}
+
+// rangeListItemType is the target of a range-list element that is exactly
+// "{{<expr>}}" (§1.3.12): the list-item type T? | list[T] of §1.3.2, where T
+// is the parameter's element type — int for INT and CHUNK[INT], string,
+// path — so a null result drops the element and a list result flattens. FLOAT
+// also admits int, float? | int | list[float], so an int result is kept as
+// written, as the <floatstring> it stands for would be, while a list's members
+// are converted to float. exprcheck.go checks the same position against this
+// same type, so the checker and the resolver cannot disagree about it.
+func rangeListItemType(typ TaskParamType) expr.Type {
+	elem := rangeExprElemType(typ)
+	if typ == TaskParamTypeFloat {
+		return expr.UnionOf(expr.OptionalOf(elem), expr.TInt, expr.ListOf(elem))
+	}
+	return expr.UnionOf(expr.OptionalOf(elem), expr.ListOf(elem))
+}
+
+// resolveRangeListItem evaluates one lone range-list expression against its
+// list-item type and returns the elements it contributes: none for null, one
+// per member for a list, and one otherwise.
+func resolveRangeListItem(body string, typ TaskParamType, syms expr.MapSymbols, lim ExprLimits, room int) ([]string, error) {
+	e, err := expr.Parse(body)
+	if err != nil {
+		return nil, err
+	}
+	v, err := e.Eval(syms, rangeListItemType(typ), lim.evalOptions()...)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case v.IsUnresolved():
+		return nil, errUnresolvedRangeValue(v)
+	case v.IsNull():
+		return nil, nil
+	case v.Type.Code == expr.CodeList:
+		elems := v.AsList()
+		if len(elems) > room {
+			return nil, fmt.Errorf("the range list resolves to more than %d values, the most a step may have tasks", maxTasksPerStep)
+		}
+		out := make([]string, len(elems))
+		for k, elem := range elems {
+			if elem.IsUnresolved() {
+				return nil, errUnresolvedRangeValue(elem)
+			}
+			out[k] = elem.String()
+		}
+		return out, nil
+	}
+	return []string{v.String()}, nil
 }
 
 // resolveRangeExprField resolves one task-parameter definition's whole-field
@@ -406,16 +509,15 @@ func resolveRangeListDefinition(
 // own doc comment. An embedded reference here CAN legitimately
 // evaluate to a genuine range_expr-typed value — "{{ range_expr(\"10-15:2,1-5\") }},7"
 // is a real, reachable input, and Value.String() renders a range_expr value
-// back to ITS OWN <IntRangeExpr> text (rangeexpr.go: the value's payload IS
-// the text range_expr() was called with, unmodified). Pinned by
+// in its canonical form (Template Schemas §3.4.1.1.1). Pinned by
 // TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue:
 // resolving "{{ range_expr(\"10-15:2,1-5\") }},7" produces RangeExpr
-// "10-15:2,1-5,7", which ExpandParameterSpace's parseIntRangeExpr then
+// "1-5,10-14:2,7", which ExpandParameterSpace's parseIntRangeExpr then
 // expands under internal/openjd's OWN first-seen policy to
-// [10,12,14,1,2,3,4,5,7] — the SPEC's own ascending, deduplicated order
+// [1,2,3,4,5,10,12,14,7] — the SPEC's own ascending, deduplicated order
 // (section 3.4.1.1.1) for that same composed text would be
-// [1,2,3,4,5,7,10,12,14], so this really does reorder relative to the
-// expression language.
+// [1,2,3,4,5,7,10,12,14], so this reorders relative to the expression
+// language, across the literal that follows the embedded value.
 //
 // This behavior is correct, not a defect. The no-re-parse rule is scoped
 // to the LONE whole-field form, where the expression IS the range and
@@ -819,10 +921,11 @@ func resolveChunkInt(
 		}
 		return 0, false, ValidationErrors{{Pointer: ptr, Message: err.Error()}}
 	}
-	n, convErr := strconv.Atoi(text)
+	n64, convErr := expr.ParseIntString(text)
 	if convErr != nil {
 		return 0, false, ValidationErrors{{Pointer: ptr, Message: fmt.Sprintf("resolved to %q, which is not an integer", text)}}
 	}
+	n = int(n64)
 	if n < minimum {
 		return 0, false, ValidationErrors{{Pointer: ptr, Message: fmt.Sprintf("resolved to %d; must be at least %d", n, minimum)}}
 	}

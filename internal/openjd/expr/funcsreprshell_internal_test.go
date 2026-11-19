@@ -111,11 +111,6 @@ func TestReprPwsh(t *testing.T) {
 		{"single nested EMPTY list takes the unary comma form", `repr_pwsh([[]])`, "@(,@())"},
 		{"two nested lists take no comma", `repr_pwsh([[1, 2], [3]])`, "@(@(1, 2), @(3))"},
 		{"single scalar element takes no comma", `repr_pwsh(['a'])`, "@('a')"},
-		// The rule recurses: each list decides for itself. The reference
-		// implementation refuses three levels of nesting outright ("Lists
-		// may be nested at most 2 levels deep"), so this row's ground truth
-		// is section 2.2.6's own wording, not the oracle.
-		{"unary comma applies at depth too", `repr_pwsh([[['a']], [['b']]])`, "@(@(,@('a')), @(,@('b')))"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

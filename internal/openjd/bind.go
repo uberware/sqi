@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"math"
 	"slices"
-	"strconv"
 	"unicode/utf8"
+
+	"github.com/uberware/sqi/internal/openjd/expr"
 )
 
 // BindJobParameters resolves each declared job parameter to a concrete string
@@ -73,9 +74,23 @@ func BindJobParameters(params []JobParameter, provided map[string]string) (map[s
 			continue
 		}
 
+		// The white space a numeric string may carry is not part of the
+		// value (Template Schemas §7.5), so it is not what a format string
+		// substitutes later: " 3.500 " binds as "3.500".
+		if p.Type == JobParamTypeInt || p.Type == JobParamTypeFloat {
+			value = expr.TrimNumericSpace(value)
+		}
+
 		if verrs := validateParamValue(p, value); len(verrs) > 0 {
 			errs = append(errs, verrs...)
 			continue
+		}
+
+		// A range expression value is its list of values, written in its
+		// canonical form wherever it is written as a string (Template Schemas
+		// §3.4.1.1.1), so it is bound canonical once, here.
+		if p.Type == JobParamTypeRangeExpr {
+			value = expr.CanonicalRangeExpr(value)
 		}
 
 		resolved[p.Name] = value
@@ -112,7 +127,7 @@ func validateParamValue(p JobParameter, value string) ValidationErrors {
 // validateIntParamValue validates an INT parameter value against its constraints.
 func validateIntParamValue(p JobParameter, value, ptr string) ValidationErrors {
 	var errs ValidationErrors
-	n, err := strconv.ParseInt(value, 10, 64)
+	n, err := expr.ParseIntString(value)
 	if err != nil {
 		return ValidationErrors{{
 			Pointer: ptr,
@@ -120,7 +135,7 @@ func validateIntParamValue(p JobParameter, value, ptr string) ValidationErrors {
 		}}
 	}
 	if p.MinValue != nil {
-		if minV, err := strconv.ParseInt(*p.MinValue, 10, 64); err == nil && n < minV {
+		if minV, err := expr.ParseIntString(*p.MinValue); err == nil && n < minV {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("value %d is below minimum %d", n, minV),
@@ -128,7 +143,7 @@ func validateIntParamValue(p JobParameter, value, ptr string) ValidationErrors {
 		}
 	}
 	if p.MaxValue != nil {
-		if maxV, err := strconv.ParseInt(*p.MaxValue, 10, 64); err == nil && n > maxV {
+		if maxV, err := expr.ParseIntString(*p.MaxValue); err == nil && n > maxV {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("value %d is above maximum %d", n, maxV),
@@ -147,7 +162,7 @@ func validateIntParamValue(p JobParameter, value, ptr string) ValidationErrors {
 // validateFloatParamValue validates a FLOAT parameter value against its constraints.
 func validateFloatParamValue(p JobParameter, value, ptr string) ValidationErrors {
 	var errs ValidationErrors
-	f, err := strconv.ParseFloat(value, 64)
+	f, err := expr.ParseFloatString(value)
 	if err != nil {
 		return ValidationErrors{{
 			Pointer: ptr,
@@ -161,7 +176,7 @@ func validateFloatParamValue(p JobParameter, value, ptr string) ValidationErrors
 		}}
 	}
 	if p.MinValue != nil {
-		if minV, err := strconv.ParseFloat(*p.MinValue, 64); err == nil && f < minV {
+		if minV, err := expr.ParseFloatString(*p.MinValue); err == nil && f < minV {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("value %v is below minimum %v", f, minV),
@@ -169,7 +184,7 @@ func validateFloatParamValue(p JobParameter, value, ptr string) ValidationErrors
 		}
 	}
 	if p.MaxValue != nil {
-		if maxV, err := strconv.ParseFloat(*p.MaxValue, 64); err == nil && f > maxV {
+		if maxV, err := expr.ParseFloatString(*p.MaxValue); err == nil && f > maxV {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
 				Message: fmt.Sprintf("value %v is above maximum %v", f, maxV),
@@ -214,7 +229,7 @@ func validateStringOrPathParamValue(p JobParameter, value, ptr string) Validatio
 // Non-parseable allowed entries are silently skipped.
 func intInAllowed(n int64, allowed []string) bool {
 	for _, av := range allowed {
-		if m, err := strconv.ParseInt(av, 10, 64); err == nil && m == n {
+		if m, err := expr.ParseIntString(av); err == nil && m == n {
 			return true
 		}
 	}
@@ -226,7 +241,7 @@ func intInAllowed(n int64, allowed []string) bool {
 // are considered equal. Non-parseable allowed entries are silently skipped.
 func floatInAllowed(f float64, allowed []string) bool {
 	for _, av := range allowed {
-		if g, err := strconv.ParseFloat(av, 64); err == nil && g == f {
+		if g, err := expr.ParseFloatString(av); err == nil && g == f {
 			return true
 		}
 	}

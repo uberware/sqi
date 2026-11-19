@@ -126,6 +126,7 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 		{
 			name: "amount.worker.vcpu min with template ref skips reserved check",
 			mutate: func(t *openjd.JobTemplate) {
+				t.ParameterDefinitions = []openjd.JobParameter{{Name: "MinCPU", Type: openjd.JobParamTypeInt}}
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
 					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Min: new("{{Param.MinCPU}}")}},
 				}
