@@ -28,10 +28,12 @@
 //
 // A flushed chunk is encoded and queued for delivery; it is never published
 // inline, so a slow or broken broker does not hold up the process's output.
-// One sender goroutine delivers the queue in order through a [Transport] and
-// tries each chunk again, with backoff, until the log stream stores it. Every
-// try of a chunk carries the message ID "<attemptID>/<seq>", so the stream
-// drops a retry it already stored, and the server keeps one copy per seq. The
+// One sender goroutine delivers the queue through a [Transport], putting up
+// to 32 chunks on the wire in order before it waits for their acks, so a
+// worker far from the broker is not held to one chunk per round trip. It tries
+// each chunk again, with backoff, until the log stream stores it. Every try of
+// a chunk carries the message ID "<attemptID>/<seq>", so the stream drops a
+// retry it already stored, and the server keeps one copy per seq. The
 // queue holds at most 32 MiB of encoded chunks; past that the oldest are
 // dropped, with a warning at most once a minute.
 //
@@ -91,6 +93,7 @@ type Config struct {
 	retryMax        time.Duration
 	flushWait       time.Duration
 	maxPendingBytes int
+	window          int
 }
 
 // DefaultConfig returns a [Config] populated with production-sensible defaults.
@@ -129,6 +132,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.maxPendingBytes <= 0 {
 		c.maxPendingBytes = defaultMaxPendingBytes
+	}
+	if c.window <= 0 {
+		c.window = defaultWindow
 	}
 }
 

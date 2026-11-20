@@ -40,7 +40,7 @@ type fakeConn struct {
 	held map[string]chan struct{}
 }
 
-func (f *fakeConn) Publish(subj string, data []byte) error {
+func (f *fakeConn) record(subj string, data []byte) {
 	f.mu.Lock()
 	f.msgs = append(f.msgs, published{subject: subj, data: slices.Clone(data)})
 	hook := f.onPublish
@@ -48,7 +48,21 @@ func (f *fakeConn) Publish(subj string, data []byte) error {
 	if hook != nil {
 		hook(subj, data)
 	}
+}
+
+// Publish records a core-NATS publish.
+func (f *fakeConn) Publish(subj string, data []byte) error {
+	f.record(subj, data)
 	return nil
+}
+
+// logConn is the log publisher's view of a fakeConn: it records each chunk
+// and acknowledges it at once.
+type logConn struct{ *fakeConn }
+
+func (c logConn) Publish(subj string, data []byte, _ string) (logstreamer.AckWait, error) {
+	c.record(subj, data)
+	return func(context.Context) error { return nil }, nil
 }
 
 // holdAck makes PublishAcked fail the report with this message ID until the
@@ -64,7 +78,7 @@ func (f *fakeConn) holdAck(msgID string) (release func()) {
 	return sync.OnceFunc(func() { close(ch) })
 }
 
-// PublishAcked records a status report as Publish does and acknowledges it,
+// PublishAcked records a status report and acknowledges it,
 // unless holdAck is refusing it.
 func (f *fakeConn) PublishAcked(_ context.Context, subj string, data []byte, msgID string) error {
 	f.mu.Lock()
@@ -77,7 +91,8 @@ func (f *fakeConn) PublishAcked(_ context.Context, subj string, data []byte, msg
 			return errors.New("fake: ack held")
 		}
 	}
-	return f.Publish(subj, data)
+	f.record(subj, data)
+	return nil
 }
 
 func (f *fakeConn) setHook(h func(string, []byte)) {
@@ -119,7 +134,7 @@ func newTestDispatcher(t *testing.T, plan simworker.TaskPlan) (*simworker.Dispat
 	conn := &fakeConn{}
 	logger := slog.New(slog.DiscardHandler)
 	st := status.New(conn, status.Config{WorkerID: testWorkerID}, logger)
-	logs := logstreamer.New(conn, testWorkerID, logstreamer.DefaultConfig(), logger)
+	logs := logstreamer.New(logConn{conn}, testWorkerID, logstreamer.DefaultConfig(), logger)
 	l := simworker.NewLedger()
 	b := simworker.BehaviorFunc(func(*protocol.AssignMsg, *rand.Rand) simworker.TaskPlan { return plan })
 	d := simworker.NewDispatcher(testWorkerID, st, logs, b, l, rand.New(rand.NewPCG(1, 2)))
@@ -522,7 +537,7 @@ func TestDispatcher_ProgressEverySendsSnapshots(t *testing.T) {
 			ProgressEvery: time.Second,
 		})
 		logger := slog.New(slog.DiscardHandler)
-		logs := logstreamer.New(conn, testWorkerID, logstreamer.DefaultConfig(), logger)
+		logs := logstreamer.New(logConn{conn}, testWorkerID, logstreamer.DefaultConfig(), logger)
 		d.SetProgress(openjd.New(logs, conn, testWorkerID, logger))
 
 		if err := d.Dispatch(t.Context(), assignment("t1", "a1")); err != nil {

@@ -29,7 +29,7 @@ const testWorkerID = "w-test"
 type mockNATS struct {
 	mu     sync.Mutex
 	msgs   []capturedMsg
-	pubErr error // if non-nil, all PublishAcked calls return this error
+	pubErr error // if non-nil, every Publish returns this error
 }
 
 type capturedMsg struct {
@@ -37,16 +37,16 @@ type capturedMsg struct {
 	data    []byte
 }
 
-func (m *mockNATS) PublishAcked(_ context.Context, subj string, data []byte, _ string) error {
+func (m *mockNATS) Publish(subj string, data []byte, _ string) (logstreamer.AckWait, error) {
 	if m.pubErr != nil {
-		return m.pubErr
+		return nil, m.pubErr
 	}
 	cp := make([]byte, len(data))
 	copy(cp, data)
 	m.mu.Lock()
 	m.msgs = append(m.msgs, capturedMsg{subject: subj, data: cp})
 	m.mu.Unlock()
-	return nil
+	return func(context.Context) error { return nil }, nil
 }
 
 func (m *mockNATS) snapshot() []capturedMsg {

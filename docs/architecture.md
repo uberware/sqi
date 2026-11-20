@@ -493,9 +493,14 @@ connection drops the report. Progress snapshots are plain core publishes with
 no ack, because only the latest matters.
 
 **Log chunks are acknowledged too.** The log publisher queues each chunk it
-flushes and one sender goroutine per worker delivers the queue in order with a
-JetStream publish that expects stream `SQI_LOGS` and waits for its ack
-(`internal/worker/logstreamer/outbox.go`). Every try of a chunk carries
+flushes and one sender goroutine per worker delivers the queue with JetStream
+publishes that expect stream `SQI_LOGS`, up to 32 chunks sent in order before
+it waits for their acks (`internal/worker/logstreamer/outbox.go`), so a worker
+far from the broker is not limited to one chunk per round trip. Chunks are
+stored in the order they were sent, except that a chunk which fails while a
+later chunk in the same send is stored lands after that chunk when it is
+retried. The log view shows chunks in stored order, so after a fault one may
+appear out of place; each chunk keeps its `seq_num`. Every try of a chunk carries
 `Nats-Msg-Id: <attemptID>/<seq>`, and a failed try is retried, waiting 250 ms
 and doubling to 5 s, until the stream stores it, so a chunk sent while a
 stream cannot store, while the broker restarts or while the connection is

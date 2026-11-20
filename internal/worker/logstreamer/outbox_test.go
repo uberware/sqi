@@ -8,10 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
 
 	"github.com/uberware/sqi/internal/worker/logstreamer"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -20,11 +23,13 @@ import (
 // ── fakeTransport ─────────────────────────────────────────────────────────────
 
 // fakeTransport stores what it is sent. It fails the first failFirst tries of
-// each message ID and, while block is open, holds every try until block is
-// closed or the try's context ends.
+// each message ID and, while block is open, holds the ack of every try until
+// block is closed or the wait's context ends.
 type fakeTransport struct {
 	mu        sync.Mutex
 	failFirst int
+	refuse    map[string]int  // sends of a message ID refused before it is sent
+	tooBig    map[string]bool // message IDs refused as over the payload limit
 	block     chan struct{}
 	tries     map[string]int
 	tried     []string // the message ID of every try, in order
@@ -37,6 +42,29 @@ func newFakeTransport() *fakeTransport {
 
 func (f *fakeTransport) blockAll() { f.mu.Lock(); f.block = make(chan struct{}); f.mu.Unlock() }
 
+// releaseAndBlock lets every held ack through and holds the acks of later
+// tries.
+func (f *fakeTransport) releaseAndBlock() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.block != nil {
+		close(f.block)
+	}
+	f.block = make(chan struct{})
+}
+
+// waitTried waits until n tries have been made.
+func (f *fakeTransport) waitTried(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(f.triedIDs()) < n && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := f.triedIDs(); len(got) < n {
+		t.Fatalf("tries = %v, want %d", got, n)
+	}
+}
+
 func (f *fakeTransport) release() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -46,30 +74,41 @@ func (f *fakeTransport) release() {
 	}
 }
 
-func (f *fakeTransport) PublishAcked(ctx context.Context, _ string, data []byte, msgID string) error {
+func (f *fakeTransport) Publish(_ string, data []byte, msgID string) (logstreamer.AckWait, error) {
 	f.mu.Lock()
+	if f.tooBig[msgID] {
+		f.mu.Unlock()
+		return nil, nats.ErrMaxPayload
+	}
+	if f.refuse[msgID] > 0 {
+		f.refuse[msgID]--
+		f.mu.Unlock()
+		return nil, errors.New("nats: connection reconnecting")
+	}
 	f.tried = append(f.tried, msgID)
 	block := f.block
 	f.mu.Unlock()
-	if block != nil {
-		select {
-		case <-block:
-		case <-ctx.Done():
-			return ctx.Err()
+	return func(ctx context.Context) error {
+		if block != nil {
+			select {
+			case <-block:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.tries[msgID]++
-	if f.tries[msgID] <= f.failFirst {
-		return errors.New("nats: timeout")
-	}
-	var c protocol.LogChunkMsg
-	if err := json.Unmarshal(data, &c); err != nil {
-		return err
-	}
-	f.stored = append(f.stored, c)
-	return nil
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.tries[msgID]++
+		if f.tries[msgID] <= f.failFirst {
+			return errors.New("nats: timeout")
+		}
+		var c protocol.LogChunkMsg
+		if err := json.Unmarshal(data, &c); err != nil {
+			return err
+		}
+		f.stored = append(f.stored, c)
+		return nil
+	}, nil
 }
 
 func (f *fakeTransport) storedChunks() []protocol.LogChunkMsg {
@@ -185,6 +224,92 @@ func TestPublisher_HandleLineDoesNotWaitForTheBroker(t *testing.T) {
 	p.Abandon()
 }
 
+// TestPublisher_KeepsSeveralChunksInFlight pins that delivery does not wait
+// for one chunk's ack before sending the next: a worker far from the broker
+// would otherwise deliver one chunk per round trip. Chunks queued behind a
+// send go out together, up to the window, in order.
+func TestPublisher_KeepsSeveralChunksInFlight(t *testing.T) {
+	ft := newFakeTransport()
+	ft.blockAll()
+	k := fastKnobs()
+	k.Window = 4
+	k.AckTimeout = 5 * time.Second // no try times out while the test looks
+	p := logstreamer.New(ft, testWorkerID, logstreamer.WithKnobs(slowFlushCfg(1, 1<<20), k), discard())
+	line := func(i int) {
+		p.HandleLine(context.Background(), "task-f", "attempt-f", "", "stdout", fmt.Sprintf("line %d", i))
+	}
+	line(1)
+	ft.waitTried(t, 1)
+	for i := 2; i <= 10; i++ {
+		line(i)
+	}
+	ft.releaseAndBlock() // chunk 1 is acked; the next send's acks are held
+	ft.waitTried(t, 5)
+	time.Sleep(20 * time.Millisecond)
+	want := []string{"attempt-f/1", "attempt-f/2", "attempt-f/3", "attempt-f/4", "attempt-f/5"}
+	if got := ft.triedIDs(); !slices.Equal(got, want) {
+		t.Fatalf("sent = %v, want %v (chunk 1, then a window of four in order)", got, want)
+	}
+	ft.release()
+	if dropped := p.Flush(contextWithTimeout(t, 5*time.Second)); dropped != 0 {
+		t.Errorf("Flush dropped %d, want 0", dropped)
+	}
+	if got := seqs(ft.storedChunks()); !slices.Equal(got, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
+		t.Errorf("stored seqs = %v, want 1 to 10 in order", got)
+	}
+}
+
+// TestPublisher_StopsASendAtARefusal pins that a send stops at the first
+// chunk the transport refuses, as it does while reconnecting, so a later
+// chunk is not stored ahead of it.
+func TestPublisher_StopsASendAtARefusal(t *testing.T) {
+	ft := newFakeTransport()
+	ft.refuse = map[string]int{"attempt-s/2": 1}
+	ft.blockAll()
+	k := fastKnobs()
+	k.Window = 4
+	p := logstreamer.New(ft, testWorkerID, logstreamer.WithKnobs(slowFlushCfg(1, 1<<20), k), discard())
+	p.HandleLine(context.Background(), "task-s", "attempt-s", "", "stdout", "line 1")
+	ft.waitTried(t, 1)
+	for i := 2; i <= 4; i++ {
+		p.HandleLine(context.Background(), "task-s", "attempt-s", "", "stdout", fmt.Sprintf("line %d", i))
+	}
+	ft.release()
+	if dropped := p.Flush(contextWithTimeout(t, 5*time.Second)); dropped != 0 {
+		t.Errorf("Flush dropped %d, want 0", dropped)
+	}
+	want := []string{"attempt-s/1", "attempt-s/2", "attempt-s/3", "attempt-s/4"}
+	if got := ft.triedIDs(); !slices.Equal(got, want) {
+		t.Errorf("sent = %v, want %v (nothing after the refused chunk until it is sent)", got, want)
+	}
+	if got := seqs(ft.storedChunks()); !slices.Equal(got, []int64{1, 2, 3, 4}) {
+		t.Errorf("stored seqs = %v, want 1 to 4 in order", got)
+	}
+}
+
+// TestPublisher_AnOversizedChunkDropsOnlyItself pins that a chunk no retry
+// can send is dropped alone: the chunks after it in the same send go out.
+func TestPublisher_AnOversizedChunkDropsOnlyItself(t *testing.T) {
+	ft := newFakeTransport()
+	ft.tooBig = map[string]bool{"attempt-m/2": true}
+	ft.blockAll()
+	k := fastKnobs()
+	k.Window = 4
+	p := logstreamer.New(ft, testWorkerID, logstreamer.WithKnobs(slowFlushCfg(1, 1<<20), k), discard())
+	p.HandleLine(context.Background(), "task-m", "attempt-m", "", "stdout", "line 1")
+	ft.waitTried(t, 1)
+	for i := 2; i <= 4; i++ {
+		p.HandleLine(context.Background(), "task-m", "attempt-m", "", "stdout", fmt.Sprintf("line %d", i))
+	}
+	ft.release()
+	if dropped := p.Flush(contextWithTimeout(t, 5*time.Second)); dropped != 0 {
+		t.Errorf("Flush dropped %d, want 0", dropped)
+	}
+	if got := seqs(ft.storedChunks()); !slices.Equal(got, []int64{1, 3, 4}) {
+		t.Errorf("stored seqs = %v, want 1, 3 and 4", got)
+	}
+}
+
 func TestFlushLogs_WaitsForItsAttempt(t *testing.T) {
 	ft := newFakeTransport()
 	ft.blockAll()
@@ -234,8 +359,10 @@ func TestPublisher_BoundDropsTheOldest(t *testing.T) {
 	ft.blockAll()
 	log := &captured{}
 	k := fastKnobs()
-	// Each encoded chunk is about 200 bytes; the bound holds a few.
+	// Each encoded chunk is about 200 bytes; the bound holds a few. One
+	// chunk in flight keeps the rest evictable.
 	k.MaxPendingBytes = 700
+	k.Window = 1
 	p := logstreamer.New(ft, testWorkerID, logstreamer.WithKnobs(slowFlushCfg(1, 1<<20), k), slog.New(log))
 	for i := 1; i <= 10; i++ {
 		p.HandleLine(context.Background(), "task-o", "attempt-o", "", "stdout", fmt.Sprintf("line %02d", i))

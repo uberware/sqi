@@ -11,6 +11,7 @@ type Knobs struct {
 	RetryMax        time.Duration
 	FlushWait       time.Duration
 	MaxPendingBytes int
+	Window          int
 }
 
 // WithKnobs returns c with k's delivery settings.
@@ -20,6 +21,7 @@ func WithKnobs(c Config, k Knobs) Config {
 	c.retryMax = k.RetryMax
 	c.flushWait = k.FlushWait
 	c.maxPendingBytes = k.MaxPendingBytes
+	c.window = k.Window
 	return c
 }
 

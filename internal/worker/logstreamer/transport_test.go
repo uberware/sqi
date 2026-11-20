@@ -107,3 +107,56 @@ func TestJetStreamTransport_DeliversOnceTheStreamExists(t *testing.T) {
 		}
 	}
 }
+
+// TestJetStreamTransport_StoresAWindowInOrder pins that chunks sent several
+// at a time are stored once each and in the order they were published, which
+// is the order the log viewer shows them in.
+func TestJetStreamTransport_StoresAWindowInOrder(t *testing.T) {
+	nc := startJetStream(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:     bus.StreamLogs,
+		Subjects: []string{bus.SubjectTaskLogsPrefix + ".>"},
+		Storage:  jetstream.FileStorage,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := logstreamer.NewJetStreamTransport(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := logstreamer.New(tr, testWorkerID, logstreamer.WithKnobs(slowFlushCfg(1, 1<<20), fastKnobs()), discard())
+	const n = 200
+	for i := 1; i <= n; i++ {
+		p.HandleLine(context.Background(), "task-o", "attempt-o", "", "stdout", fmt.Sprintf("line %d", i))
+	}
+	if dropped := p.Flush(ctx); dropped != 0 {
+		t.Fatalf("Flush dropped %d chunks, want 0", dropped)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.State.Msgs != n {
+		t.Fatalf("the stream holds %d chunks, want %d", info.State.Msgs, n)
+	}
+	for seq := uint64(1); seq <= n; seq++ {
+		m, err := stream.GetMsg(ctx, seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var c protocol.LogChunkMsg
+		if err := json.Unmarshal(m.Data, &c); err != nil {
+			t.Fatal(err)
+		}
+		if c.SeqNum != int64(seq) {
+			t.Fatalf("stream message %d is chunk %d, want chunks stored in publish order", seq, c.SeqNum)
+		}
+	}
+}

@@ -23,16 +23,25 @@ type countingConn struct {
 	n  int
 }
 
-func (c *countingConn) Publish(string, []byte) error {
+func (c *countingConn) add() {
 	c.mu.Lock()
 	c.n++
 	c.mu.Unlock()
+}
+
+// PublishAcked counts a status report and acknowledges it.
+func (c *countingConn) PublishAcked(context.Context, string, []byte, string) error {
+	c.add()
 	return nil
 }
 
-// PublishAcked counts a status report as Publish does and acknowledges it.
-func (c *countingConn) PublishAcked(_ context.Context, subj string, data []byte, _ string) error {
-	return c.Publish(subj, data)
+// logConn is the log publisher's view of a countingConn: it counts each
+// chunk and acknowledges it at once.
+type logConn struct{ *countingConn }
+
+func (c logConn) Publish(string, []byte, string) (logstreamer.AckWait, error) {
+	c.add()
+	return func(context.Context) error { return nil }, nil
 }
 
 func (c *countingConn) count() int {
@@ -47,7 +56,7 @@ func newInternalDispatcher(plan TaskPlan) (*Dispatcher, *countingConn, *Ledger) 
 	l := NewLedger()
 	d := NewDispatcher("w1",
 		status.New(conn, status.Config{WorkerID: "w1"}, logger),
-		logstreamer.New(conn, "w1", logstreamer.DefaultConfig(), logger),
+		logstreamer.New(logConn{conn}, "w1", logstreamer.DefaultConfig(), logger),
 		BehaviorFunc(func(*protocol.AssignMsg, *rand.Rand) TaskPlan { return plan }),
 		l, rand.New(rand.NewPCG(1, 2)))
 	return d, conn, l
