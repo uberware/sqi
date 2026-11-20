@@ -216,7 +216,7 @@ func TestGuard_ReconcileIgnoresAnOlderForeignRead(t *testing.T) {
 	}
 	lostCalls := make(chan error, 1)
 	g := &Guard{
-		kv: kv, holder: GuardHolder{InstanceID: id}, revision: 5, logger: slog.New(slog.DiscardHandler),
+		kv: kv, holder: GuardHolder{InstanceID: id}, revision: 5, lastOK: time.Now(), logger: slog.New(slog.DiscardHandler),
 		opts: GuardOptions{OnLost: func(err error) { lostCalls <- err }},
 	}
 	if lost := g.refreshOnce(context.Background()); lost {
@@ -232,6 +232,35 @@ func TestGuard_ReconcileIgnoresAnOlderForeignRead(t *testing.T) {
 	case err := <-lostCalls:
 		t.Errorf("OnLost called: %v", err)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// TestGuard_ReconcileLosesToAnOlderForeignHolderPastTheTTL pins that another
+// holder at a revision below this server's is not ignored for ever: the
+// bucket's revisions start again when it is deleted and created anew, and
+// once a whole TTL has passed without a refresh this server's own key has
+// expired, so the other holder is real.
+func TestGuard_ReconcileLosesToAnOlderForeignHolderPastTheTTL(t *testing.T) {
+	kv := &scriptedKV{
+		updates: []error{&jetstream.APIError{Code: 400, ErrorCode: jsErrWrongLastSequence}},
+		gets:    []jetstream.KeyValueEntry{guardEntry{value: holderValue(t, "recreated"), rev: 1}},
+	}
+	lostCalls := make(chan error, 1)
+	g := &Guard{
+		kv: kv, holder: GuardHolder{InstanceID: "self"}, revision: 40,
+		lastOK: time.Now().Add(-guardTTL - time.Second), logger: slog.New(slog.DiscardHandler),
+		opts: GuardOptions{OnLost: func(err error) { lostCalls <- err }},
+	}
+	if lost := g.refreshOnce(context.Background()); !lost {
+		t.Fatal("refreshOnce kept the guard against another holder a whole TTL after the last refresh")
+	}
+	select {
+	case err := <-lostCalls:
+		if !errors.Is(err, ErrGuardHeld) {
+			t.Errorf("OnLost(%v), want ErrGuardHeld", err)
+		}
+	case <-time.After(time.Second):
+		t.Error("OnLost was not called")
 	}
 }
 

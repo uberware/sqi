@@ -705,9 +705,14 @@ func (g *Guard) refreshed(rev uint64) {
 //
 // A read at or before the recorded revision says nothing new: a write the
 // refresh was refused for may still be in flight, and a newly elected leader
-// can be behind (see [advanced]); the next refresh decides.
-// Past it, the key is this server's own refresh that landed after it was
-// abandoned, which counts, or another holder's takeover.
+// can be behind (see [advanced]); the next refresh decides. Past it, the key
+// is this server's own refresh that landed after it was abandoned, which
+// counts, or another holder's takeover.
+//
+// Another holder at an older revision is not waited on for ever: revisions
+// start again when the bucket is deleted and created anew, and once a whole
+// TTL has passed since this server's last refresh its own key has expired,
+// so the other holder is real.
 func (g *Guard) reconcile(ctx context.Context) bool {
 	entry, err := readGuardKey(ctx, g.kv)
 	switch {
@@ -719,11 +724,13 @@ func (g *Guard) reconcile(ctx context.Context) bool {
 	}
 	g.mu.Lock()
 	moved := advanced(entry, g.revision)
+	expired := time.Since(g.lastOK) > guardTTL
 	g.mu.Unlock()
+	owned := g.ownedBy(entry.Value())
 	switch {
-	case !moved:
+	case !moved && (owned || !expired):
 		return false
-	case g.ownedBy(entry.Value()):
+	case owned:
 		g.refreshed(entry.Revision())
 		return false
 	default:
