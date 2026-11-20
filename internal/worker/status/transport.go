@@ -51,7 +51,7 @@ func NewJetStreamTransport(nc *nats.Conn) (Transport, error) {
 // reconnecting it publishes nothing and returns [nats.ErrConnectionReconnecting],
 // which the publisher retries.
 func (t *jetStreamTransport) PublishAcked(ctx context.Context, subj string, data []byte, msgID string) error {
-	if st := t.nc.Status(); st == nats.RECONNECTING || st == nats.CONNECTING {
+	if bus.Reconnecting(t.nc) {
 		return fmt.Errorf("status: publish %s: %w", msgID, nats.ErrConnectionReconnecting)
 	}
 	_, err := t.js.PublishMsg(

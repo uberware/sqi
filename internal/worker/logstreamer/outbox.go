@@ -4,13 +4,12 @@ package logstreamer
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"slices"
 	"sync"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/uberware/sqi/internal/bus"
 )
 
 // Delivery defaults. Each is a [Config] field tests can shorten; none is
@@ -111,6 +110,9 @@ func (o *outbox) enqueue(c *pendingChunk) {
 	o.bytes += len(c.data)
 	o.perAttempt[c.attemptID]++
 	evicted := o.evictLocked()
+	if evicted > 0 {
+		o.signalLocked()
+	}
 	if !o.running {
 		o.running = true
 		o.idle = make(chan struct{})
@@ -135,15 +137,24 @@ func (o *outbox) evictLocked() (evicted int) {
 	return evicted
 }
 
-// removeLocked takes the chunk at index i out of the queue.
+// removeLocked takes the chunk at index i out of the queue. Chunks leave
+// from within a window of the head, so the chunks in front of it move up one
+// rather than every chunk behind it moving down: a backlog of many thousands
+// drains in time proportional to its length. Callers then call signalLocked.
 func (o *outbox) removeLocked(i int) {
 	c := o.queue[i]
-	o.queue = slices.Delete(o.queue, i, i+1)
+	copy(o.queue[1:i+1], o.queue[:i])
+	o.queue[0] = nil
+	o.queue = o.queue[1:]
 	o.bytes -= len(c.data)
 	o.perAttempt[c.attemptID]--
 	if o.perAttempt[c.attemptID] <= 0 {
 		delete(o.perAttempt, c.attemptID)
 	}
+}
+
+// signalLocked wakes everything waiting for a chunk to leave the queue.
+func (o *outbox) signalLocked() {
 	close(o.changed)
 	o.changed = make(chan struct{})
 }
@@ -188,13 +199,18 @@ func (o *outbox) run() {
 		errs := o.send(batch)
 
 		o.mu.Lock()
+		removed := false
 		for i, c := range batch {
 			c.sending = false
-			if errs[i] == nil || permanent(errs[i]) {
+			if errs[i] == nil || bus.PermanentPublishError(errs[i]) {
 				if j := slices.Index(o.queue, c); j >= 0 {
 					o.removeLocked(j)
+					removed = true
 				}
 			}
+		}
+		if removed {
+			o.signalLocked()
 		}
 		o.mu.Unlock()
 		o.settle(batch, errs)
@@ -212,7 +228,7 @@ func (o *outbox) send(batch []*pendingChunk) []error {
 	errs := make([]error, len(batch))
 	waits := make([]AckWait, len(batch))
 	for i, c := range batch {
-		if i > 0 && errs[i-1] != nil && !permanent(errs[i-1]) {
+		if i > 0 && errs[i-1] != nil && !bus.PermanentPublishError(errs[i-1]) {
 			errs[i] = errs[i-1]
 			continue
 		}
@@ -237,7 +253,7 @@ func (o *outbox) settle(batch []*pendingChunk, errs []error) {
 		switch {
 		case err == nil:
 			stored = true
-		case permanent(err):
+		case bus.PermanentPublishError(err):
 			if lost == nil {
 				lost, lostErr = batch[i], err
 			}
@@ -346,10 +362,4 @@ func (o *outbox) close() (dropped int) {
 	o.mu.Unlock()
 	<-idle
 	return dropped
-}
-
-// permanent reports whether err cannot be cured by sending the same chunk
-// again. A closed connection never reopens.
-func permanent(err error) bool {
-	return errors.Is(err, nats.ErrMaxPayload) || errors.Is(err, nats.ErrConnectionClosed)
 }

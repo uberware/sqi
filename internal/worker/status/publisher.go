@@ -50,13 +50,10 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"slices"
 	"sync"
 	"time"
-
-	"github.com/nats-io/nats.go"
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -447,7 +444,7 @@ func (p *Publisher) try(e *entry) (retry bool) {
 		return false
 	case e.ctx.Err() != nil:
 		return false // stopped; whoever stopped it logs
-	case permanent(err):
+	case bus.PermanentPublishError(err):
 		p.logger.ErrorContext(e.ctx, "status: report cannot be sent; dropped", attrs(e, slog.Any("error", err))...)
 		return false
 	}
@@ -467,13 +464,6 @@ func (p *Publisher) encode(e *entry) ([]byte, error) {
 		msg.EndedAgoMs = max(0, p.since(e.endedAt).Milliseconds())
 	}
 	return json.Marshal(msg)
-}
-
-// permanent reports whether err cannot be cured by sending the same report
-// again. A closed connection never reopens, so retrying on it would only keep
-// the report pending until Flush gave up.
-func permanent(err error) bool {
-	return errors.Is(err, nats.ErrMaxPayload) || errors.Is(err, nats.ErrConnectionClosed)
 }
 
 // attrs returns the attributes naming e, followed by extra.

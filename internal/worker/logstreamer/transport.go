@@ -54,7 +54,7 @@ func NewJetStreamTransport(nc *nats.Conn) (Transport, error) {
 }
 
 func (t *jetStreamTransport) Publish(subj string, data []byte, msgID string) (AckWait, error) {
-	if st := t.nc.Status(); st == nats.RECONNECTING || st == nats.CONNECTING {
+	if bus.Reconnecting(t.nc) {
 		return nil, fmt.Errorf("logstreamer: publish %s: %w", msgID, nats.ErrConnectionReconnecting)
 	}
 	f, err := t.js.PublishMsgAsync(
