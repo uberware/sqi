@@ -327,9 +327,11 @@ func (s *Server) Metrics() *metrics.Metrics {
 	return s.metrics
 }
 
-// serveHTTP configures TLS on s.httpServer when it is enabled and starts the
-// listener in a background goroutine. Split out of [Server.start] to keep that
-// function under the cyclop complexity threshold.
+// serveHTTP configures TLS on s.httpServer when it is enabled, binds its
+// listener and serves it in a background goroutine. The bind happens here, so
+// a port another process holds fails startup instead of leaving a server
+// running with no REST API, UI or readiness endpoint. Split out of
+// [Server.start] to keep that function under the cyclop complexity threshold.
 func (s *Server) serveHTTP(ctx context.Context) error {
 	// Both TLS surfaces are warned about here, beside the listener they concern,
 	// rather than riding on broker startup where a reordering would silently
@@ -345,20 +347,29 @@ func (s *Server) serveHTTP(ctx context.Context) error {
 		s.httpServer.TLSConfig = tlsCfg
 	}
 
-	go func() {
-		s.logger.InfoContext(ctx, "http: listening",
-			slog.String("addr", s.cfg.HTTPAddr),
-			slog.Bool("tls", tlsOn),
-			slog.String("url", browseURL(s.cfg.HTTPAddr, tlsOn)))
+	addr := s.httpServer.Addr
+	if addr == "" {
+		addr = ":http" // as http.Server.ListenAndServe defaults it
+	}
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("http: listen on %s: %w", addr, err)
+	}
+	s.logger.InfoContext(ctx, "http: listening",
+		slog.String("addr", s.cfg.HTTPAddr),
+		slog.Bool("tls", tlsOn),
+		slog.String("url", browseURL(s.cfg.HTTPAddr, tlsOn)))
 
-		// Certificates are already loaded into TLSConfig, so both paths pass
-		// empty filenames: re-reading them here could pick up a half-written
-		// file if a rotation lands between validation and listen.
+	go func() {
+		// Certificates are already loaded into TLSConfig, so the TLS path
+		// passes empty filenames: re-reading them here could pick up a
+		// half-written file if a rotation lands between validation and serve.
 		var err error
 		if tlsOn {
-			err = s.httpServer.ListenAndServeTLS("", "")
+			err = s.httpServer.ServeTLS(ln, "", "")
 		} else {
-			err = s.httpServer.ListenAndServe()
+			err = s.httpServer.Serve(ln)
 		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.logger.ErrorContext(ctx, "http: server error", slog.Any("error", err))
@@ -630,7 +641,12 @@ func (s *Server) Run(ctx context.Context) error {
 		return s.runHA(ctx)
 	}
 
-	if err := s.start(ctx); err != nil {
+	// Everything start launches runs under startCtx, so a failed start can end
+	// it before abortStart closes the store those loops write to.
+	startCtx, cancelStart := context.WithCancel(ctx)
+	defer cancelStart()
+	if err := s.start(startCtx); err != nil {
+		cancelStart()
 		s.abortStart()
 		return fmt.Errorf("startup failed: %w", err)
 	}
@@ -1199,14 +1215,17 @@ func browseURL(addr string, tlsOn bool) string {
 	return scheme + net.JoinHostPort(host, port)
 }
 
-// abortStartTimeout bounds stopping the HTTP listener after a failed start.
+// abortStartTimeout bounds stopping the HTTP listener, and waiting for the
+// checkpointer, after a failed start.
 const abortStartTimeout = 5 * time.Second
 
 // abortStart stops what a failed [Server.start] had already started, so that
 // an immediate retry finds nothing held. The broker matters most: an external
 // broker holds its account's guard until it is shut down, and a retry inside
-// the guard's lease would be refused naming this host. The store is left
-// as it is; the process is exiting.
+// the guard's lease would be refused naming this host. The store closes last,
+// releasing the single-server lock, once the loops that write to it have
+// ended: the caller cancels the context start ran under first, which also
+// ends the SQLite checkpointer.
 func (s *Server) abortStart() {
 	if s.discovery != nil {
 		s.discovery.Shutdown()
@@ -1228,6 +1247,15 @@ func (s *Server) abortStart() {
 		// Bounded inside: an external broker gives its guard up within its
 		// own guard-operation timeout.
 		s.broker.Shutdown()
+	}
+	s.ha.stopLoops()
+	if s.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), abortStartTimeout)
+		s.waitCheckpoint(ctx)
+		cancel()
+		if err := s.store.Close(); err != nil {
+			s.logger.WarnContext(context.Background(), "store: close after a failed start", slog.Any("error", err))
+		}
 	}
 }
 
