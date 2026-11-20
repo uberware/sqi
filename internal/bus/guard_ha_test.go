@@ -329,11 +329,10 @@ func TestCheckGuard_Cases(t *testing.T) {
 	js := dataJS(t, c)
 	logger, _ := bufLogger()
 	ctx := t.Context()
-	// One replica: these cases are about what CheckGuard decides from the
-	// key, and reads of a replicated key may come from a replica that is
-	// behind, which under load shows an expired key again or an older
+	// Three replicas: the guard reads its key from the stream leader, so a
+	// replica that is behind cannot show an expired key again or an older
 	// revision after a newer one.
-	const replicas = 1
+	const replicas = 3
 
 	if err := bus.CheckGuard(ctx, js, bus.GuardOptions{IsMember: members()}, logger); err != nil {
 		t.Fatalf("no bucket: CheckGuard = %v, want nil", err)

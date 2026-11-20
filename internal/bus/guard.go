@@ -220,7 +220,7 @@ func guardBucket(ctx context.Context, js jetstream.JetStream, replicas int, dead
 	if err != nil {
 		return nil, fmt.Errorf("bus: guard bucket %s: %w", GuardBucket, err)
 	}
-	return kv, nil
+	return leaderReads(js, kv), nil
 }
 
 // ensureGuardBucket brings the guard bucket's configuration, its replica
@@ -413,11 +413,12 @@ func retakeStaleGuardKey(ctx context.Context, kv jetstream.KeyValue, value []byt
 	return newRev, false, err
 }
 
-// advanced reports whether entry is a write after revision rev. A read can
-// come back older than a revision already seen: on a replicated bucket the
-// reads are direct gets that any replica may answer, and one that is behind
-// serves the key as it was. Revisions are stream sequences, so an older one
-// is a stale read and says nothing about the holder.
+// advanced reports whether entry is a write after revision rev. The guard
+// reads its key from the bucket's stream leader (see [leaderReadKV]), so a
+// read is not normally older than a revision already seen; a leader elected
+// a moment ago can still be behind on what it has applied. Revisions are
+// stream sequences, so an older one is a stale read and says nothing about
+// the holder.
 func advanced(entry jetstream.KeyValueEntry, rev uint64) bool {
 	return entry.Revision() > rev
 }
@@ -488,6 +489,7 @@ func CheckGuard(ctx context.Context, js jetstream.JetStream, opts GuardOptions, 
 	case err != nil:
 		return fmt.Errorf("bus: guard bucket %s: %w", GuardBucket, err)
 	}
+	kv = leaderReads(js, kv)
 	opCtx, cancel := context.WithTimeout(ctx, guardOpTimeout)
 	entry, err := readGuardKey(opCtx, kv)
 	cancel()
@@ -701,9 +703,9 @@ func (g *Guard) refreshed(rev uint64) {
 // reconcile handles a refused refresh: the key expired and nobody took it,
 // which is retaken, or another server holds it, which is final.
 //
-// A read at or before the recorded revision says nothing new: on a replicated
-// bucket a replica that is behind serves the key as it was, and a write the
-// refresh was refused for may still be in flight; the next refresh decides.
+// A read at or before the recorded revision says nothing new: a write the
+// refresh was refused for may still be in flight, and a newly elected leader
+// can be behind (see [advanced]); the next refresh decides.
 // Past it, the key is this server's own refresh that landed after it was
 // abandoned, which counts, or another holder's takeover.
 func (g *Guard) reconcile(ctx context.Context) bool {
