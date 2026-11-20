@@ -9,15 +9,11 @@
 package bustest
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	mrand "math/rand/v2"
-	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +23,7 @@ import (
 
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/testport"
 )
 
 // stopAllGrace and stopAllDuration shape the lame duck shutdown of
@@ -540,58 +537,12 @@ func (c *Cluster) Shutdown() {
 	}
 }
 
-// portRangeLow and portRangeHigh bound the ports [freePorts] hands out. A
-// node restarted by [Cluster.RestartNode] binds its old port again, so that
-// port must stay free while the node is down. A port in the operating
-// system's ephemeral range does not: any outgoing connection can be given it
-// as its source port, and many tests running at once open thousands of
-// them. The range sits below every default ephemeral range (Linux 32768 to
-// 60999, Windows and macOS 49152 to 65535), so only a listener can take one
-// of its ports.
-const (
-	portRangeLow  = 20000
-	portRangeHigh = 32768
-)
-
-// freePorts reserves n distinct loopback ports in [portRangeLow,
-// portRangeHigh) and releases them. Another process can still bind one
-// before the node does; [StartCluster] retries on fresh ports when that
-// happens.
+// freePorts is [testport.Free]: a node restarted by [Cluster.RestartNode]
+// binds its old port again. Another process can still bind a port before the
+// node does; [StartCluster] retries on fresh ports when that happens.
 func freePorts(t testing.TB, n int) []int {
 	t.Helper()
-	ports, err := pickPorts(n, portRangeLow, portRangeHigh)
-	if err != nil {
-		t.Fatalf("bustest: reserve ports: %v", err)
-	}
-	return ports
-}
-
-// pickPorts finds n distinct loopback ports in [lo, hi) that can be bound
-// now, trying them from a random starting point so tests running at once
-// rarely try the same ones. It holds each port until all n are found.
-func pickPorts(n, lo, hi int) ([]int, error) {
-	size := hi - lo
-	var listeners []net.Listener
-	defer func() {
-		for _, l := range listeners {
-			l.Close()
-		}
-	}()
-	ports := make([]int, 0, n)
-	first := mrand.IntN(size) //nolint:gosec // spreads tests over the range; nothing depends on it being unpredictable
-	for i := 0; i < size && len(ports) < n; i++ {
-		port := lo + (first+i)%size
-		l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-		if err != nil {
-			continue
-		}
-		listeners = append(listeners, l)
-		ports = append(ports, port)
-	}
-	if len(ports) < n {
-		return nil, fmt.Errorf("%d of %d ports free in [%d, %d)", len(ports), n, lo, hi)
-	}
-	return ports, nil
+	return testport.Free(t, n)
 }
 
 func generate(t testing.TB, gen func() ([]byte, string, error)) (seed []byte, pub string) {

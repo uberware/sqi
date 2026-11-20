@@ -123,9 +123,9 @@ type Embedded struct {
 	// recovery loop; one is enough to wake it.
 	breakCh chan streamBreak
 
-	// stageHook, when set by a test, is called at each named stage of a
-	// restart (see stageStopped).
-	stageHook func(stage string)
+	// afterStopHook, when set by a test, is called once a restart has
+	// stopped the old server, before it starts the new one.
+	afterStopHook func()
 
 	// The recovery loop (embeddedrecover.go). broken is the break not yet
 	// recovered from, missingConsumers the durables a restart did not bring

@@ -700,6 +700,12 @@ func (g *Guard) refreshed(rev uint64) {
 
 // reconcile handles a refused refresh: the key expired and nobody took it,
 // which is retaken, or another server holds it, which is final.
+//
+// A read at or before the recorded revision says nothing new: on a replicated
+// bucket a replica that is behind serves the key as it was, and a write the
+// refresh was refused for may still be in flight; the next refresh decides.
+// Past it, the key is this server's own refresh that landed after it was
+// abandoned, which counts, or another holder's takeover.
 func (g *Guard) reconcile(ctx context.Context) bool {
 	entry, err := readGuardKey(ctx, g.kv)
 	switch {
@@ -708,30 +714,17 @@ func (g *Guard) reconcile(ctx context.Context) bool {
 		return false
 	case entry == nil:
 		return g.retakeExpired(ctx)
+	}
+	g.mu.Lock()
+	moved := advanced(entry, g.revision)
+	g.mu.Unlock()
+	switch {
+	case !moved:
+		return false
 	case g.ownedBy(entry.Value()):
-		// A refresh that landed after it was abandoned moved the key on, and
-		// counts. At the same revision nothing was refreshed: the write the
-		// server refused this one for is still in flight and may be another
-		// server's, which the next refresh finds. An older revision is a
-		// stale read and changes nothing either.
-		g.mu.Lock()
-		moved := advanced(entry, g.revision)
-		g.mu.Unlock()
-		if moved {
-			g.refreshed(entry.Revision())
-		}
+		g.refreshed(entry.Revision())
 		return false
 	default:
-		// A takeover is a write after this server's last one, so only a read
-		// past the recorded revision can show one. An older read of another
-		// holder's value is the key as it was before this server took it,
-		// served by a replica that is behind; the next refresh decides.
-		g.mu.Lock()
-		taken := advanced(entry, g.revision)
-		g.mu.Unlock()
-		if !taken {
-			return false
-		}
 		g.markLost(ctx, entry.Value())
 		return true
 	}

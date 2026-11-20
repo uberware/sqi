@@ -22,21 +22,16 @@ func boundPort(b *Embedded) int {
 	if ns == nil {
 		return 0
 	}
-	if a, ok := ns.Addr().(*net.TCPAddr); ok {
-		return a.Port
-	}
-	return 0
+	return boundPortOf(ns, 0)
 }
 
-// pauseAt makes b's restart stop at stage until release is closed, closing
-// reached when it gets there.
-func pauseAt(b *Embedded, stage string) (reached, release chan struct{}) {
+// pauseAfterStop makes b's restart wait, once it has stopped the old server,
+// until release is closed, closing reached when it gets there.
+func pauseAfterStop(b *Embedded) (reached, release chan struct{}) {
 	reached, release = make(chan struct{}), make(chan struct{})
-	b.stageHook = func(s string) {
-		if s == stage {
-			close(reached)
-			<-release
-		}
+	b.afterStopHook = func() {
+		close(reached)
+		<-release
 	}
 	return reached, release
 }
@@ -186,7 +181,7 @@ func TestRestart_RevokeWaitsForRestart(t *testing.T) {
 	b := startAuthEmbedded(t, creds)
 	restartWorker(t, b, nkeyOption(t, seed, pub)) // the connection the revoke must not let back
 
-	reached, release := pauseAt(b, stageStopped)
+	reached, release := pauseAfterStop(b)
 	restarted := make(chan error, 1)
 	go func() { restarted <- b.restart(context.Background()) }()
 	<-reached
@@ -222,7 +217,7 @@ func TestRestart_RevokeWaitsForRestart(t *testing.T) {
 func TestRestart_ShutdownDuringRestart(t *testing.T) {
 	b := startEmbedded(t, EmbeddedConfig{})
 	port := boundPort(b)
-	reached, release := pauseAt(b, stageStopped)
+	reached, release := pauseAfterStop(b)
 	go func() { _ = b.restart(context.Background()) }() //nolint:errcheck // either outcome; Shutdown is what is judged
 	<-reached
 
@@ -260,10 +255,7 @@ func TestRestart_StartFailureLeavesNoServer(t *testing.T) {
 	port := boundPort(b)
 
 	var hog net.Listener
-	b.stageHook = func(s string) {
-		if s != stageStopped {
-			return
-		}
+	b.afterStopHook = func() {
 		var lc net.ListenConfig
 		var err error
 		if hog, err = lc.Listen(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", itoa(port))); err != nil {
@@ -280,7 +272,7 @@ func TestRestart_StartFailureLeavesNoServer(t *testing.T) {
 		_ = hog.Close()
 	}
 
-	b.stageHook = nil
+	b.afterStopHook = nil
 	if err := b.restart(t.Context()); err != nil {
 		t.Fatalf("second restart: %v", err)
 	}

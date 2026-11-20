@@ -11,17 +11,9 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 )
 
-// stageStopped is the restart stage between stopping the old server and
-// starting the new one.
-const stageStopped = "stopped"
-
 // errNoServer is what an in-process dial gets while no server is current:
 // during a restart, or after one that failed to start. nats.go retries it.
 var errNoServer = errors.New("bus: the embedded broker is restarting")
-
-var _ interface {
-	InProcessConn() (net.Conn, error)
-} = (*Embedded)(nil)
 
 // InProcessConn dials the current server in-process. Every in-process
 // connection to the embedded broker dials through it rather than through one
@@ -63,12 +55,14 @@ func (e *Embedded) abandonStart(ns *natsserver.Server, nl *natsLogger) {
 	nl.close()
 }
 
-func (e *Embedded) stage(name string) {
+// afterStop runs the test hook set for the moment a restart has stopped the
+// old server and not yet started the new one.
+func (e *Embedded) afterStop() {
 	e.mu.Lock()
-	hook := e.stageHook
+	hook := e.afterStopHook
 	e.mu.Unlock()
 	if hook != nil {
-		hook(name)
+		hook()
 	}
 }
 
@@ -100,7 +94,7 @@ func (e *Embedded) restart(ctx context.Context) error {
 		stopServer(old)
 		oldLog.close()
 	}
-	e.stage(stageStopped)
+	e.afterStop()
 
 	opts, err := e.serverOptions(layout)
 	if err != nil {

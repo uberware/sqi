@@ -12,9 +12,6 @@ import "errors"
 // Windows a reset discards the -ERR the client has not read. A refusal can
 // therefore arrive as a reset.
 func isConnReset(err error) bool {
-	if err == nil {
-		return false
-	}
 	for _, errno := range connResetErrnos {
 		if errors.Is(err, errno) {
 			return true

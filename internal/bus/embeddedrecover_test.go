@@ -18,24 +18,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// testClock is a clock a test moves by hand.
-type testClock struct {
-	mu sync.Mutex
-	t  time.Time
-}
-
-func (c *testClock) now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.t
-}
-
-func (c *testClock) set(t time.Time) {
-	c.mu.Lock()
-	c.t = t
-	c.mu.Unlock()
-}
-
 // switchProbe is a recovery probe a test turns on and off.
 type switchProbe struct{ pass atomic.Bool }
 
@@ -48,7 +30,7 @@ func (p *switchProbe) probe(string) error {
 
 // recoveryBroker starts an embedded broker whose recovery loop ticks every
 // 20 ms, on clock and probe, logging to logger.
-func recoveryBroker(t *testing.T, clock *testClock, probe *switchProbe, logger *slog.Logger) *Embedded {
+func recoveryBroker(t *testing.T, clock *fakeClock, probe *switchProbe, logger *slog.Logger) *Embedded {
 	t.Helper()
 	cfg := EmbeddedConfig{
 		Addr:       net.JoinHostPort("127.0.0.1", itoa(freePort(t))),
@@ -128,7 +110,7 @@ func checkSays(t *testing.T, b *Embedded, want ...string) {
 var t0 = time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
 
 func TestRecovery_BreakDegradesReadinessThenRestarts(t *testing.T) {
-	clock, probe := &testClock{t: t0}, &switchProbe{}
+	clock, probe := &fakeClock{t: t0}, &switchProbe{}
 	b := recoveryBroker(t, clock, probe, slog.New(slog.DiscardHandler))
 	port := boundPort(b)
 
@@ -145,7 +127,7 @@ func TestRecovery_BreakDegradesReadinessThenRestarts(t *testing.T) {
 }
 
 func TestRecovery_ProbeFailingKeepsBrokenWithoutRestart(t *testing.T) {
-	clock, probe := &testClock{t: t0}, &switchProbe{}
+	clock, probe := &fakeClock{t: t0}, &switchProbe{}
 	h := &recordHandler{}
 	b := recoveryBroker(t, clock, probe, slog.New(h))
 
@@ -172,7 +154,7 @@ func TestRecovery_ProbeFailingKeepsBrokenWithoutRestart(t *testing.T) {
 // after a restart waits 30 s from it, the next 1 m, and 10 minutes without a
 // restart reset it.
 func TestRecovery_BackoffSpacesRepeatedRestarts(t *testing.T) {
-	clock, probe := &testClock{t: t0}, &switchProbe{}
+	clock, probe := &fakeClock{t: t0}, &switchProbe{}
 	probe.pass.Store(true)
 	b := recoveryBroker(t, clock, probe, slog.New(slog.DiscardHandler))
 
@@ -203,7 +185,7 @@ func TestRecovery_BackoffSpacesRepeatedRestarts(t *testing.T) {
 // every worker is disconnected, so the backoff does not apply, and the failed
 // attempt does not lengthen it either.
 func TestRecovery_FailedStartRetriesWithoutBackoff(t *testing.T) {
-	clock, probe := &testClock{t: t0}, &switchProbe{}
+	clock, probe := &fakeClock{t: t0}, &switchProbe{}
 	probe.pass.Store(true)
 	b := recoveryBroker(t, clock, probe, slog.New(slog.DiscardHandler))
 	port := boundPort(b)
@@ -215,10 +197,7 @@ func TestRecovery_FailedStartRetriesWithoutBackoff(t *testing.T) {
 	var hog net.Listener
 	hogged := make(chan struct{})
 	b.mu.Lock()
-	b.stageHook = func(s string) {
-		if s != stageStopped {
-			return
-		}
+	b.afterStopHook = func() {
 		once.Do(func() {
 			var lc net.ListenConfig
 			hog, _ = lc.Listen(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", itoa(port))) //nolint:errcheck // a nil hog fails the test below
@@ -247,7 +226,7 @@ func TestRecovery_FailedStartRetriesWithoutBackoff(t *testing.T) {
 }
 
 func TestRecovery_JetStreamDisabledIsABreak(t *testing.T) {
-	clock, probe := &testClock{t: t0}, &switchProbe{}
+	clock, probe := &fakeClock{t: t0}, &switchProbe{}
 	b := recoveryBroker(t, clock, probe, slog.New(slog.DiscardHandler))
 	createServerDurables(t, b) // a stream that cannot be read is checked for them
 	b.mu.Lock()
@@ -275,7 +254,7 @@ func TestRecovery_JetStreamDisabledIsABreak(t *testing.T) {
 // that existed before and did not come back keeps readiness degraded, naming
 // it, without another restart.
 func TestRecovery_VerifyRecreatesStreamAndReportsConsumer(t *testing.T) {
-	clock, probe := &testClock{t: t0}, &switchProbe{}
+	clock, probe := &fakeClock{t: t0}, &switchProbe{}
 	probe.pass.Store(true)
 	b := recoveryBroker(t, clock, probe, slog.New(slog.DiscardHandler))
 	c, err := b.NewClient()
@@ -291,10 +270,7 @@ func TestRecovery_VerifyRecreatesStreamAndReportsConsumer(t *testing.T) {
 
 	streams := filepath.Join(b.cfg.DataDir, "jetstream", DefaultAccount, "streams")
 	b.mu.Lock()
-	b.stageHook = func(s string) {
-		if s != stageStopped {
-			return
-		}
+	b.afterStopHook = func() {
 		for _, dir := range []string{filepath.Join(streams, StreamWorker), filepath.Join(streams, StreamLogs, "obs", "logs-durable")} {
 			if err := os.RemoveAll(dir); err != nil {
 				t.Errorf("remove %s: %v", dir, err)
@@ -350,16 +326,13 @@ func createServerDurables(t *testing.T, b *Embedded) {
 // list its consumers: the consumers a running sqi-server keeps are checked,
 // and one that did not come back keeps readiness degraded, naming it.
 func TestRecovery_JetStreamDisabledChecksTheServersConsumers(t *testing.T) {
-	clock, probe := &testClock{t: t0}, &switchProbe{}
+	clock, probe := &fakeClock{t: t0}, &switchProbe{}
 	b := recoveryBroker(t, clock, probe, slog.New(slog.DiscardHandler))
 	createServerDurables(t, b)
 	streams := filepath.Join(b.cfg.DataDir, "jetstream", DefaultAccount, "streams")
 	b.mu.Lock()
 	ns := b.ns
-	b.stageHook = func(s string) {
-		if s != stageStopped {
-			return
-		}
+	b.afterStopHook = func() {
 		if err := os.RemoveAll(filepath.Join(streams, StreamTask, "obs", taskStatusConsumerName)); err != nil {
 			t.Errorf("remove the consumer: %v", err)
 		}
@@ -379,7 +352,7 @@ func TestRecovery_JetStreamDisabledChecksTheServersConsumers(t *testing.T) {
 // server keeps failing to start, retried at every passing check, logs its
 // failure at most once a minute rather than at every attempt.
 func TestRecovery_FailedStartsLogOncePerMinute(t *testing.T) {
-	clock, probe := &testClock{t: t0}, &switchProbe{}
+	clock, probe := &fakeClock{t: t0}, &switchProbe{}
 	probe.pass.Store(true)
 	h := &recordHandler{}
 	b := recoveryBroker(t, clock, probe, slog.New(h))
@@ -388,10 +361,7 @@ func TestRecovery_FailedStartsLogOncePerMinute(t *testing.T) {
 	var attempts atomic.Int32
 	var hog net.Listener
 	b.mu.Lock()
-	b.stageHook = func(s string) {
-		if s != stageStopped {
-			return
-		}
+	b.afterStopHook = func() {
 		if attempts.Add(1) == 1 {
 			var lc net.ListenConfig
 			hog, _ = lc.Listen(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", itoa(port))) //nolint:errcheck // a nil hog fails the test below
@@ -441,7 +411,7 @@ func TestRecovery_FailedStartsLogOncePerMinute(t *testing.T) {
 // no server left running and no restart failure logged: the restart ended
 // because sqi-server is stopping, not because the broker could not start.
 func TestRecovery_ShutdownDuringALoopRestart(t *testing.T) {
-	clock, probe := &testClock{t: t0}, &switchProbe{}
+	clock, probe := &fakeClock{t: t0}, &switchProbe{}
 	probe.pass.Store(true)
 	h := &recordHandler{}
 	b := recoveryBroker(t, clock, probe, slog.New(h))
@@ -450,10 +420,7 @@ func TestRecovery_ShutdownDuringALoopRestart(t *testing.T) {
 	reached, proceed := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	b.mu.Lock()
-	b.stageHook = func(s string) {
-		if s != stageStopped {
-			return
-		}
+	b.afterStopHook = func() {
 		once.Do(func() {
 			close(reached)
 			<-proceed

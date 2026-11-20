@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,17 +47,24 @@ var errStartupFailed = errors.New("server failed to start")
 const serverReadyMsg = "sqi-server ready — waiting for signal"
 
 // readyWatch is a slog.Handler that closes ready on the server's ready record
-// and drops every record.
+// and drops every record. Once ready is closed it enables nothing, so the
+// records a running server logs are not built only to be dropped.
 type readyWatch struct {
 	once  sync.Once
 	ready chan struct{}
+	seen  atomic.Bool
 }
 
-func (*readyWatch) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelInfo }
+func (h *readyWatch) Enabled(_ context.Context, l slog.Level) bool {
+	return l >= slog.LevelInfo && !h.seen.Load()
+}
 
 func (h *readyWatch) Handle(_ context.Context, r slog.Record) error {
 	if r.Message == serverReadyMsg {
-		h.once.Do(func() { close(h.ready) })
+		h.once.Do(func() {
+			h.seen.Store(true)
+			close(h.ready)
+		})
 	}
 	return nil
 }
