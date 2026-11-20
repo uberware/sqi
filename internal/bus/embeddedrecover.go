@@ -199,7 +199,7 @@ func (e *Embedded) restartAndVerify(ctx context.Context, st *recoverState, broke
 		e.missingConsumers = missing
 	}
 	e.mu.Unlock()
-	e.logger.InfoContext(ctx, msgRestarted, slog.Duration("broken_for", now.Sub(broken.Since)))
+	e.logger.InfoContext(ctx, msgRestarted, slog.Duration("broken_for", e.now().Sub(broken.Since)))
 	if len(missing) > 0 {
 		e.logger.ErrorContext(ctx, msgMissing, slog.String("consumers", strings.Join(missing, ", ")),
 			slog.String("impact", "the server no longer consumes those streams"),
