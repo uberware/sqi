@@ -402,7 +402,7 @@ func retakeStaleGuardKey(ctx context.Context, kv jetstream.KeyValue, value []byt
 		return 0, false, err
 	case entry == nil:
 		newRev, err = kv.Create(opCtx, guardKey, value)
-	case entry.Revision() != rev:
+	case advanced(entry, rev):
 		return 0, true, nil
 	default:
 		newRev, err = kv.Update(opCtx, guardKey, value, rev)
@@ -411,6 +411,15 @@ func retakeStaleGuardKey(ctx context.Context, kv jetstream.KeyValue, value []byt
 		return 0, true, nil
 	}
 	return newRev, false, err
+}
+
+// advanced reports whether entry is a write after revision rev. A read can
+// come back older than a revision already seen: on a replicated bucket the
+// reads are direct gets that any replica may answer, and one that is behind
+// serves the key as it was. Revisions are stream sequences, so an older one
+// is a stale read and says nothing about the holder.
+func advanced(entry jetstream.KeyValueEntry, rev uint64) bool {
+	return entry.Revision() > rev
 }
 
 // readGuardKey returns the guard key's entry, or nil when there is none.
@@ -439,7 +448,7 @@ func watchGuardKey(ctx context.Context, kv jetstream.KeyValue, rev uint64) (valu
 			// A read that failed says nothing; the next poll tries again.
 		case entry == nil:
 			return nil, false, nil
-		case entry.Revision() != rev:
+		case advanced(entry, rev):
 			return entry.Value(), true, nil
 		}
 		if !time.Now().Before(end) {
@@ -703,11 +712,12 @@ func (g *Guard) reconcile(ctx context.Context) bool {
 		// A refresh that landed after it was abandoned moved the key on, and
 		// counts. At the same revision nothing was refreshed: the write the
 		// server refused this one for is still in flight and may be another
-		// server's, which the next refresh finds.
+		// server's, which the next refresh finds. An older revision is a
+		// stale read and changes nothing either.
 		g.mu.Lock()
-		same := entry.Revision() == g.revision
+		moved := advanced(entry, g.revision)
 		g.mu.Unlock()
-		if !same {
+		if moved {
 			g.refreshed(entry.Revision())
 		}
 		return false

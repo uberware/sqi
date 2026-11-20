@@ -167,3 +167,59 @@ func TestGuard_RefreshRefusedInFlightIsNotARefresh(t *testing.T) {
 		t.Errorf("after a refused refresh: lastOK moved %s, revision %d; want unchanged at 5", g.lastOK.Sub(before), g.revision)
 	}
 }
+
+// TestWatchGuardKey_OlderRevisionIsNotAMove pins that a read older than the
+// revision being watched is a stale read, not a write. A replicated bucket's
+// reads are direct gets any replica may answer, so a replica that is behind
+// can serve the key's previous revision after the current one was seen; only
+// a revision past the watched one shows a live holder.
+func TestWatchGuardKey_OlderRevisionIsNotAMove(t *testing.T) {
+	stale := guardEntry{value: holderValue(t, "previous"), rev: 3}
+	kv := &scriptedKV{gets: []jetstream.KeyValueEntry{stale, stale}}
+	value, moved, err := watchGuardKey(context.Background(), kv, 4)
+	if err != nil {
+		t.Fatalf("watchGuardKey: %v", err)
+	}
+	if moved {
+		t.Errorf("watchGuardKey reported a move to %s on a read older than revision 4", value)
+	}
+}
+
+// TestGuard_ReconcileKeepsRevisionOnAnOlderRead pins that a stale read of the
+// guard's own key cannot move its recorded revision backwards.
+func TestGuard_ReconcileKeepsRevisionOnAnOlderRead(t *testing.T) {
+	const id = "self"
+	own := holderValue(t, id)
+	kv := &scriptedKV{
+		updates: []error{&jetstream.APIError{Code: 400, ErrorCode: jsErrWrongLastSequence}},
+		gets:    []jetstream.KeyValueEntry{guardEntry{value: own, rev: 4}},
+	}
+	before := time.Now().Add(-time.Minute)
+	g := &Guard{kv: kv, holder: GuardHolder{InstanceID: id}, revision: 5, lastOK: before, logger: slog.New(slog.DiscardHandler)}
+	if lost := g.refreshOnce(context.Background()); lost {
+		t.Fatal("refreshOnce reported the guard lost")
+	}
+	if g.revision != 5 || !g.lastOK.Equal(before) {
+		t.Errorf("after a stale read at revision 4: revision %d, lastOK moved %s; want 5 and unchanged", g.revision, g.lastOK.Sub(before))
+	}
+}
+
+// TestRetakeStaleGuardKey_OlderReadStillRetakes pins that a stale read older
+// than the dead holder's revision does not count as the key changing hands:
+// the compare-and-set at that revision decides, on the stream leader.
+func TestRetakeStaleGuardKey_OlderReadStillRetakes(t *testing.T) {
+	kv := &scriptedKV{
+		updates: []error{nil},
+		gets:    []jetstream.KeyValueEntry{guardEntry{value: holderValue(t, "previous"), rev: 3}},
+	}
+	_, retake, err := retakeStaleGuardKey(context.Background(), kv, holderValue(t, "self"), 4)
+	if err != nil {
+		t.Fatalf("retakeStaleGuardKey: %v", err)
+	}
+	if retake {
+		t.Error("retakeStaleGuardKey asked to look again on a read older than revision 4")
+	}
+	if len(kv.updates) != 0 {
+		t.Error("no compare-and-set at revision 4 was made")
+	}
+}
