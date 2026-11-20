@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
 	"syscall"
 )
 
@@ -26,7 +27,15 @@ func fdHeadroom() error {
 	if err != nil {
 		return fmt.Errorf("count open file descriptors: %w", err)
 	}
-	// The read held one descriptor of its own, which it has closed.
-	open := uint64(max(len(entries)-1, 0))
+	// The list includes the descriptor the read itself held, closed since;
+	// counting it errs by one toward waiting.
+	open := make([]int, 0, len(entries))
+	for _, e := range entries {
+		fd, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		open = append(open, fd)
+	}
 	return fdHeadroomFrom(open, lim.Cur)
 }

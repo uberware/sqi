@@ -59,11 +59,22 @@ func probeWritable(dir string) error {
 	return nil
 }
 
-// fdHeadroomFrom reports whether open descriptors leave enough of limit free.
-func fdHeadroomFrom(open, limit uint64) error {
+// fdHeadroomFrom reports whether the open descriptors fds leave enough
+// descriptor numbers free below the soft limit. The limit bounds the numbers
+// a new open can take, not how many are open: a limit lowered under a running
+// process leaves its higher descriptors open, and those take no number below
+// it.
+func fdHeadroomFrom(fds []int, limit uint64) error {
+	var below uint64
+	for _, fd := range fds {
+		if fd >= 0 && uint64(fd) < limit {
+			below++
+		}
+	}
+	free := limit - below
 	need := max(uint64(fdHeadroomMin), limit/fdHeadroomDivisor)
-	if limit < need || open > limit-need {
-		return fmt.Errorf("%d of %d file descriptors are open; a restart needs %d free", open, limit, need)
+	if free < need {
+		return fmt.Errorf("%d of %d file descriptors are free; a restart needs %d free", free, limit, need)
 	}
 	return nil
 }
