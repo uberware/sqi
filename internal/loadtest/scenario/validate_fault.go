@@ -310,6 +310,7 @@ func (v *validator) expect() {
 			v.failf(path+".kind", "%q is not one of %s, %s", k.Kind, KnownMust, KnownMay)
 		}
 		v.knownCeiling(path, k)
+		v.knownMatch(path, k)
 		if strings.TrimSpace(k.Reason) == "" {
 			v.failf(path+".reason", "is required")
 		}
@@ -344,6 +345,21 @@ func (v *validator) realTasks() {
 		if rt.ScratchBytes < 0 {
 			v.failf(path+".scratch_bytes", "must not be negative")
 		}
+	}
+}
+
+// knownMatch checks an entry's match: a pattern that compiles, on an entry
+// for an invariant check.
+func (v *validator) knownMatch(path string, k KnownViolation) {
+	if k.Match == "" {
+		return
+	}
+	if k.Check == ReworkCheck {
+		v.failf(path+".match", "does not apply to a %q entry, whose finding is a count", ReworkCheck)
+		return
+	}
+	if _, err := regexp.Compile(k.Match); err != nil {
+		v.failf(path+".match", "does not compile: %v", err)
 	}
 }
 

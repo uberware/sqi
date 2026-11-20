@@ -454,6 +454,7 @@ expect:
 | `check` | An invariant name from the table above, or `rework`. |
 | `kind` | `must` (the default) or `may`. |
 | `max_attempts` | On a `rework` entry, the most rework it excuses. Required there, and an error on any other check. |
+| `match` | A regular expression (RE2) that scopes the entry to the violations it matches. Optional, and an error on a `rework` entry. |
 | `os` | The operating systems (`linux`, `darwin`, `windows`) the entry applies on. Empty means all. On any other system the entry does nothing. |
 | `reason` | What the defect does. Required. |
 | `tracker` | The tracker item, such as `H99x`. Required. |
@@ -463,6 +464,15 @@ How an entry is applied:
 - A failed result that an entry names becomes OK. The summary shows it as
   `known (H99x)` and keeps its evidence. Several entries for one check join
   their trackers.
+- An entry with a `match` pattern excuses only the violations it matches.
+  When every entry for a check has one, a failure is excused only when each
+  of its violations matches one of them, all of them, not only the first 20
+  the evidence shows. An unmatched violation keeps the result failed, and its
+  evidence counts the unmatched violations and names the first, so a new
+  defect in the same check cannot hide behind the recorded one. An entry
+  with no pattern still excuses every violation of its check. A result with
+  more than 10,000 violations cannot be checked against a pattern and stays
+  failed.
 - A `rework` entry excuses rework only up to its `max_attempts`. Rework above
   the scenario's `max_rework_attempts` and at or under the ceiling is the
   defect firing, and the summary notes the ceiling. Rework over the ceiling
@@ -473,7 +483,8 @@ How an entry is applied:
   failure stays, and a `must` entry for it is not counted as fired. Rework
   that could not be measured is one, as is a store the checks could not open.
 - A `must` entry whose check did not fail adds a failed result of its own,
-  named `known:<check>`. This is the stops-firing rule: when the defect is
+  named `known:<check>`, as does a `must` entry whose pattern matched none of
+  its check's violations. This is the stops-firing rule: when the defect is
   fixed, the scenario fails until the entry is removed, so a fixed defect
   cannot stay on the list. The same happens when the check did not run.
 - A `may` entry that did not fire adds nothing. It is for a defect that is

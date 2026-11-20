@@ -92,6 +92,9 @@ const (
 	// MaxEvidence is the most evidence entries a Result carries. When there is
 	// more, the last entry counts what was left out.
 	MaxEvidence = 20
+	// MaxKeptViolations is the most violations a Result keeps in full, for
+	// a known violation scoped by a pattern to judge. Past it none are kept.
+	MaxKeptViolations = 10000
 	// DefaultSettle is the settle time when Input.Settle is zero.
 	DefaultSettle = 5 * time.Second
 	// DefaultLogSettle is the logs settle time when Input.LogSettle is zero.
@@ -227,6 +230,12 @@ type Result struct {
 	// Unmeasured marks a failure that is no finding: the check could not read
 	// what it judges, or did not run. A known violation never excuses it.
 	Unmeasured bool `json:"unmeasured,omitempty"`
+	// Violations is every violation the check found, which Evidence shows
+	// only the first MaxEvidence of, and none of its notes; nil for a result
+	// not built from [Evidence]. ViolationsCut is set, and Violations nil,
+	// when there were more than MaxKeptViolations.
+	Violations    []string `json:"-"`
+	ViolationsCut bool     `json:"-"`
 }
 
 // FaultWindow is when a network, server or power-cut fault was in effect: from
@@ -504,6 +513,8 @@ func listFarmJobs(ctx context.Context, v ServerView, farmID string, fn func(clie
 type Evidence struct {
 	lines []string
 	n     int
+	// all is every violation, up to MaxKeptViolations; nil past it.
+	all []string
 	// notes are shown after the violations and fail nothing.
 	notes []string
 	// unmeasured is set when a read failed, so the result is no finding.
@@ -521,6 +532,12 @@ func (e *Evidence) Add(s string) {
 	e.n++
 	if len(e.lines) < MaxEvidence {
 		e.lines = append(e.lines, s)
+	}
+	switch {
+	case e.n <= MaxKeptViolations:
+		e.all = append(e.all, s)
+	case e.all != nil:
+		e.all = nil
 	}
 }
 
@@ -546,7 +563,10 @@ func (e *Evidence) Result(name string) Result {
 	if len(e.notes) > 0 {
 		lines = append(slices.Clip(lines), e.notes...)
 	}
-	return Result{Name: name, OK: e.n == 0, Evidence: lines, Unmeasured: e.unmeasured}
+	return Result{
+		Name: name, OK: e.n == 0, Evidence: lines, Unmeasured: e.unmeasured,
+		Violations: e.all, ViolationsCut: e.n > MaxKeptViolations,
+	}
 }
 
 // Unmeasured returns a Result for each name, failed and unmeasured with msg

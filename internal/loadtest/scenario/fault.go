@@ -133,9 +133,15 @@ type KnownViolation struct {
 	// MaxAttempts is a rework entry's ceiling: rework above the scenario's
 	// max_rework_attempts and at or under this is the defect firing, and more
 	// than this fails. Required on a rework entry, an error on any other.
-	MaxAttempts *int   `yaml:"max_attempts,omitempty"`
-	Reason      string `yaml:"reason"`
-	Tracker     string `yaml:"tracker"` // e.g. "H99x"
+	MaxAttempts *int `yaml:"max_attempts,omitempty"`
+	// Match, when set, is an RE2 pattern that scopes the entry to the
+	// violations it matches: a failure is excused only when each of its
+	// violations matches an entry for its check (an entry with no pattern
+	// excuses every violation). Not on a rework entry, whose finding is a
+	// count.
+	Match   string `yaml:"match,omitempty"`
+	Reason  string `yaml:"reason"`
+	Tracker string `yaml:"tracker"` // e.g. "H99x"
 }
 
 // ReworkCheck names the rework budget in a KnownViolation.
