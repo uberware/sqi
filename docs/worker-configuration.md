@@ -553,7 +553,10 @@ relationship to storage-location roots.
 Capability tags merged with auto-detected capabilities at registration. Use
 them for software or hardware the detectors cannot discover. An entry is a
 bare tag (`gpu`) or a `key=value` pair (`maya=false`), and it overrides any
-auto-detected tag with the same key.
+auto-detected tag with the same key. A bare tag means `true`, the value a
+detector gives its tags, so a job requirement such as `attr.worker.tag.gpu`
+with `anyOf: ["true"]` matches it. `key=` clears a tag to an empty value,
+which no requirement matches.
 
 ```yaml
 worker:

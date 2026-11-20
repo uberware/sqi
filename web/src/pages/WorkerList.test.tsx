@@ -765,6 +765,22 @@ describe('WorkerList', () => {
       expect(screen.getByText('nuke_license=noncommercial')).toBeInTheDocument()
     })
 
+    it('shows a cleared tag with its empty value instead of as present', async () => {
+      const worker = makeWorker({
+        hostname: 'cleared-node',
+        os: 'Linux',
+        cpu_count: 8,
+        ram_mb: 16384,
+        tags: { maya: '' },
+      })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('maya='))
+      expect(screen.queryByText('maya')).not.toBeInTheDocument()
+    })
+
     it('keeps value-bearing (non-presence) tags verbatim', async () => {
       const worker = makeWorker({
         hostname: 'proj-node',

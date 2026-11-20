@@ -32,9 +32,10 @@ export default defineConfig([
     ...vitest.configs.recommended,
   },
 
-  // Config files (vite.config.ts, etc.): recommended rules only, Node globals.
+  // Config files (vite.config.ts, etc.) and Node scripts under scripts/:
+  // recommended rules only, Node globals.
   {
-    files: ['*.config.{ts,js,mts,mjs}'],
+    files: ['*.config.{ts,js,mts,mjs}', 'scripts/**/*.mjs'],
     extends: [js.configs.recommended, tseslint.configs.recommended],
     languageOptions: {
       globals: globals.node,

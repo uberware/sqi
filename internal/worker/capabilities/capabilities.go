@@ -65,9 +65,9 @@ type Capabilities struct {
 
 	// Tags holds arbitrary string capability tags merged from auto-detection
 	// and any manual overrides supplied via WorkerConfig.Worker.CapabilityTags.
-	// The map value is the empty string for presence-only, list-style tags
-	// (e.g. "maya_2025") and the right-hand side of the entry for key=value
-	// tags (e.g. "maya=true" → Tags["maya"] = "true"). See [MergeManualTags].
+	// The map value is "true" for a detector's tag and for a bare manual entry
+	// (e.g. "maya_2025"), and the right-hand side of the entry for a key=value
+	// tag (e.g. "maya=false" → Tags["maya"] = "false"). See [MergeManualTags].
 	//
 	// Auto-detected entries seeded by [Detect]:
 	//   "os"         → Capabilities.OS
@@ -141,12 +141,13 @@ func ValidateTagKeys(tags map[string]string) error {
 // MergeManualTags merges manual capability tags from
 // WorkerConfig.Worker.CapabilityTags into c.Tags. Each entry is either:
 //
-//   - a bare tag, stored as a map key with an empty value, signaling presence
-//     (e.g. "maya_2025", "gpu", "highram"); or
-//   - a "key=value" pair, split on the first "=" (e.g. "maya=true" sets
-//     Tags["maya"] = "true"; a value may itself contain "=", e.g. "a=b=c"
+//   - a bare tag, stored with the value "true" as a detector's tag is, so an
+//     attr.worker.tag.<key> requirement of anyOf ["true"] matches it (e.g.
+//     "maya_2025", "gpu", "highram"); or
+//   - a "key=value" pair, split on the first "=" (e.g. "maya=false" sets
+//     Tags["maya"] = "false"; a value may itself contain "=", e.g. "a=b=c"
 //     sets Tags["a"] = "b=c"; a trailing "=" with nothing after it, e.g.
-//     "maya=", sets Tags["maya"] = "", same as the presence-only form).
+//     "maya=", sets Tags["maya"] = "", which no requirement matches).
 //
 // An entry with an empty key (starting with "=", e.g. "=true") is skipped
 // rather than stored verbatim, since an empty tag key can never be matched
@@ -169,6 +170,6 @@ func (c *Capabilities) MergeManualTags(tags []string) {
 			c.Tags[key] = value
 			continue
 		}
-		c.Tags[t] = ""
+		c.Tags[t] = "true"
 	}
 }

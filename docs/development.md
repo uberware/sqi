@@ -1486,13 +1486,14 @@ and `probe_other.go`.
    ```
 
 3. **Consume the result in `Detect`** in `capabilities.go`. If the tag is a
-   simple presence flag, add it to `c.Tags`:
+   simple presence flag, add it to `c.Tags` with the value `"true"`, which is
+   what an `attr.worker.tag.<key>` requirement of `anyOf: ["true"]` matches:
 
    ```go
    func Detect(p Probe) Capabilities {
        // ... existing fields ...
        if p.IsNVLink() {
-           c.Tags["nvlink"] = ""
+           c.Tags["nvlink"] = "true"
        }
        return c
    }

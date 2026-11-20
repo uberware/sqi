@@ -830,7 +830,9 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 			if v := caps.Tags[k]; v != "" {
 				fmt.Fprintf(w, "  %s: %s\n", k, v)
 			} else {
-				fmt.Fprintf(w, "  %s\n", k)
+				// Only a cleared entry ("key=") has an empty value; show it
+				// so it does not read as a tag that is present.
+				fmt.Fprintf(w, "  %s: \"\"\n", k)
 			}
 		}
 	}

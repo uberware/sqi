@@ -1149,9 +1149,9 @@ does not have the gap: it supplies an `aerender` command from the install it
 finds.
 
 Manual tags are needed only when a DCC is installed somewhere the built-in
-detectors do not check, or for in-house tools they do not cover. Add a
-`key=value` entry to the worker's `capability_tags` (see [worker capability
-tags](worker-capabilities.md)):
+detectors do not check, or for in-house tools they do not cover. Add the tag
+to the worker's `capability_tags`, either as `maya=true` or as a bare `maya`,
+which means the same (see [worker capability tags](worker-capabilities.md)):
 
 ```yaml
 worker:

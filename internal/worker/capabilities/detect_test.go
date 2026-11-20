@@ -271,14 +271,27 @@ func TestMergeManualTags_AddsTagsToMap(t *testing.T) {
 
 func TestMergeManualTags_OverwritesAutoDetectedTag(t *testing.T) {
 	caps := Detect(&fakeProbe{os: "linux", osVersion: "22.04"})
-	// Overwrite the auto-detected "os" tag with a custom value.
-	caps.MergeManualTags([]string{"os"})
+	caps.MergeManualTags([]string{"os=freebsd", "os_version="})
 
-	// The key must exist and its value must now be the empty string (manual tag).
-	if v, ok := caps.Tags["os"]; !ok {
-		t.Fatal(`Tags["os"] must still be present after overwrite`)
-	} else if v != "" {
-		t.Errorf(`Tags["os"]: got %q, want "" (manual tag value)`, v)
+	if v := caps.Tags["os"]; v != "freebsd" {
+		t.Errorf(`Tags["os"] = %q, want "freebsd" (the manual value)`, v)
+	}
+	if v, ok := caps.Tags["os_version"]; !ok || v != "" {
+		t.Errorf(`Tags["os_version"] = (%q, %v), want ("", true): "os_version=" clears it`, v, ok)
+	}
+}
+
+// A bare manual tag means true, as a detector's tag does, so a requirement
+// such as attr.worker.tag.maya anyOf ["true"] matches it, and naming a tag a
+// detector already found does not turn it off.
+func TestMergeManualTags_BareTagMeansTrue(t *testing.T) {
+	caps := Capabilities{Tags: map[string]string{"maya": "true"}}
+	caps.MergeManualTags([]string{"maya", "gpu"})
+
+	for _, tag := range []string{"maya", "gpu"} {
+		if v := caps.Tags[tag]; v != "true" {
+			t.Errorf("Tags[%q] = %q, want \"true\"", tag, v)
+		}
 	}
 }
 
@@ -341,11 +354,11 @@ func TestMergeManualTags_KeyValueParsing(t *testing.T) {
 		wantValue string
 	}{
 		{
-			name:      "plain presence-only tag has no equals sign",
+			name:      "bare tag with no equals sign means true",
 			entries:   []string{"gpu"},
 			wantKey:   "gpu",
 			wantOK:    true,
-			wantValue: "",
+			wantValue: "true",
 		},
 		{
 			name:      "key=value tag splits on the equals sign",
