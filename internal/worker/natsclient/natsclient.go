@@ -308,9 +308,15 @@ func (lc *lifecycle) logRefusal(err error, remaining time.Duration) {
 	)
 }
 
+// logReset warns about a reset during the initial dial. Only a worker that
+// presents a key has a credential the broker can refuse this way.
 func (lc *lifecycle) logReset(err error, remaining time.Duration) {
+	msg := "natsclient: the broker reset the connection before it was set up; retrying — the broker may be restarting or overloaded"
+	if lc.keyed {
+		msg = "natsclient: the broker reset the connection before it was set up; retrying — this is how a refusal of this worker's credential can arrive, while sqi-server or its store is unavailable"
+	}
 	lc.logger.WarnContext(
-		lc.ctx, "natsclient: the broker reset the connection before it was set up; retrying — this is how a refusal of this worker's credential can arrive, while sqi-server or its store is unavailable",
+		lc.ctx, msg,
 		slog.Any("error", err),
 		slog.Duration("gives_up_in", remaining.Round(time.Second)),
 	)

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -161,5 +162,21 @@ func TestIsConnReset(t *testing.T) {
 	}
 	if isConnReset(err) {
 		t.Errorf("isConnReset(%v) = true for a refused dial", err)
+	}
+}
+
+// TestLogReset_NamesACredentialOnlyWhenTheWorkerHasOne pins the wording of
+// the reset warning: a refusal of the worker's credential can arrive as a
+// reset only when the worker presents one, so a worker without a key is not
+// sent looking for a credential problem.
+func TestLogReset_NamesACredentialOnlyWhenTheWorkerHasOne(t *testing.T) {
+	for _, keyed := range []bool{true, false} {
+		var logs syncLog
+		lc := newLifecycle(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), keyed, time.Second, time.Minute)
+		lc.logReset(errors.New("connection reset by peer"), time.Minute)
+		got := logs.String()
+		if mentions := strings.Contains(got, "credential"); mentions != keyed {
+			t.Errorf("keyed=%v: reset warning mentions a credential = %v: %s", keyed, mentions, got)
+		}
 	}
 }
