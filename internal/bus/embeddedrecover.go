@@ -58,6 +58,14 @@ type recoverState struct {
 	quick        int       // restarts in a row within recoverBackoffReset of the previous
 	startFailed  bool      // the last attempt's new server did not start
 	lastProbeLog time.Time
+	// failedStarts counts attempts whose new server did not start since the
+	// last failure was logged, which is at most once a minute.
+	failedStarts int
+	lastFailLog  time.Time
+	// durables is the snapshot taken before the first attempt of a restart,
+	// which the attempts after a failed start reuse: no server runs then to
+	// list consumers from.
+	durables map[string][]string
 }
 
 // startRecovery launches the recovery loop. Shutdown stops it.
@@ -168,17 +176,31 @@ func (st *recoverState) nextRestart() time.Time {
 	return st.lastRestart.Add(step)
 }
 
-// restartAndVerify restarts the broker and checks what came back.
+// restartAndVerify restarts the broker and checks what came back. Attempts
+// after a failed start log nothing until one succeeds, except the failure
+// itself at most once a minute.
 func (e *Embedded) restartAndVerify(ctx context.Context, st *recoverState, broken *brokenState, now time.Time) {
-	durables := e.snapshotDurables(ctx)
-	e.logger.InfoContext(ctx, msgRestarting, slog.String("stream", broken.Stream))
+	if !st.startFailed {
+		st.durables = e.snapshotDurables(ctx)
+		e.logger.InfoContext(ctx, msgRestarting, slog.String("stream", broken.Stream))
+	}
 	if err := e.restart(ctx); err != nil {
+		if ctx.Err() != nil {
+			// Shutdown ended the restart; sqi-server is stopping.
+			return
+		}
 		st.startFailed = true
-		e.logger.ErrorContext(ctx, msgRestartFailed, slog.Any("error", err),
-			slog.String("impact", "no worker can connect until a restart succeeds; the next is tried at the next passing check"))
+		st.failedStarts++
+		if st.lastFailLog.IsZero() || now.Sub(st.lastFailLog) >= recoverProbeLogEvery {
+			e.logger.ErrorContext(ctx, msgRestartFailed, slog.Any("error", err),
+				slog.Int("failed_attempts", st.failedStarts),
+				slog.String("impact", "no worker can connect until a restart succeeds; one is tried at every passing check"))
+			st.failedStarts, st.lastFailLog = 0, now
+		}
 		return
 	}
-	st.startFailed = false
+	durables := st.durables
+	st.startFailed, st.failedStarts, st.lastFailLog, st.durables = false, 0, time.Time{}, nil
 	if !st.lastRestart.IsZero() && now.Sub(st.lastRestart) < recoverBackoffReset {
 		st.quick++
 	} else {
@@ -208,21 +230,36 @@ func (e *Embedded) restartAndVerify(ctx context.Context, st *recoverState, broke
 }
 
 // snapshotDurables lists, per stream, the consumers it has, so the check after
-// a restart verifies the ones that existed. A stream it cannot read within
-// the budget lists none.
+// a restart verifies the ones that existed. A stream it cannot read within the
+// budget, as when JetStream is disabled, lists the durable consumers a
+// running sqi-server keeps on it: the server creates them at startup, so they
+// existed unless JetStream broke before it did, and then the check names
+// them and a restart of sqi-server clears it.
 func (e *Embedded) snapshotDurables(ctx context.Context) map[string][]string {
+	out := make(map[string][]string)
+	_, server := RestoreTargets()
+	serverDurables := func(stream string) {
+		for _, d := range server {
+			if d.Stream == stream {
+				out[stream] = append(out[stream], d.Name)
+			}
+		}
+	}
 	js, ok := e.dataJetStream()
 	if !ok {
-		return nil
+		for _, name := range StreamNames() {
+			serverDurables(name)
+		}
+		return out
 	}
 	// One budget for the whole snapshot: with JetStream down every request
 	// waits out its timeout.
 	opCtx, cancel := context.WithTimeout(ctx, guardOpTimeout)
 	defer cancel()
-	out := make(map[string][]string)
 	for _, name := range StreamNames() {
 		stream, err := js.Stream(opCtx, name)
 		if err != nil {
+			serverDurables(name)
 			continue
 		}
 		names := stream.ConsumerNames(opCtx)

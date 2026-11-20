@@ -210,9 +210,9 @@ for what it does.
 | `bus: the broker can no longer store messages on a stream` | `ERROR` | `stream`, `error`, `impact`, `remediation` | The first break of an outage. `stream` is `all (JetStream is disabled)` when nats-server shut JetStream down. |
 | `bus: another broker stream can no longer store messages` | `WARN` | `stream`, `error` | A further stream broke before the broker recovered. |
 | `bus: the broker cannot restart yet` | `WARN` | `error` | The data directory does not take a write yet, or too few file descriptors are free. At most once a minute. |
-| `bus: restarting the broker` | `INFO` | `stream` | The restart begins. |
+| `bus: restarting the broker` | `INFO` | `stream` | The restart begins. Not logged again for the retries after a failed start. |
 | `bus: the broker restarted and stores messages again` | `INFO` | `broken_for` | The restart is done. |
-| `bus: the broker restart failed` | `ERROR` | `error`, `impact` | The new broker did not start; the next passing check tries again. |
+| `bus: the broker restart failed` | `ERROR` | `error`, `failed_attempts`, `impact` | The new broker did not start; every passing check tries again. At most once a minute; `failed_attempts` counts the attempts since the last one. Not logged when `sqi-server` stopping ended the restart. |
 | `bus: consumers did not come back after the broker restarted` | `ERROR` | `consumers`, `impact`, `remediation` | Restart `sqi-server`. |
 
 While a stream is broken, `GET /readyz` answers 503 with the `nats` check

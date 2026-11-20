@@ -249,6 +249,7 @@ func TestRecovery_FailedStartRetriesWithoutBackoff(t *testing.T) {
 func TestRecovery_JetStreamDisabledIsABreak(t *testing.T) {
 	clock, probe := &testClock{t: t0}, &switchProbe{}
 	b := recoveryBroker(t, clock, probe, slog.New(slog.DiscardHandler))
+	createServerDurables(t, b) // a stream that cannot be read is checked for them
 	b.mu.Lock()
 	ns := b.ns
 	b.mu.Unlock()
@@ -323,4 +324,172 @@ func requireStreams(t *testing.T, b *Embedded) {
 			return err
 		})
 	}
+}
+
+// createServerDurables creates the durable consumers a running sqi-server
+// keeps, as the server does at startup.
+func createServerDurables(t *testing.T, b *Embedded) {
+	t.Helper()
+	c, err := b.NewClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, consumers := RestoreTargets()
+	for _, d := range consumers {
+		if _, err := c.js.CreateOrUpdateConsumer(t.Context(), d.Stream, jetstream.ConsumerConfig{
+			Durable: d.Name, AckPolicy: jetstream.AckExplicitPolicy,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestRecovery_JetStreamDisabledChecksTheServersConsumers pins the check after
+// a restart from JetStream disabled, when no stream can be read beforehand to
+// list its consumers: the consumers a running sqi-server keeps are checked,
+// and one that did not come back keeps readiness degraded, naming it.
+func TestRecovery_JetStreamDisabledChecksTheServersConsumers(t *testing.T) {
+	clock, probe := &testClock{t: t0}, &switchProbe{}
+	b := recoveryBroker(t, clock, probe, slog.New(slog.DiscardHandler))
+	createServerDurables(t, b)
+	streams := filepath.Join(b.cfg.DataDir, "jetstream", DefaultAccount, "streams")
+	b.mu.Lock()
+	ns := b.ns
+	b.stageHook = func(s string) {
+		if s != stageStopped {
+			return
+		}
+		if err := os.RemoveAll(filepath.Join(streams, StreamTask, "obs", taskStatusConsumerName)); err != nil {
+			t.Errorf("remove the consumer: %v", err)
+		}
+	}
+	b.mu.Unlock()
+	if err := ns.DisableJetStream(); err != nil {
+		t.Fatal(err)
+	}
+	checkSays(t, b, "JetStream is disabled")
+
+	probe.pass.Store(true)
+	waitRestarts(t, b, 1)
+	checkSays(t, b, StreamTask+"/"+taskStatusConsumerName, "restart sqi-server")
+}
+
+// TestRecovery_FailedStartsLogOncePerMinute pins that a restart whose new
+// server keeps failing to start, retried at every passing check, logs its
+// failure at most once a minute rather than at every attempt.
+func TestRecovery_FailedStartsLogOncePerMinute(t *testing.T) {
+	clock, probe := &testClock{t: t0}, &switchProbe{}
+	probe.pass.Store(true)
+	h := &recordHandler{}
+	b := recoveryBroker(t, clock, probe, slog.New(h))
+	port := boundPort(b)
+
+	var attempts atomic.Int32
+	var hog net.Listener
+	b.mu.Lock()
+	b.stageHook = func(s string) {
+		if s != stageStopped {
+			return
+		}
+		if attempts.Add(1) == 1 {
+			var lc net.ListenConfig
+			hog, _ = lc.Listen(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", itoa(port))) //nolint:errcheck // a nil hog fails the test below
+		}
+	}
+	b.mu.Unlock()
+
+	injectBreak(t, b, StreamTask)
+	eventuallyNil(t, 15*time.Second, "failed attempts", func() error {
+		if n := attempts.Load(); n < 4 {
+			return errors.New("attempts = " + itoa(int(n)))
+		}
+		return nil
+	})
+	if hog == nil {
+		t.Fatal("could not occupy the broker's port")
+	}
+	count := func(msg string) int {
+		n := 0
+		for _, r := range h.records() {
+			if r.Message == msg {
+				n++
+			}
+		}
+		return n
+	}
+	if got := count(msgRestartFailed); got != 1 {
+		t.Errorf("logged %d restart failures over %d attempts within a minute, want 1", got, attempts.Load())
+	}
+	if got := count(msgRestarting); got != 1 {
+		t.Errorf("logged %d restarting records over %d attempts, want 1", got, attempts.Load())
+	}
+
+	clock.set(t0.Add(61 * time.Second))
+	eventuallyNil(t, 15*time.Second, "a second failure record after a minute", func() error {
+		if got := count(msgRestartFailed); got != 2 {
+			return errors.New("restart failures logged = " + itoa(got))
+		}
+		return nil
+	})
+	_ = hog.Close()
+	waitRestarts(t, b, 1)
+}
+
+// TestRecovery_ShutdownDuringALoopRestart pins that Shutdown arriving while
+// the recovery loop restarts the broker ends that restart and returns, with
+// no server left running and no restart failure logged: the restart ended
+// because sqi-server is stopping, not because the broker could not start.
+func TestRecovery_ShutdownDuringALoopRestart(t *testing.T) {
+	clock, probe := &testClock{t: t0}, &switchProbe{}
+	probe.pass.Store(true)
+	h := &recordHandler{}
+	b := recoveryBroker(t, clock, probe, slog.New(h))
+	port := boundPort(b)
+
+	reached, proceed := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	b.mu.Lock()
+	b.stageHook = func(s string) {
+		if s != stageStopped {
+			return
+		}
+		once.Do(func() {
+			close(reached)
+			<-proceed
+		})
+	}
+	b.mu.Unlock()
+
+	injectBreak(t, b, StreamTask)
+	<-reached
+	shut := make(chan struct{})
+	go func() {
+		b.Shutdown()
+		close(shut)
+	}()
+	time.Sleep(100 * time.Millisecond) // Shutdown has canceled the loop
+	close(proceed)
+	select {
+	case <-shut:
+	case <-time.After(15 * time.Second):
+		t.Fatal("Shutdown did not return")
+	}
+	for _, r := range h.records() {
+		if r.Message == msgRestartFailed {
+			t.Errorf("logged %q during Shutdown", r.Message)
+		}
+	}
+	b.mu.Lock()
+	ns := b.ns
+	b.mu.Unlock()
+	if ns != nil {
+		t.Error("a server is current after Shutdown")
+	}
+	var lc net.ListenConfig
+	l, err := lc.Listen(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", itoa(port)))
+	if err != nil {
+		t.Fatalf("the broker's port is still taken after Shutdown: %v", err)
+	}
+	_ = l.Close()
 }

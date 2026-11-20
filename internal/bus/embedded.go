@@ -109,11 +109,11 @@ type Embedded struct {
 	stopped bool
 
 	// What a restart rebuilds the server from, kept from Start: the port the
-	// first server bound, the account layout and the keys, which a restart
-	// reuses so no client's credential or the callout's issuer changes.
+	// first server bound and the account layout, whose public keys a restart
+	// reuses so no client's credential or the callout's issuer changes. sqi's
+	// own connections keep their seeds and reconnect with them.
 	port   int
 	layout Layout
-	keys   embeddedKeys
 
 	// restartMu orders a restart (held for writing) against Shutdown (for
 	// writing) and each of Revoke's disconnect passes (for reading).
@@ -327,7 +327,7 @@ func (e *Embedded) Start(ctx context.Context) error {
 	e.mu.Lock()
 	e.ns, e.natsLog = ns, nl
 	e.port = boundPortOf(ns, opts.Port)
-	e.layout, e.keys = layout, keys
+	e.layout = layout
 	e.mu.Unlock()
 
 	e.logger.InfoContext(

@@ -2522,8 +2522,9 @@ is kept. `sqi-server` recovers from this by itself:
 - A restart that comes within 10 minutes of the previous one waits 30 seconds
   after it, then 1, 2 and 5 minutes for the ones after, so a volume that keeps
   filling cannot make the broker restart in a loop. A restart whose new broker
-  could not start (`bus: the broker restart failed`) is tried again at the next
-  passing check.
+  could not start (`bus: the broker restart failed`) is tried again at every
+  passing check, and the failure is logged at most once a minute, with
+  `failed_attempts` counting the attempts since the last such line.
 - After a restart it checks that every stream and every server consumer came
   back. A stream that did not is created again. A consumer that did not keeps
   `/readyz` at 503 (`nats consumers ... did not come back after the broker
