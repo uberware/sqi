@@ -12,7 +12,8 @@ description: chaos - leave the 2 real workers' session volume no free space or i
 # their cause (reason matches "no space left on device", in any case), and no
 # more than 12 may fail: 6 hold tasks a minute start about 6 in the 60s window
 # and each failed task is retried at most once inside it, so about 12 is the
-# ceiling with room for a retry that fails again.
+# ceiling with room for a retry that fails again. At least 1 must fail, so a
+# run in which the fault made no task fail does not pass.
 duration: 3m
 warmup: 10s
 drain_timeout: 5m
@@ -57,6 +58,7 @@ faults:
       headroom_bytes: 0
       inodes: true
       reason: '(?i)no space left on device'
+      min_failed: 1
       max_failed: 12
     duration: 60s
 

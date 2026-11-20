@@ -80,6 +80,10 @@ type DiskFull struct {
 	// Reason, on a workers volume, is an RE2 pattern every attempt that fails
 	// on a real worker inside the window must match; "" checks none.
 	Reason string `yaml:"reason"`
+	// MinFailed, on a workers volume, is the fewest attempts that must fail
+	// on real workers inside the window, so a run in which the fault made no
+	// task fail does not pass; nil has no minimum.
+	MinFailed *int `yaml:"min_failed,omitempty"`
 	// MaxFailed, on a workers volume, bounds the attempts that fail on real
 	// workers inside the window; nil is unbounded.
 	MaxFailed *int `yaml:"max_failed,omitempty"`

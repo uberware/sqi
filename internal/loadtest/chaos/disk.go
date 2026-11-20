@@ -23,13 +23,17 @@ type DiskWindow struct {
 	// Reason, when set, is what every attempt failing inside the window must
 	// match; nil checks none.
 	Reason *regexp.Regexp
+	// MinFailed, when set, is the fewest attempts that must fail inside the
+	// window: fewer means the fault did not do what the scenario injects it
+	// for.
+	MinFailed *int
 	// MaxFailed, when set, bounds the attempts that fail inside the window.
 	MaxFailed *int
 }
 
 // diskViolations checks one disk_full window over the attempts of the real
-// workers: each failure inside it matches the reason, the failures number no
-// more than the bound, and every real worker has a succeeded attempt that
+// workers: each failure inside it matches the reason, the failures number
+// within the bounds, and every real worker has a succeeded attempt that
 // started after the heal. The note says how many attempts failed inside the
 // window, so a pass shows whether the fault caused any failure; it is empty
 // when the window was not judged.
@@ -55,6 +59,9 @@ func diskViolations(w DiskWindow, realIDs []string, attempts []store.TaskAttempt
 					a.ID, a.TaskID, a.WorkerID, a.Message, w.Reason))
 			}
 		}
+	}
+	if w.MinFailed != nil && failed < *w.MinFailed {
+		out = append(out, fmt.Sprintf("%d attempts failed in the window, fewer than the minimum of %d: the fault did not make the tasks fail", failed, *w.MinFailed))
 	}
 	if w.MaxFailed != nil && failed > *w.MaxFailed {
 		out = append(out, fmt.Sprintf("%d attempts failed in the window, bound %d", failed, *w.MaxFailed))

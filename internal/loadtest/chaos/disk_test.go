@@ -100,6 +100,32 @@ func TestDiskFullCheck(t *testing.T) {
 			wants: []string{"3 attempts failed in the window, bound 2"},
 		},
 		{
+			name: "under the minimum",
+			win:  DiskWindow{Start: start, Healed: healed, MinFailed: &two},
+			attempts: []injected{
+				failedInWindow("a-f1", "w1", "x"),
+				recovered("a-ok", "w1"),
+			},
+			wants: []string{"1 attempts failed in the window, fewer than the minimum of 2"},
+		},
+		{
+			name: "a fault that made nothing fail is under the minimum",
+			win:  DiskWindow{Start: start, Healed: healed, MinFailed: &two},
+			attempts: []injected{
+				recovered("a-ok", "w1"),
+			},
+			wants: []string{"0 attempts failed in the window, fewer than the minimum of 2"},
+		},
+		{
+			name: "at the minimum",
+			win:  DiskWindow{Start: start, Healed: healed, MinFailed: &two},
+			attempts: []injected{
+				failedInWindow("a-f1", "w1", "x"), failedInWindow("a-f2", "w1", "x"),
+				recovered("a-ok", "w1"),
+			},
+			failed: 2,
+		},
+		{
 			name: "no reason and no bound judge only the recovery",
 			win:  DiskWindow{Start: start, Healed: healed},
 			attempts: []injected{

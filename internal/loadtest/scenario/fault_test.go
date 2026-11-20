@@ -498,6 +498,19 @@ func TestValidate_DiskFull(t *testing.T) {
 			want: "faults[0].disk_full.max_failed: must not be negative",
 		},
 		{name: "max_failed zero", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, max_failed: 0}, duration: 5s}\n"},
+		{name: "min_failed", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, min_failed: 2, max_failed: 3}, duration: 5s}\n"},
+		{
+			name: "min_failed on server", extra: "faults:\n  - {at: 5s, disk_full: {volume: server, min_failed: 1}, duration: 5s}\n",
+			want: "faults[0].disk_full.min_failed: applies to a workers volume only",
+		},
+		{
+			name: "min_failed zero", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, min_failed: 0}, duration: 5s}\n",
+			want: "faults[0].disk_full.min_failed: must be at least 1",
+		},
+		{
+			name: "min_failed over max_failed", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, min_failed: 4, max_failed: 3}, duration: 5s}\n",
+			want: "faults[0].disk_full.min_failed: 4 is more than max_failed (3)",
+		},
 		{
 			name: "workers volume without real workers", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers}, duration: 5s}\n",
 			mutate: func(s *Scenario) { s.Workers[0].Real = 0 },

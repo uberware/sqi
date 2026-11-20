@@ -24,7 +24,9 @@ description: chaos - leave the 2 real workers' session volume 1 MiB free at 1m05
 # falls in the window's first 30s fails at most twice inside it, and one whose
 # first failure falls later at most once. The 3 tasks running when it starts
 # and the 3 started in its first 30s can fail twice (12), the 3 started later
-# once (3): 15.
+# once (3): 15. At least 4 must fail, so a run in which the fault made no task
+# fail does not pass: the 3 tasks running when it starts fill the volume within
+# seconds, and three runs failed 8, 8 and 10.
 duration: 3m
 warmup: 10s
 drain_timeout: 5m
@@ -68,6 +70,7 @@ faults:
       volume: workers
       headroom_bytes: 1048576
       reason: 'process exited with code'
+      min_failed: 4
       max_failed: 15
     duration: 60s
 
