@@ -93,8 +93,9 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	// authoritative check, would refuse it anyway. Neither refusal is answered
 	// at once: see holdDisabledLease and refuseLeaseAfterDelay. A worker that
 	// may not take new work is refused without the instance-mismatch check or
-	// its Debug log.
-	if !worker.MayTakeNewWork() {
+	// its Debug log. A worker whose credential was revoked is held the same
+	// way ([Scheduler.NoteWorkerRevoked]).
+	if !worker.MayTakeNewWork() || s.workerRevoked(workerID) {
 		return marshalLeaseReply(s.holdDisabledLease(ctx, workerID, req.InstanceID))
 	}
 	if s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
@@ -165,8 +166,9 @@ func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
 
 // leaseAfterPark is the one retry a parked lease request makes once woken: it
 // re-reads the worker and, unless the worker may no longer take new work
-// ([store.Worker.MayTakeNewWork]), was taken offline, or re-registered from
-// another process while the request was parked, selects a batch. A failure to
+// ([store.Worker.MayTakeNewWork]), was taken offline, had its credential
+// revoked ([Scheduler.NoteWorkerRevoked]), or re-registered from another
+// process while the request was parked, selects a batch. A failure to
 // read the worker is an empty batch; a failure part way through selection
 // returns the tasks already leased, which must reach the worker (see
 // [Scheduler.selectLeaseBatch]).
@@ -185,7 +187,7 @@ func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID str
 	}
 	w, err := s.store.GetWorker(ctx, workerID)
 	if err != nil || !w.MayTakeNewWork() || w.Status == store.WorkerStatusOffline ||
-		s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
+		s.workerRevoked(workerID) || s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
 		return nil
 	}
 	batch, err := s.selectLeaseBatchLocked(ctx, w)
@@ -547,4 +549,29 @@ func fullMachineCost(task store.Task, worker store.Worker) int {
 		return worker.CPUCount
 	}
 	return 1
+}
+
+// NoteWorkerRevoked records that workerID's broker credential was revoked, so
+// the worker is leased nothing from now on: neither a request it parked before
+// the revoke, which would otherwise be served once work arrived although the
+// revoke disconnected the worker, nor a new one from a connection the broker
+// cannot close (an external broker with no system credential keeps it until
+// its user JWT expires). The record lives in this process; it ends when the
+// worker registers with an active credential, which only a worker enrolled
+// again can do. With broker authentication off it records nothing: there is
+// no connection to revoke and no credential a registration could confirm.
+func (s *Scheduler) NoteWorkerRevoked(workerID string) {
+	if !s.cfg.NATSAuthEnabled {
+		return
+	}
+	s.revokedWorkers.Store(workerID, struct{}{})
+	s.logger.InfoContext(s.ctx, "scheduler: worker credential revoked; it is leased no work until it enrolls again",
+		slog.String("worker_id", workerID))
+}
+
+// workerRevoked reports whether workerID's credential was revoked through this
+// server and the worker has not registered with an active credential since.
+func (s *Scheduler) workerRevoked(workerID string) bool {
+	_, ok := s.revokedWorkers.Load(workerID)
+	return ok
 }

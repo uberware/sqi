@@ -17,12 +17,9 @@ description: chaos - revoke one of 2 real workers' credentials at 3m21s under br
 # The revoked check holds the worker to at most 5s of heartbeats or new
 # attempts after the revoke. Hold jobs arrive every 10s from the start of
 # submissions, so the revoke comes 1s after one (3m21s) and the next one 9s
-# after it: a hold task leased to the revoked worker always lands past the
-# grace, never on it. The server can lease it one: a lease request the
-# worker parked before the revoke is still served when the next hold job
-# arrives, and the task waits for the reclaim. Whether the revoked worker's
-# request or the other worker's takes that job varies from run to run, so the
-# entry is "may".
+# after it: a hold task leased to the revoked worker would land past the
+# grace, never on it. A lease request the worker parked before the revoke is
+# not served after it, so the next hold job goes to the other worker.
 duration: 4m45s
 warmup: 10s
 drain_timeout: 5m
@@ -74,8 +71,3 @@ faults:
 # that.
 expect:
   max_rework_attempts: 4
-  known_violations:
-    - check: revoked
-      kind: may
-      reason: a lease request the revoked worker parked before the revoke is still served after it, so the disconnected worker is given the next hold task, which waits until the sweep reclaims it; it fires when that worker's request, not the other's, takes the task
-      tracker: H13f8

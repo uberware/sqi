@@ -2568,10 +2568,8 @@ it runs 30 second tasks, then stops it 60 seconds later.
   cannot be reported. They are reclaimed when the heartbeat sweep marks the
   worker offline, and run elsewhere, so their completed work is redone. Stop a
   revoked worker's process.
-- A lease request the worker parked before the revoke can still be served
-  after it (H13f8). The worker is then given a task, which waits for the sweep,
-  about half a minute, before it runs elsewhere. Whether this happens depends
-  on which worker's request takes the task.
+- The worker is leased no new work after the revoke, including through a
+  lease request it sent before it.
 
 ### Workers with the wrong clock
 

@@ -224,6 +224,22 @@ connection the worker already holds is closed:
   process with no broker handle. It closes nothing: it takes effect at the
   worker's next connect, which is within `nats.auth.user_ttl` at the latest.
 
+With broker authentication on, a REST revocation also stops the scheduler
+leasing the worker new work. That includes a lease request the worker sent
+before the revoke and that was still waiting for work, and, in the bounded
+case above, every request from the connection it keeps until its
+authorization expires; only a request already being leased when the revoke
+lands can still complete. In the immediate cases the worker's in-flight tasks
+return to the queue once its heartbeats stop and the heartbeat sweep takes it
+offline; in the bounded case the worker stays connected, so it finishes and
+reports the tasks it holds. A worker that enrolls again and registers with
+its new credential is leased work as before. The server logs the revocation,
+and its end, at Info. The record of a REST revocation lives in the server
+process: after a restart or a failover to another server, a worker still
+holding a connection in the bounded case can be leased work again until its
+authorization expires. The CLI path above records nothing in a running
+server.
+
 Use the REST path when you need a worker off the farm right now (a
 compromised host, a decommissioned machine). The CLI path is for offline
 maintenance — revoking a credential while no server runs, or as part of a

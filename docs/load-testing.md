@@ -1078,14 +1078,6 @@ worker's restart and keeps writing the task's output while the reclaimed task
 re-runs on a live worker. `chaos-worker-kill-mid-task` records it, where
 `no-orphans` and `single-writer` can fail on Linux.
 
-### A revoked worker can still be given a task (H13f8)
-
-Revoking a worker's credential disconnects it from the broker at once, but a
-lease request it parked before the revoke is still served when the next task
-arrives. The task goes to the disconnected worker and waits until the heartbeat
-sweep takes the worker offline and reclaims it. `chaos-worker-revoke` records
-it, where `revoked` can fail.
-
 ### A full volume or descriptor limit can stop a broker stream for the rest of the run (H13f9)
 
 When the server's data volume fills, the embedded broker's first stream write

@@ -38,6 +38,7 @@ import (
 
 	"github.com/uberware/sqi/internal/auth/jointoken"
 	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
@@ -485,6 +486,78 @@ func TestWorkerDeletion_RevokesCredentialAndDisconnects(t *testing.T) {
 
 	// The worker row itself is gone.
 	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/workers/worker-a"), nil, "", http.StatusNotFound, nil)
+}
+
+// TestRevocation_ParkedLeaseGetsNoWork revokes a worker while it has a lease
+// request parked (it asked for work when there was none), then submits a job.
+// The revoke disconnected the worker, so the parked request must not be
+// served: a task leased to it would go to an inbox no one reads and wait for
+// the heartbeat sweep. WorkerTimeout is raised so the sweep cannot take the
+// worker offline during the test, which would refuse the request for another
+// reason.
+func TestRevocation_ParkedLeaseGetsNoWork(t *testing.T) {
+	so := storeFor(t, t.TempDir()+"/sqi-broker-auth-parked.db")
+	seedA, pubA, err := brokerauth.GenerateSeed()
+	if err != nil {
+		t.Fatalf("GenerateSeed(A): %v", err)
+	}
+	seedWorkerCredential(t, so, "worker-a", pubA)
+
+	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
+		cfg.Scheduler.WorkerTimeout = 30 * time.Second
+	})
+	farmID, queueID := seedFarmAndQueue(t, ts)
+
+	closedA := make(chan struct{})
+	workerA := newMockWorkerWithNkey(t, "nats://"+ts.NATSAddr, "worker-a", farmID, queueID, seedA, pubA,
+		nats.ClosedHandler(func(*nats.Conn) { close(closedA) }))
+	workerA.register()
+	workerA.startHeartbeat(200 * time.Millisecond)
+	pollWorkerOnline(t, ts, "worker-a", 5*time.Second)
+
+	// A lease request with no work to lease parks on the server. The request
+	// itself ends when the revoke closes the connection.
+	req, err := json.Marshal(map[string]string{"worker_id": "worker-a"})
+	if err != nil {
+		t.Fatalf("marshal lease request: %v", err)
+	}
+	requested := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, reqErr := workerA.nc.RequestWithContext(ctx, bus.WorkLeaseSubject("worker-a", queueID), req)
+		requested <- reqErr
+	}()
+	// The server parks a request that finds no work at once; this leaves it
+	// time to arrive. A request that arrived after the revoke instead would be
+	// held by the check at the front of the lease handler, so the test would
+	// still pass without exercising the parked path, which
+	// TestParkedLeaseOfARevokedWorkerGetsNoWork in internal/scheduler pins.
+	time.Sleep(500 * time.Millisecond)
+
+	revokeWorkerCredential(t, ts, "worker-a")
+	select {
+	case <-closedA:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker A's NATS connection was not closed by revocation")
+	}
+	if reqErr := <-requested; reqErr == nil {
+		t.Fatal("the parked lease request was answered; want it to end with the closed connection")
+	}
+
+	jobID := submitJob(t, ts, farmID, queueID)
+	ids := jobTaskIDs(t, ts, jobID)
+	if len(ids) != 1 {
+		t.Fatalf("job has %d tasks, want 1", len(ids))
+	}
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if got := getTaskDetail(t, ts, ids[0]).Status; got != "ready" {
+			t.Fatalf("task status %q after the revoke, want ready: the revoked worker's parked request was served", got)
+		}
+	}
+	if attempts := getTaskAttempts(t, ts, ids[0]).Items; len(attempts) != 0 {
+		t.Fatalf("task has %d attempts, want 0 (nothing leased to the revoked worker)", len(attempts))
+	}
 }
 
 // TestEnrollment_ConnectsToRunningBrokerWithoutRestart guards that
