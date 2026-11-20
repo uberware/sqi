@@ -2506,15 +2506,19 @@ is kept. `sqi-server` recovers from this by itself:
   resources, the check reads `nats JetStream is disabled since ...` instead.
 - Every 5 seconds it checks whether the cause has cleared: a 64 KiB write to
   `nats.embedded.data_dir` must succeed and, on Linux and macOS, at least
-  64 file descriptors, or 5% of the soft limit if that is more, must be free.
+  64 file descriptors, or 5% of the soft limit if that is more, must be free
+  below the soft limit.
   Until both hold it logs `bus: the broker cannot restart yet` with the reason,
   at most once a minute.
 - It then restarts the embedded broker in place, on the same data directory,
   port and keys, and logs `bus: restarting the broker` and, once the new one
   is up, `bus: the broker restarted and stores messages again` with
   `broken_for`. Every stream comes back with what it had stored. Workers and
-  the server's own connections reconnect by themselves; a worker's task
-  status reports are retried until they are stored, so finished work counts.
+  the server's own connections reconnect by themselves. A worker's task
+  status reports and log chunks are retried until they are stored, so
+  finished work counts and its log lines arrive; each worker holds up to
+  32 MiB of log chunks meanwhile and drops the oldest past that, logging
+  `logstreamer: dropped log chunks the broker has not stored`.
 - A restart that comes within 10 minutes of the previous one waits 30 seconds
   after it, then 1, 2 and 5 minutes for the ones after, so a volume that keeps
   filling cannot make the broker restart in a loop. A restart whose new broker

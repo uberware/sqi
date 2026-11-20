@@ -253,7 +253,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	}
 
 	// ── Session manager, and the task executor with its publishers ──
-	exec, statusPub, sessionRoot, err := newExecutor(nc, workerID, cfg, m, logger)
+	exec, reports, sessionRoot, err := newExecutor(nc, workerID, cfg, m, logger)
 	if err != nil {
 		return err
 	}
@@ -357,7 +357,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	)
 
 	// ── Drain, flush reports, stop heartbeating, deregister ──────────
-	completed, killed := shutdownSequence(exec, statusPub, hbStop, reg, grace, kind)
+	completed, killed := shutdownSequence(exec, reports, hbStop, reg, grace, kind)
 
 	// ── Log shutdown outcome ─────────────────────────────────────────
 	logger.InfoContext(
@@ -459,9 +459,24 @@ type drainer interface {
 	DrainAndShutdown(gracePeriod time.Duration) (completed, killed int)
 }
 
-// flusher is the part of *status.Publisher the shutdown sequence uses.
+// flusher is the part of *status.Publisher and *logstreamer.Publisher the
+// shutdown sequence uses.
 type flusher interface {
 	Flush(ctx context.Context) (dropped int)
+}
+
+// reportFlusher flushes what the worker still holds for the server at
+// shutdown: the status reports first, so a broken log stream cannot spend the
+// wait they need, then the log chunks, under the same deadline. It returns the
+// reports' drop count; the log publisher logs its own drops.
+type reportFlusher struct {
+	status, logs flusher
+}
+
+func (f reportFlusher) Flush(ctx context.Context) (dropped int) {
+	dropped = f.status.Flush(ctx)
+	f.logs.Flush(ctx)
+	return dropped
 }
 
 // deregisterer is the part of *registration.Registrar the shutdown sequence uses.
@@ -519,8 +534,8 @@ func startPreemptionWatch(
 //     keeps running throughout: a drain may outlast the server's heartbeat
 //     timeout, and a worker that goes quiet is declared offline and loses its
 //     running tasks.
-//  2. Flush: wait up to [status.DefaultFlushTimeout] for the publisher to
-//     store the status reports it still holds. The drain returns once each
+//  2. Flush: wait up to [status.DefaultFlushTimeout] for the publishers to
+//     store the status reports, then the log chunks, they still hold. The drain returns once each
 //     task has made its first try at its terminal report, which the broker may
 //     not have stored yet, and a deregistration sent before it is stored would
 //     let the server reclaim a task that has finished. The heartbeat keeps
@@ -555,15 +570,16 @@ func shutdownSequence(
 // newExecutor builds the task executor, its session manager (see
 // newSessionManager) and the publishers it reports through: the log chunk
 // publisher, the OpenJD interceptor in front of it, and the task status
-// publisher. It returns the status publisher too, and the session root for the
+// publisher. It returns the flusher the shutdown sequence waits on (the status
+// publisher, then the log chunk publisher) and the session root for the
 // start-up log.
 func newExecutor(
 	nc *nats.Conn, workerID string, cfg workerconfig.WorkerConfig, m *workmetrics.Metrics, logger *slog.Logger,
-) (exec *executor.Executor, statusPub *status.Publisher, sessionRoot string, err error) {
+) (exec *executor.Executor, reports reportFlusher, sessionRoot string, err error) {
 	// ── Isolation provider, session root and session manager ──────
 	sessionMgr, sessionRoot, stagingIsolationCapable, err := newSessionManager(cfg, logger)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, reportFlusher{}, "", err
 	}
 
 	// ── Log chunk publisher ────────────────────────────────────
@@ -577,7 +593,7 @@ func newExecutor(
 	// fields. A field added to one must be added to both and mapped here.
 	logTransport, err := logstreamer.NewJetStreamTransport(nc)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, reportFlusher{}, "", err
 	}
 	logPub := logstreamer.New(logTransport, workerID, logstreamer.Config{
 		MaxLinesPerChunk: cfg.LogStreamer.MaxLinesPerChunk,
@@ -601,9 +617,9 @@ func newExecutor(
 	// it; progress snapshots stay on the interceptor's core publish.
 	statusTransport, err := status.NewJetStreamTransport(nc)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, reportFlusher{}, "", err
 	}
-	statusPub = status.New(statusTransport, status.Config{WorkerID: workerID}, logger)
+	statusPub := status.New(statusTransport, status.Config{WorkerID: workerID}, logger)
 
 	// ── Task executor ───────────────────────────────────────────
 	//
@@ -625,7 +641,7 @@ func newExecutor(
 		},
 		logger,
 	)
-	return exec, statusPub, sessionRoot, nil
+	return exec, reportFlusher{status: statusPub, logs: logPub}, sessionRoot, nil
 }
 
 // newSessionManager resolves the isolation provider and session root and

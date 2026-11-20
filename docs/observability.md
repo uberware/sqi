@@ -219,6 +219,17 @@ While a stream is broken, `GET /readyz` answers 503 with the `nats` check
 reading `nats stream <stream> cannot store messages since <time> (<error>);
 the broker restarts once its data directory is writable`.
 
+Workers keep their log chunks meanwhile and send them again until the stream
+stores them. Their own log shows it:
+
+| Message | Level | Attributes | What it is |
+|---|---|---|---|
+| `logstreamer: log chunk not acknowledged; retrying` | `WARN` | `msg_id`, `failures`, `error` | The broker did not store a chunk. On the first failure, then at most once a minute. |
+| `logstreamer: log chunk stored after retrying` | `INFO` | `msg_id`, `failures` | Delivery resumed. |
+| `logstreamer: dropped log chunks the broker has not stored` | `WARN` | `dropped`, `max_pending_bytes` | The worker held 32 MiB of unstored chunks and dropped the oldest. At most once a minute. |
+| `logstreamer: log chunk cannot be sent; dropped` | `ERROR` | `subject`, `msg_id`, `error` | A chunk over the broker's payload limit, or the connection closed for good. |
+| `logstreamer: shutdown left log chunks unsent` | `WARN` | `dropped` | The worker stopped before the broker stored them. |
+
 ---
 
 ## Task-state health signals

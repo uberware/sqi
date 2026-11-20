@@ -250,6 +250,7 @@ type incarnation struct {
 	nc         *nats.Conn
 	reg        *registration.Registrar
 	disp       *Dispatcher
+	logs       *logstreamer.Publisher
 	ctl        *controlResponder
 
 	stopHB, stopLease context.CancelFunc
@@ -354,6 +355,7 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	}
 	d.SetProgress(openjd.New(logs, nc, id, w.logger))
 	inc.disp = d
+	inc.logs = logs
 
 	interval := g.Heartbeat.Duration
 	if interval <= 0 {
@@ -499,11 +501,13 @@ func (inc *incarnation) stop(ctx context.Context) {
 		inc.disp.wait(context.Background())
 	}
 	inc.disp.shutdown(endShutdown) // refuses any late dispatch
-	// Wait for the reports still unacknowledged while the heartbeat runs and
-	// the connection is open, as sqi-worker does: a deregistration sent first
-	// would let the server reclaim a task that has finished.
+	// Wait for the reports still unacknowledged, then the log chunks, while
+	// the heartbeat runs and the connection is open, as sqi-worker does: a
+	// deregistration sent first would let the server reclaim a task that has
+	// finished.
 	flushCtx, stopFlushWait := context.WithTimeout(context.Background(), status.DefaultFlushTimeout)
 	inc.disp.FlushStatuses(flushCtx)
+	inc.logs.Flush(flushCtx)
 	stopFlushWait()
 	inc.stopHB()
 	<-inc.hbDone
@@ -519,10 +523,10 @@ func (inc *incarnation) stop(ctx context.Context) {
 // The socket is not severed. Close flushes the connection's buffer, so every
 // message a task handed to the connection before the crash still goes out: a
 // terminal status already being published (the ledger records that attempt as
-// terminal, not crashed), a running status from a task that started as the
-// crash began, and the log lines the log publisher still held, which FlushLogs
-// drains while stopping its per-attempt goroutine. The ledger misses no
-// status the server got.
+// terminal, not crashed), and a running status from a task that started as the
+// crash began. The ledger misses no status the server got. Log chunks the log
+// publisher still holds for delivery are dropped, as a crashed process loses
+// them; a chunk already on the connection still goes out.
 //
 // A report the broker has not yet acknowledged is dropped, not awaited, as in
 // a crashed process. The ledger records a terminal status when the status
@@ -543,5 +547,6 @@ func (inc *incarnation) crash() {
 	// abandons them now, which also stops their retry goroutines before the
 	// connection they would retry on is closed.
 	inc.disp.AbandonStatuses()
+	inc.logs.Abandon()
 	inc.nc.Close()
 }

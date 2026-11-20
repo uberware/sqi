@@ -492,6 +492,21 @@ buffered and sent with its old age once the connection comes back. A closed
 connection drops the report. Progress snapshots are plain core publishes with
 no ack, because only the latest matters.
 
+**Log chunks are acknowledged too.** The log publisher queues each chunk it
+flushes and one sender goroutine per worker delivers the queue in order with a
+JetStream publish that expects stream `SQI_LOGS` and waits for its ack
+(`internal/worker/logstreamer/outbox.go`). Every try of a chunk carries
+`Nats-Msg-Id: <attemptID>/<seq>`, and a failed try is retried, waiting 250 ms
+and doubling to 5 s, until the stream stores it, so a chunk sent while a
+stream cannot store, while the broker restarts or while the connection is
+down still lands. Queueing never waits on the broker, so a slow or broken
+broker does not hold up a task's output. The queue holds at most 32 MiB of
+encoded chunks per worker; past that the oldest are dropped with a Warn
+(`logstreamer: dropped log chunks the broker has not stored`) at most once a
+minute. Before an attempt's terminal status the executor's `FlushLogs` waits up
+to 5 s for that attempt's chunks to be stored; what is still pending after the
+wait lands after the terminal status, which ingest accepts.
+
 A worker's heartbeat lists the attempts its executor holds plus the attempts
 the publisher still has a status pending for, so the server's reconciliation
 does not reclaim an attempt whose terminal status is waiting for the stream.
@@ -499,10 +514,13 @@ does not reclaim an attempt whose terminal status is waiting for the stream.
 **Worker shutdown order.** On SIGTERM the worker runs `DrainAndShutdown`
 (waiting up to the drain grace for tasks to finish, then interrupting the rest
 and reporting them `failed` with `worker_shutdown`), then `Flush` of the status
-publisher, then stops the heartbeat, then `Deregister`, then drains the NATS
-connection. `Flush` has its own 10 s budget, separate from the grace; a status
-still pending when it ends is dropped with a Warn naming it, and the task is
-re-run after the server reclaims the attempt.
+publisher and then of the log publisher, then stops the heartbeat, then
+`Deregister`, then drains the NATS connection. The two flushes share a 10 s
+budget, separate from the grace, and the status reports go first so a broken
+log stream cannot spend it. A status still pending when it ends is dropped
+with a Warn naming it, and the task is re-run after the server reclaims the
+attempt; log chunks still pending are dropped with a Warn
+(`logstreamer: shutdown left log chunks unsent`) giving the count.
 
 ### 5. Status ingestion
 
