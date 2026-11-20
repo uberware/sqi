@@ -55,7 +55,8 @@ type msgGetResponse struct {
 }
 
 // Get returns key's latest value as the stream leader has it, or
-// [jetstream.ErrKeyNotFound] when it has none, or was deleted or purged.
+// [jetstream.ErrKeyNotFound] when it has none, or was deleted, purged or
+// expired.
 func (k *leaderReadKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
 	bucket := k.Bucket()
 	req, err := json.Marshal(struct {
@@ -87,6 +88,11 @@ func (k *leaderReadKV) Get(ctx context.Context, key string) (jetstream.KeyValueE
 			return nil, fmt.Errorf("bus: read %s from the stream leader: %w", key, err)
 		}
 		if op := hdr.Get(kvOperationHeader); op == kvOpDelete || op == kvOpPurge {
+			return nil, jetstream.ErrKeyNotFound
+		}
+		// A marker the server writes when a key expires or is removed, on a
+		// bucket that asks for them, as nats.go reads it.
+		if hdr.Get(jetstream.MarkerReasonHeader) != "" {
 			return nil, jetstream.ErrKeyNotFound
 		}
 	}

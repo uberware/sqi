@@ -234,7 +234,8 @@ func (e *Embedded) restartAndVerify(ctx context.Context, st *recoverState, broke
 // budget, as when JetStream is disabled, lists the durable consumers a
 // running sqi-server keeps on it: the server creates them at startup, so they
 // existed unless JetStream broke before it did, and then the check names
-// them and a restart of sqi-server clears it.
+// them and a restart of sqi-server clears it. Other consumers on such a
+// stream are not checked.
 func (e *Embedded) snapshotDurables(ctx context.Context) map[string][]string {
 	out := make(map[string][]string)
 	_, server := RestoreTargets()
