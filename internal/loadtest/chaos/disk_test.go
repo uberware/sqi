@@ -135,14 +135,36 @@ func TestDiskFullCheck(t *testing.T) {
 			failed: 3,
 		},
 		{
-			name: "a worker that succeeded nothing after the heal",
+			name: "a worker given work after the heal that succeeded none of it",
+			win:  DiskWindow{Start: start, Healed: healed},
+			attempts: []injected{
+				recovered("a-ok", "w1"),
+				{
+					id: "a-after", worker: "w2", status: store.AttemptStatusFailed, message: "x",
+					created: healed.Add(time.Second), started: healed.Add(time.Second), ended: new(healed.Add(20 * time.Second)),
+				},
+			},
+			real:  []string{"w1", "w2"},
+			wants: []string{"worker w2 was given work after the disk was freed and succeeded none of it"},
+		},
+		{
+			// The scheduler can hand every task after the heal to the other
+			// worker; one given nothing has shown nothing either way.
+			name: "a worker given nothing after the heal is not judged",
 			win:  DiskWindow{Start: start, Healed: healed},
 			attempts: []injected{
 				recovered("a-ok", "w1"),
 				{id: "a-before", worker: "w2", created: start, started: start, ended: new(start.Add(time.Second))},
 			},
-			real:  []string{"w1", "w2"},
-			wants: []string{"worker w2 succeeded nothing after the disk was freed"},
+			real: []string{"w1", "w2"},
+		},
+		{
+			name: "no real worker succeeded after the heal",
+			win:  DiskWindow{Start: start, Healed: healed},
+			attempts: []injected{
+				{id: "a-before", worker: "w1", created: start, started: start, ended: new(start.Add(time.Second))},
+			},
+			wants: []string{"no real worker succeeded an attempt started after the disk was freed"},
 		},
 		{
 			name:  "never healed",
