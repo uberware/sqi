@@ -126,6 +126,18 @@ type Embedded struct {
 	// stageHook, when set by a test, is called at each named stage of a
 	// restart (see stageStopped).
 	stageHook func(stage string)
+
+	// The recovery loop (embeddedrecover.go). broken is the break not yet
+	// recovered from, missingConsumers the durables a restart did not bring
+	// back, restarts the restarts that succeeded. checkEvery, now and probe
+	// are fixed before Start; tests replace them.
+	broken           *brokenState
+	missingConsumers []string
+	restarts         int
+	stopRecovery     func()
+	checkEvery       time.Duration
+	now              func() time.Time
+	probe            func(dataDir string) error
 }
 
 var _ Broker = (*Embedded)(nil)
@@ -133,7 +145,10 @@ var _ Broker = (*Embedded)(nil)
 // NewEmbedded creates an [Embedded] broker with the given configuration and
 // logger. Call [Embedded.Start] to boot it.
 func NewEmbedded(cfg EmbeddedConfig, logger *slog.Logger) *Embedded {
-	return &Embedded{cfg: cfg, logger: logger, breakCh: make(chan streamBreak, 1)}
+	return &Embedded{
+		cfg: cfg, logger: logger, breakCh: make(chan streamBreak, 1),
+		checkEvery: recoverCheckInterval, now: time.Now, probe: probeRecovered,
+	}
 }
 
 // Identity returns "embedded:SQI": the embedded broker always keeps sqi's
@@ -346,6 +361,7 @@ func (e *Embedded) Start(ctx context.Context) error {
 		ctx, "bus: jetstream streams provisioned",
 		slog.String("streams", strings.Join(StreamNames(), ",")),
 	)
+	e.startRecovery()
 	return nil
 }
 
@@ -484,6 +500,16 @@ func closeConns(conns ...*nats.Conn) {
 // here under the same lock. The (possibly slow) nats-server calls below run
 // after the lock is released.
 func (e *Embedded) Shutdown() {
+	// The recovery loop first: its context ends any restart it is in, and it
+	// starts no other.
+	e.mu.Lock()
+	stopRecovery := e.stopRecovery
+	e.stopRecovery = nil
+	e.mu.Unlock()
+	if stopRecovery != nil {
+		stopRecovery()
+	}
+
 	// A restart in progress finishes first, so its server is the one stopped.
 	e.restartMu.Lock()
 	defer e.restartMu.Unlock()
@@ -513,6 +539,9 @@ func (e *Embedded) Shutdown() {
 // server is running, the data connection is connected and, with auth on, so
 // is the callout connection: without it every worker connect is refused.
 func (e *Embedded) Check(_ context.Context) error {
+	if err := e.brokenError(); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	ns, data, callout := e.ns, e.data, e.callout
 	e.mu.Unlock()

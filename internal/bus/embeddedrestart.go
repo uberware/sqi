@@ -64,8 +64,11 @@ func (e *Embedded) abandonStart(ns *natsserver.Server, nl *natsLogger) {
 }
 
 func (e *Embedded) stage(name string) {
-	if e.stageHook != nil {
-		e.stageHook(name)
+	e.mu.Lock()
+	hook := e.stageHook
+	e.mu.Unlock()
+	if hook != nil {
+		hook(name)
 	}
 }
 
