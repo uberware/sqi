@@ -44,9 +44,9 @@ func startJetStream(t *testing.T) *nats.Conn {
 }
 
 // TestJetStreamTransport_DeliversOnceTheStreamExists pins that chunks the
-// broker could not store are delivered once it can: here the log stream does
-// not exist while the task prints, as when a stream cannot store, and every
-// chunk lands exactly once after it is created. A core publish loses all five.
+// broker could not store are delivered once it can: the log stream does not
+// exist while the task prints, and every chunk lands exactly once after it is
+// created.
 func TestJetStreamTransport_DeliversOnceTheStreamExists(t *testing.T) {
 	nc := startJetStream(t)
 	tr, err := logstreamer.NewJetStreamTransport(nc)

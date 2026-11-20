@@ -535,8 +535,9 @@ func startPreemptionWatch(
 //     timeout, and a worker that goes quiet is declared offline and loses its
 //     running tasks.
 //  2. Flush: wait up to [status.DefaultFlushTimeout] for the publishers to
-//     store the status reports, then the log chunks, they still hold. The drain returns once each
-//     task has made its first try at its terminal report, which the broker may
+//     store the status reports they still hold, then the log chunks. The
+//     drain returns once each task has made its first try at its terminal
+//     report, which the broker may
 //     not have stored yet, and a deregistration sent before it is stored would
 //     let the server reclaim a task that has finished. The heartbeat keeps
 //     running and lists these attempts as held. Reports still pending when the

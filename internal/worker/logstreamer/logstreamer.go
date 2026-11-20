@@ -31,7 +31,9 @@
 // One sender goroutine delivers the queue through a [Transport], putting up
 // to 32 chunks on the wire in order before it waits for their acks, so a
 // worker far from the broker is not held to one chunk per round trip. It tries
-// each chunk again, with backoff, until the log stream stores it. Every try of
+// each chunk again, with backoff, until the log stream stores it or the
+// failure is one no retry can cure, such as a chunk over the broker's payload
+// limit or a closed connection. Every try of
 // a chunk carries the message ID "<attemptID>/<seq>", so the stream drops a
 // retry it already stored, and the server keeps one copy per seq. The
 // queue holds at most 32 MiB of encoded chunks; past that the oldest are

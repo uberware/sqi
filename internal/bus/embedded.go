@@ -466,10 +466,9 @@ const (
 // stopServer stops ns through lame duck mode and waits until it has exited.
 //
 // Lame duck mode closes the client listener and then every client before it
-// shuts the server down, so no client is mid-CONNECT when the system account
-// stops. That once worked around a nats-server v2.15.2 crash (the auth callout
-// dereferenced the stopped system account); v2.15.3 fixed it, and the callout
-// now refuses such a connection instead.
+// shuts the server down, so few clients are still connecting when the system
+// account stops. The auth callout refuses one that is; nats-server v2.15.2
+// crashed on it instead, so sqi needs v2.15.3 or later.
 //
 // The explicit Shutdown is required: lame duck mode returns without shutting
 // down when it has nothing to do (no listener, or already in lame duck mode).

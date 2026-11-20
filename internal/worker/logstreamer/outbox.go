@@ -13,11 +13,11 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 )
 
-// Delivery defaults. Each is a [Config] field tests can shorten; none is
-// operator configuration.
+// Delivery defaults. All but warnEvery back a [Config] field tests can
+// shorten; none is operator configuration.
 const (
-	// defaultAckTimeout bounds one try, the wait for the stream's ack
-	// included. It matches the status publisher's.
+	// defaultAckTimeout bounds the wait for one chunk's ack. It matches the
+	// status publisher's DefaultAckTimeout.
 	defaultAckTimeout = 2 * time.Second
 	// defaultRetryBase is the wait before the first retry of a chunk; each
 	// later wait doubles, up to defaultRetryMax.
@@ -292,7 +292,8 @@ func (o *outbox) settle(batch []*pendingChunk, errs []error) {
 	}
 }
 
-// stored logs that the chunks got through after failed sends.
+// stored logs that a chunk was stored after failed sends, and resets the
+// failure count.
 func (o *outbox) stored(c *pendingChunk) {
 	if o.failures > 0 {
 		o.logger.InfoContext(context.Background(), "logstreamer: log chunk stored after retrying",

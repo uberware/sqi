@@ -26,10 +26,10 @@ import (
 const fdChildEnv = "SQI_TEST_FD_CHILD"
 
 // TestRecovery_RealDescriptorExhaustion runs the embedded broker out of file
-// descriptors for real, as chaos-server-fd-exhaustion does: SQI_TASK traffic
-// that is acked as it arrives makes the stream open a new block file every
-// time an ack empties the last one, and with no descriptor free that open
-// fails and nats-server keeps the stream's write error. The broker must
+// descriptors, as the chaos-server-fd-exhaustion load scenario does: SQI_TASK
+// traffic that is acked as it arrives makes the stream open a new block file
+// every time an ack empties the last one, and with no descriptor free that
+// open fails and nats-server keeps the stream's write error. The broker must
 // report the break and recover by itself once the limit is lifted. It pins
 // the log formats detection matches against the real nats-server.
 func TestRecovery_RealDescriptorExhaustion(t *testing.T) {
@@ -138,8 +138,8 @@ func drain(ctx context.Context, js jetstream.JetStream, consumed *atomic.Int64) 
 }
 
 // exhaustDescriptors lowers this process's soft descriptor limit to what is
-// open plus 10 and takes those 10 too, as the redialing workers do in the
-// chaos scenario. The returned function gives them back and restores the
+// open plus 10 and takes those 10 too, as redialing workers do in that
+// scenario. The returned function gives them back and restores the
 // limit.
 func exhaustDescriptors(t *testing.T) (restore func()) {
 	t.Helper()

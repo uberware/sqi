@@ -466,8 +466,8 @@ How an entry is applied:
   their trackers.
 - An entry with a `match` pattern excuses only the violations it matches.
   When every entry for a check has one, a failure is excused only when each
-  of its violations matches one of them, all of them, not only the first 20
-  the evidence shows. An unmatched violation keeps the result failed, and its
+  of its violations matches one of them, including those past the 20 the
+  evidence shows. An unmatched violation keeps the result failed, and its
   evidence counts the unmatched violations and names the first, so a new
   defect in the same check cannot hide behind the recorded one. An entry
   with no pattern still excuses every violation of its check. A result with

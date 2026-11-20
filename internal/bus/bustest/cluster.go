@@ -537,9 +537,10 @@ func (c *Cluster) Shutdown() {
 	}
 }
 
-// freePorts is [testport.Free]: a node restarted by [Cluster.RestartNode]
-// binds its old port again. Another process can still bind a port before the
-// node does; [StartCluster] retries on fresh ports when that happens.
+// freePorts is [testport.Free], whose ports a node restarted by
+// [Cluster.RestartNode] can bind again. Another process can still bind a port
+// before the node does; [StartCluster] retries on fresh ports when that
+// happens.
 func freePorts(t testing.TB, n int) []int {
 	t.Helper()
 	return testport.Free(t, n)

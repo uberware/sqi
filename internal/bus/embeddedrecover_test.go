@@ -212,8 +212,8 @@ func TestRecovery_FailedStartRetriesWithoutBackoff(t *testing.T) {
 	if hog == nil {
 		t.Fatal("could not occupy the broker's port")
 	}
-	// The break, not the missing server, is what Check reports while it
-	// stands; the failed attempt shows as no current server.
+	// Check reports the break while it stands, so the failed attempt is
+	// observed as no current server.
 	eventuallyNil(t, 15*time.Second, "the failed restart", func() error {
 		if boundPort(b) != 0 {
 			return errors.New("a server is still current")
@@ -408,8 +408,8 @@ func TestRecovery_FailedStartsLogOncePerMinute(t *testing.T) {
 
 // TestRecovery_ShutdownDuringALoopRestart pins that Shutdown arriving while
 // the recovery loop restarts the broker ends that restart and returns, with
-// no server left running and no restart failure logged: the restart ended
-// because sqi-server is stopping, not because the broker could not start.
+// no server left running and no restart failure logged, since the restart
+// ended because sqi-server is stopping.
 func TestRecovery_ShutdownDuringALoopRestart(t *testing.T) {
 	clock, probe := &fakeClock{t: t0}, &switchProbe{}
 	probe.pass.Store(true)
@@ -435,7 +435,7 @@ func TestRecovery_ShutdownDuringALoopRestart(t *testing.T) {
 		b.Shutdown()
 		close(shut)
 	}()
-	time.Sleep(100 * time.Millisecond) // Shutdown has canceled the loop
+	time.Sleep(100 * time.Millisecond) // time for Shutdown to cancel the loop
 	close(proceed)
 	select {
 	case <-shut:

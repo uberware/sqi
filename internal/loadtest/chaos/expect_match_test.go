@@ -61,8 +61,8 @@ func TestApply_ScopedEntryLeavesAnUnmatchedViolationFailed(t *testing.T) {
 }
 
 // TestApply_ScopedEntryJudgesViolationsPastTheEvidenceCap pins that the
-// pattern is checked against every violation, not only the ones the capped
-// evidence shows: a new defect whose violation sorts after the cap is not
+// pattern is checked against every violation, including those past the
+// evidence cap, so a new defect whose violation sorts after the cap is not
 // hidden behind the recorded one.
 func TestApply_ScopedEntryJudgesViolationsPastTheEvidenceCap(t *testing.T) {
 	var lines []string

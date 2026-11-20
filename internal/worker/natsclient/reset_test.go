@@ -87,7 +87,7 @@ func (p *resetProxy) forward(c net.Conn) {
 
 // TestConnect_InitialDialRetriesThroughHandshakeResets covers a worker that
 // boots while the credential store is down on a host where the broker's
-// refusals arrive as connection resets (H13f19): the resets are retried
+// refusals arrive as connection resets: the resets are retried
 // within the grace, as refusals are, and the dial connects once they stop.
 func TestConnect_InitialDialRetriesThroughHandshakeResets(t *testing.T) {
 	t.Parallel()

@@ -534,7 +534,8 @@ func stamp(t time.Time) string { return t.UTC().Format("15:04:05.000000") }
 // least the newest chunk must be there. A lost chunk counts as a violation:
 // the worker delivers log chunks with an acknowledged publish and retries
 // each until the stream stores it, so outside a fault window only its 32 MiB
-// bound or a crash drops one.
+// bound, a chunk over the broker's payload limit, a closed connection or a
+// crash drops one.
 //
 // Inside a fault window it does not: when the attempt's ledger interval, from
 // its lease to its end, overlaps a window that hit the attempt's worker (its

@@ -232,10 +232,10 @@ func (e *Embedded) restartAndVerify(ctx context.Context, st *recoverState, broke
 // snapshotDurables lists, per stream, the consumers it has, so the check after
 // a restart verifies the ones that existed. A stream it cannot read within the
 // budget, as when JetStream is disabled, lists the durable consumers a
-// running sqi-server keeps on it: the server creates them at startup, so they
-// existed unless JetStream broke before it did, and then the check names
-// them and a restart of sqi-server clears it. Other consumers on such a
-// stream are not checked.
+// running sqi-server keeps on it. The server creates those at startup, so
+// they existed unless JetStream broke first; then the check names them, and
+// restarting sqi-server clears it. Other consumers on such a stream are not
+// checked.
 func (e *Embedded) snapshotDurables(ctx context.Context) map[string][]string {
 	out := make(map[string][]string)
 	_, server := RestoreTargets()
@@ -272,9 +272,9 @@ func (e *Embedded) snapshotDurables(ctx context.Context) map[string][]string {
 }
 
 // verifyAfterRestart waits for the data connection, creates any of sqi's
-// streams that did not come back, and returns the durables of durables that
-// did not, as "stream/consumer". A connection that does not come back within
-// recoverVerifyWait checks nothing: Check reports it.
+// streams that did not come back, and returns the consumers listed in
+// durables that did not, as "stream/consumer". A connection that does not
+// come back within recoverVerifyWait checks nothing: Check reports it.
 func (e *Embedded) verifyAfterRestart(ctx context.Context, durables map[string][]string) []string {
 	if !e.waitDataConnected(ctx, recoverVerifyWait) {
 		return nil

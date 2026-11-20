@@ -43,8 +43,8 @@ type jetStreamTransport struct {
 	js jetstream.JetStream
 }
 
-// asyncAckGiveUp is when the client forgets a chunk whose ack never came, so
-// a lost ack holds nothing in it. The publisher's own wait decides a chunk's
+// asyncAckGiveUp is how long the client waits for a chunk's ack before it
+// forgets the chunk, so a lost ack holds nothing in it. The publisher's own wait decides a chunk's
 // outcome; this only has to outlast it, and the client starts the clock at
 // the send, while a send's last chunk is waited for only once the chunks
 // before it were acked.

@@ -67,10 +67,10 @@ func TestStart_RecoversFromAPortTakenByAnotherProcess(t *testing.T) {
 }
 
 // TestStart_IgnoresAnotherServersReadiness covers a drawn HTTP port that
-// another process's sqi-server took before this one bound it (H13f21): that
-// server answers /readyz with 200 at once, before this server has even
-// started its broker, so trusting the first 200 returned a Server whose HTTP
-// URL was the other server's and whose NATS port nothing listened on yet.
+// another process's sqi-server took before this one bound it. That server
+// answers /readyz with 200 before this one has started its broker, so a Start
+// that trusted the first 200 would return a Server whose HTTP URL is the other
+// server's and whose NATS port has no listener.
 func TestStart_IgnoresAnotherServersReadiness(t *testing.T) {
 	var lc net.ListenConfig
 	hog, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")

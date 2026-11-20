@@ -100,7 +100,7 @@ func fetchDurable(t *testing.T, js jetstream.JetStream, durable string) string {
 // the same port, a worker and sqi's own in-process connections reconnect to
 // it, and what the stream had stored, and the durable's position, survive.
 // With auth on the worker's reconnect is authorized through the callout,
-// whose connection had to follow the restart too.
+// whose connection must follow the restart too.
 func TestRestart_FollowsCurrentServer(t *testing.T) {
 	for _, auth := range []bool{false, true} {
 		name := "auth off"
@@ -206,7 +206,7 @@ func TestRestart_RevokeWaitsForRestart(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("Revoke did not return after the restart")
 	}
-	time.Sleep(time.Second) // give a reconnect the chance to be (wrongly) placed
+	time.Sleep(time.Second) // time for a reconnect that should be refused to land
 	if conns := connzForUser(t, b, "worker-a"); len(conns) != 0 {
 		t.Errorf("the revoked worker has %d connections on the new server", len(conns))
 	}
