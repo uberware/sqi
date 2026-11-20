@@ -569,12 +569,17 @@ func newExecutor(
 	// ── Log chunk publisher ────────────────────────────────────
 	//
 	// The logstreamer Publisher buffers task process output lines and batches
-	// them into LogChunkMsg messages published to NATS JetStream. It
-	// implements executor.OutputHandler and executor.LogFlusher so the executor
-	// can flush remaining logs before publishing the terminal task status.
+	// them into LogChunkMsg messages delivered to NATS JetStream, each retried
+	// until SQI_LOGS acknowledges it. It implements executor.OutputHandler and
+	// executor.LogFlusher so the executor can flush remaining logs before
+	// publishing the terminal task status.
 	// SYNC: logstreamer.Config and workerconfig.LogStreamerConfig have matching
 	// fields. A field added to one must be added to both and mapped here.
-	logPub := logstreamer.New(nc, workerID, logstreamer.Config{
+	logTransport, err := logstreamer.NewJetStreamTransport(nc)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	logPub := logstreamer.New(logTransport, workerID, logstreamer.Config{
 		MaxLinesPerChunk: cfg.LogStreamer.MaxLinesPerChunk,
 		MaxBytesPerChunk: cfg.LogStreamer.MaxBytesPerChunk,
 		FlushInterval:    cfg.LogStreamer.FlushInterval,

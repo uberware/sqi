@@ -22,13 +22,14 @@ import (
 // built with; it is a token of every subject those tests observe.
 const testWorkerID = "w-test"
 
-// ── Mock NATS ─────────────────────────────────────────────────────────────────
+// ── Mock transport ────────────────────────────────────────────────────────────
 
-// mockNATS captures published messages for assertion in tests.
+// mockNATS is a [logstreamer.Transport] that stores every chunk at once and
+// captures it for assertion in tests.
 type mockNATS struct {
 	mu     sync.Mutex
 	msgs   []capturedMsg
-	pubErr error // if non-nil, all Publish calls return this error
+	pubErr error // if non-nil, all PublishAcked calls return this error
 }
 
 type capturedMsg struct {
@@ -36,7 +37,7 @@ type capturedMsg struct {
 	data    []byte
 }
 
-func (m *mockNATS) Publish(subj string, data []byte) error {
+func (m *mockNATS) PublishAcked(_ context.Context, subj string, data []byte, _ string) error {
 	if m.pubErr != nil {
 		return m.pubErr
 	}
@@ -60,6 +61,19 @@ func (m *mockNATS) count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.msgs)
+}
+
+// eventually waits for the mock to hold want chunks: a threshold flush queues
+// its chunk and the sender delivers it a moment later.
+func (m *mockNATS) eventually(t *testing.T, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for m.count() < want && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := m.count(); got != want {
+		t.Fatalf("chunks stored = %d, want %d", got, want)
+	}
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -164,10 +178,8 @@ func TestChunkBoundaryLines(t *testing.T) {
 		p.HandleLine(ctx, "task-lines", "attempt-lines", "sess", "stdout", fmt.Sprintf("L%d", i))
 	}
 
-	// The flush is synchronous inside HandleLine, so no sleep needed.
-	if got := nc.count(); got != 1 {
-		t.Fatalf("expected 1 chunk after %d lines, got %d", maxLines, got)
-	}
+	// The flush queues the chunk inside HandleLine; the sender stores it.
+	nc.eventually(t, 1)
 	chunk := decodeChunk(t, nc.snapshot()[0])
 	lines := strings.Split(chunk.Data, "\n")
 	if len(lines) != maxLines {
@@ -207,9 +219,7 @@ func TestChunkBoundaryBytes(t *testing.T) {
 	}
 
 	p.HandleLine(ctx, "task-bytes", "attempt-bytes", "sess", "stdout", line) // 22 bytes — flush
-	if got := nc.count(); got != 1 {
-		t.Fatalf("expected 1 chunk after byte threshold, got %d", got)
-	}
+	nc.eventually(t, 1)
 
 	chunk := decodeChunk(t, nc.snapshot()[0])
 	parts := strings.Split(chunk.Data, "\n")
@@ -456,6 +466,7 @@ func TestNATSSubject(t *testing.T) {
 
 	const taskID = "my-task-id"
 	p.HandleLine(ctx, taskID, "attempt-subj", "sess", "stdout", "line")
+	nc.eventually(t, 1)
 
 	msgs := nc.snapshot()
 	if len(msgs) == 0 {
@@ -472,15 +483,20 @@ func TestNATSSubject(t *testing.T) {
 // TestPublishErrorDoesNotPanic verifies that a NATS publish error is logged
 // as a warning and does not propagate out to HandleLine or FlushLogs.
 func TestPublishErrorDoesNotPanic(t *testing.T) {
-	nc := &mockNATS{pubErr: errors.New("nats: connection closed")}
-	cfg := slowFlushCfg(1, 1<<20) // flush on the first line
+	nc := &mockNATS{pubErr: errors.New("nats: timeout")}
+	k := fastKnobs()
+	k.FlushWait = 50 * time.Millisecond
+	cfg := logstreamer.WithKnobs(slowFlushCfg(1, 1<<20), k) // flush on the first line
 	p := logstreamer.New(nc, testWorkerID, cfg, discard())
 	ctx := context.Background()
 
-	// Should not panic even though NATS publish returns an error.
+	// Should not panic even though every publish returns an error.
 	p.HandleLine(ctx, "task-err", "attempt-err", "sess", "stdout", "line")
 	if err := p.FlushLogs(ctx, "task-err", "attempt-err"); err != nil {
 		t.Fatalf("FlushLogs: %v", err)
+	}
+	if dropped := p.Abandon(); dropped != 1 {
+		t.Errorf("Abandon dropped %d, want the 1 chunk the broker never stored", dropped)
 	}
 }
 

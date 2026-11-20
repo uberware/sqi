@@ -339,7 +339,12 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	logCfg := logstreamer.DefaultConfig()
 	logCfg.Now = wire
 	st := status.New(tr, status.Config{WorkerID: id, WireOffset: skew}, w.logger)
-	logs := logstreamer.New(nc, id, logCfg, w.logger)
+	logTr, err := logstreamer.NewJetStreamTransport(nc)
+	if err != nil {
+		nc.Close()
+		return nil, err
+	}
+	logs := logstreamer.New(logTr, id, logCfg, w.logger)
 	d := NewDispatcher(id, st, logs, w.behavior, w.ledger, w.rng)
 	d.instanceID = inc.instanceID
 	d.logger = w.logger
