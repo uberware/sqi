@@ -30,10 +30,14 @@ type fakeTransport struct {
 	failFirst int
 	refuse    map[string]int  // sends of a message ID refused before it is sent
 	tooBig    map[string]bool // message IDs refused as over the payload limit
-	block     chan struct{}
-	tries     map[string]int
-	tried     []string // the message ID of every try, in order
-	stored    []protocol.LogChunkMsg
+	// serial, when set, is how long each chunk takes on the wire: chunks
+	// sent together are acked one after another, as on a slow link.
+	serial   time.Duration
+	linkFree time.Time
+	block    chan struct{}
+	tries    map[string]int
+	tried    []string // the message ID of every try, in order
+	stored   []protocol.LogChunkMsg
 }
 
 func newFakeTransport() *fakeTransport {
@@ -87,8 +91,20 @@ func (f *fakeTransport) Publish(_ string, data []byte, msgID string) (logstreame
 	}
 	f.tried = append(f.tried, msgID)
 	block := f.block
+	var ackAt time.Time
+	if f.serial > 0 {
+		f.linkFree = later(f.linkFree, time.Now()).Add(f.serial)
+		ackAt = f.linkFree
+	}
 	f.mu.Unlock()
 	return func(ctx context.Context) error {
+		if !ackAt.IsZero() {
+			select {
+			case <-time.After(time.Until(ackAt)):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		if block != nil {
 			select {
 			case <-block:
@@ -109,6 +125,13 @@ func (f *fakeTransport) Publish(_ string, data []byte, msgID string) (logstreame
 		f.stored = append(f.stored, c)
 		return nil
 	}, nil
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 func (f *fakeTransport) storedChunks() []protocol.LogChunkMsg {
@@ -307,6 +330,58 @@ func TestPublisher_AnOversizedChunkDropsOnlyItself(t *testing.T) {
 	}
 	if got := seqs(ft.storedChunks()); !slices.Equal(got, []int64{1, 3, 4}) {
 		t.Errorf("stored seqs = %v, want 1, 3 and 4", got)
+	}
+}
+
+// TestPublisher_SlowLinkDoesNotTimeOutTheTail pins that each chunk of a send
+// gets the whole ack timeout from when the chunk before it was acked: on a
+// slow link a send's chunks are acked one after another, and one deadline for
+// the whole send would fail its tail every time, retrying chunks still on the
+// wire.
+func TestPublisher_SlowLinkDoesNotTimeOutTheTail(t *testing.T) {
+	ft := newFakeTransport()
+	ft.serial = 60 * time.Millisecond
+	k := fastKnobs() // a 200 ms ack timeout: under four chunks' time on this link
+	p := logstreamer.New(ft, testWorkerID, logstreamer.WithKnobs(slowFlushCfg(1, 1<<20), k), discard())
+	for i := 1; i <= 10; i++ {
+		p.HandleLine(context.Background(), "task-n", "attempt-n", "", "stdout", fmt.Sprintf("line %d", i))
+	}
+	if dropped := p.Flush(contextWithTimeout(t, 10*time.Second)); dropped != 0 {
+		t.Errorf("Flush dropped %d, want 0", dropped)
+	}
+	if got := ft.triedIDs(); len(got) != 10 {
+		t.Errorf("sent %d times for 10 chunks, want no retry: %v", len(got), got)
+	}
+	if got := seqs(ft.storedChunks()); !slices.Equal(got, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
+		t.Errorf("stored seqs = %v, want 1 to 10 in order", got)
+	}
+}
+
+// TestPublisher_ASilentLinkFailsASendAtOneTimeout pins that once a chunk of a
+// send times out, the chunks after it are not each waited for in turn: on a
+// link that has gone silent a send of the whole window would otherwise take
+// the window times the ack timeout before its first retry.
+func TestPublisher_ASilentLinkFailsASendAtOneTimeout(t *testing.T) {
+	ft := newFakeTransport()
+	ft.blockAll()
+	p := logstreamer.New(ft, testWorkerID, logstreamer.WithKnobs(slowFlushCfg(1, 1<<20), fastKnobs()), discard())
+	t.Cleanup(func() { p.Abandon() })
+	p.HandleLine(context.Background(), "task-q", "attempt-q", "", "stdout", "line 1")
+	ft.waitTried(t, 1)
+	for i := 2; i <= 10; i++ {
+		p.HandleLine(context.Background(), "task-q", "attempt-q", "", "stdout", fmt.Sprintf("line %d", i))
+	}
+	time.Sleep(1500 * time.Millisecond)
+	tries := 0
+	for _, id := range ft.triedIDs() {
+		if id == "attempt-q/1" {
+			tries++
+		}
+	}
+	// Each send of the ten takes about one 200 ms timeout plus a short
+	// backoff; waiting each chunk's timeout in turn would take 2 s.
+	if tries < 4 {
+		t.Errorf("chunk 1 sent %d times in 1.5 s, want 4 or more", tries)
 	}
 }
 

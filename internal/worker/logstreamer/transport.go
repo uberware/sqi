@@ -23,7 +23,8 @@ type Transport interface {
 }
 
 // AckWait waits for the stream's ack of one sent chunk: nil once the stream
-// stored it, or the reason it did not, or ctx's error when ctx ends first.
+// stored it, or the reason it did not, or ctx's error when ctx ends first. An
+// outcome already in when it is called is returned even if ctx has ended.
 type AckWait func(ctx context.Context) error
 
 // jetStreamTransport publishes chunks through JetStream on the worker's own
@@ -42,11 +43,16 @@ type jetStreamTransport struct {
 	js jetstream.JetStream
 }
 
-// NewJetStreamTransport returns a [Transport] that publishes on nc. An ack
-// that never comes is given up after defaultAckTimeout, so a lost one holds
-// nothing in the client.
+// asyncAckGiveUp is when the client forgets a chunk whose ack never came, so
+// a lost ack holds nothing in it. The publisher's own wait decides a chunk's
+// outcome; this only has to outlast it, and the client starts the clock at
+// the send, while a send's last chunk is waited for only once the chunks
+// before it were acked.
+const asyncAckGiveUp = 2 * defaultWindow * defaultAckTimeout
+
+// NewJetStreamTransport returns a [Transport] that publishes on nc.
 func NewJetStreamTransport(nc *nats.Conn) (Transport, error) {
-	js, err := jetstream.New(nc, jetstream.WithPublishAsyncTimeout(defaultAckTimeout))
+	js, err := jetstream.New(nc, jetstream.WithPublishAsyncTimeout(asyncAckGiveUp))
 	if err != nil {
 		return nil, fmt.Errorf("logstreamer: jetstream context: %w", err)
 	}
@@ -66,6 +72,14 @@ func (t *jetStreamTransport) Publish(subj string, data []byte, msgID string) (Ac
 		return nil, fmt.Errorf("logstreamer: publish %s: %w", msgID, err)
 	}
 	return func(ctx context.Context) error {
+		// An outcome already in wins over a ctx that has ended too.
+		select {
+		case <-f.Ok():
+			return nil
+		case err := <-f.Err():
+			return fmt.Errorf("logstreamer: publish %s: %w", msgID, err)
+		default:
+		}
 		select {
 		case <-f.Ok():
 			return nil

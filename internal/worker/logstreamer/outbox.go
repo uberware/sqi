@@ -4,6 +4,7 @@ package logstreamer
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"sync"
@@ -217,14 +218,15 @@ func (o *outbox) run() {
 	}
 }
 
-// send puts batch on the wire in order and waits for each chunk's ack, all
-// within one ack timeout. It returns each chunk's outcome. A chunk the
-// transport refuses for a reason a retry can cure, as while reconnecting, ends
-// the send there, and the chunks after it fail with the same error, so none
-// is stored ahead of it. A chunk no retry can send is dropped alone.
+// send puts batch on the wire in order and waits for each chunk's ack. Each
+// chunk is given the ack timeout from when the chunk before it was acked, or
+// from the send for the first: the stream acks a send's chunks one after
+// another, and on a slow link the last of them is still on the wire long
+// after the first was stored. It returns each chunk's outcome. A chunk the
+// transport refuses for a reason a retry can cure, as while reconnecting,
+// ends the send there, and the chunks after it fail with the same error, so
+// none is stored ahead of it. A chunk no retry can send is dropped alone.
 func (o *outbox) send(batch []*pendingChunk) []error {
-	ctx, cancel := context.WithTimeout(o.stopCtx, o.cfg.ackTimeout)
-	defer cancel()
 	errs := make([]error, len(batch))
 	waits := make([]AckWait, len(batch))
 	for i, c := range batch {
@@ -234,10 +236,24 @@ func (o *outbox) send(batch []*pendingChunk) []error {
 		}
 		waits[i], errs[i] = o.t.Publish(c.subj, c.data, c.msgID)
 	}
+	// Once a chunk's ack is overdue the link is presumed silent: the chunks
+	// after it count only if their acks are already in, so a send fails
+	// after one ack timeout rather than one per chunk.
+	overdue, stop := context.WithCancel(o.stopCtx)
+	stop()
+	timedOut := false
 	for i, wait := range waits {
-		if errs[i] == nil {
-			errs[i] = wait(ctx)
+		if errs[i] != nil {
+			continue
 		}
+		if timedOut {
+			errs[i] = wait(overdue)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(o.stopCtx, o.cfg.ackTimeout)
+		errs[i] = wait(ctx)
+		cancel()
+		timedOut = errors.Is(errs[i], context.DeadlineExceeded)
 	}
 	return errs
 }
@@ -245,14 +261,13 @@ func (o *outbox) send(batch []*pendingChunk) []error {
 // settle logs a send's outcome and, when a chunk of it can be retried, waits
 // out the backoff before the next send.
 func (o *outbox) settle(batch []*pendingChunk, errs []error) {
-	var retry, lost *pendingChunk
+	var retry, lost, stored *pendingChunk
 	var retryErr, lostErr error
 	lostCount := 0
-	stored := false
 	for i, err := range errs {
 		switch {
 		case err == nil:
-			stored = true
+			stored = batch[i]
 		case bus.PermanentPublishError(err):
 			if lost == nil {
 				lost, lostErr = batch[i], err
@@ -272,8 +287,8 @@ func (o *outbox) settle(batch []*pendingChunk, errs []error) {
 		// Closed; the next pass exits.
 	case retry != nil:
 		o.retryWait(retry, retryErr)
-	case stored:
-		o.stored(batch[len(batch)-1])
+	case stored != nil:
+		o.stored(stored)
 	}
 }
 
