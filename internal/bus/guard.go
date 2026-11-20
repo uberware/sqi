@@ -722,6 +722,16 @@ func (g *Guard) reconcile(ctx context.Context) bool {
 		}
 		return false
 	default:
+		// A takeover is a write after this server's last one, so only a read
+		// past the recorded revision can show one. An older read of another
+		// holder's value is the key as it was before this server took it,
+		// served by a replica that is behind; the next refresh decides.
+		g.mu.Lock()
+		taken := advanced(entry, g.revision)
+		g.mu.Unlock()
+		if !taken {
+			return false
+		}
 		g.markLost(ctx, entry.Value())
 		return true
 	}

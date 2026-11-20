@@ -204,6 +204,37 @@ func TestGuard_ReconcileKeepsRevisionOnAnOlderRead(t *testing.T) {
 	}
 }
 
+// TestGuard_ReconcileIgnoresAnOlderForeignRead pins that a stale read showing
+// the holder this server took the key from does not count as losing it: a
+// takeover is a later write, so only a read past the recorded revision can
+// show one.
+func TestGuard_ReconcileIgnoresAnOlderForeignRead(t *testing.T) {
+	const id = "self"
+	kv := &scriptedKV{
+		updates: []error{&jetstream.APIError{Code: 400, ErrorCode: jsErrWrongLastSequence}},
+		gets:    []jetstream.KeyValueEntry{guardEntry{value: holderValue(t, "previous"), rev: 3}},
+	}
+	lostCalls := make(chan error, 1)
+	g := &Guard{
+		kv: kv, holder: GuardHolder{InstanceID: id}, revision: 5, logger: slog.New(slog.DiscardHandler),
+		opts: GuardOptions{OnLost: func(err error) { lostCalls <- err }},
+	}
+	if lost := g.refreshOnce(context.Background()); lost {
+		t.Fatal("refreshOnce reported the guard lost on a read older than its revision")
+	}
+	if g.lost != nil {
+		t.Errorf("guard recorded a loss: %v", g.lost)
+	}
+	if g.revision != 5 {
+		t.Errorf("revision = %d, want 5", g.revision)
+	}
+	select {
+	case err := <-lostCalls:
+		t.Errorf("OnLost called: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 // TestRetakeStaleGuardKey_OlderReadStillRetakes pins that a stale read older
 // than the dead holder's revision does not count as the key changing hands:
 // the compare-and-set at that revision decides, on the stream leader.
