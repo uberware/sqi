@@ -2490,57 +2490,63 @@ applied, and gets no work during that wait; when the wait runs out the server
 logs `scheduler: restart registration applied before the task-status consumer
 caught up` at Warn.
 
-### A full data volume on the server
+### When the broker cannot store: a full data volume or no file descriptors
 
-`chaos-disk-server-full` leaves the server's data volume (512 MB, holding the
-database and the broker's data) with no free space for 60 seconds while 40
-workers run tasks that log 5,000 lines each:
+When a write by the embedded broker to one of sqi's streams fails because the
+data volume is full or `sqi-server` has run out of file descriptors,
+nats-server keeps that error on the stream, and the stream stores nothing
+more until the broker restarts: no task status, heartbeat or log chunk on it
+is kept. `sqi-server` recovers from this by itself:
 
-- The server process stays up and does not restart.
-- `GET /readyz` answers 200 throughout the fill, and `POST /api/v1/jobs` keeps
-  returning 201.
-- Task and status processing stops within seconds of the fill. No task reaches
-  a terminal status afterwards.
-- `sqi-server` logs a `bus: nats server error` for each broker stream the
-  fill reaches, reading `Filestore [<stream>] Critical write error: write
-  .../<n>.blk: no space left on device`, and from then on `JetStream failed to
-  store a msg on stream 'SQI > <stream>': ... no space left on device` once a
-  minute, with a `suppressed` count, still after the space returns. See [The
-  embedded broker's own log](observability.md#the-embedded-brokers-own-log).
-- Nothing recovers after the space returns. The broker's streams store nothing
-  from the fill to the end of the run (H13f9). When the server's startup
-  liveness grace of about 3 minutes 10 seconds is over, the heartbeat sweep
-  marks every worker offline and reclaims its attempts, and none comes back.
-  Whether a restart of the server recovers it is not known.
+- It logs `bus: the broker can no longer store messages on a stream` at Error
+  once, with the `stream` and the broker's `error`, and `GET /readyz` answers
+  503 with the `nats` check reading `nats stream <stream> cannot store
+  messages since <time> (<error>); the broker restarts once its data directory
+  is writable`. When nats-server shuts JetStream down altogether for lack of
+  resources, the check reads `nats JetStream is disabled since ...` instead.
+- Every 5 seconds it checks whether the cause has cleared: a 64 KiB write to
+  `nats.embedded.data_dir` must succeed and, on Linux and macOS, at least
+  64 file descriptors, or 5% of the soft limit if that is more, must be free.
+  Until both hold it logs `bus: the broker cannot restart yet` with the reason,
+  at most once a minute.
+- It then restarts the embedded broker in place, on the same data directory,
+  port and keys, and logs `bus: restarting the broker` and, once the new one
+  is up, `bus: the broker restarted and stores messages again` with
+  `broken_for`. Every stream comes back with what it had stored. Workers and
+  the server's own connections reconnect by themselves; a worker's task
+  status reports are retried until they are stored, so finished work counts.
+- A restart that comes within 10 minutes of the previous one waits 30 seconds
+  after it, then 1, 2 and 5 minutes for the ones after, so a volume that keeps
+  filling cannot make the broker restart in a loop. A restart whose new broker
+  could not start (`bus: the broker restart failed`) is tried again at the next
+  passing check.
+- After a restart it checks that every stream and every server consumer came
+  back. A stream that did not is created again. A consumer that did not keeps
+  `/readyz` at 503 (`nats consumers ... did not come back after the broker
+  restarted; restart sqi-server`) and is logged at Error; restart `sqi-server`.
+- While a stream cannot store, the heartbeat sweep and the stale-assigned reap
+  wait rather than act on reports the stream could not keep, so live workers
+  are not marked offline and their tasks are not taken back.
 
-Readiness does not show this state. Watch free space on the data volume
-directly.
+Watch free space on the volume holding `nats.embedded.data_dir` and the
+process's descriptor count anyway: while the cause lasts nothing on the broken
+stream is processed. The example unit above sets `LimitNOFILE=65536`.
 
-### Running out of file descriptors
+With an external NATS server or cluster (`nats.mode: external`) `sqi-server`
+sees none of this: the broker's log and its restart are the operator's. When
+a stream there stops storing after a full volume, restart the affected
+nats-server once the space is back.
 
-`chaos-server-fd-exhaustion` (Linux) lowers the running server's descriptor
-limit so it can open only 10 more files for 40 seconds while 30 of 120 workers
-redial after a short network cut. The example unit above sets
-`LimitNOFILE=65536`. In most runs a broker stream stops storing and stores
-nothing more for the rest of the run, also after the limit lifts: the task
-status stream, the heartbeat stream, or both. Otherwise the farm is unharmed.
-When the task status stream stops, tasks lease but never reach running, and
-each is taken back and leased again about every 30 seconds, so finished work
-never counts; well over a thousand completed attempts can be redone in a run.
-When the heartbeat stream stops, every worker is marked offline and its
-attempts are reclaimed while it still runs them. The scenario does not probe
-readiness. A stopped stream's newest block file is last written inside the
-limit window and never again. A standalone nats-server fails the same way when
-it runs out of descriptors.
-
-The server log shows it. While the limit holds, the broker logs `bus: nats
-server error` lines reading `Temporary Client Accept Error(... too many open
-files)`, once per step of its back-off and then once a minute with a
-`suppressed` count. A stream that stops logs `Filestore [<stream>] Critical
-write error: lmb missing` once, then `JetStream failed to store a msg on
-stream 'SQI > <stream>': lmb missing` once a minute, with a `suppressed`
-count, until the server stops. See [The embedded broker's own
-log](observability.md#the-embedded-brokers-own-log).
+`chaos-disk-server-full` fills the server's data volume (512 MB, holding the
+database and the broker's data) for 60 seconds while 40 workers run tasks
+that log 5,000 lines each, and `chaos-server-fd-exhaustion` (Linux) lowers the
+running server's descriptor limit so it can open only 10 more files for 40
+seconds while 30 of 120 workers redial after a short network cut. Both check
+that the farm finishes every task once the space or the descriptors return.
+While the descriptor limit holds the broker also logs `bus: nats server error`
+lines reading `Temporary Client Accept Error(... too many open files)`, once
+per step of its back-off and then once a minute with a `suppressed` count. See
+[The embedded broker's own log](observability.md#the-embedded-brokers-own-log).
 
 ### A full session volume on a worker
 

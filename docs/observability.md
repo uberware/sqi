@@ -197,6 +197,28 @@ connection, so it is logged at the first refusal and then once a minute with a
 An external broker (`nats.mode: external`) keeps its own log; `sqi-server`
 logs none of it.
 
+### When an embedded broker stream cannot store
+
+A stream the embedded broker can no longer write to (a full data volume, or no
+file descriptors left) is reported by `sqi-server` itself, which then
+restarts the broker in place once the cause has cleared. See [When the broker
+cannot store](operations.md#when-the-broker-cannot-store-a-full-data-volume-or-no-file-descriptors)
+for what it does.
+
+| Message | Level | Attributes | What it is |
+|---|---|---|---|
+| `bus: the broker can no longer store messages on a stream` | `ERROR` | `stream`, `error`, `impact`, `remediation` | The first break of an outage. `stream` is `all (JetStream is disabled)` when nats-server shut JetStream down. |
+| `bus: another broker stream can no longer store messages` | `WARN` | `stream`, `error` | A further stream broke before the broker recovered. |
+| `bus: the broker cannot restart yet` | `WARN` | `error` | The data directory does not take a write yet, or too few file descriptors are free. At most once a minute. |
+| `bus: restarting the broker` | `INFO` | `stream` | The restart begins. |
+| `bus: the broker restarted and stores messages again` | `INFO` | `broken_for` | The restart is done. |
+| `bus: the broker restart failed` | `ERROR` | `error`, `impact` | The new broker did not start; the next passing check tries again. |
+| `bus: consumers did not come back after the broker restarted` | `ERROR` | `consumers`, `impact`, `remediation` | Restart `sqi-server`. |
+
+While a stream is broken, `GET /readyz` answers 503 with the `nats` check
+reading `nats stream <stream> cannot store messages since <time> (<error>);
+the broker restarts once its data directory is writable`.
+
 ---
 
 ## Task-state health signals

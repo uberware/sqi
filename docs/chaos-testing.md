@@ -498,13 +498,12 @@ enforced end to end: it runs `chaos-server-term` with a `must` entry for
 
 ### Recorded defects
 
-The suite records three defects in sqi. Each is also listed under [Known
-server defects](load-testing.md#known-server-defects).
+The suite records one defect in sqi, also listed under [Known server
+defects](load-testing.md#known-server-defects).
 
 | Tracker | Defect | Recorded in |
 |---|---|---|
 | H13f4 | Killing `sqi-worker` on Linux leaves its task's process tree running. A silent child, which writes no stdout, never gets SIGPIPE, outlives the worker's restart and writes alongside the re-run. | `chaos-worker-kill-mid-task`, `no-orphans` and `single-writer`, `may`, `os: [linux]` |
-| H13f9 | After a write to a broker stream fails because the data volume is full or the server is out of file descriptors, the stream may store nothing more for the rest of the run; whether a restart clears it is not known. With a full volume the server stays ready and answers REST while the volume is full. Every worker is then reclaimed. | `chaos-disk-server-full`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded`, `must`; `chaos-server-fd-exhaustion`, the same checks and `rework` (up to 2500), `may` |
 
 ---
 
@@ -542,10 +541,10 @@ chaos-container`.
 | `chaos-db-stall-2m` | Stall the database for 2m at 3m15s: four `heartbeat_timeout`s, and `scheduler.reconcile_grace`. | rework 0, reclaims 0 | 5m30s |
 | `chaos-db-stall-3m` | Stall the database for 3m at 3m15s: longer than `SQI_WORKER`'s 2-minute MaxAge, so heartbeats expire unread and the worker consumer must hold the heartbeat sweep after the skip. | rework 0, reclaims 0 | 6m45s |
 | `chaos-db-drop` | Close the server's PostgreSQL connections and refuse new ones for 30s at 3m15s. PostgreSQL only. Submissions made meanwhile are refused with 500, which the summary reports as a finding. | rework 0 | 4m15s |
-| `chaos-disk-server-full` | Leave the server's data volume no free space for 60s at 1m, under a verbose renderer (5,000 lines of 200 bytes per task) on 40 workers. Container. | H13f9 `must` on `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded` | 3m |
+| `chaos-disk-server-full` | Leave the server's data volume no free space for 60s at 1m, under a verbose renderer (5,000 lines of 200 bytes per task) on 40 workers. Container. | every check must pass once the space returns | 3m |
 | `chaos-disk-worker-full-at-setup` | Leave the 2 real workers' session volume no free space and no free inodes for 60s at 1m, so tasks fail at setup. Each failure must name "no space left on device", at most 12 may fail, and each real worker must succeed a task afterwards. Container. | rework 0 | 3m |
 | `chaos-disk-worker-full-mid-render` | Leave the 2 real workers' session volume 1 MiB free for 60s at 1m05s while their tasks write 8 MiB each, so tasks fail partway through. Each failure must name the process's exit, at most 15 may fail, and each real worker must succeed a task afterwards. Container. | rework 0 | 3m |
-| `chaos-server-fd-exhaustion` | Linux. Cut `rack-b`, 30 of 120 workers, for 20s at 3m15s and lower the server's open-file limit for 40s at 3m20s so it can open only 10 more files, so the rack redials into the limit. | rework 30; H13f9 `may` on `terminal`, `outcomes`, `rework` (up to 2500), `single-attempt`, `workers-converge` and `executions-recorded` | 5m |
+| `chaos-server-fd-exhaustion` | Linux. Cut `rack-b`, 30 of 120 workers, for 20s at 3m15s and lower the server's open-file limit for 40s at 3m20s so it can open only 10 more files, so the rack redials into the limit. | rework 30 | 5m |
 | `chaos-worker-revoke` | Broker auth on. Revoke one of 2 real workers' credentials at 3m21s and stop it 60s later, not restarting it. | rework 4 | 4m45s |
 | `chaos-clock-skew` | No fault: 20 each of 120 workers run their clocks 10m ahead, 10m behind and a day ahead of the server's. | rework 0, reclaims 0 | 4m |
 | `chaos-session-expiry` | No fault: broker auth with a 1m session lifetime (`nats.auth.user_ttl`), so each of 100 workers reconnects about four times in a run, with 30 to 90s tasks. | rework 0, reclaims 0 | 4m |
@@ -675,17 +674,15 @@ It also has these limits:
 - Every fault has a fixed `at`. Fault times are not drawn from a seeded
   distribution.
 - Nothing reports how often each `may` known violation fires, so an entry
-  that never fires is not flagged. Where a `may` entry is broad, as on
-  `chaos-server-fd-exhaustion`, a regression in the same check is hidden
-  until the defect it records is fixed.
-- The `disk-full` check has no minimum number of failed attempts, so a run in
-  which the fault never made a task fail passes it. The summary records the
-  count for each fault window; read it to see whether the fault bit.
+  that never fires is not flagged.
+- A `disk_full` fault on a workers volume without `min_failed` passes the
+  `disk-full` check in a run in which the fault never made a task fail. The
+  summary records the count for each fault window.
 - Both of `chaos-worker-kill-mid-task`'s H13f4 entries are `may`: its real
   task is too short for the orphaned child to outlive the 10 s grace in every
   run.
-- A known violation is not scoped to evidence. An entry excuses every failure
-  of its check, so a new defect in the same check hides behind a recorded one.
+- An entry without a `match` pattern excuses every failure of its check, so a
+  new defect in the same check hides behind a recorded one.
 - A `chaos-disk-*` scenario skips outside `make chaos-container`, so a run of
   `make chaos` alone never exercises the disk faults.
 

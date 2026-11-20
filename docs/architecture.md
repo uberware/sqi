@@ -1737,6 +1737,17 @@ pipes; workers connect to its client listener, `nats.embedded.addr`.
                         sqi-worker × N
 ```
 
+The embedded broker can restart in place. nats-server keeps a stream's write
+error for good, so a stream whose write failed on a full data volume or for
+want of a file descriptor stores nothing more until its store is reopened.
+`Embedded` recognizes the broker's log line for such a break, reports it
+through the `nats` readiness check, and once the data directory takes a write
+and descriptors are free stops the nats-server and starts a new one on the
+same data directory, port and keys. Every in-process connection dials through
+`Embedded` itself (it is the `nats.InProcessConnProvider`), so the
+reconnecting connections land on the new server. See [When the broker cannot
+store](operations.md#when-the-broker-cannot-store-a-full-data-volume-or-no-file-descriptors).
+
 **External** (`nats.mode: external`). The broker is a NATS server or cluster
 the operator runs, normally configured from the fragment
 `sqi-server nats external init` writes. `sqi-server` is one more client of it:
@@ -2086,7 +2097,9 @@ degraded unless:
 - the data connection is connected;
 - with `nats.auth.enabled`, the callout connection is connected too, since
   without it every worker connect is refused;
-- on the embedded broker, the in-process server is running;
+- on the embedded broker, the in-process server is running, no stream has a
+  write error it has not recovered from, and every server consumer came back
+  after its last restart;
 - on an external broker, this server still holds the guard: its last refresh
   succeeded within 30 s and no other server took the key.
 
