@@ -7,10 +7,10 @@ hardware.
 
 Tags appear in two forms:
 
-- **List-style tags**: presence only, such as a manual `gpu` entry, whose value
-  is the empty string. Used for software labels and feature flags. The
-  built-in detectors below instead emit `key=true` pairs (see [Capability
-  auto-detection](#capability-auto-detection-built-in-dcc-detectors)).
+- **Flag tags**: such as a manual `gpu` entry or a tag a built-in detector
+  emits (see [Capability
+  auto-detection](#capability-auto-detection-built-in-dcc-detectors)), whose
+  value is `true`. Used for software labels and feature flags.
 - **Key=value tags**: such as `os=linux` or `os_version=22.04`, where the value
   carries information a matching rule can test.
 
@@ -249,8 +249,8 @@ A detector emits tags into the same `Tags` map as the hardware tags above:
   your custom detector's checks run.
 - Manual `worker.capability_tags` are merged last via `MergeManualTags` and
   overwrite a same-named key from any detector. Use them to suppress a
-  misdetection (`maya=` clears the value) or to set a tag the checks miss
-  (`maya=true` on a nonstandard install path).
+  misdetection (`maya=false`, or `maya=` to clear the value) or to set a tag
+  the checks miss (`maya` or `maya=true` on a nonstandard install path).
 
 ### The `sqi-worker capabilities` command
 
@@ -269,10 +269,10 @@ os         linux   auto
 os_version 22.04   auto
 ```
 
-The `VALUE` column is the tag's advertised value: `true` for a detector tag,
-the detected string for `os` and `os_version`, and whatever a manual entry set
-(a bare manual entry such as `gpu` has an empty value; the example above was
-set as `gpu=true`). The `SOURCE` column is one of `auto` (the hardware probe's
+The `VALUE` column is the tag's advertised value: `true` for a detector tag
+and for a bare manual entry such as `gpu`, the detected string for `os` and
+`os_version`, and the right-hand side of a manual `key=value` entry. The
+`SOURCE` column is one of `auto` (the hardware probe's
 `os` and, when detected, `os_version`), `builtin:<tag>`, `custom`, or `manual`.
 Run this first when a worker is not picking up jobs you expect it to.
 `sqi-worker start --dry-run` includes the same tags in its configuration and
@@ -468,15 +468,15 @@ worker:
   capability_tags:
     - maya_2025
     - arnold_7
-    - gpu
+    - gpu               # bare: sets Tags["gpu"] = "true"
     - highram
-    - maya=true   # key=value: sets Tags["maya"] = "true"
+    - nuke_license=indie  # key=value: sets Tags["nuke_license"] = "indie"
 ```
 
 **Via environment variable (comma-separated):**
 
 ```sh
-SQI_WORKER_CAPABILITY_TAGS=maya_2025,arnold_7,gpu,maya=true sqi-worker start
+SQI_WORKER_CAPABILITY_TAGS=maya_2025,arnold_7,gpu,highram,nuke_license=indie sqi-worker start
 ```
 
 **Verify before connecting:**
@@ -519,12 +519,14 @@ key is identical.
 
 Each `capability_tags` entry is parsed by `MergeManualTags`:
 
-- A bare entry with no `=` is stored as a presence-only key with an empty
-  value, e.g. `maya_2025` → `Tags["maya_2025"] = ""`.
-- A `key=value` entry is split on the first `=`, e.g. `maya=true` →
-  `Tags["maya"] = "true"`. A value may itself contain `=` (only the first
+- A bare entry with no `=` is stored with the value `true`, the value a
+  detector gives its tags, e.g. `maya_2025` → `Tags["maya_2025"] = "true"`.
+  A requirement of `anyOf: ["true"]` matches it, and naming a tag a detector
+  already found keeps it `true`.
+- A `key=value` entry is split on the first `=`, e.g. `maya=false` →
+  `Tags["maya"] = "false"`. A value may itself contain `=` (only the first
   one splits the key from the value), and a trailing `=` with nothing after
-  it (`maya=`) stores an empty value, same as the presence-only form.
+  it (`maya=`) stores an empty value, which no requirement matches.
 - An entry with an empty key (starting with `=`, e.g. `=true`) is skipped,
   since an empty tag key can never satisfy an `attr.worker.tag.<key>` requirement.
 
@@ -535,12 +537,12 @@ and can be overridden by a manual tag with exactly the same key:
 worker:
   capability_tags:
     - os=freebsd  # replaces Tags["os"] with "freebsd"
-    - os_version  # presence-only: clears the auto-detected value to ""
+    - os_version= # clears the auto-detected value to ""
 ```
 
 To override `os_version` with a specific value, use `os_version=<value>`; to
-clear it, add the bare `os_version` entry (which sets
-`Tags["os_version"] = ""`).
+clear it, use `os_version=` (which sets `Tags["os_version"] = ""`). A bare
+`os_version` would set it to `true`.
 
 **Hardware values** (`RAMMb`, `CPUCount` and the GPU fields) are reported as
 typed fields in the registration message, not as entries in the `Tags` map,

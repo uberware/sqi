@@ -90,6 +90,12 @@ The full gate, matching CI, is:
 npm run format:check && npm run typecheck && npm run lint && npm run test:coverage
 ```
 
+The test scripts start Vitest through `scripts/vitest.mjs` so that, on
+Windows, a working directory with a lowercase drive letter does not load
+Vitest twice (every file then fails with "Vitest failed to find the current
+suite"). Run a single file with `npm test -- <path>` rather than a bare
+`npx vitest`.
+
 ## Testing
 
 Tests use [Vitest](https://vitest.dev/) with

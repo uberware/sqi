@@ -91,13 +91,14 @@ function collapseCapabilityTags(tags: Record<string, string>): string[] {
   const out: string[] = []
   const seen = new Set<string>()
   for (const [key, value] of Object.entries(tags)) {
-    // A presence tag (value "true" or empty) collapses to its base name, with
-    // any trailing version removed. The worker writes a version as underscore-
+    // A presence tag (value "true") collapses to its base name, with any
+    // trailing version removed. The worker writes a version as underscore-
     // separated digits ("nuke_17_0", since OpenJD identifiers allow no dot or
     // hyphen). A tag written by hand in the older "name-2025" form still
-    // collapses too.
+    // collapses too. An empty value is a tag the operator cleared ("maya="),
+    // so it is shown as such rather than as present.
     const label =
-      value === 'true' || value === ''
+      value === 'true'
         ? key.replace(/(?:_\d+)+$/, '').replace(/-\d[A-Za-z0-9.]*$/, '')
         : `${key}=${value}`
     if (!seen.has(label)) {

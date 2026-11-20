@@ -77,6 +77,13 @@ Before considering a change done, run the full gate (matches CI):
 npm run format:check && npm run typecheck && npm run lint && npm run test:coverage
 ```
 
+The test scripts start Vitest through `scripts/vitest.mjs`, which loads it
+from the canonical path of `web/`. On Windows, a bare `npx vitest` run from a
+directory whose drive letter is lowercase (`c:\...`, as some editors' terminals
+open) fails every test file with "Vitest failed to find the current suite", so
+pass arguments through the npm scripts instead, e.g.
+`npm test -- src/pages/WorkerList.test.tsx`.
+
 ---
 
 ## Proxy configuration

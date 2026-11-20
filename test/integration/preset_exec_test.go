@@ -472,12 +472,10 @@ func hostAttributeRequirements(t *testing.T, entry presettest.Entry) []openjd.At
 // test's scheduling depend on it, and a detector change would surface here as a
 // job stuck in `pending` rather than as a failure in the detector's own test.
 //
-// They are spelled key=value, not as bare names. A bare tag is stored by
-// capabilities.MergeManualTags as presence-only (Tags["maya"] = ""), and
-// scheduler/matcher.go's workerAttributeValue hands that empty string to the
-// requirement's anyOf list, so "maya" alone never satisfies
-// `attr.worker.tag.maya anyOf ["true"]`, and the job sits `pending` for the
-// full 90s timeout with no worker ever matching.
+// They are spelled key=value with the value the requirement names, not as bare
+// names: a bare tag means "true" (capabilities.MergeManualTags), and a
+// requirement's anyOf need not list "true", so the exact value keeps the match
+// independent of what a bare tag defaults to.
 func workerTagEnv(t *testing.T, entry presettest.Entry) []string {
 	t.Helper()
 	const prefix = "attr.worker.tag."

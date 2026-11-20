@@ -349,3 +349,45 @@ worker:
 		t.Fatalf("capabilities output missing 'testtag' row; got:\n%s", out)
 	}
 }
+
+// TestCapabilityOutput_BareAndClearedTags pins what an operator sees for the two
+// manual forms that carry no explicit value: a bare tag advertises "true", so it
+// matches a preset's anyOf:["true"] gate, and a cleared tag ("key=") shows its
+// empty value in start --dry-run rather than reading like a present tag.
+func TestCapabilityOutput_BareAndClearedTags(t *testing.T) {
+	t.Cleanup(func() { persistentFlags.ConfigFile = "" })
+
+	cfgPath := filepath.Join(t.TempDir(), "sqi-worker.yaml")
+	cfgYAML := "worker:\n  capability_tags:\n    - baretag\n    - \"clearedtag=\"\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o644); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+
+	prepareRoot([]string{"--config", cfgPath, "capabilities"})
+	out := captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Errorf("Execute(capabilities): %v", err)
+		}
+	})
+	var row []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if f := strings.Fields(line); len(f) > 0 && f[0] == "baretag" {
+			row = f
+		}
+	}
+	if len(row) != 3 || row[1] != "true" || row[2] != "manual" {
+		t.Errorf("capabilities row for baretag = %q, want [baretag true manual]\nfull output:\n%s", row, out)
+	}
+
+	prepareRoot([]string{"--config", cfgPath, "start", "--dry-run"})
+	out = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Errorf("Execute(start --dry-run): %v", err)
+		}
+	})
+	for _, want := range []string{"\n  baretag: true\n", "\n  clearedtag: \"\"\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("start --dry-run output missing %q\nfull output:\n%s", want, out)
+		}
+	}
+}

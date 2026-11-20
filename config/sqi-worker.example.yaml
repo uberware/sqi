@@ -194,6 +194,9 @@ worker:
   # Auto-detected tags (always included): os, os_version, cpu_count, ram_mb,
   # gpu_vendor, gpu_model, gpu_vram_mb (when GPU is present).
   # Tags listed here overwrite an auto-detected tag with the same key.
+  # A bare tag (gpu) means true, so a job requirement of
+  # attr.worker.tag.gpu anyOf ["true"] matches it. A key=value entry sets
+  # another value (maya=false turns a detected tag off), and key= clears it.
   # Type: []string   Env: SQI_WORKER_CAPABILITY_TAGS (comma-separated)
   capability_tags: []
   # Examples:
