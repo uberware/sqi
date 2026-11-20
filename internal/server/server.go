@@ -542,7 +542,11 @@ func (s *Server) buildBroker(ctx context.Context) (bus.Broker, error) {
 const revokeBrokerTimeout = 10 * time.Second
 
 // RevokeWorker revokes workerID's active broker credential and, when broker
-// authentication is enabled, disconnects it and reclaims its in-flight work.
+// authentication is enabled, disconnects it. With broker authentication on,
+// the scheduler leases the worker nothing from then on
+// ([scheduler.Scheduler.NoteWorkerRevoked]), including a request it parked
+// before the revoke, and the heartbeat sweep returns its in-flight work to
+// ready once its heartbeats stop.
 // It implements [api.WorkerRevoker] and is what makes DELETE
 // /api/v1/workers/{id}/credential the synchronous revocation path: the
 // offline "sqi-server worker revoke" CLI command writes the same store row
@@ -567,6 +571,11 @@ const revokeBrokerTimeout = 10 * time.Second
 func (s *Server) RevokeWorker(ctx context.Context, workerID string) error {
 	if err := s.store.RevokeWorkerCredential(ctx, workerID, time.Now().UTC()); err != nil {
 		return err
+	}
+	// Before the disconnect, which takes seconds: a request served meanwhile
+	// would be leased to a connection about to close.
+	if s.sched != nil {
+		s.sched.NoteWorkerRevoked(workerID)
 	}
 	return s.disconnectWorker(ctx, workerID)
 }

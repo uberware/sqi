@@ -409,6 +409,12 @@ type Scheduler struct {
 	instanceRefusalWarnAfter int
 	instanceRefusalWarnEvery time.Duration
 
+	// revokedWorkers holds the workers whose broker credential this server
+	// revoked ([Scheduler.NoteWorkerRevoked]); a lease request from one is
+	// leased nothing. An entry ends when the worker registers with an active
+	// credential.
+	revokedWorkers sync.Map // worker ID -> struct{}
+
 	// leaseHoldTimeout bounds how long an unfulfillable lease request parks
 	// before replying empty. Overridable in tests.
 	leaseHoldTimeout time.Duration
@@ -1220,6 +1226,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	// Touches the broker credential when authentication is on, and reads
 	// what capacity-group membership needs (capacitymembership.go).
 	rc := s.beforeRegistration(ctx, m, now)
+	revocationEnded := s.endRevocationOnRegistration(ctx, m.WorkerID, rc)
 
 	stored, reg, err := s.store.RegisterWorker(ctx, w)
 	if errors.Is(err, store.ErrStaleRegistration) {
@@ -1256,6 +1263,13 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, m.Hostname, reclaimRestart, reg.Reclaimed)
 	}
 
+	if revocationEnded {
+		// A request the worker sent before this registration landed is held
+		// as a revoked worker's; with the row now naming this process it can
+		// be served.
+		s.WakeWorker(m.WorkerID)
+	}
+
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
 	s.afterRegistration(ctx, m, stored, rc, now)
 	s.noteMemberWoke(ctx, reg, stored, now)
@@ -1279,6 +1293,30 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
+}
+
+// endRevocationOnRegistration ends workerID's revocation
+// ([Scheduler.NoteWorkerRevoked]) when its registration confirmed an active
+// credential, which only a worker enrolled again after the revoke holds, and
+// reports whether it ended one. A revoked worker's registration that confirmed
+// none (one stored before the revoke and delivered after it, or a credential
+// read that failed) keeps the revocation and is logged, since the worker stays
+// online and is leased nothing until it registers again.
+func (s *Scheduler) endRevocationOnRegistration(ctx context.Context, workerID string, rc registrationContext) bool {
+	if rc.hasCred {
+		_, ended := s.revokedWorkers.LoadAndDelete(workerID)
+		if ended {
+			s.logger.InfoContext(ctx, "scheduler: revoked worker registered with an active credential; it is leased work again",
+				slog.String("worker_id", workerID))
+		}
+		return ended
+	}
+	if s.workerRevoked(workerID) {
+		s.logger.WarnContext(ctx, "scheduler: registration of a revoked worker confirmed no active credential; "+
+			"it is leased no work until it registers with one",
+			slog.String("worker_id", workerID))
+	}
+	return false
 }
 
 // brokerAt returns the broker's stream timestamp of a worker's message (kind

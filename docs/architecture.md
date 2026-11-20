@@ -1394,6 +1394,15 @@ The server treats reports, registrations and cancels as follows.
   A worker is removable when it is offline, disabled or not;
   `DELETE /workers/{id}` also refuses a worker that still holds an assigned or
   running task with the same 409 as any worker that is not removable.
+- With broker authentication on, a worker whose credential was revoked through
+  `Server.RevokeWorker` (`DELETE /workers/{id}/credential`, or deleting the
+  worker) is leased nothing new, its requests parked like a disabled worker's.
+  `Scheduler.NoteWorkerRevoked` records it before the broker disconnect, and
+  `leaseAfterPark` checks the record, so a request the worker parked before the
+  revoke is not served to the closed connection. The record is held in memory
+  by the leading server and ends when the worker registers with an active
+  credential, which wakes any request it has held; a restart or failover
+  forgets it (see [Revocation](auth.md#revocation-two-paths-deliberately-distinct)).
 - A worker process that restarts within the heartbeat timeout does not leave
   its previous process's tasks `running`. Each worker process sends a random
   `instance_id` in every registration (optional: a worker that sends none is
