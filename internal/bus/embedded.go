@@ -104,6 +104,28 @@ type Embedded struct {
 	// and held only in memory. Every Client from NewClient presents it.
 	dataSeed []byte
 	dataPub  string
+
+	// stopped is set by Shutdown; a restart after it does nothing.
+	stopped bool
+
+	// What a restart rebuilds the server from, kept from Start: the port the
+	// first server bound, the account layout and the keys, which a restart
+	// reuses so no client's credential or the callout's issuer changes.
+	port   int
+	layout Layout
+	keys   embeddedKeys
+
+	// restartMu orders a restart (held for writing) against Shutdown (for
+	// writing) and each of Revoke's disconnect passes (for reading).
+	restartMu sync.RWMutex
+
+	// breakCh carries the stream breaks the server's logger reports to the
+	// recovery loop; one is enough to wake it.
+	breakCh chan streamBreak
+
+	// stageHook, when set by a test, is called at each named stage of a
+	// restart (see stageStopped).
+	stageHook func(stage string)
 }
 
 var _ Broker = (*Embedded)(nil)
@@ -111,7 +133,7 @@ var _ Broker = (*Embedded)(nil)
 // NewEmbedded creates an [Embedded] broker with the given configuration and
 // logger. Call [Embedded.Start] to boot it.
 func NewEmbedded(cfg EmbeddedConfig, logger *slog.Logger) *Embedded {
-	return &Embedded{cfg: cfg, logger: logger}
+	return &Embedded{cfg: cfg, logger: logger, breakCh: make(chan streamBreak, 1)}
 }
 
 // Identity returns "embedded:SQI": the embedded broker always keeps sqi's
@@ -285,6 +307,13 @@ func (e *Embedded) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Current from here, so sqi's in-process connections, which dial through
+	// e, reach it.
+	e.mu.Lock()
+	e.ns, e.natsLog = ns, nl
+	e.port = boundPortOf(ns, opts.Port)
+	e.layout, e.keys = layout, keys
+	e.mu.Unlock()
 
 	e.logger.InfoContext(
 		ctx, "bus: nats server started",
@@ -294,23 +323,20 @@ func (e *Embedded) Start(ctx context.Context) error {
 		slog.String("account", DefaultAccount),
 	)
 
-	own, err := connectOwn(ctx, ns, keys, responder)
+	own, err := connectOwn(ctx, e, keys, responder)
 	if err != nil {
-		stopServer(ns)
-		nl.close()
+		e.abandonStart(ns, nl)
 		return err
 	}
 
 	if err := provisionStreams(ctx, own.data); err != nil {
 		closeConns(own.data, own.callout)
-		stopServer(ns)
-		nl.close()
+		e.abandonStart(ns, nl)
 		return err
 	}
 
 	e.mu.Lock()
-	e.ns, e.data, e.callout = ns, own.data, own.callout
-	e.natsLog = nl
+	e.data, e.callout = own.data, own.callout
 	e.responder = responder
 	e.authTimeout = time.Duration(opts.AuthTimeout * float64(time.Second))
 	e.dataSeed, e.dataPub = keys.dataSeed, keys.dataPub
@@ -333,6 +359,7 @@ func (e *Embedded) startServer(ctx context.Context, opts *natsserver.Options, la
 	}
 
 	nl := newNATSLogger(e.logger)
+	nl.onBreak = e.noteBreak
 	ns.SetLoggerV2(nl, false, false, false)
 
 	// Start is non-blocking; the server accepts connections asynchronously.
@@ -360,15 +387,15 @@ type ownConns struct {
 	callout *nats.Conn // nil with auth off
 }
 
-// connectOwn opens sqi's in-process connections: the data connection, and
-// with auth on the callout connection, which starts answering authorization
-// requests before connectOwn returns.
-func connectOwn(ctx context.Context, ns *natsserver.Server, keys embeddedKeys, responder *Responder) (ownConns, error) {
+// connectOwn opens sqi's in-process connections through provider: the data
+// connection, and with auth on the callout connection, which starts answering
+// authorization requests before connectOwn returns.
+func connectOwn(ctx context.Context, provider nats.InProcessConnProvider, keys embeddedKeys, responder *Responder) (ownConns, error) {
 	var own ownConns
 	var err error
 	own.data, err = nats.Connect(
 		inProcessURL,
-		nats.InProcessServer(ns),
+		nats.InProcessServer(provider),
 		brokerauth.NkeyOption(keys.dataPub, keys.dataSeed),
 		nats.Name("sqi-server data"),
 		nats.MaxReconnects(-1),
@@ -382,7 +409,7 @@ func connectOwn(ctx context.Context, ns *natsserver.Server, keys embeddedKeys, r
 
 	own.callout, err = nats.Connect(
 		inProcessURL,
-		nats.InProcessServer(ns),
+		nats.InProcessServer(provider),
 		brokerauth.NkeyOption(keys.calloutPub, keys.calloutSeed),
 		nats.Name("sqi-server auth callout"),
 		nats.MaxReconnects(-1),
@@ -422,21 +449,11 @@ const (
 
 // stopServer stops ns through lame duck mode and waits until it has exited.
 //
-// It works around a nats-server v2.15.2 bug: Shutdown stops the system
-// account (shutdownEventing sets s.sys to nil) before it closes the clients
-// it has accepted, and a CONNECT that needs the auth callout processed in
-// between dereferences that nil (processClientOrLeafCallout → newRespInbox),
-// crashing the process. With auth on, any connection attempt during
-// shutdown, such as a worker reconnecting at its user JWT's expiry, would
-// take sqi-server down before its store is closed.
-//
 // Lame duck mode closes the client listener and then every client before it
-// shuts the server down, and a connection accepted after it began is dropped
-// before it is registered or read (createClientEx checks the lame duck flag
-// under the server lock). That narrows the window without closing it: a
-// client whose read loop was already parsing a CONNECT when lame duck mode
-// closed it can still reach the callout after the system account is gone.
-// Closing it needs an upstream fix.
+// shuts the server down, so no client is mid-CONNECT when the system account
+// stops. That once worked around a nats-server v2.15.2 crash (the auth callout
+// dereferenced the stopped system account); v2.15.3 fixed it, and the callout
+// now refuses such a connection instead.
 //
 // The explicit Shutdown is required: lame duck mode returns without shutting
 // down when it has nothing to do (no listener, or already in lame duck mode).
@@ -467,7 +484,12 @@ func closeConns(conns ...*nats.Conn) {
 // here under the same lock. The (possibly slow) nats-server calls below run
 // after the lock is released.
 func (e *Embedded) Shutdown() {
+	// A restart in progress finishes first, so its server is the one stopped.
+	e.restartMu.Lock()
+	defer e.restartMu.Unlock()
+
 	e.mu.Lock()
+	e.stopped = true
 	ns, data, callout := e.ns, e.data, e.callout
 	nl := e.natsLog
 	responder := e.responder
@@ -568,7 +590,7 @@ func (e *Embedded) NewClient() (*Client, error) {
 	if ns == nil {
 		return nil, errors.New("bus: broker not started")
 	}
-	return NewClient(inProcessURL, e.logger, nats.InProcessServer(ns), brokerauth.NkeyOption(pub, seed))
+	return NewClient(inProcessURL, e.logger, nats.InProcessServer(e), brokerauth.NkeyOption(pub, seed))
 }
 
 // RevokeBudget is how long [Embedded.Revoke] may need: the auth timeout and
@@ -610,18 +632,39 @@ func (e *Embedded) Revoke(ctx context.Context, workerID string) error {
 		return errors.New("bus: revoke: empty worker id")
 	}
 	e.mu.Lock()
-	ns, authTimeout := e.ns, e.authTimeout
+	authTimeout := e.authTimeout
 	e.mu.Unlock()
-	if ns == nil {
-		return errors.New("bus: broker not started")
-	}
 
-	if err := disconnectUser(ns, workerID); err != nil {
+	if err := e.disconnectCurrent(workerID); err != nil {
 		return err
 	}
 
 	if err := awaitRevokeSettle(ctx, began, authTimeout, workerID); err != nil {
 		return err
+	}
+	return e.disconnectCurrent(workerID)
+}
+
+// disconnectCurrent is one of Revoke's passes, on the current server. It
+// holds restartMu for reading, so a pass begun during a restart waits for it
+// and then runs on the new server. A restart closes every connection, and the
+// new server authorizes each reconnect afresh against the store, so a restart
+// between the two passes keeps Revoke's guarantee.
+func (e *Embedded) disconnectCurrent(workerID string) error {
+	e.restartMu.RLock()
+	defer e.restartMu.RUnlock()
+	e.mu.Lock()
+	ns, started, stopped := e.ns, e.started, e.stopped
+	e.mu.Unlock()
+	switch {
+	case !started:
+		return errors.New("bus: broker not started")
+	case stopped:
+		return errors.New("bus: broker stopped")
+	case ns == nil:
+		// A restart failed to start its server: there is none, so no
+		// connection to close.
+		return nil
 	}
 	return disconnectUser(ns, workerID)
 }
