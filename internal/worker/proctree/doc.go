@@ -26,7 +26,16 @@
 // both platforms. On Windows the job's kill-on-close flag, which stops the
 // tree if the worker process itself exits mid-run, is cleared first.
 //
-// The package imports only the standard library, golang.org/x/sys/windows and
+// On POSIX nothing outlives the worker to stop a tree when the worker itself
+// is killed, so a launch site marks each tree's environment with a fresh token
+// ([MarkEnv]) and records it in the worker's [Ledger] with [Tree.Track],
+// which reads the token back from the command; [Tree.Release] deletes the
+// record. The next worker to start on the same data directory runs
+// [Ledger.Sweep] before it registers, killing every process that still
+// carries a recorded token. Windows records nothing: its job objects die with
+// the worker.
+//
+// The package imports only the standard library, golang.org/x/sys and
 // internal/worker/protocol, so both internal/worker/executor and
 // internal/worker/session can use it.
 package proctree
