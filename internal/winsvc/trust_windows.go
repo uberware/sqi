@@ -85,6 +85,21 @@ var (
 	}
 )
 
+// volumeRootRule judges a volume or share root: ancestorRule without DELETE,
+// since a root cannot be deleted or renamed, which is all DELETE on it would
+// allow (a new data volume grants Authenticated Users Modify on its root).
+var volumeRootRule = rightsRule{mask: ancestorRule.mask &^ rightD, verb: ancestorRule.verb}
+
+// ancestorRuleFor is the rule ancestor p is judged by: volumeRootRule when p
+// is the root of its volume (C:\, \\server\share\, \\?\Volume{…}\), else
+// ancestorRule.
+func ancestorRuleFor(p string) rightsRule {
+	if p == filepath.VolumeName(p)+`\` {
+		return volumeRootRule
+	}
+	return ancestorRule
+}
+
 // PathFailure is one path CheckPaths refused.
 type PathFailure struct {
 	// Key and Path are the PathRef's.
@@ -203,7 +218,7 @@ func judgeRef(ref PathRef, trusted []*windows.SID) ([]PathFailure, error) {
 	}
 	for p := judged; filepath.Dir(p) != p; {
 		p = filepath.Dir(p)
-		reasons, err := judgeExisting(p, trusted, ancestorRule)
+		reasons, err := judgeExisting(p, trusted, ancestorRuleFor(p))
 		if err != nil {
 			return nil, err
 		}

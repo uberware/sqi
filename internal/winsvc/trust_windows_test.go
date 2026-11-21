@@ -565,24 +565,44 @@ func TestCheckPaths_FailsAncestorUntrustedOwner(t *testing.T) {
 func TestJudgeSecurity_AncestorRules(t *testing.T) {
 	me, _ := currentAccount(t)
 	owned := "O:" + me.String() + "D:P" + trustedACEs(t)
+	const (
+		dir      = `C:\sqi`
+		root     = `C:\`
+		dataRoot = `D:\`
+		uncRoot  = `\\server\share\`
+		volRoot  = `\\?\Volume{1b3b1146-4076-11e1-84aa-806e6f6e6963}\`
+	)
 	tests := []struct {
 		name string
+		path string // the ancestor being judged
 		sddl string
 		want string // "" = passes; otherwise a substring of the reasons
 	}{
-		{"add file and folder pass", owned + "(A;;" + sddlProgramDataUsers + ";;;AU)", ""},
-		{`C:\ shape passes`, owned + "(A;;0x4;;;AU)(A;OICIIO;" + sddlModify + ";;;AU)", ""},
-		{"deny passes", owned + "(D;;FA;;;BU)", ""},
-		{"delete child fails", owned + "(A;;0x40;;;BU)", "(DC)"},
-		{"delete fails", owned + "(A;;SD;;;BU)", "(D)"},
-		{"write owner fails", owned + "(A;;0x80000;;;BU)", "(WO)"},
-		{"generic write fails", owned + "(A;;GW;;;BU)", "(GW)"},
-		{"generic all fails", owned + "(A;;GA;;;BU)", "(GA)"},
-		{"maximum allowed fails", owned + "(A;;0x2000000;;;BU)", "(MA)"},
-		{"modify names only the replace rights", owned + "(A;;" + sddlModify + ";;;BU)", "children (D)"},
-		{"untrusted owner fails", "O:BUD:P" + trustedACEs(t), "owner "},
-		{"object allow fails closed", owned + "(OA;;FA;bf967aba-0de6-11d0-a285-00aa003049e2;;BU)", "unsupported type 5"},
-		{"NULL DACL fails", "O:" + me.String() + "D:NO_ACCESS_CONTROL", "NULL DACL"},
+		{"add file and folder pass", dir, owned + "(A;;" + sddlProgramDataUsers + ";;;AU)", ""},
+		{`C:\ shape passes`, root, owned + "(A;;0x4;;;AU)(A;OICIIO;" + sddlModify + ";;;AU)", ""},
+		{"deny passes", dir, owned + "(D;;FA;;;BU)", ""},
+		{"delete child fails", dir, owned + "(A;;0x40;;;BU)", "(DC)"},
+		{"delete fails", dir, owned + "(A;;SD;;;BU)", "(D)"},
+		{"write owner fails", dir, owned + "(A;;0x80000;;;BU)", "(WO)"},
+		{"generic write fails", dir, owned + "(A;;GW;;;BU)", "(GW)"},
+		{"generic all fails", dir, owned + "(A;;GA;;;BU)", "(GA)"},
+		{"maximum allowed fails", dir, owned + "(A;;0x2000000;;;BU)", "(MA)"},
+		{"modify names only the replace rights", dir, owned + "(A;;" + sddlModify + ";;;BU)", "children (D)"},
+		{"untrusted owner fails", dir, "O:BUD:P" + trustedACEs(t), "owner "},
+		{"object allow fails closed", dir, owned + "(OA;;FA;bf967aba-0de6-11d0-a285-00aa003049e2;;BU)", "unsupported type 5"},
+		{"NULL DACL fails", dir, "O:" + me.String() + "D:NO_ACCESS_CONTROL", "NULL DACL"},
+		// A volume root cannot be deleted or renamed, so DELETE on it cannot
+		// move anything aside.
+		{"delete on a volume root passes", root, owned + "(A;;SD;;;AU)", ""},
+		{"modify on a data volume root passes", dataRoot, owned + "(A;OICI;" + sddlModify + ";;;AU)", ""},
+		{"delete on a share root passes", uncRoot, owned + "(A;;SD;;;AU)", ""},
+		{"delete on a volume GUID root passes", volRoot, owned + "(A;;SD;;;AU)", ""},
+		{"delete below a volume GUID root fails", volRoot + "sqi", owned + "(A;;SD;;;AU)", "(D)"},
+		{"delete child on a volume root fails", dataRoot, owned + "(A;;0x40;;;AU)", "(DC)"},
+		{"write DAC on a volume root fails", dataRoot, owned + "(A;;" + sddlWriteDAC + ";;;AU)", "(WDAC)"},
+		{"generic write on a volume root fails", root, owned + "(A;;GW;;;AU)", "(GW)"},
+		{"full control on a volume root names all but D", root, owned + "(A;;FA;;;AU)", "children (DC,WDAC,WO)"},
+		{"untrusted owner of a volume root fails", root, "O:BUD:P" + trustedACEs(t), "owner "},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -590,7 +610,7 @@ func TestJudgeSecurity_AncestorRules(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse %q: %v", tc.sddl, err)
 			}
-			reasons, err := judgeSecurity(sd, testTrusted(t), ancestorRule)
+			reasons, err := judgeSecurity(sd, testTrusted(t), ancestorRuleFor(tc.path))
 			if err != nil {
 				t.Fatal(err)
 			}
