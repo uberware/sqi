@@ -58,6 +58,11 @@ type natsLogger struct {
 	now       func() time.Time
 	afterFunc func(d time.Duration, f func()) (stop func() bool)
 
+	// onBreak, when set, is told of every stream break nats-server logs (see
+	// [parseBreak]). It is set before the logger is installed and must not
+	// block.
+	onBreak func(streamBreak)
+
 	mu     sync.Mutex
 	closed bool // set by close: lines are logged untracked from then on
 	recent map[recentKey]*recentLine
@@ -123,6 +128,13 @@ func (l *natsLogger) Warnf(format string, v ...any) {
 }
 
 func (l *natsLogger) Errorf(format string, v ...any) {
+	// Before the level check in emitf: detection must not depend on
+	// log.level.
+	if l.onBreak != nil {
+		if b, ok := parseBreak(format, v); ok {
+			l.onBreak(b)
+		}
+	}
 	l.emitf(slog.LevelError, "bus: nats server error", "error", format, v...)
 }
 

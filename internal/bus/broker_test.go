@@ -16,28 +16,18 @@ import (
 
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/uberware/sqi/internal/testport"
 )
 
 // ── Test harness ──────────────────────────────────────────────────────────────
 
-// freePort asks the OS for an available loopback TCP port and returns it.  The
-// port is released immediately, so there is a small race window before the
-// broker binds it; acceptable for in-process tests.
+// freePort returns a loopback port from [testport.Free], below the ephemeral
+// range and reserved for the test, so a broker restarted in place finds its
+// port free again.
 func freePort(t *testing.T) int {
 	t.Helper()
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("freePort: %v", err)
-	}
-	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("freePort: unexpected addr type %T", ln.Addr())
-	}
-	port := tcpAddr.Port
-	if closeErr := ln.Close(); closeErr != nil {
-		t.Fatalf("freePort: close: %v", closeErr)
-	}
-	return port
+	return testport.Free(t, 1)[0]
 }
 
 // startBroker boots an embedded broker with auth off on a temp JetStream dir

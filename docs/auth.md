@@ -94,8 +94,11 @@ the worker the same "Authorization Violation" whether its key was revoked or
 `sqi-server` could not answer (a database restart, or in external mode a
 `sqi-server` restart), so a worker holding a credential keeps retrying,
 logging a WARN at each refusal, and exits only once the refusals have lasted
-2 minutes. A worker with no credential gets no grace: on a broker that
-requires one it exits at the first refusal.
+2 minutes. When the worker is starting, a refusal can also arrive as a
+connection reset (the broker closes the connection before the worker has read
+the refusal, which Windows reports as a reset); the worker retries those for
+the same 2 minutes and logs a WARN for each. A worker with no credential gets
+no grace: on a broker that requires one it exits at the first refusal.
 
 Embedded mode needs nothing beyond `nats.auth.enabled: true`: the broker
 inside `sqi-server` is set up with the callout, and the keys it signs with are

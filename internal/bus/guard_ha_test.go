@@ -329,13 +329,17 @@ func TestCheckGuard_Cases(t *testing.T) {
 	js := dataJS(t, c)
 	logger, _ := bufLogger()
 	ctx := t.Context()
+	// Three replicas: the guard reads its key from the stream leader, so a
+	// replica that is behind cannot show an expired key again or an older
+	// revision after a newer one.
+	const replicas = 3
 
 	if err := bus.CheckGuard(ctx, js, bus.GuardOptions{IsMember: members()}, logger); err != nil {
 		t.Fatalf("no bucket: CheckGuard = %v, want nil", err)
 	}
 
 	holder := guardHolder("render-a", 4242)
-	g, err := bus.AcquireGuard(ctx, js, 3, holder, logger)
+	g, err := bus.AcquireGuard(ctx, js, replicas, holder, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +403,7 @@ func TestCheckGuard_Cases(t *testing.T) {
 	})
 
 	t.Run("canceled while watching", func(t *testing.T) {
-		live, err := bus.AcquireGuard(ctx, js, 3, guardHolder("render-b", 5), logger)
+		live, err := bus.AcquireGuard(ctx, js, replicas, guardHolder("render-b", 5), logger)
 		if err != nil {
 			t.Fatal(err)
 		}

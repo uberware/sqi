@@ -24,17 +24,36 @@
 // across both stdout and stderr chunks so the server can replay all chunks in
 // publication order regardless of NATS delivery order.
 //
+// # Delivery
+//
+// A flushed chunk is encoded and queued for delivery; it is never published
+// inline, so a slow or broken broker does not hold up the process's output.
+// One sender goroutine delivers the queue through a [Transport], putting up
+// to 32 chunks on the wire in order before it waits for their acks, so a
+// worker far from the broker is not held to one chunk per round trip. It tries
+// each chunk again, with backoff, until the log stream stores it or the
+// failure is one no retry can cure, such as a chunk over the broker's payload
+// limit or a closed connection. Every try of
+// a chunk carries the message ID "<attemptID>/<seq>", so the stream drops a
+// retry it already stored, and the server keeps one copy per seq. The
+// queue holds at most 32 MiB of encoded chunks; past that the oldest are
+// dropped, with a warning at most once a minute.
+//
 // # Lifecycle
 //
 // Call [Publisher.FlushLogs] after the process exits to drain all remaining
-// buffered lines and stop the background flush goroutine.  FlushLogs blocks
-// until the drain is complete, providing the ordering guarantee that all log
-// output arrives at the server before the terminal status message is published.
+// buffered lines and stop the background flush goroutine. FlushLogs then
+// waits up to 5 s for the attempt's chunks to be stored, so in the normal
+// case all log output reaches the server before the terminal status message
+// is published; a chunk still unstored after the wait keeps being retried and
+// lands after it. At worker shutdown [Publisher.Flush] delivers what is still
+// queued, for as long as its context allows; [Publisher.Abandon] drops it.
 package logstreamer
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -44,15 +63,6 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
-
-// ── natsPublisher ─────────────────────────────────────────────────────────────
-
-// natsPublisher is the minimal subset of [*nats.Conn] the Publisher uses to
-// deliver log-chunk messages.  Defined as an interface so tests can inject a
-// stub without a live NATS server.
-type natsPublisher interface {
-	Publish(subj string, data []byte) error
-}
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -77,6 +87,15 @@ type Config struct {
 
 	// Now stamps each chunk's At; nil is time.Now.
 	Now func() time.Time
+
+	// Delivery settings, the package defaults when zero. Unexported: they
+	// are not operator configuration, and only tests change them.
+	ackTimeout      time.Duration
+	retryBase       time.Duration
+	retryMax        time.Duration
+	flushWait       time.Duration
+	maxPendingBytes int
+	window          int
 }
 
 // DefaultConfig returns a [Config] populated with production-sensible defaults.
@@ -100,6 +119,24 @@ func (c *Config) applyDefaults() {
 	}
 	if c.FlushInterval <= 0 {
 		c.FlushInterval = d.FlushInterval
+	}
+	if c.ackTimeout <= 0 {
+		c.ackTimeout = defaultAckTimeout
+	}
+	if c.retryBase <= 0 {
+		c.retryBase = defaultRetryBase
+	}
+	if c.retryMax <= 0 {
+		c.retryMax = defaultRetryMax
+	}
+	if c.flushWait <= 0 {
+		c.flushWait = defaultFlushWait
+	}
+	if c.maxPendingBytes <= 0 {
+		c.maxPendingBytes = defaultMaxPendingBytes
+	}
+	if c.window <= 0 {
+		c.window = defaultWindow
 	}
 }
 
@@ -162,11 +199,11 @@ func (b *attemptBuf) streamBuf(stream string) *bufState {
 
 // Publisher implements executor.OutputHandler, accumulating process output
 // lines from concurrent task goroutines into batched [protocol.LogChunkMsg]
-// messages published to NATS JetStream.
+// messages delivered to NATS JetStream.
 //
 // Publisher is safe for concurrent use from multiple goroutines.
 type Publisher struct {
-	nc     natsPublisher
+	out    *outbox
 	logger *slog.Logger
 	cfg    Config
 
@@ -180,12 +217,12 @@ type Publisher struct {
 	attempts map[string]*attemptBuf // keyed by attemptID
 }
 
-// New returns a ready-to-use Publisher publishing as workerID.
+// New returns a ready-to-use Publisher publishing as workerID through t.
 // Any zero or negative fields in cfg are replaced with defaults before use.
-func New(nc natsPublisher, workerID string, cfg Config, logger *slog.Logger) *Publisher {
+func New(t Transport, workerID string, cfg Config, logger *slog.Logger) *Publisher {
 	cfg.applyDefaults()
 	return &Publisher{
-		nc:       nc,
+		out:      newOutbox(t, cfg, logger),
 		logger:   logger,
 		cfg:      cfg,
 		workerID: workerID,
@@ -197,11 +234,11 @@ func New(nc natsPublisher, workerID string, cfg Config, logger *slog.Logger) *Pu
 //
 // It appends line to the in-memory buffer for (taskID, attemptID, stream).
 // When the buffer meets the MaxLinesPerChunk or MaxBytesPerChunk threshold, a
-// chunk is flushed immediately and synchronously — HandleLine does not return
-// until the publish call completes.  The per-attempt background goroutine
+// chunk is flushed immediately: HandleLine queues it for delivery before it
+// returns, without waiting on the broker. The per-attempt background goroutine
 // handles the periodic FlushInterval drain between threshold events.
 //
-// Concurrency note: threshold-triggered publishes happen synchronously inside
+// Concurrency note: threshold-triggered flushes happen synchronously inside
 // HandleLine, so when all HandleLine callers return (i.e., when the executor's
 // readWg.Wait() completes after process exit), no threshold flush is in flight.
 // This is why [FlushLogs] can safely drain the remaining buffer without a
@@ -233,13 +270,14 @@ func (p *Publisher) HandleLine(_ context.Context, taskID, attemptID, _ /* sessio
 // It signals the background flush goroutine to stop, waits for it to exit,
 // then performs a final synchronous drain of any remaining buffered lines for
 // both stdout and stderr.  FlushLogs MUST be called after the task process has
-// exited and before the terminal status message is published, providing the
-// ordering guarantee that all log output is delivered to the server first.
+// exited and before the terminal status message is published. It waits up to
+// the flush wait (5 s) for the attempt's chunks to be stored, so in the normal
+// case all log output reaches the server first.
 //
 // Safety: the executor calls FlushLogs only after readWg.Wait() completes
 // (all scanOutput goroutines — and thus all HandleLine calls — have returned).
-// Because threshold-triggered publishes are synchronous inside HandleLine,
-// there are no in-flight publishes for this attempt when FlushLogs runs.
+// Because threshold-triggered flushes are synchronous inside HandleLine,
+// there are no in-flight flushes for this attempt when FlushLogs runs.
 // The only concurrent publisher is the background flushLoop goroutine, which
 // is stopped via close(buf.done) + wg.Wait() before the final drain.
 //
@@ -270,7 +308,31 @@ func (p *Publisher) FlushLogs(_ context.Context, taskID, attemptID string) error
 	// (e.g., during worker shutdown).
 	p.drainBuf(context.Background(), buf, "stdout")
 	p.drainBuf(context.Background(), buf, "stderr")
+
+	// Wait, for a bounded time, for the stream to store this attempt's
+	// chunks, so they reach the server before its terminal status. A broken
+	// log stream must not hold the status for long: what is still unstored
+	// after the wait keeps being retried and lands after it.
+	p.out.waitAttempt(buf.attemptID, p.cfg.flushWait)
 	return nil
+}
+
+// Flush delivers the chunks still queued until none is left or ctx ends, then
+// stops delivery for good and returns how many chunks it dropped, logging them.
+// It is the worker's shutdown call: it must run while the connection is open.
+func (p *Publisher) Flush(ctx context.Context) (dropped int) {
+	dropped = p.out.flush(ctx)
+	if dropped > 0 {
+		p.logger.WarnContext(ctx, "logstreamer: shutdown left log chunks unsent", slog.Int("dropped", dropped))
+	}
+	return dropped
+}
+
+// Abandon stops delivery for good without waiting on the broker and returns
+// how many queued chunks it dropped. It is the crash path: a crashed worker's
+// unsent lines are lost.
+func (p *Publisher) Abandon() (dropped int) {
+	return p.out.close()
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -338,15 +400,15 @@ func (p *Publisher) drainBuf(ctx context.Context, buf *attemptBuf, stream string
 	p.publishChunk(ctx, buf, stream, lines)
 }
 
-// publishChunk assigns the next sequence number, encodes a [protocol.LogChunkMsg],
-// and publishes it to the task.logs.<workerID>.<taskID> NATS subject.
+// publishChunk assigns the next sequence number, encodes a [protocol.LogChunkMsg]
+// and queues it for the task.logs.<workerID>.<taskID> NATS subject.
 // It is a no-op if lines is empty.
 //
-// SeqNum assignment and NATS publish are not atomic.  When the flushLoop
+// SeqNum assignment and queueing are not atomic. When the flushLoop
 // goroutine and a threshold-triggered path from HandleLine run concurrently,
-// a chunk with a higher SeqNum may be published to NATS before one with a
-// lower SeqNum.  This is expected: the server stores SeqNum for ordered replay
-// and handles out-of-order delivery (the NATS JetStream sequence assigned by
+// a chunk with a higher SeqNum may be queued before one with a lower SeqNum,
+// and a chunk dropped by the bound leaves a gap. Both are expected: the server
+// stores SeqNum for ordered replay (the NATS JetStream sequence assigned by
 // the server is the persistence-order number; SeqNum is the logical counter).
 // See protocol.LogChunkMsg.SeqNum documentation.
 func (p *Publisher) publishChunk(ctx context.Context, buf *attemptBuf, stream string, lines []string) {
@@ -380,16 +442,10 @@ func (p *Publisher) publishChunk(ctx context.Context, buf *attemptBuf, stream st
 		return
 	}
 
-	subj := bus.TaskLogsSubject(p.workerID, buf.taskID)
-	if err := p.nc.Publish(subj, data); err != nil {
-		p.logger.WarnContext(
-			ctx, "logstreamer: publish log chunk failed",
-			slog.String("task_id", buf.taskID),
-			slog.String("attempt_id", buf.attemptID),
-			slog.String("subject", subj),
-			slog.String("stream", stream),
-			slog.Int64("seq_num", seq),
-			slog.Any("error", err),
-		)
-	}
+	p.out.enqueue(&pendingChunk{
+		subj:      bus.TaskLogsSubject(p.workerID, buf.taskID),
+		msgID:     fmt.Sprintf("%s/%d", buf.attemptID, seq),
+		attemptID: buf.attemptID,
+		data:      data,
+	})
 }

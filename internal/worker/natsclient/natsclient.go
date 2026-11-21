@@ -130,7 +130,10 @@ func connect(
 // A refused credential never enters nats.go's own backoff loop, where the
 // reason would be buried: dial retries it here, with a WARN per refusal, and
 // returns the fatal rejection error once the refusals have lasted the grace.
-// Any other failure, notably an unreachable server, is returned at once.
+// A connection reset is retried the same way, since a refusal can arrive as
+// one (see [isConnReset]), but past the grace it is returned as a dial error,
+// since a reset does not prove a refusal. Any other failure, notably an unreachable server, is returned
+// at once.
 func dial(ctx context.Context, cfg workerconfig.NATSConfig, opts []nats.Option, lc *lifecycle) (*nats.Conn, error) {
 	backoff := exponentialBackoff(cfg.ReconnectWait)
 	var since time.Time
@@ -139,7 +142,8 @@ func dial(ctx context.Context, cfg workerconfig.NATSConfig, opts []nats.Option, 
 		if err == nil {
 			return nc, nil
 		}
-		if !IsAuthRefusal(err) {
+		refused := IsAuthRefusal(err)
+		if !refused && !isConnReset(err) {
 			return nil, dialError(ctx, cfg.URL, err)
 		}
 		now := time.Now()
@@ -147,10 +151,16 @@ func dial(ctx context.Context, cfg workerconfig.NATSConfig, opts []nats.Option, 
 			since = now
 		}
 		remaining := lc.grace - now.Sub(since)
-		if remaining <= 0 {
+		switch {
+		case remaining <= 0 && refused:
 			return nil, lc.rejection(err)
+		case remaining <= 0:
+			return nil, dialError(ctx, cfg.URL, err)
+		case refused:
+			lc.logRefusal(err, remaining)
+		default:
+			lc.logReset(err, remaining)
 		}
-		lc.logRefusal(err, remaining)
 
 		wait := time.NewTimer(min(backoff(attempt), remaining))
 		select {
@@ -290,6 +300,20 @@ func (lc *lifecycle) logRefusal(err error, remaining time.Duration) {
 	msg := "natsclient: the broker refused this worker's credential; retrying — it may have been revoked, or sqi-server or its store may be unavailable"
 	if lc.keyed {
 		msg += ", or the farm runs with broker authentication off and refuses any key"
+	}
+	lc.logger.WarnContext(
+		lc.ctx, msg,
+		slog.Any("error", err),
+		slog.Duration("gives_up_in", remaining.Round(time.Second)),
+	)
+}
+
+// logReset warns about a reset during the initial dial. Only a worker that
+// presents a key has a credential the broker can refuse this way.
+func (lc *lifecycle) logReset(err error, remaining time.Duration) {
+	msg := "natsclient: the broker reset the connection before it was set up; retrying — the broker may be restarting or overloaded"
+	if lc.keyed {
+		msg = "natsclient: the broker reset the connection before it was set up; retrying — this is how a refusal of this worker's credential can arrive, while sqi-server or its store is unavailable"
 	}
 	lc.logger.WarnContext(
 		lc.ctx, msg,

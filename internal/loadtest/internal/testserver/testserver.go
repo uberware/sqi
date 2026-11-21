@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,44 +35,43 @@ const (
 // hand out a port that something else already holds.
 var nextPort = freePort
 
-// errStartupFailed marks a server that stopped, or failed to bind its HTTP
-// port, before /readyz passed: what a lost race for a port looks like.
+// errStartupFailed marks a server that stopped before it was ready: what a
+// lost race for a port looks like, since sqi-server fails to start when its
+// HTTP or NATS port is taken.
 var errStartupFailed = errors.New("server failed to start")
 
-// httpServerErrorMsg is the record server.Run logs when ListenAndServe fails.
-// Run does not return in that case, so the log is the only signal of a lost
-// HTTP port; TestStart_RecoversFromAPortTakenByAnotherProcess fails if the
-// message changes.
-const httpServerErrorMsg = "http: server error"
+// serverReadyMsg is the record server.Run logs once startup has finished,
+// both listeners bound. Until then a 200 from /readyz on the drawn HTTP port
+// may come from another process's server that took the port first;
+// TestStart_IgnoresAnotherServersReadiness fails if the message changes.
+const serverReadyMsg = "sqi-server ready — waiting for signal"
 
-// bindWatch is a slog.Handler that reports an HTTP listen failure on failed
-// and drops every record.
-type bindWatch struct{ failed chan error }
+// readyWatch is a slog.Handler that closes ready on the server's ready record
+// and drops every record. Once ready is closed it enables nothing, so the
+// records a running server logs are not built only to be dropped.
+type readyWatch struct {
+	once  sync.Once
+	ready chan struct{}
+	seen  atomic.Bool
+}
 
-func (*bindWatch) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelError }
+func (h *readyWatch) Enabled(_ context.Context, l slog.Level) bool {
+	return l >= slog.LevelInfo && !h.seen.Load()
+}
 
-func (h *bindWatch) Handle(_ context.Context, r slog.Record) error {
-	if r.Message != httpServerErrorMsg {
-		return nil
-	}
-	err := errors.New(r.Message)
-	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == "error" {
-			err = fmt.Errorf("%s: %v", r.Message, a.Value.Any())
-			return false
-		}
-		return true
-	})
-	select {
-	case h.failed <- err:
-	default:
+func (h *readyWatch) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == serverReadyMsg {
+		h.once.Do(func() {
+			h.seen.Store(true)
+			close(h.ready)
+		})
 	}
 	return nil
 }
 
-func (h *bindWatch) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *readyWatch) WithAttrs([]slog.Attr) slog.Handler { return h }
 
-func (h *bindWatch) WithGroup(string) slog.Handler { return h }
+func (h *readyWatch) WithGroup(string) slog.Handler { return h }
 
 // Options configures Start.
 type Options struct {
@@ -179,11 +179,17 @@ func startOnce(tb testing.TB, opts Options) (*Server, error) {
 		joinToken = enableBrokerAuth(tb, &cfg)
 	}
 
-	bindFailed := make(chan error, 1)
-	srv := server.New(cfg, slog.New(&bindWatch{failed: bindFailed}), nil)
+	watch := &readyWatch{ready: make(chan struct{})}
+	srv := server.New(cfg, slog.New(watch), nil)
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- srv.Run(ctx) }()
+	// done closes when Run returns, with its error in runErr, so both the
+	// readiness wait and stop can observe the exit.
+	done := make(chan struct{})
+	var runErr error
+	go func() {
+		runErr = srv.Run(ctx)
+		close(done)
+	}()
 
 	var stopOnce sync.Once
 	stop := func() {
@@ -198,7 +204,8 @@ func startOnce(tb testing.TB, opts Options) (*Server, error) {
 	}
 	tb.Cleanup(stop)
 
-	if err := awaitReady(httpAddr, done, bindFailed, startupTimeout); err != nil {
+	exited := func() error { return runErr } // read only after done closes
+	if err := awaitReady(httpAddr, done, exited, watch.ready, startupTimeout); err != nil {
 		stop()
 		return nil, fmt.Errorf("%w (HTTP %s, NATS %s)", err, httpAddr, natsAddr)
 	}
@@ -286,19 +293,27 @@ func drawPort(tb testing.TB) int {
 	return tcpAddr.Port
 }
 
-// awaitReady polls /readyz until it answers 200. It returns early if the
-// server's Run returns, or its HTTP listener fails to bind, so a lost port is
-// reported as such instead of as a timeout: a foreign listener on httpAddr
-// still accepts connections, but never answers with a 200.
-func awaitReady(httpAddr string, done, bindFailed <-chan error, timeout time.Duration) error {
-	client := &http.Client{Timeout: 2 * time.Second}
+// awaitReady waits for the server's ready record, then polls /readyz until it
+// answers 200. It returns early if the server's Run returns, so a lost port
+// is reported as such instead of as a timeout. /readyz is not polled before
+// the ready record: the drawn HTTP port may be another server's until this
+// one has bound it, and that server answers 200.
+func awaitReady(httpAddr string, done <-chan struct{}, runErr func() error, ready <-chan struct{}, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return fmt.Errorf("%w: Run returned: %w", errStartupFailed, runErr())
+	case <-ready:
+	case <-timer.C:
+		return fmt.Errorf("server not ready within %s", timeout)
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
 	for time.Now().Before(deadline) {
 		select {
-		case err := <-done:
-			return fmt.Errorf("%w: Run returned: %w", errStartupFailed, err)
-		case err := <-bindFailed:
-			return fmt.Errorf("%w: %w", errStartupFailed, err)
+		case <-done:
+			return fmt.Errorf("%w: Run returned: %w", errStartupFailed, runErr())
 		default:
 		}
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+httpAddr+"/readyz", http.NoBody)

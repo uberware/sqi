@@ -492,6 +492,26 @@ buffered and sent with its old age once the connection comes back. A closed
 connection drops the report. Progress snapshots are plain core publishes with
 no ack, because only the latest matters.
 
+**Log chunks are acknowledged too.** The log publisher queues each chunk it
+flushes and one sender goroutine per worker delivers the queue with JetStream
+publishes that expect stream `SQI_LOGS`, up to 32 chunks sent in order before
+it waits for their acks (`internal/worker/logstreamer/outbox.go`), so a worker
+far from the broker is not limited to one chunk per round trip. Chunks are
+stored in the order they were sent, except that a chunk which fails while a
+later chunk in the same send is stored lands after that chunk when it is
+retried. The log view shows chunks in stored order, so after a fault one may
+appear out of place; each chunk keeps its `seq_num`. Every try of a chunk carries
+`Nats-Msg-Id: <attemptID>/<seq>`, and a failed try is retried, waiting 250 ms
+and doubling to 5 s, until the stream stores it, so a chunk sent while a
+stream cannot store, while the broker restarts or while the connection is
+down still lands. Queueing never waits on the broker, so a slow or broken
+broker does not hold up a task's output. The queue holds at most 32 MiB of
+encoded chunks per worker; past that the oldest are dropped with a Warn
+(`logstreamer: dropped log chunks the broker has not stored`) at most once a
+minute. Before an attempt's terminal status the executor's `FlushLogs` waits up
+to 5 s for that attempt's chunks to be stored; what is still pending after the
+wait lands after the terminal status, which ingest accepts.
+
 A worker's heartbeat lists the attempts its executor holds plus the attempts
 the publisher still has a status pending for, so the server's reconciliation
 does not reclaim an attempt whose terminal status is waiting for the stream.
@@ -499,10 +519,13 @@ does not reclaim an attempt whose terminal status is waiting for the stream.
 **Worker shutdown order.** On SIGTERM the worker runs `DrainAndShutdown`
 (waiting up to the drain grace for tasks to finish, then interrupting the rest
 and reporting them `failed` with `worker_shutdown`), then `Flush` of the status
-publisher, then stops the heartbeat, then `Deregister`, then drains the NATS
-connection. `Flush` has its own 10 s budget, separate from the grace; a status
-still pending when it ends is dropped with a Warn naming it, and the task is
-re-run after the server reclaims the attempt.
+publisher and then of the log publisher, then stops the heartbeat, then
+`Deregister`, then drains the NATS connection. The two flushes share a 10 s
+budget, separate from the grace, and the status reports go first so a broken
+log stream cannot spend it. A status still pending when it ends is dropped
+with a Warn naming it, and the task is re-run after the server reclaims the
+attempt; log chunks still pending are dropped with a Warn
+(`logstreamer: shutdown left log chunks unsent`) giving the count.
 
 ### 5. Status ingestion
 
@@ -1737,6 +1760,17 @@ pipes; workers connect to its client listener, `nats.embedded.addr`.
                         sqi-worker × N
 ```
 
+The embedded broker can restart in place. nats-server keeps a stream's write
+error for good, so a stream whose write failed on a full data volume or for
+want of a file descriptor stores nothing more until its store is reopened.
+`Embedded` recognizes the broker's log line for such a break, reports it
+through the `nats` readiness check, and once the data directory takes a write
+and descriptors are free stops the nats-server and starts a new one on the
+same data directory, port and keys. Every in-process connection dials through
+`Embedded` itself (it is the `nats.InProcessConnProvider`), so the
+reconnecting connections land on the new server. See [When the broker cannot
+store](operations.md#when-the-broker-cannot-store-a-full-data-volume-or-no-file-descriptors).
+
 **External** (`nats.mode: external`). The broker is a NATS server or cluster
 the operator runs, normally configured from the fragment
 `sqi-server nats external init` writes. `sqi-server` is one more client of it:
@@ -2086,7 +2120,9 @@ degraded unless:
 - the data connection is connected;
 - with `nats.auth.enabled`, the callout connection is connected too, since
   without it every worker connect is refused;
-- on the embedded broker, the in-process server is running;
+- on the embedded broker, the in-process server is running, no stream has a
+  write error it has not recovered from, and every server consumer came back
+  after its last restart;
 - on an external broker, this server still holds the guard: its last refresh
   succeeded within 30 s and no other server took the key.
 

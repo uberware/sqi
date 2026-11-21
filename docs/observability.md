@@ -197,6 +197,39 @@ connection, so it is logged at the first refusal and then once a minute with a
 An external broker (`nats.mode: external`) keeps its own log; `sqi-server`
 logs none of it.
 
+### When an embedded broker stream cannot store
+
+A stream the embedded broker can no longer write to (a full data volume, or no
+file descriptors left) is reported by `sqi-server` itself, which then
+restarts the broker in place once the cause has cleared. See [When the broker
+cannot store](operations.md#when-the-broker-cannot-store-a-full-data-volume-or-no-file-descriptors)
+for what it does.
+
+| Message | Level | Attributes | What it is |
+|---|---|---|---|
+| `bus: the broker can no longer store messages on a stream` | `ERROR` | `stream`, `error`, `impact`, `remediation` | The first break of an outage. `stream` is `all (JetStream is disabled)` when nats-server shut JetStream down. |
+| `bus: another broker stream can no longer store messages` | `WARN` | `stream`, `error` | A further stream broke before the broker recovered. |
+| `bus: the broker cannot restart yet` | `WARN` | `error` | The data directory does not take a write yet, or too few file descriptors are free. At most once a minute. |
+| `bus: restarting the broker` | `INFO` | `stream` | The restart begins. Not logged again for the retries after a failed start. |
+| `bus: the broker restarted and stores messages again` | `INFO` | `broken_for` | The restart is done. |
+| `bus: the broker restart failed` | `ERROR` | `error`, `failed_attempts`, `impact` | The new broker did not start; every passing check tries again. At most once a minute; `failed_attempts` counts the attempts since the last one. Not logged when `sqi-server` stopping ended the restart. |
+| `bus: consumers did not come back after the broker restarted` | `ERROR` | `consumers`, `impact`, `remediation` | Restart `sqi-server`. |
+
+While a stream is broken, `GET /readyz` answers 503 with the `nats` check
+reading `nats stream <stream> cannot store messages since <time> (<error>);
+the broker restarts once its data directory is writable`.
+
+Workers keep their log chunks meanwhile and send them again until the stream
+stores them. Their own log shows it:
+
+| Message | Level | Attributes | What it is |
+|---|---|---|---|
+| `logstreamer: log chunk not acknowledged; retrying` | `WARN` | `msg_id`, `failures`, `error` | The broker did not store a chunk. On the first failure, then at most once a minute. |
+| `logstreamer: log chunk stored after retrying` | `INFO` | `msg_id`, `failures` | Delivery resumed. |
+| `logstreamer: dropped log chunks the broker has not stored` | `WARN` | `dropped`, `max_pending_bytes` | The worker held 32 MiB of unstored chunks and dropped the oldest. At most once a minute. |
+| `logstreamer: log chunk cannot be sent; dropped` | `ERROR` | `subject`, `msg_id`, `chunks`, `error` | A chunk over the broker's payload limit, or the connection closed for good. Logged at most once a minute; `chunks` counts the ones dropped since the last such line, and `subject` and `msg_id` name the first chunk of the send that logged it. |
+| `logstreamer: shutdown left log chunks unsent` | `WARN` | `dropped` | The worker stopped before the broker stored them. |
+
 ---
 
 ## Task-state health signals

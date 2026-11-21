@@ -1054,7 +1054,7 @@ func diskWindows(faults []scenario.Fault, records []report.FaultRecord) ([]chaos
 		if d == nil || d.Volume != scenario.VolumeWorkers {
 			continue
 		}
-		w := chaos.DiskWindow{Start: rec.Start, Healed: rec.Healed, MaxFailed: d.MaxFailed}
+		w := chaos.DiskWindow{Start: rec.Start, Healed: rec.Healed, MinFailed: d.MinFailed, MaxFailed: d.MaxFailed}
 		if d.Reason != "" {
 			re, err := regexp.Compile(d.Reason)
 			if err != nil {

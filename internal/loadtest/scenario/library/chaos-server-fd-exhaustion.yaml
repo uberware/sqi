@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: chaos-server-fd-exhaustion
-description: chaos - lower the server's file descriptor limit to 10 free descriptors for 40s while a rack of 30 of 120 workers redials after a 20s cut; records whether the farm converges once the limit lifts, 5 min
+description: chaos - lower the server's file descriptor limit to 10 free descriptors for 40s while a rack of 30 of 120 workers redials after a 20s cut; the broker restarts once the limit lifts and the farm converges, 5 min
 # Linux only (RLIMIT_NOFILE, set on the server with prlimit); it needs no
 # privilege and no container.
 #
@@ -32,25 +32,18 @@ description: chaos - lower the server's file descriptor limit to 10 free descrip
 # up to 1000ms, then once a minute with a suppressed count while the limit
 # holds.
 #
-# The farm often does not converge. The redialing workers take the free
-# descriptors, and a stream can stop storing: its newest block file is last
-# written inside the window and never again, also after the limit lifts, and
-# the stream stores nothing more for the rest of the run. A standalone
-# nats-server 2.15.2 ends in the same state: out of descriptors while a
-# work-queue stream needs a new block file, its writes fail for good. In sqi
-# the server log shows "Filestore [SQI_TASK] Critical write error: lmb
-# missing", then "JetStream failed to store a msg on stream 'SQI > SQI_TASK':
-# lmb missing" for the rest of the run. The broker creates block files many
-# times a minute, and which stream stops depends on whose block create falls in
-# the window: the task status stream, the heartbeat stream, both, or neither
-# (the run then passes every check); the log stream has not been seen to stop.
-# So every entry below is "may".
-#   - Status stream: no task reaches running or a terminal status. The
-#     stale-assigned reap takes each task back 30-45s after its lease and
-#     leases it again, so every open task re-runs about every 30s until the
-#     run ends, about 370s after the break, and its work never counts.
-#   - Heartbeat stream: the sweep marks every worker offline for good and
-#     reclaims the attempts they are still running.
+# The redialing workers take the free descriptors, and a stream can stop
+# storing: a work-queue stream opens a new block file whenever an ack empties
+# its last one, and with no descriptor free that open fails and nats-server
+# keeps the stream's write error ("Filestore [SQI_TASK] Critical write error:
+# lmb missing"). Which stream breaks depends on whose block create falls in
+# the window: the task status stream, the heartbeat stream, both, or neither.
+# sqi-server reports the broken stream (/readyz degraded, one ERROR) and
+# restarts its broker in place once the limit has lifted and descriptors are
+# free again (it waits for max(64, 5% of the limit) to spare), which reopens
+# every stream with what it had stored. While a stream is broken its ingest
+# markers stop arriving, so the heartbeat sweep and the stale-assigned reap
+# hold rather than act on reports the stream could not store.
 duration: 5m
 warmup: 10s
 drain_timeout: 5m
@@ -95,39 +88,5 @@ faults:
 # for about a minute, past heartbeat_timeout), about 12 tasks on rack-b's
 # quarter of the fleet and up to about 25 with the backlog; the bound of 30
 # covers that.
-#
-# With the status stream broken, rework is open tasks times re-runs: about 12
-# re-runs a task in the 370s left after the break, on every task open when the
-# stream breaks or submitted after it. That comes to 1,050 to 1,572 attempts,
-# the most when the heartbeat stream breaks too, since the sweep's reclaims
-# re-lease tasks sooner than the reap; a heartbeat-only break gives 56 to 88.
-# The ceiling of 2,500 leaves 60% over the highest count; a count over it is
-# still a failure.
 expect:
   max_rework_attempts: 30
-  known_violations:
-    - check: terminal
-      kind: may
-      reason: the task status stream stopped storing inside the descriptor-limit window and stored nothing more for the rest of the run (consistent with a block file the broker could not create while the limit held, unconfirmed in sqi's logs), so no task status is stored after it and no job finishes
-      tracker: H13f9
-    - check: outcomes
-      kind: may
-      reason: when the status stream breaks no task status is stored after it, so the open tasks stay assigned and never reach the status the simulator decided
-      tracker: H13f9
-    - check: rework
-      kind: may
-      max_attempts: 2500
-      reason: whichever stream breaks, finished work is rejected - with the status stream broken the stale-assigned reap takes every leased task back and leases it again about every 30s, and with the heartbeat stream broken the sweep reclaims the attempts of workers still running them
-      tracker: H13f9
-    - check: single-attempt
-      kind: may
-      reason: when the heartbeat stream breaks, the sweep reclaims the attempts of workers still running them and leases the tasks again
-      tracker: H13f9
-    - check: workers-converge
-      kind: may
-      reason: when the heartbeat stream breaks no heartbeat is stored, the sweep marks every worker offline and none comes back
-      tracker: H13f9
-    - check: executions-recorded
-      kind: may
-      reason: when the heartbeat stream breaks, the attempts the swept workers were running can stay open in the stopped server's store; it fires when both streams break
-      tracker: H13f9

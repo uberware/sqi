@@ -220,7 +220,7 @@ func guardBucket(ctx context.Context, js jetstream.JetStream, replicas int, dead
 	if err != nil {
 		return nil, fmt.Errorf("bus: guard bucket %s: %w", GuardBucket, err)
 	}
-	return kv, nil
+	return leaderReads(js, kv), nil
 }
 
 // ensureGuardBucket brings the guard bucket's configuration, its replica
@@ -402,7 +402,7 @@ func retakeStaleGuardKey(ctx context.Context, kv jetstream.KeyValue, value []byt
 		return 0, false, err
 	case entry == nil:
 		newRev, err = kv.Create(opCtx, guardKey, value)
-	case entry.Revision() != rev:
+	case advanced(entry, rev):
 		return 0, true, nil
 	default:
 		newRev, err = kv.Update(opCtx, guardKey, value, rev)
@@ -411,6 +411,16 @@ func retakeStaleGuardKey(ctx context.Context, kv jetstream.KeyValue, value []byt
 		return 0, true, nil
 	}
 	return newRev, false, err
+}
+
+// advanced reports whether entry is a write after revision rev. The guard
+// reads its key from the bucket's stream leader (see [leaderReadKV]), so a
+// read is not normally older than a revision already seen; a leader elected
+// a moment ago can still be behind on what it has applied. Revisions are
+// stream sequences, so an older one is a stale read and says nothing about
+// the holder.
+func advanced(entry jetstream.KeyValueEntry, rev uint64) bool {
+	return entry.Revision() > rev
 }
 
 // readGuardKey returns the guard key's entry, or nil when there is none.
@@ -439,7 +449,7 @@ func watchGuardKey(ctx context.Context, kv jetstream.KeyValue, rev uint64) (valu
 			// A read that failed says nothing; the next poll tries again.
 		case entry == nil:
 			return nil, false, nil
-		case entry.Revision() != rev:
+		case advanced(entry, rev):
 			return entry.Value(), true, nil
 		}
 		if !time.Now().Before(end) {
@@ -479,6 +489,7 @@ func CheckGuard(ctx context.Context, js jetstream.JetStream, opts GuardOptions, 
 	case err != nil:
 		return fmt.Errorf("bus: guard bucket %s: %w", GuardBucket, err)
 	}
+	kv = leaderReads(js, kv)
 	opCtx, cancel := context.WithTimeout(ctx, guardOpTimeout)
 	entry, err := readGuardKey(opCtx, kv)
 	cancel()
@@ -589,17 +600,20 @@ func (g *Guard) deleteOwnKey(ctx context.Context) error {
 		// recorded, and on a replicated bucket a delete is refused while that
 		// write is still being applied, when a read can still show the old
 		// revision. Delete the key at its current revision while it is still
-		// this server's, until the write has landed.
+		// this server's, until the write has landed. A read at or before the
+		// recorded revision has not seen the write yet: wait, and delete at the
+		// recorded revision again.
 		entry, gerr := g.kv.Get(ctx, guardKey)
 		if gerr != nil || !g.ownedBy(entry.Value()) {
 			return nil
 		}
-		if entry.Revision() == rev {
+		if !advanced(entry, rev) {
 			select {
 			case <-ctx.Done():
 				return wrapRelease(err)
 			case <-time.After(guardReleaseRetry):
 			}
+			continue
 		}
 		rev = entry.Revision()
 	}
@@ -691,6 +705,17 @@ func (g *Guard) refreshed(rev uint64) {
 
 // reconcile handles a refused refresh: the key expired and nobody took it,
 // which is retaken, or another server holds it, which is final.
+//
+// A read at or before the recorded revision says nothing new: a write the
+// refresh was refused for may still be in flight, and a newly elected leader
+// can be behind (see [advanced]); the next refresh decides. Past it, the key
+// is this server's own refresh that landed after it was abandoned, which
+// counts, or another holder's takeover.
+//
+// Another holder at an older revision is not waited on for ever: revisions
+// start again when the bucket is deleted and created anew, and once a whole
+// TTL has passed since this server's last refresh its own key has expired,
+// so the other holder is real.
 func (g *Guard) reconcile(ctx context.Context) bool {
 	entry, err := readGuardKey(ctx, g.kv)
 	switch {
@@ -699,17 +724,17 @@ func (g *Guard) reconcile(ctx context.Context) bool {
 		return false
 	case entry == nil:
 		return g.retakeExpired(ctx)
-	case g.ownedBy(entry.Value()):
-		// A refresh that landed after it was abandoned moved the key on, and
-		// counts. At the same revision nothing was refreshed: the write the
-		// server refused this one for is still in flight and may be another
-		// server's, which the next refresh finds.
-		g.mu.Lock()
-		same := entry.Revision() == g.revision
-		g.mu.Unlock()
-		if !same {
-			g.refreshed(entry.Revision())
-		}
+	}
+	g.mu.Lock()
+	moved := advanced(entry, g.revision)
+	expired := time.Since(g.lastOK) > guardTTL
+	g.mu.Unlock()
+	owned := g.ownedBy(entry.Value())
+	switch {
+	case !moved && (owned || !expired):
+		return false
+	case owned:
+		g.refreshed(entry.Revision())
 		return false
 	default:
 		g.markLost(ctx, entry.Value())

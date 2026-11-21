@@ -260,6 +260,9 @@ func TestValidate_Expect(t *testing.T) {
 		{name: "max_attempts below the bound", extra: "expect:\n  max_rework_attempts: 5\n  known_violations:\n    - {check: rework, max_attempts: 3, reason: r, tracker: t}\n", want: "expect.known_violations[0].max_attempts"},
 		{name: "max_attempts just above the bound", extra: "expect:\n  max_rework_attempts: 5\n  known_violations:\n    - {check: rework, max_attempts: 6, reason: r, tracker: t}\n"},
 		{name: "max_attempts on another check", extra: "expect:\n  max_rework_attempts: 0\n  known_violations:\n    - {check: terminal, max_attempts: 5, reason: r, tracker: t}\n", want: "expect.known_violations[0].max_attempts"},
+		{name: "match", extra: "expect:\n  known_violations:\n    - {check: terminal, match: 'stream \\S+ broken', reason: r, tracker: t}\n"},
+		{name: "match does not compile", extra: "expect:\n  known_violations:\n    - {check: terminal, match: '(', reason: r, tracker: t}\n", want: "expect.known_violations[0].match: does not compile"},
+		{name: "match on rework", extra: "expect:\n  max_rework_attempts: 0\n  known_violations:\n    - {check: rework, max_attempts: 5, match: x, reason: r, tracker: t}\n", want: `expect.known_violations[0].match: does not apply to a "rework" entry`},
 		{name: "unknown check", extra: "expect:\n  known_violations:\n    - {check: nope, reason: r, tracker: t}\n", want: "expect.known_violations[0].check"},
 		{name: "unknown kind", extra: "expect:\n  known_violations:\n    - {check: terminal, kind: sometimes, reason: r, tracker: t}\n", want: "expect.known_violations[0].kind"},
 		{name: "no reason", extra: "expect:\n  known_violations:\n    - {check: terminal, tracker: t}\n", want: "expect.known_violations[0].reason"},
@@ -498,6 +501,19 @@ func TestValidate_DiskFull(t *testing.T) {
 			want: "faults[0].disk_full.max_failed: must not be negative",
 		},
 		{name: "max_failed zero", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, max_failed: 0}, duration: 5s}\n"},
+		{name: "min_failed", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, min_failed: 2, max_failed: 3}, duration: 5s}\n"},
+		{
+			name: "min_failed on server", extra: "faults:\n  - {at: 5s, disk_full: {volume: server, min_failed: 1}, duration: 5s}\n",
+			want: "faults[0].disk_full.min_failed: applies to a workers volume only",
+		},
+		{
+			name: "min_failed zero", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, min_failed: 0}, duration: 5s}\n",
+			want: "faults[0].disk_full.min_failed: must be at least 1",
+		},
+		{
+			name: "min_failed over max_failed", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers, min_failed: 4, max_failed: 3}, duration: 5s}\n",
+			want: "faults[0].disk_full.min_failed: 4 is more than max_failed (3)",
+		},
 		{
 			name: "workers volume without real workers", extra: "faults:\n  - {at: 5s, disk_full: {volume: workers}, duration: 5s}\n",
 			mutate: func(s *Scenario) { s.Workers[0].Real = 0 },

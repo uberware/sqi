@@ -311,3 +311,43 @@ func TestStartPreemptionWatch_NoneReachesNoEndpoint(t *testing.T) {
 		t.Errorf("watch none contacted the endpoint %d times (ctx err %v), want no activity", hits.Load(), ctx.Err())
 	}
 }
+
+// namedFlusher records the order flushes run in and the context each got.
+type namedFlusher struct {
+	name    string
+	order   *[]string
+	ctxs    *[]context.Context
+	dropped int
+}
+
+func (f namedFlusher) Flush(ctx context.Context) int {
+	*f.order = append(*f.order, f.name)
+	*f.ctxs = append(*f.ctxs, ctx)
+	return f.dropped
+}
+
+// TestReportFlusher_StatusThenLogs pins the shutdown flush: status reports
+// first, so a broken log stream cannot spend the wait the reports need, then
+// log chunks, under the same deadline; the count returned is the reports'
+// (the log publisher logs its own drops).
+func TestReportFlusher_StatusThenLogs(t *testing.T) {
+	var order []string
+	var ctxs []context.Context
+	f := reportFlusher{
+		status: namedFlusher{name: "status", order: &order, ctxs: &ctxs, dropped: 2},
+		logs:   namedFlusher{name: "logs", order: &order, ctxs: &ctxs, dropped: 5},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if got := f.Flush(ctx); got != 2 {
+		t.Errorf("Flush = %d, want the status publisher's 2", got)
+	}
+	if len(order) != 2 || order[0] != "status" || order[1] != "logs" {
+		t.Errorf("flush order = %v, want [status logs]", order)
+	}
+	for i, c := range ctxs {
+		if c != ctx {
+			t.Errorf("flush %d got a different context, want the shared deadline", i)
+		}
+	}
+}

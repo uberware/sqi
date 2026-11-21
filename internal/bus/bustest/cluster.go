@@ -9,11 +9,9 @@
 package bustest
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +23,7 @@ import (
 
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/testport"
 )
 
 // stopAllGrace and stopAllDuration shape the lame duck shutdown of
@@ -42,9 +41,9 @@ const (
 const readyTimeout = 30 * time.Second
 
 // startAttempts is how many times [StartCluster] boots a cluster on freshly
-// reserved ports before giving up. A reserved port can be taken by another
-// process before the node binds it, which is likely when many test packages
-// run at once.
+// reserved ports before giving up. Other testport callers skip a reserved
+// port, but a program that binds a fixed port can still take it before the
+// node does.
 const startAttempts = 3
 
 // reservePorts is [freePorts]; a test replaces it to inject a collision.
@@ -538,30 +537,13 @@ func (c *Cluster) Shutdown() {
 	}
 }
 
-// freePorts reserves n distinct loopback ports and releases them. A port can
-// in principle be taken before the node binds it; tests accept that race.
+// freePorts is [testport.Free], whose ports stay reserved for the test, so a
+// node restarted by [Cluster.RestartNode] can bind its port again. A program
+// that binds a fixed port can still take one before the node does;
+// [StartCluster] retries on fresh ports when that happens.
 func freePorts(t testing.TB, n int) []int {
 	t.Helper()
-	ports := make([]int, 0, n)
-	var listeners []net.Listener
-	defer func() {
-		for _, l := range listeners {
-			l.Close()
-		}
-	}()
-	for range n {
-		l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("bustest: reserve port: %v", err)
-		}
-		listeners = append(listeners, l)
-		addr, ok := l.Addr().(*net.TCPAddr)
-		if !ok {
-			t.Fatalf("bustest: unexpected listener address %v", l.Addr())
-		}
-		ports = append(ports, addr.Port)
-	}
-	return ports
+	return testport.Free(t, n)
 }
 
 func generate(t testing.TB, gen func() ([]byte, string, error)) (seed []byte, pub string) {

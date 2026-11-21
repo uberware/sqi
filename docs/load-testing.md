@@ -644,7 +644,7 @@ about 2,000 and a seeded random sample of that size beyond.
 | `terminal` | Every accepted job is `completed`, `failed` or `canceled` within `drain_timeout` after submissions stop. A job left non-terminal is stranded. |
 | `outcomes` | Every task's final server status is the one the simulator decided (succeeded, failed after retries, or canceled). A task the simulator never leased can only be canceled, and a task of a job a cancel action targeted may be canceled whatever was decided. A `completed` job has only succeeded tasks. A job has exactly `steps x tasks_per_step` tasks, so no work is silently dropped. A disagreeing task is re-read for a few seconds before it counts. |
 | `single-attempt` | On each sampled task, no two of the server's attempts are held at once; every attempt after the first follows a failed or canceled one (a retry or a reclaim); and a task in a terminal status holds no open attempt. On every task, the simulator never ran two attempts at once: an attempt leased while an earlier attempt of the same task had not ended (succeeded, failed, canceled or crashed) on its worker fails the check, naming both attempts and workers. The server's attempt list cannot show that case: a worker still running an attempt the server already reclaimed (its heartbeats lost under load) or canceled (the cancel lost) leaves the server with sequential attempts and its late report rejected. |
-| `logs` | On each sampled task, the lines the server returns for the task's latest attempt equal the lines the simulator sent for it, in order. When the scenario overflows the broker's store on purpose, losing the attempt's oldest whole chunks is allowed and nothing else is. A chunk lost on an unplanned connection drop fails the check: workers publish log chunks with a core-NATS publish, which delivers at most once. |
+| `logs` | On each sampled task, the lines the server returns for the task's latest attempt equal the lines the simulator sent for it, in order. When the scenario overflows the broker's store on purpose, losing the attempt's oldest whole chunks is allowed and nothing else is. A chunk lost outside a fault window fails the check: workers deliver log chunks with an acknowledged publish and retry each until the stream stores it, so only the 32 MiB bound, a chunk over the broker's payload limit, a closed connection or a crash drops one. |
 | `workers-converge` | Within the server's heartbeat timeout plus the slowest worker heartbeat plus 10 s, the farm's online worker count equals the number of workers the harness has running. |
 | `caps` | The most attempts the simulator held at once on a queue never exceeded `max_concurrent_tasks` (0 is unlimited), and on a usage pool never exceeded its `limit` (each task claims one unit). A canceled attempt counts as released when the cancel action started, since the server frees the slot when it commits the cancel. |
 | `submission-atomic` | Every job in the farm is an accepted job or an orphan, and every orphan holds all of its class's tasks (`steps x tasks_per_step`). A submission is one transaction, so one the server answered with no 2xx must have created its whole job or nothing; a second job for one submission, or a partial one, fails. |
@@ -868,12 +868,11 @@ are too noisy to gate on timings. Compare uploaded directories with `sqi-load
 compare`. A new run never cancels one in progress: the scheduled run waits
 for a dispatched soak to finish, and the reverse.
 
-The nightly can fail on `logs` with every other invariant holding, and more
-rarely on `caps`. `ci-medium` has cancels, churn and disconnects, and core
-NATS delivers at most once: log chunks published during a forced disconnect
-are lost, and a cancel published while its worker is disconnected arrives
-only after the reconnect (see [Known server defects](#known-server-defects)).
-The evidence names the tasks and attempts involved.
+The nightly can fail on `caps`. `ci-medium` has cancels, churn and
+disconnects, and core NATS delivers at most once: a cancel published while its
+worker is disconnected arrives only after the reconnect (see [Known server
+defects](#known-server-defects)). The evidence names the tasks and attempts
+involved.
 
 `workflow_dispatch` takes two inputs: `scenario` (default `ci-medium`) and
 `duration`. Giving a duration runs the scenario as a soak of that length, up
@@ -1077,51 +1076,6 @@ its task running. A child with no stdout never gets SIGPIPE, outlives the
 worker's restart and keeps writing the task's output while the reclaimed task
 re-runs on a live worker. `chaos-worker-kill-mid-task` records it, where
 `no-orphans` and `single-writer` can fail on Linux.
-
-### A full volume or descriptor limit can stop a broker stream for the rest of the run (H13f9)
-
-When the server's data volume fills, the embedded broker's first stream write
-that fails with ENOSPC leaves that stream failing every later write, also
-after the space returns, for the rest of the run; whether a restart clears it
-is not known. No task status, heartbeat or log is stored, while `/readyz`
-stays ready and REST requests succeed. The server log shows each stream's
-`Critical write error: write .../<n>.blk: no space left on device` once, then
-`JetStream failed to store a msg on stream ...: ... no space left on device`
-once a minute until the server stops, also after the space returns.
-When the heartbeat sweep runs, every worker is marked offline and none
-returns.
-`chaos-disk-server-full` records it, where `terminal`, `outcomes`,
-`single-attempt`, `workers-converge` and `executions-recorded` fail.
-
-Running out of file descriptors often ends the same way: a stream's newest
-block file is last written inside the descriptor-limit window and never again,
-also after the limit lifts, and nothing more is stored on it for the rest of
-the run. Which stream stops varies by run. When the task status stream stops,
-leased tasks never reach running: the stale-assigned reap takes each one back
-and leases it again about every 30 seconds, and the finished work never
-counts. When the heartbeat stream stops, every worker is marked offline and
-its attempts are reclaimed while it still runs them. When neither stream
-stops, the farm is unharmed. `chaos-server-fd-exhaustion` records `rework`,
-`terminal`, `outcomes`, `single-attempt`, `workers-converge` and
-`executions-recorded`, each as one that can fail.
-
-The server log shows what happens in the broker (see [The embedded broker's own
-log](observability.md#the-embedded-brokers-own-log)). While the limit holds,
-the broker fails to accept a connection about once a second, and the server
-logs `Temporary Client Accept Error(... too many open files), sleeping <n>ms`
-once for each step of the broker's back-off up to 1000 ms, then once a minute
-with a `suppressed` count. For each stream that stops it logs `Filestore
-[SQI_TASK] Critical write error: lmb missing` and `JetStream stream 'SQI >
-SQI_TASK' critical write error: lmb missing` once, then `JetStream failed to
-store a msg on stream 'SQI > SQI_TASK': lmb missing` once a minute, with a
-`suppressed` count, until the server stops.
-The task status and heartbeat streams create a new block file many times a
-minute, because nats-server 2.15.2 starts a new last block whenever an ack
-empties the current one, and a stream whose new last block could not be
-created is left without one. A standalone nats-server 2.15.2, run out of
-descriptors while a work-queue stream needs a new block file, logs the same
-critical write error and refuses every later store on that stream after the
-limit lifts.
 
 ---
 

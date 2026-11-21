@@ -531,9 +531,11 @@ func stamp(t time.Time) string { return t.UTC().Format("15:04:05.000000") }
 // logs: on each sampled task, the lines of the server's latest attempt are the
 // lines the simulator sent for that attempt, in order. With overflow expected,
 // losing the attempt's oldest whole chunks is allowed and nothing else is: at
-// least the newest chunk must be there. A chunk lost on a connection drop
-// counts as a violation: the worker publishes log chunks with a core NATS
-// publish, which has no acknowledgement and no retry.
+// least the newest chunk must be there. A lost chunk counts as a violation:
+// the worker delivers log chunks with an acknowledged publish and retries
+// each until the stream stores it, so outside a fault window only its 32 MiB
+// bound, a chunk over the broker's payload limit, a closed connection or a
+// crash drops one.
 //
 // Inside a fault window it does not: when the attempt's ledger interval, from
 // its lease to its end, overlaps a window that hit the attempt's worker (its

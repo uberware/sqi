@@ -178,6 +178,18 @@ func (v *validator) newKinds(path string, f *Fault, groups map[string]int) {
 	}
 }
 
+// diskMinFailed checks a disk_full fault's min_failed: at least 1, since 0
+// is no minimum, and no more than max_failed.
+func (v *validator) diskMinFailed(path string, d *DiskFull) {
+	switch {
+	case d.MinFailed == nil:
+	case *d.MinFailed < 1:
+		v.failf(path+".min_failed", "must be at least 1")
+	case d.MaxFailed != nil && *d.MinFailed > *d.MaxFailed:
+		v.failf(path+".min_failed", "%d is more than max_failed (%d)", *d.MinFailed, *d.MaxFailed)
+	}
+}
+
 func (v *validator) diskFull(path string, d *DiskFull) {
 	switch d.Volume {
 	case VolumeServer, VolumeWorkers:
@@ -195,12 +207,16 @@ func (v *validator) diskFull(path string, d *DiskFull) {
 	if d.MaxFailed != nil && *d.MaxFailed < 0 {
 		v.failf(path+".max_failed", "must not be negative")
 	}
+	v.diskMinFailed(path, d)
 	if d.Volume != VolumeWorkers {
 		if d.Reason != "" {
 			v.failf(path+".reason", "applies to a workers volume only")
 		}
 		if d.MaxFailed != nil {
 			v.failf(path+".max_failed", "applies to a workers volume only")
+		}
+		if d.MinFailed != nil {
+			v.failf(path+".min_failed", "applies to a workers volume only")
 		}
 		return
 	}
@@ -294,6 +310,7 @@ func (v *validator) expect() {
 			v.failf(path+".kind", "%q is not one of %s, %s", k.Kind, KnownMust, KnownMay)
 		}
 		v.knownCeiling(path, k)
+		v.knownMatch(path, k)
 		if strings.TrimSpace(k.Reason) == "" {
 			v.failf(path+".reason", "is required")
 		}
@@ -328,6 +345,21 @@ func (v *validator) realTasks() {
 		if rt.ScratchBytes < 0 {
 			v.failf(path+".scratch_bytes", "must not be negative")
 		}
+	}
+}
+
+// knownMatch checks an entry's match: a pattern that compiles, on an entry
+// for an invariant check.
+func (v *validator) knownMatch(path string, k KnownViolation) {
+	if k.Match == "" {
+		return
+	}
+	if k.Check == ReworkCheck {
+		v.failf(path+".match", "does not apply to a %q entry, whose finding is a count", ReworkCheck)
+		return
+	}
+	if _, err := regexp.Compile(k.Match); err != nil {
+		v.failf(path+".match", "does not compile: %v", err)
 	}
 }
 

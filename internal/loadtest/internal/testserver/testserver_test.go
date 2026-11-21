@@ -4,6 +4,7 @@ package testserver
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"testing"
@@ -63,4 +64,49 @@ func TestStart_RecoversFromAPortTakenByAnotherProcess(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("readyz status %d", resp.StatusCode)
 	}
+}
+
+// TestStart_IgnoresAnotherServersReadiness covers a drawn HTTP port that
+// another process's sqi-server took before this one bound it. That server
+// answers /readyz with 200 before this one has started its broker, so a Start
+// that trusted the first 200 would return a Server whose HTTP URL is the other
+// server's and whose NATS port has no listener.
+func TestStart_IgnoresAnotherServersReadiness(t *testing.T) {
+	var lc net.ListenConfig
+	hog, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	other := &http.Server{
+		Handler:           http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }),
+		ReadHeaderTimeout: time.Second,
+	}
+	go other.Serve(hog) //nolint:errcheck // ends with the test
+	t.Cleanup(func() { _ = other.Close() })
+	taken, ok := hog.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("unexpected address type %T", hog.Addr())
+	}
+
+	first := true
+	orig := nextPort
+	t.Cleanup(func() { nextPort = orig })
+	nextPort = func(tb testing.TB) int {
+		if first {
+			first = false
+			return taken.Port
+		}
+		return orig(tb)
+	}
+
+	srv := Start(t, Options{})
+	if want := fmt.Sprintf("http://127.0.0.1:%d", taken.Port); srv.HTTPURL() == want {
+		t.Fatalf("Start returned the other server's URL %s", want)
+	}
+	d := net.Dialer{Timeout: time.Second}
+	conn, err := d.DialContext(t.Context(), "tcp", srv.NATSURL()[len("nats://"):])
+	if err != nil {
+		t.Fatalf("NATS %s after Start: %v", srv.NATSURL(), err)
+	}
+	_ = conn.Close()
 }

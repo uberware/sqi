@@ -197,7 +197,7 @@ faults:
 | `flap` | | `{groups: [...], period}`. Cuts the groups for half of each `period` and opens them for the other half, for `duration`, and ends open. |
 | `power_cut` | | `{order, down, gap}`. Kills the server and every running real worker and crashes the simulated fleet, all at once. After `down` it brings back the first side, and after `gap` more the second. `order` is `server-first` or `workers-first`. |
 | `database` | | `{mode}`, `stall` or `drop`. A stall leaves the database unavailable without closing anything: on SQLite the harness takes the database's write lock from outside the server, on PostgreSQL a proxy between the server and the database keeps the connections open and forwards nothing. A drop closes the server's PostgreSQL connections and refuses new ones, and needs PostgreSQL. The database is available again when the fault ends. |
-| `disk_full` | | `{volume, headroom_bytes, inodes, reason, max_failed}`. Fills a size-limited volume with a ballast file until `headroom_bytes` are free (0 fills it) and, with `inodes: true`, uses up the free inodes too. The ballast is removed when the fault heals. `volume` is `server` (the server's data directory, which holds the database and the broker's data) or `workers` (the real workers' session directories). `reason` and `max_failed` judge a `workers` volume: see `disk-full` under [Invariants](#invariants). Needs the size-limited volumes of `make chaos-container`. |
+| `disk_full` | | `{volume, headroom_bytes, inodes, reason, min_failed, max_failed}`. Fills a size-limited volume with a ballast file until `headroom_bytes` are free (0 fills it) and, with `inodes: true`, uses up the free inodes too. The ballast is removed when the fault heals. `volume` is `server` (the server's data directory, which holds the database and the broker's data) or `workers` (the real workers' session directories). `reason`, `min_failed` and `max_failed` judge a `workers` volume: see `disk-full` under [Invariants](#invariants). Needs the size-limited volumes of `make chaos-container`. |
 | `fd_limit` | | `{headroom}`. Lowers the running server's soft open-file limit (`RLIMIT_NOFILE`) so that it can open `headroom` more files, and restores it when the fault heals. Linux only. |
 | `revoke` | | `{group, real}`. Revokes the broker credential of `real` of the group's real workers (0 meaning all of them) through the REST API, after removing each worker's join token so it cannot enroll again. The broker disconnects a revoked worker and refuses its reconnects; the worker process keeps running until `duration` has passed, then is stopped and not restarted. The scenario needs `server.broker_auth: true`. |
 
@@ -252,7 +252,8 @@ A scenario with several problems reports all of them, each with its path
 - A database `mode` is `stall` or `drop`.
 - A `disk_full` fault's `volume` is `server` or `workers`, `headroom_bytes` is
   not negative, `reason` is a regular expression that compiles, and
-  `max_failed` is not negative. `reason` and `max_failed` apply to a `workers`
+  `max_failed` is not negative. `min_failed` is at least 1 and no more than
+  `max_failed`. `reason`, `min_failed` and `max_failed` apply to a `workers`
   volume only, and a `workers` volume needs a group with real workers.
 - An `fd_limit` fault's `headroom` is positive.
 - A `revoke` names a group with real workers, never the server, and the
@@ -333,7 +334,11 @@ In the library scenarios that run a real task (`chaos-worker-kill-mid-task`,
 `chaos-worker-gone`, `chaos-worker-sleep`, `chaos-worker-revoke` and the two
 `chaos-disk-worker-full-*` scenarios) the real workers serve their own queue
 (`queues: [render-real]`), so every real task runs on a real worker while
-simulated workers carry the background load. In the two power-cut scenarios the
+simulated workers carry the background load. In the two
+`chaos-disk-worker-full-*` scenarios each real worker has a queue and a hold
+job of its own (`render-real-a`, `render-real-b`), so both are given work
+after the fault: a worker that stopped taking work leaves its queue's tasks
+unfinished, which the `terminal` check fails. In the two power-cut scenarios the
 real workers share the `render` queue with the simulated ones and run the
 default no-op task, so they write no markers.
 
@@ -369,7 +374,7 @@ at most 20 entries.
 | `attempt-order` | Read from the stopped server's store, on every attempt of every job in the farm: `started_at` is not more than 1 second before `created_at`, and `ended_at` is not more than 1 second before `started_at`. The server stamps `created_at` and `started_at` with its own clock and dates `ended_at` from the broker's stamp of the terminal status minus the worker's measured age of the end, so a worker whose clock is wrong cannot break the order; the check guards that. |
 | `revoked` | Read from the stopped server's store, only with a `revoke` fault: for each revoked worker, no heartbeat was recorded and no attempt was created for it more than 5 seconds after its credential was revoked. The 5 seconds cover the revoke reaching the broker and the server's own bookkeeping. |
 | `skew-warning` | Read from the server's log, only when a group has a `clock_skew`: for every skewed group, the server logged `scheduler: worker heartbeat delayed or skewed` for at least one of its workers. A log that cannot be read leaves the check unmeasured. |
-| `disk-full` | Read from the stopped server's store, only with a `disk_full` fault on a `workers` volume. For each fault that fired and healed, over the attempts of the real workers: every attempt that failed and ended from the fault's start to 10 seconds after it healed names a cause matching the fault's `reason`, when it sets one; no more than `max_failed` of them failed, when it sets one; and every real worker succeeded at least one attempt that started after the fault healed. A fault that never healed fails the check, and a run with no real worker to judge leaves it unmeasured. The check has no minimum: a run in which no attempt failed in the window passes it. Its summary notes, for each fault, how many attempts failed in the window, so a pass shows whether the fault made a task fail. |
+| `disk-full` | Read from the stopped server's store, only with a `disk_full` fault on a `workers` volume. For each fault that fired and healed, over the attempts of the real workers: every attempt that failed and ended from the fault's start to 10 seconds after it healed names a cause matching the fault's `reason`, when it sets one; at least `min_failed` and no more than `max_failed` of them failed, when the fault sets those; some real worker succeeded an attempt that started after the fault healed; and every real worker given an attempt after the fault healed succeeded one. A real worker given no attempt after the heal is not judged, since the scheduler can hand every task to another worker. A fault that never healed fails the check, and a run with no real worker to judge leaves it unmeasured. Without `min_failed`, a run in which no attempt failed in the window passes the check. Its summary notes, for each fault, how many attempts failed in the window, so a pass shows whether the fault made a task fail. |
 
 A store the checks cannot open or read fails `store-integrity` and
 `executions-recorded` with the error as evidence.
@@ -453,6 +458,7 @@ expect:
 | `check` | An invariant name from the table above, or `rework`. |
 | `kind` | `must` (the default) or `may`. |
 | `max_attempts` | On a `rework` entry, the most rework it excuses. Required there, and an error on any other check. |
+| `match` | A regular expression (RE2) that scopes the entry to the violations it matches. Optional, and an error on a `rework` entry. |
 | `os` | The operating systems (`linux`, `darwin`, `windows`) the entry applies on. Empty means all. On any other system the entry does nothing. |
 | `reason` | What the defect does. Required. |
 | `tracker` | The tracker item, such as `H99x`. Required. |
@@ -462,6 +468,15 @@ How an entry is applied:
 - A failed result that an entry names becomes OK. The summary shows it as
   `known (H99x)` and keeps its evidence. Several entries for one check join
   their trackers.
+- An entry with a `match` pattern excuses only the violations it matches.
+  When every entry for a check has one, a failure is excused only when each
+  of its violations matches one of them, including those past the 20 the
+  evidence shows. An unmatched violation keeps the result failed, and its
+  evidence counts the unmatched violations and names the first, so a new
+  defect in the same check cannot hide behind the recorded one. An entry
+  with no pattern still excuses every violation of its check. A result with
+  more than 10,000 violations cannot be checked against a pattern and stays
+  failed.
 - A `rework` entry excuses rework only up to its `max_attempts`. Rework above
   the scenario's `max_rework_attempts` and at or under the ceiling is the
   defect firing, and the summary notes the ceiling. Rework over the ceiling
@@ -472,7 +487,8 @@ How an entry is applied:
   failure stays, and a `must` entry for it is not counted as fired. Rework
   that could not be measured is one, as is a store the checks could not open.
 - A `must` entry whose check did not fail adds a failed result of its own,
-  named `known:<check>`. This is the stops-firing rule: when the defect is
+  named `known:<check>`, as does a `must` entry whose pattern matched none of
+  its check's violations. This is the stops-firing rule: when the defect is
   fixed, the scenario fails until the entry is removed, so a fixed defect
   cannot stay on the list. The same happens when the check did not run.
 - A `may` entry that did not fire adds nothing. It is for a defect that is
@@ -486,13 +502,12 @@ enforced end to end: it runs `chaos-server-term` with a `must` entry for
 
 ### Recorded defects
 
-The suite records three defects in sqi. Each is also listed under [Known
-server defects](load-testing.md#known-server-defects).
+The suite records one defect in sqi, also listed under [Known server
+defects](load-testing.md#known-server-defects).
 
 | Tracker | Defect | Recorded in |
 |---|---|---|
 | H13f4 | Killing `sqi-worker` on Linux leaves its task's process tree running. A silent child, which writes no stdout, never gets SIGPIPE, outlives the worker's restart and writes alongside the re-run. | `chaos-worker-kill-mid-task`, `no-orphans` and `single-writer`, `may`, `os: [linux]` |
-| H13f9 | After a write to a broker stream fails because the data volume is full or the server is out of file descriptors, the stream may store nothing more for the rest of the run; whether a restart clears it is not known. With a full volume the server stays ready and answers REST while the volume is full. Every worker is then reclaimed. | `chaos-disk-server-full`, `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded`, `must`; `chaos-server-fd-exhaustion`, the same checks and `rework` (up to 2500), `may` |
 
 ---
 
@@ -530,10 +545,10 @@ chaos-container`.
 | `chaos-db-stall-2m` | Stall the database for 2m at 3m15s: four `heartbeat_timeout`s, and `scheduler.reconcile_grace`. | rework 0, reclaims 0 | 5m30s |
 | `chaos-db-stall-3m` | Stall the database for 3m at 3m15s: longer than `SQI_WORKER`'s 2-minute MaxAge, so heartbeats expire unread and the worker consumer must hold the heartbeat sweep after the skip. | rework 0, reclaims 0 | 6m45s |
 | `chaos-db-drop` | Close the server's PostgreSQL connections and refuse new ones for 30s at 3m15s. PostgreSQL only. Submissions made meanwhile are refused with 500, which the summary reports as a finding. | rework 0 | 4m15s |
-| `chaos-disk-server-full` | Leave the server's data volume no free space for 60s at 1m, under a verbose renderer (5,000 lines of 200 bytes per task) on 40 workers. Container. | H13f9 `must` on `terminal`, `outcomes`, `single-attempt`, `workers-converge` and `executions-recorded` | 3m |
-| `chaos-disk-worker-full-at-setup` | Leave the 2 real workers' session volume no free space and no free inodes for 60s at 1m, so tasks fail at setup. Each failure must name "no space left on device", at most 12 may fail, and each real worker must succeed a task afterwards. Container. | rework 0 | 3m |
-| `chaos-disk-worker-full-mid-render` | Leave the 2 real workers' session volume 1 MiB free for 60s at 1m05s while their tasks write 8 MiB each, so tasks fail partway through. Each failure must name the process's exit, at most 15 may fail, and each real worker must succeed a task afterwards. Container. | rework 0 | 3m |
-| `chaos-server-fd-exhaustion` | Linux. Cut `rack-b`, 30 of 120 workers, for 20s at 3m15s and lower the server's open-file limit for 40s at 3m20s so it can open only 10 more files, so the rack redials into the limit. | rework 30; H13f9 `may` on `terminal`, `outcomes`, `rework` (up to 2500), `single-attempt`, `workers-converge` and `executions-recorded` | 5m |
+| `chaos-disk-server-full` | Leave the server's data volume no free space for 60s at 1m, under a verbose renderer (5,000 lines of 200 bytes per task) on 40 workers. Container. | every check must pass once the space returns | 3m |
+| `chaos-disk-worker-full-at-setup` | Leave the 2 real workers' session volume no free space and no free inodes for 60s at 1m15s, so tasks fail at setup. Each failure must name "no space left on device", at most 12 may fail, and each real worker, on a queue of its own, must succeed a task afterwards. Container. | rework 0 | 3m |
+| `chaos-disk-worker-full-mid-render` | Leave the 2 real workers' session volume 1 MiB free for 60s at 1m05s while their tasks write 8 MiB each, so tasks fail partway through. Each failure must name the process's exit, at most 16 may fail, and each real worker, on a queue of its own, must succeed a task afterwards. Container. | rework 0 | 3m |
+| `chaos-server-fd-exhaustion` | Linux. Cut `rack-b`, 30 of 120 workers, for 20s at 3m15s and lower the server's open-file limit for 40s at 3m20s so it can open only 10 more files, so the rack redials into the limit. | rework 30 | 5m |
 | `chaos-worker-revoke` | Broker auth on. Revoke one of 2 real workers' credentials at 3m21s and stop it 60s later, not restarting it. | rework 4 | 4m45s |
 | `chaos-clock-skew` | No fault: 20 each of 120 workers run their clocks 10m ahead, 10m behind and a day ahead of the server's. | rework 0, reclaims 0 | 4m |
 | `chaos-session-expiry` | No fault: broker auth with a 1m session lifetime (`nats.auth.user_ttl`), so each of 100 workers reconnects about four times in a run, with 30 to 90s tasks. | rework 0, reclaims 0 | 4m |
@@ -663,17 +678,15 @@ It also has these limits:
 - Every fault has a fixed `at`. Fault times are not drawn from a seeded
   distribution.
 - Nothing reports how often each `may` known violation fires, so an entry
-  that never fires is not flagged. Where a `may` entry is broad, as on
-  `chaos-server-fd-exhaustion`, a regression in the same check is hidden
-  until the defect it records is fixed.
-- The `disk-full` check has no minimum number of failed attempts, so a run in
-  which the fault never made a task fail passes it. The summary records the
-  count for each fault window; read it to see whether the fault bit.
+  that never fires is not flagged.
+- A `disk_full` fault on a workers volume without `min_failed` passes the
+  `disk-full` check in a run in which the fault never made a task fail. The
+  summary records the count for each fault window.
 - Both of `chaos-worker-kill-mid-task`'s H13f4 entries are `may`: its real
   task is too short for the orphaned child to outlive the 10 s grace in every
   run.
-- A known violation is not scoped to evidence. An entry excuses every failure
-  of its check, so a new defect in the same check hides behind a recorded one.
+- An entry without a `match` pattern excuses every failure of its check, so a
+  new defect in the same check hides behind a recorded one.
 - A `chaos-disk-*` scenario skips outside `make chaos-container`, so a run of
   `make chaos` alone never exercises the disk faults.
 
