@@ -15,6 +15,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/uberware/sqi/internal/winsvc"
 )
 
 // fileID identifies a file or directory whatever path reaches it: its
@@ -113,7 +115,7 @@ func isDefaultDir(dir, pd string) (bool, error) {
 // followed. A directory that cannot be opened counts as inside: the answer
 // only adds a requirement.
 func isUnderDir(dir, pd string) (bool, error) {
-	if underDir(dir, pd) {
+	if winsvc.PathWithin(dir, pd) {
 		return true, nil
 	}
 	pdIDs, ok, err := identities(pd)

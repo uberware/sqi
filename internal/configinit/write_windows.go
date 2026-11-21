@@ -148,19 +148,6 @@ func checkAccount(target, pd, account string, ops winOps) error {
 	return ops.lookupAccount(account)
 }
 
-// underDir reports whether dir is root or inside it, on whole path
-// components and ignoring case, as Windows compares paths.
-func underDir(dir, root string) bool {
-	d, r := filepath.Clean(dir), filepath.Clean(root)
-	if strings.EqualFold(d, r) {
-		return true
-	}
-	if !strings.HasSuffix(r, `\`) {
-		r += `\`
-	}
-	return len(d) > len(r) && strings.EqualFold(d[:len(r)], r)
-}
-
 // refusal adds to an *UntrustedPathsError about path the way out: moving
 // path aside and running config init again, or choosing another --config
 // when the failure is in a directory above it (or path is not one to move).
@@ -182,7 +169,7 @@ func refusal(what, path, pd string, err error) error {
 	if self && movable(path, pd) {
 		remedy = fmt.Sprintf("Someone other than SYSTEM and Administrators can change it. Move it aside from an elevated PowerShell:\n"+
 			"  Rename-Item -LiteralPath '%s' -NewName ('%s.suspect-' + (Get-Date -Format yyyyMMddHHmmss))\n"+
-			"then run config init again.", psQuote(path), psQuote(filepath.Base(path)))
+			"then run config init again.", winsvc.QuotePowerShell(path), winsvc.QuotePowerShell(filepath.Base(path)))
 	}
 	if above || (self && !movable(path, pd)) {
 		if remedy != "" {
@@ -197,20 +184,6 @@ func refusal(what, path, pd string, err error) error {
 // (%ProgramData%) itself or a volume root.
 func movable(path, pd string) bool {
 	return filepath.Dir(path) != path && !strings.EqualFold(path, pd)
-}
-
-// psQuote escapes s for a PowerShell single-quoted string, which also ends
-// at the typographic single quotes.
-func psQuote(s string) string {
-	var sb strings.Builder
-	for _, r := range s {
-		switch r {
-		case '\'', '\u2018', '\u2019', '\u201a', '\u201b':
-			sb.WriteRune(r)
-		}
-		sb.WriteRune(r)
-	}
-	return sb.String()
 }
 
 func dirExists(dir string) (bool, error) {

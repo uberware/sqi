@@ -42,6 +42,8 @@ type fakeOps struct {
 	startErr       error
 	preShutdown    time.Duration
 	preShutdownErr error
+	checkErr       error     // what checkPaths returns
+	checked        []PathRef // the refs checkPaths was given
 }
 
 func (f *fakeOps) recordf(format string, args ...any) {
@@ -54,6 +56,11 @@ func (f *fakeOps) operations() operations {
 		exists: func(name string) (bool, error) {
 			f.recordf("exists %s", name)
 			return f.existing, f.existsErr
+		},
+		checkPaths: func(refs []PathRef, account string) error {
+			f.recordf("checkPaths %s", account)
+			f.checked = refs
+			return f.checkErr
 		},
 		grantLogonRight: func(account string) error { f.recordf("grant %s", account); return nil },
 		validateCredentials: func(account, password string) error {
@@ -89,7 +96,8 @@ func (f *fakeOps) operations() operations {
 	}
 }
 
-// testSpec is a CommandSpec whose DrainTimeout counts its calls.
+// testSpec is a CommandSpec whose DrainTimeout counts its calls and whose
+// configuration names no paths.
 func testSpec(drainCalls *int) CommandSpec {
 	return CommandSpec{
 		Binary: testBinary, RunVerb: "start", DisplayName: "sqi Test", Description: "sqi test service",
@@ -98,6 +106,7 @@ func testSpec(drainCalls *int) CommandSpec {
 			*drainCalls++
 			return testDrain, nil
 		},
+		ConfigPaths: func(string) (ConfigPaths, error) { return ConfigPaths{}, nil },
 		UserWarning: "the account also needs a privilege",
 	}
 }
@@ -180,6 +189,7 @@ func refusingOps(t *testing.T) operations {
 	return operations{
 		requireElevated:     func() error { return ErrNotElevated },
 		exists:              func(string) (bool, error) { return false, touched("exists") },
+		checkPaths:          func([]PathRef, string) error { return touched("checkPaths") },
 		grantLogonRight:     func(string) error { return touched("grantLogonRight") },
 		validateCredentials: func(string, string) error { return touched("validateCredentials") },
 		ensureLogDir:        func(string, string) error { return touched("ensureLogDir") },
@@ -270,6 +280,7 @@ func TestInstall_UserAccount(t *testing.T) {
 			want := []string{
 				"requireElevated",
 				"exists " + testBinary,
+				"checkPaths " + tc.account,
 				"grant " + tc.account,
 				"validate " + tc.account + " s3cret",
 				"ensureLogDir " + logDir + " " + tc.account,
@@ -317,7 +328,10 @@ func TestInstall_LocalSystem(t *testing.T) {
 			if err != nil {
 				t.Fatalf("install: %v\n%s", err, out)
 			}
-			want := []string{"requireElevated", "exists " + testBinary, "ensureLogDir " + logDir + " ", "install " + testBinary}
+			want := []string{
+				"requireElevated", "exists " + testBinary, "checkPaths ",
+				"ensureLogDir " + logDir + " ", "install " + testBinary,
+			}
 			if !slices.Equal(fake.calls, want) {
 				t.Errorf("calls:\n got %q\nwant %q", fake.calls, want)
 			}
@@ -338,14 +352,15 @@ func TestInstall_LocalSystem(t *testing.T) {
 func TestInstall_InvalidInputChangesNothing(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
 	probed := []string{"requireElevated", "exists " + testBinary}
+	checked := append(slices.Clone(probed), `checkPaths .\render`)
 	for _, tc := range []struct {
 		name, stdin, want string
 		args              []string
 		calls             []string
 	}{
 		{"missing config", "s3cret\n", "not found", []string{"--config", missing}, probed},
-		{"empty password", "\n", "password must not be empty", nil, probed},
-		{"no password", "", "read password", nil, probed},
+		{"empty password", "\n", "password must not be empty", nil, checked},
+		{"no password", "", "read password", nil, checked},
 		{"invalid service name", "s3cret\n", "is invalid", []string{"--name", `bad\name`}, []string{"requireElevated"}},
 		{"empty service name", "s3cret\n", "is invalid", []string{"--name", ""}, []string{"requireElevated"}},
 	} {
@@ -375,7 +390,7 @@ func TestInstall_WrongPasswordStopsBeforeInstall(t *testing.T) {
 	if !errors.Is(err, windows.ERROR_LOGON_FAILURE) || !strings.Contains(err.Error(), "check the password") {
 		t.Fatalf("install = %v, want the logon failure and a password hint", err)
 	}
-	want := []string{"requireElevated", "exists " + testBinary, `grant .\render`, `validate .\render wrong`}
+	want := []string{"requireElevated", "exists " + testBinary, `checkPaths .\render`, `grant .\render`, `validate .\render wrong`}
 	if !slices.Equal(fake.calls, want) {
 		t.Errorf("calls:\n got %q\nwant %q", fake.calls, want)
 	}
@@ -561,6 +576,290 @@ func TestStatus_PrintsStateAndRegistration(t *testing.T) {
 	} {
 		if !strings.Contains(out, s) {
 			t.Errorf("status output lacks %q:\n%s", s, out)
+		}
+	}
+}
+
+// recordingStdin records "readPassword" in f's calls when it is first read.
+type recordingStdin struct {
+	f    *fakeOps
+	r    io.Reader
+	read bool
+}
+
+func (s *recordingStdin) Read(p []byte) (int, error) {
+	if !s.read {
+		s.read = true
+		s.f.recordf("readPassword")
+	}
+	return s.r.Read(p)
+}
+
+// TestInstall_ChecksPathsBeforePasswordAndChanges pins where the path check
+// sits: after the existence probe and before the password is read, the logon
+// right granted, the log directory touched or the service registered. A
+// refusal, or a configuration whose paths cannot be read, stops install there.
+func TestInstall_ChecksPathsBeforePasswordAndChanges(t *testing.T) {
+	refused := &UntrustedPathsError{Failures: []PathFailure{
+		{Key: "nats.tls_ca_file", Path: `C:\ca.pem`, JudgedPath: `C:\ca.pem`, Reason: `BUILTIN\Users can write (WD)`},
+	}}
+	ioErr := fmt.Errorf("read security: %w", windows.ERROR_ACCESS_DENIED)
+	prefix := []string{"requireElevated", "exists " + testBinary, `checkPaths .\render`}
+	for _, tc := range []struct {
+		name     string
+		checkErr error
+		pathsErr error
+		want     []string
+	}{
+		{"passes", nil, nil, append(slices.Clone(prefix), "readPassword", `grant .\render`, `validate .\render s3cret`,
+			`ensureLogDir `+filepath.Dir(DefaultLogPath(testBinary))+` .\render`, "install "+testBinary)},
+		{"refused", refused, nil, prefix},
+		{"unreadable path", ioErr, nil, prefix},
+		{"unreadable configuration", nil, errors.New("line 2: unknown key log.fil"), prefix[:2]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeOps{checkErr: tc.checkErr}
+			spec := testSpec(new(int))
+			spec.ConfigPaths = func(string) (ConfigPaths, error) { return ConfigPaths{}, tc.pathsErr }
+			stdin := &recordingStdin{f: fake, r: strings.NewReader("s3cret\n")}
+			_, err := execute(t, spec, fake.operations(), stdin, "install", "--user", "render", "--config", writeConfig(t))
+			if !slices.Equal(fake.calls, tc.want) {
+				t.Errorf("calls:\n got %q\nwant %q", fake.calls, tc.want)
+			}
+			switch {
+			case tc.checkErr == nil && tc.pathsErr == nil:
+				if err != nil {
+					t.Fatalf("install: %v", err)
+				}
+			case tc.pathsErr != nil:
+				if err == nil || !strings.Contains(err.Error(), tc.pathsErr.Error()) {
+					t.Errorf("install = %v, want the configuration error", err)
+				}
+			default:
+				if !errors.Is(err, tc.checkErr) {
+					t.Errorf("install = %v, want %v", err, tc.checkErr)
+				}
+			}
+		})
+	}
+}
+
+// TestInstall_CheckedRefs pins the paths install checks, in order: the
+// configuration and its directory, the binary and its directory, the log
+// directory and its parent, then every path the configuration names.
+func TestInstall_CheckedRefs(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultLogDir := filepath.Dir(DefaultLogPath(testBinary))
+	for _, tc := range []struct {
+		name          string
+		paths         ConfigPaths
+		logDir, named []PathRef
+	}{
+		{
+			name:   "log.file unset",
+			paths:  ConfigPaths{Paths: []PathRef{{"nats.tls_ca_file", `E:\pki\ca.pem`}}},
+			logDir: []PathRef{{"log directory", defaultLogDir}, {"log directory parent", filepath.Dir(defaultLogDir)}},
+			named:  []PathRef{{"nats.tls_ca_file", `E:\pki\ca.pem`}},
+		},
+		{
+			name: "log.file set",
+			paths: ConfigPaths{LogFile: `D:\logs\sqi\w.log`, Paths: []PathRef{
+				{"worker.data_dir", `E:\sqi\data`}, {"log.file", `D:\logs\sqi\w.log`},
+			}},
+			logDir: []PathRef{{"log directory", `D:\logs\sqi`}, {"log directory parent", `D:\logs`}},
+			named:  []PathRef{{"worker.data_dir", `E:\sqi\data`}, {"log.file", `D:\logs\sqi\w.log`}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := writeConfig(t)
+			fake := &fakeOps{}
+			spec := testSpec(new(int))
+			var loaded string
+			spec.ConfigPaths = func(p string) (ConfigPaths, error) { loaded = p; return tc.paths, nil }
+			if out, err := execute(t, spec, fake.operations(), strings.NewReader("s3cret\n"),
+				"install", "--user", "render", "--config", cfg); err != nil {
+				t.Fatalf("install: %v\n%s", err, out)
+			}
+			if loaded != cfg {
+				t.Errorf("ConfigPaths loaded %q, want %q", loaded, cfg)
+			}
+			want := []PathRef{
+				{"config", cfg},
+				{"config directory", filepath.Dir(cfg)},
+				{"binary", exe},
+				{"binary directory", filepath.Dir(exe)},
+			}
+			want = append(append(want, tc.logDir...), tc.named...)
+			if !slices.Equal(fake.checked, want) {
+				t.Errorf("checked refs:\n got %q\nwant %q", fake.checked, want)
+			}
+		})
+	}
+}
+
+// TestServiceInstall_ResolvesRelativePathsAgainstConfigDir pins that a
+// relative configured path is checked where the service will find it: under
+// the configuration's directory, which the service runs in, not the
+// installing shell's working directory.
+func TestServiceInstall_ResolvesRelativePathsAgainstConfigDir(t *testing.T) {
+	cfg := writeConfig(t)
+	dir := filepath.Dir(cfg)
+	t.Chdir(t.TempDir())
+	fake := &fakeOps{}
+	spec := testSpec(new(int))
+	spec.ConfigPaths = func(string) (ConfigPaths, error) {
+		return ConfigPaths{LogFile: `logs\w.log`, Paths: []PathRef{
+			{"log.file", `logs\w.log`}, {"worker.data_dir", "data"},
+		}}, nil
+	}
+	if out, err := execute(t, spec, fake.operations(), &readSpy{}, "install", "--config", cfg); err != nil {
+		t.Fatalf("install: %v\n%s", err, out)
+	}
+	if len(fake.checked) < 4 {
+		t.Fatalf("checked refs = %q", fake.checked)
+	}
+	want := []PathRef{
+		{"log directory", filepath.Join(dir, "logs")},
+		{"log directory parent", dir},
+		{"log.file", filepath.Join(dir, "logs", "w.log")},
+		{"worker.data_dir", filepath.Join(dir, "data")},
+	}
+	if got := fake.checked[4:]; !slices.Equal(got, want) {
+		t.Errorf("checked refs after the binary's:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestResolveAgainst pins how a configured path resolves for a service whose
+// working directory is base: a rooted path takes base's drive, and a path
+// relative to another drive's current directory resolves from that drive's
+// root, since a service has no current directory there.
+func TestResolveAgainst(t *testing.T) {
+	const base = `C:\ProgramData\sqi`
+	for _, tc := range []struct{ path, want string }{
+		{`E:\sqi\data`, `E:\sqi\data`},
+		{`data`, `C:\ProgramData\sqi\data`},
+		{`..\x\y`, `C:\ProgramData\x\y`},
+		{`logs/w.log`, `C:\ProgramData\sqi\logs\w.log`},
+		{`\sqi\data`, `C:\sqi\data`},
+		{`/sqi/data`, `C:\sqi\data`},
+		{`C:data`, `C:\ProgramData\sqi\data`},
+		{`D:data`, `D:\data`},
+		{`\\server\share\sqi`, `\\server\share\sqi`},
+	} {
+		if got := resolveAgainst(base, tc.path); got != tc.want {
+			t.Errorf("resolveAgainst(%q, %q) = %q, want %q", base, tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestInstall_RefusalNamesRemedy pins the way out a refusal offers: a binary
+// an ordinary user can change is copied into an administrators-only
+// directory from an elevated PowerShell; a path under %ProgramData% is moved
+// aside, and a configuration recreated with config init; anything else is
+// for the operator to fix. The *UntrustedPathsError stays reachable.
+func TestInstall_RefusalNamesRemedy(t *testing.T) {
+	pd := t.TempDir()
+	t.Setenv("ProgramData", pd)
+	sqiDir := filepath.Join(pd, "sqi")
+	if err := os.Mkdir(sqiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(sqiDir, testBinary+".yaml")
+	if err := os.WriteFile(cfg, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	programFiles := os.Getenv("ProgramFiles")
+	if programFiles == "" {
+		programFiles = `C:\Program Files`
+	}
+	binaryRemedy := []string{"elevated PowerShell", "Git Bash", "'" + filepath.Join(programFiles, "sqi") + "'", "Copy-Item -LiteralPath '" + exe + "'"}
+	moveRemedy := []string{
+		"Rename-Item -LiteralPath '" + sqiDir + "' -NewName ('sqi.suspect-' + (Get-Date -Format yyyyMMddHHmmss))",
+		testBinary + " config init",
+	}
+	otherRemedy := []string{"administrators-only"}
+	for _, tc := range []struct {
+		name     string
+		failures []PathFailure
+		want     []string
+		wantNot  []string
+	}{
+		{
+			name:     "binary",
+			failures: []PathFailure{{Key: "binary", Path: exe, JudgedPath: exe, Reason: `owner DESKTOP\bob is not trusted`}},
+			want:     binaryRemedy,
+			wantNot:  []string{"Rename-Item", "config init"},
+		},
+		{
+			name: "configuration under ProgramData",
+			failures: []PathFailure{
+				{Key: "config directory", Path: sqiDir, JudgedPath: sqiDir, Reason: `BUILTIN\Users can write (AD)`},
+			},
+			want:    moveRemedy,
+			wantNot: []string{"Copy-Item"},
+		},
+		{
+			name: "both",
+			failures: []PathFailure{
+				{Key: "binary directory", Path: filepath.Dir(exe), JudgedPath: filepath.Dir(exe), Reason: "x"},
+				{Key: "config", Path: cfg, JudgedPath: sqiDir, Reason: "y"},
+			},
+			want: append(slices.Clone(binaryRemedy), moveRemedy...),
+		},
+		{
+			name:     "elsewhere",
+			failures: []PathFailure{{Key: "nats.tls_ca_file", Path: `E:\ca.pem`, JudgedPath: `E:\`, Reason: "z"}},
+			want:     otherRemedy,
+			wantNot:  []string{"Copy-Item", "Rename-Item", "config init"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refused := &UntrustedPathsError{Failures: tc.failures}
+			fake := &fakeOps{checkErr: refused}
+			_, err := execute(t, testSpec(new(int)), fake.operations(), &readSpy{}, "install", "--config", cfg)
+			if got, ok := errors.AsType[*UntrustedPathsError](err); !ok || got != refused {
+				t.Fatalf("install = %v, want the *UntrustedPathsError", err)
+			}
+			msg := err.Error()
+			for _, s := range append([]string{refused.Error()}, tc.want...) {
+				if !strings.Contains(msg, s) {
+					t.Errorf("refusal lacks %q:\n%s", s, msg)
+				}
+			}
+			for _, s := range tc.wantNot {
+				if strings.Contains(msg, s) {
+					t.Errorf("refusal has %q:\n%s", s, msg)
+				}
+			}
+		})
+	}
+}
+
+func TestPathWithin(t *testing.T) {
+	tests := []struct {
+		dir, root string
+		want      bool
+	}{
+		{`C:\ProgramData`, `C:\ProgramData`, true},
+		{`C:\ProgramData\sqi`, `C:\ProgramData`, true},
+		{`c:\programdata\SQI\x`, `C:\ProgramData`, true},
+		{`C:\ProgramData\sqi\..\sqi`, `C:\ProgramData\`, true},
+		{`C:\ProgramDataX`, `C:\ProgramData`, false},
+		{`C:\ProgramDataX\sqi`, `C:\ProgramData`, false},
+		{`C:\Program`, `C:\ProgramData`, false},
+		{`D:\ProgramData`, `C:\ProgramData`, false},
+		{`C:\x`, `C:\`, true},
+	}
+	for _, tt := range tests {
+		if got := PathWithin(tt.dir, tt.root); got != tt.want {
+			t.Errorf("PathWithin(%q, %q) = %v, want %v", tt.dir, tt.root, got, tt.want)
 		}
 	}
 }

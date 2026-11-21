@@ -20,6 +20,7 @@ func init() {
 		Description:      "sqi distributed task worker",
 		DelayedAutoStart: true,
 		DrainTimeout:     workerDrainTimeout,
+		ConfigPaths:      workerConfigPaths,
 		// Printed whenever --user names an account: isolation is queue-scoped
 		// (queues.run_as_user), so the worker config cannot tell whether
 		// run-as-user will be used.
@@ -38,6 +39,22 @@ func workerDrainTimeout(configPath string) (time.Duration, error) {
 		return 0, fmt.Errorf("load %s: %w", configPath, err)
 	}
 	return workerDrainBound(cfg.Worker.ShutdownGracePeriod), nil
+}
+
+// workerConfigPaths is the log.file and every path the configuration in
+// configPath names, with SQI_WORKER_* overrides from the installing shell
+// applied, for service install to check.
+func workerConfigPaths(configPath string) (winsvc.ConfigPaths, error) {
+	cfg, err := workerconfig.Load(configPath, workerconfig.FlagOverrides{})
+	if err != nil {
+		return winsvc.ConfigPaths{}, fmt.Errorf("load %s: %w", configPath, err)
+	}
+	named := cfg.NamedPaths()
+	paths := make([]winsvc.PathRef, 0, len(named))
+	for _, p := range named {
+		paths = append(paths, winsvc.PathRef(p))
+	}
+	return winsvc.ConfigPaths{LogFile: cfg.Log.File, Paths: paths}, nil
 }
 
 // workerDrainBound is how long a worker shutdown can take to drain: up to the

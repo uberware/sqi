@@ -572,28 +572,6 @@ func TestConfigInitWindows_ProgramDataItselfIsNeverRenamed(t *testing.T) {
 	}
 }
 
-func TestUnderDir(t *testing.T) {
-	tests := []struct {
-		dir, root string
-		want      bool
-	}{
-		{`C:\ProgramData`, `C:\ProgramData`, true},
-		{`C:\ProgramData\sqi`, `C:\ProgramData`, true},
-		{`c:\programdata\SQI\x`, `C:\ProgramData`, true},
-		{`C:\ProgramData\sqi\..\sqi`, `C:\ProgramData\`, true},
-		{`C:\ProgramDataX`, `C:\ProgramData`, false},
-		{`C:\ProgramDataX\sqi`, `C:\ProgramData`, false},
-		{`C:\Program`, `C:\ProgramData`, false},
-		{`D:\ProgramData`, `C:\ProgramData`, false},
-		{`C:\x`, `C:\`, true},
-	}
-	for _, tt := range tests {
-		if got := underDir(tt.dir, tt.root); got != tt.want {
-			t.Errorf("underDir(%q, %q) = %v, want %v", tt.dir, tt.root, got, tt.want)
-		}
-	}
-}
-
 func TestWriteFile_NoReplaceRefusesAnExistingFile(t *testing.T) {
 	tgt := filepath.Join(t.TempDir(), "sqi-worker.yaml")
 	if err := os.WriteFile(tgt, []byte("planted"), 0o600); err != nil {

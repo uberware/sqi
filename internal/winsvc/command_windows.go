@@ -38,6 +38,10 @@ type CommandSpec struct {
 	// DrainTimeout returns the binary's graceful-shutdown bound for the given
 	// config file; the PreShutdown timeout is this plus ShutdownMargin.
 	DrainTimeout func(configPath string) (time.Duration, error)
+	// ConfigPaths loads configPath and returns its log.file and every path
+	// it names, as written: install resolves a relative one against the
+	// configuration's directory, where the service runs.
+	ConfigPaths func(configPath string) (ConfigPaths, error)
 	// UserWarning, when non-empty, is printed if --user names an account.
 	UserWarning string
 }
@@ -50,6 +54,7 @@ type CommandSpec struct {
 type operations struct {
 	requireElevated     func() error
 	exists              func(name string) (bool, error)
+	checkPaths          func(refs []PathRef, account string) error
 	grantLogonRight     func(account string) error
 	validateCredentials func(account, password string) error
 	ensureLogDir        func(dir, account string) error
@@ -65,6 +70,7 @@ func systemOperations() operations {
 	return operations{
 		requireElevated:     RequireElevated,
 		exists:              Exists,
+		checkPaths:          CheckPaths,
 		grantLogonRight:     GrantServiceLogonRight,
 		validateCredentials: ValidateCredentials,
 		ensureLogDir:        EnsureLogDir,
@@ -130,7 +136,10 @@ func (c commands) installCmd() *cobra.Command {
 		Long: `Register ` + c.spec.Binary + ` as an automatic-start Windows service.
 
 The config file (--config, default %ProgramData%\sqi\` + c.spec.Binary + `.yaml) must
-exist; its absolute path is baked into the service's command line. The service
+exist; its absolute path is baked into the service's command line. Install
+refuses when anyone but SYSTEM, Administrators and the service's account could
+change the config file, the binary, the log directory or any file or directory
+the config names, or a directory above one of them. The service
 runs as LocalSystem unless --user is given. With --user the password is
 prompted for (or read from piped stdin), the account is granted "Log on as a
 service", and the password is then checked with a service logon. That check
@@ -159,8 +168,9 @@ func configFlag(cmd *cobra.Command) string {
 
 // runInstall registers the service. The order is fixed: the name and the
 // existence probe (refuseExisting), everything else that can be checked
-// without changing the system (installConfig), then the account's logon right
-// and password, the log directory, and the service.
+// without changing the system (installConfig, which refuses files someone
+// else could change before it reads a password), then the account's logon
+// right and password, the log directory, and the service.
 func (c commands) runInstall(cmd *cobra.Command, f installFlags) error {
 	if err := c.refuseExisting(f.name); err != nil {
 		return err
@@ -230,8 +240,8 @@ func (c commands) displayName(name, flagValue string, explicit bool) string {
 }
 
 // installConfig resolves the config file, the drain timeout, the account and
-// its password, and validates the registration they make, without changing
-// anything on the system.
+// its password, refuses files someone else could change, and validates the
+// registration they make, without changing anything on the system.
 func (c commands) installConfig(cmd *cobra.Command, f installFlags) (ServiceConfig, error) {
 	cfgPath, err := ResolveConfigPath(configFlag(cmd), c.spec.Binary)
 	if err != nil {
@@ -248,6 +258,9 @@ func (c commands) installConfig(cmd *cobra.Command, f installFlags) (ServiceConf
 	// Normalized before anything sees it: a bare name would reach LogonUserW
 	// with no domain, which it reads as a UPN.
 	account := NormalizeAccount(f.user)
+	if err := c.checkInstallPaths(cfgPath, exe, f.name, account); err != nil {
+		return ServiceConfig{}, err
+	}
 	password, err := c.readPassword(cmd, account)
 	if err != nil {
 		return ServiceConfig{}, err
@@ -264,6 +277,22 @@ func (c commands) installConfig(cmd *cobra.Command, f installFlags) (ServiceConf
 		DelayedAutoStart: c.spec.DelayedAutoStart,
 		DrainTimeout:     drain,
 	})
+}
+
+// checkInstallPaths refuses to register a service, to run as account, whose
+// configuration, binary, log directory or any path its configuration names
+// someone other than SYSTEM, Administrators and account could change: each
+// is a way to run code as the service's account, LocalSystem by default.
+func (c commands) checkInstallPaths(cfgPath, exe, name, account string) error {
+	cp, err := c.spec.ConfigPaths(cfgPath)
+	if err != nil {
+		return fmt.Errorf("read the paths %s names: %w", cfgPath, err)
+	}
+	err = c.ops.checkPaths(installRefs(cfgPath, exe, name, cp), account)
+	if u, ok := errors.AsType[*UntrustedPathsError](err); ok {
+		return c.untrustedError(u, exe)
+	}
+	return err
 }
 
 // readPassword prompts for account's password, or reads it from piped stdin.

@@ -7,6 +7,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -25,6 +26,37 @@ func TestWorkerDrainTimeout_FromConfig(t *testing.T) {
 	got, err := workerDrainTimeout(path)
 	if err != nil || got != 120*time.Second {
 		t.Fatalf("workerDrainTimeout = %v, %v; want 120s (90s grace + 30s kill window)", got, err)
+	}
+}
+
+// TestWorkerConfigPaths_FromConfig pins that service install checks the
+// paths the loaded configuration names, as written, log.file included and
+// carried separately for the log directory.
+func TestWorkerConfigPaths_FromConfig(t *testing.T) {
+	t.Setenv("SQI_WORKER_NATS_TLS_CA_FILE", "")
+	t.Setenv("SQI_WORKER_LOG_FILE", "")
+	t.Setenv("SQI_WORKER_DATA_DIR", "")
+	path := filepath.Join(t.TempDir(), "sqi-worker.yaml")
+	body := "nats:\n  tls_ca_file: pki/ca.pem\nworker:\n  data_dir: data\nlog:\n  file: logs/w.log\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := workerConfigPaths(path)
+	if err != nil {
+		t.Fatalf("workerConfigPaths: %v", err)
+	}
+	if got.LogFile != "logs/w.log" {
+		t.Errorf("LogFile = %q, want logs/w.log", got.LogFile)
+	}
+	for _, want := range []winsvc.PathRef{
+		{Key: "nats.tls_ca_file", Path: "pki/ca.pem"},
+		{Key: "nats.credential_file", Path: filepath.Join("data", "worker.nk")},
+		{Key: "worker.data_dir", Path: "data"},
+		{Key: "log.file", Path: "logs/w.log"},
+	} {
+		if !slices.Contains(got.Paths, want) {
+			t.Errorf("Paths lacks %q: %q", want, got.Paths)
+		}
 	}
 }
 
