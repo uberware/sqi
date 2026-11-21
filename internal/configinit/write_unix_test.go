@@ -55,11 +55,12 @@ func TestRealUnixSys_MissingGroup(t *testing.T) {
 
 // Not parallel: the umask belongs to the whole process. The umask clears the
 // owner's write bit, so a directory left at the mode MkdirAll produced is
-// 0500 and the test sees it.
+// 0500 and the test sees it. The temporary directory is made before the umask
+// changes, which would otherwise leave it unwritable.
 func TestRealUnixSys_CreatedDirectoryIgnoresUmask(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sqi")
 	old := syscall.Umask(0o277)
 	defer syscall.Umask(old)
-	dir := filepath.Join(t.TempDir(), "sqi")
 	if err := writeUnix(filepath.Join(dir, "x.yaml"), []byte("b"), unixOpts{Shared: false}, realUnixSys()); err != nil {
 		t.Fatal(err)
 	}
