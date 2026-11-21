@@ -9,12 +9,18 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // Tree is the POSIX counterpart of the Windows job object. Configure's
 // Setpgid establishes containment before Start, so there is nothing to
 // create here; the type gives callers one shape on both platforms.
-type Tree struct{ proc *exec.Cmd }
+type Tree struct {
+	proc *exec.Cmd
+	// record is the path of the tree's ledger record, set by Track and
+	// removed by Release. Empty when the tree is not recorded.
+	record string
+}
 
 // Configure places the command in its own process group so that the
 // whole group (the task's process and every child it spawns) can be signaled
@@ -34,11 +40,39 @@ func Supervise(cmd *exec.Cmd) (*Tree, error) {
 	return &Tree{proc: cmd}, nil
 }
 
-// Release is a no-op: processes still running in the task's process group
-// when the task exits successfully are left running. internal/worker/staging's
-// stage-out checks (openStageOutSource) allow for such a process. The Windows
-// Release behaves the same.
-func (*Tree) Release() error { return nil }
+// Track records the tree in l under token, the value the launch site put in
+// the process's environment with [MarkEnv], so that if this worker is killed
+// the next one to start on the same data directory kills the tree
+// ([Ledger.Sweep]). Release removes the record. A nil l records nothing. An
+// error leaves the tree running and unrecorded.
+func (t *Tree) Track(l *Ledger, token string, label Label) error {
+	if l == nil {
+		return nil
+	}
+	path, err := l.write(record{
+		Token:     token,
+		PGID:      t.proc.Process.Pid,
+		BootID:    l.bootID,
+		Label:     label,
+		StartedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return err
+	}
+	t.record = path
+	return nil
+}
+
+// Release removes the tree's ledger record and otherwise does nothing:
+// processes still running in the task's process group when the task exits
+// successfully are left running. internal/worker/staging's stage-out checks
+// (openStageOutSource) allow for such a process. The Windows Release behaves
+// the same.
+func (t *Tree) Release() error {
+	path := t.record
+	t.record = ""
+	return removeRecord(path)
+}
 
 // Alive reports whether any process of the task's process group is still
 // running. A group whose processes belong to another account (run-as-user)

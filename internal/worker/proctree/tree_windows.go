@@ -163,6 +163,11 @@ func setKillOnClose(job windows.Handle, on bool) error {
 	return nil
 }
 
+// Track records nothing on Windows: the job object's kill-on-close stops the
+// tree if the worker process dies, so there is nothing for a later worker to
+// sweep. It exists so the launch sites have one shape on both platforms.
+func (*Tree) Track(*Ledger, string, Label) error { return nil }
+
 // Release closes the job without killing whatever is still inside it.
 //
 // It clears KILL_ON_JOB_CLOSE first, which closing the handle would otherwise
