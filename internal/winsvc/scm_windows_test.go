@@ -663,3 +663,56 @@ func computerName(t *testing.T) string {
 	}
 	return n
 }
+
+// TestEnsureLogDir_LetsAccountReadSqiDirAttributes pins the one right a
+// --user service needs on %ProgramData%\sqi, which is otherwise SYSTEM and
+// Administrators only: at start it opens the log directory's parent for its
+// attributes (checkParent) to refuse a junction there. EnsureLogDir adds one
+// non-inheritable allow ACE of read-attributes, traverse and synchronize for
+// the account on that parent, and nothing on any other parent; a second call
+// adds no duplicate, LocalSystem ("") gets none, and the parent still passes
+// the install check with the account not trusted (none of those rights can
+// change it). NetworkService stands in for the account, named via its SID so
+// the test also passes on a localized Windows.
+func TestEnsureLogDir_LetsAccountReadSqiDirAttributes(t *testing.T) {
+	pd := t.TempDir()
+	t.Setenv("ProgramData", pd)
+	sqiDir := filepath.Join(pd, "sqi")
+	logs := filepath.Join(sqiDir, "logs")
+	svc, account := wellKnownAccount(t, windows.WinNetworkServiceSid)
+
+	if err := EnsureLogDir(logs, ""); err != nil {
+		t.Fatal(err)
+	}
+	acl, _ := daclOf(t, sqiDir)
+	if got := allowedFor(aclEntries(t, acl), svc); len(got) != 0 {
+		t.Fatalf("LocalSystem install granted %s on %s: %+v", account, sqiDir, got)
+	}
+	for range 2 {
+		if err := EnsureLogDir(logs, account); err != nil {
+			t.Fatal(err)
+		}
+		acl, protected := daclOf(t, sqiDir)
+		if !protected {
+			t.Errorf("the grant unprotected %s", sqiDir)
+		}
+		got := allowedFor(aclEntries(t, acl), svc)
+		if len(got) != 1 || got[0].mask != sqiDirAccountAccess || got[0].flags != 0 {
+			t.Fatalf("ACEs for %s on %s = %+v, want exactly one non-inheritable %#x", account, sqiDir, got, sqiDirAccountAccess)
+		}
+	}
+	if err := checkPaths([]PathRef{{Key: "default log directory parent", Path: sqiDir}}, testTrusted(t)); err != nil {
+		t.Errorf("the install check refuses %s after the grant: %v", sqiDir, err)
+	}
+
+	other := filepath.Join(t.TempDir(), "logs-parent")
+	if err := EnsureLogDir(filepath.Join(other, "logs"), account); err != nil {
+		t.Fatal(err)
+	}
+	acl, _ = daclOf(t, other)
+	for _, e := range allowedFor(aclEntries(t, acl), svc) {
+		if e.flags&windows.INHERITED_ACE == 0 {
+			t.Errorf("a parent other than %%ProgramData%%\\sqi got an ACE for %s: %+v", account, e)
+		}
+	}
+}

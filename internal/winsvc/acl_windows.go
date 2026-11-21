@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -27,6 +29,10 @@ const (
 	// delete, but not change permissions or take ownership.
 	fileModifyAccess = windows.ACCESS_MASK(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE |
 		windows.FILE_GENERIC_EXECUTE | windows.DELETE)
+	// sqiDirAccountAccess is what a --user service needs on %ProgramData%\sqi:
+	// to open it for its attributes (checkParent) and pass through it to its
+	// log directory. It cannot list, read or change anything there.
+	sqiDirAccountAccess = windows.ACCESS_MASK(windows.FILE_READ_ATTRIBUTES | windows.FILE_TRAVERSE | windows.SYNCHRONIZE)
 )
 
 // EnsureLogDir makes dir usable as the log directory of a service running as
@@ -42,6 +48,12 @@ const (
 // service could not then create its log (plan clarification 4). Either way an
 // existing dir that is, or sits under, a junction or symbolic link is refused
 // (errReparsePoint; see mkdirProtected).
+//
+// When account is set and dir's parent is %ProgramData%\sqi, which is SYSTEM
+// and Administrators only, the account also gets one non-inheritable ACE
+// there of read-attributes, traverse and synchronize (sqiDirAccountAccess):
+// the service opens that parent for its attributes at every start to refuse
+// a junction, and would otherwise stop before it could log anything.
 func EnsureLogDir(dir, account string) error {
 	var sid *windows.SID
 	if account != "" {
@@ -52,10 +64,73 @@ func EnsureLogDir(dir, account string) error {
 		sid = s
 	}
 	created, err := mkdirProtected(dir, sid)
-	if err != nil || created || sid == nil {
+	if err != nil || sid == nil {
 		return err
 	}
-	return grantDir(dir, sid, fileModifyAccess)
+	if !created {
+		if err := grantDir(dir, sid, fileModifyAccess); err != nil {
+			return err
+		}
+	}
+	return grantSqiDir(dir, sid)
+}
+
+// grantSqiDir gives sid sqiDirAccountAccess on dir's parent, through a handle
+// to the parent itself, when that parent is %ProgramData%\sqi and sid holds
+// no allow ACE covering it already. The ACE is not inheritable: the log
+// directory below has its own protected DACL, and nothing else there is the
+// account's to reach.
+func grantSqiDir(dir string, sid *windows.SID) error {
+	parent := filepath.Dir(filepath.Clean(dir))
+	if !strings.EqualFold(parent, filepath.Clean(filepath.Join(ProgramDataDir(), "sqi"))) {
+		return nil
+	}
+	if err := checkParent(parent); err != nil {
+		return err
+	}
+	h, err := openDirForACL(parent)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("read ACL of %s: %w", parent, err)
+	}
+	existing, _, err := sd.DACL()
+	if err != nil {
+		return fmt.Errorf("read ACL of %s: %w", parent, err)
+	}
+	control, _, err := sd.Control()
+	if err != nil {
+		return fmt.Errorf("read ACL control of %s: %w", parent, err)
+	}
+	if has, err := allows(existing, sid, sqiDirAccountAccess); err != nil || has {
+		return err
+	}
+	return writeDACL(h, parent, []*windows.SID{sid}, sqiDirAccountAccess, windows.NO_INHERITANCE,
+		existing, control&windows.SE_DACL_PROTECTED != 0)
+}
+
+// allows reports whether dacl has an allow ACE for sid that applies to the
+// object itself and grants every right in mask.
+func allows(dacl *windows.ACL, sid *windows.SID, mask windows.ACCESS_MASK) (bool, error) {
+	if dacl == nil {
+		return false, nil
+	}
+	for i := range uint32(dacl.AceCount) {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			return false, fmt.Errorf("read ACE %d: %w", i, err)
+		}
+		if ace.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE &&
+			ace.Header.AceFlags&windows.INHERIT_ONLY_ACE == 0 &&
+			ace.Mask&mask == mask &&
+			(*windows.SID)(unsafe.Pointer(&ace.SidStart)).Equals(sid) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // checkExistingDir makes the read-only checks grantDir makes before it
@@ -153,7 +228,8 @@ func grantDir(dir string, sid *windows.SID, mask windows.ACCESS_MASK) error {
 	if err != nil {
 		return fmt.Errorf("read ACL control of %s: %w", dir, err)
 	}
-	return writeDACL(h, dir, []*windows.SID{sid}, mask, existing, control&windows.SE_DACL_PROTECTED != 0)
+	return writeDACL(h, dir, []*windows.SID{sid}, mask, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+		existing, control&windows.SE_DACL_PROTECTED != 0)
 }
 
 // errReparsePoint is returned when a path this package must use as itself —
@@ -253,11 +329,14 @@ func openPlain(path string, access uint32) (windows.Handle, uint32, error) {
 	return h, info.FileAttributes, nil
 }
 
-// writeDACL writes to h a DACL of inheritable grants of mask to sids, merged
-// onto base when base is non-nil. It is the only place this package changes
-// an existing object's DACL (createSecuredDir gives a new one its DACL).
-func writeDACL(h windows.Handle, dir string, sids []*windows.SID, mask windows.ACCESS_MASK, base *windows.ACL, protected bool) error {
-	acl, err := buildDACL(sids, mask, base)
+// writeDACL writes to h a DACL of grants of mask to sids, with inheritance,
+// merged onto base when base is non-nil. It is the only place this package
+// changes an existing object's DACL (createSecuredDir gives a new one its
+// DACL).
+func writeDACL(h windows.Handle, dir string, sids []*windows.SID, mask windows.ACCESS_MASK, inheritance uint32,
+	base *windows.ACL, protected bool,
+) error {
+	acl, err := buildDACLInheriting(sids, mask, inheritance, base)
 	if err != nil {
 		return err
 	}
@@ -276,12 +355,17 @@ func writeDACL(h windows.Handle, dir string, sids []*windows.SID, mask windows.A
 // buildDACL is a DACL of inheritable grants of mask to sids, merged onto base
 // when base is non-nil.
 func buildDACL(sids []*windows.SID, mask windows.ACCESS_MASK, base *windows.ACL) (*windows.ACL, error) {
+	return buildDACLInheriting(sids, mask, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, base)
+}
+
+// buildDACLInheriting is buildDACL with the grants' inheritance given.
+func buildDACLInheriting(sids []*windows.SID, mask windows.ACCESS_MASK, inheritance uint32, base *windows.ACL) (*windows.ACL, error) {
 	entries := make([]windows.EXPLICIT_ACCESS, 0, len(sids))
 	for _, sid := range sids {
 		entries = append(entries, windows.EXPLICIT_ACCESS{
 			AccessPermissions: mask,
 			AccessMode:        windows.GRANT_ACCESS,
-			Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+			Inheritance:       inheritance,
 			Trustee: windows.TRUSTEE{
 				TrusteeForm:  windows.TRUSTEE_IS_SID,
 				TrusteeType:  windows.TRUSTEE_IS_UNKNOWN,
