@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -430,5 +431,36 @@ func TestSweep_StopsOnContextCancel(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("sweep took %s after its context was canceled", elapsed)
+	}
+	// An interrupted start forgets nothing: the next one sweeps again.
+	if left := ledgerFiles(t, l); len(left) != 1 {
+		t.Errorf("records after a canceled sweep = %v, want the one record kept", left)
+	}
+}
+
+func TestSweep_ReportsOnlyProcessesStillAliveAfterTheLastKill(t *testing.T) {
+	l := testLedger(t)
+	putRecord(t, l, record{Token: "A", PGID: 10, Label: Label{Kind: "task"}})
+	// Every kill makes the tree fork a new marked child, so marked processes
+	// keep appearing until the deadline.
+	tab := &fakeTable{procs: map[int]*fakeProc{10: {token: "A"}}}
+	next := 100
+	tab.onKill = func(int) {
+		tab.mu.Lock()
+		defer tab.mu.Unlock()
+		next++
+		tab.procs[next] = &fakeProc{token: "A"}
+	}
+	ops := tab.ops()
+	ops.deadline = 100 * time.Millisecond
+	logs := runSweep(t, l, ops)
+	killed := map[string]bool{}
+	for _, pid := range tab.killedPIDs() {
+		killed[strconv.Itoa(pid)] = true
+	}
+	for _, e := range logs.at(slog.LevelError) {
+		if e["msg"] == "proctree: a process the previous worker left running survived SIGKILL" && killed[e["pid"]] {
+			t.Errorf("pid %s reported as surviving SIGKILL, but the fake table shows it killed", e["pid"])
+		}
 	}
 }

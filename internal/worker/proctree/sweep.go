@@ -81,6 +81,9 @@ func (l *Ledger) sweepWith(ctx context.Context, logger *slog.Logger, ops sweepOp
 	}
 	trees, files := l.readRecords(ctx, logger, ents)
 	defer func() {
+		if ctx.Err() != nil {
+			return // an interrupted start forgets nothing; the next one sweeps again
+		}
 		for _, f := range files {
 			if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
 				logger.ErrorContext(ctx, "proctree: could not delete a process tree record", slog.String("file", f), slog.Any("error", err))
@@ -231,8 +234,11 @@ func (s *sweepPass) killMarked(ctx context.Context) (map[int]string, error) {
 				alive[pid] = tok
 			}
 		}
-		if len(alive) == 0 || !time.Now().Before(deadline) {
+		if len(alive) == 0 {
 			return alive, nil
+		}
+		if !time.Now().Before(deadline) {
+			return s.stillMarked(ctx, alive), nil
 		}
 		select {
 		case <-ctx.Done():
@@ -240,6 +246,24 @@ func (s *sweepPass) killMarked(ctx context.Context) (map[int]string, error) {
 		case <-time.After(ops.poll):
 		}
 	}
+}
+
+// stillMarked waits one poll interval, then returns the processes of alive
+// that still run carrying the same token: the deadline's last pass sent
+// SIGKILL to everything in alive, and those that died of it did not survive.
+func (s *sweepPass) stillMarked(ctx context.Context, alive map[int]string) map[int]string {
+	select {
+	case <-ctx.Done():
+		return alive
+	case <-time.After(s.ops.poll):
+	}
+	left := map[int]string{}
+	for pid, tok := range alive {
+		if info, err := s.ops.inspect(pid); err == nil && !info.zombie && info.token == tok {
+			left[pid] = tok
+		}
+	}
+	return left
 }
 
 // visit looks at one process: it kills a live process carrying a recorded

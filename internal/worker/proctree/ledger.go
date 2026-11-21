@@ -56,12 +56,18 @@ func OpenLedger(dir string) (*Ledger, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("proctree: create ledger %s: %w", dir, err)
 	}
-	id, err := bootID()
+	// The boot ID only lets the sweep skip records from before a reboot; the
+	// token is what proves a process is a recorded tree's. Without one (a
+	// sandbox with a restricted /proc, say) records are swept by token alone.
+	id, err := readBootID()
 	if err != nil {
-		return nil, fmt.Errorf("proctree: read boot id: %w", err)
+		id = ""
 	}
 	return &Ledger{dir: dir, bootID: id}, nil
 }
+
+// readBootID is bootID, replaceable by a test.
+var readBootID = bootID
 
 // newToken returns a fresh tree token: 128 random bits as lowercase hex.
 func newToken() string {

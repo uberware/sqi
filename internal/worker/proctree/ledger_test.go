@@ -3,6 +3,7 @@
 package proctree
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"regexp"
@@ -116,5 +117,18 @@ func TestNilLedger_IsNoOp(t *testing.T) {
 	}
 	if err := tree.Release(); err != nil {
 		t.Errorf("Release = %v, want nil", err)
+	}
+}
+
+func TestOpenLedger_BootIDFailureIsNotFatal(t *testing.T) {
+	orig := readBootID
+	readBootID = func() (string, error) { return "", errors.New("no boot id here") }
+	t.Cleanup(func() { readBootID = orig })
+	l, err := OpenLedger(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenLedger with an unreadable boot ID = %v, want a ledger that sweeps by token alone", err)
+	}
+	if l.bootID != "" {
+		t.Errorf("bootID = %q, want empty", l.bootID)
 	}
 }
