@@ -27,7 +27,7 @@ func init() {
 // serverConfigPaths is the log.file and every path the configuration in
 // configPath names, with SQI_* overrides from the installing shell applied,
 // for service install to check.
-func serverConfigPaths(configPath string) (winsvc.ConfigPaths, error) {
+func serverConfigPaths(configPath, _ string) (winsvc.ConfigPaths, error) {
 	cfg, err := config.Load(configPath, config.FlagOverrides{})
 	if err != nil {
 		return winsvc.ConfigPaths{}, fmt.Errorf("load %s: %w", configPath, err)

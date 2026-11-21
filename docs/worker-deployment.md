@@ -789,6 +789,10 @@ and then:
   chooses what it runs, and `service install` would trust it for that);
 - creates the worker's data directory, `C:\ProgramData\sqi-render\worker`, and
   gives the account **Modify** on it;
+- creates a session directory, `C:\ProgramData\sqi-render\sessions`, gives the
+  account **Modify** on it, and writes it as `worker.session_dir`: the default
+  session root is under the administrators-only `C:\ProgramData\sqi`, where the
+  account could not create the directory each task runs in;
 - needs no password, and does not log the account on;
 - refuses the default `C:\ProgramData\sqi`, which would let the account read every
   other service's configuration (the default directory is recognised however its
@@ -812,7 +816,8 @@ The installer then, in this order:
 
 1. refuses an existing service (above);
 2. checks the configuration file: it must exist, and the worker reads
-   `worker.shutdown_grace_period` from it;
+   `worker.shutdown_grace_period` from it; it must set `worker.data_dir`, and
+   a `worker.session_dir` outside `C:\ProgramData\sqi`;
 3. checks that the binary, the configuration and every path it names are in
    places only administrators (and this account, for its own files) can change
    (see [What `service install` checks](#what-service-install-checks));

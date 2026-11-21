@@ -43,7 +43,7 @@ func TestWorkerConfigPaths_FromConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := workerConfigPaths(path)
+	got, err := workerConfigPaths(path, "")
 	if err != nil {
 		t.Fatalf("workerConfigPaths: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestWorkerConfigPaths_DefaultSessionRoot(t *testing.T) {
 	if err := os.WriteFile(path, []byte("worker:\n  data_dir: data\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := workerConfigPaths(path)
+	got, err := workerConfigPaths(path, "")
 	if err != nil {
 		t.Fatalf("workerConfigPaths: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestInstall_RefusesUnsetWorkerDataDir(t *testing.T) {
 		return path
 	}
 	path := write("log:\n  level: info\n")
-	_, err := workerConfigPaths(path)
+	_, err := workerConfigPaths(path, "")
 	if err == nil {
 		t.Fatal("workerConfigPaths accepted a configuration without worker.data_dir")
 	}
@@ -116,8 +116,63 @@ func TestInstall_RefusesUnsetWorkerDataDir(t *testing.T) {
 		}
 	}
 	def := workerconfig.Default().Worker.DataDir
-	if _, err := workerConfigPaths(write("worker:\n  data_dir: '" + def + "'\n")); err != nil {
+	if _, err := workerConfigPaths(write("worker:\n  data_dir: '"+def+"'\n"), ""); err != nil {
 		t.Errorf("workerConfigPaths refused a data_dir equal to the default: %v", err)
+	}
+}
+
+// TestWorkerConfigPaths_UserNeedsSessionRootItCanWrite pins that a --user
+// install is refused when the worker's session root is under the
+// administrators-only %ProgramData%\sqi (worker.session_dir unset, or set
+// there), where the account could create no session and every task would
+// fail, with the way out; that another session root is accepted; and that a
+// LocalSystem install is not affected.
+func TestWorkerConfigPaths_UserNeedsSessionRootItCanWrite(t *testing.T) {
+	t.Setenv("SQI_WORKER_SESSION_DIR", "")
+	t.Setenv("SQI_WORKER_DATA_DIR", "")
+	pd := t.TempDir()
+	t.Setenv("ProgramData", pd)
+	dir := filepath.Join(pd, "sqi-render")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, sessionDir, account string
+		refused                   bool
+	}{
+		{"unset, --user", "", `.\render`, true},
+		{"under sqi, --user", filepath.Join(pd, "sqi", "scratch"), `.\render`, true},
+		{"its own, --user", filepath.Join(dir, "sessions"), `.\render`, false},
+		{"unset, LocalSystem", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "worker:\n  data_dir: '" + filepath.Join(dir, "worker") + "'\n"
+			if tc.sessionDir != "" {
+				body += "  session_dir: '" + tc.sessionDir + "'\n"
+			}
+			path := filepath.Join(dir, "sqi-worker.yaml")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := workerConfigPaths(path, tc.account)
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("workerConfigPaths: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("workerConfigPaths accepted a session root the account cannot write")
+			}
+			for _, s := range []string{
+				"worker.session_dir", filepath.Join(pd, "sqi"), tc.account,
+				"session_dir: " + filepath.Join(dir, "sessions"), "config init --user",
+			} {
+				if !strings.Contains(err.Error(), s) {
+					t.Errorf("refusal lacks %q:\n%v", s, err)
+				}
+			}
+		})
 	}
 }
 

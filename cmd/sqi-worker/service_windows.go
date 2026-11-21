@@ -52,7 +52,10 @@ func workerDrainTimeout(configPath string) (time.Duration, error) {
 // installing administrator's, for the service its own account's (for
 // LocalSystem, C:\Windows\System32\config\systemprofile), so the path install
 // would check is not the one the worker keeps its identity and credential in.
-func workerConfigPaths(configPath string) (winsvc.ConfigPaths, error) {
+//
+// For an account ("" is LocalSystem) it also refuses a session root under
+// %ProgramData%\sqi (see userSessionRoot).
+func workerConfigPaths(configPath, account string) (winsvc.ConfigPaths, error) {
 	cfg, src, err := workerconfig.LoadWithSources(configPath, workerconfig.FlagOverrides{})
 	if err != nil {
 		return winsvc.ConfigPaths{}, fmt.Errorf("load %s: %w", configPath, err)
@@ -62,6 +65,9 @@ func workerConfigPaths(configPath string) (winsvc.ConfigPaths, error) {
 			"identity and credential under its own account's profile, which install cannot check. "+
 			"Set it explicitly, for example:\n  worker:\n    data_dir: %s\nor write a new configuration "+
 			"with sqi-worker config init", configPath, filepath.Join(filepath.Dir(configPath), "worker"))
+	}
+	if err := userSessionRoot(configPath, account, cfg.Worker); err != nil {
+		return winsvc.ConfigPaths{}, err
 	}
 	named := cfg.NamedPaths()
 	paths := make([]winsvc.PathRef, 0, len(named)+1)
@@ -73,6 +79,33 @@ func workerConfigPaths(configPath string) (winsvc.ConfigPaths, error) {
 		paths = append(paths, winsvc.PathRef{Key: "worker.session_dir (default)", Path: root})
 	}
 	return winsvc.ConfigPaths{LogFile: cfg.Log.File, Paths: paths}, nil
+}
+
+// userSessionRoot refuses, for a service running as account, a session root
+// under %ProgramData%\sqi: the default when worker.session_dir is unset, or
+// one set there. Only SYSTEM and Administrators can write that directory, so
+// the worker would register and then fail every task it was given, creating
+// its session directory. LocalSystem ("") can use it.
+func userSessionRoot(configPath, account string, w workerconfig.WorkerSettings) error {
+	if account == "" {
+		return nil
+	}
+	root, _ := effectiveSessionRoot(w)
+	if !filepath.IsAbs(root) {
+		root = filepath.Join(filepath.Dir(configPath), root)
+	}
+	sqiDir := filepath.Join(winsvc.ProgramDataDir(), "sqi")
+	if !winsvc.PathWithin(root, sqiDir) {
+		return nil
+	}
+	what := "leaves worker.session_dir unset, so the worker would create its task session directories in " + root
+	if w.SessionDir != "" {
+		what = "sets worker.session_dir to " + root
+	}
+	return fmt.Errorf("%s %s, which is under %s, where only SYSTEM and Administrators can write: running as %s, "+
+		"the worker would fail every task. Set worker.session_dir to a directory %s owns or can write, for example:\n"+
+		"  worker:\n    session_dir: %s\n(sqi-worker config init --user writes and creates it)",
+		configPath, what, sqiDir, account, account, filepath.Join(filepath.Dir(configPath), "sessions"))
 }
 
 // workerDrainBound is how long a worker shutdown can take to drain: up to the

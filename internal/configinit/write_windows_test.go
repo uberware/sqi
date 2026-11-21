@@ -89,7 +89,7 @@ func TestConfigInitWindows_ElevationFirst(t *testing.T) {
 	pd := fakeProgramData(t)
 	tgt := filepath.Join(pd, "sqi", "sqi-worker.yaml")
 	f := &fakeWinOps{elevatedErr: winsvc.ErrNotElevated}
-	err := writeWindows(tgt, []byte("x"), "", false, filepath.Join(pd, "sqi", "worker"), f.ops())
+	err := writeWindows(tgt, []byte("x"), "", false, filepath.Join(pd, "sqi", "worker"), "", f.ops())
 	if !errors.Is(err, winsvc.ErrNotElevated) {
 		t.Fatalf("error = %v, want ErrNotElevated", err)
 	}
@@ -114,7 +114,7 @@ func TestConfigInitWindows_ElevationFirstForMissingDirAndAccount(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &fakeWinOps{elevatedErr: winsvc.ErrNotElevated}
-			err := writeWindows(tt.target, []byte("x"), tt.account, false, filepath.Join(filepath.Dir(tt.target), "worker"), f.ops())
+			err := writeWindows(tt.target, []byte("x"), tt.account, false, filepath.Join(filepath.Dir(tt.target), "worker"), "", f.ops())
 			if !errors.Is(err, winsvc.ErrNotElevated) {
 				t.Fatalf("error = %v, want ErrNotElevated", err)
 			}
@@ -307,6 +307,7 @@ func TestConfigInitWindows_JudgesAndWritesTheCanonicalPath(t *testing.T) {
 		"requireElevated",
 		`lookupAccount .\render`,
 		`prepareConfigDir ` + dir + ` .\render`,
+		`prepareDataDir ` + filepath.Join(dir, "sessions") + ` .\render`,
 		`prepareDataDir ` + data + ` .\render`,
 		"writeFile " + tgt + " replace=false admin=true",
 	}
@@ -392,18 +393,26 @@ func TestConfigInitWindows_UserPreparesBothDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := filepath.Join(dir, "worker")
+	sessions := filepath.Join(dir, "sessions")
 	want := []string{
 		"requireElevated",
 		`lookupAccount .\render`,
 		`prepareConfigDir ` + dir + ` .\render`,
+		`prepareDataDir ` + sessions + ` .\render`,
 		`prepareDataDir ` + data + ` .\render`,
 		"writeFile " + tgt + " replace=false admin=true",
 	}
 	if !slices.Equal(f.calls, want) {
 		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
 	}
-	if got := readFile(t, tgt); !strings.Contains(got, "data_dir: '"+data+"'") {
+	got := readFile(t, tgt)
+	if !strings.Contains(got, "data_dir: '"+data+"'") {
 		t.Errorf("worker.data_dir is not %s:\n%s", data, got)
+	}
+	// The default session root is under the administrators-only
+	// %ProgramData%\sqi, which the account cannot write.
+	if !strings.Contains(got, "session_dir: '"+sessions+"'") {
+		t.Errorf("worker.session_dir is not %s:\n%s", sessions, got)
 	}
 	if wantNext := "next: sqi-worker service install --start --user render --config " + tgt + "\n"; !strings.Contains(out, wantNext) {
 		t.Errorf("output %q lacks %q", out, wantNext)
@@ -421,6 +430,9 @@ func TestConfigInitWindows_ServerUserDataDir(t *testing.T) {
 	data := filepath.Join(dir, "data")
 	if !slices.Contains(f.calls, `prepareDataDir `+data+` HOST\render`) {
 		t.Errorf("calls = %q, want prepareDataDir %s", f.calls, data)
+	}
+	if slices.ContainsFunc(f.calls, func(c string) bool { return strings.Contains(c, "sessions") }) {
+		t.Errorf("calls = %q: a server has no session directory", f.calls)
 	}
 	got := readFile(t, tgt)
 	for _, w := range []string{"'" + filepath.Join(data, "sqi.db") + "'", "'" + filepath.Join(data, "nats") + "'"} {

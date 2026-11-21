@@ -53,7 +53,7 @@ func platformWriter(_ Spec) writer {
 
 func windowsWriter(ops winOps) writer {
 	return func(req writeRequest) error {
-		return writeWindows(req.Target, req.Content, req.Account, req.Force, req.DataDir, ops)
+		return writeWindows(req.Target, req.Content, req.Account, req.Force, req.DataDir, req.SessionDir, ops)
 	}
 }
 
@@ -61,12 +61,12 @@ func windowsWriter(ops winOps) writer {
 // missing one, or one for an account is made administrators-only (granting
 // account read) or must already be, which needs an elevated shell, checked
 // before anything else. An existing directory of one's own elsewhere is
-// written into as it is. dataDir is created either way. account, when not
-// "", must resolve to a user, may not use the default %ProgramData%\sqi, and
-// gets Modify on dataDir. target must be in canonicalPath's spelling, as
+// written into as it is. dataDir, and sessionDir when it is not "", are
+// created either way. account, when not "", must resolve to a user, may not
+// use the default %ProgramData%\sqi, and gets Modify on both. target must be in canonicalPath's spelling, as
 // run gives it, so the directory judged is the one written; %ProgramData% is
 // compared in that spelling too.
-func writeWindows(target string, content []byte, account string, force bool, dataDir string, ops winOps) error {
+func writeWindows(target string, content []byte, account string, force bool, dataDir, sessionDir string, ops winOps) error {
 	pd, err := canonicalPath(winsvc.ProgramDataDir())
 	if err != nil {
 		return fmt.Errorf("%%ProgramData%%: %w", err)
@@ -95,8 +95,13 @@ func writeWindows(target string, content []byte, account string, force bool, dat
 	if err != nil {
 		return err
 	}
-	if err := makeDataDir(dataDir, pd, account, protect, ops); err != nil {
-		return err
+	for _, d := range []string{sessionDir, dataDir} {
+		if d == "" {
+			continue
+		}
+		if err := makeDataDir(d, pd, account, protect, ops); err != nil {
+			return err
+		}
 	}
 	return ops.writeFile(target, content, replace, protect)
 }

@@ -177,6 +177,43 @@ func TestRender_RoundTripsThroughStrictLoader(t *testing.T) {
 	}
 }
 
+// TestRender_SessionDirOnlyWhenGiven pins that worker.session_dir is written,
+// and loads back, only when a value is given (config init --user gives one),
+// and that the server's starter never has one.
+func TestRender_SessionDirOnlyWhenGiven(t *testing.T) {
+	t.Setenv("SQI_WORKER_SESSION_DIR", "")
+	target := configinit.DefaultTarget(configinit.Worker, winSp)
+	data := configinit.DataDir(configinit.Worker, winSp, target)
+	sessions := `C:\ProgramData\sqi render\sessions`
+	for _, tc := range []struct {
+		name, sessionDir string
+	}{{"unset", ""}, {"set", sessions}} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := configinit.Render(configinit.Worker, winSp, configinit.Values{DataDir: data, SessionDir: tc.sessionDir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(out), "session_dir"); got != (tc.sessionDir != "") {
+				t.Errorf("starter has session_dir = %v, want %v:\n%s", got, tc.sessionDir != "", out)
+			}
+			cfg, err := workerconfig.Load(writeTemp(t, out), workerconfig.FlagOverrides{})
+			if err != nil {
+				t.Fatalf("strict loader rejected:\n%s\n%v", out, err)
+			}
+			if cfg.Worker.SessionDir != tc.sessionDir || cfg.Worker.DataDir != data {
+				t.Errorf("worker.session_dir = %q, data_dir = %q; want %q, %q", cfg.Worker.SessionDir, cfg.Worker.DataDir, tc.sessionDir, data)
+			}
+		})
+	}
+	out, err := configinit.Render(configinit.Server, winSp, configinit.Values{DataDir: data, SessionDir: sessions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "session_dir") {
+		t.Errorf("server starter has session_dir:\n%s", out)
+	}
+}
+
 var headerDocs = map[configinit.Binary]string{
 	configinit.Server: "docs/configuration.md",
 	configinit.Worker: "docs/worker-configuration.md",

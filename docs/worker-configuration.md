@@ -520,7 +520,12 @@ Left unset, the value is resolved at startup:
   running as LocalSystem has its home directory under
   `System32\config\systemprofile`, which is unsuitable for render scratch.
   Directory modes have no effect on Windows; each session directory is
-  protected by an NTFS DACL instead (see [Windows](#windows) below).
+  protected by an NTFS DACL instead (see [Windows](#windows) below). On a host
+  where `%ProgramData%\sqi` exists it is administrators-only, so a worker run by
+  any other account — a `--user` service, or a console `sqi-worker start` from
+  a shell that is not elevated — must set `worker.session_dir` to a directory
+  that account can write; `config init --user` writes one, and
+  `service install --user` refuses a configuration without one.
 - **Otherwise (non-root POSIX)**: `<data_dir>/sessions`, created at `0750`. A
   non-root worker cannot run tasks as another user, so session scratch needs no
   wider access.

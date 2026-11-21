@@ -32,7 +32,7 @@ func TestServerConfigPaths_FromConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte("log:\n  file: logs/s.log\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := serverConfigPaths(path)
+	got, err := serverConfigPaths(path, "")
 	if err != nil {
 		t.Fatalf("serverConfigPaths: %v", err)
 	}

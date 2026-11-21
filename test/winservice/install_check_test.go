@@ -20,6 +20,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
 
 // unreachableNATS is a NATS URL nothing listens on: these tests install
@@ -178,7 +180,8 @@ func TestWinService_InstallRefusesSquattedSqiDirWithConfigElsewhere(t *testing.T
 
 // TestWinService_ConfigInitUserAccountCanReadAndWrite pins what config init
 // --user gives the account, checked as the account itself: it reads the
-// configuration but cannot change it, and writes its data directory. install
+// configuration but cannot change it, and writes its data directory and the
+// session root the configuration implies, as every task needs. install
 // --user then accepts the layout.
 func TestWinService_ConfigInitUserAccountCanReadAndWrite(t *testing.T) {
 	account, password := throwawayAccount(t)
@@ -190,10 +193,28 @@ func TestWinService_ConfigInitUserAccountCanReadAndWrite(t *testing.T) {
 	cleanupDir(t, dir)
 	cfg := filepath.Join(dir, "sqi-worker.yaml")
 	mustRun(t, bin("sqi-worker"), "config", "init", "--user", account, "--nats-url", unreachableNATS, "--config", cfg)
+	// The session root the worker would use with the written configuration
+	// (cmd/sqi-worker's default on Windows when worker.session_dir is unset).
+	loaded, err := workerconfig.Load(cfg, workerconfig.FlagOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionRoot := loaded.Worker.SessionDir
+	if sessionRoot == "" {
+		sessionRoot = filepath.Join(os.Getenv("ProgramData"), "sqi", "worker", "sessions")
+	}
 
 	token := logon(t, account, password)
-	err := asAccount(token, func() error {
+	err = asAccount(token, func() error {
 		var errs []error
+		// As session.Manager does for each task: the root, then a session
+		// directory and a file in it.
+		session := filepath.Join(sessionRoot, "probe-session")
+		if err := os.MkdirAll(session, 0o700); err != nil {
+			errs = append(errs, fmt.Errorf("create a session directory: %w", err))
+		} else if err := os.WriteFile(filepath.Join(session, "probe"), []byte("x"), 0o600); err != nil {
+			errs = append(errs, fmt.Errorf("write in a session directory: %w", err))
+		}
 		if _, err := os.ReadFile(cfg); err != nil {
 			errs = append(errs, fmt.Errorf("read the configuration: %w", err))
 		}

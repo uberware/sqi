@@ -29,8 +29,11 @@ type writeRequest struct {
 	Target   string // absolute path of the file to write
 	Content  []byte
 	DataDir  string // the data directory the content names
-	Force    bool   // replace a file already at Target
-	Account  string // Windows --user, normalized; "" for none
+	// SessionDir is the session directory the content names, created like
+	// DataDir; "" when it names none.
+	SessionDir string
+	Force      bool   // replace a file already at Target
+	Account    string // Windows --user, normalized; "" for none
 }
 
 // writer is the platform write step: it puts req.Content at req.Target with
@@ -92,14 +95,17 @@ func run(cmd *cobra.Command, spec Spec, w writer, force bool, natsURL, user stri
 		return err
 	}
 	dataDir := DataDir(spec.Binary, p, target)
-	content, err := Render(spec.Binary, p, Values{Version: spec.Version, NATSURL: natsURL, DataDir: dataDir})
+	account := winsvc.NormalizeAccount(user)
+	sessionDir := SessionDir(spec.Binary, p, target, account)
+	content, err := Render(spec.Binary, p, Values{
+		Version: spec.Version, NATSURL: natsURL, DataDir: dataDir, SessionDir: sessionDir,
+	})
 	if err != nil {
 		return err
 	}
-	account := winsvc.NormalizeAccount(user)
 	req := writeRequest{
 		Binary: spec.Binary, Platform: p, Target: target, Content: content, DataDir: dataDir,
-		Force: force, Account: account,
+		SessionDir: sessionDir, Force: force, Account: account,
 	}
 	if err := w(req); err != nil {
 		return err

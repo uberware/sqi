@@ -46,6 +46,9 @@ type Values struct {
 	Version string // version of the writing binary
 	NATSURL string // worker only; "" leaves discovery on
 	DataDir string // from DataDir
+	// SessionDir is the worker's worker.session_dir, written only when it is
+	// not "" (config init --user gives one: see SessionDir).
+	SessionDir string
 }
 
 // DefaultTarget returns the path "config init" writes b's configuration to
@@ -78,6 +81,18 @@ func DataDir(b Binary, p Platform, target string) string {
 	default:
 		return path.Join("/var/lib", string(b))
 	}
+}
+
+// SessionDir returns the worker.session_dir a Windows starter for an
+// account (config init --user) names: a sessions directory beside target.
+// Otherwise it is "" and the worker uses its default, under
+// %ProgramData%\sqi on Windows, which only SYSTEM and Administrators can
+// write, so a service running as an account could create no session there.
+func SessionDir(b Binary, p Platform, target, account string) string {
+	if b != Worker || p.GOOS != goosWindows || account == "" {
+		return ""
+	}
+	return winJoin(winDir(target), "sessions")
 }
 
 // ValidateNATSURL checks a worker's nats.url: one or more comma-separated
@@ -147,6 +162,9 @@ func renderWorker(sb *strings.Builder, v Values) error {
 		sb.WriteString("# nats:\n#   url: 'nats://server.example.com:4222'\n\n")
 	}
 	fmt.Fprintf(sb, "worker:\n  data_dir: %s\n", quote(v.DataDir))
+	if v.SessionDir != "" {
+		fmt.Fprintf(sb, "  session_dir: %s\n", quote(v.SessionDir))
+	}
 	return nil
 }
 

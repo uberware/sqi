@@ -108,7 +108,7 @@ func testSpec(drainCalls *int) CommandSpec {
 			*drainCalls++
 			return testDrain, nil
 		},
-		ConfigPaths: func(string) (ConfigPaths, error) { return ConfigPaths{}, nil },
+		ConfigPaths: func(string, string) (ConfigPaths, error) { return ConfigPaths{}, nil },
 		UserWarning: "the account also needs a privilege",
 	}
 }
@@ -633,7 +633,7 @@ func TestInstall_ChecksPathsBeforePasswordAndChanges(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &fakeOps{checkErr: tc.checkErr, sqiDirErr: tc.sqiDirErr}
 			spec := testSpec(new(int))
-			spec.ConfigPaths = func(string) (ConfigPaths, error) { return ConfigPaths{}, tc.pathsErr }
+			spec.ConfigPaths = func(string, string) (ConfigPaths, error) { return ConfigPaths{}, tc.pathsErr }
 			stdin := &recordingStdin{f: fake, r: strings.NewReader("s3cret\n")}
 			_, err := execute(t, spec, fake.operations(), stdin, "install", "--user", "render", "--config", writeConfig(t))
 			if !slices.Equal(fake.calls, tc.want) {
@@ -723,7 +723,7 @@ func TestInstall_CheckedRefs(t *testing.T) {
 			fake := &fakeOps{}
 			spec := testSpec(new(int))
 			var loaded string
-			spec.ConfigPaths = func(p string) (ConfigPaths, error) { loaded = p; return tc.paths, nil }
+			spec.ConfigPaths = func(p, _ string) (ConfigPaths, error) { loaded = p; return tc.paths, nil }
 			if out, err := execute(t, spec, fake.operations(), &readSpy{}, "install", "--config", cfg); err != nil {
 				t.Fatalf("install: %v\n%s", err, out)
 			}
@@ -754,7 +754,7 @@ func TestServiceInstall_ResolvesRelativePathsAgainstConfigDir(t *testing.T) {
 	t.Chdir(t.TempDir())
 	fake := &fakeOps{}
 	spec := testSpec(new(int))
-	spec.ConfigPaths = func(string) (ConfigPaths, error) {
+	spec.ConfigPaths = func(string, string) (ConfigPaths, error) {
 		return ConfigPaths{LogFile: `logs\w.log`, Paths: []PathRef{
 			{"log.file", `logs\w.log`}, {"worker.data_dir", "data"},
 		}}, nil
@@ -787,11 +787,15 @@ func TestInstall_RefusesUnsetWorkerDataDir(t *testing.T) {
 	unset := errors.New("worker.data_dir is not set in the configuration; set it explicitly")
 	fake := &fakeOps{}
 	spec := testSpec(new(int))
-	spec.ConfigPaths = func(string) (ConfigPaths, error) { return ConfigPaths{}, unset }
+	var account string
+	spec.ConfigPaths = func(_, a string) (ConfigPaths, error) { account = a; return ConfigPaths{}, unset }
 	stdin := &readSpy{}
 	out, err := execute(t, spec, fake.operations(), stdin, "install", "--user", "render", "--config", writeConfig(t))
 	if err != unset { //nolint:errorlint // returned as it is, not wrapped
 		t.Fatalf("install = %v, want the ConfigPaths error unchanged", err)
+	}
+	if account != `.\render` {
+		t.Errorf("ConfigPaths was given account %q, want the normalized .\\render", account)
 	}
 	if want := []string{"requireElevated", "exists " + testBinary}; !slices.Equal(fake.calls, want) {
 		t.Errorf("calls = %q, want only %q", fake.calls, want)
