@@ -25,6 +25,11 @@ type fakeProc struct {
 	// envUnreadable means the process's environment cannot be read (another
 	// account's process, without CAP_SYS_PTRACE).
 	envUnreadable bool
+	// envHidden means the kernel answered but withheld the environment (macOS
+	// 27 does this for Apple's own binaries).
+	envHidden bool
+	// start is the process's start time, as leaderStart reports it.
+	start int64
 	// readErr, when set, is what inspect returns for the process.
 	readErr error
 	// survives makes kill a no-op for this process.
@@ -64,7 +69,16 @@ func (f *fakeTable) ops() sweepOps {
 			if p.envUnreadable {
 				return procInfo{pgid: p.pgid, zombie: p.zombie, envUnreadable: true}, p.readErr
 			}
-			return procInfo{token: p.token, pgid: p.pgid, zombie: p.zombie}, p.readErr
+			return procInfo{token: p.token, pgid: p.pgid, zombie: p.zombie, envHidden: p.envHidden}, p.readErr
+		},
+		leaderStart: func(pid int) (int64, bool) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			p, ok := f.procs[pid]
+			if !ok || p.zombie {
+				return 0, false
+			}
+			return p.start, true
 		},
 		kill: func(pid int) error {
 			f.mu.Lock()
@@ -462,5 +476,79 @@ func TestSweep_ReportsOnlyProcessesStillAliveAfterTheLastKill(t *testing.T) {
 		if e["msg"] == "proctree: a process the previous worker left running survived SIGKILL" && killed[e["pid"]] {
 			t.Errorf("pid %s reported as surviving SIGKILL, but the fake table shows it killed", e["pid"])
 		}
+	}
+}
+
+// A process whose environment the kernel withholds carries no token to match.
+// It belongs to a recorded tree when it is in the tree's group and the group's
+// leader is still the process the record saw: group numbers are reused, a
+// start time is not.
+func TestSweep_KillsHiddenEnvMembersOfAVerifiedGroup(t *testing.T) {
+	cases := []struct {
+		name string
+		rec  record
+		tab  map[int]*fakeProc
+		want []int
+	}{
+		{
+			name: "leader alive with the recorded start",
+			rec:  record{Token: "A", PGID: 10, LeaderStart: 500},
+			tab: map[int]*fakeProc{
+				10: {pgid: 10, envHidden: true, start: 500},
+				11: {pgid: 10, envHidden: true, start: 501},
+				12: {pgid: 77, envHidden: true}, // another group
+				13: {pgid: 10, token: "other"},  // readable, and not this tree's
+			},
+			want: []int{10, 11},
+		},
+		{
+			name: "leader gone, members remain",
+			rec:  record{Token: "A", PGID: 10, LeaderStart: 500},
+			tab:  map[int]*fakeProc{11: {pgid: 10, envHidden: true, start: 501}},
+			want: []int{11},
+		},
+		{
+			name: "group number reused by another process",
+			rec:  record{Token: "A", PGID: 10, LeaderStart: 500},
+			tab: map[int]*fakeProc{
+				10: {pgid: 10, envHidden: true, start: 9000},
+				11: {pgid: 10, envHidden: true, start: 9001},
+			},
+		},
+		{
+			name: "record carries no leader start",
+			rec:  record{Token: "A", PGID: 10},
+			tab:  map[int]*fakeProc{11: {pgid: 10, envHidden: true, start: 501}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := testLedger(t)
+			tc.rec.Label = Label{Kind: "task"}
+			putRecord(t, l, tc.rec)
+			tab := &fakeTable{procs: tc.tab}
+			runSweep(t, l, tab.ops())
+			if got := tab.killedPIDs(); !slices.Equal(got, tc.want) {
+				t.Errorf("killed %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSweep_ReportsHiddenEnvSurvivors(t *testing.T) {
+	l := testLedger(t)
+	putRecord(t, l, record{Token: "A", PGID: 10, LeaderStart: 500, Label: Label{Kind: "task"}})
+	tab := &fakeTable{procs: map[int]*fakeProc{11: {pgid: 10, envHidden: true, start: 501, survives: true}}}
+	ops := tab.ops()
+	ops.deadline = 50 * time.Millisecond
+	logs := runSweep(t, l, ops)
+	var found bool
+	for _, e := range logs.at(slog.LevelError) {
+		if e["msg"] == "proctree: a process the previous worker left running survived SIGKILL" && e["pid"] == "11" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no survivor ERROR for pid 11; ERRORs: %v", logs.at(slog.LevelError))
 	}
 }

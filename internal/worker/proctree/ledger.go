@@ -28,11 +28,15 @@ type Label struct {
 
 // record is one tree's ledger file.
 type record struct {
-	Token     string    `json:"token"`
-	PGID      int       `json:"pgid"`
-	BootID    string    `json:"boot_id"`
-	Label     Label     `json:"label"`
-	StartedAt time.Time `json:"started_at"`
+	Token  string `json:"token"`
+	PGID   int    `json:"pgid"`
+	BootID string `json:"boot_id"`
+	// LeaderStart is when the group's leader started (see sweepOps.leaderStart),
+	// 0 when the platform cannot say. It lets the sweep trust the group number
+	// for processes whose environment is withheld.
+	LeaderStart int64     `json:"leader_start,omitempty"`
+	Label       Label     `json:"label"`
+	StartedAt   time.Time `json:"started_at"`
 }
 
 // recordExt and tmpExt name a record file and the temporary file it is

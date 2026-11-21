@@ -13,3 +13,6 @@ import (
 // worker that created it, so nothing is left to sweep; other systems have no
 // process-table reader.
 func (*Ledger) Sweep(context.Context, *slog.Logger) error { return nil }
+
+// leaderStartTime is 0 where there is no process-table reader.
+func leaderStartTime(int) int64 { return 0 }

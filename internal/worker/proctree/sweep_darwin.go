@@ -61,5 +61,25 @@ func inspectProc(pid int) (procInfo, error) {
 		return procInfo{}, err
 	}
 	info.token = envToken(env)
+	// macOS 27 answers without an environment for Apple's own binaries. A
+	// process the worker launched always had at least the token in it.
+	info.envHidden = len(env) == 0
 	return info, nil
+}
+
+// processStart returns a process's start time in microseconds since the epoch,
+// from kern.proc.pid. The bool is false when there is no such process.
+func processStart(pid int) (int64, bool) {
+	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil || kp.Proc.P_pid != int32(pid) { //nolint:gosec // G115: pid came from the kernel
+		return 0, false
+	}
+	tv := kp.Proc.P_starttime
+	return tv.Sec*1_000_000 + int64(tv.Usec), true
+}
+
+// leaderStartTime is processStart, 0 when unknown: what a record stores.
+func leaderStartTime(pid int) int64 {
+	start, _ := processStart(pid)
+	return start
 }

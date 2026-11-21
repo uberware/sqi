@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -31,6 +32,45 @@ func pidsWithToken(t *testing.T, token string) []int {
 		}
 	}
 	return pids
+}
+
+// treePIDs is pidsWithToken plus, for processes whose environment the kernel
+// withholds, the members of group pgid: the processes the sweep must find.
+func treePIDs(t *testing.T, token string, pgid int) []int {
+	t.Helper()
+	all, err := listProcs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pids []int
+	for _, pid := range all {
+		info, err := inspectProc(pid)
+		if err != nil || info.zombie {
+			continue
+		}
+		if info.token == token || (info.envHidden && info.pgid == pgid) {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// platformHidesEnv reports whether this host withholds the environment of the
+// system binaries the sweep tests run (macOS 27 does), so a process that left
+// its group cannot be matched by token and cannot be found at all.
+func platformHidesEnv(t *testing.T) bool {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "sleep", "5")
+	cmd.Env = MarkEnv(nil)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }() //nolint:errcheck // cleanup
+	info, err := inspectProc(cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.token == "" && info.envHidden
 }
 
 // goneOrZombie reports whether pid has exited (or exited and awaits reaping).
@@ -99,14 +139,24 @@ func TestSweep_KillsARealOrphanedTree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var pids []int
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if pids = pidsWithToken(t, tok); len(pids) >= 3 {
+	// Where the environment is withheld the process that left its group has
+	// nothing to identify it: a sweep finds the other two.
+	want := 3
+	if platformHidesEnv(t) {
+		want = 2
+	}
+	// perl is itself in the group until it calls setsid, so where the group is
+	// what identifies the tree, wait for the set of members to hold still.
+	var pids, prev []int
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		pids = treePIDs(t, tok, cmd.Process.Pid)
+		if len(pids) >= want && slices.Equal(pids, prev) {
 			break
 		}
+		prev = pids
 	}
-	if len(pids) < 3 {
-		t.Fatalf("found %d marked processes %v, want 3 (shell, sleep, the sleep that left the group)", len(pids), pids)
+	if len(pids) < want {
+		t.Fatalf("found %d tree processes %v, want %d (shell, sleep, and where the environment is readable the sleep that left the group)", len(pids), pids, want)
 	}
 
 	// No Release: this is a worker that died with the tree running.
