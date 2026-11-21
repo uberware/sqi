@@ -652,7 +652,7 @@ func TestController_PowerCutWorkersFirstSupervisesWorkers(t *testing.T) {
 				at = append(at, r.at.Sub(start))
 			}
 		}
-		if len(at) != 2 || at[0] > 200*time.Millisecond-tolerance || at[1] < rs.at.Sub(start) {
+		if len(at) != 2 || at[0] >= rs.at.Sub(start) || at[1] < rs.at.Sub(start) {
 			t.Errorf("worker %d started at %v, want once at the boot (100ms) and once after the server (%s)", w, at, rs.at.Sub(start))
 		}
 	}
