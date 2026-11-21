@@ -64,10 +64,12 @@ func TestSweep_KillsARealOrphanedTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A background child, a child that leaves the group with setsid, and the
-	// shell itself. The echo after both are started means all three exist
-	// before the sweep.
-	cmd := exec.CommandContext(t.Context(), "sh", "-c", "sleep 300 & setsid sleep 300 & echo started; wait")
+	// A background child, a child that leaves the group with setsid(2), and
+	// the shell itself. perl makes the setsid call because macOS ships no
+	// setsid(1). The echo after both are started means all three exist before
+	// the sweep.
+	cmd := exec.CommandContext(t.Context(), "sh", "-c",
+		"sleep 300 & perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sleep 300 & echo started; wait")
 	Configure(cmd)
 	cmd.Env = MarkEnv(nil)
 	tok := envToken(cmd.Env)
@@ -79,8 +81,12 @@ func TestSweep_KillsARealOrphanedTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck // cleanup after a failure
-		cmd.Wait()                                      //nolint:errcheck // reaps the shell
+		// After a failure: the group, and the child that left it.
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck // ESRCH when the sweep worked
+		for _, pid := range pidsWithToken(t, envToken(cmd.Env)) {
+			syscall.Kill(pid, syscall.SIGKILL) //nolint:errcheck // ESRCH when the sweep worked
+		}
+		cmd.Wait() //nolint:errcheck // reaps the shell
 	})
 	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || strings.TrimSpace(line) != "started" {
 		t.Fatalf("marker read = %q, %v", line, err)
@@ -100,7 +106,7 @@ func TestSweep_KillsARealOrphanedTree(t *testing.T) {
 		}
 	}
 	if len(pids) < 3 {
-		t.Fatalf("found %d marked processes %v, want 3 (shell, sleep, setsid sleep)", len(pids), pids)
+		t.Fatalf("found %d marked processes %v, want 3 (shell, sleep, the sleep that left the group)", len(pids), pids)
 	}
 
 	// No Release: this is a worker that died with the tree running.

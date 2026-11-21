@@ -17,7 +17,12 @@ const unreadableHint = "macOS lets only root read another account's process argu
 
 // listProcs returns every process ID from kern.proc.all.
 func listProcs() ([]int, error) {
+	// The sysctl sizes its buffer, then reads; processes started in between
+	// can overflow it (ENOMEM), so try once more.
 	procs, err := unix.SysctlKinfoProcSlice("kern.proc.all")
+	if errors.Is(err, unix.ENOMEM) {
+		procs, err = unix.SysctlKinfoProcSlice("kern.proc.all")
+	}
 	if err != nil {
 		return nil, err
 	}
