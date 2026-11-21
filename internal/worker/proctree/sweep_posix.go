@@ -24,12 +24,12 @@ const (
 
 // Sweep kills every process a previous worker on this data directory left
 // running: each process whose EnvVar carries a token one of the ledger's
-// records names. It then deletes every record. Run it before the worker
-// registers, since the registration is what reclaims (and re-runs) the dead
-// worker's tasks, and only while holding the data directory's lock, so that a
-// live worker's trees are never swept. It waits at most 5 seconds. Only an
-// unreadable ledger directory is returned as an error; everything else is
-// logged. A nil ledger does nothing.
+// records names. It then deletes every record, unless ctx has ended. Run it
+// before the worker registers, since the registration is what reclaims (and
+// re-runs) the dead worker's tasks, and only while holding the data
+// directory's lock, so that a live worker's trees are never swept. It waits at
+// most 5 seconds. Only an unreadable ledger directory is returned as an error;
+// everything else is logged. A nil ledger does nothing.
 func (l *Ledger) Sweep(ctx context.Context, logger *slog.Logger) error {
 	return l.sweepWith(ctx, logger, systemOps())
 }

@@ -43,8 +43,9 @@ func Supervise(cmd *exec.Cmd) (*Tree, error) {
 // Track records the tree in l under the token [MarkEnv] put in the command's
 // environment, so that if this worker is killed the next one to start on the
 // same data directory kills the tree ([Ledger.Sweep]). Release removes the
-// record. A nil l records nothing. An error leaves the tree running and
-// unrecorded; a command whose environment carries no token is one.
+// record. A nil l records nothing. Track fails when the record cannot be
+// written or the command's environment carries no token; the tree is then
+// left running and unrecorded.
 func (t *Tree) Track(l *Ledger, label Label) error {
 	if l == nil {
 		return nil

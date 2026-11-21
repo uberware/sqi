@@ -135,9 +135,10 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// Then load or create this worker's stable ID, and lock the data directory:
 	// the lock refuses a second worker there, which would share this one's
 	// worker ID. Holding it, kill every process tree a previous worker here
-	// left running when it was killed (POSIX; a no-op on Windows, whose job
-	// objects die with the worker). This must come before the registration
-	// below, which reclaims and re-runs those trees' tasks.
+	// left running when it was killed (Linux and macOS; a no-op elsewhere, and
+	// on Windows a tree's job object dies with the worker). This must come
+	// before the registration below, which reclaims and re-runs those trees'
+	// tasks.
 	workerID, release, ledger, err := claimWorkerIdentity(ctx, cfg, logger)
 	if err != nil {
 		return err

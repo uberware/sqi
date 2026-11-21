@@ -666,7 +666,7 @@ func startIsolatedSleepGroup(t *testing.T, env []string) (cmd *exec.Cmd, waited 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		cmd.Wait() //nolint:errcheck // killed on purpose; only reaping matters
+		cmd.Wait() //nolint:errcheck // the test kills the group; only reaping matters
 	}()
 	pgid := cmd.Process.Pid
 	t.Cleanup(func() {

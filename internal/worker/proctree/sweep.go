@@ -20,8 +20,8 @@ import (
 type sweepOps struct {
 	// list returns every process ID on the host.
 	list func() ([]int, error)
-	// inspect describes a process. An error means it could not be read at all
-	// (it exited).
+	// inspect describes a process. An error means it could not be read at all,
+	// usually because it exited; the sweep skips it.
 	inspect func(pid int) (procInfo, error)
 	// kill sends SIGKILL to the process alone. A process already gone is not
 	// an error.
@@ -51,8 +51,8 @@ type procInfo struct {
 	pgid   int
 	zombie bool
 	// envUnreadable means the environment could not be read: another
-	// account's process, which root may read only with CAP_SYS_PTRACE (a
-	// container's default capability set lacks it). Such a process is never
+	// account's process, which on Linux root may read only with CAP_SYS_PTRACE
+	// (a container's default capability set lacks it). Such a process is never
 	// killed, since nothing proves it is a recorded tree's.
 	envUnreadable bool
 }
@@ -68,9 +68,10 @@ type sweptTree struct {
 }
 
 // sweepWith kills every process carrying a recorded token, then deletes every
-// record. Only an unreadable ledger directory is returned as an error; every
-// other problem is logged and the sweep goes on, so that one bad record or
-// process can neither stop the worker from starting nor repeat on every start.
+// record unless ctx has ended. Only an unreadable ledger directory is
+// returned as an error; every other problem is logged and the sweep goes on,
+// so that one bad record or process can neither stop the worker from starting
+// nor repeat on every start.
 func (l *Ledger) sweepWith(ctx context.Context, logger *slog.Logger, ops sweepOps) error {
 	if l == nil {
 		return nil

@@ -48,8 +48,8 @@ func processGone(pid int) bool {
 
 // TestWorkerRestart_KillsTheKilledWorkersTree kills a real worker outright
 // while its task's tree runs, then starts a new worker on the same data
-// directory: the new worker must kill the old tree (H13f4) rather than leave
-// it running beside the re-run its registration triggers.
+// directory: the new worker must kill the old tree rather than leave it
+// running beside the re-run its registration triggers.
 func TestWorkerRestart_KillsTheKilledWorkersTree(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)

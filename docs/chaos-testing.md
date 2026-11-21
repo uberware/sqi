@@ -503,8 +503,8 @@ enforced end to end: it runs `chaos-server-term` with a `must` entry for
 ### Recorded defects
 
 No library scenario records a known violation.
-[Known server defects](load-testing.md#known-server-defects) lists what the
-load harness still knows about.
+[Known server defects](load-testing.md#known-server-defects) lists the
+defects the load harness records.
 
 ---
 

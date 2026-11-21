@@ -40,8 +40,9 @@ func (s *syncBuffer) String() string {
 }
 
 // ledgerRun runs script as a task through execProcess with a session manager
-// recording into ledgerDir, in the background. It returns a channel that
-// yields the result, the lines the task wrote, and the log output.
+// recording into ledgerDir, in the background; with removeDir, ledgerDir is
+// removed once the ledger is open, so recording fails. It returns a channel
+// that yields the result, the lines the task wrote, and the log output.
 func ledgerRun(t *testing.T, ledgerDir string, removeDir bool, script string) (<-chan processResult, *recordingHandler, *syncBuffer) {
 	t.Helper()
 	logs := &syncBuffer{}

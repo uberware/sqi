@@ -26,8 +26,8 @@ func TestTrack_WritesRecordAndReleaseRemovesIt(t *testing.T) {
 	}
 	tok := envToken(cmd.Env)
 
-	// The on-disk keys are spelled out here on purpose: a new worker sweeps the
-	// records an older one left.
+	// The on-disk keys are spelled out here rather than taken from record: a
+	// newer worker must read the records an older one wrote.
 	path := filepath.Join(dir, tok+".json")
 	b, err := os.ReadFile(path)
 	if err != nil {

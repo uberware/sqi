@@ -46,8 +46,8 @@ action's `cancelation:` method: `TERMINATE` (the default) kills it at once;
 period has passed (30 seconds when the action names none), then kills it.
 Every process of a task or action carries `SQI_PROCESS_TREE` in its
 environment. On Linux and macOS, when a killed worker is restarted on the same
-data directory, it kills whatever its predecessor left running before it
-registers, and logs `killed a process tree the previous worker left
+data directory, it kills the process trees its predecessor left running before
+it registers, and logs `killed a process tree the previous worker left
 running` for each tree (see [`worker.data_dir`](worker-configuration.md#workerdata_dir)).
 Ending the session kills nothing.
 
