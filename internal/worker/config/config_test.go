@@ -635,8 +635,9 @@ func TestLoad_WorkerIDNotAffectedByLoad(t *testing.T) {
 }
 
 // TestLoadWithSources_DataDir pins Sources.DataDir: set by the file (even to
-// the default's value, or through a merge key) or the environment, and unset
-// when absent or null.
+// the default's value, or through a merge key), and unset when absent or null
+// in it, whatever SQI_WORKER_DATA_DIR holds: a service never sees the
+// installing shell's environment.
 func TestLoadWithSources_DataDir(t *testing.T) {
 	def := Default().Worker.DataDir
 	for _, tc := range []struct {
@@ -649,7 +650,8 @@ func TestLoadWithSources_DataDir(t *testing.T) {
 		{"set", "worker:\n  data_dir: 'C:\\ProgramData\\sqi\\worker'\n", "", true},
 		{"set to the default", "worker:\n  data_dir: '" + def + "'\n", "", true},
 		{"through a merge key", "worker:\n  <<: {data_dir: /srv/sqi}\n", "", true},
-		{"environment", "log:\n  level: info\n", "/srv/sqi", true},
+		{"environment only", "log:\n  level: info\n", "/srv/sqi", false},
+		{"file and environment", "worker:\n  data_dir: /srv/a\n", "/srv/b", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SQI_WORKER_DATA_DIR", tc.env)

@@ -820,9 +820,12 @@ type Sources struct {
 	// resolves an empty value to DefaultCredentialFile(Worker.DataDir).
 	CredentialFile bool
 
-	// DataDir is true when worker.data_dir was set by the config file or by
-	// SQI_WORKER_DATA_DIR. When false it is [Default]'s, under the home
-	// directory of whoever loads the configuration.
+	// DataDir is true when the config file sets worker.data_dir. An
+	// SQI_WORKER_DATA_DIR does not count: `service install` asks, and the
+	// service it registers never sees the installing shell's environment.
+	// When the file leaves it unset the value is [Default]'s, under the home
+	// directory of whoever loads the configuration, unless the environment
+	// changes it.
 	DataDir bool
 }
 
@@ -893,14 +896,11 @@ func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sour
 	return cfg, src, nil
 }
 
-// dataDirSet reports whether the config file data or SQI_WORKER_DATA_DIR
-// sets worker.data_dir. It asks yaml.v3 rather than comparing values, so a
-// value equal to the default still counts as set, and one supplied through a
-// merge key is found. A null counts as unset, as it leaves the default.
+// dataDirSet reports whether the config file data sets worker.data_dir. It
+// asks yaml.v3 rather than comparing values, so a value equal to the default
+// still counts as set, and one supplied through a merge key is found. A null
+// counts as unset, as it leaves the default.
 func dataDirSet(data []byte) bool {
-	if os.Getenv("SQI_WORKER_DATA_DIR") != "" {
-		return true
-	}
 	var probe struct {
 		Worker struct {
 			DataDir *string `yaml:"data_dir"`
