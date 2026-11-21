@@ -121,11 +121,14 @@ func checkReplace(target, pd, account string, force, protect bool, ops winOps) (
 }
 
 // needsProtection reports whether dir must be made, or already be,
-// administrators-only: when it is under pd (%ProgramData%), is missing, or
-// is for an account.
+// administrators-only: when it is under pd (%ProgramData%), by spelling or
+// identity, is missing, or is for an account.
 func needsProtection(dir, pd, account string, ops winOps) (bool, error) {
-	if account != "" || underDir(dir, pd) {
+	if account != "" {
 		return true, nil
+	}
+	if under, err := isUnderDir(dir, pd); under || err != nil {
+		return under, err
 	}
 	exists, err := ops.dirExists(dir)
 	return !exists, err
@@ -135,7 +138,11 @@ func needsProtection(dir, pd, account string, ops winOps) (bool, error) {
 // account, which would let it read every other service's configuration, and
 // an account that does not resolve to a user.
 func checkAccount(target, pd, account string, ops winOps) error {
-	if strings.EqualFold(filepath.Dir(target), filepath.Join(pd, "sqi")) {
+	isDefault, err := isDefaultDir(filepath.Dir(target), pd)
+	if err != nil {
+		return err
+	}
+	if isDefault {
 		return fmt.Errorf(`--user needs its own directory: pass --config, e.g. C:\ProgramData\sqi-render\%s`, filepath.Base(target))
 	}
 	return ops.lookupAccount(account)

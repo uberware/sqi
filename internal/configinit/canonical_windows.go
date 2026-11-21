@@ -33,21 +33,14 @@ func canonicalTarget(path string) (string, error) {
 //   - GetLongPathName expands 8.3 names in the longest part that exists,
 //     and the rest is appended as given.
 //
-// A \\?\, \\.\ or \??\ path, which skips Win32's normalization, is refused.
+// Refused: a \\?\, \\.\ or \??\ path, which skips Win32's normalization; a
+// path on anything but a drive letter (a UNC path, \\localhost\C$ included,
+// reaches a local directory by another name); and a ':' after the drive's,
+// which names a stream (dir::$INDEX_ALLOCATION opens dir itself).
 func canonicalPath(path string) (string, error) {
-	if isDevicePath(path) {
-		return "", deviceErr(path)
-	}
-	full, err := fullPathName(path)
+	full, vol, err := fullDrivePath(path)
 	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", path, err)
-	}
-	if isDevicePath(full) {
-		return "", deviceErr(path)
-	}
-	vol := filepath.VolumeName(full)
-	if vol == "" || !filepath.IsAbs(full) {
-		return "", fmt.Errorf("resolve %s: not an absolute path", path)
+		return "", err
 	}
 	var parts []string
 	for c := range strings.SplitSeq(full[len(vol):], `\`) {
@@ -83,6 +76,29 @@ func longExisting(path string) (string, error) {
 		return "", err
 	}
 	return longPathName(path)
+}
+
+// fullDrivePath is path made absolute by GetFullPathName, with its drive
+// ("C:"), refusing what canonicalPath refuses.
+func fullDrivePath(path string) (full, vol string, err error) {
+	if isDevicePath(path) {
+		return "", "", deviceErr(path)
+	}
+	full, err = fullPathName(path)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve %s: %w", path, err)
+	}
+	if isDevicePath(full) {
+		return "", "", deviceErr(path)
+	}
+	vol = filepath.VolumeName(full)
+	if len(vol) != 2 || vol[1] != ':' || !filepath.IsAbs(full) {
+		return "", "", fmt.Errorf(`%s: only a path on a drive letter is accepted, e.g. C:\ProgramData\sqi-render\sqi-worker.yaml`, path)
+	}
+	if strings.Contains(full[len(vol):], ":") {
+		return "", "", fmt.Errorf("%s: a ':' after the drive names a stream, not a file or directory", path)
+	}
+	return full, vol, nil
 }
 
 // isDevicePath reports a \\?\, \\.\ or \??\ prefix, in either slash.
