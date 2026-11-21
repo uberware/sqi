@@ -220,7 +220,16 @@ func hostPort(port int) string { return net.JoinHostPort("127.0.0.1", strconv.It
 // t.Context(); a cleanup must pass a context that outlives the test, because
 // t.Context() is canceled just before cleanups run.
 func run(ctx context.Context, stdin, exe string, args ...string) (string, error) {
+	return runEnv(ctx, nil, stdin, exe, args...)
+}
+
+// runEnv is run with env ("KEY=value" entries) added to the inherited
+// environment, replacing a variable it already has.
+func runEnv(ctx context.Context, env []string, stdin, exe string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, exe, args...)
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
