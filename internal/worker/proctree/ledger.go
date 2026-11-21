@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // EnvVar is the environment variable that marks every process of a tree with
@@ -24,6 +25,22 @@ type Label struct {
 	SessionID string `json:"session_id,omitempty"`
 	Command   string `json:"command,omitempty"`
 }
+
+// record is one tree's ledger file.
+type record struct {
+	Token     string    `json:"token"`
+	PGID      int       `json:"pgid"`
+	BootID    string    `json:"boot_id"`
+	Label     Label     `json:"label"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// recordExt and tmpExt name a record file and the temporary file it is
+// written through.
+const (
+	recordExt = ".json"
+	tmpExt    = ".tmp"
+)
 
 // Ledger is the directory where a worker records every process tree it
 // starts, so that the next worker to start on the same data directory can kill

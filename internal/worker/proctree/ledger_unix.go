@@ -10,23 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
-)
-
-// record is one tree's ledger file.
-type record struct {
-	Token     string    `json:"token"`
-	PGID      int       `json:"pgid"`
-	BootID    string    `json:"boot_id"`
-	Label     Label     `json:"label"`
-	StartedAt time.Time `json:"started_at"`
-}
-
-// recordExt and tmpExt name a record file and the temporary file it is
-// written through.
-const (
-	recordExt = ".json"
-	tmpExt    = ".tmp"
 )
 
 // write records a tree: written to a temporary name, synced and renamed, so a
