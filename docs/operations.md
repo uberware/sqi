@@ -2564,8 +2564,8 @@ seconds, in a container with a 64 MB volume.
   run tasks to success after the space returns. The check has no minimum; its
   summary records how many attempts failed in each fault window.
 - With 1 MiB left while each task writes 8 MiB, the render fails partway with
-  the process's non-zero exit, about 8 to 10 attempts in the window, under the
-  bound of 15. Both workers succeed work after the space returns.
+  the process's non-zero exit, about 6 to 9 attempts in the window, under the
+  bound of 16. Both workers succeed work after the space returns.
 - No completed work is redone in either scenario.
 
 ### Revoking a worker's credential
