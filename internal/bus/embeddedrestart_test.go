@@ -172,6 +172,36 @@ func TestRestart_FollowsCurrentServer(t *testing.T) {
 	}
 }
 
+// TestRestart_OwnConnectionsReconnectPromptly pins that sqi's in-process
+// connections redial within a moment of a restart, not after nats.go's
+// default two-second reconnect wait: with auth on, every worker's reconnect is
+// refused until the callout connection is back.
+func TestRestart_OwnConnectionsReconnectPromptly(t *testing.T) {
+	b := startAuthEmbedded(t, newCredentialMap())
+	client, err := b.NewClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Close)
+	b.mu.Lock()
+	conns := map[string]*nats.Conn{"data": b.data, "callout": b.callout, "NewClient": client.nc}
+	b.mu.Unlock()
+
+	if err := b.restart(t.Context()); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	const within = 500 * time.Millisecond
+	deadline := time.Now().Add(within)
+	for name, nc := range conns {
+		for nc.Stats().Reconnects == 0 || nc.Status() != nats.CONNECTED {
+			if time.Now().After(deadline) {
+				t.Fatalf("the %s connection had not reconnected %s after the restart (status %v)", name, within, nc.Status())
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
 // TestRestart_RevokeWaitsForRestart pins that a Revoke begun while the broker
 // restarts returns only once the new server is up, and that the revoked
 // worker cannot reconnect to it.

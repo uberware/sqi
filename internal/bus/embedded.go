@@ -397,6 +397,12 @@ func (e *Embedded) startServer(ctx context.Context, opts *natsserver.Options, la
 	return ns, nl, nil
 }
 
+// inProcessReconnectWait is the pause before an in-process connection redials
+// the embedded broker after a restart. An in-process dial costs no network
+// round trip, and with auth on every worker's reconnect is refused until the
+// callout connection is back.
+const inProcessReconnectWait = 50 * time.Millisecond
+
 // ownConns are sqi's in-process connections to the embedded broker.
 type ownConns struct {
 	data    *nats.Conn
@@ -415,6 +421,7 @@ func connectOwn(ctx context.Context, provider nats.InProcessConnProvider, keys e
 		brokerauth.NkeyOption(keys.dataPub, keys.dataSeed),
 		nats.Name("sqi-server data"),
 		nats.MaxReconnects(-1),
+		nats.ReconnectWait(inProcessReconnectWait),
 	)
 	if err != nil {
 		return ownConns{}, fmt.Errorf("bus: data connection: %w", err)
@@ -429,6 +436,7 @@ func connectOwn(ctx context.Context, provider nats.InProcessConnProvider, keys e
 		brokerauth.NkeyOption(keys.calloutPub, keys.calloutSeed),
 		nats.Name("sqi-server auth callout"),
 		nats.MaxReconnects(-1),
+		nats.ReconnectWait(inProcessReconnectWait),
 	)
 	if err != nil {
 		own.data.Close()
@@ -618,7 +626,8 @@ func (e *Embedded) NewClient() (*Client, error) {
 	if ns == nil {
 		return nil, errors.New("bus: broker not started")
 	}
-	return NewClient(inProcessURL, e.logger, nats.InProcessServer(e), brokerauth.NkeyOption(pub, seed))
+	return NewClient(inProcessURL, e.logger, nats.InProcessServer(e), brokerauth.NkeyOption(pub, seed),
+		nats.ReconnectWait(inProcessReconnectWait))
 }
 
 // RevokeBudget is how long [Embedded.Revoke] may need: the auth timeout and
