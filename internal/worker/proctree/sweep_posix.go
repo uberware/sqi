@@ -44,6 +44,7 @@ func systemOps() sweepOps {
 		deadline:       sweepDeadline,
 		slack:          sweepSlack,
 		poll:           sweepPoll,
+		leaderStart:    processStart,
 		self:           os.Getpid(),
 		unreadableHint: unreadableHint,
 	}

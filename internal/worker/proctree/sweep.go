@@ -38,6 +38,12 @@ type sweepOps struct {
 	// started from a recorded tree (a job that restarts the worker) inherits
 	// that tree's token.
 	self int
+	// leaderStart returns when the process with this pid started, in a unit
+	// of the platform's choosing that only has to be stable (microseconds since
+	// the epoch on macOS). The bool is false when no such process exists or the
+	// platform cannot say. It is what makes a group number trustworthy for a
+	// process whose environment is withheld; nil means it never is.
+	leaderStart func(pid int) (int64, bool)
 	// unreadableHint is the advice logged with processes whose environment
 	// could not be read.
 	unreadableHint string
@@ -55,6 +61,13 @@ type procInfo struct {
 	// (a container's default capability set lacks it). Such a process is never
 	// killed, since nothing proves it is a recorded tree's.
 	envUnreadable bool
+	// envHidden means the kernel answered but withheld the environment: macOS
+	// 27 does this for Apple's own binaries (/bin/sh, /bin/sleep). A process the
+	// worker launched always carries the token, so an empty environment from a
+	// readable process means the answer was withheld, not that it was empty.
+	// Such a process has no token to match; it is identified by its group
+	// instead (see [sweepPass.owner]).
+	envHidden bool
 }
 
 // sweptTree is a record the sweep is looking for, and what it found.
@@ -212,7 +225,7 @@ func newSweepPass(trees map[string]*sweptTree, ops sweepOps) *sweepPass {
 	s := &sweepPass{trees: trees, byGroup: make(map[int]*sweptTree, len(trees)), ops: ops}
 	for _, t := range trees {
 		t.killed, t.unchecked = map[int]bool{}, map[int]bool{}
-		s.byGroup[t.rec.PGID] = t
+		s.byGroup[t.rec.PGID] = t // two records for one group: either may win, and the other is left alone
 	}
 	return s
 }
@@ -260,8 +273,10 @@ func (s *sweepPass) stillMarked(ctx context.Context, alive map[int]string) map[i
 	}
 	left := map[int]string{}
 	for pid, tok := range alive {
-		if info, err := s.ops.inspect(pid); err == nil && !info.zombie && info.token == tok {
-			left[pid] = tok
+		if info, err := s.ops.inspect(pid); err == nil && !info.zombie {
+			if t, ok := s.owner(info); ok && t.rec.Token == tok {
+				left[pid] = tok
+			}
 		}
 	}
 	return left
@@ -285,13 +300,41 @@ func (s *sweepPass) visit(pid int) (string, bool) {
 		}
 		return "", false
 	}
-	t, ok := s.trees[info.token] // a record's token is never empty (decodeRecord)
+	t, ok := s.owner(info)
 	if !ok {
 		return "", false
 	}
 	t.killed[pid] = true
 	s.ops.kill(pid) //nolint:errcheck // a failed kill shows as a survivor on the next pass
-	return info.token, true
+	return t.rec.Token, true
+}
+
+// owner returns the recorded tree a process belongs to. A process carrying a
+// recorded token belongs to that tree. A process whose environment was
+// withheld has no token, so it belongs to the tree whose group it is in, but
+// only when the group is verified: group numbers are reused, so the record
+// must carry its leader's start time and the process now holding that number,
+// if there is one, must have started then. A leader that is gone and members
+// that remain still count. The kernel does not reuse a group number while the
+// group has a member, but if the recorded group emptied and its number was
+// reused, a surviving member of the new group is taken for the old one. That
+// needs a pid wrap between the worker's death and the next start, and a new
+// leader that exits before its children.
+func (s *sweepPass) owner(info procInfo) (*sweptTree, bool) {
+	if t, ok := s.trees[info.token]; ok { // a record's token is never empty (decodeRecord)
+		return t, true
+	}
+	if !info.envHidden {
+		return nil, false
+	}
+	t, ok := s.byGroup[info.pgid]
+	if !ok || t.rec.LeaderStart == 0 || s.ops.leaderStart == nil {
+		return nil, false
+	}
+	if start, alive := s.ops.leaderStart(t.rec.PGID); alive && start != t.rec.LeaderStart {
+		return nil, false
+	}
+	return t, true
 }
 
 // logTree reports what the sweep found of one tree: msg, the tree's label and
