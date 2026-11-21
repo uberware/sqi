@@ -195,6 +195,23 @@ jobs:
       - name: Build
         run: make build
 
+      # The units ship in the release archives and name the binaries by their
+      # installed path, so verify them against the binaries just built. Users
+      # are created because verify resolves User=/Group=. A verify error exits
+      # non-zero and fails the step. The worker template is verified through
+      # an instance copy.
+      - name: Verify the systemd units
+        run: |
+          sudo install bin/sqi-server bin/sqi-worker /usr/local/bin/
+          sudo useradd --system --no-create-home sqi
+          sudo useradd --system --no-create-home sqiworker
+          instance_dir="$(mktemp -d)"
+          cp deploy/systemd/sqi-worker@.service "$instance_dir/sqi-worker@9091.service"
+          systemd-analyze verify \
+            deploy/systemd/sqi-server.service \
+            deploy/systemd/sqi-worker.service \
+            "$instance_dir/sqi-worker@9091.service"
+
       # Publishes the binaries so python-integration can use them without
       # rebuilding the web UI and Go code.
       - name: Upload binaries

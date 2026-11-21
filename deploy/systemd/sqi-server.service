@@ -1,0 +1,37 @@
+# sqi server (scheduler, REST API, web UI, embedded NATS broker).
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Install: copy to /etc/systemd/system/, then `systemctl enable --now sqi-server`.
+#
+# ProtectSystem=strict makes everything outside ReadWritePaths read-only for the
+# service, so a backup written anywhere but /var/lib/sqi-server fails. Add the
+# backup directory to ReadWritePaths= before pointing `sqi-server backup` at it.
+[Unit]
+Description=sqi server
+Documentation=https://github.com/uberware/sqi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sqi
+Group=sqi
+WorkingDirectory=/var/lib/sqi-server
+ExecStart=/usr/local/bin/sqi-server serve --config /etc/sqi/sqi-server.yaml
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=60s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sqi-server
+LimitNOFILE=65536
+
+StateDirectory=sqi-server
+StateDirectoryMode=0750
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sqi-server
+
+[Install]
+WantedBy=multi-user.target
