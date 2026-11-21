@@ -334,7 +334,11 @@ In the library scenarios that run a real task (`chaos-worker-kill-mid-task`,
 `chaos-worker-gone`, `chaos-worker-sleep`, `chaos-worker-revoke` and the two
 `chaos-disk-worker-full-*` scenarios) the real workers serve their own queue
 (`queues: [render-real]`), so every real task runs on a real worker while
-simulated workers carry the background load. In the two power-cut scenarios the
+simulated workers carry the background load. In the two
+`chaos-disk-worker-full-*` scenarios each real worker has a queue and a hold
+job of its own (`render-real-a`, `render-real-b`), so both are given work
+after the fault: a worker that stopped taking work leaves its queue's tasks
+unfinished, which the `terminal` check fails. In the two power-cut scenarios the
 real workers share the `render` queue with the simulated ones and run the
 default no-op task, so they write no markers.
 
@@ -542,8 +546,8 @@ chaos-container`.
 | `chaos-db-stall-3m` | Stall the database for 3m at 3m15s: longer than `SQI_WORKER`'s 2-minute MaxAge, so heartbeats expire unread and the worker consumer must hold the heartbeat sweep after the skip. | rework 0, reclaims 0 | 6m45s |
 | `chaos-db-drop` | Close the server's PostgreSQL connections and refuse new ones for 30s at 3m15s. PostgreSQL only. Submissions made meanwhile are refused with 500, which the summary reports as a finding. | rework 0 | 4m15s |
 | `chaos-disk-server-full` | Leave the server's data volume no free space for 60s at 1m, under a verbose renderer (5,000 lines of 200 bytes per task) on 40 workers. Container. | every check must pass once the space returns | 3m |
-| `chaos-disk-worker-full-at-setup` | Leave the 2 real workers' session volume no free space and no free inodes for 60s at 1m, so tasks fail at setup. Each failure must name "no space left on device", at most 12 may fail, and each real worker must succeed a task afterwards. Container. | rework 0 | 3m |
-| `chaos-disk-worker-full-mid-render` | Leave the 2 real workers' session volume 1 MiB free for 60s at 1m05s while their tasks write 8 MiB each, so tasks fail partway through. Each failure must name the process's exit, at most 15 may fail, and each real worker must succeed a task afterwards. Container. | rework 0 | 3m |
+| `chaos-disk-worker-full-at-setup` | Leave the 2 real workers' session volume no free space and no free inodes for 60s at 1m, so tasks fail at setup. Each failure must name "no space left on device", at most 12 may fail, and each real worker, on a queue of its own, must succeed a task afterwards. Container. | rework 0 | 3m |
+| `chaos-disk-worker-full-mid-render` | Leave the 2 real workers' session volume 1 MiB free for 60s at 1m05s while their tasks write 8 MiB each, so tasks fail partway through. Each failure must name the process's exit, at most 16 may fail, and each real worker, on a queue of its own, must succeed a task afterwards. Container. | rework 0 | 3m |
 | `chaos-server-fd-exhaustion` | Linux. Cut `rack-b`, 30 of 120 workers, for 20s at 3m15s and lower the server's open-file limit for 40s at 3m20s so it can open only 10 more files, so the rack redials into the limit. | rework 30 | 5m |
 | `chaos-worker-revoke` | Broker auth on. Revoke one of 2 real workers' credentials at 3m21s and stop it 60s later, not restarting it. | rework 4 | 4m45s |
 | `chaos-clock-skew` | No fault: 20 each of 120 workers run their clocks 10m ahead, 10m behind and a day ahead of the server's. | rework 0, reclaims 0 | 4m |
