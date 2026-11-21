@@ -227,7 +227,7 @@ stores them. Their own log shows it:
 | `logstreamer: log chunk not acknowledged; retrying` | `WARN` | `msg_id`, `failures`, `error` | The broker did not store a chunk. On the first failure, then at most once a minute. |
 | `logstreamer: log chunk stored after retrying` | `INFO` | `msg_id`, `failures` | Delivery resumed. |
 | `logstreamer: dropped log chunks the broker has not stored` | `WARN` | `dropped`, `max_pending_bytes` | The worker held 32 MiB of unstored chunks and dropped the oldest. At most once a minute. |
-| `logstreamer: log chunk cannot be sent; dropped` | `ERROR` | `subject`, `msg_id`, `chunks`, `error` | A chunk over the broker's payload limit, or the connection closed for good. Logged once per send of up to 32 chunks; `chunks` counts the ones dropped, and `subject` and `msg_id` name the first. |
+| `logstreamer: log chunk cannot be sent; dropped` | `ERROR` | `subject`, `msg_id`, `chunks`, `error` | A chunk over the broker's payload limit, or the connection closed for good. Logged at most once a minute; `chunks` counts the ones dropped since the last such line, and `subject` and `msg_id` name the first chunk of the send that logged it. |
 | `logstreamer: shutdown left log chunks unsent` | `WARN` | `dropped` | The worker stopped before the broker stored them. |
 
 ---

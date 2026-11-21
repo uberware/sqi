@@ -79,6 +79,8 @@ type outbox struct {
 
 	dropped      int // dropped by the bound since the last warning
 	lastDropWarn time.Time
+	lost         int // dropped as unsendable since the last error
+	lastLostLog  time.Time
 	failures     int // consecutive sends with a chunk that failed
 	lastWarn     time.Time
 }
@@ -278,9 +280,7 @@ func (o *outbox) settle(batch []*pendingChunk, errs []error) {
 		}
 	}
 	if lost != nil {
-		o.logger.ErrorContext(context.Background(), "logstreamer: log chunk cannot be sent; dropped",
-			slog.String("subject", lost.subj), slog.String("msg_id", lost.msgID),
-			slog.Int("chunks", lostCount), slog.Any("error", lostErr))
+		o.noteLost(lost, lostCount, lostErr)
 	}
 	switch {
 	case o.stopCtx.Err() != nil:
@@ -290,6 +290,21 @@ func (o *outbox) settle(batch []*pendingChunk, errs []error) {
 	case stored != nil:
 		o.stored(stored)
 	}
+}
+
+// noteLost counts n chunks no retry can send, c the first of them, and logs
+// at most once a minute: a connection closed for good drops every send.
+func (o *outbox) noteLost(c *pendingChunk, n int, err error) {
+	o.lost += n
+	now := time.Now()
+	if now.Sub(o.lastLostLog) < warnEvery {
+		return
+	}
+	lost := o.lost
+	o.lost, o.lastLostLog = 0, now
+	o.logger.ErrorContext(context.Background(), "logstreamer: log chunk cannot be sent; dropped",
+		slog.String("subject", c.subj), slog.String("msg_id", c.msgID),
+		slog.Int("chunks", lost), slog.Any("error", err))
 }
 
 // stored logs that a chunk was stored after failed sends, and resets the

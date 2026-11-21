@@ -30,6 +30,7 @@ type fakeTransport struct {
 	failFirst int
 	refuse    map[string]int  // sends of a message ID refused before it is sent
 	tooBig    map[string]bool // message IDs refused as over the payload limit
+	closed    bool            // every send refused on a connection closed for good
 	// serial, when set, is how long each chunk takes on the wire: chunks
 	// sent together are acked one after another, as on a slow link.
 	serial   time.Duration
@@ -83,6 +84,10 @@ func (f *fakeTransport) Publish(_ string, data []byte, msgID string) (logstreame
 	if f.tooBig[msgID] {
 		f.mu.Unlock()
 		return nil, nats.ErrMaxPayload
+	}
+	if f.closed {
+		f.mu.Unlock()
+		return nil, nats.ErrConnectionClosed
 	}
 	if f.refuse[msgID] > 0 {
 		f.refuse[msgID]--
@@ -464,6 +469,27 @@ func TestPublisher_BoundDropsTheOldest(t *testing.T) {
 	}
 	if n := log.count("dropped log chunks the broker has not stored"); n != 1 {
 		t.Errorf("drop warnings = %d, want 1", n)
+	}
+}
+
+// TestPublisher_AClosedConnectionLogsItsDropsOnce pins that a connection
+// closed for good, which drops every chunk of every send, logs the drop once
+// rather than once per send.
+func TestPublisher_AClosedConnectionLogsItsDropsOnce(t *testing.T) {
+	ft := newFakeTransport()
+	ft.closed = true
+	log := &captured{}
+	k := fastKnobs()
+	k.Window = 1
+	p := logstreamer.New(ft, testWorkerID, logstreamer.WithKnobs(slowFlushCfg(1, 1<<20), k), slog.New(log))
+	for i := 1; i <= 5; i++ {
+		p.HandleLine(context.Background(), "task-c", "attempt-c", "", "stdout", fmt.Sprintf("line %d", i))
+	}
+	if dropped := p.Flush(contextWithTimeout(t, 5*time.Second)); dropped != 0 {
+		t.Errorf("Flush dropped %d, want 0 (the sends dropped them)", dropped)
+	}
+	if n := log.count("log chunk cannot be sent; dropped"); n != 1 {
+		t.Errorf("drop errors = %d over five sends, want 1", n)
 	}
 }
 
