@@ -645,23 +645,31 @@ func TestInstall_ChecksPathsBeforePasswordAndChanges(t *testing.T) {
 }
 
 // TestInstall_CheckedRefs pins the paths install checks, in order: the
-// configuration and its directory, the binary and its directory, the log
-// directory and its parent, then every path the configuration names.
+// configuration and its directory, the binary and its directory, log.file's
+// directory and its parent when it is set, the default log directory and its
+// parent (always: install prepares it and the service's trace log goes
+// there), then every path the configuration names. A default log directory
+// already checked under another key is not checked again.
 func TestInstall_CheckedRefs(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defaultLogDir := filepath.Dir(DefaultLogPath(testBinary))
+	pd := t.TempDir()
+	t.Setenv("ProgramData", pd)
+	sqiDir := filepath.Join(pd, "sqi")
+	defaultLogDir := filepath.Join(sqiDir, "logs")
+	defaults := []PathRef{{"default log directory", defaultLogDir}, {"default log directory parent", sqiDir}}
 	for _, tc := range []struct {
 		name          string
+		cfgDir        string // "" for a directory of its own
 		paths         ConfigPaths
 		logDir, named []PathRef
 	}{
 		{
 			name:   "log.file unset",
 			paths:  ConfigPaths{Paths: []PathRef{{"nats.tls_ca_file", `E:\pki\ca.pem`}}},
-			logDir: []PathRef{{"log directory", defaultLogDir}, {"log directory parent", filepath.Dir(defaultLogDir)}},
+			logDir: defaults,
 			named:  []PathRef{{"nats.tls_ca_file", `E:\pki\ca.pem`}},
 		},
 		{
@@ -669,12 +677,31 @@ func TestInstall_CheckedRefs(t *testing.T) {
 			paths: ConfigPaths{LogFile: `D:\logs\sqi\w.log`, Paths: []PathRef{
 				{"worker.data_dir", `E:\sqi\data`}, {"log.file", `D:\logs\sqi\w.log`},
 			}},
-			logDir: []PathRef{{"log directory", `D:\logs\sqi`}, {"log directory parent", `D:\logs`}},
+			logDir: append([]PathRef{{"log directory", `D:\logs\sqi`}, {"log directory parent", `D:\logs`}}, defaults...),
 			named:  []PathRef{{"worker.data_dir", `E:\sqi\data`}, {"log.file", `D:\logs\sqi\w.log`}},
+		},
+		{
+			name:   "log.file in the default log directory",
+			paths:  ConfigPaths{LogFile: filepath.Join(defaultLogDir, "w.log")},
+			logDir: []PathRef{{"log directory", defaultLogDir}, {"log directory parent", sqiDir}},
+		},
+		{
+			name:   "configuration in the default log directory's parent",
+			cfgDir: sqiDir,
+			logDir: defaults[:1],
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := writeConfig(t)
+			if tc.cfgDir != "" {
+				if err := os.MkdirAll(tc.cfgDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				cfg = filepath.Join(tc.cfgDir, testBinary+".yaml")
+				if err := os.WriteFile(cfg, []byte("{}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			fake := &fakeOps{}
 			spec := testSpec(new(int))
 			var loaded string
@@ -718,17 +745,42 @@ func TestServiceInstall_ResolvesRelativePathsAgainstConfigDir(t *testing.T) {
 	if out, err := execute(t, spec, fake.operations(), &readSpy{}, "install", "--config", cfg); err != nil {
 		t.Fatalf("install: %v\n%s", err, out)
 	}
-	if len(fake.checked) < 4 {
-		t.Fatalf("checked refs = %q", fake.checked)
-	}
+	defaultLogDir := filepath.Dir(DefaultLogPath(testBinary))
 	want := []PathRef{
 		{"log directory", filepath.Join(dir, "logs")},
 		{"log directory parent", dir},
+		{"default log directory", defaultLogDir},
+		{"default log directory parent", filepath.Dir(defaultLogDir)},
 		{"log.file", filepath.Join(dir, "logs", "w.log")},
 		{"worker.data_dir", filepath.Join(dir, "data")},
 	}
+	if len(fake.checked) < 4 {
+		t.Fatalf("checked refs = %q", fake.checked)
+	}
 	if got := fake.checked[4:]; !slices.Equal(got, want) {
 		t.Errorf("checked refs after the binary's:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestInstall_RefusesUnsetWorkerDataDir pins that an error from ConfigPaths
+// (the worker's for a configuration that leaves worker.data_dir unset) is
+// returned as it is, before the password prompt and before any operation
+// after the existence probe.
+func TestInstall_RefusesUnsetWorkerDataDir(t *testing.T) {
+	unset := errors.New("worker.data_dir is not set in the configuration; set it explicitly")
+	fake := &fakeOps{}
+	spec := testSpec(new(int))
+	spec.ConfigPaths = func(string) (ConfigPaths, error) { return ConfigPaths{}, unset }
+	stdin := &readSpy{}
+	out, err := execute(t, spec, fake.operations(), stdin, "install", "--user", "render", "--config", writeConfig(t))
+	if err != unset { //nolint:errorlint // returned as it is, not wrapped
+		t.Fatalf("install = %v, want the ConfigPaths error unchanged", err)
+	}
+	if want := []string{"requireElevated", "exists " + testBinary}; !slices.Equal(fake.calls, want) {
+		t.Errorf("calls = %q, want only %q", fake.calls, want)
+	}
+	if stdin.read || out != "" {
+		t.Errorf("install prompted or printed before refusing (stdin read %v): %q", stdin.read, out)
 	}
 }
 

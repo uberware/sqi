@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/envvar"
 	sqilog "github.com/uberware/sqi/internal/log"
@@ -817,6 +819,11 @@ type Sources struct {
 	// config file or by SQI_WORKER_NATS_CREDENTIAL_FILE, before [Load]
 	// resolves an empty value to DefaultCredentialFile(Worker.DataDir).
 	CredentialFile bool
+
+	// DataDir is true when worker.data_dir was set by the config file or by
+	// SQI_WORKER_DATA_DIR. When false it is [Default]'s, under the home
+	// directory of whoever loads the configuration.
+	DataDir bool
 }
 
 // LoadWithSources is [Load], additionally reporting which of a subset of
@@ -830,8 +837,9 @@ func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sour
 	if err != nil {
 		return WorkerConfig{}, Sources{}, fmt.Errorf("resolve config file: %w", err)
 	}
+	var data []byte
 	if path != "" {
-		data, err := os.ReadFile(path)
+		data, err = os.ReadFile(path)
 		if err != nil {
 			return WorkerConfig{}, Sources{}, fmt.Errorf("read config file %s: %w", path, err)
 		}
@@ -873,8 +881,7 @@ func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sour
 		return WorkerConfig{}, Sources{}, errors.Join(joined...)
 	}
 
-	var src Sources
-	src.CredentialFile = cfg.NATS.CredentialFile != ""
+	src := Sources{CredentialFile: cfg.NATS.CredentialFile != "", DataDir: dataDirSet(data)}
 
 	// CredentialFile defaults relative to Worker.DataDir, which any of the
 	// three layers above may have changed, so it is resolved last rather
@@ -884,6 +891,22 @@ func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sour
 	}
 
 	return cfg, src, nil
+}
+
+// dataDirSet reports whether the config file data or SQI_WORKER_DATA_DIR
+// sets worker.data_dir. It asks yaml.v3 rather than comparing values, so a
+// value equal to the default still counts as set, and one supplied through a
+// merge key is found. A null counts as unset, as it leaves the default.
+func dataDirSet(data []byte) bool {
+	if os.Getenv("SQI_WORKER_DATA_DIR") != "" {
+		return true
+	}
+	var probe struct {
+		Worker struct {
+			DataDir *string `yaml:"data_dir"`
+		} `yaml:"worker"`
+	}
+	return yaml.Unmarshal(data, &probe) == nil && probe.Worker.DataDir != nil
 }
 
 // resolveConfigFile returns the config file path to use. If explicit is

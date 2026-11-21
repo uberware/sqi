@@ -40,7 +40,8 @@ type CommandSpec struct {
 	DrainTimeout func(configPath string) (time.Duration, error)
 	// ConfigPaths loads configPath and returns its log.file and every path
 	// it names, as written: install resolves a relative one against the
-	// configuration's directory, where the service runs.
+	// configuration's directory, where the service runs. An error stops
+	// install and is returned as it is, so it should name configPath.
 	ConfigPaths func(configPath string) (ConfigPaths, error)
 	// UserWarning, when non-empty, is printed if --user names an account.
 	UserWarning string
@@ -286,7 +287,7 @@ func (c commands) installConfig(cmd *cobra.Command, f installFlags) (ServiceConf
 func (c commands) checkInstallPaths(cfgPath, exe, name, account string) error {
 	cp, err := c.spec.ConfigPaths(cfgPath)
 	if err != nil {
-		return fmt.Errorf("read the paths %s names: %w", cfgPath, err)
+		return err
 	}
 	err = c.ops.checkPaths(installRefs(cfgPath, exe, name, cp), account)
 	if u, ok := errors.AsType[*UntrustedPathsError](err); ok {

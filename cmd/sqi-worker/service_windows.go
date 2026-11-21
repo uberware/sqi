@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/uberware/sqi/internal/winsvc"
@@ -43,16 +44,33 @@ func workerDrainTimeout(configPath string) (time.Duration, error) {
 
 // workerConfigPaths is the log.file and every path the configuration in
 // configPath names, with SQI_WORKER_* overrides from the installing shell
-// applied, for service install to check.
+// applied, for service install to check, plus the session root the worker
+// uses when worker.session_dir is unset.
+//
+// It refuses a configuration that leaves worker.data_dir unset. The default
+// is under the home directory of the account that loads it: here the
+// installing administrator's, for the service its own account's (for
+// LocalSystem, C:\Windows\System32\config\systemprofile), so the path install
+// would check is not the one the worker keeps its identity and credential in.
 func workerConfigPaths(configPath string) (winsvc.ConfigPaths, error) {
-	cfg, err := workerconfig.Load(configPath, workerconfig.FlagOverrides{})
+	cfg, src, err := workerconfig.LoadWithSources(configPath, workerconfig.FlagOverrides{})
 	if err != nil {
 		return winsvc.ConfigPaths{}, fmt.Errorf("load %s: %w", configPath, err)
 	}
+	if !src.DataDir {
+		return winsvc.ConfigPaths{}, fmt.Errorf("%s does not set worker.data_dir, so a service would keep its "+
+			"identity and credential under its own account's profile, which install cannot check. "+
+			"Set it explicitly, for example:\n  worker:\n    data_dir: %s\nor write a new configuration "+
+			"with sqi-worker config init", configPath, filepath.Join(filepath.Dir(configPath), "worker"))
+	}
 	named := cfg.NamedPaths()
-	paths := make([]winsvc.PathRef, 0, len(named))
+	paths := make([]winsvc.PathRef, 0, len(named)+1)
 	for _, p := range named {
 		paths = append(paths, winsvc.PathRef(p))
+	}
+	if cfg.Worker.SessionDir == "" {
+		root, _ := effectiveSessionRoot(cfg.Worker)
+		paths = append(paths, winsvc.PathRef{Key: "worker.session_dir (default)", Path: root})
 	}
 	return winsvc.ConfigPaths{LogFile: cfg.Log.File, Paths: paths}, nil
 }

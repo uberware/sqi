@@ -634,6 +634,36 @@ func TestLoad_WorkerIDNotAffectedByLoad(t *testing.T) {
 	}
 }
 
+// TestLoadWithSources_DataDir pins Sources.DataDir: set by the file (even to
+// the default's value, or through a merge key) or the environment, and unset
+// when absent or null.
+func TestLoadWithSources_DataDir(t *testing.T) {
+	def := Default().Worker.DataDir
+	for _, tc := range []struct {
+		name, yaml, env string
+		want            bool
+	}{
+		{"absent", "log:\n  level: info\n", "", false},
+		{"empty file", "", "", false},
+		{"null", "worker:\n  data_dir: ~\n", "", false},
+		{"set", "worker:\n  data_dir: 'C:\\ProgramData\\sqi\\worker'\n", "", true},
+		{"set to the default", "worker:\n  data_dir: '" + def + "'\n", "", true},
+		{"through a merge key", "worker:\n  <<: {data_dir: /srv/sqi}\n", "", true},
+		{"environment", "log:\n  level: info\n", "/srv/sqi", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SQI_WORKER_DATA_DIR", tc.env)
+			_, src, err := LoadWithSources(writeTempYAML(t, tc.yaml), FlagOverrides{})
+			if err != nil {
+				t.Fatalf("LoadWithSources: %v", err)
+			}
+			if src.DataDir != tc.want {
+				t.Errorf("Sources.DataDir = %v, want %v", src.DataDir, tc.want)
+			}
+		})
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func writeTempYAML(t *testing.T, content string) string {

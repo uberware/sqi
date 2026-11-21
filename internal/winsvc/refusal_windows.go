@@ -14,25 +14,37 @@ import (
 
 // installRefs is every path `service install` checks for the service name
 // whose configuration is cfgPath and binary exe, in order: the configuration
-// and its directory, the binary and its directory, the log directory and its
-// parent, then each path the configuration names. A relative path is
-// resolved against the configuration's directory, which the service runs in.
+// and its directory, the binary and its directory, log.file's directory and
+// its parent when log.file is set, the default log directory and its parent,
+// then each path the configuration names. A relative path is resolved
+// against the configuration's directory, which the service runs in.
+//
+// The default log directory is checked whatever log.file says: install
+// prepares it (ensureLogDir) and the service writes its trace log there. It
+// is left out where an earlier ref already names the same path.
 func installRefs(cfgPath, exe, name string, cp ConfigPaths) []PathRef {
 	base := filepath.Dir(cfgPath)
-	logDir := filepath.Dir(DefaultLogPath(name))
-	if cp.LogFile != "" {
-		logDir = filepath.Dir(resolveAgainst(base, cp.LogFile))
-	}
-	refs := make([]PathRef, 0, 6+len(cp.Paths))
+	refs := make([]PathRef, 0, 8+len(cp.Paths))
 	refs = append(
 		refs,
 		PathRef{"config", cfgPath},
 		PathRef{"config directory", base},
 		PathRef{"binary", exe},
 		PathRef{"binary directory", filepath.Dir(exe)},
-		PathRef{"log directory", logDir},
-		PathRef{"log directory parent", filepath.Dir(logDir)},
 	)
+	if cp.LogFile != "" {
+		logDir := filepath.Dir(resolveAgainst(base, cp.LogFile))
+		refs = append(refs, PathRef{"log directory", logDir}, PathRef{"log directory parent", filepath.Dir(logDir)})
+	}
+	defaultLogDir := filepath.Dir(DefaultLogPath(name))
+	for _, ref := range []PathRef{
+		{"default log directory", defaultLogDir},
+		{"default log directory parent", filepath.Dir(defaultLogDir)},
+	} {
+		if !slices.ContainsFunc(refs, func(r PathRef) bool { return strings.EqualFold(r.Path, ref.Path) }) {
+			refs = append(refs, ref)
+		}
+	}
 	for _, p := range cp.Paths {
 		refs = append(refs, PathRef{p.Key, resolveAgainst(base, p.Path)})
 	}
