@@ -1,59 +1,63 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//go:build linux || darwin
+
 package proctree
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strconv"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
 
-// pidsWithToken scans /proc for processes whose environment carries token.
+// pidsWithToken lists the processes whose environment carries token, through
+// the same process reader the sweep uses.
 func pidsWithToken(t *testing.T, token string) []int {
 	t.Helper()
-	ents, err := os.ReadDir("/proc")
+	all, err := listProcs()
 	if err != nil {
 		t.Fatal(err)
 	}
 	var pids []int
-	for _, e := range ents {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join("/proc", e.Name(), "environ"))
-		if err != nil {
-			continue
-		}
-		if bytes.Contains(b, []byte(EnvVar+"="+token+"\x00")) {
+	for _, pid := range all {
+		if info, err := inspectProc(pid); err == nil && !info.zombie && info.token == token {
 			pids = append(pids, pid)
 		}
 	}
 	return pids
 }
 
-// goneOrZombie reports whether pid has exited (or exited and waits to be
-// reaped).
+// goneOrZombie reports whether pid has exited (or exited and awaits reaping).
 func goneOrZombie(pid int) bool {
 	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
 		return true
 	}
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	info, err := inspectProc(pid)
+	return err != nil || info.zombie
+}
+
+func TestBootID_IsStableAndNonEmpty(t *testing.T) {
+	a, err := bootID()
 	if err != nil {
-		return true
+		t.Fatalf("bootID: %v", err)
 	}
-	s := string(b)
-	i := strings.LastIndexByte(s, ')')
-	return i >= 0 && strings.HasPrefix(strings.TrimSpace(s[i+1:]), "Z")
+	b, err := bootID()
+	if err != nil {
+		t.Fatalf("bootID: %v", err)
+	}
+	if a == "" || a != b {
+		t.Errorf("bootID = %q then %q, want one non-empty value", a, b)
+	}
+	if !regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`).MatchString(a) {
+		t.Errorf("bootID = %q, want the kernel's boot UUID", a)
+	}
 }
 
 func TestSweep_KillsARealOrphanedTree(t *testing.T) {
