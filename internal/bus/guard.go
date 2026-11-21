@@ -600,17 +600,20 @@ func (g *Guard) deleteOwnKey(ctx context.Context) error {
 		// recorded, and on a replicated bucket a delete is refused while that
 		// write is still being applied, when a read can still show the old
 		// revision. Delete the key at its current revision while it is still
-		// this server's, until the write has landed.
+		// this server's, until the write has landed. A read at or before the
+		// recorded revision has not seen the write yet: wait, and delete at the
+		// recorded revision again.
 		entry, gerr := g.kv.Get(ctx, guardKey)
 		if gerr != nil || !g.ownedBy(entry.Value()) {
 			return nil
 		}
-		if entry.Revision() == rev {
+		if !advanced(entry, rev) {
 			select {
 			case <-ctx.Done():
 				return wrapRelease(err)
 			case <-time.After(guardReleaseRetry):
 			}
+			continue
 		}
 		rev = entry.Revision()
 	}

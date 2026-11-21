@@ -120,6 +120,32 @@ func TestGuard_ReleaseDeletesOwnKeyAfterAnInFlightRefresh(t *testing.T) {
 	}
 }
 
+// TestGuard_ReleaseWaitsOutAnOlderRead pins that a read older than the
+// revision the release recorded, as from a stream leader still applying the
+// last refresh, is a write not yet landed: the release pauses before deleting
+// again at the recorded revision, rather than retrying at once at the older
+// one, which can only be refused.
+func TestGuard_ReleaseWaitsOutAnOlderRead(t *testing.T) {
+	wrongRev := &jetstream.APIError{Code: 400, ErrorCode: jsErrWrongLastSequence, Description: "wrong last sequence: 6"}
+	const id = "self"
+	own := holderValue(t, id)
+	kv := &scriptedKV{
+		deletes: []error{wrongRev, nil},
+		gets:    []jetstream.KeyValueEntry{guardEntry{value: own, rev: 5}},
+	}
+	g := &Guard{kv: kv, holder: GuardHolder{InstanceID: id}, revision: 6}
+	start := time.Now()
+	if err := g.deleteOwnKey(context.Background()); err != nil {
+		t.Fatalf("deleteOwnKey: %v", err)
+	}
+	if d := time.Since(start); d < guardReleaseRetry {
+		t.Errorf("released after %s, want a pause of at least %s after the older read", d, guardReleaseRetry)
+	}
+	if kv.deleted != 2 {
+		t.Errorf("deletes = %d, want 2", kv.deleted)
+	}
+}
+
 // TestGuard_ReleaseLeavesAnotherHoldersKey pins that the release's retry
 // never deletes a key another server now holds, nor one already gone.
 func TestGuard_ReleaseLeavesAnotherHoldersKey(t *testing.T) {
