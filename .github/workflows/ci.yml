@@ -510,6 +510,13 @@ jobs:
           GOOS=windows GOARCH=amd64 go build ./internal/... ./cmd/...
           GOOS=windows GOARCH=amd64 go vet -tags winservice ./internal/worker/... ./internal/winsvc/... ./internal/secretin/... ./internal/log/... ./cmd/... ./test/winservice/...
 
+      # The worker's macOS-only files (internal/worker/proctree's sysctl
+      # process reader) run in no CI test job, so vet type-checks them here.
+      - name: macOS worker packages vet
+        if: matrix.goos == 'darwin' && matrix.goarch == 'arm64'
+        run: |
+          GOOS=darwin GOARCH=arm64 go vet ./internal/worker/... ./cmd/...
+
   # ── Cross-platform runtime smoke ─────────────────────────────────────────────
   # Runs the binaries natively on macOS and Windows: start, register a worker,
   # execute a job and stream logs over REST and WebSocket. Linux is covered by

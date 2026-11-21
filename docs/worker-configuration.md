@@ -440,8 +440,34 @@ delete `worker.id` unless you intend to re-register as a new worker. For
 production, use an absolute path on local disk.
 
 Each worker instance needs its own `data_dir`: two workers sharing one load
-the same `worker.id` and collide on the server. See
+the same `worker.id` and collide on the server. A worker holds an exclusive
+lock on `<data_dir>/worker.lock` while it runs, and a second worker started on
+the same directory exits with `another sqi-worker is already running with
+data_dir <dir>`. See
 [running multiple workers on one host](#running-multiple-workers-on-one-host).
+
+On Linux and macOS, `<data_dir>/proctrees/` records every task process tree
+the worker is running (and every OpenJD environment `onEnter`/`onExit`
+action), and each process of such a tree carries `SQI_PROCESS_TREE=<token>`
+in its environment. If the worker is killed outright (SIGKILL, the OOM killer,
+a crash), its trees keep running. The next worker to start on the same
+`data_dir` kills every process that still carries a recorded token before it
+registers, so the tasks its registration reclaims do not run beside their old
+processes. It logs `killed a process tree the previous worker left running`
+for each tree, waits at most 5 seconds, and never kills a process it cannot
+prove was recorded. Windows needs none of this: a tree's job object dies with
+the worker. Three cases are not covered:
+
+- A worker that is killed and not restarted. Its trees run until their work
+  ends, while the server reclaims their tasks for other workers.
+- A process that clears its environment (`env -i`, or a program that starts
+  its children with an empty environment). Leaving the process group with
+  `setsid` does not escape the sweep.
+- A root worker running tasks as other accounts (run-as-user) without
+  `CAP_SYS_PTRACE`, which reading another account's environment needs even for
+  root. A default container lacks it (add `--cap-add SYS_PTRACE`); a root
+  process on a host has it. The worker then logs `could not check processes in
+  a previous worker's process group; they were left running` and leaves them.
 
 Session working directories are configured separately by
 [`worker.session_dir`](#workersession_dir). With it unset, they live outside
