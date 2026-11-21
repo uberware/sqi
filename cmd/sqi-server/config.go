@@ -10,6 +10,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/uberware/sqi/internal/config"
+	"github.com/uberware/sqi/internal/configinit"
+	"github.com/uberware/sqi/internal/version"
 )
 
 // configCmd groups configuration-related subcommands.
@@ -19,7 +21,8 @@ var configCmd = &cobra.Command{
 	Long: `Inspect and validate the sqi-server configuration.
 
 Subcommands:
-  print   Emit the effective merged configuration to stdout as YAML.`,
+  print   Emit the effective merged configuration to stdout as YAML.
+  init    Write a starter configuration file.`,
 	// No RunE — bare "config" prints usage.
 }
 
@@ -46,6 +49,11 @@ instead).`,
 
 func init() {
 	configCmd.AddCommand(configPrintCmd)
+	configCmd.AddCommand(configinit.NewCommand(configinit.Spec{
+		Binary:    configinit.Server,
+		Version:   version.Version,
+		UnixGroup: "sqi",
+	}))
 }
 
 func runConfigPrint(_ *cobra.Command, _ []string) error {
