@@ -159,6 +159,16 @@ func CheckPaths(refs []PathRef, account string) error {
 // SID when account is not LocalSystem. account must name a user: trusting a
 // group would trust every member of it.
 func trustedPrincipals(account string) ([]*windows.SID, error) {
+	sid, err := resolveUser(account)
+	if err != nil {
+		return nil, err
+	}
+	return trustedSet(sid)
+}
+
+// trustedSet is SYSTEM, Administrators, TrustedInstaller and, when non-nil,
+// account.
+func trustedSet(account *windows.SID) ([]*windows.SID, error) {
 	sids := make([]*windows.SID, 0, 4)
 	for _, wk := range []windows.WELL_KNOWN_SID_TYPE{windows.WinLocalSystemSid, windows.WinBuiltinAdministratorsSid} {
 		sid, err := windows.CreateWellKnownSid(wk)
@@ -172,17 +182,27 @@ func trustedPrincipals(account string) ([]*windows.SID, error) {
 		return nil, fmt.Errorf("TrustedInstaller SID: %w", err)
 	}
 	sids = append(sids, ti)
-	if account = NormalizeAccount(account); account != "" {
-		sid, _, typ, err := windows.LookupSID("", lookupName(account))
-		if err != nil {
-			return nil, fmt.Errorf("look up account %s: %w", account, err)
-		}
-		if typ != windows.SidTypeUser {
-			return nil, fmt.Errorf("account %s is not a user account", account)
-		}
-		sids = append(sids, sid)
+	if account != nil {
+		sids = append(sids, account)
 	}
 	return sids, nil
+}
+
+// resolveUser is account's SID, normalized as `service install --user`
+// normalizes it, or nil when it is "" (LocalSystem). account must name a
+// user: trusting or granting a group would cover every member of it.
+func resolveUser(account string) (*windows.SID, error) {
+	if account = NormalizeAccount(account); account == "" {
+		return nil, nil
+	}
+	sid, _, typ, err := windows.LookupSID("", lookupName(account))
+	if err != nil {
+		return nil, fmt.Errorf("look up account %s: %w", account, err)
+	}
+	if typ != windows.SidTypeUser {
+		return nil, fmt.Errorf("account %s is not a user account", account)
+	}
+	return sid, nil
 }
 
 // checkPaths is CheckPaths with the trusted set given.

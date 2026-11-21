@@ -67,7 +67,7 @@ func checkExistingDir(dir string) error {
 	}
 	h, err := openPlainDir(dir, windows.FILE_READ_ATTRIBUTES)
 	if err != nil {
-		return fmt.Errorf("cannot use log directory: %w", err)
+		return fmt.Errorf("cannot use directory: %w", err)
 	}
 	windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
 	return nil
@@ -75,13 +75,17 @@ func checkExistingDir(dir string) error {
 
 // mkdirProtected creates dir, and any missing parents, and gives dir a
 // protected DACL granting inheritable full control to SYSTEM, Administrators
-// and account (when non-nil). Parents it creates inherit as usual. When dir
-// already exists it changes nothing and reports created false. Either way it
-// refuses a dir that is, or sits under, a junction or symbolic link (see
-// checkParent and checkExistingDir): the service would write, rename and
-// delete its log files through it, as SYSTEM for a LocalSystem service.
-// Install and a running service share this check, so a hand-registered
-// service, which never ran `service install`, gets it too.
+// and account (when non-nil), in place from the moment dir exists, and owned
+// by Administrators when this process is privileged (by its own account
+// otherwise; see createProtected). A missing %ProgramData%\sqi parent is
+// created protected too, and other parents it creates inherit as usual (see
+// mkdirParent). When dir already exists it changes nothing and reports
+// created false. Either way it refuses a dir that is, or sits under, a
+// junction or symbolic link (see checkParent and checkExistingDir): the
+// service would write, rename and delete its log files through it, as SYSTEM
+// for a LocalSystem service. Install and a running service share this check,
+// so a hand-registered service, which never ran `service install`, gets it
+// too.
 func mkdirProtected(dir string, account *windows.SID) (created bool, err error) {
 	info, err := os.Stat(dir)
 	switch {
@@ -95,26 +99,16 @@ func mkdirProtected(dir string, account *windows.SID) (created bool, err error) 
 	if err := checkParent(dir); err != nil {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o750); err != nil {
-		return false, fmt.Errorf("create %s: %w", filepath.Dir(dir), err)
-	}
-	if err := os.Mkdir(dir, 0o750); err != nil {
-		if info, statErr := os.Stat(dir); statErr == nil && info.IsDir() {
-			return false, checkExistingDir(dir)
-		}
-		return false, fmt.Errorf("create %s: %w", dir, err)
-	}
-	trustees, err := protectedTrustees(account)
-	if err == nil {
-		err = protectNewDir(dir, trustees)
-	}
-	if err != nil {
-		// Leave nothing behind: a retry would otherwise find the directory
-		// and keep its inherited, unprotected DACL.
-		os.Remove(dir)
+	if err := mkdirParent(dir); err != nil {
 		return false, err
 	}
-	return true, nil
+	// A directory that fails to come out protected is removed again, so a
+	// retry never finds it and keeps an inherited, unprotected DACL.
+	created, err = createProtected(dir, account)
+	if err != nil || created {
+		return created, err
+	}
+	return false, checkExistingDir(dir)
 }
 
 // protectedTrustees is SYSTEM, Administrators and, unless it is one of those,
@@ -132,17 +126,6 @@ func protectedTrustees(account *windows.SID) ([]*windows.SID, error) {
 		sids = append(sids, account)
 	}
 	return sids, nil
-}
-
-// protectNewDir gives the directory mkdirProtected just created a protected
-// DACL of inheritable full control for sids.
-func protectNewDir(dir string, sids []*windows.SID) error {
-	h, err := openDirForACL(dir)
-	if err != nil {
-		return err
-	}
-	defer windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
-	return writeDACL(h, dir, sids, fileAllAccess, nil, true)
 }
 
 // grantDir adds an inheritable ACE granting mask to sid onto dir's existing
@@ -194,7 +177,7 @@ func checkParent(dir string) error {
 	case errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND):
 		return nil
 	case err != nil:
-		return fmt.Errorf("cannot secure log directory %s: parent %w", dir, err)
+		return fmt.Errorf("cannot secure %s: parent %w", dir, err)
 	}
 	windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
 	return nil
@@ -216,7 +199,7 @@ func checkParent(dir string) error {
 func openDirForACL(dir string) (windows.Handle, error) {
 	h, err := openPlainDir(dir, windows.READ_CONTROL|windows.WRITE_DAC|windows.FILE_READ_ATTRIBUTES)
 	if err != nil {
-		return 0, fmt.Errorf("cannot secure log directory: %w", err)
+		return 0, fmt.Errorf("cannot secure directory: %w", err)
 	}
 	return h, nil
 }
@@ -271,9 +254,28 @@ func openPlain(path string, access uint32) (windows.Handle, uint32, error) {
 }
 
 // writeDACL writes to h a DACL of inheritable grants of mask to sids, merged
-// onto base when base is non-nil. It is the only place this package writes a
-// DACL.
+// onto base when base is non-nil. It is the only place this package changes
+// an existing object's DACL (createSecuredDir gives a new one its DACL).
 func writeDACL(h windows.Handle, dir string, sids []*windows.SID, mask windows.ACCESS_MASK, base *windows.ACL, protected bool) error {
+	acl, err := buildDACL(sids, mask, base)
+	if err != nil {
+		return err
+	}
+	info := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION)
+	if protected {
+		info |= windows.PROTECTED_DACL_SECURITY_INFORMATION
+	} else {
+		info |= windows.UNPROTECTED_DACL_SECURITY_INFORMATION
+	}
+	if err := windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, info, nil, nil, acl, nil); err != nil {
+		return fmt.Errorf("secure %s: %w", dir, err)
+	}
+	return nil
+}
+
+// buildDACL is a DACL of inheritable grants of mask to sids, merged onto base
+// when base is non-nil.
+func buildDACL(sids []*windows.SID, mask windows.ACCESS_MASK, base *windows.ACL) (*windows.ACL, error) {
 	entries := make([]windows.EXPLICIT_ACCESS, 0, len(sids))
 	for _, sid := range sids {
 		entries = append(entries, windows.EXPLICIT_ACCESS{
@@ -289,16 +291,7 @@ func writeDACL(h windows.Handle, dir string, sids []*windows.SID, mask windows.A
 	}
 	acl, err := windows.ACLFromEntries(entries, base)
 	if err != nil {
-		return fmt.Errorf("build ACL: %w", err)
+		return nil, fmt.Errorf("build ACL: %w", err)
 	}
-	info := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION)
-	if protected {
-		info |= windows.PROTECTED_DACL_SECURITY_INFORMATION
-	} else {
-		info |= windows.UNPROTECTED_DACL_SECURITY_INFORMATION
-	}
-	if err := windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, info, nil, nil, acl, nil); err != nil {
-		return fmt.Errorf("secure %s: %w", dir, err)
-	}
-	return nil
+	return acl, nil
 }
