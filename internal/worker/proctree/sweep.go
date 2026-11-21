@@ -42,8 +42,7 @@ type sweepOps struct {
 	// of the platform's choosing that only has to be stable (microseconds since
 	// the epoch on macOS). The bool is false when no such process exists or the
 	// platform cannot say. It is what makes a group number trustworthy for a
-	// process whose environment is withheld; nil means it never is (no system
-	// ops leave it nil, but a test's ops may).
+	// process whose environment is withheld; nil means it never is.
 	leaderStart func(pid int) (int64, bool)
 	// unreadableHint is the advice logged with processes whose environment
 	// could not be read.
@@ -316,11 +315,11 @@ func (s *sweepPass) visit(pid int) (string, bool) {
 // only when the group is verified: group numbers are reused, so the record
 // must carry its leader's start time and the process now holding that number,
 // if there is one, must have started then. A leader that is gone and members
-// that remain still count, which is a residual risk: the kernel does not reuse
-// a group number while the group has a member, but that does not show the
-// group is the recorded one if the number was reused after the recorded group
-// emptied. It takes a pid wrap between the worker's death and the next start,
-// and a reusing leader that exits before its children.
+// that remain still count. The kernel does not reuse a group number while the
+// group has a member, but if the recorded group emptied and its number was
+// reused, a surviving member of the new group is taken for the old one. That
+// needs a pid wrap between the worker's death and the next start, and a new
+// leader that exits before its children.
 func (s *sweepPass) owner(info procInfo) (*sweptTree, bool) {
 	if t, ok := s.trees[info.token]; ok { // a record's token is never empty (decodeRecord)
 		return t, true
