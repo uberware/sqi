@@ -11,18 +11,9 @@ import (
 	"strings"
 )
 
-// systemOps reads the process table from /proc.
-func systemOps() sweepOps {
-	return sweepOps{
-		list:     listProcs,
-		inspect:  inspectProc,
-		kill:     killProcess,
-		deadline: sweepDeadline,
-		slack:    sweepSlack,
-		poll:     sweepPoll,
-		self:     os.Getpid(),
-	}
-}
+// unreadableHint is the sweep's advice when a process's environment cannot be
+// read.
+const unreadableHint = "a worker running tasks as other accounts needs CAP_SYS_PTRACE to read their environment"
 
 // listProcs returns the numeric entries of /proc.
 func listProcs() ([]int, error) {

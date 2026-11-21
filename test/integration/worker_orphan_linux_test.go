@@ -7,7 +7,6 @@ package integration
 import (
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -47,22 +46,6 @@ func processGone(pid int) bool {
 	return i >= 0 && strings.HasPrefix(strings.TrimSpace(s[i+1:]), "Z")
 }
 
-// readPID waits for a pid file and returns its value.
-func readPID(t *testing.T, path string, timeout time.Duration) int {
-	t.Helper()
-	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		b, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
-			return pid
-		}
-	}
-	t.Fatalf("no pid in %s within %v", path, timeout)
-	return 0
-}
-
 // TestWorkerRestart_KillsTheKilledWorkersTree kills a real worker outright
 // while its task's tree runs, then starts a new worker on the same data
 // directory: the new worker must kill the old tree (H13f4) rather than leave
@@ -77,14 +60,10 @@ func TestWorkerRestart_KillsTheKilledWorkersTree(t *testing.T) {
 	first := startRealWorkerNoWait(t, ts, farmID, queueID, nil, env, false)
 	pollForOnlineWorker(t, ts, farmID, 30*time.Second)
 
-	url := fmt.Sprintf("http://%s/api/v1/jobs?farm_id=%s&queue_id=%s&owner=orphan-test", ts.HTTPAddr, farmID, queueID)
-	var job struct {
-		ID string `json:"id"`
-	}
-	mustDoJSON(t, http.MethodPost, url, fmt.Appendf(nil, orphanJobYAML, pidDir), "application/x-yaml", http.StatusCreated, &job)
+	submitJobCustomYAML(t, ts, farmID, queueID, fmt.Sprintf(orphanJobYAML, pidDir))
 
-	mainPID := readPID(t, filepath.Join(pidDir, "main.pid"), 30*time.Second)
-	childPID := readPID(t, filepath.Join(pidDir, "child.pid"), 10*time.Second)
+	mainPID := waitForPID(t, filepath.Join(pidDir, "main.pid"), 30*time.Second)
+	childPID := waitForPID(t, filepath.Join(pidDir, "child.pid"), 10*time.Second)
 	t.Cleanup(func() {
 		for _, pid := range []int{mainPID, childPID} {
 			syscall.Kill(pid, syscall.SIGKILL) //nolint:errcheck // only after a failure; ESRCH otherwise

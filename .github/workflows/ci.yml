@@ -580,15 +580,15 @@ jobs:
           go build -o "bin/sqi-server${ext}" ./cmd/sqi-server
           go build -o "bin/sqi-worker${ext}" ./cmd/sqi-worker
 
-      # scripts/smoke.sh is what `make smoke` runs. Passing the prebuilt
-      # binaries skips its internal `make build`, so the Windows runner needs
-      # no GNU make.
       # The process-tree sweep reads macOS's process table through sysctl,
       # code no Linux job runs, so its real-process tests run here.
       - name: Process-tree sweep tests (macOS)
         if: runner.os == 'macOS'
         run: go test -race -count=1 ./internal/worker/proctree/
 
+      # scripts/smoke.sh is what `make smoke` runs. Passing the prebuilt
+      # binaries skips its internal `make build`, so the Windows runner needs
+      # no GNU make.
       - name: End-to-end smoke (REST + WebSocket, plain / broker-auth / TLS)
         run: |
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"

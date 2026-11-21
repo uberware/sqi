@@ -63,18 +63,20 @@ func OpenLedger(dir string) (*Ledger, error) {
 	return &Ledger{dir: dir, bootID: id}, nil
 }
 
-// NewToken returns a fresh tree token: 128 random bits as lowercase hex.
-func NewToken() string {
+// newToken returns a fresh tree token: 128 random bits as lowercase hex.
+func newToken() string {
 	var b [16]byte
 	rand.Read(b[:]) // never fails: crypto/rand.Read crashes the program rather than return an error
 	return hex.EncodeToString(b[:])
 }
 
-// MarkEnv returns env with EnvVar set to token, replacing any inherited value
-// (a worker started from another worker's task inherits that task's marker). A
-// nil env means the current process's environment, as it does to os/exec, so
-// marking it never empties the process's environment.
-func MarkEnv(env []string, token string) []string {
+// MarkEnv returns env with EnvVar set to a fresh tree token, replacing any
+// inherited value (a worker started from another worker's task inherits that
+// task's marker). A launch site assigns the result to the command's Env before
+// Start, and [Tree.Track] reads the token back from it. A nil env means the
+// current process's environment, as it does to os/exec, so marking it never
+// empties the process's environment.
+func MarkEnv(env []string) []string {
 	if env == nil {
 		env = os.Environ()
 	}
@@ -84,5 +86,15 @@ func MarkEnv(env []string, token string) []string {
 			out = append(out, kv)
 		}
 	}
-	return append(out, EnvVar+"="+token)
+	return append(out, EnvVar+"="+newToken())
+}
+
+// envToken returns EnvVar's value from an environment, or "".
+func envToken(env []string) string {
+	for _, kv := range env {
+		if tok, ok := strings.CutPrefix(kv, EnvVar+"="); ok {
+			return tok
+		}
+	}
+	return ""
 }

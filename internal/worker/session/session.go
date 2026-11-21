@@ -1340,8 +1340,7 @@ func startContainedAction(action *protocol.Action, workDir string, env []string,
 	if err := applyCredential(cmd, cred); err != nil {
 		return nil, nil, fmt.Errorf("apply run-as-user credential: %w", err)
 	}
-	token := proctree.NewToken()
-	cmd.Env = proctree.MarkEnv(env, token)
+	cmd.Env = proctree.MarkEnv(env)
 
 	// procout, not StdoutPipe, so the action's exit is seen while a descendant
 	// still holds its output open, such as a service an onEnter action starts
@@ -1361,7 +1360,7 @@ func startContainedAction(action *protocol.Action, workDir string, env []string,
 		return nil, nil, fmt.Errorf("supervise %q process tree: %w", action.Command, err)
 	}
 	label := proctree.Label{Kind: "environment-action", SessionID: sessionID, Command: action.Command}
-	if err := tree.Track(ledger, token, label); err != nil {
+	if err := tree.Track(ledger, label); err != nil {
 		logger.WarnContext(context.Background(), "session: record environment action process tree; it will not be stopped if this worker is killed",
 			slog.String("command", action.Command), slog.Any("error", err))
 	}

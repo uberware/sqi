@@ -4,7 +4,6 @@ package proctree
 
 import (
 	"errors"
-	"os"
 
 	"golang.org/x/sys/unix"
 )
@@ -12,18 +11,9 @@ import (
 // szomb is p_stat for a zombie (sys/proc.h SZOMB).
 const szomb = 5
 
-// systemOps reads the process table through sysctl.
-func systemOps() sweepOps {
-	return sweepOps{
-		list:     listProcs,
-		inspect:  inspectProc,
-		kill:     killProcess,
-		deadline: sweepDeadline,
-		slack:    sweepSlack,
-		poll:     sweepPoll,
-		self:     os.Getpid(),
-	}
-}
+// unreadableHint is the sweep's advice when a process's environment cannot be
+// read.
+const unreadableHint = "macOS lets only root read another account's process arguments"
 
 // listProcs returns every process ID from kern.proc.all.
 func listProcs() ([]int, error) {

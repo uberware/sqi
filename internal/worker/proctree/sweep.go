@@ -38,6 +38,9 @@ type sweepOps struct {
 	// started from a recorded tree (a job that restarts the worker) inherits
 	// that tree's token.
 	self int
+	// unreadableHint is the advice logged with processes whose environment
+	// could not be read.
+	unreadableHint string
 }
 
 // procInfo is what the sweep reads about one process.
@@ -56,8 +59,9 @@ type procInfo struct {
 
 // sweptTree is a record the sweep is looking for, and what it found.
 type sweptTree struct {
-	rec    record
-	killed int
+	rec record
+	// killed holds the processes the sweep sent SIGKILL.
+	killed map[int]bool
 	// unchecked holds the processes in the record's group whose environment
 	// could not be read.
 	unchecked map[int]bool
@@ -95,11 +99,14 @@ func (l *Ledger) sweepWith(ctx context.Context, logger *slog.Logger, ops sweepOp
 		return nil
 	}
 	for _, t := range trees {
-		if t.killed > 0 {
-			logKilled(ctx, logger, t)
+		if len(t.killed) > 0 {
+			logTree(ctx, logger, t, "killed a process tree the previous worker left running", len(t.killed),
+				slog.Duration("running_for", time.Since(t.rec.StartedAt).Round(time.Second)))
 		}
 		if len(t.unchecked) > 0 {
-			logUnchecked(ctx, logger, t)
+			logTree(ctx, logger, t,
+				"proctree: could not check processes in a previous worker's process group; they were left running",
+				len(t.unchecked), slog.String("hint", ops.unreadableHint))
 		}
 	}
 	for pid, tok := range res.survivors {
@@ -159,8 +166,6 @@ type sweepPass struct {
 	// byGroup finds a record by its tree's process group, for a process whose
 	// environment cannot be read.
 	byGroup map[int]*sweptTree
-	// counted holds the processes already counted against their tree.
-	counted map[int]bool
 	ops     sweepOps
 	// current is the pid being inspected, for the log line when a read hangs.
 	current atomic.Int64
@@ -200,8 +205,9 @@ type passResult struct {
 
 // newSweepPass prepares a scan of trees.
 func newSweepPass(trees map[string]*sweptTree, ops sweepOps) *sweepPass {
-	s := &sweepPass{trees: trees, byGroup: make(map[int]*sweptTree, len(trees)), counted: map[int]bool{}, ops: ops}
+	s := &sweepPass{trees: trees, byGroup: make(map[int]*sweptTree, len(trees)), ops: ops}
 	for _, t := range trees {
+		t.killed, t.unchecked = map[int]bool{}, map[int]bool{}
 		s.byGroup[t.rec.PGID] = t
 	}
 	return s
@@ -250,47 +256,24 @@ func (s *sweepPass) visit(pid int) (string, bool) {
 	}
 	if info.envUnreadable {
 		if t, ok := s.byGroup[info.pgid]; ok {
-			if t.unchecked == nil {
-				t.unchecked = map[int]bool{}
-			}
 			t.unchecked[pid] = true
 		}
 		return "", false
 	}
-	t, ok := s.trees[info.token]
-	if info.token == "" || !ok {
+	t, ok := s.trees[info.token] // a record's token is never empty (decodeRecord)
+	if !ok {
 		return "", false
 	}
-	if !s.counted[pid] {
-		s.counted[pid] = true
-		t.killed++
-	}
+	t.killed[pid] = true
 	s.ops.kill(pid) //nolint:errcheck // a failed kill shows as a survivor on the next pass
 	return info.token, true
 }
 
-// logKilled reports one tree the sweep killed.
-func logKilled(ctx context.Context, logger *slog.Logger, t *sweptTree) {
-	attrs := append(
-		labelAttrs(t.rec),
-		slog.Int("pgid", t.rec.PGID),
-		slog.Int("processes", t.killed),
-		slog.Duration("running_for", time.Since(t.rec.StartedAt).Round(time.Second)),
-	)
-	logger.LogAttrs(ctx, slog.LevelWarn, "killed a process tree the previous worker left running", attrs...)
-}
-
-// logUnchecked reports the processes in a recorded tree's group that the
-// sweep could not read, and so left running.
-func logUnchecked(ctx context.Context, logger *slog.Logger, t *sweptTree) {
-	attrs := append(
-		labelAttrs(t.rec),
-		slog.Int("pgid", t.rec.PGID),
-		slog.Int("processes", len(t.unchecked)),
-		slog.String("hint", "a worker running tasks as other accounts needs CAP_SYS_PTRACE to read their environment"),
-	)
-	logger.LogAttrs(ctx, slog.LevelWarn,
-		"proctree: could not check processes in a previous worker's process group; they were left running", attrs...)
+// logTree reports what the sweep found of one tree: msg, the tree's label and
+// group, n processes, and one more attribute.
+func logTree(ctx context.Context, logger *slog.Logger, t *sweptTree, msg string, n int, extra slog.Attr) {
+	attrs := append(labelAttrs(t.rec), slog.Int("pgid", t.rec.PGID), slog.Int("processes", n), extra)
+	logger.LogAttrs(ctx, slog.LevelWarn, msg, attrs...)
 }
 
 // labelAttrs is a record's label as log attributes, empty fields left out.

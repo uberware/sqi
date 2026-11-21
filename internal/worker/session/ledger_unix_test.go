@@ -53,17 +53,13 @@ func TestRunAction_RecordsEnvironmentAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rec struct {
-		Token string `json:"token"`
-		Label struct {
-			Kind      string `json:"kind"`
-			SessionID string `json:"session_id"`
-			Command   string `json:"command"`
-		} `json:"label"`
+		Token string         `json:"token"`
+		Label proctree.Label `json:"label"`
 	}
 	if err := json.Unmarshal(b, &rec); err != nil {
 		t.Fatalf("decode %s: %v", b, err)
 	}
-	if rec.Label.Kind != "environment-action" || rec.Label.SessionID != "s1" || rec.Label.Command != "sh" {
+	if rec.Label != (proctree.Label{Kind: "environment-action", SessionID: "s1", Command: "sh"}) {
 		t.Errorf("record label = %+v, want environment-action, s1, sh", rec.Label)
 	}
 

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"syscall"
 	"time"
 )
@@ -33,6 +34,21 @@ func (l *Ledger) Sweep(ctx context.Context, logger *slog.Logger) error {
 	return l.sweepWith(ctx, logger, systemOps())
 }
 
+// systemOps reads this host's process table (listProcs and inspectProc, one
+// pair per operating system).
+func systemOps() sweepOps {
+	return sweepOps{
+		list:           listProcs,
+		inspect:        inspectProc,
+		kill:           killProcess,
+		deadline:       sweepDeadline,
+		slack:          sweepSlack,
+		poll:           sweepPoll,
+		self:           os.Getpid(),
+		unreadableHint: unreadableHint,
+	}
+}
+
 // killProcess sends SIGKILL to pid alone. A process already gone is not an
 // error.
 func killProcess(pid int) error {
@@ -40,16 +56,4 @@ func killProcess(pid int) error {
 		return err
 	}
 	return nil
-}
-
-// envToken returns EnvVar's value from a NUL-separated environment block, or
-// "".
-func envToken(env []string) string {
-	const prefix = EnvVar + "="
-	for _, kv := range env {
-		if len(kv) > len(prefix) && kv[:len(prefix)] == prefix {
-			return kv[len(prefix):]
-		}
-	}
-	return ""
 }

@@ -16,14 +16,9 @@ import (
 	"testing"
 	"time"
 
-	workerconfig "github.com/uberware/sqi/internal/worker/config"
-	"github.com/uberware/sqi/internal/worker/fmtres"
-	"github.com/uberware/sqi/internal/worker/isolation"
-	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/proctree"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
-	"github.com/uberware/sqi/internal/worker/status"
 )
 
 // syncBuffer is a bytes.Buffer safe for a logger and a test to share.
@@ -60,21 +55,11 @@ func ledgerRun(t *testing.T, ledgerDir string, removeDir bool, script string) (<
 			t.Fatal(err)
 		}
 	}
-	mgr := session.NewManager(filepath.Join(newTraversableSessionDataDir(t), "sessions"), false,
-		isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger,
-		session.WithLedger(l))
-	msg := &protocol.AssignMsg{JobID: "job-1", TaskID: "task-1", AttemptID: "attempt-1"}
-	sess, err := mgr.Create(context.Background(), msg)
-	if err != nil {
-		t.Fatalf("session Create: %v", err)
-	}
-	t.Cleanup(func() { mgr.Cleanup(context.Background(), sess, false) })
-	e := New(status.New(discardNATS{}, status.Config{WorkerID: "test-worker"}, logger), mgr, metrics.New(), DiscardOutput{}, Config{}, logger)
-	run := &taskRun{taskID: msg.TaskID, attemptID: msg.AttemptID, sessionID: sess.ID, jobID: msg.JobID}
+	d := newDirectRun(t, logger, session.WithLedger(l))
 	out := &recordingHandler{}
 	done := make(chan processResult, 1)
 	go func() {
-		done <- e.execProcess(context.Background(), msg, sess, run, nil,
+		done <- d.e.execProcess(context.Background(), d.msg, d.sess, d.run, nil,
 			&protocol.Action{Command: "sh", Args: []string{"-c", script}}, nil, out)
 	}()
 	return done, out, logs
@@ -108,18 +93,14 @@ func TestExecProcess_RecordsTreeWhileRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rec struct {
-		Token string `json:"token"`
-		Label struct {
-			Kind      string `json:"kind"`
-			AttemptID string `json:"attempt_id"`
-			TaskID    string `json:"task_id"`
-		} `json:"label"`
+		Token string         `json:"token"`
+		Label proctree.Label `json:"label"`
 	}
 	if err := json.Unmarshal(b, &rec); err != nil {
 		t.Fatalf("decode %s: %v", b, err)
 	}
-	if rec.Label.Kind != "task" || rec.Label.AttemptID != "attempt-1" || rec.Label.TaskID != "task-1" {
-		t.Errorf("record label = %+v, want kind task, attempt-1, task-1", rec.Label)
+	if want := (proctree.Label{Kind: "task", AttemptID: "attempt-1", TaskID: "task-1", SessionID: rec.Label.SessionID}); rec.Label != want || rec.Label.SessionID == "" {
+		t.Errorf("record label = %+v, want kind task, attempt-1, task-1 and the session", rec.Label)
 	}
 
 	if r := awaitResult(t, done); r.Err != nil || r.ExitCode != 0 {

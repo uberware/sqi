@@ -30,30 +30,6 @@ func TestLockDataDir_SecondHolderRefused(t *testing.T) {
 	third.Release() //nolint:errcheck // end of test
 }
 
-func TestSweepPreviousTrees_CreatesLedgerDir(t *testing.T) {
-	dir := t.TempDir()
-	l, err := sweepPreviousTrees(t.Context(), dir, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("sweepPreviousTrees: %v", err)
-	}
-	if l == nil {
-		t.Fatal("sweepPreviousTrees returned a nil ledger")
-	}
-	if fi, err := os.Stat(filepath.Join(dir, "proctrees")); err != nil || !fi.IsDir() {
-		t.Errorf("proctrees dir: %v, %v; want a directory", fi, err)
-	}
-}
-
-func TestSweepPreviousTrees_UncreatableDirFails(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "proctrees"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sweepPreviousTrees(t.Context(), dir, slog.New(slog.DiscardHandler)); err == nil {
-		t.Error("sweepPreviousTrees with proctrees a regular file = nil, want an error")
-	}
-}
-
 func TestClaimDataDir_HoldsTheLockUntilReleased(t *testing.T) {
 	dir := t.TempDir()
 	release, ledger, err := claimDataDir(t.Context(), dir, slog.New(slog.DiscardHandler))
@@ -62,6 +38,9 @@ func TestClaimDataDir_HoldsTheLockUntilReleased(t *testing.T) {
 	}
 	if ledger == nil {
 		t.Fatal("claimDataDir returned a nil ledger")
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "proctrees")); err != nil || !fi.IsDir() {
+		t.Errorf("proctrees dir: %v, %v; want a directory", fi, err)
 	}
 	if _, _, err := claimDataDir(t.Context(), dir, slog.New(slog.DiscardHandler)); err == nil {
 		t.Fatal("second claimDataDir while the first holds the lock = nil, want an error")
@@ -74,13 +53,13 @@ func TestClaimDataDir_HoldsTheLockUntilReleased(t *testing.T) {
 	again()
 }
 
-func TestClaimDataDir_SweepFailureReleasesTheLock(t *testing.T) {
+func TestClaimDataDir_UncreatableLedgerFailsAndReleasesTheLock(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "proctrees"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := claimDataDir(t.Context(), dir, slog.New(slog.DiscardHandler)); err == nil {
-		t.Fatal("claimDataDir with an uncreatable ledger = nil, want an error")
+		t.Fatal("claimDataDir with proctrees a regular file = nil, want an error")
 	}
 	l, err := lockDataDir(dir)
 	if err != nil {

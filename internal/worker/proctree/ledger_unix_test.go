@@ -14,26 +14,6 @@ import (
 	"testing"
 )
 
-// startSleepTree starts `sleep 30` as a supervised tree and kills it when the
-// test ends.
-func startSleepTree(t *testing.T) (*exec.Cmd, *Tree) {
-	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "sleep", "30")
-	Configure(cmd)
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	tree, err := Supervise(cmd)
-	if err != nil {
-		t.Fatalf("Supervise: %v", err)
-	}
-	t.Cleanup(func() {
-		tree.Kill() //nolint:errcheck // already dead in most tests
-		cmd.Wait()  //nolint:errcheck // reaps the killed process
-	})
-	return cmd, tree
-}
-
 func TestTrack_WritesRecordAndReleaseRemovesIt(t *testing.T) {
 	dir := t.TempDir()
 	l, err := OpenLedger(dir)
@@ -41,11 +21,13 @@ func TestTrack_WritesRecordAndReleaseRemovesIt(t *testing.T) {
 		t.Fatalf("OpenLedger: %v", err)
 	}
 	cmd, tree := startSleepTree(t)
-	tok := NewToken()
-	if err := tree.Track(l, tok, Label{Kind: "task", AttemptID: "a1"}); err != nil {
+	if err := tree.Track(l, Label{Kind: "task", AttemptID: "a1"}); err != nil {
 		t.Fatalf("Track: %v", err)
 	}
+	tok := envToken(cmd.Env)
 
+	// The on-disk keys are spelled out here on purpose: a new worker sweeps the
+	// records an older one left.
 	path := filepath.Join(dir, tok+".json")
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -97,10 +79,37 @@ func TestTrack_WriteFailureIsReturned(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, tree := startSleepTree(t)
-	if err := tree.Track(l, NewToken(), Label{Kind: "task"}); err == nil {
+	if err := tree.Track(l, Label{Kind: "task"}); err == nil {
 		t.Error("Track into a removed ledger dir = nil, want an error")
 	}
 	if err := tree.Release(); err != nil {
 		t.Errorf("Release after a failed Track = %v, want nil", err)
+	}
+}
+
+func TestTrack_UnmarkedCommandIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	l, err := OpenLedger(dir)
+	if err != nil {
+		t.Fatalf("OpenLedger: %v", err)
+	}
+	cmd := exec.CommandContext(t.Context(), "sleep", "30")
+	Configure(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	tree, err := Supervise(cmd)
+	if err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+	t.Cleanup(func() {
+		tree.Kill() //nolint:errcheck // cleanup
+		cmd.Wait()  //nolint:errcheck // reaps it
+	})
+	if err := tree.Track(l, Label{Kind: "task"}); err == nil {
+		t.Error("Track of a command MarkEnv never marked = nil, want an error")
+	}
+	if left := ledgerFiles(t, l); len(left) != 0 {
+		t.Errorf("an unmarked command was recorded: %v", left)
 	}
 }

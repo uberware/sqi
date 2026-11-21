@@ -40,14 +40,18 @@ func Supervise(cmd *exec.Cmd) (*Tree, error) {
 	return &Tree{proc: cmd}, nil
 }
 
-// Track records the tree in l under token, the value the launch site put in
-// the process's environment with [MarkEnv], so that if this worker is killed
-// the next one to start on the same data directory kills the tree
-// ([Ledger.Sweep]). Release removes the record. A nil l records nothing. An
-// error leaves the tree running and unrecorded.
-func (t *Tree) Track(l *Ledger, token string, label Label) error {
+// Track records the tree in l under the token [MarkEnv] put in the command's
+// environment, so that if this worker is killed the next one to start on the
+// same data directory kills the tree ([Ledger.Sweep]). Release removes the
+// record. A nil l records nothing. An error leaves the tree running and
+// unrecorded; a command whose environment carries no token is one.
+func (t *Tree) Track(l *Ledger, label Label) error {
 	if l == nil {
 		return nil
+	}
+	token := envToken(t.proc.Env)
+	if token == "" {
+		return errors.New("proctree: the command's environment carries no " + EnvVar + "; set it with MarkEnv before Start")
 	}
 	path, err := l.write(record{
 		Token:     token,

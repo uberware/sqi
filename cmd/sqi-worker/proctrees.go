@@ -28,25 +28,12 @@ func lockDataDir(dataDir string) (*fslock.Lock, error) {
 	return l, nil
 }
 
-// sweepPreviousTrees opens the process-tree ledger in <dataDir>/proctrees and
-// kills every tree a previous worker on this data directory left running when
-// it was killed. It must run with the data directory locked and before the
-// worker registers, because the registration reclaims those trees' tasks and
-// they would run again beside the old processes.
-func sweepPreviousTrees(ctx context.Context, dataDir string, logger *slog.Logger) (*proctree.Ledger, error) {
-	l, err := proctree.OpenLedger(filepath.Join(dataDir, "proctrees"))
-	if err != nil {
-		return nil, err
-	}
-	if err := l.Sweep(ctx, logger); err != nil {
-		return nil, err
-	}
-	return l, nil
-}
-
-// claimDataDir locks dataDir for this worker's life and sweeps the trees a
-// killed predecessor left running (lockDataDir, sweepPreviousTrees). The
-// returned release drops the lock; on an error the lock is not held.
+// claimDataDir locks dataDir for this worker's life (lockDataDir), opens the
+// process-tree ledger in <dataDir>/proctrees, and kills every tree a previous
+// worker on this data directory left running when it was killed. It must run
+// before the worker registers, because the registration reclaims those trees'
+// tasks and they would run again beside the old processes. The returned
+// release drops the lock; on an error the lock is not held.
 func claimDataDir(ctx context.Context, dataDir string, logger *slog.Logger) (release func(), ledger *proctree.Ledger, err error) {
 	lock, err := lockDataDir(dataDir)
 	if err != nil {
@@ -57,10 +44,13 @@ func claimDataDir(ctx context.Context, dataDir string, logger *slog.Logger) (rel
 			logger.WarnContext(context.Background(), "release data_dir lock", slog.Any("error", err))
 		}
 	}
-	ledger, err = sweepPreviousTrees(ctx, dataDir, logger)
+	ledger, err = proctree.OpenLedger(filepath.Join(dataDir, "proctrees"))
+	if err == nil {
+		err = ledger.Sweep(ctx, logger)
+	}
 	if err != nil {
 		release()
-		return nil, nil, fmt.Errorf("sweep process trees: %w", err)
+		return nil, nil, err
 	}
 	return release, ledger, nil
 }

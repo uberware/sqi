@@ -695,11 +695,10 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		maps.Copy(overrides, envVars)
 		maps.Copy(overrides, dyn)
 	}
-	// The token marks every process of the task's tree, so if this worker is
-	// killed the next one on its data directory finds and kills them
+	// The token MarkEnv adds marks every process of the task's tree, so if this
+	// worker is killed the next one on its data directory finds and kills them
 	// (proctree.Ledger.Sweep).
-	token := proctree.NewToken()
-	cmd.Env = proctree.MarkEnv(envutil.BuildFromBase(sess.BaseEnv(), overrides, sess.EnvUnset()), token)
+	cmd.Env = proctree.MarkEnv(envutil.BuildFromBase(sess.BaseEnv(), overrides, sess.EnvUnset()))
 
 	startedAt := time.Now()
 
@@ -736,7 +735,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		return earlyResult(fmt.Errorf("supervise task process tree: %w", err), startedAt)
 	}
 	label := proctree.Label{Kind: "task", AttemptID: msg.AttemptID, TaskID: msg.TaskID, SessionID: sess.ID}
-	if err := tree.Track(sess.Ledger(), token, label); err != nil {
+	if err := tree.Track(sess.Ledger(), label); err != nil {
 		e.logger.WarnContext(ctx, "executor: record process tree; it will not be stopped if this worker is killed",
 			slog.String("attempt_id", msg.AttemptID), slog.Any("error", err))
 	}

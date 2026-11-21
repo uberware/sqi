@@ -82,6 +82,8 @@ func (f *fakeTable) ops() sweepOps {
 		slack:    time.Second,
 		poll:     10 * time.Millisecond,
 		self:     -1,
+		// The real hint is per operating system; any text stands in.
+		unreadableHint: "test hint",
 	}
 }
 

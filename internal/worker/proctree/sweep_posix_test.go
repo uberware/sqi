@@ -8,7 +8,6 @@ import (
 	"bufio"
 	"errors"
 	"log/slog"
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -65,13 +64,13 @@ func TestSweep_KillsARealOrphanedTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok := NewToken()
 	// A background child, a child that leaves the group with setsid, and the
 	// shell itself. The echo after both are started means all three exist
 	// before the sweep.
 	cmd := exec.CommandContext(t.Context(), "sh", "-c", "sleep 300 & setsid sleep 300 & echo started; wait")
 	Configure(cmd)
-	cmd.Env = MarkEnv(nil, tok)
+	cmd.Env = MarkEnv(nil)
+	tok := envToken(cmd.Env)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +89,7 @@ func TestSweep_KillsARealOrphanedTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tree.Track(l, tok, Label{Kind: "task", AttemptID: "a1"}); err != nil {
+	if err := tree.Track(l, Label{Kind: "task", AttemptID: "a1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -122,9 +121,8 @@ func TestSweep_KillsARealOrphanedTree(t *testing.T) {
 			t.Fatalf("%d of %v still alive 5s after the sweep", alive, pids)
 		}
 	}
-	ents, err := os.ReadDir(l.dir)
-	if err != nil || len(ents) != 0 {
-		t.Errorf("ledger after sweep: %d entries, err %v; want empty", len(ents), err)
+	if left := ledgerFiles(t, l); len(left) != 0 {
+		t.Errorf("ledger after sweep: %v; want empty", left)
 	}
 }
 
@@ -143,9 +141,7 @@ func TestSweep_LeavesUnmarkedGroupMembers(t *testing.T) {
 		cmd.Wait()         //nolint:errcheck // reaps it
 	})
 	// A record naming this process's group, as if the number had been reused.
-	if _, err := l.write(record{Token: NewToken(), PGID: cmd.Process.Pid, BootID: l.bootID, Label: Label{Kind: "task"}, StartedAt: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
+	putRecord(t, l, record{Token: newToken(), PGID: cmd.Process.Pid, Label: Label{Kind: "task"}})
 	if err := l.Sweep(t.Context(), slog.New(&logCapture{})); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
