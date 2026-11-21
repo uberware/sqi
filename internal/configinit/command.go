@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -29,10 +30,13 @@ type writeRequest struct {
 	Target   string // absolute path of the file to write
 	Content  []byte
 	DataDir  string // the data directory the content names
+	Force    bool   // replace a file already at Target
+	Account  string // Windows --user, normalized; "" for none
 }
 
 // writer is the platform write step: it puts req.Content at req.Target with
-// the permissions that platform needs, replacing a file already there.
+// the permissions that platform needs, replacing a file already there when
+// req.Force is set.
 type writer func(req writeRequest) error
 
 // NewCommand returns the "init" command, which writes a starter configuration
@@ -45,6 +49,7 @@ func NewCommand(spec Spec) *cobra.Command {
 func newCommand(spec Spec, w writer) *cobra.Command {
 	var force bool
 	var natsURL string
+	var user string
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Write a starter configuration file",
@@ -63,10 +68,11 @@ keeps its default and is documented in config/%[1]s.example.yaml.`, spec.Binary)
 				}
 				url = natsURL
 			}
-			return run(cmd, spec, w, force, url)
+			return run(cmd, spec, w, force, url, user)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "replace the file if it exists")
+	addUserFlag(cmd, &user)
 	if spec.Binary == Worker {
 		cmd.Flags().StringVar(&natsURL, "nats-url", "",
 			"URL of the sqi-server's NATS broker (comma-separated for a cluster); default is to discover it by mDNS")
@@ -74,7 +80,7 @@ keeps its default and is documented in config/%[1]s.example.yaml.`, spec.Binary)
 	return cmd
 }
 
-func run(cmd *cobra.Command, spec Spec, w writer, force bool, natsURL string) error {
+func run(cmd *cobra.Command, spec Spec, w writer, force bool, natsURL, user string) error {
 	p, err := hostPlatform()
 	if err != nil {
 		return err
@@ -91,14 +97,31 @@ func run(cmd *cobra.Command, spec Spec, w writer, force bool, natsURL string) er
 	if err != nil {
 		return err
 	}
-	req := writeRequest{Binary: spec.Binary, Platform: p, Target: target, Content: content, DataDir: dataDir}
+	account := winsvc.NormalizeAccount(user)
+	req := writeRequest{
+		Binary: spec.Binary, Platform: p, Target: target, Content: content, DataDir: dataDir,
+		Force: force, Account: account,
+	}
 	if err := w(req); err != nil {
 		return err
 	}
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "wrote %s\n", target)
-	fmt.Fprintln(out, nextStep(p.GOOS, spec.Binary))
+	next := nextStep(p.GOOS, spec.Binary)
+	if account != "" {
+		next += fmt.Sprintf(" --user %s --config %s", shellArg(user), shellArg(target))
+	}
+	fmt.Fprintln(out, next)
 	return nil
+}
+
+// shellArg double-quotes s when it holds a space, so a printed command line
+// can be pasted as it is.
+func shellArg(s string) string {
+	if strings.ContainsAny(s, " \t") {
+		return `"` + s + `"`
+	}
+	return s
 }
 
 // configFlag reads the binary's persistent root --config flag.

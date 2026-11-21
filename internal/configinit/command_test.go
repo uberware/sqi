@@ -258,3 +258,12 @@ func TestNextStep_EveryPlatform(t *testing.T) {
 		})
 	}
 }
+
+func TestInit_UserFlagOnlyOnWindows(t *testing.T) {
+	for _, spec := range []Spec{workerSpec, serverSpec} {
+		got := newCommand(spec, (&recorder{}).write).Flags().Lookup("user") != nil
+		if want := runtime.GOOS == "windows"; got != want {
+			t.Errorf("%s: has --user = %v, want %v", spec.Binary, got, want)
+		}
+	}
+}

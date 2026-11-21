@@ -626,3 +626,28 @@ func TestJudgeSecurity_AncestorRules(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveUser(t *testing.T) {
+	_, me := currentAccount(t)
+	tests := []struct {
+		account string
+		want    string // "" for success, else a substring of the error
+	}{
+		{"", ""},
+		{"LocalSystem", ""},
+		{me, ""},
+		{`BUILTIN\Administrators`, "is not a user account"},
+		{"sqi-no-such-account-for-test", "look up account"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.account, func(t *testing.T) {
+			err := ResolveUser(tt.account)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("ResolveUser(%q) = %v, want nil", tt.account, err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+				t.Errorf("ResolveUser(%q) = %v, want an error containing %q", tt.account, err, tt.want)
+			}
+		})
+	}
+}

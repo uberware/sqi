@@ -188,6 +188,15 @@ func trustedSet(account *windows.SID) ([]*windows.SID, error) {
 	return sids, nil
 }
 
+// ResolveUser checks that account, normalized as NormalizeAccount does,
+// resolves to a user account's SID; "" and LocalSystem pass. It is the check
+// CheckPaths, PrepareConfigDir and PrepareDataDir make before using account,
+// for a caller that must refuse an account before changing anything.
+func ResolveUser(account string) error {
+	_, err := resolveUser(account)
+	return err
+}
+
 // resolveUser is account's SID, normalized as `service install --user`
 // normalizes it, or nil when it is "" (LocalSystem). account must name a
 // user: trusting or granting a group would cover every member of it.
