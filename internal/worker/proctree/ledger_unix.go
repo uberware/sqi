@@ -12,8 +12,11 @@ import (
 	"path/filepath"
 )
 
-// write records a tree: written to a temporary name, synced and renamed, so a
-// crash never leaves a half-written record under the record's own name.
+// write records a tree: written to a temporary name and renamed, so a crash
+// never leaves a half-written record under the record's own name. It is not
+// synced: a record only has to outlive the worker process, which the page
+// cache does, and a host crash changes the boot ID, which drops the record
+// unread.
 func (l *Ledger) write(rec record) (string, error) {
 	b, err := json.Marshal(rec)
 	if err != nil {
@@ -26,9 +29,8 @@ func (l *Ledger) write(rec record) (string, error) {
 		return "", fmt.Errorf("proctree: write record: %w", err)
 	}
 	_, werr := f.Write(b)
-	serr := f.Sync()
 	cerr := f.Close()
-	if err := errors.Join(werr, serr, cerr); err != nil {
+	if err := errors.Join(werr, cerr); err != nil {
 		os.Remove(tmp) // best effort; the sweep drops a leftover .tmp
 		return "", fmt.Errorf("proctree: write record: %w", err)
 	}
