@@ -25,6 +25,8 @@ import (
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/uberware/sqi/internal/winsvc"
 )
 
 var binDir string // built once by TestMain, in a path containing a space
@@ -42,15 +44,27 @@ func TestMain(m *testing.M) {
 // runSuite builds both binaries and runs the tests. It is split from TestMain
 // so the binary directory is removed on every path, a failed build included.
 func runSuite(m *testing.M) int {
-	// Under %ProgramData% so a --user service account can execute it, and
-	// with a space in the path to exercise ImagePath quoting.
-	dir, err := os.MkdirTemp(os.Getenv("ProgramData"), "sqi winservice bin ")
+	// Under %ProgramData% with a space in the path to exercise ImagePath
+	// quoting, and administrators-only, as `service install` requires of a
+	// service's binary, with read and execute for Users (as C:\Program Files
+	// grants) so a --user service account can run it.
+	dir, err := newProtectedDir("sqi winservice bin ", "")
+	if dir != "" {
+		defer func() {
+			if err := removeAll(dir); err != nil {
+				fmt.Printf("winservice: cleanup: %v\n", err)
+			}
+		}()
+	}
 	if err != nil {
 		fmt.Println(err)
 		return 1
 	}
-	defer os.RemoveAll(dir) // best-effort cleanup
 	binDir = dir
+	if out, err := exec.CommandContext(context.Background(), "icacls", dir, "/grant", "*"+usersSID+":(OI)(CI)RX").CombinedOutput(); err != nil {
+		fmt.Printf("icacls: %v\n%s", err, out)
+		return 1
+	}
 	// go test runs a test binary in its package directory, test/winservice.
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -64,6 +78,12 @@ func runSuite(m *testing.M) int {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Printf("build: %v\n%s", err, out)
 		return 1
+	}
+	for _, name := range []string{"sqi-server", "sqi-worker"} {
+		if err := ownByAdministrators(bin(name)); err != nil {
+			fmt.Println(err)
+			return 1
+		}
 	}
 	sweepStaleProfiles()
 	return m.Run()
@@ -87,16 +107,90 @@ func uniqueName(t *testing.T, prefix string) string {
 	return prefix + "-" + randomHex(t, 4)
 }
 
+// usersSID is BUILTIN\Users.
+const usersSID = "S-1-5-32-545"
+
 // testDir is under %ProgramData% (not the admin's %TEMP%) so a service running
-// as another account can reach it, and contains a space.
+// as another account can reach it, contains a space, and is created as
+// `config init` creates a configuration directory, so `service install`
+// accepts what it holds.
 func testDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp(os.Getenv("ProgramData"), "sqi winservice ") //nolint:usetesting // t.TempDir is under the admin's profile, unreachable by a --user service
+	return testDirFor(t, "")
+}
+
+// testDirFor is testDir granting account, when not "", read and execute, as
+// `config init --user` does.
+func testDirFor(t *testing.T, account string) string {
+	t.Helper()
+	dir, err := newProtectedDir("sqi winservice ", account)
+	if dir != "" {
+		cleanupDir(t, dir)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
 	return dir
+}
+
+// cleanupDir removes dir and everything in it when the test ends, reporting a
+// failure, since it leaves a directory behind under %ProgramData%.
+func cleanupDir(t *testing.T, dir string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := removeAll(dir); err != nil {
+			t.Errorf("cleanup: %v", err)
+		}
+	})
+}
+
+// removeAll is os.RemoveAll retried for a while: a binary that just ran, or a
+// file a service just closed, can stay open briefly (an antivirus scan, the
+// SCM), and removing it fails meanwhile.
+func removeAll(dir string) error {
+	var err error
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(250 * time.Millisecond) {
+		if err = os.RemoveAll(dir); err == nil || time.Now().After(deadline) {
+			break
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("remove %s: %w", dir, err)
+	}
+	return nil
+}
+
+// newProtectedDir creates a directory under %ProgramData% named prefix plus
+// random hex with winsvc.PrepareConfigDir: owned by Administrators whichever
+// shell started the test, SYSTEM and Administrators only, plus read and
+// execute for account when it is not "". It returns the path, for the caller
+// to remove, even when it fails.
+func newProtectedDir(prefix, account string) (string, error) {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	dir := filepath.Join(os.Getenv("ProgramData"), prefix+hex.EncodeToString(b))
+	if err := winsvc.PrepareConfigDir(dir, account); err != nil {
+		return dir, fmt.Errorf("prepare %s: %w", dir, err)
+	}
+	return dir, nil
+}
+
+// ownByAdministrators makes BUILTIN\Administrators the owner of path. What an
+// elevated Git Bash creates is owned by the user's own account, which
+// `service install` refuses; an elevated token may give what it owns to
+// Administrators, a group it holds.
+func ownByAdministrators(path string) error {
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return err
+	}
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION,
+		admins, nil, nil, nil); err != nil {
+		return fmt.Errorf("make Administrators the owner of %s: %w", path, err)
+	}
+	return nil
 }
 
 // freePorts returns n distinct free loopback ports. Every listener stays open
@@ -143,9 +237,14 @@ func mustRun(t *testing.T, exe string, args ...string) string {
 	return out
 }
 
+// writeFile writes path owned by Administrators, so `service install` judges
+// it by its directory's permissions, not by which shell started the test.
 func writeFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ownByAdministrators(path); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -175,7 +274,7 @@ func startServer(t *testing.T) serverFixture {
 	dir := testDir(t)
 	ports := freePorts(t, 2)
 	cfg := filepath.Join(dir, "sqi-server.yaml")
-	writeFile(t, cfg, serverYAML(ports[0], ports[1]))
+	writeFile(t, cfg, serverYAML(ports[0], ports[1], ""))
 	name := uniqueName(t, "sqi-test-server")
 	cleanupService(t, bin("sqi-server"), name)
 	mustRun(t, bin("sqi-server"), "service", "install", "--name", name, "--config", cfg, "--start")
@@ -188,10 +287,17 @@ func startServer(t *testing.T) serverFixture {
 	return f
 }
 
-func serverYAML(httpPort, natsPort int) string {
-	return "http:\n  addr: " + strconv.Quote(hostPort(httpPort)) +
-		"\nnats:\n  embedded:\n    addr: " + strconv.Quote(hostPort(natsPort)) +
-		"\ndiscovery:\n  enabled: false\n"
+// serverYAML is a server configuration on the given ports. dataDir, when not
+// "", holds the database and the broker's data; otherwise both take their
+// defaults, beside the configuration.
+func serverYAML(httpPort, natsPort int, dataDir string) string {
+	y := "http:\n  addr: " + strconv.Quote(hostPort(httpPort)) +
+		"\nnats:\n  embedded:\n    addr: " + strconv.Quote(hostPort(natsPort))
+	if dataDir != "" {
+		y += "\n    data_dir: " + strconv.Quote(filepath.Join(dataDir, "nats")) +
+			"\nstore:\n  sqlite_path: " + strconv.Quote(filepath.Join(dataDir, "sqi.db"))
+	}
+	return y + "\ndiscovery:\n  enabled: false\n"
 }
 
 func workerYAML(t *testing.T, natsURL, dataDir string) string {
@@ -468,17 +574,19 @@ func removeAccount(ctx context.Context, t *testing.T, account string, sid *windo
 	}
 }
 
-// removeLogDirGrant removes the inheritable Modify ACE `service install
-// --user` adds to the shared log directory (winsvc.EnsureLogDir), or the
-// full-control one when that install created the directory.
+// removeLogDirGrant removes what `service install --user` grants the account
+// (winsvc.EnsureLogDir): the inheritable Modify ACE on the shared log
+// directory, or the full-control one when that install created the
+// directory, and the read-attributes ACE on its parent, %ProgramData%\sqi.
 func removeLogDirGrant(ctx context.Context, t *testing.T, sid string) {
 	t.Helper()
-	dir := logDir()
-	if _, err := os.Stat(dir); err != nil {
-		return
-	}
-	if out, err := run(ctx, "", "icacls", dir, "/remove:g", "*"+sid); err != nil {
-		t.Errorf("cleanup: remove %s from the ACL of %s: %v\n%s", sid, dir, err, out)
+	for _, dir := range []string{logDir(), filepath.Dir(logDir())} {
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		if out, err := run(ctx, "", "icacls", dir, "/remove:g", "*"+sid); err != nil {
+			t.Errorf("cleanup: remove %s from the ACL of %s: %v\n%s", sid, dir, err, out)
+		}
 	}
 }
 

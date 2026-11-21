@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/uberware/sqi/internal/winsvc"
 )
 
 func TestWinService_ServerLifecycle(t *testing.T) {
@@ -156,14 +158,16 @@ func TestWinService_UserAccount(t *testing.T) {
 			"not granting the account access to the existing protected directory; run the whole suite for that", logDir())
 	}
 
-	dir := testDir(t)
-	// The service account must be able to write sqi.db and data/nats here.
-	if out, err := exec.CommandContext(t.Context(), "icacls", dir, "/grant", account+":(OI)(CI)M").CombinedOutput(); err != nil {
-		t.Fatalf("icacls: %v\n%s", err, out)
+	// As `sqi-server config init --user` lays it out: the account reads the
+	// configuration directory and writes sqi.db and nats in its data directory.
+	dir := testDirFor(t, account)
+	dataDir := filepath.Join(dir, "data")
+	if err := winsvc.PrepareDataDir(dataDir, account); err != nil {
+		t.Fatal(err)
 	}
 	ports := freePorts(t, 2)
 	cfg := filepath.Join(dir, "sqi-server.yaml")
-	writeFile(t, cfg, serverYAML(ports[0], ports[1]))
+	writeFile(t, cfg, serverYAML(ports[0], ports[1], dataDir))
 	name := uniqueName(t, "sqi-test-user")
 	cleanupService(t, bin("sqi-server"), name)
 	// The password is piped on stdin, never passed as an argument or logged.
