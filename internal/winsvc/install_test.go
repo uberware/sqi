@@ -68,6 +68,8 @@ func TestBuildServiceConfig_Rejects(t *testing.T) {
 	}{
 		{"empty name", func(s *InstallSpec) { s.Name = "" }, "name"},
 		{"slash in name", func(s *InstallSpec) { s.Name = `a\b` }, "name"},
+		{"dot name", func(s *InstallSpec) { s.Name = "." }, "name"},
+		{"dot-dot name", func(s *InstallSpec) { s.Name = ".." }, "name"},
 		{"relative exe", func(s *InstallSpec) { s.ExePath = "sqi-worker.exe" }, "absolute"},
 		{"relative config", func(s *InstallSpec) { s.ConfigPath = "sqi-worker.yaml" }, "absolute"},
 		{"no verb", func(s *InstallSpec) { s.RunVerb = "" }, "verb"},

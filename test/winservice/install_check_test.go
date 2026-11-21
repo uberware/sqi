@@ -164,7 +164,9 @@ func TestWinService_InstallRefusesSquattedSqiDirWithConfigElsewhere(t *testing.T
 
 	out, err := runEnv(t.Context(), []string{"ProgramData=" + root}, "",
 		bin("sqi-server"), "service", "install", "--name", name, "--config", cfg)
-	requireRefusal(t, err, out, "default log directory parent "+sqi+": ", usersCanWrite)
+	// The default log directory's parent, sqi\logs, does not exist yet: it is
+	// judged by sqi.
+	requireRefusal(t, err, out, "default log directory parent "+filepath.Join(sqi, "logs")+": ", usersCanWrite)
 	requireNotInstalled(t, bin("sqi-server"), name)
 	if after := securityString(t, sqi); after != before {
 		t.Errorf("install changed the security of %s:\nbefore %s\nafter  %s", sqi, before, after)
@@ -311,6 +313,38 @@ func allowedSIDs(t *testing.T, sd *windows.SECURITY_DESCRIPTOR) []*windows.SID {
 		sids = append(sids, (*windows.SID)(unsafe.Pointer(&ace.SidStart)))
 	}
 	return sids
+}
+
+// sqiDirTraverse is the one right a --user account gets on each shared
+// directory above its own log directory: read attributes, traverse and
+// synchronize.
+const sqiDirTraverse = windows.ACCESS_MASK(windows.FILE_READ_ATTRIBUTES | windows.FILE_TRAVERSE | windows.SYNCHRONIZE)
+
+// inheritFlags are the ACE flags that pass an entry on to children.
+const inheritFlags = windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE
+
+// aceFor is every allow ACE in path's DACL for sid.
+func aceFor(t *testing.T, path string, sid *windows.SID) []*windows.ACCESS_ALLOWED_ACE {
+	t.Helper()
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		t.Fatalf("read DACL of %s: %v (nil: %t)", path, err, dacl == nil)
+	}
+	var out []*windows.ACCESS_ALLOWED_ACE
+	for i := range uint32(dacl.AceCount) {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			t.Fatalf("read ACE %d of %s: %v", i, path, err)
+		}
+		if ace.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE && (*windows.SID)(unsafe.Pointer(&ace.SidStart)).Equals(sid) {
+			out = append(out, ace)
+		}
+	}
+	return out
 }
 
 // sameSIDs reports whether got holds each of want, and nothing else.

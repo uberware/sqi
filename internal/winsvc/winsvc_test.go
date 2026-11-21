@@ -62,7 +62,7 @@ func TestRequireConfigFile(t *testing.T) {
 func TestDefaultLogPath_UnderProgramData(t *testing.T) {
 	pd := t.TempDir()
 	t.Setenv("ProgramData", pd)
-	want := filepath.Join(pd, "sqi", "logs", "sqi-worker-2.log")
+	want := filepath.Join(pd, "sqi", "logs", "sqi-worker-2", "sqi-worker-2.log")
 	if got := DefaultLogPath("sqi-worker-2"); got != want {
 		t.Fatalf("DefaultLogPath = %q, want %q", got, want)
 	}
@@ -101,7 +101,7 @@ func TestResolveLogFile_ServiceModeCreatesDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != filepath.Join(pd, "sqi", "logs", "sqi-server.log") {
+	if got != filepath.Join(pd, "sqi", "logs", "sqi-server", "sqi-server.log") {
 		t.Fatalf("path = %q", got)
 	}
 	if info, err := os.Stat(filepath.Dir(got)); err != nil || !info.IsDir() {

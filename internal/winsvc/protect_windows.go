@@ -213,29 +213,26 @@ func removeDirs(dirs []string) {
 
 // mkdirParent creates dir's missing parents for mkdirProtected.
 //
-// %ProgramData%\sqi, the default log directory's parent, is created protected
-// rather than inheriting ProgramData's ACL, which lets every local user create
-// and write files in it. A privileged process (`service install`, a
-// LocalSystem service's first start) gives it SYSTEM and Administrators only,
-// owned by Administrators, as PrepareConfigDir does. An unprivileged one (a
+// Below %ProgramData%\sqi (see sqiAncestors), each missing directory from
+// %ProgramData%\sqi down to dir's parent — the shared %ProgramData%\sqi\logs
+// above every service's own log directory — is created protected rather than
+// inheriting ProgramData's ACL, which lets every local user create and write
+// files in it. A privileged process (`service install`, a LocalSystem
+// service's first start) gives it SYSTEM and Administrators only, owned by
+// Administrators, as PrepareConfigDir does. An unprivileged one (a
 // hand-registered service running as an ordinary account, on its first start)
-// cannot make Administrators the owner, and could not create logs in a
-// directory only they may change, so it owns the directory and adds its own
-// account: the service account controlling its own directory is not an
-// escalation. An existing %ProgramData%\sqi is left as it is. Every other
-// parent is created by os.MkdirAll and inherits as usual.
+// cannot make Administrators the owner, and could not create its log
+// directory in one only they may change, so it owns the directory and adds its
+// own account: the service account controlling its own directory is not an
+// escalation. An existing one is left as it is (mkdirProtected has already
+// refused a junction among them). Every other parent is created by
+// os.MkdirAll and inherits as usual.
 func mkdirParent(dir string) error {
-	parent := filepath.Dir(dir)
-	if !strings.EqualFold(parent, filepath.Join(ProgramDataDir(), "sqi")) {
-		return mkdirAll(parent)
+	tree := sqiAncestors(dir)
+	if len(tree) == 0 {
+		return mkdirAll(filepath.Dir(dir))
 	}
-	switch _, err := os.Lstat(parent); {
-	case err == nil:
-		return nil
-	case !errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("stat %s: %w", parent, err)
-	}
-	if err := mkdirAll(filepath.Dir(parent)); err != nil {
+	if err := mkdirAll(filepath.Dir(tree[0])); err != nil {
 		return err
 	}
 	var self *windows.SID
@@ -246,12 +243,76 @@ func mkdirParent(dir string) error {
 		}
 		self = me
 	}
-	created, err := createProtected(parent, self)
-	if err != nil || created {
-		return err
+	for _, p := range tree {
+		switch _, err := os.Lstat(p); {
+		case err == nil:
+			continue
+		case !errors.Is(err, fs.ErrNotExist):
+			return fmt.Errorf("stat %s: %w", p, err)
+		}
+		created, err := createProtected(p, self)
+		if err != nil {
+			return err
+		}
+		if !created {
+			// Someone else created it meanwhile: refuse it if it is a junction.
+			if err := checkPlainDir(p); err != nil {
+				return err
+			}
+		}
 	}
-	// Someone else created it meanwhile: refuse it if it is a junction.
-	return checkParent(dir)
+	return nil
+}
+
+// sqiAncestors is each directory from %ProgramData%\sqi down to dir's parent,
+// outermost first, when dir is below %ProgramData%\sqi; otherwise none. These
+// are the directories every sqi service shares, which `service install`
+// keeps SYSTEM and Administrators only.
+func sqiAncestors(dir string) []string {
+	sqi := filepath.Clean(filepath.Join(ProgramDataDir(), "sqi"))
+	parent := filepath.Dir(filepath.Clean(dir))
+	if !PathWithin(parent, sqi) {
+		return nil
+	}
+	var tree []string
+	for p := parent; ; p = filepath.Dir(p) {
+		tree = append(tree, p)
+		if strings.EqualFold(p, sqi) || filepath.Dir(p) == p {
+			break
+		}
+	}
+	slices.Reverse(tree)
+	return tree
+}
+
+// checkSqiAncestors refuses dir when one of its sqiAncestors that exists is a
+// junction, symbolic link or anything but a plain directory. Checking each
+// from the outermost down means none is reached through a redirected one: any
+// local user can create %ProgramData%\sqi as a junction, and a log directory
+// two levels below it would otherwise resolve into the junction's target.
+func checkSqiAncestors(dir string) error {
+	for _, p := range sqiAncestors(dir) {
+		h, err := openPlainDir(p, windows.FILE_READ_ATTRIBUTES)
+		switch {
+		case isNotFound(err):
+			return nil // nor does anything below it
+		case err != nil:
+			return fmt.Errorf("cannot secure %s: %w", dir, err)
+		}
+		windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
+	}
+	return nil
+}
+
+// checkPlainDir fails unless dir is a plain directory, not a junction or
+// symbolic link.
+func checkPlainDir(dir string) error {
+	h, err := openPlainDir(dir, windows.FILE_READ_ATTRIBUTES)
+	if err != nil {
+		return fmt.Errorf("cannot use %s: %w", dir, err)
+	}
+	windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
+	return nil
 }
 
 func mkdirAll(dir string) error {

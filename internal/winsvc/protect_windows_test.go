@@ -250,12 +250,12 @@ func TestPrepareDataDir_GrantsModify(t *testing.T) {
 }
 
 // TestMkdirProtected_CreatesSqiParentProtected pins that a missing
-// %ProgramData%\sqi, created as the default log directory's parent, does not
-// inherit ProgramData's ACL, which lets every local user create files in it.
-// A privileged process creates it owned by Administrators for SYSTEM and
-// Administrators only; an unprivileged one (a hand-registered service running
-// as an ordinary account) owns it and adds its own account, so it can then
-// create logs. The unprivileged branch is taken through the isPrivileged seam,
+// %ProgramData%\sqi and %ProgramData%\sqi\logs, created as a default log
+// directory's parents, do not inherit ProgramData's ACL, which lets every
+// local user create files in them. A privileged process creates them owned by
+// Administrators for SYSTEM and Administrators only; an unprivileged one (a
+// hand-registered service running as an ordinary account) owns them and adds
+// its own account, so it can then create its log directory. The unprivileged branch is taken through the isPrivileged seam,
 // since an elevated test process cannot drop its elevation.
 func TestMkdirProtected_CreatesSqiParentProtected(t *testing.T) {
 	me, _ := currentAccount(t)
@@ -269,28 +269,33 @@ func TestMkdirProtected_CreatesSqiParentProtected(t *testing.T) {
 			}
 			root := t.TempDir()
 			t.Setenv("ProgramData", root)
-			parent := filepath.Join(root, "sqi")
-			if _, err := mkdirProtected(filepath.Join(parent, "logs"), me); err != nil {
+			sqiDir := filepath.Join(root, "sqi")
+			logs := filepath.Join(sqiDir, "logs")
+			if _, err := mkdirProtected(filepath.Join(logs, "sqi-worker"), me); err != nil {
 				t.Fatal(err)
 			}
-			acl, protected := daclOf(t, parent)
-			if !protected {
-				t.Errorf("%s has an unprotected DACL", parent)
-			}
-			entries := aclEntries(t, acl)
 			// Unprivileged, the owner is the token's default: the process
 			// account for an ordinary token, but Administrators for an
 			// elevated one started from PowerShell, which the forced branch
 			// may be running in.
 			wantOwner := defaultOwner(t)
 			if isPrivileged() {
-				assertOnlyAdmins(t, entries)
 				wantOwner = admins
-			} else {
-				assertOnlyAdmins(t, entries, aceInfo{sid: me, mask: fileAllAccess})
 			}
-			assertOwner(t, parent, wantOwner)
-			assertOwner(t, filepath.Join(parent, "logs"), wantOwner)
+			for _, parent := range []string{sqiDir, logs} {
+				acl, protected := daclOf(t, parent)
+				if !protected {
+					t.Errorf("%s has an unprotected DACL", parent)
+				}
+				entries := aclEntries(t, acl)
+				if isPrivileged() {
+					assertOnlyAdmins(t, entries)
+				} else {
+					assertOnlyAdmins(t, entries, aceInfo{sid: me, mask: fileAllAccess})
+				}
+				assertOwner(t, parent, wantOwner)
+			}
+			assertOwner(t, filepath.Join(logs, "sqi-worker"), wantOwner)
 		})
 	}
 }

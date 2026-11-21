@@ -358,7 +358,7 @@ log:
   # already exist. A relative path resolves against the working directory (a
   # Windows service runs in the directory that holds its config file).
   # When sqi-worker runs as a Windows service and this is empty, logs go to
-  # %ProgramData%\sqi\logs\<service-name>.log instead, and that directory is
+  # %ProgramData%\sqi\logs\<service-name>\<service-name>.log instead, and that directory is
   # created for you (see docs/worker-deployment.md#windows--windows-service).
   # Type: string   Env: SQI_WORKER_LOG_FILE
   file: ""

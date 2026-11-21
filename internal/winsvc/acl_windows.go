@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -29,9 +28,11 @@ const (
 	// delete, but not change permissions or take ownership.
 	fileModifyAccess = windows.ACCESS_MASK(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE |
 		windows.FILE_GENERIC_EXECUTE | windows.DELETE)
-	// sqiDirAccountAccess is what a --user service needs on %ProgramData%\sqi:
-	// to open it for its attributes (checkParent) and pass through it to its
-	// log directory. It cannot list, read or change anything there.
+	// sqiDirAccountAccess is what a --user service needs on each shared
+	// directory above its own log directory (%ProgramData%\sqi and
+	// %ProgramData%\sqi\logs): to open it for its attributes (checkParent,
+	// checkSqiAncestors) and pass through it. It cannot list, read or change
+	// anything there.
 	sqiDirAccountAccess = windows.ACCESS_MASK(windows.FILE_READ_ATTRIBUTES | windows.FILE_TRAVERSE | windows.SYNCHRONIZE)
 )
 
@@ -43,17 +44,19 @@ const (
 // environment detail.
 //
 // An existing dir keeps its DACL and its protection state. When account is
-// set, one inheritable Modify ACE for it is added: a LocalSystem service
-// installed earlier may already have created dir without it, and this
-// service could not then create its log (plan clarification 4). Either way an
-// existing dir that is, or sits under, a junction or symbolic link is refused
+// set, one inheritable Modify ACE for it is added: a LocalSystem service of
+// the same name installed earlier may already have created dir without it,
+// and this service could not then create its log. Either way an existing dir
+// that is, or sits under, a junction or symbolic link is refused
 // (errReparsePoint; see mkdirProtected).
 //
-// When account is set and dir's parent is %ProgramData%\sqi, which is SYSTEM
-// and Administrators only, the account also gets one non-inheritable ACE
-// there of read-attributes, traverse and synchronize (sqiDirAccountAccess):
-// the service opens that parent for its attributes at every start to refuse
-// a junction, and would otherwise stop before it could log anything.
+// When account is set and dir is below %ProgramData%\sqi, the account also
+// gets one non-inheritable ACE of read-attributes, traverse and synchronize
+// (sqiDirAccountAccess) on each shared directory above dir (sqiAncestors),
+// which are SYSTEM and Administrators only: the service opens them for their
+// attributes at every start to refuse a junction, and would otherwise stop
+// before it could log anything. Nothing it is given reaches another service's
+// log directory.
 func EnsureLogDir(dir, account string) error {
 	var sid *windows.SID
 	if account != "" {
@@ -72,43 +75,43 @@ func EnsureLogDir(dir, account string) error {
 			return err
 		}
 	}
-	return grantSqiDir(dir, sid)
+	for _, p := range sqiAncestors(dir) {
+		if err := grantTraverse(p, sid); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// grantSqiDir gives sid sqiDirAccountAccess on dir's parent, through a handle
-// to the parent itself, when that parent is %ProgramData%\sqi and sid holds
-// no allow ACE covering it already. The ACE is not inheritable: the log
-// directory below has its own protected DACL, and nothing else there is the
-// account's to reach.
-func grantSqiDir(dir string, sid *windows.SID) error {
-	parent := filepath.Dir(filepath.Clean(dir))
-	if !strings.EqualFold(parent, filepath.Clean(filepath.Join(ProgramDataDir(), "sqi"))) {
-		return nil
-	}
-	if err := checkParent(parent); err != nil {
+// grantTraverse gives sid sqiDirAccountAccess on dir, through a handle to dir
+// itself, unless sid holds an allow ACE covering it already. The ACE is not
+// inheritable: nothing below dir is the account's to reach but its own log
+// directory, which has its own protected DACL.
+func grantTraverse(dir string, sid *windows.SID) error {
+	if err := checkParent(dir); err != nil {
 		return err
 	}
-	h, err := openDirForACL(parent)
+	h, err := openDirForACL(dir)
 	if err != nil {
 		return err
 	}
 	defer windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
 	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
-		return fmt.Errorf("read ACL of %s: %w", parent, err)
+		return fmt.Errorf("read ACL of %s: %w", dir, err)
 	}
 	existing, _, err := sd.DACL()
 	if err != nil {
-		return fmt.Errorf("read ACL of %s: %w", parent, err)
+		return fmt.Errorf("read ACL of %s: %w", dir, err)
 	}
 	control, _, err := sd.Control()
 	if err != nil {
-		return fmt.Errorf("read ACL control of %s: %w", parent, err)
+		return fmt.Errorf("read ACL control of %s: %w", dir, err)
 	}
 	if has, err := allows(existing, sid, sqiDirAccountAccess); err != nil || has {
 		return err
 	}
-	return writeDACL(h, parent, []*windows.SID{sid}, sqiDirAccountAccess, windows.NO_INHERITANCE,
+	return writeDACL(h, dir, []*windows.SID{sid}, sqiDirAccountAccess, windows.NO_INHERITANCE,
 		existing, control&windows.SE_DACL_PROTECTED != 0)
 }
 
@@ -152,16 +155,19 @@ func checkExistingDir(dir string) error {
 // protected DACL granting inheritable full control to SYSTEM, Administrators
 // and account (when non-nil), in place from the moment dir exists, and owned
 // by Administrators when this process is privileged (by its own account
-// otherwise; see createProtected). A missing %ProgramData%\sqi parent is
-// created protected too, and other parents it creates inherit as usual (see
-// mkdirParent). When dir already exists it changes nothing and reports
-// created false. Either way it refuses a dir that is, or sits under, a
-// junction or symbolic link (see checkParent and checkExistingDir): the
-// service would write, rename and delete its log files through it, as SYSTEM
-// for a LocalSystem service. Install and a running service share this check,
-// so a hand-registered service, which never ran `service install`, gets it
-// too.
+// otherwise; see createProtected). Missing parents from %ProgramData%\sqi
+// down are created protected too, and other parents it creates inherit as
+// usual (see mkdirParent). When dir already exists it changes nothing and
+// reports created false. Either way it refuses a dir that is, or sits under,
+// a junction or symbolic link (see checkSqiAncestors, checkParent and
+// checkExistingDir): the service would write, rename and delete its log files
+// through it, as SYSTEM for a LocalSystem service. Install and a running
+// service share this check, so a hand-registered service, which never ran
+// `service install`, gets it too.
 func mkdirProtected(dir string, account *windows.SID) (created bool, err error) {
+	if err := checkSqiAncestors(dir); err != nil {
+		return false, err
+	}
 	info, err := os.Stat(dir)
 	switch {
 	case err == nil && info.IsDir():
@@ -239,11 +245,12 @@ var errReparsePoint = errors.New("is a junction or symbolic link")
 
 // checkParent refuses to go on when dir's parent exists and is not a plain
 // directory. FILE_FLAG_OPEN_REPARSE_POINT protects only dir's final
-// component, but the default log directory's parent, %ProgramData%\sqi, can
-// be created as a junction by any local user without privilege (ProgramData
-// grants Users create-folder and write-data), or an empty one converted into
-// one; every path below it would then resolve into the junction's target —
-// and every host has C:\Windows\Logs. A missing parent is fine: MkdirAll
+// component, but a default log directory's parents, %ProgramData%\sqi and
+// its logs, can be created as junctions by any local user without privilege
+// (ProgramData grants Users create-folder and write-data), or empty ones
+// converted into them; every path below would then resolve into the
+// junction's target — and every host has C:\Windows\Logs (see also
+// checkSqiAncestors). A missing parent is fine: MkdirAll
 // creates it. Residual TOCTOU, accepted: the parent is checked and then used
 // by path, so one swapped for a junction during the install itself is not
 // caught.

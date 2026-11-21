@@ -601,7 +601,7 @@ From an **elevated** PowerShell:
 installed service "sqi-worker"
   command: "C:\Program Files\sqi\sqi-worker.exe" start --config C:\ProgramData\sqi\sqi-worker.yaml
   account: LocalSystem
-  log:     C:\ProgramData\sqi\logs\sqi-worker.log (unless log.file is set)
+  log:     C:\ProgramData\sqi\logs\sqi-worker\sqi-worker.log (unless log.file is set)
 service "sqi-worker" is running (pid 4812)
 ```
 
@@ -760,8 +760,9 @@ that is.
   environment). Put settings in the file.
 
 `service install --user` also gives the account a single read-attributes and
-traverse entry on `C:\ProgramData\sqi`, so that its service can reach its log
-directory. `service uninstall` leaves that entry; it grants nothing else.
+traverse entry on `C:\ProgramData\sqi` and on `C:\ProgramData\sqi\logs`, so that
+its service can reach its own log directory below them. `service uninstall`
+leaves those entries; they let the account open nothing else there.
 
 ### Choosing the account
 
@@ -802,8 +803,7 @@ stopped until it has its own `log.file`. If you are not applying it, add
 `--start`.
 
 Anything else the worker writes needs Modify for the account too: a `log.file`
-(see [the known limitations](#security-notes-and-known-limitations)) belongs in
-the data directory (`C:\ProgramData\sqi-render\worker`) or another directory the
+belongs in the data directory (`C:\ProgramData\sqi-render\worker`) or another directory the
 account has Modify on, **not** in `C:\ProgramData\sqi-render` itself, where the
 account can only read — the path passes validation there, and the service then
 fails to open the file at every start.
@@ -856,13 +856,13 @@ paths (`\\nas\shows\...`) in job parameters, or map them with
 ### Logs
 
 A service has no console, so it logs to a file. Unless `log.file` is set, that
-is `C:\ProgramData\sqi\logs\<service-name>.log` — `<service-name>` being the
-name the service was installed under (`sqi-worker.log` by default) — rotated at
+is `C:\ProgramData\sqi\logs\<service-name>\<service-name>.log` — `<service-name>` being the
+name the service was installed under (`sqi-worker\sqi-worker.log` by default) — rotated at
 `log.max_size_mb` (default 100 MB), keeping `log.max_backups` (default 5) old
 files:
 
 ```powershell
-Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
+Get-Content C:\ProgramData\sqi\logs\sqi-worker\sqi-worker.log -Wait -Tail 50
 ```
 
 - **Settings.** [`log.file`](worker-configuration.md#logfile),
@@ -873,13 +873,16 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
   relative `log.file` resolves against the service's working directory, which is
   the directory that holds its configuration file. An explicit `log.file` needs
   its directory to exist already.
-- **The default directory** is created with permissions that grant full control
-  to SYSTEM, Administrators and the service's account only, and nothing is
-  inherited. `service install` creates it; a hand-registered service creates it
-  at its first start. A directory that already exists is left as it is, except
-  that `service install --user` always adds its account to it, whatever
-  `log.file` says, and that `service install` refuses one that anyone other than
-  SYSTEM and Administrators can change (see
+- **The default directory** is the service's own: each service on a host has
+  one, named after it, under `C:\ProgramData\sqi\logs`. It is created with
+  permissions that grant full control to SYSTEM, Administrators and the
+  service's account only, and nothing is inherited; `C:\ProgramData\sqi\logs`
+  itself stays SYSTEM and Administrators only, so no service's account reaches
+  another's logs. `service install` creates it; a hand-registered service
+  creates it at its first start. A directory that already exists is left as it
+  is, except that `service install --user` always adds its account to it,
+  whatever `log.file` says, and that `service install` refuses one that anyone
+  other than SYSTEM, Administrators and the service's account can change (see
   [What `service install` checks](#what-service-install-checks)) and both it and
   the starting service refuse one that is, or sits under, a junction or symbolic
   link (see the [known limitations](#security-notes-and-known-limitations)).
@@ -892,7 +895,7 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
   temporarily grow past its limit.
 - **Startup failures** are recorded even when the worker never got as far as
   opening its log: a worker that stops with an error (for example an invalid
-  config) appends one line to `C:\ProgramData\sqi\logs\<service-name>.log`, such
+  config) appends one line to `C:\ProgramData\sqi\logs\<service-name>\<service-name>.log`, such
   as `{"time":"…","level":"ERROR","msg":"service exited with error","error":"…"}`,
   and the service reports exit code `1066 (service-specific 1)`. When that file
   cannot be written — say its directory is, or sits under, a junction, which the
@@ -928,7 +931,7 @@ exit codes: 0 (service-specific 0)
 account:    LocalSystem
 start type: automatic (delayed)
 command:    "C:\Program Files\sqi\sqi-worker.exe" start --config C:\ProgramData\sqi\sqi-worker.yaml
-log:        C:\ProgramData\sqi\logs\sqi-worker.log (unless log.file is set)
+log:        C:\ProgramData\sqi\logs\sqi-worker\sqi-worker.log (unless log.file is set)
 ```
 
 A service that stopped because of an error shows
@@ -1050,50 +1053,6 @@ reproduce.
 These describe what the Windows service support does today; none is hidden by
 the defaults.
 
-- **`--user` always gets access to the shared log directory.** The server and
-  every worker on a host log to the one `C:\ProgramData\sqi\logs` directory by
-  default, and `service install --user X` always prepares *that* directory for
-  `X`: it adds an inheritable *Modify* permission for `X` (full control, if the
-  install had to create the directory). It does so whatever `log.file` says —
-  the installer does not read the configuration for it — and the permission
-  reaches the logs already in the directory as well as those created later. So
-  `X` can read, rewrite and delete the *other* services' logs there, for example
-  the LocalSystem `sqi-server`'s, which can carry job and environment detail.
-  Giving the `--user` worker its own `log.file` does **not** take that away.
-  There are two mitigations, and each has a price:
-  - *Send the other services' logs elsewhere.* Give the server, and every other
-    service `X` must not see, a `log.file` in a directory that only that
-    service's account and administrators can read **and** write — for example
-    `C:\ProgramData\sqi`, which `config init` makes administrators-only:
-    `log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`. Then restart the server
-    — `sqi-server service stop`, then `service start` — so that it closes the old
-    file and writes the new one: while it runs it holds `logs\sqi-server.log` open
-    and Windows will not let the file be moved or deleted. Only then move or
-    delete that `sqi-server.log` and its `.1` to `.N` backups out of `logs\`,
-    because `X`'s permission already reaches those files. The price:
-    `service status`, `service start` and `install --start` no longer show that
-    service's log (see below), and a service that fails at startup still appends
-    its one `service exited with error` line to the default directory, where `X`
-    can read it.
-  - *Take `X` out of the default directory once it is installed.* Install the
-    `--user` service without `--start`, run
-    `icacls "C:\ProgramData\sqi\logs" /remove:g "STUDIO\render-svc"` (with the
-    account you installed under; the removal reaches the files already there),
-    give the worker its own `log.file` in a directory `X` has Modify on — the data
-    directory from [Choosing the account](#choosing-the-account)
-    (`C:\ProgramData\sqi-render\worker`), not the configuration directory,
-    where it can only read — and only then `service start`. The price:
-    the worker **needs** that
-    `log.file`, because without the permission it cannot open the default log
-    file and fails at every start; and it loses the best-effort startup-failure
-    line — the default directory is closed to it, and the fallback,
-    `<service-name>.trace.log` beside the configuration file, is in the
-    configuration directory, where it can only read — so a configuration error
-    leaves you only
-    `exit codes: 1066 (service-specific 1)` and the console recipe under
-    [Troubleshooting](#troubleshooting) to find out why. Every later
-    `service install --user X` adds the permission back, so run the `icacls`
-    command again after each one.
 - **`service install`'s checks are narrow, and a squatted `C:\ProgramData\sqi`
   is what they are for.** `config init` creating the directory, and
   [What `service install` checks](#what-service-install-checks) refusing a
@@ -1119,7 +1078,7 @@ the defaults.
   `service status`, and restart it with a wrapper or an external monitor.
 - **`service status` prints, and `service start` and `install --start` tail,
   only the default log path.** With `log.file` set they still print and tail
-  `C:\ProgramData\sqi\logs\<name>.log`, which may be missing or a stale file from
+  `C:\ProgramData\sqi\logs\<name>\<name>.log`, which may be missing or a stale file from
   an earlier run, and a fatal startup error is recorded there too (or, when that
   directory cannot be used, in `<name>.trace.log` beside the configuration file,
   which they never show). Read the file you configured.
@@ -1248,7 +1207,7 @@ three settings that must differ per instance. Manage each with the usual
 > ```
 >
 > The instance gets the display name `sqi Worker Agent (sqi-worker-2)`, logs to
-> `C:\ProgramData\sqi\logs\sqi-worker-2.log`, and is managed with
+> `C:\ProgramData\sqi\logs\sqi-worker-2\sqi-worker-2.log`, and is managed with
 > `sqi-worker service status --name sqi-worker-2`. See
 > [Windows — Windows Service](#windows--windows-service).
 

@@ -149,7 +149,7 @@ registration, errors, etc.) using Go's structured `slog`. This output is
 written to stderr in JSON format by default (see
 [Log format](#log-format-and-level)); set `log.file` to write it to a rotating
 file instead. A Windows service has no stderr, so it always writes a file, by
-default `C:\ProgramData\sqi\logs\<service-name>.log` (see
+default `C:\ProgramData\sqi\logs\<service-name>\<service-name>.log` (see
 [Log destination](#log-destination)). When diagnostics are enabled (the
 default), the logs are also forwarded to the server's in-memory ring buffer and
 shown in the web UI, so operators can see why a worker is misbehaving without
@@ -480,7 +480,7 @@ The retry line carries `task_id` and the auto-park line `job_id`, both
 are visible (component `server`) in Admin → Server log and
 `GET /api/v1/diagnostics/logs`, in addition to the server's own log (stderr;
 `log.file` when set; or, for a Windows service with no `log.file`,
-`%ProgramData%\sqi\logs\<service-name>.log`).
+`%ProgramData%\sqi\logs\<service-name>\<service-name>.log`).
 
 ---
 
@@ -811,7 +811,7 @@ reference is [`log.file`](configuration.md#logfile) (server) and
 [`log.file`](worker-configuration.md#logfile) (worker).
 
 A Windows service has no stderr to write to, so with `log.file` empty it logs
-to `C:\ProgramData\sqi\logs\<service-name>.log`, where `<service-name>` is the
+to `C:\ProgramData\sqi\logs\<service-name>\<service-name>.log`, where `<service-name>` is the
 name the service was installed under, and creates that directory. Rotation
 applies to that file too. See
 [Windows service](operations.md#windows-service) and
@@ -970,16 +970,16 @@ Kibana.
 ### Log files and Windows services
 
 A file written through `log.file`, or a Windows service's default
-`C:\ProgramData\sqi\logs\<service-name>.log`, is a plain file of JSON lines (with
+`C:\ProgramData\sqi\logs\<service-name>\<service-name>.log`, is a plain file of JSON lines (with
 the default `json` format). Tail it live with:
 
 ```powershell
-Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
+Get-Content C:\ProgramData\sqi\logs\sqi-worker\sqi-worker.log -Wait -Tail 50
 ```
 
 Point a file-based shipper (the Filebeat `log` input above, for example) at
-`C:\ProgramData\sqi\logs\*.log`, which matches the live files and not their
-rotated copies (`.log.1`, `.log.2`, ...). sqi creates the default log directory
+`C:\ProgramData\sqi\logs\*\*.log`, which matches the live files and not their
+rotated copies (`.log.1`, `.log.2`, ...). sqi creates each service's log directory
 with full control for SYSTEM, Administrators and the service's own account, and
 nothing inherited, so the shipper must run as SYSTEM or an
 administrator, or be granted read access to it. The process rotates by renaming, so a

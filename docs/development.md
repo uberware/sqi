@@ -308,7 +308,7 @@ Service holds its hives open after the service is stopped and deleted), so
 every such profile whose account is gone. It builds the binaries into
 `%ProgramData%\sqi winservice bin NNN` and works in `%ProgramData%\sqi winservice NNN`
 directories, each made administrators-only (a `service install` that checked
-its binary and configuration would refuse anything a user can write), and it writes logs to `%ProgramData%\sqi\logs\sqi-test-*.log`.
+its binary and configuration would refuse anything a user can write), and its services log to their own `%ProgramData%\sqi\logs\sqi-test-*` directories.
 Thirteen `TestWinService_*` tests cover:
 
 - the install, start, status, stop and uninstall round trip for both binaries
@@ -358,6 +358,7 @@ sc.exe delete $name
 # A leftover account, in this order: undo what the --user install did to the
 # machine while the account can still be looked up, then delete it
 icacls "$env:ProgramData\sqi\logs" /remove:g sqisvc-xxxxxxxx
+icacls "$env:ProgramData\sqi" /remove:g sqisvc-xxxxxxxx
 # secpol.msc -> Local Policies -> User Rights Assignment -> Log on as a service:
 #   remove sqisvc-xxxxxxxx
 net user sqisvc-xxxxxxxx /delete
@@ -365,7 +366,7 @@ net user sqisvc-xxxxxxxx /delete
 
 # Leftover files
 Remove-Item -Recurse -Force "$env:ProgramData\sqi winservice*"
-Remove-Item "$env:ProgramData\sqi\logs\sqi-test-*"
+Remove-Item -Recurse -Force "$env:ProgramData\sqi\logs\sqi-test-*"
 ```
 
 The suite also creates `%ProgramData%\sqi` and `%ProgramData%\sqi\logs` when they

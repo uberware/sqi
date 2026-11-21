@@ -663,10 +663,11 @@ func TestInstall_ChecksPathsBeforePasswordAndChanges(t *testing.T) {
 
 // TestInstall_CheckedRefs pins the paths install checks, in order: the
 // configuration and its directory, the binary and its directory, log.file's
-// directory and its parent when it is set, the default log directory and its
-// parent (always: install prepares it and the service's trace log goes
-// there), then every path the configuration names. A default log directory
-// already checked under another key is not checked again.
+// directory and its parent when it is set, the service's own default log
+// directory and its parent, the shared logs directory (always: install
+// prepares it and the service's trace log goes there), then every path the
+// configuration names. A default log directory already checked under another
+// key is not checked again.
 func TestInstall_CheckedRefs(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -674,9 +675,9 @@ func TestInstall_CheckedRefs(t *testing.T) {
 	}
 	pd := t.TempDir()
 	t.Setenv("ProgramData", pd)
-	sqiDir := filepath.Join(pd, "sqi")
-	defaultLogDir := filepath.Join(sqiDir, "logs")
-	defaults := []PathRef{{"default log directory", defaultLogDir}, {"default log directory parent", sqiDir}}
+	logs := filepath.Join(pd, "sqi", "logs")
+	defaultLogDir := filepath.Join(logs, testBinary)
+	defaults := []PathRef{{"default log directory", defaultLogDir}, {"default log directory parent", logs}}
 	for _, tc := range []struct {
 		name          string
 		cfgDir        string // "" for a directory of its own
@@ -700,11 +701,11 @@ func TestInstall_CheckedRefs(t *testing.T) {
 		{
 			name:   "log.file in the default log directory",
 			paths:  ConfigPaths{LogFile: filepath.Join(defaultLogDir, "w.log")},
-			logDir: []PathRef{{"log directory", defaultLogDir}, {"log directory parent", sqiDir}},
+			logDir: []PathRef{{"log directory", defaultLogDir}, {"log directory parent", logs}},
 		},
 		{
 			name:   "configuration in the default log directory's parent",
-			cfgDir: sqiDir,
+			cfgDir: logs,
 			logDir: defaults[:1],
 		},
 	} {
@@ -723,8 +724,7 @@ func TestInstall_CheckedRefs(t *testing.T) {
 			spec := testSpec(new(int))
 			var loaded string
 			spec.ConfigPaths = func(p string) (ConfigPaths, error) { loaded = p; return tc.paths, nil }
-			if out, err := execute(t, spec, fake.operations(), strings.NewReader("s3cret\n"),
-				"install", "--user", "render", "--config", cfg); err != nil {
+			if out, err := execute(t, spec, fake.operations(), &readSpy{}, "install", "--config", cfg); err != nil {
 				t.Fatalf("install: %v\n%s", err, out)
 			}
 			if loaded != cfg {

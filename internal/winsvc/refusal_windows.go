@@ -15,8 +15,11 @@ import (
 // installRefs is every path `service install` checks for the service name
 // whose configuration is cfgPath and binary exe, in order: the configuration
 // and its directory, the binary and its directory, log.file's directory and
-// its parent when log.file is set, the default log directory and its parent,
-// then each path the configuration names. A relative path is resolved
+// its parent when log.file is set, the service's own default log directory
+// and its parent (the logs directory every service's own one sits in), then
+// each path the configuration names. Another service's log directory is
+// never judged: what its account was granted there reaches nothing of this
+// one's. A relative path is resolved
 // against the configuration's directory, which the service runs in.
 //
 // The default log directory is checked whatever log.file says: install

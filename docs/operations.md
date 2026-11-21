@@ -280,7 +280,7 @@ create — see
   JetStream directory go), as
   [choosing the account](worker-deployment.md#choosing-the-account) does for a
   worker, and install with the same `--config`;
-- logs to `C:\ProgramData\sqi\logs\sqi-server.log` unless `log.file` is set
+- logs to `C:\ProgramData\sqi\logs\sqi-server\sqi-server.log` unless `log.file` is set
   (see [Writing to a file](#writing-to-a-file)).
 
 ```powershell
@@ -313,19 +313,11 @@ file (the fallback is described under
 > directory untouched. Either set absolute paths in the configuration file, or
 > `Set-Location C:\ProgramData\sqi` first (the Windows commands in this guide do).
 
-The server's logs can carry job and environment detail, and every sqi service on
-a host shares the one `C:\ProgramData\sqi\logs` directory by default. Any service
-installed with `--user` — a worker on the same host, say — is always granted
-access to that directory, whatever its own `log.file` is. If the server shares a
-host with one, give the server a `log.file` outside that directory, in one only
-it and administrators can read and write (for example
-`log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`), restart the server
-(`service stop`, then `service start`: while it runs it holds
-`logs\sqi-server.log` open, and Windows will not let the file be moved or
-deleted), then move or delete that `sqi-server.log` and its `.1` to `.N` backups
-out of `logs\` (the account's permission already reaches those files), and read the
-[security notes](worker-deployment.md#security-notes-and-known-limitations) for
-what that costs. `service stop`, `start` and `uninstall` act on any service name
+The server's logs can carry job and environment detail. Each sqi service on a
+host logs to a directory of its own under `C:\ProgramData\sqi\logs`, which only
+SYSTEM, Administrators and that service's account can open, so a service
+installed with `--user` — a worker on the same host, say — cannot read the
+server's log. `service stop`, `start` and `uninstall` act on any service name
 you give `--name`, like `sc.exe`.
 
 ---
@@ -2289,7 +2281,7 @@ The environment variables are `SQI_LOG_FILE`, `SQI_LOG_MAX_SIZE_MB` and
   current file and tries again after another `max_size_mb` of output, so the file
   can temporarily grow past its limit.
 - **A Windows service always logs to a file.** With `log.file` empty it writes
-  `C:\ProgramData\sqi\logs\<service-name>.log` (`sqi-server.log` by default),
+  `C:\ProgramData\sqi\logs\<service-name>\<service-name>.log` (`sqi-server\sqi-server.log` by default),
   creating that directory. See [Windows service](#windows-service).
 
 ### Routing logs

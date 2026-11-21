@@ -1788,7 +1788,7 @@ that ends with a separator or names an existing directory also fails
 validation.
 
 When `sqi-worker` runs as a Windows service and `log.file` is empty, logs go to
-`%ProgramData%\sqi\logs\<service-name>.log` instead, since a service has no
+`%ProgramData%\sqi\logs\<service-name>\<service-name>.log` instead, since a service has no
 stderr to write to. That default directory is created for you.
 
 ```yaml

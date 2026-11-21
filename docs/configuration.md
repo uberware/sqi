@@ -1079,7 +1079,7 @@ must name a file: one that ends with a path separator, or names an existing
 directory, fails validation too.
 
 When `sqi-server` runs as a Windows service and `log.file` is empty, logs go to
-`%ProgramData%\sqi\logs\<service-name>.log` instead, since a service has no
+`%ProgramData%\sqi\logs\<service-name>\<service-name>.log` instead, since a service has no
 stderr to write to. That default directory is created for you.
 
 ```yaml

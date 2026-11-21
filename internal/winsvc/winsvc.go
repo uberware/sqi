@@ -70,9 +70,11 @@ func ProgramDataDir() string {
 	return `C:\ProgramData`
 }
 
-// DefaultLogPath is where a service logs when log.file is not configured.
+// DefaultLogPath is where a service logs when log.file is not configured:
+// %ProgramData%\sqi\logs\<name>\<name>.log. Each service has a directory of
+// its own, so the account of one never gains access to another's logs.
 func DefaultLogPath(serviceName string) string {
-	return filepath.Join(ProgramDataDir(), "sqi", "logs", serviceName+".log")
+	return filepath.Join(ProgramDataDir(), "sqi", "logs", serviceName, serviceName+".log")
 }
 
 // requireConfigFile refuses to run a Windows service that was given no

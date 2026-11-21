@@ -208,8 +208,8 @@ func (c commands) runInstall(cmd *cobra.Command, f installFlags) error {
 // refuseExisting rejects an invalid name, or one a service already has (no
 // overwrite), before install prompts for a password or changes
 // anything. Otherwise the logon right, a credential check (a wrong password
-// counts toward the account's lockout) and an ACE on the log directory every
-// sqi service shares would all come first. Install's own probe still catches
+// counts toward the account's lockout) and ACEs on the log directories would
+// all come first. Install's own probe still catches
 // a service created after this one.
 func (c commands) refuseExisting(name string) error {
 	if err := validateName(name); err != nil {

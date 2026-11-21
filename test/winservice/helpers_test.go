@@ -317,9 +317,10 @@ func workerYAML(t *testing.T, natsURL, dataDir string) string {
 }
 
 // cleanupService uninstalls name (stopping it first) and removes its default
-// log when the test ends. Call it before installing, so a half-finished
-// install is removed too. An uninstall that fails for any reason but the
-// service already being gone is reported, since it leaves a service behind.
+// log directory when the test ends. Call it before installing, so a
+// half-finished install is removed too. An uninstall that fails for any
+// reason but the service already being gone is reported, since it leaves a
+// service behind.
 func cleanupService(t *testing.T, exe, name string) {
 	t.Helper()
 	ctx := context.WithoutCancel(t.Context())
@@ -328,15 +329,20 @@ func cleanupService(t *testing.T, exe, name string) {
 			!strings.Contains(out, serviceNotFound) {
 			t.Errorf("cleanup: uninstall %s: %v\n%s", name, err, out)
 		}
-		os.Remove(defaultLogPath(name))
+		if err := removeAll(serviceLogDir(name)); err != nil {
+			t.Errorf("cleanup: %v", err)
+		}
 	})
 }
 
-// logDir is the log directory every sqi service shares by default
+// logDir is the directory every sqi service's own log directory sits in
 // (winsvc.DefaultLogPath).
 func logDir() string { return filepath.Join(os.Getenv("ProgramData"), "sqi", "logs") }
 
-func defaultLogPath(name string) string { return filepath.Join(logDir(), name+".log") }
+// serviceLogDir is name's own default log directory.
+func serviceLogDir(name string) string { return filepath.Join(logDir(), name) }
+
+func defaultLogPath(name string) string { return filepath.Join(serviceLogDir(name), name+".log") }
 
 // waitServiceState polls `service status` until the service is in state, and
 // returns that status output.
@@ -455,7 +461,7 @@ func readLog(t *testing.T, path string) string {
 // `net user`, so its password never appears on a command line (which process
 // auditing can record). Its removal also undoes what `service install --user`
 // and running the service leave keyed to its SID — the "Log on as a service"
-// right, the ACE on the shared log directory, the profile (not until a later
+// right, the ACEs on the shared log directories, the profile (not until a later
 // run after a reboot, see deleteProfile) — because deleting an account removes
 // none of them, and this suite also runs on developer machines
 // (scripts/test-isolation-windows.ps1 does the same for its accounts).
@@ -584,9 +590,9 @@ func removeAccount(ctx context.Context, t *testing.T, account string, sid *windo
 }
 
 // removeLogDirGrant removes what `service install --user` grants the account
-// (winsvc.EnsureLogDir): the inheritable Modify ACE on the shared log
-// directory, or the full-control one when that install created the
-// directory, and the read-attributes ACE on its parent, %ProgramData%\sqi.
+// on the shared directories (winsvc.EnsureLogDir): the read-attributes and
+// traverse ACE on %ProgramData%\sqi\logs and on %ProgramData%\sqi. Its own
+// log directory goes with its service (cleanupService).
 func removeLogDirGrant(ctx context.Context, t *testing.T, sid string) {
 	t.Helper()
 	for _, dir := range []string{logDir(), filepath.Dir(logDir())} {
