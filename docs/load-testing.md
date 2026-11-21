@@ -1069,14 +1069,6 @@ worker's heartbeats stop reporting, after `scheduler.reconcile_grace` (default
 2 minutes). `chaos-churn-instant-restart`, whose churn restarts a worker at
 once, is a regression guard for it.
 
-### Killing sqi-worker on Linux leaves its task's processes running (H13f4)
-
-On a bare-process Linux worker, killing `sqi-worker` leaves the process tree of
-its task running. A child with no stdout never gets SIGPIPE, outlives the
-worker's restart and keeps writing the task's output while the reclaimed task
-re-runs on a live worker. `chaos-worker-kill-mid-task` records it, where
-`no-orphans` and `single-writer` can fail on Linux.
-
 ---
 
 ## Open questions

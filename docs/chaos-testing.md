@@ -502,12 +502,9 @@ enforced end to end: it runs `chaos-server-term` with a `must` entry for
 
 ### Recorded defects
 
-The suite records one defect in sqi, also listed under [Known server
-defects](load-testing.md#known-server-defects).
-
-| Tracker | Defect | Recorded in |
-|---|---|---|
-| H13f4 | Killing `sqi-worker` on Linux leaves its task's process tree running. A silent child, which writes no stdout, never gets SIGPIPE, outlives the worker's restart and writes alongside the re-run. | `chaos-worker-kill-mid-task`, `no-orphans` and `single-writer`, `may`, `os: [linux]` |
+No library scenario records a known violation.
+[Known server defects](load-testing.md#known-server-defects) lists the
+defects the load harness records.
 
 ---
 
@@ -529,7 +526,7 @@ chaos-container`.
 | `chaos-server-stall-short` | SIGSTOP the server for 15s at 3m15s, under `heartbeat_timeout`. POSIX. | rework 0, reclaims 0 | 3m45s |
 | `chaos-server-stall-long` | SIGSTOP for 60s at 3m15s, about twice `heartbeat_timeout`. POSIX. | rework 0 | 4m30s |
 | `chaos-logs-during-restart` | 40 workers, tasks of 5,000 lines of 200 bytes, the server killed at 1m and restarted 20s later: every terminal status must still arrive. | rework 0 | 3m |
-| `chaos-worker-kill-mid-task` | One of 2 real workers killed at 1m while it runs 60s process trees (a chatty and a silent child), restarted 10s later. 60 simulated workers carry the background load. | rework 8; H13f4 `may` on `no-orphans` and `single-writer`, `os: [linux]` | 3m |
+| `chaos-worker-kill-mid-task` | One of 2 real workers killed at 1m30s while it runs 180s process trees (a chatty and a silent child), restarted 3s later. Its restart kills the orphaned trees before it registers, inside the 10s orphan grace; without that, the silent child outlives the grace every run. 60 simulated workers carry the background load. | rework 6 | 4m |
 | `chaos-worker-gone` | One of 2 real workers killed at 30s while it runs 30s tasks, never restarted: its work is reclaimed and the worker is shown offline. **Smoke.** | rework 4 | 3m |
 | `chaos-worker-sleep` | SIGSTOP one of 2 real workers for 75s at 3m15s while it runs 90s tasks, then SIGCONT: stale attempts are canceled, nothing is credited twice. POSIX. | rework 8 | 4m45s |
 | `chaos-churn-storm` | No fault: 100 simulated workers each crash about 30 times an hour and restart 10s later. | rework 5 | 3m |
@@ -682,9 +679,6 @@ It also has these limits:
 - A `disk_full` fault on a workers volume without `min_failed` passes the
   `disk-full` check in a run in which the fault never made a task fail. The
   summary records the count for each fault window.
-- Both of `chaos-worker-kill-mid-task`'s H13f4 entries are `may`: its real
-  task is too short for the orphaned child to outlive the 10 s grace in every
-  run.
 - An entry without a `match` pattern excuses every failure of its check, so a
   new defect in the same check hides behind a recorded one.
 - A `chaos-disk-*` scenario skips outside `make chaos-container`, so a run of

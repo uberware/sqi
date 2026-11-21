@@ -510,6 +510,14 @@ jobs:
           GOOS=windows GOARCH=amd64 go build ./internal/... ./cmd/...
           GOOS=windows GOARCH=amd64 go vet -tags winservice ./internal/worker/... ./internal/winsvc/... ./internal/secretin/... ./internal/log/... ./cmd/... ./test/winservice/...
 
+      # The worker's macOS-only files (internal/worker/proctree's sysctl
+      # process reader) run in no pull-request test job, so vet type-checks
+      # them here; the macOS runtime smoke job runs their tests on main.
+      - name: macOS worker packages vet
+        if: matrix.goos == 'darwin' && matrix.goarch == 'arm64'
+        run: |
+          GOOS=darwin GOARCH=arm64 go vet ./internal/worker/... ./cmd/...
+
   # ── Cross-platform runtime smoke ─────────────────────────────────────────────
   # Runs the binaries natively on macOS and Windows: start, register a worker,
   # execute a job and stream logs over REST and WebSocket. Linux is covered by
@@ -571,6 +579,12 @@ jobs:
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
           go build -o "bin/sqi-server${ext}" ./cmd/sqi-server
           go build -o "bin/sqi-worker${ext}" ./cmd/sqi-worker
+
+      # The process-tree sweep reads macOS's process table through sysctl,
+      # code no Linux job runs, so its real-process tests run here.
+      - name: Process-tree sweep tests (macOS)
+        if: runner.os == 'macOS'
+        run: go test -race -count=1 ./internal/worker/proctree/
 
       # scripts/smoke.sh is what `make smoke` runs. Passing the prebuilt
       # binaries skips its internal `make build`, so the Windows runner needs
@@ -832,7 +846,7 @@ jobs:
   #
   # `make test-isolation` exits 0 with a message when Docker is unavailable,
   # so the job does not trust its exit code: it fails if that message appears
-  # or if any of the 12 TestIsolation_ tests is not confirmed PASS.
+  # or if any of the 13 TestIsolation_ tests is not confirmed PASS.
   isolation-integration:
     name: Isolation integration (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -856,7 +870,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Fails on a Docker-unavailable skip or unless all 12 TestIsolation_
+      # Fails on a Docker-unavailable skip or unless all 13 TestIsolation_
       # tests report PASS; see the job comment.
       - name: Run isolation integration tests
         run: |
@@ -871,7 +885,7 @@ jobs:
           fi
 
           pass_count=$(grep -c '^--- PASS: TestIsolation_' isolation-output.log || true)
-          expected=12
+          expected=13
           if [ "$status" -ne 0 ] || [ "$pass_count" -ne "$expected" ]; then
             echo "::error::Expected $expected TestIsolation_ tests to pass (exit=$status, found=$pass_count)."
             exit 1

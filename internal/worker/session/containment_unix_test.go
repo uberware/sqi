@@ -232,7 +232,7 @@ func TestRunAction_CanceledContextStartsNothing(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "marker")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := runAction(ctx, shAction("touch \""+marker+"\"", 0, nil), t.TempDir(), nil, nil, nopLogger(), nil)
+	err := runAction(ctx, shAction("touch \""+marker+"\"", 0, nil), t.TempDir(), nil, nil, nil, "", nopLogger(), nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("runAction error = %v, want one wrapping context.Canceled", err)
 	}

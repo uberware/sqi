@@ -205,7 +205,7 @@ func newTestSessionWithoutCredential(t *testing.T) *Session {
 // ExitEnvironments lifecycle — enough to prove the credential and the
 // filtered base environment reach the process launch.
 func (s *Session) runEnvironmentAction(ctx context.Context, action *protocol.Action) error {
-	return runAction(ctx, action, s.WorkDir, s.buildActionEnv(nil, nil), s.cred, nopLogger(), nil)
+	return runAction(ctx, action, s.WorkDir, s.buildActionEnv(nil, nil), s.cred, s.ledger, s.ID, nopLogger(), nil)
 }
 
 // testOnEnterAction returns a trivial, always-succeeding POSIX action

@@ -34,7 +34,7 @@ func runActionAsync(ctx context.Context, t *testing.T, action *protocol.Action, 
 	t.Helper()
 	dir := t.TempDir()
 	result := make(chan error, 1)
-	go func() { result <- runAction(ctx, action, dir, nil, nil, nopLogger(), handler) }()
+	go func() { result <- runAction(ctx, action, dir, nil, nil, nil, "", nopLogger(), handler) }()
 	return result
 }
 
