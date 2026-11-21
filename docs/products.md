@@ -35,8 +35,10 @@ do not affect running or queued jobs.
 A product submission accepts the same optional per-job overrides as a raw
 `POST /api/v1/jobs`: `owner`, `submitter`, `priority`, `project`, `depends_on`
 (IDs of upstream jobs in the same farm; the job starts blocked until they
-complete), and the retry policy `max_attempts`, `retry_delay_seconds`,
-`failure_limit`. An omitted field inherits the queue → farm → server default.
+complete), `estimated_seconds`, `paused` (create the job paused, so nothing
+runs until it is resumed), and the retry policy `max_attempts`,
+`retry_delay_seconds`, `failure_limit`. An omitted retry field inherits the
+queue → farm → server default.
 `internal/api/openapi.yaml` (`SubmitProductJobRequest`) is the authoritative
 wire contract.
 

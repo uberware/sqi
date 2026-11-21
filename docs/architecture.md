@@ -298,8 +298,8 @@ held job can also be `paused` — submitted with `paused=true`, paused while
 `blocked`, or auto-parked — and its steps stay held `pending` while it is:
 `store.ReleaseStep` declines a step whose job holds its dependencies, so no
 step-level release (the start-up step reconcile, a retry, completion
-propagation) can run the job early, and the lease path never leases a task of a
-`blocked` job.
+propagation) can run the job early. A held job's tasks therefore stay
+`pending`, and the lease path only ever considers `ready` tasks.
 `store.ResumeJob` therefore sends a held job back to `blocked` rather than to
 `pending`; a resume to `pending` would leave held steps that nothing ever
 releases. The job `PATCH` handler then reconciles the job immediately, through

@@ -958,9 +958,10 @@ func (h *jobHandler) applyStatusChange(
 // upstreams may have completed (it is released) or failed (it is canceled)
 // while it was paused; reconciling now decides it at once instead of at the
 // sweep's next pass. ReconcileBlockedJob leaves any job that is not blocked
-// alone, and a failure is logged and left to that sweep. If the job cannot be
-// re-read, the response reports the status ResumeJob wrote, with the other
-// fields as the handler last read them.
+// alone, and a failure is logged and left to that sweep. A job that ends up
+// pending wakes its queue's parked workers, as a submission does. If the job
+// cannot be re-read, the response reports the status ResumeJob wrote, with the
+// other fields as the handler last read them.
 func (h *jobHandler) resumedJob(ctx context.Context, job store.Job) store.Job {
 	if err := h.sched.ReconcileBlockedJob(ctx, job.ID); err != nil {
 		h.logger.ErrorContext(ctx, "jobs: reconcile after resume failed", slog.String("id", job.ID), slog.Any("error", err))
@@ -973,6 +974,9 @@ func (h *jobHandler) resumedJob(ctx context.Context, job store.Job) store.Job {
 			job.Status = store.JobStatusBlocked
 		}
 		return job
+	}
+	if got.Status == store.JobStatusPending {
+		h.sched.WakeQueue(got.QueueID)
 	}
 	return got
 }

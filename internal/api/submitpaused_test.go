@@ -162,3 +162,35 @@ func TestPatchJob_ResumeReportsReconciledStatus(t *testing.T) {
 		t.Fatalf("resume: status = %q, want pending after the reconcile released it", got.Status)
 	}
 }
+
+// A resume that leaves the job pending wakes the queue's parked workers, as a
+// submission does, so resuming a job submitted paused runs it at once.
+func TestPatchJob_ResumeToPendingWakesQueue(t *testing.T) {
+	st := fake.New()
+	sched := &fakeScheduler{}
+	r := newJobRouter(st, sched)
+	j := seedJob(t, st, store.JobStatusPaused)
+
+	if got := patchAction(t, r, j.ID, "resume"); got.Status != "pending" {
+		t.Fatalf("resume: status = %q, want pending", got.Status)
+	}
+	if len(sched.wokenQueue) != 1 || sched.wokenQueue[0] != j.QueueID {
+		t.Fatalf("WakeQueue calls = %v, want [%s]", sched.wokenQueue, j.QueueID)
+	}
+}
+
+// A resume back to blocked has nothing to lease, so it wakes nothing.
+func TestPatchJob_ResumeToBlockedDoesNotWakeQueue(t *testing.T) {
+	st := fake.New()
+	sched := &fakeScheduler{}
+	r := newJobRouter(st, sched)
+	held := seedHeldJob(t, st, store.JobStatusPending)
+
+	patchAction(t, r, held.ID, "pause")
+	if got := patchAction(t, r, held.ID, "resume"); got.Status != "blocked" {
+		t.Fatalf("resume: status = %q, want blocked", got.Status)
+	}
+	if len(sched.wokenQueue) != 0 {
+		t.Fatalf("WakeQueue calls = %v, want none", sched.wokenQueue)
+	}
+}
