@@ -135,8 +135,21 @@ func TestRecovery_ProbeFailingKeepsBrokenWithoutRestart(t *testing.T) {
 	checkSays(t, b, StreamTask)
 	stayRestarts(t, b, 0, 400*time.Millisecond) // about 20 ticks
 	checkSays(t, b, StreamTask, "cannot store")
+	if breaks, waits := countRecoveryLogs(h); breaks != 1 || waits != 1 {
+		t.Errorf("logged %d break and %d cannot-restart records, want 1 and 1 (the clock did not move a minute)", breaks, waits)
+	}
 
-	var breaks, waits int
+	// A minute later the probe, still failing, is logged once more.
+	clock.set(t0.Add(recoverProbeLogEvery + time.Second))
+	stayRestarts(t, b, 0, 400*time.Millisecond)
+	checkSays(t, b, StreamTask, "cannot store")
+	if breaks, waits := countRecoveryLogs(h); breaks != 1 || waits != 2 {
+		t.Errorf("after a minute: logged %d break and %d cannot-restart records, want 1 and 2", breaks, waits)
+	}
+}
+
+// countRecoveryLogs counts the break and cannot-restart records h holds.
+func countRecoveryLogs(h *recordHandler) (breaks, waits int) {
 	for _, r := range h.records() {
 		switch r.Message {
 		case msgBreak:
@@ -145,9 +158,7 @@ func TestRecovery_ProbeFailingKeepsBrokenWithoutRestart(t *testing.T) {
 			waits++
 		}
 	}
-	if breaks != 1 || waits != 1 {
-		t.Errorf("logged %d break and %d cannot-restart records, want 1 and 1 (the clock did not move a minute)", breaks, waits)
-	}
+	return breaks, waits
 }
 
 // TestRecovery_BackoffSpacesRepeatedRestarts pins the backoff: a break soon
