@@ -55,6 +55,12 @@
   box-shadow: var(--focus-ring);
 }
 
+/* The "Submit paused" checkbox. Not a .row: .row stretches every input to full
+   width, a checkbox included. */
+.pausedRow {
+  margin-bottom: var(--space-3);
+}
+
 .advanced {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);

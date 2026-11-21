@@ -112,9 +112,10 @@ func ValidateTaskTransition(from, to TaskStatus) error {
 //	pending/running/paused → terminal FinalizeJob, derived from the steps
 //	running → pending                 DemoteStalledJobs
 //	paused → pending                  ResumeJob, and RetryTasks on an auto-parked job
+//	paused → blocked                  ResumeJob, for a job still holding its dependencies
 //	blocked → pending                 ReleaseBlockedJob
 //	failed/canceled → pending         RetryTasks
-//	any non-terminal → paused         ParkJob (PauseJob for pending and running)
+//	any non-terminal → paused         ParkJob (PauseJob for pending, running and blocked)
 //	any non-terminal → canceled       CancelJobExecution and CancelJobStatus
 //	                                  (CancelBlockedJob for blocked)
 //
@@ -132,7 +133,7 @@ func ValidateTaskTransition(from, to TaskStatus) error {
 var JobTransitions = map[JobStatus][]JobStatus{
 	JobStatusPending:   {JobStatusRunning, JobStatusPaused, JobStatusCompleted, JobStatusFailed, JobStatusCanceled},
 	JobStatusRunning:   {JobStatusPending, JobStatusPaused, JobStatusCompleted, JobStatusFailed, JobStatusCanceled},
-	JobStatusPaused:    {JobStatusPending, JobStatusCompleted, JobStatusFailed, JobStatusCanceled},
+	JobStatusPaused:    {JobStatusPending, JobStatusBlocked, JobStatusCompleted, JobStatusFailed, JobStatusCanceled},
 	JobStatusBlocked:   {JobStatusPending, JobStatusPaused, JobStatusCanceled},
 	JobStatusCompleted: {},
 	JobStatusFailed:    {JobStatusPending},

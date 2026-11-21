@@ -368,6 +368,8 @@ type submitProductRequest struct {
 	FailureLimit      *int              `json:"failure_limit"`
 	EstimatedSeconds  *int              `json:"estimated_seconds"`
 	DependsOn         []string          `json:"depends_on"`
+	// Paused creates the job paused, so nothing runs until it is resumed.
+	Paused bool `json:"paused"`
 }
 
 // submitProductJob loads the named product's template and submits a job via
@@ -425,6 +427,7 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		ProductName:       p.Name,
 		ProductVersion:    p.Version,
 		DependsOn:         req.DependsOn,
+		Paused:            req.Paused,
 		Deadline:          exprDeadlineAt(h.exprDeadline),
 	})
 	if err != nil {
@@ -443,7 +446,7 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create job")
 		return
 	}
-	if h.sched != nil {
+	if h.sched != nil && !req.Paused {
 		h.sched.WakeQueue(result.Job.QueueID)
 	}
 

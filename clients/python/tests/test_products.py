@@ -239,3 +239,15 @@ def test_submit_product_job_rejects_non_integer_estimate(
     with pytest.raises(ValueError, match="estimated_seconds"):
         client.submit_product_job("blender", farm_id="f1", queue_id="q1", estimated_seconds=bad)
     assert not route.called
+
+
+@respx.mock
+def test_submit_product_job_paused_sent_and_omitted(make_client: ClientFactory) -> None:
+    route = respx.post(f"{API}/products/blender/jobs").mock(
+        return_value=httpx.Response(201, json={"id": "job-1", "name": "x"})
+    )
+    client = make_client()
+    client.submit_product_job("blender", farm_id="f1", queue_id="q1", paused=True)
+    assert json.loads(route.calls.last.request.content)["paused"] is True
+    client.submit_product_job("blender", farm_id="f1", queue_id="q1")
+    assert "paused" not in json.loads(route.calls.last.request.content)

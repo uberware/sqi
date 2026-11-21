@@ -2039,11 +2039,12 @@ describe('JobDetail', () => {
       expect(screen.queryByRole('button', { name: 'Resume job' })).not.toBeInTheDocument()
     })
 
-    it('offers Cancel but not Pause for a job blocked on another job', async () => {
+    it('offers Pause and Cancel for a job blocked on another job', async () => {
       renderJob(makeJob({ status: 'blocked', task_counts: NO_FAILURES }))
 
       expect(await screen.findByRole('button', { name: 'Cancel job' })).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Pause job' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Pause job' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Resume job' })).not.toBeInTheDocument()
     })
 
     it('offers Resume in place of Pause for a paused job', async () => {

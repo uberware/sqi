@@ -16,10 +16,13 @@ class JobOptions:
     max_attempts: int | None = None
     retry_delay_seconds: int | None = None
     failure_limit: int | None = None
+    #: Create the job paused, so nothing runs until it is resumed. Unlike the
+    #: fields above it has no "inherit" state: ``False`` sends nothing.
+    paused: bool = False
 
     def is_empty(self) -> bool:
-        """True when every override is unset (nothing to send)."""
-        return all(
+        """True when every override is unset and the job is not paused (nothing to send)."""
+        return not self.paused and all(
             v is None
             for v in (
                 self.owner,

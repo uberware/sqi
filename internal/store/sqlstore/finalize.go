@@ -89,11 +89,14 @@ WHERE  status NOT IN ('completed', 'failed', 'canceled')
 ORDER BY job_id, step_order`
 
 	// sqlListJobIDsWithPendingSteps selects the jobs whose pending steps the
-	// start-up reconcile re-releases: live jobs, and not blocked, since a
-	// blocked job's steps wait on another job rather than on a step.
+	// start-up reconcile re-releases: live jobs, and none still holding its
+	// cross-job dependencies (every blocked job, and a paused one still
+	// waiting), since such a job's steps wait on another job rather than on a
+	// step.
 	sqlListJobIDsWithPendingSteps = `
 SELECT DISTINCT j.id FROM jobs j JOIN steps s ON s.job_id = j.id
-WHERE  j.status NOT IN ('completed', 'failed', 'canceled', 'blocked')
+WHERE  j.status NOT IN ('completed', 'failed', 'canceled')
+  AND  NOT j.dependency_hold
   AND  s.status = 'pending'
 ORDER BY j.id`
 )
@@ -219,6 +222,12 @@ func (s *Store) ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error
 const sqlGuardStepPending = `
 UPDATE steps SET status = ?, updated_at = ? WHERE id = ? AND status = 'pending'`
 
+// sqlGuardStepPendingUnheld is sqlGuardStepPending for a release: it also
+// writes nothing while the step's job still holds its cross-job dependencies,
+// which only the dependency release lifts.
+const sqlGuardStepPendingUnheld = sqlGuardStepPending + `
+  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = steps.job_id AND j.dependency_hold)`
+
 // ReleaseStep implements [store.StepStore].
 func (s *Store) ReleaseStep(ctx context.Context, id string, now time.Time) (bool, []store.Task, error) {
 	return s.movePendingStep(ctx, id, store.StepStatusReady, store.TaskStatusReady, "", now)
@@ -261,8 +270,12 @@ func (s *Store) movePendingStep(
 				return result{}, txRollback, nil
 			}
 		}
+		guard := sqlGuardStepPending
+		if stepTo == store.StepStatusReady {
+			guard = sqlGuardStepPendingUnheld
+		}
 		nowText := TimeText(now.UTC())
-		res, err := tx.ExecContext(ctx, sqlGuardStepPending, string(stepTo), nowText, id)
+		res, err := tx.ExecContext(ctx, guard, string(stepTo), nowText, id)
 		if err != nil {
 			return result{}, txRollback, fmt.Errorf("store: move pending step %s: %w", id, mapErr(err))
 		}
@@ -334,7 +347,7 @@ const (
 	// exists counts as unsatisfied (the edge deliberately survives the
 	// upstream's deletion, see migration 00020).
 	sqlReleaseBlockedJob = `
-UPDATE jobs SET status = 'pending', updated_at = ?
+UPDATE jobs SET status = 'pending', dependency_hold = false, updated_at = ?
 WHERE  id = ? AND status = 'blocked'
   AND  NOT EXISTS (
          SELECT 1 FROM job_dependencies jd
@@ -467,7 +480,7 @@ WHERE id = ? AND status = 'pending'`
 	// or running job is paused.
 	sqlPauseJob = `
 UPDATE jobs SET status = 'paused', updated_at = ?
-WHERE id = ? AND status IN ('pending', 'running')`
+WHERE id = ? AND status IN ('pending', 'running', 'blocked')`
 )
 
 // PromoteJobRunning implements [store.JobStore]. It is one guarded UPDATE, so

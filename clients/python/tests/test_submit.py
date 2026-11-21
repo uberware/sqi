@@ -406,3 +406,28 @@ def test_submit_rejects_non_integer_estimate(make_client: ClientFactory, bad: An
     with pytest.raises(ValueError, match="estimated_seconds"):
         client.submit_job(_DICT_TEMPLATE, farm_id="f", queue_id="q", estimated_seconds=bad)
     assert not route.called
+
+
+# ── Submitting paused ────────────────────────────────────────────────
+
+
+@respx.mock
+def test_submit_paused_omitted_by_default(make_client: ClientFactory) -> None:
+    route = respx.post(_JOBS_URL).mock(return_value=_created())
+    client = make_client()
+
+    client.submit_job(_DICT_TEMPLATE, farm_id="farm-1", queue_id="queue-1")
+
+    assert "paused" not in route.calls.last.request.url.params
+
+
+@respx.mock
+def test_submit_paused_sends_paused_true(make_client: ClientFactory) -> None:
+    response = dict(_JOB_RESPONSE, status="paused")
+    route = respx.post(_JOBS_URL).mock(return_value=httpx.Response(201, json=response))
+    client = make_client()
+
+    job = client.submit_job(_DICT_TEMPLATE, farm_id="farm-1", queue_id="queue-1", paused=True)
+
+    assert route.calls.last.request.url.params.get("paused") == "true"
+    assert job.status == "paused"

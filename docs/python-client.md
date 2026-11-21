@@ -158,7 +158,7 @@ are equivalent. `None` filters are omitted from the request entirely.
 
 ## Submitting jobs
 
-`submit_job(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None, estimated_seconds=None) -> Job`
+`submit_job(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None, estimated_seconds=None, paused=False) -> Job`
 
 The template may be a `str` (sent verbatim), a `pathlib.Path` (read from disk),
 or a `dict` (serialized to JSON). The `Content-Type` is chosen automatically —
@@ -173,6 +173,12 @@ upstream completes (or canceled if one fails, is canceled, or is deleted).
 `submit_product_job` accepts the same `depends_on` keyword.
 
 `estimated_seconds` (1 to 2147483647) is an optional estimate of the job's total task run time; `submit_product_job` accepts it too.
+
+`paused=True` creates the job `paused`, so nothing runs until `resume_job` is
+called. With `depends_on`, a paused job that is still waiting on an upstream
+resumes to `blocked` and is then released or canceled as usual.
+`submit_product_job` accepts `paused` too; `submit_and_wait` does not, since a
+paused job would never finish.
 
 `max_attempts`, `retry_delay_seconds`, and `failure_limit` are optional per-job
 retry-policy overrides; each left `None` inherits the queue → farm → server
@@ -206,7 +212,7 @@ can show it to the artist.
 | `list_jobs(*, status, farm_id, queue_id, owner, project, sort_by, sort_dir, limit, offset, include_timing=False) -> Page[Job]` | One page of jobs. `include_timing=True` adds each job's `remaining_seconds`, `remaining_basis` and `as_of`; otherwise they are `None`. |
 | `iter_jobs(...) -> Iterator[Job]` | Same filters, auto-paged. |
 | `get_job(job_id) -> Job` | Detailed job with `steps` and `task_counts`; 404 → `NotFoundError`. |
-| `pause_job(job_id) -> Job` / `resume_job(job_id) -> Job` | Pause/resume; returns the updated job. |
+| `pause_job(job_id) -> Job` / `resume_job(job_id) -> Job` | Pause (a pending, running or blocked job) / resume; returns the updated job. A resumed job still waiting on `depends_on` comes back `blocked`, or already `pending`/`canceled` if its upstreams finished while it was paused. |
 | `set_job_priority(job_id, priority) -> Job` | Validates `priority >= 1` client-side before sending. |
 | `set_job_estimate(job_id, seconds) -> Job` | Sets the run-time estimate in seconds (1 to 2147483647); `None` clears it. Validated client-side. |
 | `cancel_job(job_id) -> None` | POST `/jobs/{id}/cancel`; returns `None` on `204`. |
@@ -326,7 +332,7 @@ server's catalog. Eight methods cover them:
 | `update_product(name, *, template, format, title=None, description=None, category=None, version=None) -> Product` | Full PUT replacement of a custom product. |
 | `delete_product(name) -> None` | Delete a custom product; a built-in raises `SqiAuthError` (403). |
 | `get_product_parameters(name) -> list[ProductParameter]` | The parsed job parameters — type, default, allowed values, and `user_interface` hints. 404 → `NotFoundError`; an unparseable stored template → `ValidationError` (422). |
-| `submit_product_job(name, *, farm_id, queue_id, job_name=None, owner=None, submitter=None, priority=None, project=None, parameters=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None) -> Job` | Submit a job from a product. |
+| `submit_product_job(name, *, farm_id, queue_id, job_name=None, owner=None, submitter=None, priority=None, project=None, parameters=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None, estimated_seconds=None, paused=False) -> Job` | Submit a job from a product. |
 
 ```python
 products = sqi.list_products()

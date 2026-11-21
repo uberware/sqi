@@ -107,6 +107,13 @@ type Job struct {
 	// ParkReason is empty for a manual pause; set when the failure-limit sweep
 	// auto-parks the job (e.g. "failure limit reached (25)").
 	ParkReason string
+	// DependencyHold is true while the job's cross-job dependency hold is in
+	// place: it is set when the job is submitted with an upstream that has not
+	// completed, and cleared when [JobStore.ReleaseBlockedJob] releases it. A
+	// held job that is paused resumes to [JobStatusBlocked] rather than
+	// [JobStatusPending], so its held steps are released by the dependency
+	// sweep and never left pending forever.
+	DependencyHold bool
 	// EstimatedSeconds is the submitter's estimate of the job's total task run
 	// time, nil when none was given. UpdateJob writes it.
 	EstimatedSeconds *int
@@ -258,9 +265,10 @@ type JobStore interface {
 	// nothing, for any other status (an unknown job included).
 	PromoteJobRunning(ctx context.Context, id string, now time.Time) (bool, error)
 
-	// PauseJob administratively pauses a pending or running job. Guarded in the
-	// write (invariant I1): a job in any other status is left untouched and
-	// [ErrConflict] is returned. [ErrNotFound] for an unknown job.
+	// PauseJob administratively pauses a pending, running or blocked job. A
+	// blocked job keeps its [Job.DependencyHold], so it resumes to blocked.
+	// Guarded in the write (invariant I1): a job in any other status is left
+	// untouched and [ErrConflict] is returned. [ErrNotFound] for an unknown job.
 	PauseJob(ctx context.Context, id string, now time.Time) error
 
 	// FinalizeJob derives the job's terminal status from its steps and writes
@@ -342,8 +350,10 @@ type JobStore interface {
 	// not exist.
 	ParkJob(ctx context.Context, jobID, reason string, now time.Time) error
 
-	// ResumeJob transitions a paused job back to [JobStatusPending] — the
-	// inverse of [ParkJob] and of a manual pause. An auto-parked job
+	// ResumeJob is the inverse of [ParkJob] and of a manual pause. It moves a
+	// paused job to [JobStatusPending], or to [JobStatusBlocked] when the job
+	// still has its [Job.DependencyHold], so the dependency sweep releases or
+	// cancels it as it would any blocked job. An auto-parked job
 	// (non-empty ParkReason) additionally has its ParkReason cleared and its
 	// FailedAttempts reset to zero, re-arming the failure limit; without the
 	// reset the next genuine failure would re-park the job immediately.

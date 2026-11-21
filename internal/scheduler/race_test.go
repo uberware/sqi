@@ -210,8 +210,8 @@ func TestReconcileDoesNotUndoUserCancel(t *testing.T) {
 				}
 			}}}
 			s := newStatusTestScheduler(wrapped)
-			if err := s.reconcileBlockedJob(t.Context(), dep.ID); err != nil {
-				t.Fatalf("reconcileBlockedJob: %v", err)
+			if err := s.ReconcileBlockedJob(t.Context(), dep.ID); err != nil {
+				t.Fatalf("ReconcileBlockedJob: %v", err)
 			}
 			if got := mustJob(t, st, dep.ID); got.Status != store.JobStatusCanceled {
 				t.Fatalf("job = %q, want canceled (the user's cancel must survive the reconcile)", got.Status)

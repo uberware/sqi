@@ -190,7 +190,7 @@ REST handler (internal/api/jobs.go)
   │
   │     store.CreateJobSubmission(job, dependsOn, steps, tasks)
   │       Writes in a single transaction:
-  │         jobs row (status=pending or blocked, template verbatim)
+  │         jobs row (status=pending, blocked or paused, template verbatim)
   │         job_dependencies rows (one per cross-job dependency edge)
   │         steps rows (one per step)
   │         tasks rows (one per expanded task, status=pending or ready)
@@ -289,6 +289,24 @@ released. Dependencies work across queues within a farm: readiness is
 farm-wide and queue affinity is only applied when a worker leases work, so a
 released job's tasks are immediately leasable regardless of which queue they
 or their upstreams belong to.
+
+The job row's `dependency_hold` flag records that this hold is still in place.
+The store sets it on every job created `blocked`, whatever the caller passes,
+and `store.ReleaseBlockedJob` clears it in the same `UPDATE` that releases the
+job (a task retry's job reset clears it too). It exists because a held job can
+also be `paused`, by being submitted with `paused=true`, paused while
+`blocked`, or auto-parked, and its steps stay held `pending` while it is.
+`store.ReleaseStep` declines a step whose job holds its dependencies, so no
+step-level release (the start-up step reconcile, a retry, completion
+propagation) can run the job early: a held job's tasks stay `pending`, and the
+lease path only ever considers `ready` tasks. `store.ResumeJob` sends a held
+job back to `blocked` rather than to `pending`; a resume to `pending` would
+leave held steps that nothing ever releases. The job `PATCH` handler then
+reconciles the job immediately, through the same path the sweep uses. A paused
+job is not reconciled while it stays paused, so an upstream that fails
+meanwhile cancels the job only once it is resumed. Because the flag is cleared
+on release, a job that was released, ran and was paused later resumes to
+`pending` even if its upstream has since been purged.
 
 A `blocked` job is reconciled whenever an upstream job reaches a terminal
 status: if every upstream in its `depends_on` list is now `completed`, the job
@@ -1099,7 +1117,8 @@ The PostgreSQL schema is SQLite's, with these differences:
   ASCII case on both backends.
 - **Integers and flags.** Every integer column that is not a flag is
   `BIGINT`, since SQLite's integers and the store's values are 64-bit. The
-  flags (`paused`, `disabled`), `INTEGER` on SQLite, are `BOOLEAN NOT NULL
+  flags (`paused`, `disabled`, `enabled`, `ephemeral`, `dependency_hold`),
+  `INTEGER` on SQLite, are `BOOLEAN NOT NULL
   DEFAULT false`.
 - **No data repairs.** SQLite's repair migrations (`00031`, `00033`, `00035`,
   `00037`) fix rows older releases wrote; a PostgreSQL database starts empty

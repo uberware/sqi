@@ -25,7 +25,7 @@ const jobCols = `
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
 	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at,
 	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason,
-	declared_extensions, estimated_seconds, product_name, product_version`
+	declared_extensions, estimated_seconds, product_name, product_version, dependency_hold`
 
 const (
 	sqlInsertJob = `
@@ -33,8 +33,8 @@ INSERT INTO jobs (
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
 	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at,
 	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason,
-	declared_extensions, estimated_seconds, product_name, product_version)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	declared_extensions, estimated_seconds, product_name, product_version, dependency_hold)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + jobCols
 
 	sqlGetJob = `SELECT ` + jobCols + ` FROM jobs WHERE id = ?`
@@ -181,10 +181,12 @@ WHERE id = ? AND status NOT IN ('completed','failed','canceled')`
 	// sqlResumeJob is the inverse of sqlParkJob: only a paused job is resumed.
 	// An auto-parked job (non-empty park_reason) also gets its failure counter
 	// reset — otherwise the very next genuine failure would re-park it — while
-	// a manual pause/resume keeps the accumulated count.
+	// a manual pause/resume keeps the accumulated count. A job still holding
+	// its cross-job dependencies resumes to blocked: its steps are held
+	// pending, and only the dependency sweep's release frees them.
 	sqlResumeJob = `
 UPDATE jobs
-SET status = 'pending', updated_at = ?,
+SET status = CASE WHEN dependency_hold THEN 'blocked' ELSE 'pending' END, updated_at = ?,
     failed_attempts = CASE WHEN park_reason != '' THEN 0 ELSE failed_attempts END,
     park_reason = ''
 WHERE id = ? AND status = 'paused'`
@@ -234,6 +236,7 @@ func scanJob(row scanner) (store.Job, error) {
 	var declaredExts string
 	var estSecs sql.NullInt64
 	var productName, productVersion sql.NullString
+	var dependencyHold dbBool
 
 	if err := row.Scan(
 		&j.ID, &j.FarmID, &j.QueueID, &j.Name, &j.Owner, &j.Submitter,
@@ -241,10 +244,11 @@ func scanJob(row scanner) (store.Job, error) {
 		&j.RawTemplate, &templateFormat, &paramsJSON,
 		&createdAt, &updatedAt, &startedAt, &completedAt,
 		&j.FailedAttempts, &maxAtt, &delay, &failLim, &j.ParkReason,
-		&declaredExts, &estSecs, &productName, &productVersion,
+		&declaredExts, &estSecs, &productName, &productVersion, &dependencyHold,
 	); err != nil {
 		return store.Job{}, err
 	}
+	j.DependencyHold = bool(dependencyHold)
 	j.EstimatedSeconds = nullIntPtr(estSecs)
 	j.ProductName, j.ProductVersion = productName.String, productVersion.String
 
@@ -367,6 +371,13 @@ func checkUpstreamsTx(ctx context.Context, tx *dbTx, upstreams []string, lock bo
 }
 
 // insertJobTx inserts one job row inside tx.
+// holdsDependencies is the dependency_hold value written for a new job: a job
+// created blocked always holds its dependencies, whatever the caller set, so
+// "blocked" and "held" can never disagree.
+func holdsDependencies(job store.Job) bool {
+	return job.DependencyHold || job.Status == store.JobStatusBlocked
+}
+
 func insertJobTx(ctx context.Context, tx *dbTx, job store.Job, now string) (store.Job, error) {
 	paramsJSON, err := marshalJSON(job.Parameters)
 	if err != nil {
@@ -384,7 +395,8 @@ func insertJobTx(ctx context.Context, tx *dbTx, job store.Job, now string) (stor
 		nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt),
 		job.FailedAttempts, nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
 		job.ParkReason, declaredExts,
-		nullInt(job.EstimatedSeconds), nullString(job.ProductName), nullString(job.ProductVersion))
+		nullInt(job.EstimatedSeconds), nullString(job.ProductName), nullString(job.ProductVersion),
+		holdsDependencies(job))
 	out, err := scanJob(row)
 	return out, mapErr(err)
 }

@@ -726,6 +726,42 @@ describe('Submit page', () => {
     })
   })
 
+  describe('Submit paused', () => {
+    async function submitWithPaused(tick: boolean): Promise<string> {
+      mockFarmsAndQueues()
+      mockJobSubmit(
+        new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      const user = userEvent.setup()
+      render(<Submit />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('option', { name: 'Default' }))
+      await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
+      if (tick) await user.click(screen.getByRole('checkbox', { name: /submit paused/i }))
+      await user.click(screen.getByRole('button', { name: /submit job/i }))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('location')).toHaveTextContent('/jobs/abc-def-123')
+      })
+      const postCall = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+      )
+      if (!postCall) throw new Error('expected a POST call')
+      return String(postCall[0])
+    }
+
+    it('sends paused=true when Submit paused is ticked', async () => {
+      expect(await submitWithPaused(true)).toContain('paused=true')
+    })
+
+    it('omits paused when Submit paused is left unticked', async () => {
+      expect(await submitWithPaused(false)).not.toContain('paused')
+    })
+  })
+
   describe('submit button state', () => {
     it('is disabled when template is empty', async () => {
       mockFarmsAndQueues()

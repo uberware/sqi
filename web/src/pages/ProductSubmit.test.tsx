@@ -341,6 +341,28 @@ describe('ProductSubmit', () => {
       expect(arg).toMatchObject({ dependsOn: ['job-a'] })
     })
 
+    it('submits paused when Submit paused is ticked', async () => {
+      const user = userEvent.setup()
+      renderPage()
+      fireEvent.change(screen.getByLabelText(/Scene/), { target: { value: '/proj/a.blend' } })
+      await user.click(screen.getByRole('checkbox', { name: /submit paused/i }))
+      fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+      await waitFor(() => expect(submitMock).toHaveBeenCalled())
+      const arg = submitMock.mock.calls[0]?.[0] as Record<string, unknown>
+      expect(arg).toMatchObject({ paused: true })
+    })
+
+    it('omits paused when Submit paused is left unticked', async () => {
+      renderPage()
+      fireEvent.change(screen.getByLabelText(/Scene/), { target: { value: '/proj/a.blend' } })
+      fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+      await waitFor(() => expect(submitMock).toHaveBeenCalled())
+      const arg = submitMock.mock.calls[0]?.[0] as Record<string, unknown>
+      expect(arg).not.toHaveProperty('paused')
+    })
+
     it('omits dependsOn when no upstream job is selected', async () => {
       renderPage()
       fireEvent.change(screen.getByLabelText(/Scene/), { target: { value: '/proj/a.blend' } })

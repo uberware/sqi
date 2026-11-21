@@ -339,10 +339,11 @@ WHERE  job_id = ? AND status IN ('failed', 'canceled')
 	// genuine-failure state so the job restarts with a clean failure count and
 	// no stale park reason. A manually paused job (empty park_reason) is left
 	// paused — retrying its tasks must not override the operator's pause.
+	// A retried job is pending, so its dependency hold is cleared.
 	sqlRetryResetJob = `
 UPDATE jobs
 SET    status = 'pending', completed_at = NULL, updated_at = ?,
-       failed_attempts = 0, park_reason = ''
+       failed_attempts = 0, park_reason = '', dependency_hold = false
 WHERE  id = ?
   AND  (status IN ('failed', 'canceled') OR (status = 'paused' AND park_reason != ''))`
 )

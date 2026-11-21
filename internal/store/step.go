@@ -156,8 +156,11 @@ type StepStore interface {
 	// ReleaseStep moves a pending step to ready and every one of its pending
 	// tasks to ready, in one transaction. Guarded on the step being pending
 	// (invariant I1): if it is not, nothing is written and it returns
-	// (false, nil, nil). Returns the promoted tasks. ErrNotFound for an unknown
-	// step.
+	// (false, nil, nil). It likewise writes nothing while the step's job still
+	// holds its cross-job dependencies ([Job.DependencyHold]): only
+	// [JobStore.ReleaseBlockedJob] lifts that hold, so no step-level release
+	// can run a waiting job's work early. Returns the promoted tasks.
+	// ErrNotFound for an unknown step.
 	ReleaseStep(ctx context.Context, id string, now time.Time) (bool, []Task, error)
 
 	// CancelPendingStep moves a pending step to canceled and every one of its

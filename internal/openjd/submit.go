@@ -138,6 +138,13 @@ type SubmitOptions struct {
 	// none may already be failed or canceled. When any is not yet completed, the
 	// job is created in store.JobStatusBlocked with all tasks held pending.
 	DependsOn []string
+
+	// Paused creates the job in store.JobStatusPaused, in the same write as the
+	// rest of the submission, so no task can be leased before someone resumes
+	// it. Steps and tasks start as they otherwise would: held pending when a
+	// dependency is unsatisfied, ready when not. A paused job that is still
+	// holding its dependencies resumes to blocked (store.Job.DependencyHold).
+	Paused bool
 }
 
 // ── SubmitResult ──────────────────────────────────────────────────────────────
@@ -329,7 +336,10 @@ func (s *Submitter) Submit(
 	// A job with an unsatisfied cross-job dependency is created blocked, in the
 	// same write as the dependency edges that justify it — see step 6.
 	jobStatus := store.JobStatusPending
-	if blocked {
+	switch {
+	case opts.Paused:
+		jobStatus = store.JobStatusPaused
+	case blocked:
 		jobStatus = store.JobStatusBlocked
 	}
 	job := store.Job{
@@ -341,6 +351,7 @@ func (s *Submitter) Submit(
 		Submitter:      opts.Submitter,
 		Priority:       priority,
 		Status:         jobStatus,
+		DependencyHold: blocked,
 		Project:        opts.Project,
 		RawTemplate:    rawTemplate,
 		TemplateFormat: format,
@@ -400,7 +411,7 @@ func (s *Submitter) Submit(
 	//
 	// Writing the blocked status last, as a separate update, fails differently:
 	// if that write fails, the job stays pending with pending tasks, which
-	// reconcileBlockedJob skips (it returns early unless the status is blocked)
+	// ReconcileBlockedJob skips (it returns early unless the status is blocked)
 	// and the scheduler never leases.
 	//
 	// The job row and its edges therefore commit together, so no sweep can

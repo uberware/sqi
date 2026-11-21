@@ -25,7 +25,11 @@ export const CANCELABLE_JOB_STATUSES: ReadonlySet<JobStatus> = new Set([
  * Job statuses the server accepts a pause for: `resolveAction` in
  * `internal/api/jobs.go`.
  */
-export const PAUSABLE_JOB_STATUSES: ReadonlySet<JobStatus> = new Set(['pending', 'running'])
+export const PAUSABLE_JOB_STATUSES: ReadonlySet<JobStatus> = new Set([
+  'pending',
+  'running',
+  'blocked',
+])
 
 /**
  * Job statuses the server accepts a resume for: `resolveAction` in

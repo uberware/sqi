@@ -156,7 +156,7 @@ func (s *Store) ListJobIDsWithPendingSteps(_ context.Context) ([]string, error) 
 			continue
 		}
 		j, ok := s.jobs[st.JobID]
-		if !ok || j.Status.IsTerminal() || j.Status == store.JobStatusBlocked {
+		if !ok || j.Status.IsTerminal() || j.DependencyHold {
 			continue
 		}
 		seen[st.JobID] = true
@@ -192,6 +192,9 @@ func (s *Store) movePendingStep(ctx context.Context, id string, stepTo store.Ste
 	}
 	if stepTo == store.StepStatusCanceled && !s.anyUpstreamUnsuccessfulLocked(st) {
 		return false, nil, nil
+	}
+	if stepTo == store.StepStatusReady && s.jobs[st.JobID].DependencyHold {
+		return false, nil, nil // held steps are released only with the job's hold
 	}
 	if st.Status != store.StepStatusPending {
 		return false, nil, nil
@@ -238,6 +241,7 @@ func (s *Store) ReleaseBlockedJob(ctx context.Context, id string, now time.Time)
 		}
 	}
 	j.Status, j.UpdatedAt = store.JobStatusPending, now.UTC() // SQLite stores UTC.
+	j.DependencyHold = false
 	s.jobs[id] = j
 	return true, nil
 }
@@ -306,7 +310,9 @@ func (s *Store) PauseJob(ctx context.Context, id string, now time.Time) error {
 	if !ok {
 		return store.ErrNotFound
 	}
-	if j.Status != store.JobStatusPending && j.Status != store.JobStatusRunning {
+	switch j.Status {
+	case store.JobStatusPending, store.JobStatusRunning, store.JobStatusBlocked:
+	default:
 		return store.ErrConflict
 	}
 	j.Status, j.UpdatedAt = store.JobStatusPaused, now.UTC() // SQLite stores UTC.

@@ -1202,13 +1202,13 @@ describe('JobList', () => {
       expect(screen.getByRole('button', { name: 'Resume selected (0)' })).toBeDisabled()
     })
 
-    it('does not offer Pause for a blocked job', async () => {
+    it('offers Pause for a blocked job', async () => {
       const user = userEvent.setup()
       renderJobList([makeJob({ id: 'jb', name: 'Blocked', status: 'blocked' })])
 
       await waitFor(() => screen.getByRole('checkbox', { name: /Select job Blocked/i }))
       await user.click(screen.getByRole('checkbox', { name: /Select job Blocked/i }))
-      expect(screen.getByRole('button', { name: 'Pause selected (0)' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Pause selected (1)' })).toBeEnabled()
     })
 
     it('keeps going past a failed pause and reports it', async () => {
@@ -1462,7 +1462,7 @@ describe('JobList', () => {
       expect(screen.queryByRole('button', { name: 'Pause job Paused' })).not.toBeInTheDocument()
     })
 
-    it.each(['completed', 'failed', 'canceled', 'blocked'] as const)(
+    it.each(['completed', 'failed', 'canceled'] as const)(
       'offers neither Pause nor Resume for a %s job',
       async (status) => {
         fetchMock.mockResolvedValueOnce(
@@ -1475,6 +1475,17 @@ describe('JobList', () => {
         expect(screen.queryByRole('button', { name: 'Resume job Idle' })).not.toBeInTheDocument()
       },
     )
+
+    it('offers Pause but not Resume for a blocked job', async () => {
+      fetchMock.mockResolvedValueOnce(
+        okJson(makeListResponse([makeJob({ name: 'Waiting', status: 'blocked' })])),
+      )
+      render(<JobList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('link', { name: 'Waiting' }))
+      expect(screen.getByRole('button', { name: 'Pause job Waiting' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Resume job Waiting' })).not.toBeInTheDocument()
+    })
 
     it('pauses the job when Pause is clicked', async () => {
       const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) })

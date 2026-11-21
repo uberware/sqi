@@ -190,6 +190,10 @@ class SubmitDialog(QtWidgets.QDialog):
         self._queue_combo = QtWidgets.QComboBox(self)
         self._queue_combo.setObjectName("queueCombo")
 
+        self._submit_paused_check = QtWidgets.QCheckBox("Submit paused", self)
+        self._submit_paused_check.setObjectName("submitPausedCheck")
+        self._submit_paused_check.setToolTip("Nothing runs until you resume the job.")
+
         self._save_scene_check = QtWidgets.QCheckBox("Save scene before submit", self)
         self._save_scene_check.setObjectName("saveSceneCheck")
         self._save_scene_check.setVisible(self._saves_scene_in_dialog)
@@ -228,6 +232,7 @@ class SubmitDialog(QtWidgets.QDialog):
         layout.addWidget(QtWidgets.QLabel("Job name", self))
         layout.addWidget(self._job_name_edit)
         layout.addLayout(farm_row)
+        layout.addWidget(self._submit_paused_check)
         layout.addWidget(self._save_scene_check)
         layout.addWidget(self._advanced_group)
         layout.addLayout(button_row)
@@ -628,23 +633,27 @@ class SubmitDialog(QtWidgets.QDialog):
     # -- submit -----------------------------------------------------------
 
     def _job_options(self) -> JobOptions | None:
-        """Advanced-group editors -> ``JobOptions``, or ``None`` when inactive.
+        """Advanced-group editors and "Submit paused" -> ``JobOptions``, or ``None``.
 
         The group is opt-in: collapsed (unchecked) means "no overrides" even
         if widgets hold stale values from a prior expand. When checked, a
         spin box left at its ``0`` sentinel or a blank line edit maps to
-        ``None`` (inherit) rather than an explicit override.
+        ``None`` (inherit) rather than an explicit override. "Submit paused"
+        sits outside the group and applies whether or not it is expanded.
         """
-        if not self._advanced_group.isChecked():
-            return None
-        opts = JobOptions(
-            owner=(self._owner_edit.text() or None) if self.session.may_submit_as else None,
-            priority=self._priority_spin.value() or None,
-            project=self._project_edit.text() or None,
-            max_attempts=self._max_attempts_spin.value() or None,
-            retry_delay_seconds=self._retry_delay_spin.value() or None,
-            failure_limit=self._failure_limit_spin.value() or None,
-        )
+        paused = self._submit_paused_check.isChecked()
+        if self._advanced_group.isChecked():
+            opts = JobOptions(
+                paused=paused,
+                owner=(self._owner_edit.text() or None) if self.session.may_submit_as else None,
+                priority=self._priority_spin.value() or None,
+                project=self._project_edit.text() or None,
+                max_attempts=self._max_attempts_spin.value() or None,
+                retry_delay_seconds=self._retry_delay_spin.value() or None,
+                failure_limit=self._failure_limit_spin.value() or None,
+            )
+        else:
+            opts = JobOptions(paused=paused)
         return None if opts.is_empty() else opts
 
     def _ready_product(self) -> Product | None:

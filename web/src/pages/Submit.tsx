@@ -6,6 +6,7 @@ import PageHeader from '@/components/PageHeader'
 import CodeEditor from '@/components/CodeEditor'
 import RetryPolicyFields from '@/components/RetryPolicyFields'
 import DependsOnField from '@/components/DependsOnField'
+import SubmitPausedField from '@/components/SubmitPausedField'
 import { useToast } from '@/components/Toast'
 import { useFarmsWithQueues } from '@/api/queries'
 import { useSubmitJob } from '@/api/mutations'
@@ -114,6 +115,7 @@ export default function Submit() {
   const [retryDelaySeconds, setRetryDelaySeconds] = useState('')
   const [failureLimit, setFailureLimit] = useState('')
   const [dependsOn, setDependsOn] = useState<string[]>([])
+  const [paused, setPaused] = useState(false)
 
   // Example loader select — controlled so it resets to placeholder after each pick.
   const [exampleKey, setExampleKey] = useState('')
@@ -169,6 +171,7 @@ export default function Submit() {
             : {}),
           ...(parsedFailureLimit !== undefined ? { failureLimit: parsedFailureLimit } : {}),
           ...(dependsOn.length > 0 ? { dependsOn } : {}),
+          ...(paused ? { paused } : {}),
         })
         showToast(`Job submitted — ID: ${job.id}`, 'success')
         navigate(`/jobs/${job.id}`)
@@ -187,6 +190,7 @@ export default function Submit() {
       retryDelaySeconds,
       failureLimit,
       dependsOn,
+      paused,
       submitJob,
       navigate,
       showToast,
@@ -372,6 +376,12 @@ export default function Submit() {
         </div>
 
         <div className={styles.formFooter}>
+          <SubmitPausedField
+            checked={paused}
+            onChange={setPaused}
+            fieldClassName={styles.pausedField}
+            noteClassName={styles.sectionNote}
+          />
           <button
             type="submit"
             className={styles.submitBtn}

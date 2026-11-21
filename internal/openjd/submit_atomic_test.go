@@ -413,7 +413,7 @@ func TestSubmit_BlockedStatusIsPartOfTheAtomicWrite(t *testing.T) {
 // If the status were written separately, a failure of that write would leave
 // the job, its edges, its steps and its tasks all durable with the job
 // stranded in pending. buildStepWithTasks creates every task pending whenever
-// the job is held, so nothing runs; reconcileBlockedJob
+// the job is held, so nothing runs; ReconcileBlockedJob
 // (internal/scheduler/jobdeps.go) early-returns unless status is blocked, so
 // neither sweepBlockedJobs nor ReconcileDependents ever revisits the row; and
 // the scheduler leases only ready tasks. The job hangs until an operator

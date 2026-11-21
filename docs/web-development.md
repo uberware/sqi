@@ -394,7 +394,7 @@ shows a **Retry M** button when retryable jobs are selected alongside (or
 instead of) cancelable ones. The select-all header includes retryable jobs in
 its scope.
 
-The bulk toolbar also offers **Pause M** (selected `pending` or `running` jobs)
+The bulk toolbar also offers **Pause M** (selected `pending`, `running` or `blocked` jobs)
 and **Resume M** (selected `paused` jobs), backed by `PATCH /api/v1/jobs/{id}`
 with `{ "action": "pause" }` or `{ "action": "resume" }`. The statuses each job
 action applies to live in `src/lib/jobStatus.ts`, as `canPauseJob`,

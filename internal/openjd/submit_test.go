@@ -1307,3 +1307,57 @@ steps:
 		}
 	}
 }
+
+// ── Submitting paused (SubmitOptions.Paused) ──────────────────────────────────
+
+func TestSubmit_Paused(t *testing.T) {
+	cases := []struct {
+		name      string
+		paused    bool
+		upstream  store.JobStatus // "" = no dependency
+		wantJob   store.JobStatus
+		wantHold  bool
+		wantTasks store.TaskStatus
+	}{
+		{"paused, no dependency", true, "", store.JobStatusPaused, false, store.TaskStatusReady},
+		{"paused, upstream pending", true, store.JobStatusPending, store.JobStatusPaused, true, store.TaskStatusPending},
+		{"paused, upstream completed", true, store.JobStatusCompleted, store.JobStatusPaused, false, store.TaskStatusReady},
+		{"not paused, upstream pending", false, store.JobStatusPending, store.JobStatusBlocked, true, store.TaskStatusPending},
+		{"not paused, upstream completed", false, store.JobStatusCompleted, store.JobStatusPending, false, store.TaskStatusReady},
+		{"not paused, no dependency", false, "", store.JobStatusPending, false, store.TaskStatusReady},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newSubmitFixture(t)
+			opts := openjd.SubmitOptions{FarmID: f.farmID, QueueID: f.queueID, Paused: tc.paused}
+			if tc.upstream != "" {
+				up, err := f.submitter.Submit(ctx, f.template, f.format,
+					openjd.SubmitOptions{FarmID: f.farmID, QueueID: f.queueID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.upstream == store.JobStatusCompleted {
+					finishUpstream(t, f.store, up, store.JobStatusCompleted)
+				}
+				opts.DependsOn = []string{up.Job.ID}
+			}
+			res, err := f.submitter.Submit(ctx, f.template, f.format, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.store.GetJob(ctx, res.Job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != tc.wantJob || got.DependencyHold != tc.wantHold {
+				t.Fatalf("job = %q hold=%v, want %q hold=%v", got.Status, got.DependencyHold, tc.wantJob, tc.wantHold)
+			}
+			for _, tk := range res.Tasks {
+				if tk.Status != tc.wantTasks {
+					t.Fatalf("task %s = %q, want %q", tk.Name, tk.Status, tc.wantTasks)
+				}
+			}
+		})
+	}
+}

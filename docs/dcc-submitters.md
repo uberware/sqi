@@ -985,6 +985,14 @@ Every submitter resolves the server URL the same way, in order:
    state and the last ticked targets there.
 5. `http://localhost:8080`.
 
+### Submit paused
+
+The dialog's **Submit paused** box, beside **Save scene before submit** and
+outside the opt-in Advanced group, creates the job `paused` (`"paused": true`
+in the submit body), so nothing runs until someone resumes it from the web UI
+or the API. It starts unticked every time the dialog opens and applies whether
+or not the Advanced group is expanded. In code it is `JobOptions(paused=True)`.
+
 ### Owner field and `jobs.submit_as`
 
 The Owner field appears only when the session's credential holds the
@@ -2597,7 +2605,7 @@ the same server every other client uses.
 |---|---|
 | `GET /api/v1/products` | List the product catalog (name, title, description, category). |
 | `GET /api/v1/products/{name}/parameters` | Fetch the chosen product's parsed parameter schema, including `userInterface` hints, to build a form. |
-| `POST /api/v1/products/{name}/jobs` | Submit a job: body `{ "farm_id", "queue_id", "name", "parameters": { ... }, plus optional "owner", "submitter", "priority", "project", "depends_on", "max_attempts", "retry_delay_seconds", "failure_limit" }`. |
+| `POST /api/v1/products/{name}/jobs` | Submit a job: body `{ "farm_id", "queue_id", "name", "parameters": { ... }, plus optional "owner", "submitter", "priority", "project", "depends_on", "max_attempts", "retry_delay_seconds", "failure_limit", "estimated_seconds", "paused" }`. |
 
 `internal/api/openapi.yaml` is the authoritative wire contract for all three;
 where it and this doc disagree, it wins. The [parameter convention

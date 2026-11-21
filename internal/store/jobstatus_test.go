@@ -55,7 +55,7 @@ func TestPauseJob(t *testing.T) {
 		store.JobStatusRunning:   nil,
 		store.JobStatusCompleted: store.ErrConflict,
 		store.JobStatusCanceled:  store.ErrConflict,
-		store.JobStatusBlocked:   store.ErrConflict,
+		store.JobStatusBlocked:   nil,
 	}
 	for from, wantErr := range cases {
 		for name, st := range newStores(t) {

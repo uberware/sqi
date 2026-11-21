@@ -262,6 +262,36 @@ def test_advanced_unchecked_sends_no_overrides(
     assert "max_attempts" not in body
 
 
+@respx.mock
+def test_submit_paused_sent_with_advanced_collapsed(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = _mock_server()
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: None)
+    paused_check = dialog.findChild(QtWidgets.QCheckBox, "submitPausedCheck")
+    assert paused_check is not None
+    assert not paused_check.isHidden()
+    assert not paused_check.isChecked()
+    paused_check.setChecked(True)
+    dialog.submit_and_wait()
+    body = json.loads(route.calls.last.request.content)
+    assert body["paused"] is True
+    assert "priority" not in body  # the Advanced group stays collapsed
+
+
+@respx.mock
+def test_submit_paused_unticked_sends_no_paused(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = _mock_server()
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: None)
+    dialog.submit_and_wait()
+    body = json.loads(route.calls.last.request.content)
+    assert "paused" not in body
+
+
 class _CapturingDialog:
     """Stands in for SubmitDialog: records constructor arguments, never builds Qt."""
 
