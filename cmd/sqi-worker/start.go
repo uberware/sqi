@@ -665,8 +665,8 @@ func newSessionManager(cfg workerconfig.WorkerConfig, ledger *proctree.Ledger, l
 	// worker refuse to start when it cannot isolate, rather than accept
 	// isolated queues it cannot honor.
 	//
-	// sessionRoot is separate from cfg.Worker.DataDir, which holds only the
-	// persistent worker-id file (see effectiveSessionRoot). When this worker
+	// sessionRoot is separate from cfg.Worker.DataDir, which holds the
+	// worker's own state (see effectiveSessionRoot). When this worker
 	// can assume another identity, resolveIsolation refuses to start rather
 	// than chmod an ancestor that lacks the traversal bit isolated tasks need.
 	isolationProvider, sessionRoot, sessionRootMode, isolationCapable, err := resolveIsolation(cfg, logger)

@@ -43,11 +43,11 @@ exit, for the session's tasks, and its later output is dropped. A `timeout:`
 on the action, or a cancel, stops everything the action started, by the
 action's `cancelation:` method: `TERMINATE` (the default) kills it at once;
 `NOTIFY_THEN_TERMINATE` notifies it, waits until it has exited or the notify
-period has passed (30 seconds when the action names none), then kills it. On
-Linux and macOS, every process of a task or action carries
-`SQI_PROCESS_TREE` in its environment. When a killed worker is restarted on
-the same data directory, it kills whatever its predecessor left running before
-it registers, and logs `killed a process tree the previous worker left
+period has passed (30 seconds when the action names none), then kills it.
+Every process of a task or action carries `SQI_PROCESS_TREE` in its
+environment. On Linux and macOS, when a killed worker is restarted on the same
+data directory, it kills whatever its predecessor left running before it
+registers, and logs `killed a process tree the previous worker left
 running` for each tree (see [`worker.data_dir`](worker-configuration.md#workerdata_dir)).
 Ending the session kills nothing.
 
