@@ -41,9 +41,9 @@ const (
 const readyTimeout = 30 * time.Second
 
 // startAttempts is how many times [StartCluster] boots a cluster on freshly
-// reserved ports before giving up. A reserved port can be taken by another
-// process before the node binds it, which is likely when many test packages
-// run at once.
+// reserved ports before giving up. Other testport callers skip a reserved
+// port, but a program that binds a fixed port can still take it before the
+// node does.
 const startAttempts = 3
 
 // reservePorts is [freePorts]; a test replaces it to inject a collision.
@@ -537,10 +537,10 @@ func (c *Cluster) Shutdown() {
 	}
 }
 
-// freePorts is [testport.Free], whose ports a node restarted by
-// [Cluster.RestartNode] can bind again. Another process can still bind a port
-// before the node does; [StartCluster] retries on fresh ports when that
-// happens.
+// freePorts is [testport.Free], whose ports stay reserved for the test, so a
+// node restarted by [Cluster.RestartNode] can bind its port again. A program
+// that binds a fixed port can still take one before the node does;
+// [StartCluster] retries on fresh ports when that happens.
 func freePorts(t testing.TB, n int) []int {
 	t.Helper()
 	return testport.Free(t, n)

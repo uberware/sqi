@@ -22,10 +22,9 @@ import (
 
 // ── Test harness ──────────────────────────────────────────────────────────────
 
-// freePort returns a free loopback port from [testport.Free], below the
-// ephemeral range, so a broker restarted in place finds its port free again.
-// The port is released at once; another process can still take it before the
-// broker binds it.
+// freePort returns a loopback port from [testport.Free], below the ephemeral
+// range and reserved for the test, so a broker restarted in place finds its
+// port free again.
 func freePort(t *testing.T) int {
 	t.Helper()
 	return testport.Free(t, 1)[0]
