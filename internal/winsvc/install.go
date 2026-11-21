@@ -122,7 +122,7 @@ func ResolveConfigPath(flagValue, binary string) (string, error) {
 		return "", fmt.Errorf("resolve config path %q: %w", path, err)
 	}
 	if _, err := os.Stat(abs); err != nil {
-		return "", fmt.Errorf("config file %s not found (%w); create one first, e.g.:\n  %s config print > \"%s\"",
+		return "", fmt.Errorf("config file %s not found (%w); create one first, e.g.:\n  %s config init --config \"%s\"",
 			abs, err, binary, abs)
 	}
 	return abs, nil

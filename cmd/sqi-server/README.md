@@ -58,6 +58,10 @@ make build-all
 # Override specific values via flags or environment variables
 SQI_LOG_FORMAT=text ./bin/sqi-server serve --http-addr 127.0.0.1:8090
 
+# Write a starter configuration file to the platform's default location
+# (--force replaces one that exists; --user ACCOUNT on Windows)
+./bin/sqi-server config init
+
 # Print the effective merged configuration and exit (useful for debugging)
 ./bin/sqi-server config print
 

@@ -565,7 +565,7 @@ test-isolation-windows: ## Run windows run-as-user isolation tests as SYSTEM aga
 # Installs, starts, stops and deletes real Windows services, and creates (then
 # deletes) one throwaway local account. Unelevated, the suite prints a "not
 # elevated" line and exits 0 without running anything — a skip verifies
-# nothing, so confirm the six `--- PASS: TestWinService_` lines.
+# nothing, so confirm the thirteen `--- PASS: TestWinService_` lines.
 .PHONY: test-service-windows
 test-service-windows: ## Run the Windows service tests against the real SCM (needs an elevated shell on Windows)
 	go test -tags winservice -count=1 -v -timeout 20m ./test/winservice/...

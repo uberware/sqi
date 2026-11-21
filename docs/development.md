@@ -307,20 +307,33 @@ Service holds its hives open after the service is stopped and deleted), so
 `UserAccount` notes it and leaves it, and the first run after a reboot deletes
 every such profile whose account is gone. It builds the binaries into
 `%ProgramData%\sqi winservice bin NNN` and works in `%ProgramData%\sqi winservice NNN`
-directories, and it writes logs to `%ProgramData%\sqi\logs\sqi-test-*.log`. Six
-tests, `TestWinService_ServerLifecycle`, `InstallRefusesExisting`,
-`WorkerLifecycle`, `StartupFailureLeavesTrace`, `HandRegisteredNewService` and
-`UserAccount`, cover the install, start, status, stop and uninstall round trip
-for both binaries, the refusal of an existing name, a service that fails at
-startup and leaves a trace line, a hand-registered service, and `--user`.
+directories, each made administrators-only (a `service install` that checked
+its binary and configuration would refuse anything a user can write), and it writes logs to `%ProgramData%\sqi\logs\sqi-test-*.log`.
+Thirteen `TestWinService_*` tests cover:
+
+- the install, start, status, stop and uninstall round trip for both binaries
+  (`ServerLifecycle`, `WorkerLifecycle`), the refusal of an existing name
+  (`InstallRefusesExisting`), a service that fails at startup and leaves a trace
+  line (`StartupFailureLeavesTrace`), a hand-registered service
+  (`HandRegisteredNewService`) and `--user` (`UserAccount`);
+- `config init` creating an administrators-only directory
+  (`ConfigInitCreatesProtectedDir`), refusing a directory a user can write
+  (`ConfigInitRefusesSquattedDir`), and with `--user` giving the account read on
+  the configuration and write on its data directory
+  (`ConfigInitUserAccountCanReadAndWrite`);
+- `service install` refusing a configuration directory, a binary and a TLS CA
+  file that a user can write (`InstallRefusesUserWritableConfigDir`,
+  `InstallRefusesUserWritableBinary`, `InstallRefusesUserWritableTLSCA`), and a
+  `%ProgramData%\sqi` a user can write even when the configuration is elsewhere
+  (`InstallRefusesSquattedSqiDirWithConfigElsewhere`).
 
 Not elevated, it prints `winservice: not elevated — the service suite needs an
 elevated (Administrator) shell` and **exits 0 without doing anything**. A skip
-verifies nothing, so confirm all six `--- PASS: TestWinService_` lines (the
+verifies nothing, so confirm all thirteen `--- PASS: TestWinService_` lines (the
 target passes `-count=1`, so a cached result cannot stand in). CI runs it as the
 `winservice-integration` job on an elevated `windows-latest` runner, on one
-architecture, and fails the job on that message or when any of the six does not
-pass.
+architecture, and fails the job on that message or when any of the thirteen does
+not pass.
 
 Two things make a local run fail for reasons outside sqi:
 

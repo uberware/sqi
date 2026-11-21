@@ -9,5 +9,16 @@ release archives ship them under `deploy/systemd/`.
 - `sqi-worker@.service` — template unit; one instance per metrics port
   (`systemctl enable --now sqi-worker@9091 sqi-worker@9092`).
 
+Each unit expects its service user to exist and its configuration file to be
+written with `config init` first:
+
+```sh
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin sqiworker   # sqi for the server
+sudo sqi-worker config init --nats-url nats://sqi-server.example.com:4222    # sqi-server config init for the server
+sudo cp deploy/systemd/sqi-worker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sqi-worker
+```
+
 See [`docs/worker-deployment.md`](../../docs/worker-deployment.md) for the full
-setup (dedicated user, config file, hardening notes).
+worker setup and [`docs/operations.md`](../../docs/operations.md) for the server.

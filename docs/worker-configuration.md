@@ -28,6 +28,11 @@ layers overriding earlier ones:
    `--log-format` are root flags available on every subcommand; `--dry-run` and
    `--nats-insecure-skip-verify` belong to `start` only.
 
+`sqi-worker config init` writes a starter file holding the settings a worker
+needs to start (`nats.url` when you pass `--nats-url`, and `worker.data_dir`) to
+the platform's default location, with the file permissions a service needs; see
+[Configuration](worker-deployment.md#configuration) in the deployment guide.
+
 Print the effective merged configuration at any time with:
 
 ```sh

@@ -108,8 +108,8 @@ func TestResolveConfigPath(t *testing.T) {
 
 	if _, err := ResolveConfigPath("", "sqi-worker"); err == nil ||
 		!strings.Contains(err.Error(), filepath.Join(pd, "sqi", "sqi-worker.yaml")) ||
-		!strings.Contains(err.Error(), "sqi-worker config print") {
-		t.Fatalf("missing default config err = %v; must name the path and the config print remedy", err)
+		!strings.Contains(err.Error(), "sqi-worker config init") {
+		t.Fatalf("missing default config err = %v; must name the path and the config init remedy", err)
 	}
 
 	cfg := filepath.Join(t.TempDir(), "w.yaml")

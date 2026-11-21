@@ -30,6 +30,15 @@ http://localhost:8080.
 
 4. Continue to **"Submit your first job"** below.
 
+These commands run in the foreground and stop when you close the terminal. For a
+real install, where the server and each worker start at boot, the archive ships
+the service files and the binaries write their own starter configuration
+(`sqi-server config init`, `sqi-worker config init`). The
+[server operations guide](operations.md#running-as-a-system-service) covers the
+server as a systemd unit (Linux) or a Windows service, and the
+[worker deployment guide](worker-deployment.md) covers the worker on Linux,
+macOS (launchd) and Windows.
+
 ## Option B — Docker Compose
 
 ```sh

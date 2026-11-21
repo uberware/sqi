@@ -16,13 +16,27 @@ per platform contains **both** `sqi-server` and `sqi-worker`. Archives are named
 `sqi_Linux_arm64.tar.gz`, `sqi_Darwin_arm64.tar.gz`,
 `sqi_Windows_x86_64.zip`.
 
+Every archive holds the binaries, the example configuration files and the
+service files for all three platforms (use the ones for yours):
+
+| In the archive | What it is |
+|---|---|
+| `sqi-worker`, `sqi-server` (`.exe` on Windows) | The binaries. |
+| `config/sqi-worker.example.yaml`, `config/sqi-server.example.yaml` | Every setting, annotated. |
+| `deploy/systemd/sqi-worker.service`, `sqi-worker@.service`, `sqi-server.service` | Linux systemd units. |
+| `deploy/launchd/net.uberware.sqi-worker.plist` | macOS launchd agent for the worker. |
+
 ```sh
 # Linux (x86_64)
 curl -Lo sqi.tar.gz https://github.com/uberware/sqi/releases/latest/download/sqi_Linux_x86_64.tar.gz
-tar -xzf sqi.tar.gz sqi-worker
-chmod +x sqi-worker
-sudo mv sqi-worker /usr/local/bin/
+mkdir sqi
+tar -xzf sqi.tar.gz -C sqi
+cd sqi
+sudo install -m 0755 sqi-worker /usr/local/bin/sqi-worker
 ```
+
+Run the commands in the sections below from the extracted `sqi` directory, which
+is where `deploy/` is.
 
 Verify the download against the published checksums:
 
@@ -50,29 +64,38 @@ make build
 
 ## Configuration
 
-Before running the worker, create a configuration file. The recommended
-location for a system-wide installation is `/etc/sqi/sqi-worker.yaml`.
-
-Copy the annotated example and edit it:
+`sqi-worker config init` writes a starter configuration file: the settings the
+worker needs to start and nothing else. Every other setting keeps its default.
 
 ```sh
-sudo mkdir -p /etc/sqi
-sudo cp config/sqi-worker.example.yaml /etc/sqi/sqi-worker.yaml
-sudo $EDITOR /etc/sqi/sqi-worker.yaml
+sqi-worker config init --nats-url nats://sqi-server.example.com:4222
 ```
 
-Minimum settings (if mDNS auto-discovery is not available):
-
-```yaml
-nats:
-  url: "nats://sqi-server.example.com:4222"
-
-discovery:
-  enable_mdns: false
-
-worker:
-  data_dir: "/var/lib/sqi-worker"
+```text
+wrote /etc/sqi/sqi-worker.yaml
+next: sudo cp deploy/systemd/sqi-worker.service /etc/systemd/system/ && sudo systemctl enable --now sqi-worker
 ```
+
+The file it writes holds `nats.url` (or a commented-out example, when you leave
+`--nats-url` off and the worker finds the server by mDNS) and `worker.data_dir`:
+
+| Platform | Default file | `worker.data_dir` it sets |
+|---|---|---|
+| Linux | `/etc/sqi/sqi-worker.yaml` | `/var/lib/sqi-worker` |
+| macOS | `~/.sqi/sqi-worker.yaml` | `~/Library/Application Support/sqi-worker` |
+| Windows | `C:\ProgramData\sqi\sqi-worker.yaml` | `C:\ProgramData\sqi\worker` |
+
+The root `--config` flag writes the file somewhere else (the data directory then
+moves too on Windows, where it sits beside the file). `--nats-url` takes a
+comma-separated list for a NATS cluster. `config init` refuses to overwrite a
+file that exists; `--force` replaces it. The platform sections below say what
+each platform needs before and after this step, because the file's owner and
+permissions differ.
+
+To change anything else, add it to the file: the annotated
+[`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml)
+in the archive lists every setting. A worker that cannot find the server by mDNS
+needs `nats.url`, which `--nats-url` sets.
 
 `nats.url` is the broker's address: `sqi-server`'s own, or, when the server
 runs with an external NATS cluster (`nats.mode: external`), the cluster's.
@@ -269,65 +292,54 @@ boot (Path A above).
 
 ## Linux — systemd
 
+Run these from the directory you extracted the release archive into (see
+[Pre-built binaries](#pre-built-binaries)), with `sqi-worker` installed in
+`/usr/local/bin`. The unit file the archive ships is
+[`deploy/systemd/sqi-worker.service`](https://github.com/uberware/sqi/blob/main/deploy/systemd/sqi-worker.service).
+
 ### 1. Create a dedicated user
 
 ```sh
-sudo useradd --system --no-create-home --shell /bin/false sqiworker
-sudo mkdir -p /var/lib/sqi-worker
-sudo chown sqiworker:sqiworker /var/lib/sqi-worker
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin sqiworker
 ```
 
-### 2. Install the systemd unit file
+Do this before the next step: `config init` makes the configuration file
+readable by the `sqiworker` group and stops with this same `useradd` command if
+the group does not exist. The unit creates `/var/lib/sqi-worker` (the worker's
+state directory) owned by that user, so there is nothing else to prepare.
 
-Ready-to-use unit files ship in the repository at
-[`deploy/systemd/`](https://github.com/uberware/sqi/tree/main/deploy/systemd)
-(`sqi-worker.service` and the `sqi-worker@.service` template). Copy one into
-place, or create `/etc/systemd/system/sqi-worker.service` from the following:
+### 2. Write the configuration
 
-```ini
-[Unit]
-Description=sqi distributed task worker
-Documentation=https://github.com/uberware/sqi
-After=network-online.target
-Wants=network-online.target
-# Optional: wait for sqi-server if it is on the same host
-# After=sqi-server.service
-
-[Service]
-Type=simple
-User=sqiworker
-Group=sqiworker
-ExecStart=/usr/local/bin/sqi-worker start --config /etc/sqi/sqi-worker.yaml
-Restart=on-failure
-RestartSec=5s
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=sqi-worker
-
-# Worker ID and session working directories
-StateDirectory=sqi-worker
-StateDirectoryMode=0750
-
-# Security hardening
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ReadWritePaths=/var/lib/sqi-worker
-
-[Install]
-WantedBy=multi-user.target
+```sh
+sudo sqi-worker config init --nats-url nats://sqi-server.example.com:4222
 ```
+
+This writes `/etc/sqi/sqi-worker.yaml`, mode `0640`, owned by root and the
+`sqiworker` group (the directory `/etc/sqi` is created `0755` if it is missing).
+Leave `--nats-url` off to have the worker find the server by mDNS. See
+[Configuration](#configuration) for what the file holds and for `--force` and
+a cluster URL.
+
+A file written to any other `--config` location is `0600` and owned by whoever
+ran the command, so the service account cannot read it: keep the default
+location for a systemd service.
+
+### 3. Install the unit and start
+
+```sh
+sudo cp deploy/systemd/sqi-worker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sqi-worker
+```
+
+The unit runs `/usr/local/bin/sqi-worker start --config /etc/sqi/sqi-worker.yaml`
+as `sqiworker`, restarts it after a failure, sends its output to journald and
+confines it with `NoNewPrivileges`, `PrivateTmp` and `ProtectSystem=strict`,
+leaving `/var/lib/sqi-worker` writable.
 
 > **Note:** If `ProtectSystem=strict` prevents the worker from executing render
 > tools, replace it with `ProtectSystem=full` or remove it. Render workers often
 > need read access to shared network mounts.
-
-### 3. Enable and start
-
-```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now sqi-worker
-```
 
 Check status:
 
@@ -342,76 +354,55 @@ Replace the binary and restart:
 
 ```sh
 sudo systemctl stop sqi-worker
-sudo cp new-sqi-worker /usr/local/bin/sqi-worker
+sudo install -m 0755 ./sqi-worker /usr/local/bin/sqi-worker
 sudo systemctl start sqi-worker
 ```
+
+A unit file that changed between releases is copied again, followed by
+`sudo systemctl daemon-reload`.
 
 ---
 
 ## macOS — launchd
 
-### 1. Create a configuration file
+Run these from the directory you extracted the release archive into, with
+`sqi-worker` installed in `/usr/local/bin`:
 
 ```sh
-mkdir -p ~/.sqi
-cp config/sqi-worker.example.yaml ~/.sqi/sqi-worker.yaml
-$EDITOR ~/.sqi/sqi-worker.yaml
+sudo mkdir -p /usr/local/bin
+sudo install -m 0755 sqi-worker /usr/local/bin/sqi-worker
 ```
 
-Set `worker.data_dir` to `~/Library/Application Support/sqi-worker` (or
-another persistent path).
+### 1. Write the configuration
 
-### 2. Install the launchd plist
-
-Create `~/Library/LaunchAgents/net.uberware.sqi-worker.plist` for a per-user
-agent (runs when the user is logged in):
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>net.uberware.sqi-worker</string>
-
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/sqi-worker</string>
-    <string>start</string>
-    <string>--config</string>
-    <string>/Users/YOURUSERNAME/.sqi/sqi-worker.yaml</string>
-  </array>
-
-  <key>RunAtLoad</key>
-  <true/>
-
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-
-  <key>StandardOutPath</key>
-  <string>/tmp/sqi-worker.log</string>
-
-  <key>StandardErrorPath</key>
-  <string>/tmp/sqi-worker.log</string>
-
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>/usr/local/bin:/usr/bin:/bin</string>
-  </dict>
-</dict>
-</plist>
+```sh
+sqi-worker config init --nats-url nats://sqi-server.example.com:4222
 ```
 
-Replace `YOURUSERNAME` with your actual macOS username.
+This writes `~/.sqi/sqi-worker.yaml`, mode `0600`, and creates the worker's data
+directory, `~/Library/Application Support/sqi-worker`, mode `0700`. Leave
+`--nats-url` off to have the worker find the server by mDNS. See
+[Configuration](#configuration).
 
-For a system-wide daemon (runs without a user logged in), place the plist at
-`/Library/LaunchDaemons/net.uberware.sqi-worker.plist` and run it as a
-dedicated service account. Update `UserName` and paths accordingly.
+### 2. Install the launchd agent
+
+The archive ships a per-user agent (it runs while the user is logged in),
+[`deploy/launchd/net.uberware.sqi-worker.plist`](https://github.com/uberware/sqi/blob/main/deploy/launchd/net.uberware.sqi-worker.plist).
+It runs `/usr/local/bin/sqi-worker start` with the configuration at
+`$HOME/.sqi/sqi-worker.yaml` and has no placeholder to edit: launchd sets
+`HOME` for an agent. It starts at load, restarts the worker after a failure, and
+writes the worker's output to `/tmp/sqi-worker.log`.
+
+```sh
+mkdir -p ~/Library/LaunchAgents
+cp deploy/launchd/net.uberware.sqi-worker.plist ~/Library/LaunchAgents/
+```
+
+For a system-wide daemon (runs without a user logged in), place a copy of the
+plist at `/Library/LaunchDaemons/net.uberware.sqi-worker.plist` and run it as a
+dedicated service account: add `UserName`, and replace the shell command with an
+explicit `start --config` naming a configuration file that account can read
+(write it with `config init --config`, run as that account).
 
 ### 3. Load and start
 
@@ -453,125 +444,152 @@ command group; see [its operations guide](operations.md#windows-service). The
 
 Every `service` subcommand, `status` included, must run from an **elevated**
 (Administrator) PowerShell. From any other shell it fails straight away with
-`this command must be run from an elevated (Administrator) shell`.
+`this command must be run from an elevated (Administrator) shell`. So does
+`config init` whenever it has to create or protect a directory, which includes
+the default location.
 
 ### 1. Install the binary
 
 Copy `sqi-worker.exe` to a permanent location that only administrators can
-write, e.g. `C:\Program Files\sqi\sqi-worker.exe`. `service install` registers
-the copy you run it from, and the service runs it as LocalSystem by default, so
-a binary that ordinary users can replace is a privilege escalation.
-
-### 2. Create the directory, administrators-only
-
-The configuration file, `worker.data_dir` (the worker ID, and the worker's
-credential when broker authentication is on) and — for `sqi-server` — the
-database all belong in `C:\ProgramData\sqi` (the configuration file's default
-location, and where step 3 puts `worker.data_dir`), and the service reads them
-as LocalSystem. `C:\ProgramData` lets **any local user create folders**, and
-whoever creates `C:\ProgramData\sqi` first owns it: they keep the right to
-change its permissions, and those of everything they put in it, however much you
-tighten it afterwards. That includes a configuration file they put there in
-advance: overwriting a file keeps its permissions, so it stays theirs to edit.
-A user who can edit the configuration a LocalSystem service runs can point
-`nats.url` at a server of their own, which can then hand the worker tasks to run
-as LocalSystem. A squatted directory is code execution as SYSTEM, not just a look
-at some logs.
-
-So create the directory yourself, as administrator, before anything else on the
-host does (`service install` and a starting service create it too, with
-ProgramData's permissive inherited permissions, if it is missing):
+write, from an **elevated PowerShell**:
 
 ```powershell
-$dir = 'C:\ProgramData\sqi'
-if (Test-Path -LiteralPath $dir) {
-    Write-Warning "$dir already exists. Do not use it as it is: see 'If the directory already exists' below."
-} else {
-    # No -Force: New-Item fails if somebody creates it between the check and here.
-    New-Item -ItemType Directory -Path $dir -ErrorAction Stop | Out-Null
-    icacls $dir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /T /C /Q
-    icacls $dir /setowner "*S-1-5-32-544" /T /C /Q
-}
-# Check it, whichever branch ran.
-Get-Item -LiteralPath $dir -Force | Format-List FullName, Attributes, LinkType, Target
-(Get-Acl -LiteralPath $dir).Owner
-icacls $dir
-Get-ChildItem -LiteralPath $dir -Force
+New-Item -ItemType Directory -Force -Path 'C:\Program Files\sqi' | Out-Null
+Copy-Item .\sqi-worker.exe 'C:\Program Files\sqi\'
 ```
 
-(`*S-1-5-18` is SYSTEM and `*S-1-5-32-544` is Administrators.) The directory is
-what you want when `Attributes` is `Directory` with no `ReparsePoint` (and
-`LinkType` is empty), the owner is `BUILTIN\Administrators`, the ACL lists only
-`NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`, both `(OI)(CI)(F)`, and the
-listing is empty.
+`service install` registers the copy you run it from, and the service runs it as
+LocalSystem by default, so a binary that ordinary users can replace is a
+privilege escalation. `service install` therefore refuses a binary that anyone
+other than SYSTEM and Administrators can change, or that sits in a directory
+they can change (see [What `service install` checks](#what-service-install-checks)).
+That rules out running it from the folder you extracted the archive into when
+that is under a user profile, such as `Downloads`. Copy the file from an
+elevated PowerShell as above: a file created from an elevated Git Bash is owned
+by your own account, which the check refuses.
 
-**If the directory already exists,** keep it only if you created it, as
-administrator, and that check passes and its contents are ones you recognise.
-Otherwise treat whoever created it as hostile: move it aside,
+### 2. Create the configuration directory and file
+
+From an **elevated PowerShell**:
 
 ```powershell
-Rename-Item -LiteralPath $dir -NewName ('sqi.suspect-' + (Get-Date -Format yyyyMMddHHmmss))
+& "C:\Program Files\sqi\sqi-worker.exe" config init --nats-url nats://sqi-server.example.com:4222
 ```
 
-which renames a junction or symbolic link as itself and touches nothing it
-points at; copy nothing out of it, least of all a configuration file; and run
-the recipe again. `cmd.exe /c rmdir "C:\ProgramData\sqi"` also removes a
-junction, and only the link — it refuses a real directory that is not empty.
-Do not try to repair a squatted directory in place with `icacls`: its creator
-owns everything they put in it, and an owner can always rewrite the permissions
-again.
+```text
+wrote C:\ProgramData\sqi\sqi-worker.yaml
+next: sqi-worker service install --start
+```
 
-A service that runs as an ordinary account (`--user`) cannot read this
-directory; see [Choosing the account](#choosing-the-account) for giving it one
-of its own.
+`config init` creates `C:\ProgramData\sqi` if it does not exist, owned by
+Administrators, with permissions that let only SYSTEM and Administrators in
+(full control, nothing inherited), and writes the configuration file into it:
 
-### 3. Create a configuration file
-
-`service install` needs the configuration file to exist — a service cannot
-prompt for one — and bakes its absolute path into the service. The default
-location is `C:\ProgramData\sqi\sqi-worker.yaml` (`%ProgramData%\sqi\sqi-worker.yaml`);
-pass `--config` (`-c`) for another. Write a small one:
-
-```powershell
-@'
+```yaml
 nats:
-  url: "nats://sqi-server.example.com:4222"
-discovery:
-  enable_mdns: false
+  url: 'nats://sqi-server.example.com:4222'
+
 worker:
   data_dir: 'C:\ProgramData\sqi\worker'
-'@ | Set-Content -Path C:\ProgramData\sqi\sqi-worker.yaml -Encoding ascii
 ```
 
-The path is single-quoted YAML, where a backslash is literal. In a double-quoted
-YAML string every backslash must be doubled (`"C:\\ProgramData\\sqi\\worker"`).
-A single one starts an escape sequence: either one YAML does not know, which is
-a parse error (`"C:\sqi\worker"` fails with `found unknown escape character`),
-or, worse, one it does, which loads silently as something else —
-`"D:\render\tmp"` becomes `D:`, a carriage return, `ender`, a tab and `mp`.
+(After a header comment. Leave `--nats-url` off and a comment shows where to put
+the URL instead, for a worker that finds the server by mDNS.) The worker creates
+`C:\ProgramData\sqi\worker` when it first starts.
 
-Set `worker.data_dir` explicitly. Left out, it defaults to `.sqi\worker` under
-the *running* account's profile, which for LocalSystem is inside
-`C:\Windows\System32\config\systemprofile`. `nats.credential_file` then follows
-it (`<data_dir>\worker.nk`), which is where the worker's private key goes when
-broker authentication is on.
+The directory is administrators-only because the configuration file, `worker.data_dir`
+(the worker ID, and the worker's credential when broker authentication is on)
+and, for `sqi-server`, the database all live in it, and the service reads them
+as LocalSystem. A user who could edit the file could point `nats.url` at a
+server of their own, which would then hand the worker tasks to run as
+LocalSystem. See [Why the directory is created for you](#why-the-directory-is-created-for-you).
 
-> **`config print` is not a template for this file.** The file it prints holds
-> the values in effect *in the shell that ran it*: your own profile as
-> `worker.data_dir` and as `nats.credential_file`, the host name as
-> `worker.name`, and any `SQI_WORKER_*` variables you have set. Installed as it
-> is, a LocalSystem service would keep its credential in your profile, and a
-> service that runs as another account (`--user`) would fail at every start,
-> because it cannot read the credential file's path in your profile. The error
-> `service install` prints for a missing file suggests `config print`; if you
-> use it to see every option, delete what you do not mean to set, and at least
-> `nats.credential_file`, `worker.data_dir` (replace it) and `worker.name`.
+`worker.data_dir` is written explicitly because left out it defaults to a
+folder under the profile of whichever account loads the file, which for
+LocalSystem is inside `C:\Windows\System32\config\systemprofile`;
+`nats.credential_file` follows it (`<data_dir>\worker.nk`), which is where the
+worker's private key goes when broker authentication is on. `service install`
+refuses a configuration that leaves `worker.data_dir` out.
 
-Check the file before installing it with
+Options:
+
+- `--config` (a flag of the root command) writes somewhere other than
+  `C:\ProgramData\sqi\sqi-worker.yaml`. `worker.data_dir` becomes a `worker`
+  folder beside the file, so each configuration file gets a data directory of
+  its own. The path must be an ordinary local path on a drive letter: `\\?\` and
+  `\\.\` paths, UNC paths (`\\server\share`) and NTFS stream names
+  (`file:stream`) are refused.
+- `--user ACCOUNT` prepares for a service that runs as that account; see
+  [Choosing the account](#choosing-the-account).
+- `--force` replaces a file that exists; without it `config init` stops. In a
+  protected directory, the file being replaced must pass the same check as the
+  directory first.
+
+A directory under `%ProgramData%`, one that does not exist yet, or one for
+`--user` is created administrators-only or, if it exists, must already be (see
+below). Any other existing directory you name with `--config` is written into as
+it is; `service install` decides later whether it is safe to run from.
+
+Check the file with
 `sqi-worker.exe start --dry-run --config C:\ProgramData\sqi\sqi-worker.yaml`.
 See [`docs/worker-configuration.md`](worker-configuration.md) for every option.
 
-### 4. Install and start the service
+The paths in the file are single-quoted YAML, where a backslash is literal. In a
+double-quoted YAML string every backslash must be doubled
+(`"C:\\ProgramData\\sqi\\worker"`). A single one starts an escape sequence:
+either one YAML does not know, which is a parse error (`"C:\sqi\worker"` fails
+with `found unknown escape character`), or, worse, one it does, which loads
+silently as something else — `"D:\render\tmp"` becomes `D:`, a carriage return,
+`ender`, a tab and `mp`.
+
+> **`config print` is not a template for this file.** It prints the values in
+> effect *in the shell that ran it*: your own profile as `worker.data_dir` and as
+> `nats.credential_file`, the host name as `worker.name`, and any `SQI_WORKER_*`
+> variables you have set. Installed as it is, a LocalSystem service would keep its
+> credential in your profile. Use it to see every option; copy only the settings
+> you mean to change into the file `config init` wrote.
+
+#### Why the directory is created for you
+
+`C:\ProgramData` lets **any local user create folders**, and whoever creates
+`C:\ProgramData\sqi` first owns it: they keep the right to change its
+permissions, and those of everything they put in it, however much you tighten it
+afterwards. That includes a configuration file they put there in advance:
+overwriting a file keeps its permissions, so it stays theirs to edit. A squatted
+directory is code execution as SYSTEM, not just a look at some logs.
+
+So `config init` makes the directory itself, as administrator, and
+`service install` makes it too when it is missing. Neither repairs one that
+already exists. An existing directory under `%ProgramData%` that anyone other than SYSTEM
+and Administrators owns or can change is refused:
+
+```text
+Error: cannot use configuration directory C:\ProgramData\sqi:
+config directory C:\ProgramData\sqi: BUILTIN\Users can write (WD,AD,WEA,WA)
+Someone other than SYSTEM and Administrators can change it. Move it aside from an elevated PowerShell:
+  Rename-Item -LiteralPath 'C:\ProgramData\sqi' -NewName ('sqi.suspect-' + (Get-Date -Format yyyyMMddHHmmss))
+then run config init again.
+```
+
+**If you get this,** keep the directory only if you created it, as administrator,
+and its contents are ones you recognise; otherwise treat whoever created it as
+hostile. Run the `Rename-Item` command it prints, which renames a junction or
+symbolic link as itself and touches nothing it points at; copy nothing out of the
+directory, least of all a configuration file; and run `config init` again.
+`cmd.exe /c rmdir "C:\ProgramData\sqi"` also removes a junction, and only the
+link: it refuses a real directory that is not empty. Do not try to repair a
+squatted directory in place with `icacls`: its creator owns everything they put
+in it, and an owner can always rewrite the permissions again.
+
+A folder you make by hand in `C:\ProgramData` (`New-Item`, Explorer) is refused
+the same way, because `C:\ProgramData` gives every user write access to what is
+created there. Let `config init` create it.
+
+A service that runs as an ordinary account (`--user`) cannot read
+`C:\ProgramData\sqi`; see [Choosing the account](#choosing-the-account) for
+giving it a directory of its own.
+
+### 3. Install and start the service
 
 From an **elevated** PowerShell:
 
@@ -586,6 +604,14 @@ installed service "sqi-worker"
   log:     C:\ProgramData\sqi\logs\sqi-worker.log (unless log.file is set)
 service "sqi-worker" is running (pid 4812)
 ```
+
+`service install` needs the configuration file to exist — a service cannot
+prompt for one — and bakes its absolute path into the service. The default
+location is `C:\ProgramData\sqi\sqi-worker.yaml` (`%ProgramData%\sqi\sqi-worker.yaml`);
+pass `--config` (`-c`) for another. Before it changes anything it checks that
+the binary, the configuration and everything the configuration names are in
+places only administrators can change, and refuses otherwise; see
+[What `service install` checks](#what-service-install-checks).
 
 This registers a service named `sqi-worker` (display name *sqi Worker Agent*)
 that:
@@ -617,7 +643,7 @@ The flags of `service install`:
 
 | Flag | Meaning |
 |---|---|
-| `--config`, `-c` | The worker's configuration file (a flag of the root command; default `C:\ProgramData\sqi\sqi-worker.yaml`). It must exist. If it does not, the error suggests `sqi-worker config print > <path>`. |
+| `--config`, `-c` | The worker's configuration file (a flag of the root command; default `C:\ProgramData\sqi\sqi-worker.yaml`). It must exist. If it does not, the error suggests `sqi-worker config init --config <path>`. |
 | `--name` | Service name (default `sqi-worker`). See [Multiple workers on one host](#multiple-workers-on-one-host). |
 | `--display-name` | Display name (default `sqi Worker Agent`). A service installed under another `--name` defaults to `sqi Worker Agent (<name>)`, because the SCM refuses two services with the same display name. |
 | `--user` | Account to run as: `DOMAIN\name`, `.\name`, a bare local name (treated as `.\name`) or a UPN. Default LocalSystem. You are prompted for the password. See [Choosing the account](#choosing-the-account). |
@@ -649,41 +675,157 @@ is still starting after 60 s — the command prints
 last 20 lines of the [default log file](#logs), and exits with an error. The
 service stays installed; fix the problem and run `service start`.
 
+### What `service install` checks
+
+A service that runs as LocalSystem trusts every file it reads and every program
+it starts, so `service install` checks them before it does anything else: before
+the password prompt, the logon right and the log directory. If `%ProgramData%\sqi`
+does not exist it first creates it administrators-only, as `config init` does.
+It then checks each path in this table and refuses to install if any fails,
+listing every failing path with the setting that named it:
+
+| Checked | Where it comes from |
+|---|---|
+| The configuration file and its directory | `--config` |
+| The binary and its directory | The `.exe` you ran `service install` from |
+| The log file's directory and its parent | `log.file`, when set |
+| `C:\ProgramData\sqi\logs` and its parent | Always: the service writes its log there |
+| The worker's session directory | `worker.session_dir`, or its default when unset |
+| Every file or directory the configuration names | TLS certificates, keys and CA files (`nats.tls_*`, `nats.server_tls_ca_file`, `metrics.tls.*`), the NATS credential and join-token files, `worker.data_dir`, `staging.scratch_dir`, `staging.sync_command`, `worker.power.sleep_command` and `shutdown_command`, `worker.commands.<name>.path` |
+
+A command is checked only when it is written with a path separator. A bare name
+such as `rsync` is looked up on the machine's `PATH` and is not checked.
+
+For `sqi-server` the configuration paths are `http.tls.*`, `nats.embedded.*`
+(`data_dir` and its TLS files), `nats.external.*` (key seeds, credentials files
+and TLS files), `store.sqlite_path`, `auth.ldap.ca_file` and each
+`capacity.providers.<name>.command`; it has no session directory.
+
+**The rule.** A path passes when all of these hold:
+
+- it is a real file or directory, never a junction, symbolic link or other
+  reparse point, so a folder-mounted volume or a folder under OneDrive is
+  refused;
+- its owner is SYSTEM, Administrators or TrustedInstaller, or the `--user`
+  account the service will run as, whose own files it may change;
+- nobody else can write to it, delete it, change its permissions or take its
+  ownership. For a directory, that includes anyone who can add or replace files
+  in it.
+
+A path that does not exist yet is judged by its nearest existing ancestor,
+because whoever can create children there could create it first. **Every
+directory above the path, up to the volume root, is judged too:** one fails if
+someone else owns it or can delete or rename what it holds, because they could
+move the path aside and plant their own. Being able to *add* files to a parent
+is fine, which is why a path under `C:\ProgramData` can pass. (A volume
+root's own DELETE right is ignored, since a root cannot be renamed.)
+
+What this means in practice:
+
+- **Binary and configuration under a user profile fail.** `C:\Users\<name>\...`
+  is owned by that user, who can change everything in it. Put the binary in
+  `C:\Program Files\sqi` (step 1) and the configuration in a directory
+  `config init` creates.
+- **A `C:\ProgramData` folder you made by hand fails**, because every user can
+  write to what they create there. Let `config init` make it, or move the
+  folder aside (above) and run it again.
+- **Data on a mounted volume or under OneDrive fails**, as the path goes through
+  a reparse point. Keep `worker.data_dir` and the other paths on an ordinary
+  folder on a local drive.
+- **The `--user` account passes in its own directory**: `config init --user`
+  gives it exactly that (see [Choosing the account](#choosing-the-account)).
+
+A refusal names the setting and the path, and says what to do. For a binary it
+prints the `New-Item` and `Copy-Item` commands from step 1 for your copy of the
+file. For a path under `C:\ProgramData` it prints the `Rename-Item` command above
+and says to write a new configuration with `config init`; for anything else it
+asks you to make the path administrators-only or to point the setting at a path
+that is.
+
+**What the check does not cover.**
+
+- It judges a directory and everything above it, **not what is already inside
+  it**. If a setting names a folder that existed before you set the service up,
+  look at what is in it.
+- File paths inside `store.postgres.dsn` (`sslrootcert`, `sslcert`, `sslkey`,
+  `passfile`) are not checked.
+- Application paths a worker finds by itself from its capability detectors are
+  not checked. A worker with no run-as-user queue runs those tasks as the
+  service account.
+- A bare command name resolves on the machine's `PATH`, which is not checked.
+- A service registered by hand rather than with `service install` gets no check
+  beyond the junction refusal on its log directory.
+- It reads the configuration with the `SQI_*` variables of the shell you install
+  from applied, which the running service does not see (it sees the machine's
+  environment). Put settings in the file.
+
+`service install --user` also gives the account a single read-attributes and
+traverse entry on `C:\ProgramData\sqi`, so that its service can reach its log
+directory. `service uninstall` leaves that entry; it grants nothing else.
+
 ### Choosing the account
 
 The service runs as **LocalSystem** by default. LocalSystem reaches network
 shares as the *computer* account (`DOMAIN\HOSTNAME$`), not as a user — if your
 jobs read scenes or write renders on SMB shares that only grant users access,
-run it as a user account:
+run it as a user account. The account cannot read `C:\ProgramData\sqi`, which is
+administrators-only, and you should not open that directory to it, so it gets a
+directory of its own. Write the configuration for it, then install:
 
 ```powershell
+& "C:\Program Files\sqi\sqi-worker.exe" config init --user STUDIO\render-svc `
+  --nats-url nats://sqi-server.example.com:4222 `
+  --config C:\ProgramData\sqi-render\sqi-worker.yaml
 & "C:\Program Files\sqi\sqi-worker.exe" service install --user STUDIO\render-svc `
   --config C:\ProgramData\sqi-render\sqi-worker.yaml
 ```
 
-The account cannot read the default configuration file, which lives in the
-administrators-only directory of step 2, so `--user` needs an explicit `--config`
-in a location it can read (see *Give the account a directory of its own* below).
+`config init --user` does the same as without `--user`, in the directory you name,
+and then:
+
+- gives the account **read** on the configuration directory, so it reads the
+  configuration file but cannot edit it (an account that can edit the file
+  chooses what it runs, and `service install` would trust it for that);
+- creates the worker's data directory, `C:\ProgramData\sqi-render\worker`, and
+  gives the account **Modify** on it;
+- needs no password, and does not log the account on;
+- refuses the default `C:\ProgramData\sqi`, which would let the account read every
+  other service's configuration (the default directory is recognised however its
+  path is spelled), and an account name that does not resolve to a user.
+
+It prints the `service install` command with `--user` and `--config` filled in.
+Run `service install` with the same `--config`.
+
 `--start` is left out on purpose: the second mitigation in the
 [known limitations](#security-notes-and-known-limitations) wants the service
 stopped until it has its own `log.file`. If you are not applying it, add
 `--start`.
+
+Anything else the worker writes needs Modify for the account too: a `log.file`
+(see [the known limitations](#security-notes-and-known-limitations)) belongs in
+the data directory (`C:\ProgramData\sqi-render\worker`) or another directory the
+account has Modify on, **not** in `C:\ProgramData\sqi-render` itself, where the
+account can only read — the path passes validation there, and the service then
+fails to open the file at every start.
 
 The installer then, in this order:
 
 1. refuses an existing service (above);
 2. checks the configuration file: it must exist, and the worker reads
    `worker.shutdown_grace_period` from it;
-3. prints a warning about run-as-user privileges (below) and prompts for the
+3. checks that the binary, the configuration and every path it names are in
+   places only administrators (and this account, for its own files) can change
+   (see [What `service install` checks](#what-service-install-checks));
+4. prints a warning about run-as-user privileges (below) and prompts for the
    password — or reads it from piped standard input; an empty password is
    refused;
-4. grants the account **Log on as a service** (`SeServiceLogonRight`);
-5. checks the password with a service-type logon;
-6. prepares the log directory's permissions (see [Logs](#logs)); and
-7. creates the service.
+5. grants the account **Log on as a service** (`SeServiceLogonRight`);
+6. checks the password with a service-type logon;
+7. prepares the log directory's permissions (see [Logs](#logs)); and
+8. creates the service.
 
 The right is granted *before* the password is checked because the check needs
-it. **A wrong password therefore stops the install at step 5 with the right
+it. **A wrong password therefore stops the install at step 6 with the right
 still granted; nothing is rolled back.** To take it back, remove the account
 under *Local Security Policy* (`secpol.msc`) → *Local Policies* → *User Rights
 Assignment* → *Log on as a service* (Windows Home has no `secpol.msc`).
@@ -691,30 +833,6 @@ Assignment* → *Log on as a service* (Windows Home has no `secpol.msc`).
 A domain Group Policy that defines "Log on as a service" overwrites local grants
 at its next refresh, after which the service fails to start with error **1069**.
 The installer cannot fix that; add the account to the policy.
-
-**Give the account a directory of its own.** It cannot read the
-administrators-only directory from step 2, so it could not read a configuration
-file there or write `worker.data_dir` there — and you should not open that
-directory to it. Prepare a second one with the same recipe (for example
-`$dir = 'C:\ProgramData\sqi-render'`), then grant the account at least read on
-it (the configuration file inherits that) and modify on the worker's data
-directory:
-
-```powershell
-$acct = 'STUDIO\render-svc'
-$data = Join-Path $dir 'worker'
-icacls $dir /grant "${acct}:(OI)(CI)RX"
-New-Item -ItemType Directory -Path $data -ErrorAction Stop | Out-Null
-icacls $data /grant "${acct}:(OI)(CI)M"
-```
-
-Put the configuration file in `$dir`, set `worker.data_dir` to `$data`, and
-install with `--config "$dir\sqi-worker.yaml"`. Anything else the worker writes
-needs Modify for the account too: a `log.file` (see
-[the known limitations](#security-notes-and-known-limitations)) belongs in `$data`
-or another directory the account has Modify on, **not** in `$dir` itself, where
-the account can only read — the path passes validation there, and the service
-then fails to open the file at every start.
 
 **Run-as-user queues.** If the farm uses run-as-user queues
 ([task isolation](worker-configuration.md#windows)), the worker's own account
@@ -760,9 +878,11 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
   inherited. `service install` creates it; a hand-registered service creates it
   at its first start. A directory that already exists is left as it is, except
   that `service install --user` always adds its account to it, whatever
-  `log.file` says, and that both `service install` and the starting service
-  refuse one that is, or sits under, a junction or symbolic link (see the
-  [known limitations](#security-notes-and-known-limitations)).
+  `log.file` says, and that `service install` refuses one that anyone other than
+  SYSTEM and Administrators can change (see
+  [What `service install` checks](#what-service-install-checks)) and both it and
+  the starting service refuse one that is, or sits under, a junction or symbolic
+  link (see the [known limitations](#security-notes-and-known-limitations)).
 - **Rotation** is by size: the file becomes `<file>.1`, `.1` becomes `.2`, and so
   on up to `log.max_backups`, and the oldest is dropped. A rotation that fails
   — most often because something such as `Get-Content -Wait`, an editor or a log
@@ -819,8 +939,11 @@ a clean stop, never a failure the recovery actions would answer.
 
 `Get-Service sqi-worker` (which needs no elevation), `Start-Service`,
 `Stop-Service` and `services.msc` work too. To upgrade, `service stop`, replace
-`sqi-worker.exe`, and `service start`; the registration keeps its path and
-settings.
+`sqi-worker.exe` (copy the new file in from an elevated PowerShell, so it stays
+administrators-only), and `service start`; the registration keeps its path and
+settings. The check in [What `service install` checks](#what-service-install-checks)
+runs again whenever you run `service install`, so a binary that anyone other than
+SYSTEM and Administrators can change is refused then.
 
 **How long each command waits.** `start` waits up to 60 s for the service to
 run, then watches it for 3 s more. `stop` and `uninstall` wait for the service
@@ -857,7 +980,8 @@ above, whenever they contain spaces, and use absolute paths: a relative
 `--config` is resolved against the directory the SCM starts the process in,
 `C:\Windows\System32`. Such a service still answers the SCM natively, drains on
 Stop and on shutdown, runs in the config file's directory and logs to the default
-file.
+file. It does not get the checks `service install` makes, so keep its binary and
+configuration where only administrators can change them (steps 1 and 2).
 
 **`--config` is required.** A service registered without it refuses to start:
 it stops at once with `exit codes: 1066 (service-specific 1)`, and its
@@ -869,7 +993,8 @@ working directory (`C:\ProgramData\sqi` when there is no `--config`) and
 `\etc\sqi\sqi-worker.yaml` on that drive (`C:\etc\sqi`). Whoever put a file
 there would choose what a LocalSystem service runs. (Before stopping, such a
 service still changes into `C:\ProgramData\sqi`, creating it with ProgramData's
-inherited permissions if it is missing, so prepare it as in step 2 either way.)
+inherited permissions if it is missing, so write the configuration with
+`config init` as in [step 2](#2-create-the-configuration-directory-and-file) either way.)
 
 What only `service install` configures is missing: delayed start, the recovery
 actions and the PreShutdown timeout. Set the first two yourself with `sc.exe`
@@ -895,6 +1020,8 @@ completes.
 | Error **1069**, "the service did not start due to a logon failure" | The account's password is wrong or has changed, or the account no longer holds "Log on as a service" (a domain policy can remove it). Add the account to the policy if one applies, then run `service uninstall` and `service install --user …` again, which prompts for the password and grants the right. |
 | The service stops straight after starting | `service status` shows `exit codes: 1066 (service-specific 1)`: the worker exited with an error. `service start` and `install --start` report a stop within 3 s of the service running as a failed start; a later one they miss, having printed `is running` (see above). Read the [log](#logs); the reason is the last `"service exited with error"` line — or, when the log directory could not be used, the line in `sqi-worker.trace.log` beside the configuration file. The SCM keeps restarting it (5 s, 30 s, then every 60 s) until the configuration is fixed. |
 | `stopped` with `exit codes: 0` that you did not ask for | Unless someone else stopped it, the worker lost its NATS connection for good and shut itself down cleanly, which the SCM does not treat as a failure. See the [known limitations](#security-notes-and-known-limitations). |
+| `refusing to install sqi-worker: someone other than SYSTEM, Administrators and the service's account can change what it would trust or run` | `service install` found a path that someone else could change. The lines after it name each path and the setting it came from. See [What `service install` checks](#what-service-install-checks): typically the binary is in a user profile (copy it to `C:\Program Files\sqi` from an elevated PowerShell) or the configuration is in a `C:\ProgramData` folder you made by hand (write it with `config init`). |
+| `cannot use configuration directory …` from `config init` | The directory exists and someone other than SYSTEM and Administrators can change it, or a directory above it. Run the `Rename-Item` command it prints, or pass `--config` for another directory. See [Why the directory is created for you](#why-the-directory-is-created-for-you). |
 | `service already exists: …` | The name is taken. `service uninstall --name <name>` first, or choose another `--name`. |
 | `must be run from an elevated (Administrator) shell` | Open PowerShell with *Run as administrator*. |
 | `service uninstall` succeeds but the service is still listed | It is *marked for deletion* until every handle to it closes — typically `services.msc` or another management tool. Close them. |
@@ -936,8 +1063,8 @@ the defaults.
   There are two mitigations, and each has a price:
   - *Send the other services' logs elsewhere.* Give the server, and every other
     service `X` must not see, a `log.file` in a directory that only that
-    service's account and administrators can read **and** write — for example the
-    administrators-only `C:\ProgramData\sqi` from step 2:
+    service's account and administrators can read **and** write — for example
+    `C:\ProgramData\sqi`, which `config init` makes administrators-only:
     `log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`. Then restart the server
     — `sqi-server service stop`, then `service start` — so that it closes the old
     file and writes the new one: while it runs it holds `logs\sqi-server.log` open
@@ -952,38 +1079,37 @@ the defaults.
     `--user` service without `--start`, run
     `icacls "C:\ProgramData\sqi\logs" /remove:g "STUDIO\render-svc"` (with the
     account you installed under; the removal reaches the files already there),
-    give the worker its own `log.file` in a directory `X` has Modify on — the
-    `$data` directory from [Choosing the account](#choosing-the-account), not
-    `$dir`, where it can only read — and only then `service start`. The price:
+    give the worker its own `log.file` in a directory `X` has Modify on — the data
+    directory from [Choosing the account](#choosing-the-account)
+    (`C:\ProgramData\sqi-render\worker`), not the configuration directory,
+    where it can only read — and only then `service start`. The price:
     the worker **needs** that
     `log.file`, because without the permission it cannot open the default log
     file and fails at every start; and it loses the best-effort startup-failure
     line — the default directory is closed to it, and the fallback,
-    `<service-name>.trace.log` beside the configuration file, is in `$dir`, where
-    it can only read — so a configuration error leaves you only
+    `<service-name>.trace.log` beside the configuration file, is in the
+    configuration directory, where it can only read — so a configuration error
+    leaves you only
     `exit codes: 1066 (service-specific 1)` and the console recipe under
     [Troubleshooting](#troubleshooting) to find out why. Every later
     `service install --user X` adds the permission back, so run the `icacls`
     command again after each one.
-- **`C:\ProgramData\sqi` can be squatted, and the installer's checks are
-  narrow.** [Step 2](#2-create-the-directory-administrators-only) is the
-  mitigation and nothing else stands in for it. `service install` refuses a
-  junction or symbolic link at the log directory, or at its parent
-  `C:\ProgramData\sqi`, for a LocalSystem install and a `--user` one alike,
-  whether it creates `logs` or finds it already there, and a starting service
-  makes the same check each time it opens its default log, so a hand-registered
-  service (which never ran `service install`) gets it too. What the check cannot
-  close is a race: the path is checked and then used by name, so a directory
-  swapped for a junction between the two — during the install, or while the
-  service runs — still redirects the log, and a squatter who owns
-  `C:\ProgramData\sqi` can make that swap at will. Nothing checks or protects
-  the working directory, the configuration file, `worker.data_dir` or (for
-  `sqi-server`) the database, and a
-  directory the installer or a starting service has to create gets ProgramData's
-  permissive inherited permissions. That is why step 2 comes first, and why its
-  check includes the owner: what a squatter plants there is theirs, and what they
-  own they can always re-permission. Keep the configuration file and the binaries
-  somewhere only administrators can write too.
+- **`service install`'s checks are narrow, and a squatted `C:\ProgramData\sqi`
+  is what they are for.** `config init` creating the directory, and
+  [What `service install` checks](#what-service-install-checks) refusing a
+  configuration, binary or data path that anyone else could change, are the
+  mitigation; nothing stands in for them when you skip them. What they cannot
+  close is a race: a path is checked and then used by name, so a directory swapped
+  for a junction between the two — during the install, or while the service
+  runs — still redirects what the service reads or writes, and someone who
+  already owns a directory on the path can make that swap at will (which is why
+  the check refuses an owner it does not trust). It also does not cover what that
+  section lists as out of scope: file paths inside `store.postgres.dsn`,
+  application paths a capability detector finds, bare command names resolved on
+  the `PATH`, and the contents of a directory that already existed. A starting
+  service checks only its default log directory for a junction or symbolic link,
+  so a service registered by hand (which never ran `service install`) gets that
+  and nothing more.
 - **Losing NATS for good does not restart the worker.** When the worker's NATS
   connection is permanently lost — a finite `nats.max_reconnect_attempts` running
   out, or the server revoking its credential — it shuts down cleanly and exits
@@ -1046,8 +1172,9 @@ and should have a distinct `worker.name`. See
 for the full rationale.
 
 On Linux the idiomatic approach is a **systemd template unit**, where the
-instance identifier (`%i`) carries the per-instance metrics port. Create
-`/etc/systemd/system/sqi-worker@.service`:
+instance identifier (`%i`) carries the per-instance metrics port. The release
+archive ships it as `deploy/systemd/sqi-worker@.service`; copy it to
+`/etc/systemd/system/sqi-worker@.service`, or create that file from:
 
 ```ini
 [Unit]
@@ -1104,13 +1231,20 @@ three settings that must differ per instance. Manage each with the usual
 > **Windows:** install each instance as its own service with its own `--name`
 > and `--config`, and give each configuration file its own `worker.data_dir`,
 > `metrics.addr` and `worker.name` (`service install` gives each instance its own
-> configuration file, not per-instance environment variables), all in
-> directories only administrators can write, as in
-> [step 2](#2-create-the-directory-administrators-only):
+> configuration file, not per-instance environment variables). Write each file
+> into a directory of its own with `config init`: its `worker.data_dir` is then
+> the `worker` folder beside the file, so two instances never share one, and the
+> directory is administrators-only as in
+> [step 2](#2-create-the-configuration-directory-and-file). Add `metrics.addr` and `worker.name` to
+> the file it writes, then install:
 >
 > ```powershell
+> & "C:\Program Files\sqi\sqi-worker.exe" config init `
+>   --nats-url nats://sqi-server.example.com:4222 `
+>   --config C:\ProgramData\sqi-worker-2\sqi-worker.yaml
+> # edit C:\ProgramData\sqi-worker-2\sqi-worker.yaml: set metrics.addr and worker.name
 > & "C:\Program Files\sqi\sqi-worker.exe" service install `
->   --name sqi-worker-2 --config C:\ProgramData\sqi\sqi-worker-2.yaml --start
+>   --name sqi-worker-2 --config C:\ProgramData\sqi-worker-2\sqi-worker.yaml --start
 > ```
 >
 > The instance gets the display name `sqi Worker Agent (sqi-worker-2)`, logs to
