@@ -103,8 +103,11 @@ your home directory and the command creates the data directory `0700`. On Window
 it is written into `C:\ProgramData\sqi`, which `config init` creates
 administrators-only; run it from an elevated PowerShell (see
 [Windows service](#windows-service)). The root `--config` flag writes the file
-elsewhere (a file anywhere but `/etc/sqi` on Linux is `0600`, owned by whoever ran
-the command), and `--force` replaces one that exists.
+elsewhere (on Linux only `/etc/sqi/sqi-server.yaml` itself is `0640`, root and
+`sqi`; a file at any other path is `0600`, owned by whoever ran the command),
+and `--force` replaces one that exists. The `next:` line then names that file:
+on Windows in the `service install` command, on Linux and macOS as what to
+change in the unit or agent, which reads the default path.
 
 Edit the file for production. The annotated
 [`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml)
@@ -219,7 +222,7 @@ sqi-server service status   # a few seconds later
 
 ```text
 wrote C:\ProgramData\sqi\sqi-server.yaml
-next: sqi-server service install --start
+next: & 'C:\Program Files\sqi\sqi-server.exe' service install --start
 ```
 
 `config init` creates `C:\ProgramData\sqi` if it is missing, owned by

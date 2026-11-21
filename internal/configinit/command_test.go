@@ -67,18 +67,21 @@ func readFile(t *testing.T, p string) string {
 	return string(b)
 }
 
+// TestInit_RefusesExistingWithoutForce pins that the POSIX writer refuses an
+// existing file before it writes anything; the Windows writer's refusal is
+// pinned in write_windows_test.go, after its elevation check.
 func TestInit_RefusesExistingWithoutForce(t *testing.T) {
 	tgt := target(t)
 	if err := os.WriteFile(tgt, []byte("mine"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r := &recorder{}
-	_, err := runInit(t, workerSpec, r.write, "--config", tgt)
+	m := newMemFS()
+	_, err := runInit(t, workerSpec, unixWriter(m.sys("linux"), "sqiworker"), "--config", tgt)
 	if want := tgt + " exists; pass --force to replace it"; err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
-	if len(r.reqs) != 0 {
-		t.Error("the writer ran for an existing file")
+	if len(m.files) != 0 || len(m.dirs) != 0 {
+		t.Errorf("the writer wrote %q for an existing file", m.paths())
 	}
 	if got := readFile(t, tgt); got != "mine" {
 		t.Errorf("existing file changed to %q", got)
@@ -200,60 +203,96 @@ func TestInit_WriterErrorIsReturnedAndNothingIsClaimed(t *testing.T) {
 	}
 }
 
+// TestInit_PrintsNextStep pins that run hands nextStep what it needs: the
+// file written, whether it is the default one, and on Windows the running
+// executable.
 func TestInit_PrintsNextStep(t *testing.T) {
-	tests := []struct {
-		spec   Spec
-		binary string
-		want   map[string]string // by GOOS
-	}{
-		{workerSpec, "sqi-worker", map[string]string{
-			"linux":   "next: sudo cp deploy/systemd/sqi-worker.service /etc/systemd/system/ && sudo systemctl enable --now sqi-worker",
-			"darwin":  "next: cp deploy/launchd/net.uberware.sqi-worker.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/net.uberware.sqi-worker.plist",
-			"windows": "next: sqi-worker service install --start",
-		}},
-		{serverSpec, "sqi-server", map[string]string{
-			"linux":   "next: sudo cp deploy/systemd/sqi-server.service /etc/systemd/system/ && sudo systemctl enable --now sqi-server",
-			"darwin":  "next: sqi-server serve",
-			"windows": "next: sqi-server service install --start",
-		}},
+	orig := executable
+	executable = func() (string, error) { return `C:\Program Files\sqi\sqi-worker.exe`, nil }
+	t.Cleanup(func() { executable = orig })
+	tgt := target(t)
+	out, err := runInit(t, workerSpec, (&recorder{}).write, "--config", tgt)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.binary, func(t *testing.T) {
-			out, err := runInit(t, tt.spec, (&recorder{}).write, "--config", target(t))
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := tt.want[runtime.GOOS]
-			if want == "" {
-				want = tt.want["linux"]
-			}
-			if !strings.Contains(out, want+"\n") {
-				t.Errorf("output %q does not contain %q", out, want)
-			}
-			if !strings.HasPrefix(out, "wrote ") {
-				t.Errorf("output %q does not start with wrote <path>", out)
-			}
-		})
+	if !strings.HasPrefix(out, "wrote "+tgt+"\n") {
+		t.Errorf("output %q does not start with wrote %s", out, tgt)
+	}
+	want := map[string]string{
+		"windows": "next: & 'C:\\Program Files\\sqi\\sqi-worker.exe' service install --config '" + tgt + "' --start\n",
+		"darwin":  "/sqi-worker.yaml; edit its --config to " + tgt,
+		"linux":   "/etc/sqi/sqi-worker.yaml; edit its ExecStart's --config to " + tgt,
+	}[runtime.GOOS]
+	if want == "" {
+		want = "edit its ExecStart's --config to " + tgt
+	}
+	if !strings.Contains(out, want) {
+		t.Errorf("output %q does not contain %q", out, want)
 	}
 }
 
 func TestNextStep_EveryPlatform(t *testing.T) {
+	const exe = `C:\Program Files\sqi\sqi-worker.exe`
 	tests := []struct {
-		goos string
-		b    Binary
+		name string
+		n    nextInfo
 		want string
 	}{
-		{"linux", Worker, "next: sudo cp deploy/systemd/sqi-worker.service /etc/systemd/system/ && sudo systemctl enable --now sqi-worker"},
-		{"linux", Server, "next: sudo cp deploy/systemd/sqi-server.service /etc/systemd/system/ && sudo systemctl enable --now sqi-server"},
-		{"darwin", Worker, "next: cp deploy/launchd/net.uberware.sqi-worker.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/net.uberware.sqi-worker.plist"},
-		{"darwin", Server, "next: sqi-server serve"},
-		{"windows", Worker, "next: sqi-worker service install --start"},
-		{"windows", Server, "next: sqi-server service install --start"},
+		{
+			"linux worker",
+			nextInfo{GOOS: "linux", Binary: Worker, Target: "/etc/sqi/sqi-worker.yaml"},
+			"next: sudo cp deploy/systemd/sqi-worker.service /etc/systemd/system/ && sudo systemctl enable --now sqi-worker",
+		},
+		{
+			"linux server",
+			nextInfo{GOOS: "linux", Binary: Server, Target: "/etc/sqi/sqi-server.yaml"},
+			"next: sudo cp deploy/systemd/sqi-server.service /etc/systemd/system/ && sudo systemctl enable --now sqi-server",
+		},
+		{
+			"linux other file",
+			nextInfo{GOOS: "linux", Binary: Worker, Target: "/srv/sqi/w.yaml", Custom: true},
+			"next: deploy/systemd/sqi-worker.service reads /etc/sqi/sqi-worker.yaml; edit its ExecStart's --config to /srv/sqi/w.yaml before you install it",
+		},
+		{
+			"darwin worker",
+			nextInfo{GOOS: "darwin", Binary: Worker, Target: "/Users/a/.sqi/sqi-worker.yaml"},
+			"next: cp deploy/launchd/net.uberware.sqi-worker.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/net.uberware.sqi-worker.plist",
+		},
+		{
+			"darwin worker, other file",
+			nextInfo{GOOS: "darwin", Binary: Worker, Target: "/Users/a/w.yaml", Custom: true},
+			"next: deploy/launchd/net.uberware.sqi-worker.plist reads ~/.sqi/sqi-worker.yaml; edit its --config to /Users/a/w.yaml before you load it",
+		},
+		{"darwin server", nextInfo{GOOS: "darwin", Binary: Server, Target: "/Users/a/.sqi/sqi-server.yaml"}, "next: sqi-server serve"},
+		{
+			"darwin server, other file",
+			nextInfo{GOOS: "darwin", Binary: Server, Target: "/Users/a/my sqi/s.yaml", Custom: true},
+			"next: sqi-server serve --config '/Users/a/my sqi/s.yaml'",
+		},
+		{
+			"windows",
+			nextInfo{GOOS: "windows", Binary: Worker, Target: `C:\ProgramData\sqi\sqi-worker.yaml`, Exe: exe},
+			"next: & 'C:\\Program Files\\sqi\\sqi-worker.exe' service install --start",
+		},
+		{
+			"windows, other file",
+			nextInfo{GOOS: "windows", Binary: Server, Target: `D:\sqi\sqi-server.yaml`, Custom: true, Exe: exe},
+			"next: & 'C:\\Program Files\\sqi\\sqi-worker.exe' service install --config 'D:\\sqi\\sqi-server.yaml' --start",
+		},
+		{"windows, --user", nextInfo{
+			GOOS: "windows", Binary: Worker, Target: `C:\ProgramData\sqi-render\sqi-worker.yaml`, Custom: true,
+			User: `STUDIO\render-svc`, Exe: exe,
+		}, "next: & 'C:\\Program Files\\sqi\\sqi-worker.exe' service install --user 'STUDIO\\render-svc' --config 'C:\\ProgramData\\sqi-render\\sqi-worker.yaml'"},
+		{
+			"windows quoting",
+			nextInfo{GOOS: "windows", Binary: Worker, Target: `C:\it's\w.yaml`, Custom: true, Exe: `C:\it's\sqi-worker.exe`},
+			"next: & 'C:\\it''s\\sqi-worker.exe' service install --config 'C:\\it''s\\w.yaml' --start",
+		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.goos+"/"+string(tt.b), func(t *testing.T) {
-			if got := nextStep(tt.goos, tt.b); got != tt.want {
-				t.Errorf("nextStep = %q, want %q", got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nextStep(tt.n); got != tt.want {
+				t.Errorf("nextStep =\n %q\nwant\n %q", got, tt.want)
 			}
 		})
 	}

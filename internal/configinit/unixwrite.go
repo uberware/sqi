@@ -157,6 +157,9 @@ func denied(err error) error {
 // system-wide file is the Linux default target; every other target is private.
 func unixWriter(sys unixSys, group string) writer {
 	return func(req writeRequest) error {
+		if err := refuseExisting(req.Target, req.Force); err != nil {
+			return err
+		}
 		shared := sys.goos == "linux" && req.Target == DefaultTarget(req.Binary, req.Platform)
 		return writeUnix(req.Target, req.Content, unixOpts{Shared: shared, Group: group, DataDir: req.DataDir}, sys)
 	}

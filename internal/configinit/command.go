@@ -91,9 +91,6 @@ func run(cmd *cobra.Command, spec Spec, w writer, force bool, natsURL, user stri
 	if err != nil {
 		return err
 	}
-	if err := refuseExisting(target, force); err != nil {
-		return err
-	}
 	dataDir := DataDir(spec.Binary, p, target)
 	account := winsvc.NormalizeAccount(user)
 	sessionDir := SessionDir(spec.Binary, p, target, account)
@@ -112,21 +109,34 @@ func run(cmd *cobra.Command, spec Spec, w writer, force bool, natsURL, user stri
 	}
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "wrote %s\n", target)
-	next := nextStep(p.GOOS, spec.Binary)
+	n := nextInfo{GOOS: p.GOOS, Binary: spec.Binary, Target: target, Custom: !isDefaultTarget(target, spec.Binary, p)}
 	if account != "" {
-		next += fmt.Sprintf(" --user %s --config %s", shellArg(user), shellArg(target))
+		n.User = user
 	}
-	fmt.Fprintln(out, next)
+	if p.GOOS == goosWindows {
+		n.Exe = string(spec.Binary) + ".exe"
+		if exe, err := executable(); err == nil {
+			n.Exe = exe
+		}
+	}
+	fmt.Fprintln(out, nextStep(n))
 	return nil
 }
 
-// shellArg double-quotes s when it holds a space, so a printed command line
-// can be pasted as it is.
-func shellArg(s string) string {
-	if strings.ContainsAny(s, " \t") {
-		return `"` + s + `"`
+// executable is os.Executable, replaced in tests.
+var executable = os.Executable
+
+// isDefaultTarget reports whether target is the file b's service reads when
+// no --config is given, in the spelling resolveTarget gives it.
+func isDefaultTarget(target string, b Binary, p Platform) bool {
+	def, err := resolveTarget("", b, p)
+	if err != nil {
+		return false
 	}
-	return s
+	if p.GOOS == goosWindows {
+		return strings.EqualFold(def, target)
+	}
+	return def == target
 }
 
 // configFlag reads the binary's persistent root --config flag.
@@ -162,6 +172,8 @@ func resolveTarget(flag string, b Binary, p Platform) (string, error) {
 	return canonicalTarget(flag)
 }
 
+// refuseExisting refuses a file already at target unless force is set. The
+// platform writers call it, after any check that must come first.
 func refuseExisting(target string, force bool) error {
 	_, err := os.Lstat(target)
 	switch {
@@ -177,19 +189,70 @@ func refuseExisting(target string, force bool) error {
 	}
 }
 
+// nextInfo is what the printed next step depends on.
+type nextInfo struct {
+	GOOS   string
+	Binary Binary
+	Target string // the file written
+	Custom bool   // Target is not the default file the service reads
+	User   string // Windows --user as given; "" for none
+	Exe    string // Windows: the running executable's full path
+}
+
 // nextStep is the line that tells the operator how to start what was
-// configured.
-func nextStep(goos string, b Binary) string {
-	switch goos {
+// configured. Where the shipped systemd unit or launchd agent would read the
+// default file instead of a custom one, it says so rather than give a
+// command that starts the service on the wrong file.
+func nextStep(n nextInfo) string {
+	switch n.GOOS {
 	case goosWindows:
-		return fmt.Sprintf("next: %s service install --start", b)
+		return windowsNextStep(n)
 	case goosDarwin:
-		if b == Worker {
+		if n.Binary == Worker {
 			const plist = "net.uberware.sqi-worker.plist"
+			if n.Custom {
+				return "next: deploy/launchd/" + plist + " reads ~/.sqi/sqi-worker.yaml; edit its --config to " +
+					n.Target + " before you load it"
+			}
 			return "next: cp deploy/launchd/" + plist + " ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/" + plist
 		}
-		return fmt.Sprintf("next: %s serve", b)
+		if n.Custom {
+			return fmt.Sprintf("next: %s serve --config %s", n.Binary, posixArg(n.Target))
+		}
+		return fmt.Sprintf("next: %s serve", n.Binary)
 	default:
-		return fmt.Sprintf("next: sudo cp deploy/systemd/%[1]s.service /etc/systemd/system/ && sudo systemctl enable --now %[1]s", b)
+		if n.Custom {
+			return fmt.Sprintf("next: deploy/systemd/%[1]s.service reads /etc/sqi/%[1]s.yaml; edit its ExecStart's --config to %[2]s before you install it",
+				n.Binary, n.Target)
+		}
+		return fmt.Sprintf("next: sudo cp deploy/systemd/%[1]s.service /etc/systemd/system/ && sudo systemctl enable --now %[1]s", n.Binary)
 	}
+}
+
+// windowsNextStep is the service install command for n, to paste into
+// PowerShell: the full path of the binary that wrote the file, run with the
+// call operator, and every argument single-quoted. --start is left off for an
+// account, which may need more rights granted before its service can start.
+func windowsNextStep(n nextInfo) string {
+	q := func(s string) string { return "'" + winsvc.QuotePowerShell(s) + "'" }
+	line := "next: & " + q(n.Exe) + " service install"
+	if n.User != "" {
+		line += " --user " + q(n.User)
+	}
+	if n.Custom || n.User != "" {
+		line += " --config " + q(n.Target)
+	}
+	if n.User == "" {
+		line += " --start"
+	}
+	return line
+}
+
+// posixArg single-quotes s for a POSIX shell unless it is made only of
+// characters no shell treats specially.
+func posixArg(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-+=:,@") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

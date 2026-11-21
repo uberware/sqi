@@ -68,7 +68,7 @@ make build
 worker needs to start and nothing else. Every other setting keeps its default.
 
 ```sh
-sqi-worker config init --nats-url nats://sqi-server.example.com:4222
+sudo sqi-worker config init --nats-url nats://sqi-server.example.com:4222
 ```
 
 ```text
@@ -86,7 +86,9 @@ The file it writes holds `nats.url` (or a commented-out example, when you leave
 | Windows | `C:\ProgramData\sqi\sqi-worker.yaml` | `C:\ProgramData\sqi\worker` |
 
 The root `--config` flag writes the file somewhere else (the data directory then
-moves too on Windows, where it sits beside the file). `--nats-url` takes a
+moves too on Windows, where it sits beside the file), and the `next:` line names
+that file: on Windows in the `service install` command, on Linux and macOS as
+what to change in the unit or agent, which reads the default path. `--nats-url` takes a
 comma-separated list for a NATS cluster. `config init` refuses to overwrite a
 file that exists; `--force` replaces it. The platform sections below say what
 each platform needs before and after this step, because the file's owner and
@@ -478,7 +480,7 @@ From an **elevated PowerShell**:
 
 ```text
 wrote C:\ProgramData\sqi\sqi-worker.yaml
-next: sqi-worker service install --start
+next: & 'C:\Program Files\sqi\sqi-worker.exe' service install --start
 ```
 
 `config init` creates `C:\ProgramData\sqi` if it does not exist, owned by
@@ -798,7 +800,8 @@ and then:
   other service's configuration (the default directory is recognised however its
   path is spelled), and an account name that does not resolve to a user.
 
-It prints the `service install` command with `--user` and `--config` filled in.
+It prints the `service install` command with `--user` and `--config` filled in,
+without `--start`.
 Run `service install` with the same `--config`. `service install --user` refuses
 a configuration inside `C:\ProgramData\sqi`, which the account cannot read, and
 says to write one with `config init --user`. The other way round, when
@@ -806,10 +809,10 @@ says to write one with `config init --user`. The other way round, when
 grants a user account Modify, the refusal adds that the configuration looks
 written for `--user` with that account.
 
-`--start` is left out on purpose: the second mitigation in the
-[known limitations](#security-notes-and-known-limitations) wants the service
-stopped until it has its own `log.file`. If you are not applying it, add
-`--start`.
+`--start` is left out on purpose: before the service first starts, give the
+account whatever else it needs — the privilege below for run-as-user queues,
+access to the shares its jobs use, Modify on a `log.file` directory — then run
+`service start`, or add `--start` when it needs nothing more.
 
 Anything else the worker writes needs Modify for the account too: a `log.file`
 belongs in the data directory (`C:\ProgramData\sqi-render\worker`) or another directory the

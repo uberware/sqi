@@ -60,8 +60,9 @@ func windowsWriter(ops winOps) writer {
 // writeWindows puts content at target. A directory under %ProgramData%, a
 // missing one, or one for an account is made administrators-only (granting
 // account read) or must already be, which needs an elevated shell, checked
-// before anything else. An existing directory of one's own elsewhere is
-// written into as it is. dataDir, and sessionDir when it is not "", are
+// before anything else, even whether target exists (an administrators-only
+// directory denies that to anyone else). An existing directory of one's own
+// elsewhere is written into as it is. dataDir, and sessionDir when it is not "", are
 // created either way. account, when not "", must resolve to a user, may not
 // use the default %ProgramData%\sqi, and gets Modify on both. target must be in canonicalPath's spelling, as
 // run gives it, so the directory judged is the one written; %ProgramData% is
@@ -80,6 +81,9 @@ func writeWindows(target string, content []byte, account string, force bool, dat
 		if err := ops.requireElevated(); err != nil {
 			return err
 		}
+	}
+	if err := refuseExisting(target, force); err != nil {
+		return err
 	}
 	if account != "" {
 		if err := checkAccount(target, pd, account, ops); err != nil {

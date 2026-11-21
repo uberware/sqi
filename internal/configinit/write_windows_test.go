@@ -101,6 +101,48 @@ func TestConfigInitWindows_ElevationFirst(t *testing.T) {
 	}
 }
 
+// TestConfigInitWindows_ElevationBeforeExistingFile pins that an unelevated
+// run on a file that is already there, in a directory that needs elevation,
+// fails with the elevation error: the existence check comes after it, so it
+// never reports what an administrators-only directory denies.
+func TestConfigInitWindows_ElevationBeforeExistingFile(t *testing.T) {
+	pd := fakeProgramData(t)
+	dir := filepath.Join(pd, "sqi")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sqi-worker.yaml"), []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeWinOps{elevatedErr: winsvc.ErrNotElevated}
+	if _, err := runInitWindows(t, workerSpec, f); !errors.Is(err, winsvc.ErrNotElevated) {
+		t.Fatalf("error = %v, want ErrNotElevated", err)
+	}
+}
+
+// TestConfigInitWindows_RefusesExistingWithoutForce pins the Windows writer's
+// refusal of a file already there, with nothing prepared or written.
+func TestConfigInitWindows_RefusesExistingWithoutForce(t *testing.T) {
+	fakeProgramData(t)
+	tgt := filepath.Join(t.TempDir(), "sqi-worker.yaml")
+	if err := os.WriteFile(tgt, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeWinOps{}
+	_, err := runInitWindows(t, workerSpec, f, "--config", tgt)
+	if want := tgt + " exists; pass --force to replace it"; err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+	for _, c := range f.calls {
+		if !strings.HasPrefix(c, "dirExists ") {
+			t.Errorf("calls = %q: %q ran for an existing file", f.calls, c)
+		}
+	}
+	if got := readFile(t, tgt); got != "mine" {
+		t.Errorf("existing file changed to %q", got)
+	}
+}
+
 func TestConfigInitWindows_ElevationFirstForMissingDirAndAccount(t *testing.T) {
 	fakeProgramData(t)
 	tests := []struct {
@@ -146,8 +188,8 @@ func TestConfigInitWindows_NoElevationForExistingOwnDir(t *testing.T) {
 	if got := readFile(t, tgt); !strings.Contains(got, "worker:") {
 		t.Errorf("file not written: %q", got)
 	}
-	if !strings.Contains(out, "next: sqi-worker service install --start\n") {
-		t.Errorf("output %q lacks the plain next step", out)
+	if !strings.Contains(out, " service install --config '"+tgt+"' --start\n") {
+		t.Errorf("output %q lacks the next step", out)
 	}
 }
 
@@ -317,7 +359,7 @@ func TestConfigInitWindows_JudgesAndWritesTheCanonicalPath(t *testing.T) {
 	if got := readFile(t, tgt); !strings.Contains(got, "data_dir: '"+data+"'") {
 		t.Errorf("worker.data_dir is not %s:\n%s", data, got)
 	}
-	if !strings.HasPrefix(out, "wrote "+tgt+"\n") || !strings.Contains(out, "--config "+tgt+"\n") {
+	if !strings.HasPrefix(out, "wrote "+tgt+"\n") || !strings.Contains(out, "--config '"+tgt+"'\n") {
 		t.Errorf("output %q does not name %s", out, tgt)
 	}
 }
@@ -414,7 +456,7 @@ func TestConfigInitWindows_UserPreparesBothDirs(t *testing.T) {
 	if !strings.Contains(got, "session_dir: '"+sessions+"'") {
 		t.Errorf("worker.session_dir is not %s:\n%s", sessions, got)
 	}
-	if wantNext := "next: sqi-worker service install --start --user render --config " + tgt + "\n"; !strings.Contains(out, wantNext) {
+	if wantNext := " service install --user 'render' --config '" + tgt + "'\n"; !strings.Contains(out, wantNext) {
 		t.Errorf("output %q lacks %q", out, wantNext)
 	}
 }
