@@ -13,14 +13,17 @@ type NamedPath struct{ Key, Path string }
 
 // NamedPaths returns every file and directory the configuration names, as
 // written (a relative path is relative to the worker's working directory),
-// skipping empty keys. A command the worker itself runs (staging's sync
-// command, the power commands) counts by its program when that contains a
-// path separator; a bare name is found on PATH. On Windows, `service install`
-// refuses a service whose named paths an unprivileged user could change:
-// each one decides whom the worker trusts or what it runs.
+// skipping empty keys. A command the worker runs (staging's sync command,
+// the power commands, and each worker.commands entry a job's command name is
+// replaced with) counts by its program when that contains a path separator;
+// a bare name is found on PATH. On Windows, `service install` refuses a
+// service whose named paths an unprivileged user could change: each one
+// decides whom the worker trusts or what it runs, and on a worker with no
+// run_as_user queue a task runs as the service account.
 //
-// The executables jobs run (worker.commands, the capability detectors) are
-// not named: job code runs as the task's account by design.
+// The capability detectors' paths are not named: detected application
+// install locations are the operator's, and on a worker with no run_as_user
+// queue what they find runs as the service account (a documented gap).
 func (c WorkerConfig) NamedPaths() []NamedPath {
 	all := []NamedPath{
 		{"nats.tls_cert_file", c.NATS.TLSCertFile},
@@ -38,6 +41,14 @@ func (c WorkerConfig) NamedPaths() []NamedPath {
 		{"staging.sync_command", commandPath(strings.Fields(c.Staging.SyncCommand))},
 		{"worker.power.sleep_command", commandPath(c.Worker.Power.SleepCommand)},
 		{"worker.power.shutdown_command", commandPath(c.Worker.Power.ShutdownCommand)},
+	}
+	names := make([]string, 0, len(c.Worker.Commands))
+	for name := range c.Worker.Commands {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		all = append(all, NamedPath{"worker.commands." + name + ".path", commandPath([]string{c.Worker.Commands[name].Path})})
 	}
 	return slices.DeleteFunc(all, func(p NamedPath) bool { return p.Path == "" })
 }

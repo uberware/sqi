@@ -8,19 +8,20 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/uberware/sqi/internal/worker/commands"
 )
 
-// taskExecutables is the reason the executables a job runs are not checked.
-const taskExecutables = "the executables tasks run; job code runs as the task's account by design, " +
-	"and application install locations are the operator's"
+// detectedApps is the reason the capability detectors' paths are not checked.
+const detectedApps = "detected application install locations are the operator's; on a worker with " +
+	"no run_as_user queue these run as the service account (documented gap)"
 
 // pathFieldExclusions are the path-valued WorkerConfig fields NamedPaths
 // deliberately leaves out, by field path, each with the reason.
 var pathFieldExclusions = map[string]string{
-	"Worker.Commands{}.Path":                         taskExecutables,
-	"Capabilities.Detect[].Checks[].Exe":             taskExecutables,
-	"Capabilities.Detect[].Checks[].PathGlob":        taskExecutables,
-	"Capabilities.Detect[].Command.Globs[].PathGlob": taskExecutables,
+	"Capabilities.Detect[].Checks[].Exe":             detectedApps,
+	"Capabilities.Detect[].Checks[].PathGlob":        detectedApps,
+	"Capabilities.Detect[].Command.Globs[].PathGlob": detectedApps,
 }
 
 // TestNamedPaths_CoverEveryPathField pins that every path-valued field of
@@ -59,6 +60,7 @@ func TestNamedPaths_SkipsEmpty(t *testing.T) {
 	cfg.Log.File = `C:\sqi\logs\w.log`
 	cfg.Worker.Power.SleepCommand = []string{"rundll32.exe", "powrprof.dll,SetSuspendState"}
 	cfg.Staging.SyncCommand = "robocopy {src} {dest}"
+	cfg.Worker.Commands = commands.Table{"blender": {Path: "blender-4.2", Args: []string{"-b"}}}
 	want := []NamedPath{{"log.file", `C:\sqi\logs\w.log`}}
 	if got := cfg.NamedPaths(); !slices.Equal(got, want) {
 		t.Errorf("NamedPaths() = %q, want %q (empty keys and commands found on PATH are skipped)", got, want)
@@ -67,13 +69,18 @@ func TestNamedPaths_SkipsEmpty(t *testing.T) {
 
 func TestNamedPaths_Keys(t *testing.T) {
 	cfg := WorkerConfig{
+		Worker: WorkerSettings{
+			DataDir: "g", SessionDir: "h",
+			Commands: commands.Table{
+				"nuke":    {Path: `C:\Program Files\Nuke15.1v1\Nuke15.1.exe`, Args: []string{"--nc"}},
+				"blender": {Path: "blender"},
+				"houdini": {Path: "/opt/hfs/bin/hython"},
+			},
+			Power: PowerConfig{SleepCommand: []string{`C:\bin\sleep.exe`, "-s"}, ShutdownCommand: []string{"tools/off"}},
+		},
 		NATS: NATSConfig{
 			TLSCertFile: "a", TLSKeyFile: "b", TLSCAFile: "c",
 			CredentialFile: "d", JoinTokenFile: "e", ServerTLSCAFile: "f",
-		},
-		Worker: WorkerSettings{
-			DataDir: "g", SessionDir: "h",
-			Power: PowerConfig{SleepCommand: []string{`C:\bin\sleep.exe`, "-s"}, ShutdownCommand: []string{"tools/off"}},
 		},
 		Staging: StagingConfig{ScratchDir: "i", SyncCommand: `C:\bin\sync.exe {src} {dest}`},
 		Metrics: MetricsConfig{TLS: MetricsTLSConfig{CertFile: "j", KeyFile: "k"}},
@@ -95,6 +102,8 @@ func TestNamedPaths_Keys(t *testing.T) {
 		{"staging.sync_command", `C:\bin\sync.exe`},
 		{"worker.power.sleep_command", `C:\bin\sleep.exe`},
 		{"worker.power.shutdown_command", "tools/off"},
+		{"worker.commands.houdini.path", "/opt/hfs/bin/hython"},
+		{"worker.commands.nuke.path", `C:\Program Files\Nuke15.1v1\Nuke15.1.exe`},
 	}
 	if got := cfg.NamedPaths(); !slices.Equal(got, want) {
 		t.Errorf("NamedPaths():\n got %q\nwant %q", got, want)
