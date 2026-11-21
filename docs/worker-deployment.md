@@ -799,7 +799,12 @@ and then:
   path is spelled), and an account name that does not resolve to a user.
 
 It prints the `service install` command with `--user` and `--config` filled in.
-Run `service install` with the same `--config`.
+Run `service install` with the same `--config`. `service install --user` refuses
+a configuration inside `C:\ProgramData\sqi`, which the account cannot read, and
+says to write one with `config init --user`. The other way round, when
+`service install` without `--user` refuses a data or session directory that
+grants a user account Modify, the refusal adds that the configuration looks
+written for `--user` with that account.
 
 `--start` is left out on purpose: the second mitigation in the
 [known limitations](#security-notes-and-known-limitations) wants the service

@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // installRefs is every path `service install` checks for the service name
@@ -74,9 +77,10 @@ func resolveAgainst(base, path string) string {
 	}
 }
 
-// untrustedError explains a refusal: what CheckPaths found, then the way out
-// for each kind of failure. It wraps u.
-func (c commands) untrustedError(u *UntrustedPathsError, exe string) error {
+// untrustedError explains a refusal of a service to run as account ("" for
+// LocalSystem): what CheckPaths found, then the way out for each kind of
+// failure. It wraps u.
+func (c commands) untrustedError(u *UntrustedPathsError, exe, account string) error {
 	var remedies []string
 	if slices.ContainsFunc(u.Failures, isBinaryFailure) {
 		dest := filepath.Join(programFilesDir(), "sqi")
@@ -102,11 +106,114 @@ func (c commands) untrustedError(u *UntrustedPathsError, exe string) error {
 			"Administrators, changeable by nobody else, and in directories nobody else can change), "+
 			"or point its setting at one that is, then run service install again.")
 	}
+	if account == "" {
+		if hint := c.userHint(u); hint != "" {
+			remedies = append(remedies, hint)
+		}
+	}
 	return fmt.Errorf("refusing to install %s: someone other than SYSTEM, Administrators and the service's "+
 		"account can change what it would trust or run:\n%w\n%s", c.spec.Binary, u, strings.Join(remedies, "\n"))
 }
 
 func isBinaryFailure(f PathFailure) bool { return f.Key == "binary" || f.Key == "binary directory" }
+
+// installKeys are the refs install adds itself rather than reads from the
+// configuration (see installRefs).
+var installKeys = []string{
+	"config", "config directory", "binary", "binary directory",
+	"log directory", "log directory parent", "default log directory", "default log directory parent",
+}
+
+// userHint is a line for a LocalSystem refusal of a path the configuration
+// names that grants a user account Modify, as config init --user lays out a
+// data and session directory: the configuration looks written for that
+// account. It is a best-effort reading of each such path's DACL; "" when it
+// finds no such account.
+func (c commands) userHint(u *UntrustedPathsError) string {
+	var users []string
+	for _, f := range u.Failures {
+		if slices.Contains(installKeys, f.Key) {
+			continue
+		}
+		for _, name := range modifyUsers(f.JudgedPath) {
+			if !slices.ContainsFunc(users, func(s string) bool { return strings.EqualFold(s, name) }) {
+				users = append(users, name)
+			}
+		}
+	}
+	if len(users) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("This configuration looks like it was written for --user %s (config init --user gives the "+
+		"account Modify on its data directory). If so, install it with: %s service install --user %s",
+		strings.Join(users, " or --user "), c.spec.Binary, users[0])
+}
+
+// modifyUsers is the name of each user account, other than SYSTEM,
+// Administrators and TrustedInstaller, that path's DACL grants at least
+// Modify through allow ACEs applying to path itself; nil when it cannot be
+// read.
+func modifyUsers(path string) []string {
+	h, _, err := openPlain(path, windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES)
+	if err != nil {
+		return nil
+	}
+	defer windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return nil
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return nil
+	}
+	sids, masks, err := untrustedAllows(dacl)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for j, sid := range sids {
+		if masks[j]&fileModifyAccess != fileModifyAccess {
+			continue
+		}
+		if _, _, typ, err := sid.LookupAccount(""); err == nil && typ == windows.SidTypeUser {
+			names = append(names, accountName(sid))
+		}
+	}
+	return names
+}
+
+// untrustedAllows is each principal other than SYSTEM, Administrators and
+// TrustedInstaller that an allow ACE applying to the object itself names in
+// dacl, with every right those ACEs grant it.
+func untrustedAllows(dacl *windows.ACL) ([]*windows.SID, []windows.ACCESS_MASK, error) {
+	trusted, err := trustedSet(nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	var sids []*windows.SID
+	var masks []windows.ACCESS_MASK
+	for i := range uint32(dacl.AceCount) {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			return nil, nil, err
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
+			continue
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if isTrusted(sid, trusted) {
+			continue
+		}
+		if j := slices.IndexFunc(sids, sid.Equals); j >= 0 {
+			masks[j] |= ace.Mask
+			continue
+		}
+		sids = append(sids, sid)
+		masks = append(masks, ace.Mask)
+	}
+	return sids, masks, nil
+}
 
 // programDataSuspects is the distinct judged paths under %ProgramData% (never
 // %ProgramData% itself) of every failure but the binary's, which moving

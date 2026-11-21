@@ -936,3 +936,78 @@ func TestPathWithin(t *testing.T) {
 		}
 	}
 }
+
+// TestInstall_UserRefusesConfigInDefaultDir pins that --user with a
+// configuration in the default %ProgramData%\sqi, which only SYSTEM and
+// Administrators can read, is refused before the configuration is loaded or
+// anything is changed, pointing at config init --user with a directory of the
+// account's own; and that the same configuration installs as LocalSystem.
+func TestInstall_UserRefusesConfigInDefaultDir(t *testing.T) {
+	pd := t.TempDir()
+	t.Setenv("ProgramData", pd)
+	for _, dir := range []string{filepath.Join(pd, "sqi"), filepath.Join(pd, "SQI", "nested")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cfg := filepath.Join(dir, testBinary+".yaml")
+		if err := os.WriteFile(cfg, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fake := &fakeOps{}
+		stdin := &readSpy{}
+		_, err := execute(t, testSpec(new(int)), fake.operations(), stdin, "install", "--user", "render", "--config", cfg)
+		if err == nil {
+			t.Fatalf("install --user with %s succeeded", cfg)
+		}
+		for _, s := range []string{cfg, `.\render`, testBinary + ` config init --user .\render --config`, filepath.Join(pd, "sqi-")} {
+			if !strings.Contains(err.Error(), s) {
+				t.Errorf("refusal lacks %q:\n%v", s, err)
+			}
+		}
+		if want := []string{"requireElevated", "exists " + testBinary}; !slices.Equal(fake.calls, want) || stdin.read {
+			t.Errorf("calls = %q (stdin read %v), want only %q", fake.calls, stdin.read, want)
+		}
+		fake = &fakeOps{}
+		if out, err := execute(t, testSpec(new(int)), fake.operations(), &readSpy{}, "install", "--config", cfg); err != nil {
+			t.Errorf("LocalSystem install with %s: %v\n%s", cfg, err, out)
+		}
+	}
+}
+
+// TestInstall_HintsAtUserForAccountDataDir pins the hint a LocalSystem
+// refusal adds when a data path it judged grants a user account Modify, as
+// config init --user lays it out: install with --user for that account. A
+// --user install, and a failure on the configuration itself, get no hint.
+func TestInstall_HintsAtUserForAccountDataDir(t *testing.T) {
+	data := t.TempDir() // the test user has full control here, inherited
+	_, me := currentAccount(t)
+	dataFailure := PathFailure{Key: "worker.data_dir", Path: data, JudgedPath: data, Reason: me + " can write (WD)"}
+	cfgFailure := PathFailure{Key: "config directory", Path: data, JudgedPath: data, Reason: me + " can write (WD)"}
+	hint := "--user " + me
+	for _, tc := range []struct {
+		name     string
+		failures []PathFailure
+		user     bool
+		want     bool
+	}{
+		{"data directory, LocalSystem", []PathFailure{dataFailure}, false, true},
+		{"data directory, --user", []PathFailure{dataFailure}, true, false},
+		{"configuration directory", []PathFailure{cfgFailure}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"install", "--config", writeConfig(t)}
+			if tc.user {
+				args = append(args, "--user", "render")
+			}
+			fake := &fakeOps{checkErr: &UntrustedPathsError{Failures: tc.failures}}
+			_, err := execute(t, testSpec(new(int)), fake.operations(), &readSpy{}, args...)
+			if err == nil {
+				t.Fatal("install succeeded")
+			}
+			msg := strings.ToLower(err.Error())
+			if got := strings.Contains(msg, strings.ToLower("written for "+hint)); got != tc.want {
+				t.Errorf("hint for %s present = %v, want %v:\n%v", me, got, tc.want, err)
+			}
+		})
+	}
+}

@@ -295,6 +295,9 @@ func (c commands) installConfig(cmd *cobra.Command, f installFlags) (ServiceConf
 // rather than by %ProgramData%, which every user can write. A refusal after
 // that leaves only that empty directory behind.
 func (c commands) checkInstallPaths(cfgPath, exe, name, account string) error {
+	if err := c.refuseUnreadableConfig(cfgPath, account); err != nil {
+		return err
+	}
 	cp, err := c.spec.ConfigPaths(cfgPath, account)
 	if err != nil {
 		return err
@@ -304,9 +307,27 @@ func (c commands) checkInstallPaths(cfgPath, exe, name, account string) error {
 	}
 	err = c.ops.checkPaths(installRefs(cfgPath, exe, name, cp), account)
 	if u, ok := errors.AsType[*UntrustedPathsError](err); ok {
-		return c.untrustedError(u, exe)
+		return c.untrustedError(u, exe, account)
 	}
 	return err
+}
+
+// refuseUnreadableConfig refuses a service running as account (not
+// LocalSystem, "") whose configuration is in %ProgramData%\sqi, which only
+// SYSTEM and Administrators can read: the service could not load it.
+// config init --user writes one into a directory of the account's own.
+func (c commands) refuseUnreadableConfig(cfgPath, account string) error {
+	sqiDir := filepath.Join(ProgramDataDir(), "sqi")
+	if account == "" || !PathWithin(filepath.Dir(cfgPath), sqiDir) {
+		return nil
+	}
+	return fmt.Errorf("%s is in %s, which only SYSTEM and Administrators can read, so a service running as %s "+
+		"could not load it. Write a configuration for the account in a directory of its own, then install with it:\n"+
+		"  %s config init --user %s --config %s\n"+
+		"  %s service install --user %s --config %s",
+		cfgPath, sqiDir, account,
+		c.spec.Binary, account, filepath.Join(ProgramDataDir(), "sqi-<name>", c.spec.Binary+".yaml"),
+		c.spec.Binary, account, filepath.Join(ProgramDataDir(), "sqi-<name>", c.spec.Binary+".yaml"))
 }
 
 // readPassword prompts for account's password, or reads it from piped stdin.
