@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -157,6 +158,92 @@ func TestJetStreamTransport_StoresAWindowInOrder(t *testing.T) {
 		}
 		if c.SeqNum != int64(seq) {
 			t.Fatalf("stream message %d is chunk %d, want chunks stored in publish order", seq, c.SeqNum)
+		}
+	}
+}
+
+// lostAck wraps a transport so the first try of msgID reaches the stream but
+// reports its ack lost, as when the link drops after the stream stored it.
+type lostAck struct {
+	logstreamer.Transport
+
+	msgID string
+	once  sync.Once
+}
+
+func (l *lostAck) Publish(subj string, data []byte, msgID string) (logstreamer.AckWait, error) {
+	wait, err := l.Transport.Publish(subj, data, msgID)
+	if err != nil || msgID != l.msgID {
+		return wait, err
+	}
+	lose := false
+	l.once.Do(func() { lose = true })
+	if !lose {
+		return wait, nil
+	}
+	return func(ctx context.Context) error {
+		if err := wait(ctx); err != nil {
+			return err
+		}
+		return context.DeadlineExceeded
+	}, nil
+}
+
+// TestJetStreamTransport_ARetryOfAStoredChunkIsNotStoredTwice pins the retry
+// of a chunk the stream stored but whose ack was lost: the stream takes the
+// resend as a duplicate of its message ID, the chunk counts as stored, and
+// the stream holds it once.
+func TestJetStreamTransport_ARetryOfAStoredChunkIsNotStoredTwice(t *testing.T) {
+	nc := startJetStream(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:     bus.StreamLogs,
+		Subjects: []string{bus.SubjectTaskLogsPrefix + ".>"},
+		Storage:  jetstream.FileStorage,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jst, err := logstreamer.NewJetStreamTransport(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := &lostAck{Transport: jst, msgID: "attempt-u/1"}
+	p := logstreamer.New(tr, testWorkerID, logstreamer.WithKnobs(slowFlushCfg(1, 1<<20), fastKnobs()), discard())
+	const n = 3
+	for i := 1; i <= n; i++ {
+		p.HandleLine(context.Background(), "task-u", "attempt-u", "", "stdout", fmt.Sprintf("line %d", i))
+	}
+	if dropped := p.Flush(ctx); dropped != 0 {
+		t.Fatalf("Flush dropped %d chunks, want 0", dropped)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.State.Msgs != n {
+		t.Fatalf("the stream holds %d chunks, want %d (the retried chunk once)", info.State.Msgs, n)
+	}
+	seen := map[int64]int{}
+	for seq := uint64(1); seq <= n; seq++ {
+		m, err := stream.GetMsg(ctx, seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var c protocol.LogChunkMsg
+		if err := json.Unmarshal(m.Data, &c); err != nil {
+			t.Fatal(err)
+		}
+		seen[c.SeqNum]++
+	}
+	for s := int64(1); s <= n; s++ {
+		if seen[s] != 1 {
+			t.Errorf("chunk seq %d stored %d times, want once (seen %v)", s, seen[s], seen)
 		}
 	}
 }
