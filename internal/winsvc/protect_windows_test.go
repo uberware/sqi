@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -35,6 +36,29 @@ func ownerOf(t *testing.T, path string) *windows.SID {
 	owner, _, err := sd.Owner()
 	if err != nil || owner == nil {
 		t.Fatalf("owner of %s: %v (owner %v)", path, err, owner)
+	}
+	return owner
+}
+
+// defaultOwner is the owner the process token gives what it creates when no
+// owner is specified (TokenOwner).
+func defaultOwner(t *testing.T) *windows.SID {
+	t.Helper()
+	token := windows.GetCurrentProcessToken()
+	var n uint32
+	// The first call only reports the size needed.
+	windows.GetTokenInformation(token, windows.TokenOwner, nil, 0, &n) //nolint:errcheck // ERROR_INSUFFICIENT_BUFFER is expected
+	if n == 0 {
+		t.Fatal("GetTokenInformation(TokenOwner) reported no size")
+	}
+	buf := make([]byte, n)
+	if err := windows.GetTokenInformation(token, windows.TokenOwner, &buf[0], n, &n); err != nil {
+		t.Fatalf("GetTokenInformation(TokenOwner): %v", err)
+	}
+	// TOKEN_OWNER (winnt.h) is one SID pointer, into buf.
+	owner, err := (*struct{ Owner *windows.SID })(unsafe.Pointer(&buf[0])).Owner.Copy()
+	if err != nil {
+		t.Fatal(err)
 	}
 	return owner
 }
@@ -254,7 +278,11 @@ func TestMkdirProtected_CreatesSqiParentProtected(t *testing.T) {
 				t.Errorf("%s has an unprotected DACL", parent)
 			}
 			entries := aclEntries(t, acl)
-			wantOwner := me
+			// Unprivileged, the owner is the token's default: the process
+			// account for an ordinary token, but Administrators for an
+			// elevated one started from PowerShell, which the forced branch
+			// may be running in.
+			wantOwner := defaultOwner(t)
 			if isPrivileged() {
 				assertOnlyAdmins(t, entries)
 				wantOwner = admins
