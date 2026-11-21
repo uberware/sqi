@@ -102,6 +102,7 @@ func TestArchiveFiles_ShipTheInstallFiles(t *testing.T) {
 		}
 	}
 	want := []string{
+		"deploy/systemd/README.md",
 		"deploy/systemd/sqi-server.service",
 		"deploy/systemd/sqi-worker.service",
 		"deploy/systemd/sqi-worker@.service",
@@ -117,6 +118,24 @@ func TestArchiveFiles_ShipTheInstallFiles(t *testing.T) {
 			}
 			sort.Strings(got)
 			t.Errorf("archives do not ship %s (shipped: %v)", p, got)
+		}
+	}
+}
+
+// TestSystemdReadme_LinksWorkInTheArchive pins that the systemd README, which
+// the archives ship on its own, links to the documentation by absolute URL: a
+// relative link points outside the extracted archive.
+func TestSystemdReadme_LinksWorkInTheArchive(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("systemd", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, line := range strings.Split(string(raw), "\n") {
+		for _, part := range strings.Split(line, "](")[1:] {
+			target, _, _ := strings.Cut(part, ")")
+			if !strings.HasPrefix(target, "https://") && !strings.HasPrefix(target, "#") {
+				t.Errorf("README.md:%d links to %q, which does not resolve inside the archive", i+1, target)
+			}
 		}
 	}
 }

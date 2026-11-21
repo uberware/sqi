@@ -20,5 +20,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now sqi-worker
 ```
 
-See [`docs/worker-deployment.md`](../../docs/worker-deployment.md) for the full
-worker setup and [`docs/operations.md`](../../docs/operations.md) for the server.
+See
+[`docs/worker-deployment.md`](https://github.com/uberware/sqi/blob/main/docs/worker-deployment.md)
+for the full worker setup and
+[`docs/operations.md`](https://github.com/uberware/sqi/blob/main/docs/operations.md)
+for the server.

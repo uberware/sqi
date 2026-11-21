@@ -126,6 +126,7 @@ archives:
       # Install files. goreleaser cannot restrict a files entry by OS without
       # splitting the builds, so every archive carries the same set: the Linux
       # units and the macOS plist travel in the Windows zip too, unused.
+      - deploy/systemd/README.md
       - deploy/systemd/sqi-server.service
       - deploy/systemd/sqi-worker.service
       - deploy/systemd/sqi-worker@.service
