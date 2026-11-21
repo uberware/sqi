@@ -70,8 +70,8 @@ func inspectProc(pid int) (procInfo, error) {
 	return info, nil
 }
 
-// processStart is not needed here: Linux readably exposes every environment
-// the worker may read, so no process is identified by its group.
+// processStart reports nothing here: Linux exposes every environment the
+// worker may read, so no process is ever identified by its group.
 func processStart(int) (int64, bool) { return 0, false }
 
 func leaderStartTime(int) int64 { return 0 }

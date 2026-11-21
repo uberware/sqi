@@ -10,7 +10,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"regexp"
-	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -106,10 +106,11 @@ func TestSweep_KillsARealOrphanedTree(t *testing.T) {
 	}
 	// A background child, a child that leaves the group with setsid(2), and
 	// the shell itself. perl makes the setsid call because macOS ships no
-	// setsid(1). The echo after both are started means all three exist before
-	// the sweep.
+	// setsid(1); it reports its pid once it has left the group, and its pid
+	// survives the exec into sleep. The echo after both are started means all
+	// three exist before the sweep.
 	cmd := exec.CommandContext(t.Context(), "sh", "-c",
-		"sleep 300 & perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sleep 300 & echo started; wait")
+		"sleep 300 & perl -MPOSIX -e 'POSIX::setsid(); print STDOUT \"left $$\\n\"; $|=1; exec @ARGV' sleep 300 & echo started; wait")
 	Configure(cmd)
 	cmd.Env = MarkEnv(nil)
 	tok := envToken(cmd.Env)
@@ -120,16 +121,38 @@ func TestSweep_KillsARealOrphanedTree(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	escaped := 0 // the child that left the group, once it has said so
 	t.Cleanup(func() {
 		// After a failure: the group, and the child that left it.
 		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck // ESRCH when the sweep worked
 		for _, pid := range pidsWithToken(t, envToken(cmd.Env)) {
 			syscall.Kill(pid, syscall.SIGKILL) //nolint:errcheck // ESRCH when the sweep worked
 		}
+		if escaped > 0 { // unfindable by token where the environment is withheld
+			syscall.Kill(escaped, syscall.SIGKILL) //nolint:errcheck // ESRCH when the sweep worked
+		}
 		cmd.Wait() //nolint:errcheck // reaps the shell
 	})
-	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || strings.TrimSpace(line) != "started" {
-		t.Fatalf("marker read = %q, %v", line, err)
+	// Both lines mean every process exists and the perl child has already left
+	// the group, so the set of group members cannot change under the test.
+	rd := bufio.NewReader(stdout)
+	for seen := map[string]bool{}; len(seen) < 2; {
+		line, err := rd.ReadString('\n')
+		if err != nil {
+			t.Fatalf("marker read = %q, %v", line, err)
+		}
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "started":
+			seen[line] = true
+		case strings.HasPrefix(line, "left "):
+			if escaped, err = strconv.Atoi(strings.TrimPrefix(line, "left ")); err != nil {
+				t.Fatalf("bad pid in marker %q: %v", line, err)
+			}
+			seen["left"] = true
+		default:
+			t.Fatalf("unexpected marker %q", line)
+		}
 	}
 	tree, err := Supervise(cmd)
 	if err != nil {
@@ -145,15 +168,11 @@ func TestSweep_KillsARealOrphanedTree(t *testing.T) {
 	if platformHidesEnv(t) {
 		want = 2
 	}
-	// perl is itself in the group until it calls setsid, so where the group is
-	// what identifies the tree, wait for the set of members to hold still.
-	var pids, prev []int
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		pids = treePIDs(t, tok, cmd.Process.Pid)
-		if len(pids) >= want && slices.Equal(pids, prev) {
+	var pids []int
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if pids = treePIDs(t, tok, cmd.Process.Pid); len(pids) >= want {
 			break
 		}
-		prev = pids
 	}
 	if len(pids) < want {
 		t.Fatalf("found %d tree processes %v, want %d (shell, sleep, and where the environment is readable the sleep that left the group)", len(pids), pids, want)
@@ -197,7 +216,9 @@ func TestSweep_LeavesUnmarkedGroupMembers(t *testing.T) {
 		cmd.Wait()         //nolint:errcheck // reaps it
 	})
 	// A record naming this process's group, as if the number had been reused.
-	putRecord(t, l, record{Token: newToken(), PGID: cmd.Process.Pid, Label: Label{Kind: "task"}})
+	// The record names the live leader but a different start time, which is how
+	// a reused number looks: the group route must refuse it.
+	putRecord(t, l, record{Token: newToken(), PGID: cmd.Process.Pid, LeaderStart: 1, Label: Label{Kind: "task"}})
 	if err := l.Sweep(t.Context(), slog.New(&logCapture{})); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}

@@ -482,7 +482,9 @@ On macOS 27 the kernel withholds the environment of Apple's own binaries
 command is a shell line. The sweep identifies such a process by its process
 group instead, and only when it can prove the group is the recorded one: the
 record holds the group leader's start time, and a process now holding that
-number must have started then. The one thing this loses is an Apple-supplied
+number must have started then. If the leader has gone, the members are still
+taken for the recorded tree's, so an unrelated process is protected only while
+the leader is alive or the group number has not been reused. The one thing this loses is an Apple-supplied
 process that left the group with `setsid`; there is nothing left to identify
 it by. Processes from other software (Blender, Python, a render) still expose
 their environment and are matched by token as before.
