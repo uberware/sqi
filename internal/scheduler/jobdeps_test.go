@@ -579,9 +579,8 @@ func (h *jobDepsHarness) leasableTasksOf(t *testing.T, jobID string) int {
 	return n
 }
 
-// The start-up step reconcile must not release a job still holding its
-// dependencies just because it is paused rather than blocked: resumed, it
-// would run while its upstream is still running.
+// The start-up step reconcile must not release a paused job that still holds
+// its dependencies: resumed, it would run while its upstream is still running.
 func TestReconcilePendingSteps_LeavesPausedHeldJobHeld(t *testing.T) {
 	ctx := context.Background()
 	h := newJobDepsHarness(t)

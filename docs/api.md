@@ -534,8 +534,8 @@ limit.
 A `pending`, `running` or `blocked` job can be paused; any other status answers
 `409`. Tasks already running finish; nothing new is leased. Resuming returns the
 job to `pending`, except a job that is still waiting on a `depends_on`
-upstream — paused while `blocked`, or submitted with `paused=true` before its
-upstreams completed — which returns to `blocked`. Such a job is reconciled at
+upstream, which returns to `blocked`: one paused while `blocked`, or submitted
+with `paused=true` before its upstreams completed. Such a job is reconciled at
 once, so the response may already show it `pending` (every upstream completed
 while it was paused) or `canceled` (one failed, was canceled or was deleted).
 A paused job is never canceled for a failed upstream while it stays paused; that

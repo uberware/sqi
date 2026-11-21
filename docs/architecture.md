@@ -290,24 +290,23 @@ farm-wide and queue affinity is only applied when a worker leases work, so a
 released job's tasks are immediately leasable regardless of which queue they
 or their upstreams belong to.
 
-The job row's `dependency_hold` flag records that this hold is still in place:
-the submitter sets it whenever it creates the job with an unsatisfied
-dependency, and `store.ReleaseBlockedJob` clears it in the same `UPDATE` that
-releases the job (a task retry's job reset clears it too). It exists because a
-held job can also be `paused` — submitted with `paused=true`, paused while
-`blocked`, or auto-parked — and its steps stay held `pending` while it is:
+The job row's `dependency_hold` flag records that this hold is still in place.
+The store sets it on every job created `blocked`, whatever the caller passes,
+and `store.ReleaseBlockedJob` clears it in the same `UPDATE` that releases the
+job (a task retry's job reset clears it too). It exists because a held job can
+also be `paused`, by being submitted with `paused=true`, paused while
+`blocked`, or auto-parked, and its steps stay held `pending` while it is.
 `store.ReleaseStep` declines a step whose job holds its dependencies, so no
 step-level release (the start-up step reconcile, a retry, completion
-propagation) can run the job early. A held job's tasks therefore stay
-`pending`, and the lease path only ever considers `ready` tasks.
-`store.ResumeJob` therefore sends a held job back to `blocked` rather than to
-`pending`; a resume to `pending` would leave held steps that nothing ever
-releases. The job `PATCH` handler then reconciles the job immediately, through
-the same path the sweep uses. A paused job is not reconciled while it stays
-paused, so an upstream that fails meanwhile cancels the job only once it is
-resumed. Because the flag is cleared on release, a job that was released, ran
-and was paused later resumes to `pending` even if its upstream has since been
-purged.
+propagation) can run the job early: a held job's tasks stay `pending`, and the
+lease path only ever considers `ready` tasks. `store.ResumeJob` sends a held
+job back to `blocked` rather than to `pending`; a resume to `pending` would
+leave held steps that nothing ever releases. The job `PATCH` handler then
+reconciles the job immediately, through the same path the sweep uses. A paused
+job is not reconciled while it stays paused, so an upstream that fails
+meanwhile cancels the job only once it is resumed. Because the flag is cleared
+on release, a job that was released, ran and was paused later resumes to
+`pending` even if its upstream has since been purged.
 
 A `blocked` job is reconciled whenever an upstream job reaches a terminal
 status: if every upstream in its `depends_on` list is now `completed`, the job

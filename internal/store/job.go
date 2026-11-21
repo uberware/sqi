@@ -350,10 +350,10 @@ type JobStore interface {
 	// not exist.
 	ParkJob(ctx context.Context, jobID, reason string, now time.Time) error
 
-	// ResumeJob transitions a paused job back to [JobStatusPending] — the
-	// inverse of [ParkJob] and of a manual pause — or to [JobStatusBlocked]
-	// when the job still has its [Job.DependencyHold], so the dependency sweep
-	// releases or cancels it as it would any blocked job. An auto-parked job
+	// ResumeJob is the inverse of [ParkJob] and of a manual pause. It moves a
+	// paused job to [JobStatusPending], or to [JobStatusBlocked] when the job
+	// still has its [Job.DependencyHold], so the dependency sweep releases or
+	// cancels it as it would any blocked job. An auto-parked job
 	// (non-empty ParkReason) additionally has its ParkReason cleared and its
 	// FailedAttempts reset to zero, re-arming the failure limit; without the
 	// reset the next genuine failure would re-park the job immediately.
