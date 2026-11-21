@@ -308,3 +308,60 @@ func TestMkdirProtected_OtherParentsInherit(t *testing.T) {
 		t.Errorf("%s, not %%ProgramData%%\\sqi, was created protected", parent)
 	}
 }
+
+// TestEnsureSqiDir_CreatesMissingAdminOnly pins that service install creates a
+// missing %ProgramData%\sqi as config init does: owned by Administrators with
+// a protected DACL of SYSTEM and Administrators only, so the check that
+// follows judges it rather than %ProgramData%, which every user can write.
+func TestEnsureSqiDir_CreatesMissingAdminOnly(t *testing.T) {
+	requireElevated(t)
+	pd := t.TempDir()
+	t.Setenv("ProgramData", pd)
+	if err := EnsureSqiDir(); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(pd, "sqi")
+	acl, protected := daclOf(t, dir)
+	if !protected {
+		t.Errorf("%s has an unprotected DACL", dir)
+	}
+	assertOnlyAdmins(t, aclEntries(t, acl))
+	assertOwner(t, dir, wellKnownSID(t, windows.WinBuiltinAdministratorsSid))
+}
+
+// TestEnsureSqiDir_LeavesExistingAlone pins that an existing %ProgramData%\sqi
+// is not changed in any way: its owner, group, DACL and contents stay as they
+// were, for the check to judge.
+func TestEnsureSqiDir_LeavesExistingAlone(t *testing.T) {
+	pd := t.TempDir()
+	t.Setenv("ProgramData", pd)
+	dir := filepath.Join(pd, "sqi")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := securityOf(t, dir)
+	if err := EnsureSqiDir(); err != nil {
+		t.Fatal(err)
+	}
+	if after := securityOf(t, dir); after != before {
+		t.Errorf("security changed:\n before %s\n after  %s", before, after)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "keep.txt" {
+		t.Errorf("contents changed: %v, %v", entries, err)
+	}
+}
+
+// securityOf is path's owner, group and DACL as SDDL.
+func securityOf(t *testing.T, path string) string {
+	t.Helper()
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.GROUP_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatalf("read security of %s: %v", path, err)
+	}
+	return sd.String()
+}

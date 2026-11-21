@@ -42,6 +42,7 @@ type fakeOps struct {
 	startErr       error
 	preShutdown    time.Duration
 	preShutdownErr error
+	sqiDirErr      error     // what ensureSqiDir returns
 	checkErr       error     // what checkPaths returns
 	checked        []PathRef // the refs checkPaths was given
 }
@@ -57,6 +58,7 @@ func (f *fakeOps) operations() operations {
 			f.recordf("exists %s", name)
 			return f.existing, f.existsErr
 		},
+		ensureSqiDir: func() error { f.recordf("ensureSqiDir"); return f.sqiDirErr },
 		checkPaths: func(refs []PathRef, account string) error {
 			f.recordf("checkPaths %s", account)
 			f.checked = refs
@@ -189,6 +191,7 @@ func refusingOps(t *testing.T) operations {
 	return operations{
 		requireElevated:     func() error { return ErrNotElevated },
 		exists:              func(string) (bool, error) { return false, touched("exists") },
+		ensureSqiDir:        func() error { return touched("ensureSqiDir") },
 		checkPaths:          func([]PathRef, string) error { return touched("checkPaths") },
 		grantLogonRight:     func(string) error { return touched("grantLogonRight") },
 		validateCredentials: func(string, string) error { return touched("validateCredentials") },
@@ -280,6 +283,7 @@ func TestInstall_UserAccount(t *testing.T) {
 			want := []string{
 				"requireElevated",
 				"exists " + testBinary,
+				"ensureSqiDir",
 				"checkPaths " + tc.account,
 				"grant " + tc.account,
 				"validate " + tc.account + " s3cret",
@@ -329,7 +333,7 @@ func TestInstall_LocalSystem(t *testing.T) {
 				t.Fatalf("install: %v\n%s", err, out)
 			}
 			want := []string{
-				"requireElevated", "exists " + testBinary, "checkPaths ",
+				"requireElevated", "exists " + testBinary, "ensureSqiDir", "checkPaths ",
 				"ensureLogDir " + logDir + " ", "install " + testBinary,
 			}
 			if !slices.Equal(fake.calls, want) {
@@ -352,7 +356,7 @@ func TestInstall_LocalSystem(t *testing.T) {
 func TestInstall_InvalidInputChangesNothing(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
 	probed := []string{"requireElevated", "exists " + testBinary}
-	checked := append(slices.Clone(probed), `checkPaths .\render`)
+	checked := append(slices.Clone(probed), "ensureSqiDir", `checkPaths .\render`)
 	for _, tc := range []struct {
 		name, stdin, want string
 		args              []string
@@ -390,7 +394,10 @@ func TestInstall_WrongPasswordStopsBeforeInstall(t *testing.T) {
 	if !errors.Is(err, windows.ERROR_LOGON_FAILURE) || !strings.Contains(err.Error(), "check the password") {
 		t.Fatalf("install = %v, want the logon failure and a password hint", err)
 	}
-	want := []string{"requireElevated", "exists " + testBinary, `checkPaths .\render`, `grant .\render`, `validate .\render wrong`}
+	want := []string{
+		"requireElevated", "exists " + testBinary, "ensureSqiDir", `checkPaths .\render`,
+		`grant .\render`, `validate .\render wrong`,
+	}
 	if !slices.Equal(fake.calls, want) {
 		t.Errorf("calls:\n got %q\nwant %q", fake.calls, want)
 	}
@@ -596,29 +603,35 @@ func (s *recordingStdin) Read(p []byte) (int, error) {
 }
 
 // TestInstall_ChecksPathsBeforePasswordAndChanges pins where the path check
-// sits: after the existence probe and before the password is read, the logon
-// right granted, the log directory touched or the service registered. A
-// refusal, or a configuration whose paths cannot be read, stops install there.
+// sits: after the existence probe and the creation of %ProgramData%\sqi
+// (without which a fresh host's default log directory would be judged by
+// %ProgramData% itself, which every user can write), and before the password
+// is read, the logon right granted, the log directory touched or the service
+// registered. A refusal, a configuration whose paths cannot be read, or a
+// %ProgramData%\sqi that cannot be created stops install there.
 func TestInstall_ChecksPathsBeforePasswordAndChanges(t *testing.T) {
 	refused := &UntrustedPathsError{Failures: []PathFailure{
 		{Key: "nats.tls_ca_file", Path: `C:\ca.pem`, JudgedPath: `C:\ca.pem`, Reason: `BUILTIN\Users can write (WD)`},
 	}}
 	ioErr := fmt.Errorf("read security: %w", windows.ERROR_ACCESS_DENIED)
-	prefix := []string{"requireElevated", "exists " + testBinary, `checkPaths .\render`}
+	prefix := []string{"requireElevated", "exists " + testBinary, "ensureSqiDir", `checkPaths .\render`}
+	sqiDirErr := fmt.Errorf("create C:\\ProgramData\\sqi: %w", windows.ERROR_ACCESS_DENIED)
 	for _, tc := range []struct {
-		name     string
-		checkErr error
-		pathsErr error
-		want     []string
+		name      string
+		sqiDirErr error
+		checkErr  error
+		pathsErr  error
+		want      []string
 	}{
-		{"passes", nil, nil, append(slices.Clone(prefix), "readPassword", `grant .\render`, `validate .\render s3cret`,
+		{"passes", nil, nil, nil, append(slices.Clone(prefix), "readPassword", `grant .\render`, `validate .\render s3cret`,
 			`ensureLogDir `+filepath.Dir(DefaultLogPath(testBinary))+` .\render`, "install "+testBinary)},
-		{"refused", refused, nil, prefix},
-		{"unreadable path", ioErr, nil, prefix},
-		{"unreadable configuration", nil, errors.New("line 2: unknown key log.fil"), prefix[:2]},
+		{"refused", nil, refused, nil, prefix},
+		{"unreadable path", nil, ioErr, nil, prefix},
+		{"sqi directory not created", sqiDirErr, nil, nil, prefix[:3]},
+		{"unreadable configuration", nil, nil, errors.New("line 2: unknown key log.fil"), prefix[:2]},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fake := &fakeOps{checkErr: tc.checkErr}
+			fake := &fakeOps{checkErr: tc.checkErr, sqiDirErr: tc.sqiDirErr}
 			spec := testSpec(new(int))
 			spec.ConfigPaths = func(string) (ConfigPaths, error) { return ConfigPaths{}, tc.pathsErr }
 			stdin := &recordingStdin{f: fake, r: strings.NewReader("s3cret\n")}
@@ -627,6 +640,10 @@ func TestInstall_ChecksPathsBeforePasswordAndChanges(t *testing.T) {
 				t.Errorf("calls:\n got %q\nwant %q", fake.calls, tc.want)
 			}
 			switch {
+			case tc.sqiDirErr != nil:
+				if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+					t.Errorf("install = %v, want the ensureSqiDir error", err)
+				}
 			case tc.checkErr == nil && tc.pathsErr == nil:
 				if err != nil {
 					t.Fatalf("install: %v", err)

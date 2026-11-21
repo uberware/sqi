@@ -55,6 +55,7 @@ type CommandSpec struct {
 type operations struct {
 	requireElevated     func() error
 	exists              func(name string) (bool, error)
+	ensureSqiDir        func() error
 	checkPaths          func(refs []PathRef, account string) error
 	grantLogonRight     func(account string) error
 	validateCredentials func(account, password string) error
@@ -71,6 +72,7 @@ func systemOperations() operations {
 	return operations{
 		requireElevated:     RequireElevated,
 		exists:              Exists,
+		ensureSqiDir:        EnsureSqiDir,
 		checkPaths:          CheckPaths,
 		grantLogonRight:     GrantServiceLogonRight,
 		validateCredentials: ValidateCredentials,
@@ -284,9 +286,17 @@ func (c commands) installConfig(cmd *cobra.Command, f installFlags) (ServiceConf
 // configuration, binary, log directory or any path its configuration names
 // someone other than SYSTEM, Administrators and account could change: each
 // is a way to run code as the service's account, LocalSystem by default.
+//
+// It first creates %ProgramData%\sqi administrators-only when it is missing
+// (ensureSqiDir), so a fresh host's default log directory is judged by it
+// rather than by %ProgramData%, which every user can write. A refusal after
+// that leaves only that empty directory behind.
 func (c commands) checkInstallPaths(cfgPath, exe, name, account string) error {
 	cp, err := c.spec.ConfigPaths(cfgPath)
 	if err != nil {
+		return err
+	}
+	if err := c.ops.ensureSqiDir(); err != nil {
 		return err
 	}
 	err = c.ops.checkPaths(installRefs(cfgPath, exe, name, cp), account)

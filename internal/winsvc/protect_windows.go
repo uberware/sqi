@@ -88,6 +88,18 @@ func prepareConfigDir(dir string, reader *windows.SID, trusted []*windows.SID) e
 	return grantDir(dir, reader, readExecuteAccess)
 }
 
+// EnsureSqiDir creates %ProgramData%\sqi when it is missing, as
+// PrepareConfigDir creates a directory: owned by BUILTIN\Administrators with
+// a protected DACL of inheritable full control for SYSTEM and Administrators.
+// An existing one is left as it is, for CheckPaths to judge. `service
+// install` calls it before its check: the default log directory lives there,
+// and a missing one would be judged by %ProgramData% itself, which every
+// user can write. Caller is elevated.
+func EnsureSqiDir() error {
+	_, err := createAdminOnly(filepath.Join(ProgramDataDir(), "sqi"), nil)
+	return err
+}
+
 // PrepareDataDir creates dir if missing (inheriting its parent's DACL) and grants account an
 // inheritable Modify ACE (fileModifyAccess).
 //
