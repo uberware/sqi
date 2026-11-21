@@ -27,6 +27,7 @@ type winOps struct {
 	lookupAccount    func(account string) error
 	prepareConfigDir func(dir, account string) error
 	prepareDataDir   func(dir, account string) error
+	makeDir          func(dir string) error
 	checkPaths       func([]winsvc.PathRef, string) error
 	dirExists        func(dir string) (bool, error)
 	writeFile        func(target string, content []byte, replace, adminOwned bool) error
@@ -38,6 +39,7 @@ func realWinOps() winOps {
 		lookupAccount:    winsvc.ResolveUser,
 		prepareConfigDir: winsvc.PrepareConfigDir,
 		prepareDataDir:   winsvc.PrepareDataDir,
+		makeDir:          makeDir,
 		checkPaths:       winsvc.CheckPaths,
 		dirExists:        dirExists,
 		writeFile:        writeFile,
@@ -59,10 +61,11 @@ func windowsWriter(ops winOps) writer {
 // missing one, or one for an account is made administrators-only (granting
 // account read) or must already be, which needs an elevated shell, checked
 // before anything else. An existing directory of one's own elsewhere is
-// written into as it is. account, when not "", must resolve to a user, may
-// not use the default %ProgramData%\sqi, and gets Modify on dataDir. target
-// must be in canonicalPath's spelling, as run gives it, so the directory
-// judged is the one written; %ProgramData% is compared in that spelling too.
+// written into as it is. dataDir is created either way. account, when not
+// "", must resolve to a user, may not use the default %ProgramData%\sqi, and
+// gets Modify on dataDir. target must be in canonicalPath's spelling, as
+// run gives it, so the directory judged is the one written; %ProgramData% is
+// compared in that spelling too.
 func writeWindows(target string, content []byte, account string, force bool, dataDir string, ops winOps) error {
 	pd, err := canonicalPath(winsvc.ProgramDataDir())
 	if err != nil {
@@ -92,12 +95,27 @@ func writeWindows(target string, content []byte, account string, force bool, dat
 	if err != nil {
 		return err
 	}
-	if account != "" {
-		if err := ops.prepareDataDir(dataDir, account); err != nil {
-			return refusal("cannot use data directory "+dataDir, dataDir, pd, err)
-		}
+	if err := makeDataDir(dataDir, pd, account, protect, ops); err != nil {
+		return err
 	}
 	return ops.writeFile(target, content, replace, protect)
+}
+
+// makeDataDir creates the data directory the starter names, which must
+// exist before the program starts (the server's store opens a file in it).
+// In a directory config init secures it is created owned by Administrators,
+// inheriting the configuration directory's DACL, with the account's Modify
+// ACE when there is one; an existing one is accepted as it is (service
+// install judges it) unless it is a junction or symbolic link. In a
+// directory of one's own it is a plain create.
+func makeDataDir(dataDir, pd, account string, protect bool, ops winOps) error {
+	if !protect {
+		return ops.makeDir(dataDir)
+	}
+	if err := ops.prepareDataDir(dataDir, account); err != nil {
+		return refusal("cannot use data directory "+dataDir, dataDir, pd, err)
+	}
+	return nil
 }
 
 // checkReplace reports whether a file at target is to be replaced: with
@@ -184,6 +202,21 @@ func refusal(what, path, pd string, err error) error {
 // (%ProgramData%) itself or a volume root.
 func movable(path, pd string) bool {
 	return filepath.Dir(path) != path && !strings.EqualFold(path, pd)
+}
+
+// makeDir creates dir with no ACL work, accepting one already there.
+func makeDir(dir string) error {
+	err := os.Mkdir(dir, 0o700)
+	if errors.Is(err, fs.ErrExist) {
+		if st, serr := os.Stat(dir); serr == nil && st.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("%s exists and is not a directory", dir)
+	}
+	if err != nil {
+		return fmt.Errorf("create data directory %s: %w", dir, err)
+	}
+	return nil
 }
 
 func dirExists(dir string) (bool, error) {

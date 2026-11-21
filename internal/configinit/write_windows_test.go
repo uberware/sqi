@@ -55,6 +55,10 @@ func (f *fakeWinOps) ops() winOps {
 			}
 			return f.checkErr
 		},
+		makeDir: func(dir string) error {
+			f.recordf("makeDir %s", dir)
+			return makeDir(dir)
+		},
 		dirExists: func(dir string) (bool, error) {
 			f.recordf("dirExists %s", dir)
 			return dirExists(dir)
@@ -135,7 +139,7 @@ func TestConfigInitWindows_NoElevationForExistingOwnDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range f.calls {
-		if !strings.HasPrefix(c, "dirExists ") && !strings.HasPrefix(c, "writeFile ") {
+		if !strings.HasPrefix(c, "dirExists ") && !strings.HasPrefix(c, "makeDir ") && !strings.HasPrefix(c, "writeFile ") {
 			t.Errorf("calls = %q: %q ran for an existing directory of one's own", f.calls, c)
 		}
 	}
@@ -455,7 +459,10 @@ func TestConfigInitWindows_ProgramDataPreparesWithoutAccount(t *testing.T) {
 	if _, err := runInitWindows(t, workerSpec, f); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"requireElevated", "prepareConfigDir " + dir + " ", "writeFile " + tgt + " replace=false admin=true"}
+	want := []string{
+		"requireElevated", "prepareConfigDir " + dir + " ",
+		"prepareDataDir " + filepath.Join(dir, "worker") + " ", "writeFile " + tgt + " replace=false admin=true",
+	}
 	if !slices.Equal(f.calls, want) {
 		t.Errorf("calls = %q, want %q", f.calls, want)
 	}
@@ -475,7 +482,10 @@ func TestConfigInitWindows_ForceChecksTheFile(t *testing.T) {
 	if _, err := runInitWindows(t, workerSpec, f, "--force"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"requireElevated", "prepareConfigDir " + dir + " ", "checkPaths config " + tgt + " ", "writeFile " + tgt + " replace=true admin=true"}
+	want := []string{
+		"requireElevated", "prepareConfigDir " + dir + " ", "checkPaths config " + tgt + " ",
+		"prepareDataDir " + filepath.Join(dir, "worker") + " ", "writeFile " + tgt + " replace=true admin=true",
+	}
 	if !slices.Equal(f.calls, want) {
 		t.Errorf("calls = %q, want %q", f.calls, want)
 	}
@@ -620,7 +630,11 @@ func TestConfigInitWindows_RealWriterCreatesProtectedDir(t *testing.T) {
 	if got := readFile(t, tgt); !strings.Contains(got, "worker:") {
 		t.Errorf("file not written: %q", got)
 	}
-	refs := []winsvc.PathRef{{Key: "config directory", Path: dir}, {Key: "config", Path: tgt}}
+	data := filepath.Join(dir, "worker")
+	if st, err := os.Lstat(data); err != nil || !st.IsDir() {
+		t.Fatalf("data directory %s: %v", data, err)
+	}
+	refs := []winsvc.PathRef{{Key: "config directory", Path: dir}, {Key: "config", Path: tgt}, {Key: "worker.data_dir", Path: data}}
 	if err := winsvc.CheckPaths(refs, ""); err != nil {
 		t.Errorf("the created directory fails the check:\n%v", err)
 	}
@@ -630,5 +644,78 @@ func TestConfigInitWindows_RealWriterCreatesProtectedDir(t *testing.T) {
 	}
 	if err := winsvc.CheckPaths(refs, ""); err != nil {
 		t.Errorf("the replaced file fails the check:\n%v", err)
+	}
+}
+
+func TestConfigInitWindows_CreatesTheDataDirectory(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    Spec
+		leaf    string
+		account []string // --user args
+		// protected: under the fake %ProgramData% (prepareDataDir);
+		// otherwise an existing directory of one's own (makeDir).
+		protected bool
+	}{
+		{"server, protected", serverSpec, "data", nil, true},
+		{"worker, protected", workerSpec, "worker", nil, true},
+		{"server, --user", serverSpec, "data", []string{"--user", "render"}, true},
+		{"worker, --user", workerSpec, "worker", []string{"--user", "render"}, true},
+		{"server, own directory", serverSpec, "data", nil, false},
+		{"worker, own directory", workerSpec, "worker", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pd := fakeProgramData(t)
+			dir := filepath.Join(t.TempDir(), "own")
+			if tt.protected && tt.account == nil {
+				dir = filepath.Join(pd, "sqi-test")
+			}
+			if err := os.Mkdir(dir, 0o700); err != nil { // the fake prepareConfigDir creates nothing
+				t.Fatal(err)
+			}
+			tgt := filepath.Join(dir, string(tt.spec.Binary)+".yaml")
+			data := filepath.Join(dir, tt.leaf)
+			f := &fakeWinOps{}
+			if _, err := runInitWindows(t, tt.spec, f, append([]string{"--config", tgt}, tt.account...)...); err != nil {
+				t.Fatal(err)
+			}
+			account := ""
+			if tt.account != nil {
+				account = `.\render`
+			}
+			step := "makeDir " + data
+			if tt.protected {
+				step = "prepareDataDir " + data + " " + account
+			}
+			i := slices.Index(f.calls, step)
+			if i < 0 || i+1 >= len(f.calls) || !strings.HasPrefix(f.calls[i+1], "writeFile "+tgt+" ") {
+				t.Fatalf("calls = %q, want %q directly before the write", f.calls, step)
+			}
+			if tt.protected && !slices.ContainsFunc(f.calls[:i], func(c string) bool { return strings.HasPrefix(c, "prepareConfigDir "+dir+" ") }) {
+				t.Errorf("calls = %q, want the configuration directory prepared before the data directory", f.calls)
+			}
+			if !tt.protected {
+				if st, err := os.Stat(data); err != nil || !st.IsDir() {
+					t.Errorf("data directory %s was not created: %v", data, err)
+				}
+			}
+		})
+	}
+}
+
+func TestMakeDir_AcceptsAnExistingDirectoryOnly(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	for range 2 {
+		if err := makeDir(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeDir(file); err == nil {
+		t.Error("makeDir accepted a file")
 	}
 }
