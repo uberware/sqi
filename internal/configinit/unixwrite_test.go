@@ -21,6 +21,9 @@ type memFS struct {
 	dirs    map[string]os.FileMode
 	lookups []string
 	seq     int
+	// umask clears these bits from the mode of a directory mkdirAll creates,
+	// as the operating system does.
+	umask os.FileMode
 	// fail maps an operation ("mkdirAll", "writeTemp", "chown", "chmod",
 	// "rename") to the error it returns.
 	fail map[string]error
@@ -63,15 +66,23 @@ func (m *memFS) sys(goos string) unixSys {
 			if err := m.fail["chmod"]; err != nil {
 				return err
 			}
+			if _, ok := m.dirs[p]; ok {
+				m.dirs[p] = mode
+				return nil
+			}
 			m.files[p].mode = mode
 			return nil
+		},
+		isDir: func(p string) bool {
+			_, ok := m.dirs[p]
+			return ok
 		},
 		mkdirAll: func(p string, mode os.FileMode) error {
 			if err := m.fail["mkdirAll"]; err != nil {
 				return err
 			}
 			if _, ok := m.dirs[p]; !ok {
-				m.dirs[p] = mode
+				m.dirs[p] = mode &^ m.umask
 			}
 			return nil
 		},
@@ -231,6 +242,60 @@ func TestWriteUnix_DataDirOnlyOnDarwin(t *testing.T) {
 				t.Errorf("~/.sqi mode = %v, want 0700", m.dirs["/Users/a/.sqi"])
 			}
 		})
+	}
+}
+
+func TestWriteUnix_CreatedDirectoryGetsItsModeWhateverTheUmask(t *testing.T) {
+	const data = "/Users/a/Library/Application Support/sqi-worker"
+	tests := []struct {
+		name   string
+		goos   string
+		target string
+		opts   unixOpts
+		want   map[string]os.FileMode
+	}{
+		{
+			"shared", "linux", "/etc/sqi/x.yaml",
+			unixOpts{Shared: true, Group: "sqi"},
+			map[string]os.FileMode{"/etc/sqi": 0o755},
+		},
+		{
+			"private", "linux", "/home/a/.sqi/x.yaml",
+			unixOpts{},
+			map[string]os.FileMode{"/home/a/.sqi": 0o700},
+		},
+		{
+			"darwin data dir", "darwin", "/Users/a/.sqi/x.yaml",
+			unixOpts{DataDir: data},
+			map[string]os.FileMode{"/Users/a/.sqi": 0o700, data: 0o700},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newMemFS()
+			m.groups["sqi"] = 7
+			m.umask = 0o077
+			if err := writeUnix(tt.target, []byte("b"), tt.opts, m.sys(tt.goos)); err != nil {
+				t.Fatal(err)
+			}
+			for dir, want := range tt.want {
+				if got := m.dirs[dir]; got != want {
+					t.Errorf("%s mode = %v, want %v", dir, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestWriteUnix_ExistingDirectoryKeepsItsMode(t *testing.T) {
+	m := newMemFS()
+	m.groups["sqi"] = 7
+	m.dirs["/etc/sqi"] = 0o750
+	if err := writeUnix("/etc/sqi/x.yaml", []byte("b"), unixOpts{Shared: true, Group: "sqi"}, m.sys("linux")); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.dirs["/etc/sqi"]; got != 0o750 {
+		t.Errorf("/etc/sqi mode = %v, want the owner's 0750 left alone", got)
 	}
 }
 

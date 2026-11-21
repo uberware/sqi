@@ -35,6 +35,7 @@ type unixSys struct {
 	chown       func(path string, uid, gid int) error
 	chmod       func(path string, mode os.FileMode) error
 	mkdirAll    func(path string, mode os.FileMode) error
+	isDir       func(path string) bool
 	// writeTemp creates a new file in dir that only its owner can read, writes
 	// content to it and returns its path.
 	writeTemp func(dir string, content []byte) (string, error)
@@ -75,15 +76,33 @@ func writeUnix(target string, content []byte, opts unixOpts, sys unixSys) error 
 		dirMode = modeSharedDir
 	}
 	dir := path.Dir(target)
-	if err := sys.mkdirAll(dir, dirMode); err != nil {
-		return denied(fmt.Errorf("create %s: %w", dir, err))
+	if err := ensureDir(dir, dirMode, sys); err != nil {
+		return err
 	}
 	if sys.goos == goosDarwin && opts.DataDir != "" {
-		if err := sys.mkdirAll(opts.DataDir, modePrivateDir); err != nil {
-			return denied(fmt.Errorf("create %s: %w", opts.DataDir, err))
+		if err := ensureDir(opts.DataDir, modePrivateDir, sys); err != nil {
+			return err
 		}
 	}
 	return replaceFile(target, dir, content, opts.Shared, gid, sys)
+}
+
+// ensureDir creates dir. One it creates gets mode explicitly, because the
+// umask narrows what MkdirAll is asked for and a service account that cannot
+// enter its configuration directory can never read the file in it. One that
+// already exists keeps the mode its owner gave it.
+func ensureDir(dir string, mode os.FileMode, sys unixSys) error {
+	existed := sys.isDir(dir)
+	if err := sys.mkdirAll(dir, mode); err != nil {
+		return denied(fmt.Errorf("create %s: %w", dir, err))
+	}
+	if existed {
+		return nil
+	}
+	if err := sys.chmod(dir, mode); err != nil {
+		return denied(fmt.Errorf("set the mode of %s: %w", dir, err))
+	}
+	return nil
 }
 
 func sharedGroup(group string, sys unixSys) (int, error) {

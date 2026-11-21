@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -49,5 +50,24 @@ func TestRealUnixSys_ReplaceResetsModeAndLeavesNoTemp(t *testing.T) {
 func TestRealUnixSys_MissingGroup(t *testing.T) {
 	if _, err := lookupGroup("sqi-no-such-group-for-test"); !errors.Is(err, errGroupNotFound) {
 		t.Errorf("error = %v, want errGroupNotFound", err)
+	}
+}
+
+// Not parallel: the umask belongs to the whole process. The umask clears the
+// owner's write bit, so a directory left at the mode MkdirAll produced is
+// 0500 and the test sees it.
+func TestRealUnixSys_CreatedDirectoryIgnoresUmask(t *testing.T) {
+	old := syscall.Umask(0o277)
+	defer syscall.Umask(old)
+	dir := filepath.Join(t.TempDir(), "sqi")
+	if err := writeUnix(filepath.Join(dir, "x.yaml"), []byte("b"), unixOpts{Shared: false}, realUnixSys()); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o700 {
+		t.Errorf("created directory mode = %v, want 0700", st.Mode().Perm())
 	}
 }

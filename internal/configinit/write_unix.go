@@ -25,10 +25,16 @@ func realUnixSys() unixSys {
 		chown:       os.Chown,
 		chmod:       os.Chmod,
 		mkdirAll:    os.MkdirAll,
+		isDir:       isDir,
 		writeTemp:   writeTemp,
 		rename:      os.Rename,
 		remove:      os.Remove,
 	}
+}
+
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
 }
 
 func lookupGroup(name string) (int, error) {
