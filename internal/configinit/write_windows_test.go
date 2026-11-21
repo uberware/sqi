@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/uberware/sqi/internal/winsvc"
 )
 
@@ -161,24 +163,189 @@ func TestConfigInitWindows_UserNeedsConfig(t *testing.T) {
 	}
 }
 
+// shortPath is p's 8.3 spelling, or "" when the volume has none for it.
+func shortPath(t *testing.T, p string) string {
+	t.Helper()
+	src, err := windows.UTF16PtrFromString(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	n, err := windows.GetShortPathName(src, &buf[0], uint32(len(buf)))
+	if err != nil {
+		t.Fatalf("GetShortPathName(%s): %v", p, err)
+	}
+	if s := windows.UTF16ToString(buf[:n]); !strings.EqualFold(s, p) {
+		return s
+	}
+	return ""
+}
+
+// spellingsOf is other ways of writing the existing directory dir that
+// Win32 opens as dir. The 8.3 row is left out when the volume has no short
+// names.
+func spellingsOf(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	parent, leaf := filepath.Dir(dir), filepath.Base(dir)
+	s := map[string]string{
+		"exact":           dir,
+		"case":            strings.ToUpper(dir),
+		"dot component":   filepath.Join(dir, ".") + `\.`,
+		"trailing dot":    parent + `\` + leaf + `.`,
+		"trailing space":  parent + `\` + leaf + ` `,
+		"dots and spaces": parent + `\` + leaf + `. .`,
+	}
+	if short := shortPath(t, parent); short != "" {
+		s["8.3 parent"] = short + `\` + leaf
+	} else {
+		t.Log("no 8.3 names on this volume; skipping the 8.3 row")
+	}
+	return s
+}
+
 func TestConfigInitWindows_UserRefusesDefaultDir(t *testing.T) {
 	pd := fakeProgramData(t)
-	tests := []string{
-		filepath.Join(pd, "sqi", "sqi-server.yaml"),
-		strings.ToUpper(filepath.Join(pd, "SQI")) + `\other.yaml`,
-		filepath.Join(pd, "sqi", ".", "sqi-server.yaml"),
+	dir := filepath.Join(pd, "sqi")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	for _, tgt := range tests {
-		t.Run(tgt, func(t *testing.T) {
+	for name, spelling := range spellingsOf(t, dir) {
+		t.Run(name, func(t *testing.T) {
 			f := &fakeWinOps{}
-			_, err := runInitWindows(t, serverSpec, f, "--user", "render", "--config", tgt)
+			_, err := runInitWindows(t, serverSpec, f, "--user", "render", "--config", spelling+`\sqi-server.yaml`)
 			if err == nil || !strings.HasPrefix(err.Error(), "--user needs its own directory: pass --config") {
-				t.Fatalf("error = %v, want the own-directory refusal", err)
+				t.Fatalf("%q: error = %v, want the own-directory refusal", spelling, err)
 			}
 			if want := []string{"requireElevated"}; !slices.Equal(f.calls, want) {
 				t.Errorf("calls = %q, want %q", f.calls, want)
 			}
 		})
+	}
+}
+
+func TestConfigInitWindows_ProgramDataSpellingsNeedElevation(t *testing.T) {
+	pd := fakeProgramData(t)
+	dir := filepath.Join(pd, "sqi")
+	if err := os.Mkdir(dir, 0o700); err != nil { // existing, so only "under %ProgramData%" asks for elevation
+		t.Fatal(err)
+	}
+	for name, spelling := range spellingsOf(t, dir) {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeWinOps{elevatedErr: winsvc.ErrNotElevated}
+			_, err := runInitWindows(t, workerSpec, f, "--config", spelling+`\sqi-worker.yaml`)
+			if !errors.Is(err, winsvc.ErrNotElevated) {
+				t.Fatalf("%q: error = %v, want ErrNotElevated", spelling, err)
+			}
+			if want := []string{"requireElevated"}; !slices.Equal(f.calls, want) {
+				t.Errorf("calls = %q, want %q", f.calls, want)
+			}
+		})
+	}
+}
+
+func TestConfigInitWindows_ShortProgramDataEnvironment(t *testing.T) {
+	pd := fakeProgramData(t)
+	short := shortPath(t, pd)
+	if short == "" {
+		t.Skip("no 8.3 names on this volume")
+	}
+	t.Setenv("ProgramData", short)
+	dir := filepath.Join(pd, "sqi")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeWinOps{elevatedErr: winsvc.ErrNotElevated}
+	_, err := runInitWindows(t, workerSpec, f, "--user", "render", "--config", filepath.Join(dir, "sqi-worker.yaml"))
+	if !errors.Is(err, winsvc.ErrNotElevated) {
+		t.Fatalf("error = %v, want ErrNotElevated", err)
+	}
+	f = &fakeWinOps{}
+	_, err = runInitWindows(t, workerSpec, f, "--user", "render", "--config", filepath.Join(dir, "sqi-worker.yaml"))
+	if err == nil || !strings.HasPrefix(err.Error(), "--user needs its own directory") {
+		t.Errorf("error = %v, want the own-directory refusal", err)
+	}
+}
+
+func TestConfigInitWindows_RefusesDevicePaths(t *testing.T) {
+	pd := fakeProgramData(t)
+	long := filepath.Join(pd, "sqi", "sqi-worker.yaml")
+	for _, tgt := range []string{`\\?\` + long, `\\.\` + long, `//?/` + filepath.ToSlash(long), `\??\` + long} {
+		for _, args := range [][]string{{"--config", tgt}, {"--user", "render", "--config", tgt}} {
+			t.Run(strings.Join(args, " "), func(t *testing.T) {
+				f := &fakeWinOps{}
+				_, err := runInitWindows(t, workerSpec, f, args...)
+				if err == nil || !strings.Contains(err.Error(), `\\?\ or \\.\`) {
+					t.Fatalf("error = %v, want the device-path refusal", err)
+				}
+				if len(f.calls) != 0 {
+					t.Errorf("calls = %q, want none", f.calls)
+				}
+			})
+		}
+	}
+}
+
+func TestConfigInitWindows_JudgesAndWritesTheCanonicalPath(t *testing.T) {
+	fakeProgramData(t)
+	dir := filepath.Join(t.TempDir(), "sqi-render")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeWinOps{}
+	spelled := dir + `. \sqi-worker.yaml`
+	out, err := runInitWindows(t, workerSpec, f, "--user", "render", "--config", spelled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tgt := filepath.Join(dir, "sqi-worker.yaml")
+	data := filepath.Join(dir, "worker")
+	want := []string{
+		"requireElevated",
+		`lookupAccount .\render`,
+		`prepareConfigDir ` + dir + ` .\render`,
+		`prepareDataDir ` + data + ` .\render`,
+		"writeFile " + tgt + " replace=false admin=true",
+	}
+	if !slices.Equal(f.calls, want) {
+		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
+	}
+	if got := readFile(t, tgt); !strings.Contains(got, "data_dir: '"+data+"'") {
+		t.Errorf("worker.data_dir is not %s:\n%s", data, got)
+	}
+	if !strings.HasPrefix(out, "wrote "+tgt+"\n") || !strings.Contains(out, "--config "+tgt+"\n") {
+		t.Errorf("output %q does not name %s", out, tgt)
+	}
+}
+
+func TestCanonicalPath(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		in, want string
+	}{
+		{root + `\a\x.yaml`, root + `\a\x.yaml`},
+		{root + `\a.\x.yaml`, root + `\a\x.yaml`},
+		{root + `\a \x.yaml`, root + `\a\x.yaml`},
+		{root + `\a\x.yaml. `, root + `\a\x.yaml`},
+		{root + `\a\missing. \deeper \x.yaml`, root + `\a\missing\deeper\x.yaml`},
+		{root + `\a\..\a\x.yaml`, root + `\a\x.yaml`},
+		{root + `/a/x.yaml`, root + `\a\x.yaml`},
+	}
+	if short := shortPath(t, root); short != "" {
+		tests = append(tests, struct{ in, want string }{short + `\a\x.yaml`, root + `\a\x.yaml`})
+	}
+	for _, tt := range tests {
+		got, err := canonicalPath(tt.in)
+		if err != nil || got != tt.want {
+			t.Errorf("canonicalPath(%q) = %q, %v; want %q", tt.in, got, err, tt.want)
+		}
+	}
+	for _, bad := range []string{root + `\a\...\x.yaml`, `\\?\` + root, `\\.\C:`} {
+		if got, err := canonicalPath(bad); err == nil {
+			t.Errorf("canonicalPath(%q) = %q, want an error", bad, got)
+		}
 	}
 }
 

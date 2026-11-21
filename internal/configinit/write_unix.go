@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"strconv"
 )
@@ -71,4 +72,13 @@ func closeAndRemove(f *os.File, cause error) error {
 	_ = f.Close()
 	_ = os.Remove(f.Name())
 	return cause
+}
+
+// canonicalTarget is path made absolute.
+func canonicalTarget(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", path, err)
+	}
+	return abs, nil
 }

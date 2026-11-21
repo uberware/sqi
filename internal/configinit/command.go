@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -147,15 +146,14 @@ func hostPlatform() (Platform, error) {
 	return p, nil
 }
 
+// resolveTarget is the file to write, absolute and in the one spelling the
+// platform opens (canonicalTarget), which everything after it uses: what is
+// checked, what is written and what is printed are the same path.
 func resolveTarget(flag string, b Binary, p Platform) (string, error) {
 	if flag == "" {
-		return DefaultTarget(b, p), nil
+		flag = DefaultTarget(b, p)
 	}
-	abs, err := filepath.Abs(flag)
-	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", flag, err)
-	}
-	return abs, nil
+	return canonicalTarget(flag)
 }
 
 func refuseExisting(target string, force bool) error {

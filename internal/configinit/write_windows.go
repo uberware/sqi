@@ -60,11 +60,16 @@ func windowsWriter(ops winOps) writer {
 // account read) or must already be, which needs an elevated shell, checked
 // before anything else. An existing directory of one's own elsewhere is
 // written into as it is. account, when not "", must resolve to a user, may
-// not use the default %ProgramData%\sqi, and gets Modify on dataDir.
+// not use the default %ProgramData%\sqi, and gets Modify on dataDir. target
+// must be in canonicalPath's spelling, as run gives it, so the directory
+// judged is the one written; %ProgramData% is compared in that spelling too.
 func writeWindows(target string, content []byte, account string, force bool, dataDir string, ops winOps) error {
-	target = filepath.Clean(target)
+	pd, err := canonicalPath(winsvc.ProgramDataDir())
+	if err != nil {
+		return fmt.Errorf("%%ProgramData%%: %w", err)
+	}
 	dir := filepath.Dir(target)
-	protect, err := needsProtection(dir, account, ops)
+	protect, err := needsProtection(dir, pd, account, ops)
 	if err != nil {
 		return err
 	}
@@ -74,54 +79,63 @@ func writeWindows(target string, content []byte, account string, force bool, dat
 		}
 	}
 	if account != "" {
-		if err := checkAccount(target, account, ops); err != nil {
+		if err := checkAccount(target, pd, account, ops); err != nil {
 			return err
 		}
 	}
 	if protect {
 		if err := ops.prepareConfigDir(dir, account); err != nil {
-			return refusal("cannot use configuration directory "+dir, dir, err)
+			return refusal("cannot use configuration directory "+dir, dir, pd, err)
 		}
 	}
-	replace := false
-	if force {
-		if replace, err = fileExists(target); err != nil {
-			return err
-		}
-	}
-	// The new file replaces the old one rather than overwriting it, so it
-	// takes none of the old ACL; but a file someone else can change, in a
-	// directory that passed, means they once could write here, and what else
-	// they left is unknown. It is refused, never papered over.
-	if replace && protect {
-		if err := ops.checkPaths([]winsvc.PathRef{{Key: "config", Path: target}}, account); err != nil {
-			return refusal("cannot replace "+target, target, err)
-		}
+	replace, err := checkReplace(target, pd, account, force, protect, ops)
+	if err != nil {
+		return err
 	}
 	if account != "" {
 		if err := ops.prepareDataDir(dataDir, account); err != nil {
-			return refusal("cannot use data directory "+dataDir, dataDir, err)
+			return refusal("cannot use data directory "+dataDir, dataDir, pd, err)
 		}
 	}
 	return ops.writeFile(target, content, replace, protect)
 }
 
+// checkReplace reports whether a file at target is to be replaced: with
+// force, when one is there. In a protected directory it must pass the check
+// first. The new file replaces the old one rather than overwriting it, so it
+// takes none of the old ACL; but a file someone else can change, in a
+// directory that passed, means they once could write here, and what else
+// they left is unknown. It is refused, never papered over.
+func checkReplace(target, pd, account string, force, protect bool, ops winOps) (bool, error) {
+	if !force {
+		return false, nil
+	}
+	exists, err := fileExists(target)
+	if err != nil || !exists || !protect {
+		return exists, err
+	}
+	if err := ops.checkPaths([]winsvc.PathRef{{Key: "config", Path: target}}, account); err != nil {
+		return false, refusal("cannot replace "+target, target, pd, err)
+	}
+	return true, nil
+}
+
 // needsProtection reports whether dir must be made, or already be,
-// administrators-only: when it is under %ProgramData%, is missing, or is for
-// an account.
-func needsProtection(dir, account string, ops winOps) (bool, error) {
-	if account != "" || underDir(dir, winsvc.ProgramDataDir()) {
+// administrators-only: when it is under pd (%ProgramData%), is missing, or
+// is for an account.
+func needsProtection(dir, pd, account string, ops winOps) (bool, error) {
+	if account != "" || underDir(dir, pd) {
 		return true, nil
 	}
 	exists, err := ops.dirExists(dir)
 	return !exists, err
 }
 
-// checkAccount refuses the default %ProgramData%\sqi for an account, which
-// would let it read every other service's configuration, and an account
-// that does not resolve to a user.
-func checkAccount(target, account string, ops winOps) error {
-	if strings.EqualFold(filepath.Dir(target), filepath.Join(winsvc.ProgramDataDir(), "sqi")) {
+// checkAccount refuses the default pd\sqi (pd is %ProgramData%) for an
+// account, which would let it read every other service's configuration, and
+// an account that does not resolve to a user.
+func checkAccount(target, pd, account string, ops winOps) error {
+	if strings.EqualFold(filepath.Dir(target), filepath.Join(pd, "sqi")) {
 		return fmt.Errorf(`--user needs its own directory: pass --config, e.g. C:\ProgramData\sqi-render\%s`, filepath.Base(target))
 	}
 	return ops.lookupAccount(account)
@@ -144,7 +158,7 @@ func underDir(dir, root string) bool {
 // path aside and running config init again, or choosing another --config
 // when the failure is in a directory above it (or path is not one to move).
 // Any other error is returned with what as its context.
-func refusal(what, path string, err error) error {
+func refusal(what, path, pd string, err error) error {
 	u, ok := errors.AsType[*winsvc.UntrustedPathsError](err)
 	if !ok {
 		return fmt.Errorf("%s: %w", what, err)
@@ -158,12 +172,12 @@ func refusal(what, path string, err error) error {
 		}
 	}
 	var remedy string
-	if self && movable(path) {
+	if self && movable(path, pd) {
 		remedy = fmt.Sprintf("Someone other than SYSTEM and Administrators can change it. Move it aside from an elevated PowerShell:\n"+
 			"  Rename-Item -LiteralPath '%s' -NewName ('%s.suspect-' + (Get-Date -Format yyyyMMddHHmmss))\n"+
 			"then run config init again.", psQuote(path), psQuote(filepath.Base(path)))
 	}
-	if above || (self && !movable(path)) {
+	if above || (self && !movable(path, pd)) {
 		if remedy != "" {
 			remedy += "\n"
 		}
@@ -172,10 +186,10 @@ func refusal(what, path string, err error) error {
 	return fmt.Errorf("%s:\n%w\n%s", what, err, remedy)
 }
 
-// movable reports whether config init may suggest renaming path: never
-// %ProgramData% itself or a volume root.
-func movable(path string) bool {
-	return filepath.Dir(path) != path && !strings.EqualFold(path, filepath.Clean(winsvc.ProgramDataDir()))
+// movable reports whether config init may suggest renaming path: never pd
+// (%ProgramData%) itself or a volume root.
+func movable(path, pd string) bool {
+	return filepath.Dir(path) != path && !strings.EqualFold(path, pd)
 }
 
 // psQuote escapes s for a PowerShell single-quoted string, which also ends
