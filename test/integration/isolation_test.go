@@ -639,6 +639,67 @@ func TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild(t *testing.T)
 	t.Errorf("a descendant of pid %d survived SIGKILL to its process group; isolation.Apply may have overwritten Setpgid", pid)
 }
 
+// TestIsolation_SweepKillsIsolatedOrphan checks that a root worker's startup
+// sweep reads and kills a tree its killed predecessor left running as another
+// account: the tree runs as render-a, is recorded and never released (the
+// worker died), and the sweep must still find it by its environment marker.
+func TestIsolation_SweepKillsIsolatedOrphan(t *testing.T) {
+	requireRoot(t)
+	provider := newRealProvider(t)
+	cred, err := provider.Resolve(context.Background(), isolation.Spec{User: renderAUser})
+	if err != nil {
+		t.Fatalf("resolve %s: %v", renderAUser, err)
+	}
+	ledger, err := proctree.OpenLedger(filepath.Join(t.TempDir(), "proctrees"))
+	if err != nil {
+		t.Fatalf("open ledger: %v", err)
+	}
+
+	token := proctree.NewToken()
+	cmd := exec.CommandContext(context.Background(), "sh", "-c", "sleep 300 & sleep 300 & wait")
+	cmd.Dir = "/"
+	proctree.Configure(cmd)
+	if err := isolation.Apply(cmd, cred); err != nil {
+		t.Fatalf("apply credential: %v", err)
+	}
+	cmd.Env = proctree.MarkEnv([]string{"PATH=/usr/bin:/bin"}, token)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start isolated tree: %v", err)
+	}
+	pgid := cmd.Process.Pid
+	// One goroutine owns Wait, so the shell is reaped as soon as the sweep
+	// kills it and the group check below never sees a zombie leader.
+	waited := make(chan struct{})
+	go func() {
+		defer close(waited)
+		cmd.Wait() //nolint:errcheck // killed on purpose; only reaping matters
+	}()
+	t.Cleanup(func() {
+		syscall.Kill(-pgid, syscall.SIGKILL) //nolint:errcheck // cleanup after a failure; ESRCH when the sweep worked
+		<-waited
+	})
+	tree, err := proctree.Supervise(cmd)
+	if err != nil {
+		t.Fatalf("supervise: %v", err)
+	}
+	if err := tree.Track(ledger, token, proctree.Label{Kind: "task", AttemptID: "iso-1"}); err != nil {
+		t.Fatalf("track: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond) // let the shell fork both sleeps
+
+	if err := ledger.Sweep(context.Background(), testLogger()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !anyProcessInGroup(t, pgid) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Errorf("a process of the isolated tree (group %d, running as %s) survived the sweep", pgid, renderAUser)
+}
+
 // TestIsolation_EnvironmentActionTimeoutReapsPrivilegeDroppedChild proves an
 // environment action runs contained as the target account: its process group
 // survives isolation.Apply, so a timeout stops the whole tree and not just the
