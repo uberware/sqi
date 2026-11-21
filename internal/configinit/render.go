@@ -28,6 +28,12 @@ const (
 	goosDarwin  = "darwin"
 )
 
+// configDocs is the guide that explains each binary's configuration.
+var configDocs = map[Binary]string{
+	Server: "docs/configuration.md",
+	Worker: "docs/worker-configuration.md",
+}
+
 // Platform is what defaults depend on. Tests build it for any OS.
 type Platform struct {
 	GOOS        string // "linux", "darwin", "windows"
@@ -109,9 +115,13 @@ func Render(b Binary, p Platform, v Values) ([]byte, error) {
 	if v.DataDir == "" {
 		return nil, errors.New("data directory must not be empty")
 	}
+	if !isAbs(p, v.DataDir) {
+		return nil, fmt.Errorf("data directory %q must be an absolute path", v.DataDir)
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# %s configuration, written by %s %s.\n", b, b, oneLine(v.Version))
-	fmt.Fprintf(&sb, "# Every setting and its default is documented in config/%s.example.yaml.\n\n", b)
+	fmt.Fprintf(&sb, "# Every setting and its default is documented in config/%s.example.yaml\n", b)
+	fmt.Fprintf(&sb, "# and in %s.\n\n", configDocs[b])
 	switch b {
 	case Worker:
 		if err := renderWorker(&sb, v); err != nil {
@@ -130,7 +140,7 @@ func renderWorker(sb *strings.Builder, v Values) error {
 		if err := ValidateNATSURL(v.NATSURL); err != nil {
 			return err
 		}
-		fmt.Fprintf(sb, "nats:\n  url: %s\n\n", quote(v.NATSURL))
+		fmt.Fprintf(sb, "nats:\n  url: %s\n\n", quote(normalizeNATSURL(v.NATSURL)))
 	} else {
 		sb.WriteString("# Workers find the server by mDNS discovery when nats.url is unset.\n")
 		sb.WriteString("# To name the server instead, uncomment and edit:\n")
@@ -143,6 +153,28 @@ func renderWorker(sb *strings.Builder, v Values) error {
 func renderServer(sb *strings.Builder, p Platform, v Values) {
 	fmt.Fprintf(sb, "store:\n  sqlite_path: %s\n\n", quote(join(p, v.DataDir, "sqi.db")))
 	fmt.Fprintf(sb, "nats:\n  embedded:\n    data_dir: %s\n", quote(join(p, v.DataDir, "nats")))
+}
+
+// normalizeNATSURL trims each entry of a validated comma-separated list.
+func normalizeNATSURL(raw string) string {
+	entries := strings.Split(raw, ",")
+	for i, e := range entries {
+		entries[i] = strings.TrimSpace(e)
+	}
+	return strings.Join(entries, ",")
+}
+
+// isAbs reports whether dir is absolute for p's platform. It does not use
+// filepath, which answers for the host rather than for p.
+func isAbs(p Platform, dir string) bool {
+	if p.GOOS != goosWindows {
+		return strings.HasPrefix(dir, "/")
+	}
+	if strings.HasPrefix(dir, `\\`) {
+		return true
+	}
+	return len(dir) >= 3 && dir[1] == ':' && (dir[2] == '\\' || dir[2] == '/') &&
+		(dir[0] >= 'A' && dir[0] <= 'Z' || dir[0] >= 'a' && dir[0] <= 'z')
 }
 
 func join(p Platform, dir, leaf string) string {

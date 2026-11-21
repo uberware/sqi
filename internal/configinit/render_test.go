@@ -114,6 +114,13 @@ func writeTemp(t *testing.T, content []byte) string {
 }
 
 func TestRender_RoundTripsThroughStrictLoader(t *testing.T) {
+	// An inherited variable overrides the file and would hide a wrong value.
+	for _, name := range []string{
+		"SQI_WORKER_NATS_URL", "SQI_WORKER_DATA_DIR",
+		"SQI_STORE_SQLITE_PATH", "SQI_NATS_EMBEDDED_DATA_DIR",
+	} {
+		t.Setenv(name, "")
+	}
 	platforms := []struct {
 		name string
 		p    configinit.Platform
@@ -170,6 +177,11 @@ func TestRender_RoundTripsThroughStrictLoader(t *testing.T) {
 	}
 }
 
+var headerDocs = map[configinit.Binary]string{
+	configinit.Server: "docs/configuration.md",
+	configinit.Worker: "docs/worker-configuration.md",
+}
+
 func TestRender_Header(t *testing.T) {
 	for _, b := range []configinit.Binary{configinit.Server, configinit.Worker} {
 		t.Run(string(b), func(t *testing.T) {
@@ -183,6 +195,9 @@ func TestRender_Header(t *testing.T) {
 			}
 			if !strings.Contains(string(out), "config/"+string(b)+".example.yaml") {
 				t.Errorf("header does not mention config/%s.example.yaml", b)
+			}
+			if doc := headerDocs[b]; !strings.Contains(string(out), doc) {
+				t.Errorf("header does not point at %s", doc)
 			}
 		})
 	}
@@ -226,6 +241,56 @@ func TestRender_QuotesEmbeddedSingleQuote(t *testing.T) {
 	}
 	if cfg.Worker.DataDir != "/var/it's" {
 		t.Errorf("data_dir = %q", cfg.Worker.DataDir)
+	}
+}
+
+func TestRender_WritesNormalizedNATSURL(t *testing.T) {
+	out, err := configinit.Render(configinit.Worker, linux, configinit.Values{
+		DataDir: "/d",
+		NATSURL: " tls://a:4222 , tls://b:4222",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "url: 'tls://a:4222,tls://b:4222'\n") {
+		t.Errorf("starter does not carry the trimmed URL list:\n%s", out)
+	}
+}
+
+func TestRender_RejectsRelativeDataDir(t *testing.T) {
+	tests := []struct {
+		name string
+		p    configinit.Platform
+		dir  string
+	}{
+		{"linux relative", linux, "var/lib/sqi"},
+		{"linux dot", linux, "."},
+		{"windows relative", windows, `data\worker`},
+		{"windows drive-relative", windows, `C:data`},
+		{"windows rooted without drive", windows, `\data`},
+		{"windows slash", windows, "/data"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := configinit.Render(configinit.Worker, tt.p, configinit.Values{DataDir: tt.dir})
+			if err == nil || !strings.Contains(err.Error(), "absolute") {
+				t.Errorf("error = %v, want one saying the path must be absolute", err)
+			}
+		})
+	}
+	for _, tt := range []struct {
+		p   configinit.Platform
+		dir string
+	}{
+		{linux, "/var/lib/sqi"},
+		{darwin, "/Users/a/x"},
+		{windows, `C:\ProgramData\sqi`},
+		{windows, `D:/farm/data`},
+		{windows, `\\host\share\sqi`},
+	} {
+		if _, err := configinit.Render(configinit.Worker, tt.p, configinit.Values{DataDir: tt.dir}); err != nil {
+			t.Errorf("rejected absolute %q: %v", tt.dir, err)
+		}
 	}
 }
 
