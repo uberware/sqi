@@ -173,8 +173,9 @@ func grantDir(dir string, sid *windows.SID, mask windows.ACCESS_MASK) error {
 	return writeDACL(h, dir, []*windows.SID{sid}, mask, existing, control&windows.SE_DACL_PROTECTED != 0)
 }
 
-// errReparsePoint is returned when the log directory, or its parent, is a
-// junction or symbolic link.
+// errReparsePoint is returned when a path this package must use as itself —
+// the log directory or its parent, or a path CheckPaths judges — is a
+// junction, symbolic link or other reparse point.
 var errReparsePoint = errors.New("is a junction or symbolic link")
 
 // checkParent refuses to go on when dir's parent exists and is not a plain
@@ -225,36 +226,48 @@ func openDirForACL(dir string) (windows.Handle, error) {
 // directory. The CreateFile error is wrapped, so a caller can test for a
 // missing path.
 func openPlainDir(path string, access uint32) (windows.Handle, error) {
+	h, attrs, err := openPlain(path, access)
+	switch {
+	case errors.Is(err, errReparsePoint):
+		return 0, fmt.Errorf("%w; it must be a real directory", err)
+	case err != nil:
+		return 0, err
+	}
+	if attrs&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
+		windows.CloseHandle(h) //nolint:errcheck // returning the check's error
+		return 0, fmt.Errorf("%s is not a directory", path)
+	}
+	return h, nil
+}
+
+// openPlain opens path itself (never a reparse point's target) with access,
+// which must include FILE_READ_ATTRIBUTES, and fails with errReparsePoint
+// when it is a junction, symbolic link or other reparse point. path may be a
+// file or a directory; its attributes are returned, read from the same
+// handle. The CreateFile error is wrapped, so a caller can test for a missing
+// path.
+func openPlain(path string, access uint32) (windows.Handle, uint32, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return 0, fmt.Errorf("encode path %q: %w", path, err)
+		return 0, 0, fmt.Errorf("encode path %q: %w", path, err)
 	}
 	h, err := windows.CreateFile(p, access,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil, windows.OPEN_EXISTING,
 		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
-		return 0, fmt.Errorf("open %s: %w", path, err)
+		return 0, 0, fmt.Errorf("open %s: %w", path, err)
 	}
-	if err := checkPlainDir(h, path); err != nil {
-		windows.CloseHandle(h) //nolint:errcheck // returning the check's error
-		return 0, err
-	}
-	return h, nil
-}
-
-func checkPlainDir(h windows.Handle, path string) error {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
-		return fmt.Errorf("read attributes of %s: %w", path, err)
+		windows.CloseHandle(h) //nolint:errcheck // returning the read's error
+		return 0, 0, fmt.Errorf("read attributes of %s: %w", path, err)
 	}
-	switch {
-	case info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0:
-		return fmt.Errorf("%s %w; it must be a real directory", path, errReparsePoint)
-	case info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0:
-		return fmt.Errorf("%s is not a directory", path)
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		windows.CloseHandle(h) //nolint:errcheck // returning the check's error
+		return 0, 0, fmt.Errorf("%s %w", path, errReparsePoint)
 	}
-	return nil
+	return h, info.FileAttributes, nil
 }
 
 // writeDACL writes to h a DACL of inheritable grants of mask to sids, merged
