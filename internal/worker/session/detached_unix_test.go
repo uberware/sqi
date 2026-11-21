@@ -54,7 +54,7 @@ func TestRunAction_FinishesWhenADescendantKeepsTheOutputOpen(t *testing.T) {
 				"echo openjd_env: SERVICE=up; exit " + strconv.Itoa(tc.exit)
 			start := time.Now()
 			err := runAction(context.Background(), &protocol.Action{Command: "sh", Args: []string{"-c", script}},
-				t.TempDir(), nil, nil, nopLogger(), handler)
+				t.TempDir(), nil, nil, nil, "", nopLogger(), handler)
 			elapsed := time.Since(start)
 
 			mu.Lock()

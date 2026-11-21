@@ -17,8 +17,9 @@ import (
 
 // effectiveSessionRoot resolves the directory under which session working
 // directories are created, kept deliberately separate from
-// cfg.Worker.DataDir: DataDir holds only the persistent worker-id file and
-// must never be widened for run-as-user traversal (see
+// cfg.Worker.DataDir: DataDir holds the worker's own state (the worker-id
+// file, its lock, the process-tree ledger) and must never be widened for
+// run-as-user traversal (see
 // workerconfig.LoadOrCreateWorkerID's doc), while session working
 // directories are ephemeral scratch that, when isolation is in use, must be
 // traversable by whichever run-as-user identity a session resolves to.

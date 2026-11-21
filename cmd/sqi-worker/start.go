@@ -37,6 +37,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/power"
 	"github.com/uberware/sqi/internal/worker/preempt"
+	"github.com/uberware/sqi/internal/worker/proctree"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/registration"
 	"github.com/uberware/sqi/internal/worker/session"
@@ -126,16 +127,23 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		return runDryRun(cfg)
 	}
 
-	// ── Root-user check + Worker ID ──────────────────────────────────────────
+	// ── Root-user check, worker ID, data-dir lock + process-tree sweep ──────
 	//
 	// Refuse to run as root on Linux/macOS unless allow_root is explicitly set,
 	// because executing render processes as root is a security risk (see
 	// docs/worker-configuration.md, "worker.allow_root"); no-op on Windows.
-	// Then load or create this worker's stable ID.
-	workerID, err := checkRootAndLoadWorkerID(cfg, logger)
+	// Then load or create this worker's stable ID, and lock the data directory:
+	// the lock refuses a second worker there, which would share this one's
+	// worker ID. Holding it, kill every process tree a previous worker here
+	// left running when it was killed (Linux and macOS; a no-op elsewhere, and
+	// on Windows a tree's job object dies with the worker). This must come
+	// before the registration below, which reclaims and re-runs those trees'
+	// tasks.
+	workerID, release, ledger, err := claimWorkerIdentity(ctx, cfg, logger)
 	if err != nil {
 		return err
 	}
+	defer release()
 
 	// ── Shutdown context ──────────────────────────────────────────────────────
 	//
@@ -253,7 +261,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	}
 
 	// ── Session manager, and the task executor with its publishers ──
-	exec, reports, sessionRoot, err := newExecutor(nc, workerID, cfg, m, logger)
+	exec, reports, sessionRoot, err := newExecutor(nc, workerID, cfg, ledger, m, logger)
 	if err != nil {
 		return err
 	}
@@ -575,10 +583,10 @@ func shutdownSequence(
 // publisher, then the log chunk publisher) and the session root for the
 // start-up log.
 func newExecutor(
-	nc *nats.Conn, workerID string, cfg workerconfig.WorkerConfig, m *workmetrics.Metrics, logger *slog.Logger,
+	nc *nats.Conn, workerID string, cfg workerconfig.WorkerConfig, ledger *proctree.Ledger, m *workmetrics.Metrics, logger *slog.Logger,
 ) (exec *executor.Executor, reports reportFlusher, sessionRoot string, err error) {
 	// ── Isolation provider, session root and session manager ──────
-	sessionMgr, sessionRoot, stagingIsolationCapable, err := newSessionManager(cfg, logger)
+	sessionMgr, sessionRoot, stagingIsolationCapable, err := newSessionManager(cfg, ledger, logger)
 	if err != nil {
 		return nil, reportFlusher{}, "", err
 	}
@@ -649,7 +657,7 @@ func newExecutor(
 // builds the session manager on them. It also returns the session root, for
 // the start-up log, and whether this worker can isolate, for the executor's
 // staging.
-func newSessionManager(cfg workerconfig.WorkerConfig, logger *slog.Logger) (mgr *session.Manager, sessionRoot string, isolationCapable bool, err error) {
+func newSessionManager(cfg workerconfig.WorkerConfig, ledger *proctree.Ledger, logger *slog.Logger) (mgr *session.Manager, sessionRoot string, isolationCapable bool, err error) {
 	// ── Isolation provider + session root ────────────────────────
 	//
 	// Provider built once at boot: POSIX credential switching via
@@ -658,8 +666,8 @@ func newSessionManager(cfg workerconfig.WorkerConfig, logger *slog.Logger) (mgr 
 	// worker refuse to start when it cannot isolate, rather than accept
 	// isolated queues it cannot honor.
 	//
-	// sessionRoot is separate from cfg.Worker.DataDir, which holds only the
-	// persistent worker-id file (see effectiveSessionRoot). When this worker
+	// sessionRoot is separate from cfg.Worker.DataDir, which holds the
+	// worker's own state (see effectiveSessionRoot). When this worker
 	// can assume another identity, resolveIsolation refuses to start rather
 	// than chmod an ancestor that lacks the traversal bit isolated tasks need.
 	isolationProvider, sessionRoot, sessionRootMode, isolationCapable, err := resolveIsolation(cfg, logger)
@@ -695,6 +703,7 @@ func newSessionManager(cfg workerconfig.WorkerConfig, logger *slog.Logger) (mgr 
 		sessionRoot, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation,
 		exprLimitsFromConfig(cfg.Expr), logger,
 		session.WithSessionRootMode(sessionRootMode),
+		session.WithLedger(ledger),
 		cmdPlan.option(logger),
 	)
 	return mgr, sessionRoot, isolationCapable, nil
@@ -706,6 +715,20 @@ func newSessionManager(cfg workerconfig.WorkerConfig, logger *slog.Logger) (mgr 
 // PreShutdown timeout is built from it (workerDrainBound), so the two cannot
 // drift apart.
 func shutdownKillGrace(grace time.Duration) time.Duration { return grace / 3 }
+
+// claimWorkerIdentity runs checkRootAndLoadWorkerID, then claimDataDir. The
+// returned release drops the data-dir lock.
+func claimWorkerIdentity(ctx context.Context, cfg workerconfig.WorkerConfig, logger *slog.Logger) (workerID string, release func(), ledger *proctree.Ledger, err error) {
+	workerID, err = checkRootAndLoadWorkerID(cfg, logger)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	release, ledger, err = claimDataDir(ctx, cfg.Worker.DataDir, logger)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return workerID, release, ledger, nil
+}
 
 // checkRootAndLoadWorkerID performs the two boot-time identity checks that
 // must happen before any network connection: refusing to run as root on

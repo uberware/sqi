@@ -202,6 +202,10 @@ type Session struct {
 
 	// commands is the Manager's worker.commands resolver, or nil.
 	commands *commands.Resolver
+
+	// ledger is the Manager's process-tree ledger, or nil. Every process this
+	// session starts is recorded in it while it runs; see Session.Ledger.
+	ledger *proctree.Ledger
 }
 
 // ResolveAction returns the action to start for a: the same one when its
@@ -348,7 +352,7 @@ func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) err
 			slog.String("session_id", s.ID),
 			slog.String("env", env.Name),
 		)
-		if err := runAction(ctx, s.ResolveAction(resolvedExit), s.WorkDir, s.buildActionEnv(resolvedVars, nil), s.cred, logger, s.actionLineHandler(ctx, logger)); err != nil {
+		if err := runAction(ctx, s.ResolveAction(resolvedExit), s.WorkDir, s.buildActionEnv(resolvedVars, nil), s.cred, s.ledger, s.ID, logger, s.actionLineHandler(ctx, logger)); err != nil {
 			logger.WarnContext(
 				ctx, "session: environment exit action failed — continuing teardown",
 				slog.String("session_id", s.ID),
@@ -370,6 +374,10 @@ func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) err
 }
 
 // ── Manager ───────────────────────────────────────────────────────────────────
+
+// Ledger returns the worker's process-tree ledger, in which the executor
+// records the task process it starts for this session, or nil.
+func (s *Session) Ledger() *proctree.Ledger { return s.ledger }
 
 // Manager creates and cleans up sessions. A single Manager is constructed
 // once at worker startup and shared by the executor for the process lifetime.
@@ -410,6 +418,10 @@ type Manager struct {
 	// both launch sites (the executor's task action and an environment's
 	// onEnter/onExit) resolve a name the same way.
 	commands *commands.Resolver
+	// ledger records every process tree a session starts, so the next worker
+	// on this data directory can kill the ones a killed worker left running.
+	// Nil records nothing.
+	ledger *proctree.Ledger
 }
 
 // ManagerOption customizes a Manager constructed by NewManager, e.g.
@@ -428,6 +440,13 @@ func WithSessionRootMode(mode os.FileMode) ManagerOption {
 // worker.commands resolver; see Session.ResolveAction.
 func WithCommands(r *commands.Resolver) ManagerOption {
 	return func(m *Manager) { m.commands = r }
+}
+
+// WithLedger gives every session this Manager creates the worker's process-tree
+// ledger, so both launch sites (the executor's task action and an
+// environment's onEnter/onExit) record the trees they start.
+func WithLedger(l *proctree.Ledger) ManagerOption {
+	return func(m *Manager) { m.ledger = l }
 }
 
 // NewManager returns a Manager that stores session working directories
@@ -687,6 +706,7 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		cred:           cred,
 		baseEnv:        baseEnv,
 		commands:       m.commands,
+		ledger:         m.ledger,
 		// Fresh per assignment, and set before enterEnvironments runs so
 		// every environment table built during entry shares it. See the
 		// exprBudget field.
@@ -830,7 +850,7 @@ func (s *Session) enterOne(ctx context.Context, env protocol.AssignEnvironment, 
 			slog.String("session_id", s.ID),
 			slog.String("env", env.Name),
 		)
-		if err := runAction(ctx, s.ResolveAction(resolvedEnter), s.WorkDir, s.buildActionEnv(resolvedVars, nil), s.cred, logger, s.actionLineHandler(ctx, logger)); err != nil {
+		if err := runAction(ctx, s.ResolveAction(resolvedEnter), s.WorkDir, s.buildActionEnv(resolvedVars, nil), s.cred, s.ledger, s.ID, logger, s.actionLineHandler(ctx, logger)); err != nil {
 			return fmt.Errorf("on_enter: %w", err)
 		}
 		logger.InfoContext(
@@ -1272,7 +1292,7 @@ const envActionDefaultNotifyPeriod = 30 * time.Second
 // logged verbatim.
 //
 // A non-zero exit code is returned as an error that includes the exit code.
-func runAction(ctx context.Context, action *protocol.Action, workDir string, env []string, cred *isolation.Credential, logger *slog.Logger, lineHandler func(stream, line string) string) error {
+func runAction(ctx context.Context, action *protocol.Action, workDir string, env []string, cred *isolation.Credential, ledger *proctree.Ledger, sessionID string, logger *slog.Logger, lineHandler func(stream, line string) string) error {
 	if action == nil || action.Command == "" {
 		return nil
 	}
@@ -1280,7 +1300,7 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 		return fmt.Errorf("command %q: not started: %w", action.Command, err)
 	}
 
-	out, tree, err := startContainedAction(action, workDir, env, cred, logger)
+	out, tree, err := startContainedAction(action, workDir, env, cred, ledger, sessionID, logger)
 	if err != nil {
 		return err
 	}
@@ -1305,8 +1325,10 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 // follows the executor's start sequence for a task: the tree is configured
 // before the credential is applied, because isolation.Apply keeps the
 // SysProcAttr fields already set and would not see ones set later, and the
-// process is supervised straight after Start, before it runs on Windows.
-func startContainedAction(action *protocol.Action, workDir string, env []string, cred *isolation.Credential, logger *slog.Logger) (*procout.Output, *proctree.Tree, error) {
+// process is supervised straight after Start, before it runs on Windows. The
+// process's environment carries a fresh proctree token, and the tree is
+// recorded in ledger (nil records nothing) until it is released.
+func startContainedAction(action *protocol.Action, workDir string, env []string, cred *isolation.Credential, ledger *proctree.Ledger, sessionID string, logger *slog.Logger) (*procout.Output, *proctree.Tree, error) {
 	// exec.Command, not exec.CommandContext (noctx): CommandContext kills only
 	// the direct process, with a fixed signal, bypassing the action's
 	// cancelation method; awaitAction stops the whole tree by that method.
@@ -1318,7 +1340,7 @@ func startContainedAction(action *protocol.Action, workDir string, env []string,
 	if err := applyCredential(cmd, cred); err != nil {
 		return nil, nil, fmt.Errorf("apply run-as-user credential: %w", err)
 	}
-	cmd.Env = env
+	cmd.Env = proctree.MarkEnv(env)
 
 	// procout, not StdoutPipe, so the action's exit is seen while a descendant
 	// still holds its output open, such as a service an onEnter action starts
@@ -1336,6 +1358,11 @@ func startContainedAction(action *protocol.Action, workDir string, env []string,
 				slog.String("command", action.Command), slog.Any("error", killErr))
 		}
 		return nil, nil, fmt.Errorf("supervise %q process tree: %w", action.Command, err)
+	}
+	label := proctree.Label{Kind: "environment-action", SessionID: sessionID, Command: action.Command}
+	if err := tree.Track(ledger, label); err != nil {
+		logger.WarnContext(context.Background(), "session: record environment action process tree; it will not be stopped if this worker is killed",
+			slog.String("command", action.Command), slog.Any("error", err))
 	}
 	return out, tree, nil
 }

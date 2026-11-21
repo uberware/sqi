@@ -32,13 +32,22 @@ func runDetachedScript(t *testing.T, script string) (processResult, []string, ti
 	return runDetachedAction(t, context.Background(), &protocol.Action{Command: "sh", Args: []string{"-c", script}})
 }
 
-// runDetachedAction runs action as a task under ctx and returns the result,
-// the lines the task wrote, and how long it took.
-func runDetachedAction(t *testing.T, ctx context.Context, action *protocol.Action) (processResult, []string, time.Duration) {
+// directRun is what execProcess needs to run one task directly: an executor,
+// the task's session, its assignment and its run state.
+type directRun struct {
+	e    *Executor
+	sess *session.Session
+	msg  *protocol.AssignMsg
+	run  *taskRun
+}
+
+// newDirectRun builds an executor and a session for task-1 / attempt-1 on a
+// session manager with opts, logging to logger, for a test that calls
+// execProcess itself.
+func newDirectRun(t *testing.T, logger *slog.Logger, opts ...session.ManagerOption) directRun {
 	t.Helper()
-	logger := slog.New(slog.DiscardHandler)
 	mgr := session.NewManager(filepath.Join(newTraversableSessionDataDir(t), "sessions"), false,
-		isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
+		isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger, opts...)
 	msg := &protocol.AssignMsg{JobID: "job-1", TaskID: "task-1", AttemptID: "attempt-1"}
 	sess, err := mgr.Create(context.Background(), msg)
 	if err != nil {
@@ -47,6 +56,15 @@ func runDetachedAction(t *testing.T, ctx context.Context, action *protocol.Actio
 	t.Cleanup(func() { mgr.Cleanup(context.Background(), sess, false) })
 	e := New(status.New(discardNATS{}, status.Config{WorkerID: "test-worker"}, logger), mgr, metrics.New(), DiscardOutput{}, Config{}, logger)
 	run := &taskRun{taskID: msg.TaskID, attemptID: msg.AttemptID, sessionID: sess.ID, jobID: msg.JobID}
+	return directRun{e: e, sess: sess, msg: msg, run: run}
+}
+
+// runDetachedAction runs action as a task under ctx and returns the result,
+// the lines the task wrote, and how long it took.
+func runDetachedAction(t *testing.T, ctx context.Context, action *protocol.Action) (processResult, []string, time.Duration) {
+	t.Helper()
+	d := newDirectRun(t, slog.New(slog.DiscardHandler))
+	e, msg, sess, run := d.e, d.msg, d.sess, d.run
 	out := &recordingHandler{}
 
 	start := time.Now()

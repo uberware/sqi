@@ -603,40 +603,89 @@ func TestIsolation_DaemonSecretAbsentAllowlistedLicensePresent(t *testing.T) {
 // working-directory traversal.
 func TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild(t *testing.T) {
 	requireRoot(t)
-	provider := newRealProvider(t)
-	cred, err := provider.Resolve(context.Background(), isolation.Spec{User: renderAUser})
+	cmd, waited := startIsolatedSleepGroup(t, nil)
+	pid := cmd.Process.Pid
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		t.Fatalf("SIGKILL process group -%d: %v", pid, err)
+	}
+	<-waited
+	if !waitGroupGone(t, pid, 5*time.Second) {
+		t.Errorf("a descendant of pid %d survived SIGKILL to its process group; isolation.Apply may have overwritten Setpgid", pid)
+	}
+}
+
+// TestIsolation_SweepKillsIsolatedOrphan checks that a root worker's startup
+// sweep reads and kills a tree its killed predecessor left running as another
+// account: the tree runs as render-a, is recorded and never released (the
+// worker died), and the sweep must still find it by its environment marker.
+func TestIsolation_SweepKillsIsolatedOrphan(t *testing.T) {
+	requireRoot(t)
+	ledger, err := proctree.OpenLedger(filepath.Join(t.TempDir(), "proctrees"))
+	if err != nil {
+		t.Fatalf("open ledger: %v", err)
+	}
+	cmd, _ := startIsolatedSleepGroup(t, proctree.MarkEnv([]string{"PATH=/usr/bin:/bin"}))
+	tree, err := proctree.Supervise(cmd)
+	if err != nil {
+		t.Fatalf("supervise: %v", err)
+	}
+	if err := tree.Track(ledger, proctree.Label{Kind: "task", AttemptID: "iso-1"}); err != nil {
+		t.Fatalf("track: %v", err)
+	}
+	if err := ledger.Sweep(context.Background(), testLogger()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if !waitGroupGone(t, cmd.Process.Pid, 5*time.Second) {
+		t.Errorf("a process of the isolated tree (group %d, running as %s) survived the sweep", cmd.Process.Pid, renderAUser)
+	}
+}
+
+// startIsolatedSleepGroup starts `sh -c "sleep 300 & sleep 300 & wait"` as
+// render-a in a process group of its own (proctree.Configure before
+// isolation.Apply, as in internal/worker/executor.execProcess), with env (nil
+// inherits this process's), and waits until the shell has forked both sleeps.
+// cmd.Dir is "/" because the callers are about the process tree, not
+// working-directory traversal. One goroutine owns Wait, so the shell is
+// reaped as soon as it is killed; waited closes then. Cleanup kills the group.
+func startIsolatedSleepGroup(t *testing.T, env []string) (cmd *exec.Cmd, waited <-chan struct{}) {
+	t.Helper()
+	cred, err := newRealProvider(t).Resolve(context.Background(), isolation.Spec{User: renderAUser})
 	if err != nil {
 		t.Fatalf("resolve %s: %v", renderAUser, err)
 	}
-
-	cmd := exec.CommandContext(context.Background(), "sh", "-c", "sleep 300 & sleep 300 & wait")
+	cmd = exec.CommandContext(context.Background(), "sh", "-c", "sleep 300 & sleep 300 & wait")
 	cmd.Dir = "/"
 	proctree.Configure(cmd)
 	if err := isolation.Apply(cmd, cred); err != nil {
 		t.Fatalf("apply credential: %v", err)
 	}
-
+	cmd.Env = env
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start process-group fixture: %v", err)
 	}
-	pid := cmd.Process.Pid
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cmd.Wait() //nolint:errcheck // the test kills the group; only reaping matters
+	}()
+	pgid := cmd.Process.Pid
+	t.Cleanup(func() {
+		syscall.Kill(-pgid, syscall.SIGKILL) //nolint:errcheck // ESRCH when the test already killed it
+		<-done
+	})
+	time.Sleep(300 * time.Millisecond) // let the shell fork both sleeps
+	return cmd, done
+}
 
-	// Give the shell time to fork both sleep children before killing the group.
-	time.Sleep(300 * time.Millisecond)
-
-	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
-		t.Fatalf("SIGKILL process group -%d: %v", pid, err)
-	}
-	_ = cmd.Wait() //nolint:errcheck // killed on purpose; only reaping is asserted below
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if !anyProcessInGroup(t, pid) {
-			return
+// waitGroupGone reports whether every process of group pgid has gone within d.
+func waitGroupGone(t *testing.T, pgid int, d time.Duration) bool {
+	t.Helper()
+	for deadline := time.Now().Add(d); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if !anyProcessInGroup(t, pgid) {
+			return true
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
-	t.Errorf("a descendant of pid %d survived SIGKILL to its process group; isolation.Apply may have overwritten Setpgid", pid)
+	return false
 }
 
 // TestIsolation_EnvironmentActionTimeoutReapsPrivilegeDroppedChild proves an
@@ -734,7 +783,7 @@ func waitForPID(t *testing.T, file string, timeout time.Duration) int {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("%s did not receive a pid within %s: the onEnter action did not run", file, timeout)
+	t.Fatalf("%s did not receive a pid within %s", file, timeout)
 	return 0
 }
 
