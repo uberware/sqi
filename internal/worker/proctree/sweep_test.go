@@ -19,6 +19,11 @@ import (
 type fakeProc struct {
 	token  string
 	zombie bool
+	// pgid is the process's group.
+	pgid int
+	// envUnreadable means the process's environment cannot be read (another
+	// account's process, without CAP_SYS_PTRACE).
+	envUnreadable bool
 	// readErr, when set, is what inspect returns for the process.
 	readErr error
 	// survives makes kill a no-op for this process.
@@ -48,14 +53,17 @@ func (f *fakeTable) ops() sweepOps {
 			slices.Sort(pids)
 			return pids, nil
 		},
-		inspect: func(pid int) (string, bool, error) {
+		inspect: func(pid int) (procInfo, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			p, ok := f.procs[pid]
 			if !ok {
-				return "", false, os.ErrNotExist
+				return procInfo{}, os.ErrNotExist
 			}
-			return p.token, p.zombie, p.readErr
+			if p.envUnreadable {
+				return procInfo{pgid: p.pgid, zombie: p.zombie, envUnreadable: true}, p.readErr
+			}
+			return procInfo{token: p.token, pgid: p.pgid, zombie: p.zombie}, p.readErr
 		},
 		kill: func(pid int) error {
 			f.mu.Lock()
@@ -226,7 +234,7 @@ func TestSweep_SkipsUnreadableProcesses(t *testing.T) {
 	l := testLedger(t)
 	putRecord(t, l, record{Token: "A", PGID: 10, Label: Label{Kind: "task"}})
 	tab := &fakeTable{procs: map[int]*fakeProc{
-		10: {token: "A", readErr: os.ErrPermission}, 11: {token: "A"},
+		10: {token: "A", readErr: os.ErrNotExist}, 11: {token: "A"},
 	}}
 	runSweep(t, l, tab.ops())
 	if got := tab.killedPIDs(); !slices.Equal(got, []int{11}) {
@@ -332,5 +340,32 @@ func TestNilLedger_SweepIsNoOp(t *testing.T) {
 	var l *Ledger
 	if err := l.Sweep(t.Context(), slog.New(&logCapture{})); err != nil {
 		t.Errorf("nil ledger Sweep = %v", err)
+	}
+}
+
+func TestSweep_ReportsUnreadableGroupMembers(t *testing.T) {
+	l := testLedger(t)
+	putRecord(t, l, record{Token: "A", PGID: 10, Label: Label{Kind: "task", AttemptID: "att-a"}})
+	tab := &fakeTable{procs: map[int]*fakeProc{
+		10: {pgid: 10, envUnreadable: true},
+		11: {pgid: 10, envUnreadable: true},
+		12: {pgid: 99, envUnreadable: true}, // another group: not mentioned
+		13: {token: "A", pgid: 10},
+	}}
+	logs := runSweep(t, l, tab.ops())
+	if got := tab.killedPIDs(); !slices.Equal(got, []int{13}) {
+		t.Errorf("killed %v, want only the readable marked process [13]", got)
+	}
+	var unchecked map[string]string
+	for _, w := range logs.at(slog.LevelWarn) {
+		if w["msg"] == "proctree: could not check processes in a previous worker's process group; they were left running" {
+			unchecked = w
+		}
+	}
+	if unchecked == nil {
+		t.Fatalf("no WARN about the unreadable group members; WARNs: %v", logs.at(slog.LevelWarn))
+	}
+	if unchecked["pgid"] != "10" || unchecked["processes"] != "2" || unchecked["attempt_id"] != "att-a" || unchecked["hint"] == "" {
+		t.Errorf("WARN = %v, want pgid 10, processes 2, attempt att-a and a hint", unchecked)
 	}
 }

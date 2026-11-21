@@ -488,12 +488,17 @@ test-oidc: ## Run the SSO tests against a real Keycloak in a container (needs Do
 # after a process-group kill — a container-hygiene artifact of the test
 # harness, not of isolation.Apply, but one that produces a false failure in
 # TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild without it.
+#
+# --cap-add SYS_PTRACE gives root what it has on a real host: reading another
+# account's /proc/<pid>/environ needs CAP_SYS_PTRACE even for root, Docker's
+# default capability set drops it, and TestIsolation_SweepKillsIsolatedOrphan
+# finds a run-as-user tree by its environment.
 .PHONY: test-isolation
 test-isolation: ## Run run-as-user isolation tests as root against real OS accounts in a container (needs Docker)
 	@if ! docker info >/dev/null 2>&1; then \
 	  echo "docker unavailable — skipping isolation integration tests"; exit 0; fi
 	@$(call docker_build_staged,test/integration/isolation/.dockerignore,sqi-isolation-test,test/integration/isolation/Dockerfile) && \
-	docker run --rm --init sqi-isolation-test \
+	docker run --rm --init --cap-add SYS_PTRACE sqi-isolation-test \
 	  go test $(TEST_FLAGS) -tags integration -run 'TestIsolation_' -v -timeout 15m ./test/integration/
 
 # docker_build_staged builds image $(2) from Dockerfile $(3) on a staged copy of

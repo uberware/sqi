@@ -3,6 +3,8 @@
 package proctree
 
 import (
+	"errors"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -35,23 +37,31 @@ func listProcs() ([]int, error) {
 	return pids, nil
 }
 
-// inspectProc reads a process's state from kern.proc.pid and its initial
-// environment from kern.procargs2.
-func inspectProc(pid int) (token string, zombie bool, err error) {
+// inspectProc reads a process's state and group from kern.proc.pid and its
+// initial environment from kern.procargs2. A process whose arguments the
+// worker may not read (EPERM, or the EINVAL macOS answers for another
+// account's process) is reported unreadable rather than as an error.
+func inspectProc(pid int) (procInfo, error) {
 	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
-		return "", false, err
+		return procInfo{}, err
 	}
-	if kp.Proc.P_stat == szomb {
-		return "", true, nil
+	info := procInfo{pgid: int(kp.Eproc.Pgid), zombie: kp.Proc.P_stat == szomb}
+	if info.zombie {
+		return info, nil
 	}
 	buf, err := unix.SysctlRaw("kern.procargs2", pid)
-	if err != nil {
-		return "", false, err
+	switch {
+	case errors.Is(err, unix.EPERM), errors.Is(err, unix.EINVAL):
+		info.envUnreadable = true
+		return info, nil
+	case err != nil:
+		return procInfo{}, err
 	}
 	env, err := parseProcArgs2(buf)
 	if err != nil {
-		return "", false, err
+		return procInfo{}, err
 	}
-	return envToken(env), false, nil
+	info.token = envToken(env)
+	return info, nil
 }

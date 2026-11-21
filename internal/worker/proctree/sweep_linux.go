@@ -5,6 +5,7 @@ package proctree
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -36,25 +37,42 @@ func listProcs() ([]int, error) {
 	return pids, nil
 }
 
-// inspectProc reads a process's state from /proc/<pid>/stat (the field after
-// the command, which is in parentheses and may itself hold spaces and
-// parentheses) and its initial environment from /proc/<pid>/environ.
-func inspectProc(pid int) (token string, zombie bool, err error) {
+// inspectProc reads a process's state and group from /proc/<pid>/stat (the
+// fields after the command, which is in parentheses and may itself hold spaces
+// and parentheses) and its initial environment from /proc/<pid>/environ.
+// Another account's environment needs CAP_SYS_PTRACE even for root; without it
+// the process is reported unreadable rather than as an error.
+func inspectProc(pid int) (procInfo, error) {
 	dir := "/proc/" + strconv.Itoa(pid)
 	stat, err := os.ReadFile(dir + "/stat")
 	if err != nil {
-		return "", false, err
+		return procInfo{}, err
 	}
 	i := bytes.LastIndexByte(stat, ')')
 	if i < 0 {
-		return "", false, errors.New("malformed stat")
+		return procInfo{}, errors.New("malformed stat")
 	}
-	if strings.HasPrefix(strings.TrimSpace(string(stat[i+1:])), "Z") {
-		return "", true, nil
+	// state ppid pgrp ...
+	fields := strings.Fields(string(stat[i+1:]))
+	if len(fields) < 3 {
+		return procInfo{}, errors.New("malformed stat")
+	}
+	pgid, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return procInfo{}, fmt.Errorf("malformed stat: %w", err)
+	}
+	info := procInfo{pgid: pgid, zombie: fields[0] == "Z"}
+	if info.zombie {
+		return info, nil
 	}
 	env, err := os.ReadFile(dir + "/environ")
-	if err != nil {
-		return "", false, err
+	switch {
+	case errors.Is(err, os.ErrPermission):
+		info.envUnreadable = true
+		return info, nil
+	case err != nil:
+		return procInfo{}, err
 	}
-	return envToken(strings.Split(string(env), "\x00")), false, nil
+	info.token = envToken(strings.Split(string(env), "\x00"))
+	return info, nil
 }
