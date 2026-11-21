@@ -30,24 +30,27 @@ import (
 
 // ReconcileDependents re-evaluates every job blocked on upstreamJobID after that
 // upstream changed state (completed, failed, canceled, or deleted). Each still-
-// blocked dependent is released or canceled by reconcileBlockedJob.
+// blocked dependent is released or canceled by ReconcileBlockedJob.
 func (s *Scheduler) ReconcileDependents(ctx context.Context, upstreamJobID string) error {
 	dependents, err := s.store.ListDependents(ctx, upstreamJobID)
 	if err != nil {
 		return err
 	}
 	for _, id := range dependents {
-		if err := s.reconcileBlockedJob(ctx, id); err != nil {
+		if err := s.ReconcileBlockedJob(ctx, id); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// reconcileBlockedJob evaluates one job's cross-job dependencies and either
+// ReconcileBlockedJob evaluates one job's cross-job dependencies and either
 // releases it (all upstreams completed), cancels it (any upstream failed,
 // canceled, or deleted), or leaves it blocked (some upstream still running).
-func (s *Scheduler) reconcileBlockedJob(ctx context.Context, jobID string) error {
+// A job that is not blocked is left alone. Besides the sweep and
+// ReconcileDependents, the job PATCH handler calls it after a resume, so a job
+// that resumed to blocked is decided at once rather than at the next sweep.
+func (s *Scheduler) ReconcileBlockedJob(ctx context.Context, jobID string) error {
 	job, err := s.store.GetJob(ctx, jobID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil
@@ -93,7 +96,7 @@ func (s *Scheduler) reconcileBlockedJob(ctx context.Context, jobID string) error
 //
 // The move is store.ReleaseBlockedJob, a guarded write that re-checks both that
 // the job is still blocked and that every upstream is completed. The reads in
-// reconcileBlockedJob that led here are only a fast path: a user cancel (or
+// ReconcileBlockedJob that led here are only a fast path: a user cancel (or
 // another reconciler) landing after them makes the release a no-op instead of
 // reviving the job.
 func (s *Scheduler) releaseBlockedJob(ctx context.Context, job store.Job) error {
@@ -168,7 +171,7 @@ func (s *Scheduler) sweepBlockedJobs(ctx context.Context) error {
 		return err
 	}
 	for _, job := range blocked {
-		err := s.reconcileBlockedJob(ctx, job.ID)
+		err := s.ReconcileBlockedJob(ctx, job.ID)
 		if errors.Is(err, store.ErrFenced) {
 			return err // the sweep stops; sweepOnce records the fence
 		}

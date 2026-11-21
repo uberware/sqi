@@ -37,6 +37,32 @@ describe('fetchSubmitJob', () => {
     const url = vi.mocked(apiFetch).mock.calls[0]?.[0] as string
     expect(url).not.toContain('depends_on')
   })
+
+  it('sends paused=true when paused', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1' })
+    await fetchSubmitJob({
+      farmId: 'f',
+      queueId: 'q',
+      template: '{}',
+      format: 'json',
+      paused: true,
+    })
+    const url = vi.mocked(apiFetch).mock.calls[0]?.[0] as string
+    expect(url).toContain('paused=true')
+  })
+
+  it.each([false, undefined])('omits paused when it is %s', async (paused) => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1' })
+    await fetchSubmitJob({
+      farmId: 'f',
+      queueId: 'q',
+      template: '{}',
+      format: 'json',
+      ...(paused !== undefined ? { paused } : {}),
+    })
+    const url = vi.mocked(apiFetch).mock.calls[0]?.[0] as string
+    expect(url).not.toContain('paused')
+  })
 })
 
 describe('fetchRetryJob', () => {
@@ -99,6 +125,38 @@ describe('product mutations', () => {
 
 describe('fetchSubmitProductJob', () => {
   beforeEach(() => vi.mocked(apiFetch).mockReset())
+
+  const productBody = () =>
+    JSON.parse((vi.mocked(apiFetch).mock.calls[0]?.[1] as RequestInit).body as string) as Record<
+      string,
+      unknown
+    >
+
+  it('sends paused: true when paused', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1' })
+    await fetchSubmitProductJob({
+      productName: 'blender',
+      name: 'Shot010',
+      farmId: 'f1',
+      queueId: 'q1',
+      parameters: {},
+      paused: true,
+    })
+    expect(productBody()).toMatchObject({ paused: true })
+  })
+
+  it('omits paused when not paused', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1' })
+    await fetchSubmitProductJob({
+      productName: 'blender',
+      name: 'Shot010',
+      farmId: 'f1',
+      queueId: 'q1',
+      parameters: {},
+      paused: false,
+    })
+    expect(productBody()).not.toHaveProperty('paused')
+  })
 
   it('posts name + params to the product jobs path', async () => {
     vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1', name: 'Shot010' })

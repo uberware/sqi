@@ -38,8 +38,8 @@ const statusesWhere = (pred: (job: { status: JobStatus }) => boolean) =>
   ALL.filter((status) => pred({ status }))
 
 describe('job action rules', () => {
-  it('offers pause for pending and running jobs', () => {
-    expect(statusesWhere(canPauseJob)).toEqual(['pending', 'running'])
+  it('offers pause for pending, running and blocked jobs', () => {
+    expect(statusesWhere(canPauseJob)).toEqual(['pending', 'running', 'blocked'])
   })
 
   it('offers resume for paused jobs', () => {

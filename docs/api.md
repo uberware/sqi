@@ -214,6 +214,19 @@ completes (see [`docs/architecture.md`](architecture.md#job-lifecycle-data-flow)
 The same `depends_on` field is accepted in the JSON body when submitting from
 a product (below).
 
+`paused=true` creates the job in status `paused`, in the same write as the rest
+of the submission, so no task is leased until someone resumes it (see
+[Pause and resume a job](#pause-and-resume-a-job)). It combines with
+`depends_on`: a paused job that is still waiting on an upstream resumes to
+`blocked`, and is then released or canceled like any other blocked job. The
+value is any of `true`/`false`, `1`/`0` or `t`/`f`; anything else is rejected
+with 400.
+
+```sh
+curl -s -X POST "$BASE/jobs?farm_id=$FARM&queue_id=$QUEUE&paused=true" \
+  -H "Content-Type: application/yaml" --data-binary @job.yaml
+```
+
 **Job parameter values.** Values for the template's own job parameters (its
 `parameterDefinitions`) are supplied as `param.<Name>=<value>` query parameters —
 one per parameter. Each `param.<Name>` key must match a declared parameter; a
@@ -291,7 +304,8 @@ own name is used. The optional integer `estimated_seconds` (1 to 2147483647,
 total task run time summed over all tasks, not wall-clock) is accepted here too. `farm_id` and `queue_id` are required. `parameters` is a flat
 string→string map matching the template's `parameterDefinitions`. `depends_on`
 is an optional array of upstream job IDs, same semantics as the raw-submit
-query parameter above. The `/parameters` endpoint returns each parameter's
+query parameter above, and `"paused": true` creates the job paused, as
+`paused=true` does there. The `/parameters` endpoint returns each parameter's
 type, default, allowed values, and `user_interface` hints.
 
 ---
@@ -516,6 +530,16 @@ task run time rather than wall-clock) is also settable here, and unlike the
 retry overrides an explicit `null` clears it. Resuming an auto-parked job (`action: resume`) also
 clears `park_reason` and resets `failed_attempts` to zero, re-arming its failure
 limit.
+
+A `pending`, `running` or `blocked` job can be paused; any other status answers
+`409`. Tasks already running finish; nothing new is leased. Resuming returns the
+job to `pending`, except a job that is still waiting on a `depends_on`
+upstream — paused while `blocked`, or submitted with `paused=true` before its
+upstreams completed — which returns to `blocked`. Such a job is reconciled at
+once, so the response may already show it `pending` (every upstream completed
+while it was paused) or `canceled` (one failed, was canceled or was deleted).
+A paused job is never canceled for a failed upstream while it stays paused; that
+happens when it is resumed.
 
 ---
 

@@ -549,9 +549,14 @@ components:
           type: string
           enum: [pause, resume]
           description: >
-            pause or resume the job. Resuming an auto-parked job (non-empty
-            `park_reason`) also clears `park_reason` and resets the job's
-            `failed_attempts` to zero, re-arming its failure limit.
+            pause or resume the job. A pending, running or blocked job can be
+            paused. Resuming returns the job to `pending`, or to `blocked` when
+            it is still waiting on a `depends_on` upstream; such a job is
+            reconciled straight away, so the response may already show it
+            `pending` (every upstream completed) or `canceled` (one failed).
+            Resuming an auto-parked job (non-empty `park_reason`) also clears
+            `park_reason` and resets the job's `failed_attempts` to zero,
+            re-arming its failure limit.
         max_attempts:
           type: integer
           minimum: 1
@@ -1863,6 +1868,13 @@ components:
           description: >-
             IDs of upstream jobs this job waits for; same farm; job starts
             blocked until all complete.
+        paused:
+          type: boolean
+          default: false
+          description: >-
+            Create the job in status `paused`, so no task is leased until the
+            job is resumed. A paused job still waiting on `depends_on`
+            resumes to `blocked`.
         parameters:
           type: object
           additionalProperties:
@@ -2857,6 +2869,18 @@ paths:
             completes. A dependency ID that does not resolve to a job in the
             same farm, or that already failed/was canceled, is rejected with
             422.
+        - name: paused
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: >-
+            Create the job in status `paused`, so no task is leased until the
+            job is resumed (`PATCH` with `action: resume`). Combines with
+            `depends_on`: a paused job that is still waiting on an upstream
+            resumes to `blocked` and is released or canceled like any blocked
+            job. Accepts `true`/`false` (and `1`/`0`, `t`/`f`); any other value
+            is rejected with 400.
       # param.<Name>=<value> query parameters are omitted
       # from this parameters list because OpenAPI 3.x does not support
       # arbitrary-suffix parameters.  Full semantics are documented in the
@@ -3018,8 +3042,10 @@ paths:
         Partial update.  Supported mutations:
         - Change `priority` (must be ≥ 1).
         - Move to a different `queue_id`.
-        - `action`: `"pause"` or `"resume"` (resuming an auto-parked job
-          clears `park_reason` and resets `failed_attempts`).
+        - `action`: `"pause"` (pending, running or blocked jobs) or
+          `"resume"`. A resumed job returns to `pending`, or to `blocked` while
+          it still waits on a `depends_on` upstream; resuming an auto-parked
+          job also clears `park_reason` and resets `failed_attempts`.
         - Set the per-job retry-policy overrides (`max_attempts`,
           `retry_delay_seconds`, `failure_limit`).
         - Set or clear `estimated_seconds`.

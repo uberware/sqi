@@ -169,6 +169,7 @@ class SubmitterSession:
                 max_attempts=opts.max_attempts,
                 retry_delay_seconds=opts.retry_delay_seconds,
                 failure_limit=opts.failure_limit,
+                paused=opts.paused,
             )
 
 

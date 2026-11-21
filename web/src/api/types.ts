@@ -729,6 +729,8 @@ export interface SubmitProductJobInput {
   failureLimit?: number
   /** IDs of upstream jobs this job waits for (whole-job, same farm). */
   dependsOn?: string[]
+  /** Create the job paused: nothing runs until it is resumed. Sent only when true. */
+  paused?: boolean
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -875,6 +877,8 @@ export interface SubmitJobInput {
   failureLimit?: number
   /** IDs of upstream jobs this job waits for (whole-job, same farm). */
   dependsOn?: string[]
+  /** Create the job paused: nothing runs until it is resumed. Sent only when true. */
+  paused?: boolean
 }
 
 // ── Servers (high availability) ───────────────────────────────────────────────

@@ -68,7 +68,7 @@ export function fetchLogout(): Promise<LogoutResult> {
  * authenticated principal and only travel as query parameters when the
  * caller holds `jobs.submit_as` (`input.maySubmitAs`) — otherwise the server
  * would 403. `depends_on` (upstream job IDs) is sent as a repeated query
- * parameter, one per dependency.
+ * parameter, one per dependency, and `paused=true` only when `input.paused`.
  */
 export function fetchSubmitJob(input: SubmitJobInput): Promise<Job> {
   const contentType = input.format === 'yaml' ? 'application/yaml' : 'application/json'
@@ -86,6 +86,7 @@ export function fetchSubmitJob(input: SubmitJobInput): Promise<Job> {
   if (input.dependsOn !== undefined) {
     for (const id of input.dependsOn) qs.append('depends_on', id)
   }
+  if (input.paused === true) qs.set('paused', 'true')
 
   return apiFetch<Job>(`/jobs?${qs.toString()}`, {
     method: 'POST',
@@ -120,7 +121,7 @@ function patchJobAction(id: string, action: 'pause' | 'resume'): Promise<Job> {
   })
 }
 
-/** Pause a pending or running job via `PATCH /jobs/{id}` with `{ action: "pause" }`. */
+/** Pause a pending, running or blocked job via `PATCH /jobs/{id}` with `{ action: "pause" }`. */
 export function fetchPauseJob(id: string): Promise<Job> {
   return patchJobAction(id, 'pause')
 }
@@ -237,7 +238,7 @@ export function useDeleteJob() {
   })
 }
 
-/** Pause a pending or running job. Invalidates all job queries on success. */
+/** Pause a pending, running or blocked job. Invalidates all job queries on success. */
 export function usePauseJob() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -907,6 +908,7 @@ export function fetchSubmitProductJob(input: SubmitProductJobInput): Promise<Job
   if (input.retryDelaySeconds !== undefined) body.retry_delay_seconds = input.retryDelaySeconds
   if (input.failureLimit !== undefined) body.failure_limit = input.failureLimit
   if (input.dependsOn !== undefined) body.depends_on = input.dependsOn
+  if (input.paused === true) body.paused = true
   return apiFetch<Job>(`/products/${encodeURIComponent(input.productName)}/jobs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -224,3 +224,27 @@ def test_settings_reads_a_file_with_a_bom(tmp_path: Path) -> None:
     settings.set("b", 2)
     assert Settings(path=str(path)).get("a") == 1
     assert Settings(path=str(path)).get("b") == 2
+
+
+def test_paused_alone_is_not_an_empty_job_options() -> None:
+    assert JobOptions().is_empty()
+    assert not JobOptions(paused=True).is_empty()
+
+
+@respx.mock
+def test_submit_forwards_paused_to_body() -> None:
+    route = respx.post(f"{BASE}/api/v1/products/p1/jobs").mock(
+        return_value=httpx.Response(201, json={"id": "j1", "name": "My Job"})
+    )
+    _session().submit(
+        "p1",
+        parameters={},
+        farm_id="f1",
+        queue_id="q1",
+        job_options=JobOptions(paused=True),
+    )
+    import json
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["paused"] is True
+    assert "priority" not in body

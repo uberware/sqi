@@ -343,6 +343,7 @@ func (s *Store) retryResetJobLocked(jobID string, now time.Time) {
 	job.Status = store.JobStatusPending
 	job.CompletedAt = nil
 	job.FailedAttempts = 0
+	job.DependencyHold = false
 	job.ParkReason = ""
 	job.UpdatedAt = now
 	s.jobs[jobID] = job

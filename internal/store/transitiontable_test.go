@@ -37,9 +37,11 @@ func TestJobOperations_FromStatesAreLegal(t *testing.T) {
 	}
 	ops := []operation{
 		{"PromoteJobRunning", []store.JobStatus{store.JobStatusPending}, store.JobStatusRunning},
-		{"PauseJob", []store.JobStatus{store.JobStatusPending, store.JobStatusRunning}, store.JobStatusPaused},
+		{"PauseJob", []store.JobStatus{store.JobStatusPending, store.JobStatusRunning, store.JobStatusBlocked}, store.JobStatusPaused},
 		{"ParkJob", nonTerminal, store.JobStatusPaused},
 		{"ResumeJob", []store.JobStatus{store.JobStatusPaused}, store.JobStatusPending},
+		// A job whose dependency hold was never released resumes to blocked.
+		{"ResumeJob", []store.JobStatus{store.JobStatusPaused}, store.JobStatusBlocked},
 		{"ReleaseBlockedJob", []store.JobStatus{store.JobStatusBlocked}, store.JobStatusPending},
 		{"CancelBlockedJob", []store.JobStatus{store.JobStatusBlocked}, store.JobStatusCanceled},
 		{"CancelJobStatus", nonTerminal, store.JobStatusCanceled},

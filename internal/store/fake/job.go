@@ -58,6 +58,9 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 	}
 
 	job := normalizeDeclaredExtensions(sub.Job)
+	// As the SQL store writes it: a job created blocked always holds its
+	// dependencies.
+	job.DependencyHold = job.DependencyHold || job.Status == store.JobStatusBlocked
 	job.Parameters = copyMap(job.Parameters)
 	job.EstimatedSeconds = copyIntPtr(job.EstimatedSeconds)
 	job.CreatedAt, job.UpdatedAt = now, now
@@ -327,6 +330,8 @@ func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error)
 	// ParkJob and ResumeJob, and are not on sqlUpdateJob's SET list.
 	job.FailedAttempts = existing.FailedAttempts
 	job.ParkReason = existing.ParkReason
+	// The dependency hold is lifecycle state, not on sqlUpdateJob's SET list.
+	job.DependencyHold = existing.DependencyHold
 	job.UpdatedAt = time.Now()
 	s.jobs[job.ID] = job
 	return job, nil
@@ -583,7 +588,8 @@ func (s *Store) ParkJob(ctx context.Context, jobID, reason string, now time.Time
 }
 
 // ResumeJob implements [store.JobStore]. It transitions a paused job back to
-// [store.JobStatusPending]; an auto-parked job (non-empty ParkReason) also has
+// [store.JobStatusPending], or to [store.JobStatusBlocked] while it still holds
+// its dependencies; an auto-parked job (non-empty ParkReason) also has
 // its ParkReason cleared and FailedAttempts reset. A job that is no longer
 // paused is a legitimate no-op.
 func (s *Store) ResumeJob(ctx context.Context, jobID string, now time.Time) error {
@@ -601,6 +607,9 @@ func (s *Store) ResumeJob(ctx context.Context, jobID string, now time.Time) erro
 		return nil // no longer paused: no-op
 	}
 	j.Status = store.JobStatusPending
+	if j.DependencyHold {
+		j.Status = store.JobStatusBlocked
+	}
 	if j.ParkReason != "" {
 		j.FailedAttempts = 0
 	}

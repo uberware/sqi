@@ -44,6 +44,11 @@ type fakeScheduler struct {
 	canceledJobs   []string // job IDs passed to CancelJob, in call order
 	retriedJobs    []string // job IDs passed to RetryJob, in call order
 	reconciledJobs []string // upstream job IDs passed to ReconcileDependents, in call order
+	// reconciledBlocked are the job IDs passed to ReconcileBlockedJob, in call
+	// order; onReconcileBlocked, when set, runs for each and its error is
+	// returned.
+	reconciledBlocked  []string
+	onReconcileBlocked func(ctx context.Context, jobID string) error
 }
 
 func (f *fakeScheduler) CancelJob(_ context.Context, id string) error {
@@ -58,6 +63,14 @@ func (f *fakeScheduler) RetryJob(_ context.Context, id string) (int, error) {
 
 func (f *fakeScheduler) WakeQueue(queueID string) {
 	f.wokenQueue = append(f.wokenQueue, queueID)
+}
+
+func (f *fakeScheduler) ReconcileBlockedJob(ctx context.Context, jobID string) error {
+	f.reconciledBlocked = append(f.reconciledBlocked, jobID)
+	if f.onReconcileBlocked != nil {
+		return f.onReconcileBlocked(ctx, jobID)
+	}
+	return nil
 }
 
 func (f *fakeScheduler) ReconcileDependents(_ context.Context, upstreamJobID string) error {

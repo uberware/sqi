@@ -9,6 +9,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -116,8 +117,15 @@ func (h *jobDepsHarness) seedRunnableJobInNewQueue(t *testing.T) store.Job {
 // edge on each of upstreamIDs, in one submission.
 func (h *jobDepsHarness) seedBlockedJobDependingOn(t *testing.T, upstreamIDs ...string) store.Job {
 	t.Helper()
+	return h.seedBlockedJobWithTasks(t, 1, upstreamIDs...).Job
+}
+
+// seedBlockedJobWithTasks is seedBlockedJobDependingOn with n pending tasks,
+// named t1..tn, returning the whole submission.
+func (h *jobDepsHarness) seedBlockedJobWithTasks(t *testing.T, n int, upstreamIDs ...string) store.JobSubmission {
+	t.Helper()
 	jobID, stepID := uuid.NewString(), uuid.NewString()
-	return storetest.Submit(t, h.store, store.JobSubmission{
+	sub := store.JobSubmission{
 		Job: store.Job{
 			ID:             jobID,
 			FarmID:         h.farmID,
@@ -128,10 +136,13 @@ func (h *jobDepsHarness) seedBlockedJobDependingOn(t *testing.T, upstreamIDs ...
 		},
 		DependsOn: upstreamIDs,
 		Steps:     []store.Step{{ID: stepID, JobID: jobID, Name: "s1", Status: store.StepStatusPending}},
-		Tasks: []store.Task{{
-			ID: uuid.NewString(), JobID: jobID, StepID: stepID, Name: "t1", Status: store.TaskStatusPending,
-		}},
-	}).Job
+	}
+	for i := range n {
+		sub.Tasks = append(sub.Tasks, store.Task{
+			ID: uuid.NewString(), JobID: jobID, StepID: stepID, Name: fmt.Sprintf("t%d", i+1), Status: store.TaskStatusPending,
+		})
+	}
+	return storetest.Submit(t, h.store, sub)
 }
 
 // seedRunnableJob creates a real job with a single running step, a single
@@ -466,5 +477,155 @@ func TestCheckJobCompletion_ReleasesDependent(t *testing.T) {
 	}
 	if gotDown.Status != store.JobStatusPending {
 		t.Fatalf("down status = %q, want pending after upstream completion", gotDown.Status)
+	}
+}
+
+// pauseHeld pauses the blocked job jobID, the state a user pausing a waiting
+// job, or submitting one paused, leaves it in.
+func (h *jobDepsHarness) pauseHeld(t *testing.T, jobID string) {
+	t.Helper()
+	if err := h.store.PauseJob(context.Background(), jobID, time.Now().UTC()); err != nil {
+		t.Fatalf("PauseJob: %v", err)
+	}
+}
+
+// resumeAndReconcile resumes jobID and reconciles it, as the job PATCH handler
+// does for a resume.
+func (h *jobDepsHarness) resumeAndReconcile(t *testing.T, jobID string) store.Job {
+	t.Helper()
+	ctx := context.Background()
+	if err := h.store.ResumeJob(ctx, jobID, time.Now().UTC()); err != nil {
+		t.Fatalf("ResumeJob: %v", err)
+	}
+	if err := h.sched.ReconcileBlockedJob(ctx, jobID); err != nil {
+		t.Fatalf("ReconcileBlockedJob: %v", err)
+	}
+	return mustJob(t, h.store, jobID)
+}
+
+func TestReconcileBlockedJob_ReleasesHeldJobResumedAfterUpstreamCompleted(t *testing.T) {
+	ctx := context.Background()
+	h := newJobDepsHarness(t)
+	up := h.seedRunnableJob(t)
+	down := h.seedBlockedJobDependingOn(t, up.ID)
+	h.pauseHeld(t, down.ID)
+
+	h.completeJob(t, up.ID)
+	if err := h.sched.ReconcileDependents(ctx, up.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJob(t, h.store, down.ID).Status; got != store.JobStatusPaused {
+		t.Fatalf("paused dependent = %q after its upstream completed, want it left paused", got)
+	}
+
+	if got := h.resumeAndReconcile(t, down.ID); got.Status != store.JobStatusPending || got.DependencyHold {
+		t.Fatalf("resumed dependent = %q hold=%v, want pending with the hold released", got.Status, got.DependencyHold)
+	}
+	page, err := h.store.ListTasks(ctx, store.ListTasksOptions{JobID: down.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range page.Items {
+		if tk.Status != store.TaskStatusReady {
+			t.Fatalf("task %s status = %q, want ready", tk.Name, tk.Status)
+		}
+	}
+}
+
+func TestReconcileBlockedJob_CancelsHeldJobResumedAfterUpstreamFailed(t *testing.T) {
+	ctx := context.Background()
+	h := newJobDepsHarness(t)
+	up := h.seedRunnableJob(t)
+	down := h.seedBlockedJobDependingOn(t, up.ID)
+	h.pauseHeld(t, down.ID)
+
+	h.failJob(t, up.ID)
+	if err := h.sched.ReconcileDependents(ctx, up.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJob(t, h.store, down.ID).Status; got != store.JobStatusPaused {
+		t.Fatalf("paused dependent = %q after its upstream failed, want it left paused until resumed", got)
+	}
+
+	if got := h.resumeAndReconcile(t, down.ID); got.Status != store.JobStatusCanceled {
+		t.Fatalf("resumed dependent = %q, want canceled", got.Status)
+	}
+}
+
+func TestReconcileBlockedJob_LeavesHeldJobWaitingOnRunningUpstream(t *testing.T) {
+	h := newJobDepsHarness(t)
+	up := h.seedRunnableJob(t)
+	down := h.seedBlockedJobDependingOn(t, up.ID)
+	h.pauseHeld(t, down.ID)
+
+	if got := h.resumeAndReconcile(t, down.ID); got.Status != store.JobStatusBlocked {
+		t.Fatalf("resumed dependent = %q, want blocked", got.Status)
+	}
+}
+
+// leasableTasksOf counts jobID's tasks the lease path would hand out now.
+func (h *jobDepsHarness) leasableTasksOf(t *testing.T, jobID string) int {
+	t.Helper()
+	ready, err := h.store.ListReadyTasks(context.Background(), "", time.Now().UTC(), store.MaxLimit)
+	if err != nil {
+		t.Fatalf("ListReadyTasks: %v", err)
+	}
+	n := 0
+	for _, tk := range ready {
+		if tk.JobID == jobID {
+			n++
+		}
+	}
+	return n
+}
+
+// The start-up step reconcile must not release a job still holding its
+// dependencies just because it is paused rather than blocked: resumed, it
+// would run while its upstream is still running.
+func TestReconcilePendingSteps_LeavesPausedHeldJobHeld(t *testing.T) {
+	ctx := context.Background()
+	h := newJobDepsHarness(t)
+	up := h.seedRunnableJob(t)
+	down := h.seedBlockedJobDependingOn(t, up.ID)
+	h.pauseHeld(t, down.ID)
+
+	h.sched.reconcilePendingSteps(ctx)
+
+	page, err := h.store.ListTasks(ctx, store.ListTasksOptions{JobID: down.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range page.Items {
+		if tk.Status != store.TaskStatusPending {
+			t.Fatalf("task %s = %q after the start-up reconcile, want pending (held)", tk.Name, tk.Status)
+		}
+	}
+	if got := h.resumeAndReconcile(t, down.ID); got.Status != store.JobStatusBlocked {
+		t.Fatalf("resumed dependent = %q, want blocked", got.Status)
+	}
+	if n := h.leasableTasksOf(t, down.ID); n != 0 {
+		t.Fatalf("%d of the dependent's tasks are leasable while its upstream runs, want 0", n)
+	}
+}
+
+// A retry on a held job must not release its held step either.
+func TestRetryJob_LeavesHeldJobHeld(t *testing.T) {
+	ctx := context.Background()
+	h := newJobDepsHarness(t)
+	up := h.seedRunnableJob(t)
+	sub := h.seedBlockedJobWithTasks(t, 2, up.ID)
+	jobID, t1 := sub.Job.ID, sub.Tasks[0].ID
+	h.pauseHeld(t, jobID)
+	if err := h.sched.CancelTask(ctx, t1); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+	if _, err := h.sched.RetryJob(ctx, jobID); err != nil {
+		t.Fatalf("RetryJob: %v", err)
+	}
+	if got := h.resumeAndReconcile(t, jobID); got.Status != store.JobStatusBlocked {
+		t.Fatalf("resumed job = %q, want blocked", got.Status)
+	}
+	if n := h.leasableTasksOf(t, jobID); n != 0 {
+		t.Fatalf("%d tasks are leasable while the upstream runs, want 0", n)
 	}
 }

@@ -447,6 +447,7 @@ class SqiClient:
         failure_limit: int | None = None,
         depends_on: list[str] | None = None,
         estimated_seconds: int | None = None,
+        paused: bool = False,
     ) -> Job:
         """Submit a raw OpenJD job template and return the created :class:`Job`.
 
@@ -494,6 +495,10 @@ class SqiClient:
                 time in seconds (1 to 2147483647), sent as a query parameter.
                 The server uses it to report ``remaining_seconds`` until it has
                 measured data. Omitted when ``None``.
+            paused: Create the job ``paused``, so no task runs until it is
+                resumed with :meth:`resume_job`. A paused job still waiting on
+                ``depends_on`` resumes to ``blocked``. Sent as ``paused=true``
+                only when ``True``.
 
         Returns:
             The created :class:`Job`, parsed from the ``201 Created`` body.
@@ -522,6 +527,7 @@ class SqiClient:
             "failure_limit": failure_limit,
             "depends_on": depends_on,
             "estimated_seconds": estimated_seconds,
+            "paused": "true" if paused else None,
         }
         data = self._request_json(
             "POST",
@@ -640,7 +646,7 @@ class SqiClient:
         return Job.from_dict(data)
 
     def pause_job(self, job_id: str) -> Job:
-        """Pause a job and return its updated state.
+        """Pause a pending, running or blocked job and return its updated state.
 
         Raises:
             NotFoundError: No job with that ID exists (HTTP 404).
@@ -650,6 +656,11 @@ class SqiClient:
 
     def resume_job(self, job_id: str) -> Job:
         """Resume a paused job and return its updated state.
+
+        The job returns to ``pending``, or to ``blocked`` while it is still
+        waiting on a ``depends_on`` upstream. The server reconciles such a job
+        straight away, so the returned status may already be ``pending`` (every
+        upstream completed) or ``canceled`` (one failed).
 
         Raises:
             NotFoundError: No job with that ID exists (HTTP 404).
@@ -1633,6 +1644,7 @@ class SqiClient:
         failure_limit: int | None = None,
         depends_on: list[str] | None = None,
         estimated_seconds: int | None = None,
+        paused: bool = False,
     ) -> Job:
         """Submit a job from a product and return the created :class:`Job`.
 
@@ -1659,6 +1671,8 @@ class SqiClient:
             estimated_seconds: Optional estimate of the job's total task run
                 time in seconds (1 to 2147483647), sent in the request body.
                 Omitted when ``None``.
+            paused: Create the job ``paused``; see :meth:`submit_job`. Sent
+                only when ``True``.
 
         Raises:
             ValueError: ``estimated_seconds`` is outside 1 to 2147483647
@@ -1683,6 +1697,8 @@ class SqiClient:
             body["depends_on"] = list(depends_on)
         if estimated_seconds is not None:
             body["estimated_seconds"] = estimated_seconds
+        if paused:
+            body["paused"] = True
         data = self._request_json("POST", f"/products/{name}/jobs", json=body)
         return Job.from_dict(data)
 

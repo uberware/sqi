@@ -21,6 +21,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -43,6 +44,10 @@ type jobCanceler interface {
 	// WakeQueue wakes parked lease waiters on queueID so a newly-submitted
 	// job's ready tasks are leased without waiting out the long-poll hold.
 	WakeQueue(queueID string)
+	// ReconcileBlockedJob releases or cancels jobID if it is blocked, used right
+	// after a resume, which returns a job still holding its dependencies to
+	// blocked.
+	ReconcileBlockedJob(ctx context.Context, jobID string) error
 	// ReconcileDependents cancels or unblocks jobs waiting on upstreamJobID,
 	// used to react immediately when the upstream is deleted rather than
 	// waiting for the periodic sweep.
@@ -319,7 +324,9 @@ func newJobHandler(
 // retry_delay_seconds, failure_limit (all optional per-job retry-policy
 // overrides; omitted means inherit queue -> farm -> server default, a
 // malformed or out-of-range value is a 400), estimated_seconds (optional
-// integer 1..2147483647, the job's estimated total task run time).
+// integer 1..2147483647, the job's estimated total task run time), paused
+// (optional boolean; true creates the job paused, so nothing runs until it is
+// resumed).
 // Job-parameter values are supplied as param.<Name>=<value> query parameters
 // (e.g. ?param.FrameStart=1&param.Quality=high).
 func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
@@ -359,6 +366,12 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	paused, problem := parsePausedQuery(r.URL.Query())
+	if problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
+
 	owner, submitter, identityProblem, identityStatus := bindSubmitIdentity(
 		ctx, h.ownerLookup, r.URL.Query().Get("owner"), r.URL.Query().Get("submitter"),
 	)
@@ -380,6 +393,7 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		FailureLimit:      failureLimit,
 		EstimatedSeconds:  estimatedSeconds,
 		DependsOn:         r.URL.Query()["depends_on"],
+		Paused:            paused,
 		Deadline:          exprDeadlineAt(h.exprDeadline),
 	}
 
@@ -410,12 +424,30 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Wake any workers parked on this queue so the new ready tasks are leased
-	// promptly rather than after the long-poll hold elapses.
-	h.sched.WakeQueue(result.Job.QueueID)
+	// promptly rather than after the long-poll hold elapses. A paused job has
+	// nothing to lease.
+	if !paused {
+		h.sched.WakeQueue(result.Job.QueueID)
+	}
 
 	respJob := refetchDependsOn(ctx, h.store, h.logger, result.Job, opts.DependsOn, "jobs")
 
 	writeJSON(w, http.StatusCreated, toJobResponse(respJob))
+}
+
+// parsePausedQuery reads the optional paused query parameter. Any value
+// [strconv.ParseBool] accepts is allowed; anything else is a problem string for
+// a 400.
+func parsePausedQuery(q url.Values) (paused bool, problem string) {
+	raw := q.Get("paused")
+	if raw == "" {
+		return false, ""
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, "paused must be true or false"
+	}
+	return v, ""
 }
 
 // refetchDependsOn re-fetches job by ID when requested is non-empty, so a
@@ -855,7 +887,7 @@ func (*jobHandler) resolveAction(
 ) (store.JobStatus, bool) {
 	switch action {
 	case "pause":
-		if current != store.JobStatusRunning && current != store.JobStatusPending {
+		if current != store.JobStatusRunning && current != store.JobStatusPending && current != store.JobStatusBlocked {
 			writeProblem(w, r, http.StatusConflict, "job cannot be paused in its current state")
 			return "", false
 		}
@@ -897,7 +929,7 @@ func (h *jobHandler) applyStatusChange(
 	}
 	switch {
 	case errors.Is(err, store.ErrConflict):
-		// The job left pending/running between the handler's read and the
+		// The job left pending/running/blocked between the handler's read and the
 		// guarded write.
 		writeProblem(w, r, http.StatusConflict, "job cannot be paused in its current state")
 		return job, err
@@ -914,13 +946,35 @@ func (h *jobHandler) applyStatusChange(
 		writeProblem(w, r, http.StatusInternalServerError, "failed to update job status")
 		return job, err
 	}
-	job.Status = newStatus
-	if action == "resume" && job.ParkReason != "" {
-		// Mirror ResumeJob's park-state reset in the response body.
-		job.FailedAttempts = 0
-		job.ParkReason = ""
+	if action == "resume" {
+		return h.resumedJob(r.Context(), job), nil
 	}
+	job.Status = newStatus
 	return job, nil
+}
+
+// resumedJob reconciles a just-resumed job and returns it as stored. A job
+// still holding its cross-job dependencies resumes to blocked, and its
+// upstreams may have completed (it is released) or failed (it is canceled)
+// while it was paused; reconciling now decides it at once instead of at the
+// sweep's next pass. ReconcileBlockedJob leaves any job that is not blocked
+// alone, and a failure is logged and left to that sweep. If the job cannot be
+// re-read, the response reports the status ResumeJob wrote, with the other
+// fields as the handler last read them.
+func (h *jobHandler) resumedJob(ctx context.Context, job store.Job) store.Job {
+	if err := h.sched.ReconcileBlockedJob(ctx, job.ID); err != nil {
+		h.logger.ErrorContext(ctx, "jobs: reconcile after resume failed", slog.String("id", job.ID), slog.Any("error", err))
+	}
+	got, err := h.store.GetJob(ctx, job.ID)
+	if err != nil {
+		h.logger.ErrorContext(ctx, "jobs: re-read after resume failed", slog.String("id", job.ID), slog.Any("error", err))
+		job.Status = store.JobStatusPending
+		if job.DependencyHold {
+			job.Status = store.JobStatusBlocked
+		}
+		return job
+	}
+	return got
 }
 
 // handleStoreError writes the appropriate HTTP error for a store lookup failure.
