@@ -490,8 +490,9 @@ jobs:
   # `go build` never compiles _test.go files, so it cannot catch a
   # Windows-only break in test code (a POSIX-only test referencing
   # SysProcAttr.Credential, say). The windows/amd64 step builds every
-  # internal package and vets internal/worker/..., cmd/... and the Windows
-  # service packages (internal/winsvc, internal/secretin, internal/log); vet
+  # internal package and vets internal/worker/..., cmd/..., the Windows
+  # service packages (internal/winsvc, internal/secretin, internal/log) and
+  # internal/configinit; vet
   # type-checks _test.go files. test/winservice is behind the `winservice`
   # build tag and //go:build windows, so the vet line passes the tag (no
   # other package uses it).
@@ -525,7 +526,7 @@ jobs:
         if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
         run: |
           GOOS=windows GOARCH=amd64 go build ./internal/... ./cmd/...
-          GOOS=windows GOARCH=amd64 go vet -tags winservice ./internal/worker/... ./internal/winsvc/... ./internal/secretin/... ./internal/log/... ./cmd/... ./test/winservice/...
+          GOOS=windows GOARCH=amd64 go vet -tags winservice ./internal/worker/... ./internal/winsvc/... ./internal/configinit/... ./internal/secretin/... ./internal/log/... ./cmd/... ./test/winservice/...
 
       # The worker's macOS-only files (internal/worker/proctree's sysctl
       # process reader) run in no pull-request test job, so vet type-checks
@@ -1482,8 +1483,9 @@ jobs:
   # cross-compile's `GOOS=windows go vet` only type-checks. The package list
   # is every package with GOOS-conditional behavior. internal/worker/isolation,
   # internal/worker/executor, internal/worker/proctree, internal/worker/staging,
-  # cmd/sqi-worker and the Windows service packages (internal/winsvc,
-  # internal/secretin, internal/log, cmd/sqi-server) carry _windows.go or _windows_test.go files.
+  # cmd/sqi-worker, the Windows service packages (internal/winsvc,
+  # internal/secretin, internal/log, cmd/sqi-server) and internal/configinit
+  # carry _windows.go or _windows_test.go files.
   # internal/worker/envutil and internal/worker/session branch on
   # runtime.GOOS in their tests, so only a Windows run executes the Windows
   # branch. internal/worker/procout reads a task's output through OS pipes,
@@ -1511,7 +1513,8 @@ jobs:
       #
       # The version matches the ubuntu step's pin; keep the two in step.
       # Scoped to the packages with per-GOOS code (the worker tree, both cmd
-      # packages, internal/winsvc, internal/secretin, internal/log) plus
+      # packages, internal/winsvc, internal/configinit, internal/secretin,
+      # internal/log) plus
       # internal/brokerauth and internal/tlsutil; a full-module run would
       # repeat the ubuntu job's findings. ./test/winservice/... is
       # behind the `winservice` build tag (set in .golangci.yml) and
@@ -1520,7 +1523,7 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.1
-          args: --timeout=5m ./cmd/sqi-worker/... ./cmd/sqi-server/... ./internal/worker/... ./internal/winsvc/... ./internal/secretin/... ./internal/log/... ./internal/brokerauth/... ./internal/tlsutil/... ./test/winservice/...
+          args: --timeout=5m ./cmd/sqi-worker/... ./cmd/sqi-server/... ./internal/worker/... ./internal/winsvc/... ./internal/configinit/... ./internal/secretin/... ./internal/log/... ./internal/brokerauth/... ./internal/tlsutil/... ./test/winservice/...
 
       # The job comment explains the package list. -count=1 disables the test
       # cache so a cached pass cannot stand in for a run. -v and the tee give
@@ -1538,6 +1541,7 @@ jobs:
             ./internal/worker/session/... \
             ./internal/worker/staging/... \
             ./internal/winsvc/... \
+            ./internal/configinit/... \
             ./internal/secretin/... \
             ./internal/log/... \
             ./cmd/sqi-server/... \
@@ -1749,9 +1753,14 @@ jobs:
   # ── Windows service: real Service Control Manager ────────────────────────────
   # Drives both binaries through the real Windows Service Control Manager:
   # install, start, stop, uninstall, a hand-registered New-Service worker, a
-  # startup failure's trace, and a --user account. This is the only job that
-  # installs a real service; the fake-driven unit tests run in
-  # isolation-integration-windows.
+  # startup failure's trace, and a --user account. It also drives `config
+  # init` and the install check against real owners and ACLs: the protected
+  # directory config init creates, a directory a standard account owns, a
+  # configuration directory, binary and TLS CA any user can write, a squatted
+  # %ProgramData%\sqi with the configuration elsewhere, and what config init
+  # --user lets the account read and write, checked as that account. This is
+  # the only job that installs a real service; the fake-driven unit tests run
+  # in isolation-integration-windows.
   #
   # The suite prints "not elevated" and exits 0 without running on a
   # non-elevated shell, so the assertion step fails on that message and
@@ -1780,7 +1789,7 @@ jobs:
         run: |
           go test -tags winservice -count=1 -v -timeout 20m ./test/winservice/... 2>&1 | tee winservice.log
 
-      # Fails on the not-elevated message and unless all six tests PASS by
+      # Fails on the not-elevated message and unless all 13 tests PASS by
       # name; see the job comment.
       - name: Assert the suite actually ran
         shell: bash
@@ -1796,6 +1805,13 @@ jobs:
             TestWinService_StartupFailureLeavesTrace
             TestWinService_HandRegisteredNewService
             TestWinService_UserAccount
+            TestWinService_ConfigInitCreatesProtectedDir
+            TestWinService_ConfigInitRefusesSquattedDir
+            TestWinService_InstallRefusesUserWritableConfigDir
+            TestWinService_InstallRefusesUserWritableBinary
+            TestWinService_InstallRefusesUserWritableTLSCA
+            TestWinService_InstallRefusesSquattedSqiDirWithConfigElsewhere
+            TestWinService_ConfigInitUserAccountCanReadAndWrite
           )
           missing=0
           for name in "${expected[@]}"; do
@@ -1807,7 +1823,7 @@ jobs:
             fi
           done
           if [ "$missing" -eq 0 ]; then
-            echo "Confirmed all ${#expected[@]}/6 named Windows service tests passed."
+            echo "Confirmed all ${#expected[@]}/13 named Windows service tests passed."
           fi
           exit $missing
 
