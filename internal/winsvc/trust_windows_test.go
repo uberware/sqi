@@ -236,8 +236,21 @@ func TestCheckPaths_FailsUntrustedOwner(t *testing.T) {
 	// would be Administrators. Only the trusted set and the owner itself are
 	// granted anything.
 	setSecurity(t, dir, fmt.Sprintf("O:%sD:P%s", me, trustedACEs(t)))
+	// The current user also owns the temp directory's ancestors, which fail
+	// too; only the failure judged at dir is this test's.
 	err := checkPaths([]PathRef{{Key: "config", Path: dir}}, builtinTrusted(t))
-	wantOneFailure(t, err, dir, "owner "+myName+" is not trusted")
+	var found bool
+	for _, f := range wantFailures(t, err) {
+		if f.JudgedPath == dir {
+			found = true
+			if !strings.Contains(f.Reason, "owner "+myName+" is not trusted") {
+				t.Errorf("Reason = %q, want it to name the untrusted owner %s", f.Reason, myName)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("checkPaths = %v, want a failure judged at %s", err, dir)
+	}
 }
 
 func TestCheckPaths_RefusesJunction(t *testing.T) {
@@ -278,7 +291,7 @@ func TestCheckPaths_RefusesPathThroughJunction(t *testing.T) {
 	link := filepath.Join(t.TempDir(), "link")
 	fsutiltest.Junction(t, link, target)
 	path := filepath.Join(link, "f")
-	wantOneFailure(t, checkOne(t, path), path, link+" is a junction or symbolic link")
+	wantOneFailure(t, checkOne(t, path), link, "ancestor "+link+": is a junction or symbolic link")
 }
 
 func TestCheckPaths_MissingPathJudgedByAncestor(t *testing.T) {
@@ -410,7 +423,174 @@ func TestJudgeSecurity_ACERules(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse %q: %v", tc.sddl, err)
 			}
-			reasons, err := judgeSecurity(sd, testTrusted(t))
+			reasons, err := judgeSecurity(sd, testTrusted(t), objectRule)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Join(reasons, "; ")
+			switch {
+			case tc.want == "" && got != "":
+				t.Errorf("reasons = %q, want none", got)
+			case tc.want != "" && !strings.Contains(got, tc.want):
+				t.Errorf("reasons = %q, want them to contain %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// fixtureFailures returns the failures in err judged below root: root (a
+// t.TempDir) and the host's ancestors of it are not the test's to judge.
+func fixtureFailures(t *testing.T, err error, root string) []PathFailure {
+	t.Helper()
+	var out []PathFailure
+	for _, f := range wantFailures(t, err) {
+		if strings.HasPrefix(f.JudgedPath, root+`\`) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// underParent makes a protected directory holding a protected file, both
+// trusted-only, inside parent, and returns their refs.
+func underParent(t *testing.T, parent string) []PathRef {
+	t.Helper()
+	dir := filepath.Join(parent, "d")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	setSecurity(t, dir, "D:P"+trustedACEs(t))
+	file := filepath.Join(dir, "worker.yaml")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setSecurity(t, file, "D:P"+trustedACEs(t))
+	return []PathRef{{Key: "config dir", Path: dir}, {Key: "config", Path: file}}
+}
+
+// wantAncestorFailures asserts err reports, for each of refs and nothing
+// else, one failure judged at ancestor whose reason names it and contains
+// want.
+func wantAncestorFailures(t *testing.T, err error, refs []PathRef, ancestor, want string) {
+	t.Helper()
+	failures := wantFailures(t, err)
+	if len(failures) != len(refs) {
+		t.Fatalf("got %d failures, want %d: %+v", len(failures), len(refs), failures)
+	}
+	prefix := "ancestor " + ancestor + ": "
+	for i, f := range failures {
+		if f.Key != refs[i].Key || f.Path != refs[i].Path || f.JudgedPath != ancestor {
+			t.Errorf("failure %d = %+v, want key %s path %s judged at %s", i, f, refs[i].Key, refs[i].Path, ancestor)
+		}
+		if !strings.HasPrefix(f.Reason, prefix) || !strings.Contains(f.Reason, want) {
+			t.Errorf("failure %d reason = %q, want %q followed by something containing %q", i, f.Reason, prefix, want)
+		}
+	}
+}
+
+// An ancestor an untrusted principal can delete children of lets them move a
+// protected directory aside and plant their own.
+func TestCheckPaths_FailsAncestorDeleteChild(t *testing.T) {
+	parent := securedDir(t, "(A;;0x40;;;BU)")
+	refs := underParent(t, parent)
+	wantAncestorFailures(t, checkPaths(refs, testTrusted(t)), refs, parent,
+		accountNameOf(t, windows.WinBuiltinUsersSid)+" can replace it or its children (DC)")
+}
+
+// WRITE_DAC on an ancestor lets its holder grant themselves DC.
+func TestCheckPaths_FailsAncestorWriteDAC(t *testing.T) {
+	parent := securedDir(t, "(A;;"+sddlWriteDAC+";;;AU)")
+	refs := underParent(t, parent)
+	wantAncestorFailures(t, checkPaths(refs, testTrusted(t)), refs, parent,
+		accountNameOf(t, windows.WinAuthenticatedUserSid)+" can replace it or its children (WDAC)")
+}
+
+// Adding files or folders to an ancestor cannot replace an existing child, so
+// the C:\ProgramData shape passes as an ancestor.
+func TestCheckPaths_PassesAncestorAddOnly(t *testing.T) {
+	parent := securedDir(t, "(A;CI;"+sddlProgramDataUsers+";;;BU)")
+	if err := checkPaths(underParent(t, parent), testTrusted(t)); err != nil {
+		t.Errorf("checkPaths(<under an add-only parent>) = %v, want nil", err)
+	}
+}
+
+func TestCheckPaths_FailsAncestorTwoLevelsUp(t *testing.T) {
+	grandparent := securedDir(t, "(A;;0x40;;;BU)")
+	parent := filepath.Join(grandparent, "p")
+	if err := os.Mkdir(parent, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	setSecurity(t, parent, "D:P"+trustedACEs(t))
+	refs := underParent(t, parent)
+	wantAncestorFailures(t, checkPaths(refs, testTrusted(t)), refs, grandparent, "(DC)")
+}
+
+// An ancestor whose owner is untrusted fails: its owner can always rewrite
+// its DACL. Making Administrators an owner needs an elevated token, so this
+// trusts SYSTEM, TrustedInstaller and the current user, not Administrators,
+// and gives the parent to Administrators.
+func TestCheckPaths_FailsAncestorUntrustedOwner(t *testing.T) {
+	if !windows.GetCurrentProcessToken().IsElevated() {
+		t.Skip("making Administrators an owner needs an elevated token; TestJudgeSecurity_AncestorRules covers the rule")
+	}
+	me, _ := currentAccount(t)
+	ti, err := windows.StringToSid(trustedInstallerSID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted := []*windows.SID{wellKnownSID(t, windows.WinLocalSystemSid), ti, me}
+	var aces strings.Builder
+	for _, sid := range trusted {
+		fmt.Fprintf(&aces, "(A;OICI;FA;;;%s)", sid)
+	}
+	root := t.TempDir()
+	parent := filepath.Join(root, "p")
+	dir := filepath.Join(parent, "d")
+	for _, d := range []string{parent, dir} {
+		if err := os.Mkdir(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setSecurity(t, parent, "O:BAD:P"+aces.String())
+	setSecurity(t, dir, fmt.Sprintf("O:%sD:P%s", me, aces.String()))
+	failures := fixtureFailures(t, checkPaths([]PathRef{{Key: "config dir", Path: dir}}, trusted), root)
+	want := "ancestor " + parent + ": owner " + accountNameOf(t, windows.WinBuiltinAdministratorsSid) + " is not trusted"
+	if len(failures) != 1 || failures[0].JudgedPath != parent || failures[0].Reason != want {
+		t.Errorf("failures in the fixture = %+v, want one judged at %s with reason %q", failures, parent, want)
+	}
+}
+
+// TestJudgeSecurity_AncestorRules pins the narrower rule an ancestor is
+// judged by.
+func TestJudgeSecurity_AncestorRules(t *testing.T) {
+	me, _ := currentAccount(t)
+	owned := "O:" + me.String() + "D:P" + trustedACEs(t)
+	tests := []struct {
+		name string
+		sddl string
+		want string // "" = passes; otherwise a substring of the reasons
+	}{
+		{"add file and folder pass", owned + "(A;;" + sddlProgramDataUsers + ";;;AU)", ""},
+		{`C:\ shape passes`, owned + "(A;;0x4;;;AU)(A;OICIIO;" + sddlModify + ";;;AU)", ""},
+		{"deny passes", owned + "(D;;FA;;;BU)", ""},
+		{"delete child fails", owned + "(A;;0x40;;;BU)", "(DC)"},
+		{"delete fails", owned + "(A;;SD;;;BU)", "(D)"},
+		{"write owner fails", owned + "(A;;0x80000;;;BU)", "(WO)"},
+		{"generic write fails", owned + "(A;;GW;;;BU)", "(GW)"},
+		{"generic all fails", owned + "(A;;GA;;;BU)", "(GA)"},
+		{"maximum allowed fails", owned + "(A;;0x2000000;;;BU)", "(MA)"},
+		{"modify names only the replace rights", owned + "(A;;" + sddlModify + ";;;BU)", "children (D)"},
+		{"untrusted owner fails", "O:BUD:P" + trustedACEs(t), "owner "},
+		{"object allow fails closed", owned + "(OA;;FA;bf967aba-0de6-11d0-a285-00aa003049e2;;BU)", "unsupported type 5"},
+		{"NULL DACL fails", "O:" + me.String() + "D:NO_ACCESS_CONTROL", "NULL DACL"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sd, err := windows.SecurityDescriptorFromString(tc.sddl)
+			if err != nil {
+				t.Fatalf("parse %q: %v", tc.sddl, err)
+			}
+			reasons, err := judgeSecurity(sd, testTrusted(t), ancestorRule)
 			if err != nil {
 				t.Fatal(err)
 			}

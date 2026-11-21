@@ -27,43 +27,75 @@ const (
 	accessDeniedCallbackObjectACEType = 0xC
 )
 
-// changeRights are the rights that let their holder change a file or
-// directory, or what it holds, each with the abbreviation icacls prints.
-var changeRights = []struct {
+// Access rights by the abbreviation icacls prints for them.
+const (
+	rightWD   = windows.ACCESS_MASK(0x2)        // FILE_WRITE_DATA / FILE_ADD_FILE
+	rightAD   = windows.ACCESS_MASK(0x4)        // FILE_APPEND_DATA / FILE_ADD_SUBDIRECTORY
+	rightWEA  = windows.ACCESS_MASK(0x10)       // FILE_WRITE_EA
+	rightDC   = windows.ACCESS_MASK(0x40)       // FILE_DELETE_CHILD
+	rightWA   = windows.ACCESS_MASK(0x100)      // FILE_WRITE_ATTRIBUTES
+	rightD    = windows.ACCESS_MASK(0x10000)    // DELETE
+	rightWDAC = windows.ACCESS_MASK(0x40000)    // WRITE_DAC
+	rightWO   = windows.ACCESS_MASK(0x80000)    // WRITE_OWNER
+	rightGA   = windows.ACCESS_MASK(0x10000000) // GENERIC_ALL
+	rightGW   = windows.ACCESS_MASK(0x40000000) // GENERIC_WRITE
+	rightMA   = windows.ACCESS_MASK(0x02000000) // MAXIMUM_ALLOWED
+)
+
+// rightNames lists the rights the rules use, in the order icacls prints them.
+var rightNames = []struct {
 	mask windows.ACCESS_MASK
 	abbr string
 }{
-	{0x2, "WD"},        // FILE_WRITE_DATA / FILE_ADD_FILE
-	{0x4, "AD"},        // FILE_APPEND_DATA / FILE_ADD_SUBDIRECTORY
-	{0x10, "WEA"},      // FILE_WRITE_EA
-	{0x40, "DC"},       // FILE_DELETE_CHILD
-	{0x100, "WA"},      // FILE_WRITE_ATTRIBUTES
-	{0x10000, "D"},     // DELETE
-	{0x40000, "WDAC"},  // WRITE_DAC
-	{0x80000, "WO"},    // WRITE_OWNER
-	{0x10000000, "GA"}, // GENERIC_ALL
-	{0x40000000, "GW"}, // GENERIC_WRITE
-	{0x02000000, "MA"}, // MAXIMUM_ALLOWED
+	{rightWD, "WD"},
+	{rightAD, "AD"},
+	{rightWEA, "WEA"},
+	{rightDC, "DC"},
+	{rightWA, "WA"},
+	{rightD, "D"},
+	{rightWDAC, "WDAC"},
+	{rightWO, "WO"},
+	{rightGA, "GA"},
+	{rightGW, "GW"},
+	{rightMA, "MA"},
 }
 
-// changeMask is every right in changeRights.
-var changeMask = func() windows.ACCESS_MASK {
-	var m windows.ACCESS_MASK
-	for _, r := range changeRights {
-		m |= r.mask
+// rightsRule is which rights, granted to a principal outside the trusted
+// set, fail a path, and how a refusal describes them.
+type rightsRule struct {
+	mask windows.ACCESS_MASK
+	verb string
+}
+
+var (
+	// objectRule judges the path itself: any right that could change it or
+	// what it holds.
+	objectRule = rightsRule{
+		mask: rightWD | rightAD | rightWEA | rightDC | rightWA | rightD | rightWDAC | rightWO | rightGA | rightGW | rightMA,
+		verb: "can write",
 	}
-	return m
-}()
+	// ancestorRule judges each of its ancestors: any right that could move
+	// the path aside, so its holder could plant their own in its place, or
+	// grant that. Adding a file or folder cannot replace an existing child,
+	// so FILE_ADD_FILE and FILE_ADD_SUBDIRECTORY alone pass (C:\ grants
+	// Authenticated Users AD on itself).
+	ancestorRule = rightsRule{
+		mask: rightDC | rightD | rightWDAC | rightWO | rightGA | rightGW | rightMA,
+		verb: "can replace it or its children",
+	}
+)
 
 // PathFailure is one path CheckPaths refused.
 type PathFailure struct {
 	// Key and Path are the PathRef's.
 	Key, Path string
-	// JudgedPath is the path whose security was read: Path, or, when Path
-	// does not exist, its nearest existing ancestor.
+	// JudgedPath is the path whose security failed: Path; its nearest
+	// existing ancestor when Path does not exist; or an ancestor whoever
+	// controls could replace Path.
 	JudgedPath string
-	// Reason says what is wrong, such as "owner DESKTOP\bob is not trusted"
-	// or "BUILTIN\Users can write (WD,AD)"; several are joined with "; ".
+	// Reason says what is wrong, such as "owner DESKTOP\bob is not trusted",
+	// "BUILTIN\Users can write (WD,AD)" or "ancestor C:\x: BUILTIN\Users can
+	// replace it or its children (DC)"; several are joined with "; ".
 	Reason string
 }
 
@@ -73,16 +105,11 @@ type UntrustedPathsError struct {
 	Failures []PathFailure
 }
 
-// Error renders one line per failure: "<key> <path>: <reason>", followed by
-// the judged path when it is an ancestor of path.
+// Error renders one line per failure: "<key> <path>: <reason>".
 func (e *UntrustedPathsError) Error() string {
 	lines := make([]string, 0, len(e.Failures))
 	for _, f := range e.Failures {
-		line := fmt.Sprintf("%s %s: %s", f.Key, f.Path, f.Reason)
-		if f.JudgedPath != f.Path {
-			line += fmt.Sprintf(" (it does not exist; judged by its nearest existing ancestor %s)", f.JudgedPath)
-		}
-		lines = append(lines, line)
+		lines = append(lines, fmt.Sprintf("%s %s: %s", f.Key, f.Path, f.Reason))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -94,11 +121,14 @@ func (e *UntrustedPathsError) Error() string {
 // escalation.
 //
 // A path passes when it is a real file or directory (not a junction, symbolic
-// link or other reparse point, and not reached through one), its owner is
-// trusted, and no allow ACE that applies to it grants anyone else a right
-// that could change it or what it holds. A path that does not exist yet is
-// judged by its nearest existing ancestor, since whoever can create children
-// there can create it first. Paths must be absolute.
+// link or other reparse point), its owner is trusted, and no allow ACE that
+// applies to it grants anyone else a right that could change it or what it
+// holds. A path that does not exist yet is judged by its nearest existing
+// ancestor, since whoever can create children there can create it first.
+// Every ancestor above the judged path, up to the volume root, must also be
+// a real directory with a trusted owner whose DACL grants nobody else a right
+// that could move the path aside and let them plant their own. Paths must be
+// absolute.
 //
 // It returns nil, an *UntrustedPathsError naming every refused path, or the
 // error that stopped it reading one.
@@ -144,15 +174,11 @@ func trustedPrincipals(account string) ([]*windows.SID, error) {
 func checkPaths(refs []PathRef, trusted []*windows.SID) error {
 	var failures []PathFailure
 	for _, ref := range refs {
-		judged, reasons, err := judgePath(ref.Path, trusted)
+		f, err := judgeRef(ref, trusted)
 		if err != nil {
 			return fmt.Errorf("check %s %s: %w", ref.Key, ref.Path, err)
 		}
-		if len(reasons) > 0 {
-			failures = append(failures, PathFailure{
-				Key: ref.Key, Path: ref.Path, JudgedPath: judged, Reason: strings.Join(reasons, "; "),
-			})
-		}
+		failures = append(failures, f...)
 	}
 	if len(failures) > 0 {
 		return &UntrustedPathsError{Failures: failures}
@@ -160,24 +186,49 @@ func checkPaths(refs []PathRef, trusted []*windows.SID) error {
 	return nil
 }
 
+// judgeRef returns ref's failures: the judged path's, then each failing
+// ancestor's, nearest first.
+func judgeRef(ref PathRef, trusted []*windows.SID) ([]PathFailure, error) {
+	judged, reasons, err := judgePath(ref.Path, trusted)
+	if err != nil {
+		return nil, err
+	}
+	var failures []PathFailure
+	if len(reasons) > 0 {
+		reason := strings.Join(reasons, "; ")
+		if judged != filepath.Clean(ref.Path) {
+			reason = fmt.Sprintf("does not exist; its nearest existing ancestor %s: %s", judged, reason)
+		}
+		failures = append(failures, PathFailure{Key: ref.Key, Path: ref.Path, JudgedPath: judged, Reason: reason})
+	}
+	for p := judged; filepath.Dir(p) != p; {
+		p = filepath.Dir(p)
+		reasons, err := judgeExisting(p, trusted, ancestorRule)
+		if err != nil {
+			return nil, err
+		}
+		if len(reasons) > 0 {
+			failures = append(failures, PathFailure{
+				Key: ref.Key, Path: ref.Path, JudgedPath: p,
+				Reason: fmt.Sprintf("ancestor %s: %s", p, strings.Join(reasons, "; ")),
+			})
+		}
+	}
+	return failures, nil
+}
+
 // judgePath finds the path to judge — path, or its nearest existing ancestor
-// — and returns it with the reasons it fails, none when it passes.
+// — and returns it with the reasons it fails by objectRule, none when it
+// passes. It does not judge the ancestors above it.
 func judgePath(path string, trusted []*windows.SID) (judged string, reasons []string, err error) {
 	if !filepath.IsAbs(path) {
 		return path, nil, fmt.Errorf("%q is not an absolute path", path)
 	}
 	judged = filepath.Clean(path)
 	for {
-		h, _, err := openPlain(judged, windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES)
-		switch {
-		case err == nil:
-			reasons, err := judgeOpened(h, judged, trusted)
-			windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
+		reasons, err := judgeExisting(judged, trusted, objectRule)
+		if !isNotFound(err) {
 			return judged, reasons, err
-		case errors.Is(err, errReparsePoint):
-			return judged, []string{errReparsePoint.Error()}, nil
-		case !isNotFound(err):
-			return judged, nil, err
 		}
 		parent := filepath.Dir(judged)
 		if parent == judged {
@@ -187,53 +238,38 @@ func judgePath(path string, trusted []*windows.SID) (judged string, reasons []st
 	}
 }
 
-// judgeOpened judges the path h was opened on: its ancestors, then its owner
-// and DACL, read from h.
-func judgeOpened(h windows.Handle, judged string, trusted []*windows.SID) ([]string, error) {
-	reasons, err := ancestorReparsePoints(judged)
-	if err != nil {
+// judgeExisting opens path itself, never a reparse point's target, and
+// returns the reasons it fails rule: it is a reparse point, or its owner or
+// DACL, read from that handle, fail. The open error is wrapped, so a caller
+// can test for a missing path.
+func judgeExisting(path string, trusted []*windows.SID, rule rightsRule) ([]string, error) {
+	h, _, err := openPlain(path, windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES)
+	switch {
+	case errors.Is(err, errReparsePoint):
+		return []string{errReparsePoint.Error()}, nil
+	case err != nil:
 		return nil, err
 	}
+	defer windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
 	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT,
 		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
-		return nil, fmt.Errorf("read security of %s: %w", judged, err)
+		return nil, fmt.Errorf("read security of %s: %w", path, err)
 	}
-	more, err := judgeSecurity(sd, trusted)
+	reasons, err := judgeSecurity(sd, trusted, rule)
 	if err != nil {
-		return nil, fmt.Errorf("read security of %s: %w", judged, err)
+		return nil, fmt.Errorf("read security of %s: %w", path, err)
 	}
-	return append(reasons, more...), nil
-}
-
-// ancestorReparsePoints names every ancestor of path that is a junction,
-// symbolic link or other reparse point. Opening path follows them, so whoever
-// can retarget one decides what path names.
-func ancestorReparsePoints(path string) ([]string, error) {
-	var reasons []string
-	for p := filepath.Dir(path); ; p = filepath.Dir(p) {
-		h, _, err := openPlain(p, windows.FILE_READ_ATTRIBUTES)
-		switch {
-		case err == nil:
-			windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
-		case errors.Is(err, errReparsePoint):
-			reasons = append(reasons, p+" "+errReparsePoint.Error())
-		default:
-			return nil, err
-		}
-		if filepath.Dir(p) == p {
-			return reasons, nil
-		}
-	}
+	return reasons, nil
 }
 
 func isNotFound(err error) bool {
 	return errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND)
 }
 
-// judgeSecurity returns the reasons sd's owner and DACL fail, none when they
-// pass.
-func judgeSecurity(sd *windows.SECURITY_DESCRIPTOR, trusted []*windows.SID) ([]string, error) {
+// judgeSecurity returns the reasons sd's owner and DACL fail rule, none when
+// they pass.
+func judgeSecurity(sd *windows.SECURITY_DESCRIPTOR, trusted []*windows.SID, rule rightsRule) ([]string, error) {
 	var reasons []string
 	owner, _, err := sd.Owner()
 	if err != nil {
@@ -253,7 +289,7 @@ func judgeSecurity(sd *windows.SECURITY_DESCRIPTOR, trusted []*windows.SID) ([]s
 	case err != nil:
 		return nil, fmt.Errorf("read DACL: %w", err)
 	}
-	more, err := judgeDACL(dacl, trusted)
+	more, err := judgeDACL(dacl, trusted, rule)
 	if err != nil {
 		return nil, err
 	}
@@ -261,10 +297,10 @@ func judgeSecurity(sd *windows.SECURITY_DESCRIPTOR, trusted []*windows.SID) ([]s
 }
 
 // judgeDACL returns a reason for each untrusted principal that an allow ACE
-// applying to the object itself grants a change right, with every such
+// applying to the object itself grants a right in rule, naming every such
 // right it holds, and one for each ACE of a type it cannot read. Deny ACEs
 // only take access away, so they never fail a path.
-func judgeDACL(dacl *windows.ACL, trusted []*windows.SID) ([]string, error) {
+func judgeDACL(dacl *windows.ACL, trusted []*windows.SID, rule rightsRule) ([]string, error) {
 	var (
 		holders []*windows.SID
 		masks   []windows.ACCESS_MASK
@@ -290,18 +326,18 @@ func judgeDACL(dacl *windows.ACL, trusted []*windows.SID) ([]string, error) {
 			continue
 		}
 		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		if ace.Mask&changeMask == 0 || isTrusted(sid, trusted) {
+		if ace.Mask&rule.mask == 0 || isTrusted(sid, trusted) {
 			continue
 		}
 		if j := slices.IndexFunc(holders, sid.Equals); j >= 0 {
-			masks[j] |= ace.Mask
+			masks[j] |= ace.Mask & rule.mask
 			continue
 		}
 		holders = append(holders, sid)
-		masks = append(masks, ace.Mask)
+		masks = append(masks, ace.Mask&rule.mask)
 	}
 	for j, sid := range holders {
-		reasons = append(reasons, fmt.Sprintf("%s can write (%s)", accountName(sid), rightsString(masks[j])))
+		reasons = append(reasons, fmt.Sprintf("%s %s (%s)", accountName(sid), rule.verb, rightsString(masks[j])))
 	}
 	return reasons, nil
 }
@@ -310,11 +346,10 @@ func isTrusted(sid *windows.SID, trusted []*windows.SID) bool {
 	return slices.ContainsFunc(trusted, sid.Equals)
 }
 
-// rightsString lists the change rights in mask by their icacls
-// abbreviations.
+// rightsString lists the rights in mask by their icacls abbreviations.
 func rightsString(mask windows.ACCESS_MASK) string {
 	var abbrs []string
-	for _, r := range changeRights {
+	for _, r := range rightNames {
 		if mask&r.mask != 0 {
 			abbrs = append(abbrs, r.abbr)
 		}
