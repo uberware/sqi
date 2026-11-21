@@ -93,9 +93,14 @@ func (c commands) untrustedError(u *UntrustedPathsError, exe, account string) er
 			filepath.Base(exe), dest, QuotePowerShell(dest), QuotePowerShell(exe), QuotePowerShell(dest),
 		))
 	}
-	suspects, other := programDataSuspects(u)
+	suspects, files, other := programDataSuspects(u)
 	if len(suspects) > 0 {
 		remedies = append(remedies, c.moveAsideRemedy(u, suspects))
+	}
+	if len(files) > 0 {
+		remedies = append(remedies, "Nothing creates "+strings.Join(files, ", ")+" again, so do not move it aside: "+
+			"fix its permissions so only SYSTEM and Administrators can change it, or move it to an "+
+			"administrators-only folder and point its setting there, then run service install again.")
 	}
 	if other {
 		which := "each path above"
@@ -218,8 +223,10 @@ func untrustedAllows(dacl *windows.ACL) ([]*windows.SID, []windows.ACCESS_MASK, 
 // programDataSuspects is the distinct judged paths under %ProgramData% (never
 // %ProgramData% itself) of every failure but the binary's, which moving
 // aside replaces with directories config init or the service creates again.
+// files is those that are files a setting names, such as a TLS certificate
+// or a credential, which nothing would create again: they are not suspects.
 // other reports a failure, again not the binary's, that moving cannot fix.
-func programDataSuspects(u *UntrustedPathsError) (suspects []string, other bool) {
+func programDataSuspects(u *UntrustedPathsError) (suspects, files []string, other bool) {
 	pd := filepath.Clean(ProgramDataDir())
 	for _, f := range u.Failures {
 		if isBinaryFailure(f) {
@@ -230,11 +237,27 @@ func programDataSuspects(u *UntrustedPathsError) (suspects []string, other bool)
 			other = true
 			continue
 		}
-		if !slices.ContainsFunc(suspects, func(s string) bool { return strings.EqualFold(s, judged) }) {
-			suspects = append(suspects, judged)
+		if f.Key != "config" && isFile(judged) {
+			files = appendDistinct(files, judged)
+			continue
 		}
+		suspects = appendDistinct(suspects, judged)
 	}
-	return suspects, other
+	return suspects, files, other
+}
+
+// appendDistinct appends p to list unless it holds p already, ignoring case.
+func appendDistinct(list []string, p string) []string {
+	if slices.ContainsFunc(list, func(s string) bool { return strings.EqualFold(s, p) }) {
+		return list
+	}
+	return append(list, p)
+}
+
+// isFile reports whether path is there and is not a directory.
+func isFile(path string) bool {
+	st, err := os.Lstat(path)
+	return err == nil && !st.IsDir()
 }
 
 // moveAsideRemedy tells the operator to rename each suspect, and to write a

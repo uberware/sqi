@@ -496,8 +496,9 @@ worker:
 ```
 
 (After a header comment. Leave `--nats-url` off and a comment shows where to put
-the URL instead, for a worker that finds the server by mDNS.) The worker creates
-`C:\ProgramData\sqi\worker` when it first starts.
+the URL instead, for a worker that finds the server by mDNS.) `config init` also
+creates the data directory, `C:\ProgramData\sqi\worker`, which inherits the
+configuration directory's permissions.
 
 The directory is administrators-only because the configuration file, `worker.data_dir`
 (the worker ID, and the worker's credential when broker authentication is on)
@@ -691,7 +692,7 @@ listing every failing path with the setting that named it:
 | The configuration file and its directory | `--config` |
 | The binary and its directory | The `.exe` you ran `service install` from |
 | The log file's directory and its parent | `log.file`, when set |
-| `C:\ProgramData\sqi\logs` and its parent | Always: the service writes its log there |
+| The service's own log directory, `C:\ProgramData\sqi\logs\<service-name>`, and `C:\ProgramData\sqi\logs` | Always: the service writes its log there |
 | The worker's session directory | `worker.session_dir`, or its default when unset |
 | Every file or directory the configuration names | TLS certificates, keys and CA files (`nats.tls_*`, `nats.server_tls_ca_file`, `metrics.tls.*`), the NATS credential and join-token files, `worker.data_dir`, `staging.scratch_dir`, `staging.sync_command`, `worker.power.sleep_command` and `shutdown_command`, `worker.commands.<name>.path` |
 
@@ -720,7 +721,10 @@ directory above the path, up to the volume root, is judged too:** one fails if
 someone else owns it or can delete or rename what it holds, because they could
 move the path aside and plant their own. Being able to *add* files to a parent
 is fine, which is why a path under `C:\ProgramData` can pass. (A volume
-root's own DELETE right is ignored, since a root cannot be renamed.)
+root's own DELETE right is ignored, since a root cannot be renamed.) A drive
+letter that is an alias, such as a global `subst` or a mapped network drive,
+counts as a volume root, so the directories above the real folder behind it
+are not judged: keep service files on local NTFS volumes.
 
 What this means in practice:
 
@@ -740,9 +744,11 @@ What this means in practice:
 A refusal names the setting and the path, and says what to do. For a binary it
 prints the `New-Item` and `Copy-Item` commands from step 1 for your copy of the
 file. For a path under `C:\ProgramData` it prints the `Rename-Item` command above
-and says to write a new configuration with `config init`; for anything else it
-asks you to make the path administrators-only or to point the setting at a path
-that is.
+and says to write a new configuration with `config init`, except for a file a
+setting names, such as a TLS certificate, key or CA file or a credential, which
+nothing creates again: for that it says to fix the file's permissions or move it
+to an administrators-only folder. For anything else it asks you to make the path
+administrators-only or to point the setting at a path that is.
 
 **What the check does not cover.**
 

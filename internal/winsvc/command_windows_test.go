@@ -844,6 +844,10 @@ func TestInstall_RefusalNamesRemedy(t *testing.T) {
 	if err := os.WriteFile(cfg, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	caFile := filepath.Join(sqiDir, "ca.pem")
+	if err := os.WriteFile(caFile, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -891,6 +895,13 @@ func TestInstall_RefusalNamesRemedy(t *testing.T) {
 			failures: []PathFailure{{Key: "nats.tls_ca_file", Path: `E:\ca.pem`, JudgedPath: `E:\`, Reason: "z"}},
 			want:     otherRemedy,
 			wantNot:  []string{"Copy-Item", "Rename-Item", "config init"},
+		},
+		{
+			// Nothing creates a CA again: moving it aside is no way out.
+			name:     "file a setting names, under ProgramData",
+			failures: []PathFailure{{Key: "nats.tls_ca_file", Path: caFile, JudgedPath: caFile, Reason: "w"}},
+			want:     []string{"permissions", "administrators-only folder"},
+			wantNot:  []string{"Rename-Item", "Copy-Item"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
