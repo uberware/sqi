@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,9 +25,19 @@ type sweepOps struct {
 	inspect func(pid int) (procInfo, error)
 	// kill sends SIGKILL to the process alone. A process already gone is not
 	// an error.
-	kill     func(pid int) error
+	kill func(pid int) error
+	// deadline is how long the sweep rescans for marked processes; slack is
+	// how much longer a scan in progress at the deadline may take before the
+	// sweep gives up on it. A read of a process's environment has no timeout of
+	// its own and can block in the kernel (a process stuck on a dead NFS
+	// mount), so the sweep never waits longer than deadline+slack in all.
 	deadline time.Duration
+	slack    time.Duration
 	poll     time.Duration
+	// self is the sweeping process's own pid, which is never killed: a worker
+	// started from a recorded tree (a job that restarts the worker) inherits
+	// that tree's token.
+	self int
 }
 
 // procInfo is what the sweep reads about one process.
@@ -75,9 +86,12 @@ func (l *Ledger) sweepWith(ctx context.Context, logger *slog.Logger, ops sweepOp
 	if len(trees) == 0 {
 		return nil
 	}
-	survivors, err := killMarked(ctx, trees, ops)
-	if err != nil {
-		logger.ErrorContext(ctx, "proctree: could not list processes to sweep", slog.Any("error", err))
+	res, done := runBounded(ctx, logger, trees, ops)
+	if !done {
+		return nil
+	}
+	if res.err != nil {
+		logger.ErrorContext(ctx, "proctree: could not list processes to sweep", slog.Any("error", res.err))
 		return nil
 	}
 	for _, t := range trees {
@@ -88,7 +102,7 @@ func (l *Ledger) sweepWith(ctx context.Context, logger *slog.Logger, ops sweepOp
 			logUnchecked(ctx, logger, t)
 		}
 	}
-	for pid, tok := range survivors {
+	for pid, tok := range res.survivors {
 		logger.ErrorContext(ctx, "proctree: a process the previous worker left running survived SIGKILL",
 			slog.Int("pid", pid), slog.String("token", tok))
 	}
@@ -139,16 +153,67 @@ func decodeRecord(path string) (record, error) {
 	return rec, nil
 }
 
-// killMarked SIGKILLs every live process whose token is in trees, rescanning
-// until none is left or ops.deadline passes (a process can fork between a scan
-// and its kill). It returns the marked processes still alive at the deadline,
-// pid to token.
-func killMarked(ctx context.Context, trees map[string]*sweptTree, ops sweepOps) (map[int]string, error) {
-	deadline := time.Now().Add(ops.deadline)
+// sweepPass is the state killMarked keeps across its scans.
+type sweepPass struct {
+	trees map[string]*sweptTree
+	// byGroup finds a record by its tree's process group, for a process whose
+	// environment cannot be read.
+	byGroup map[int]*sweptTree
+	// counted holds the processes already counted against their tree.
+	counted map[int]bool
+	ops     sweepOps
+	// current is the pid being inspected, for the log line when a read hangs.
+	current atomic.Int64
+}
+
+// runBounded runs killMarked on its own goroutine and waits at most
+// ops.deadline+ops.slack for it, or until ctx ends. done is false when it gave
+// up: the scan is then abandoned (it may still kill marked processes later),
+// trees must not be read, and the reason has been logged.
+func runBounded(ctx context.Context, logger *slog.Logger, trees map[string]*sweptTree, ops sweepOps) (passResult, bool) {
+	s := newSweepPass(trees, ops)
+	ch := make(chan passResult, 1)
+	go func() {
+		sv, err := s.killMarked(ctx)
+		ch <- passResult{survivors: sv, err: err}
+	}()
+	timer := time.NewTimer(ops.deadline + ops.slack)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		return r, true
+	case <-timer.C:
+		logger.ErrorContext(ctx, "proctree: the sweep did not finish in time; starting without it",
+			slog.Int64("pid", s.current.Load()), slog.Duration("waited", ops.deadline+ops.slack))
+	case <-ctx.Done():
+		logger.WarnContext(context.Background(), "proctree: the sweep was canceled", slog.Any("error", context.Cause(ctx)))
+	}
+	return passResult{}, false
+}
+
+// passResult is what killMarked returns: the marked processes still alive at
+// its deadline, pid to token, or the error listing the processes.
+type passResult struct {
+	survivors map[int]string
+	err       error
+}
+
+// newSweepPass prepares a scan of trees.
+func newSweepPass(trees map[string]*sweptTree, ops sweepOps) *sweepPass {
 	s := &sweepPass{trees: trees, byGroup: make(map[int]*sweptTree, len(trees)), counted: map[int]bool{}, ops: ops}
 	for _, t := range trees {
 		s.byGroup[t.rec.PGID] = t
 	}
+	return s
+}
+
+// killMarked SIGKILLs every live process whose token is in s.trees,
+// rescanning until none is left or ops.deadline passes (a process can fork
+// between a scan and its kill). It returns the marked processes still alive at
+// the deadline, pid to token.
+func (s *sweepPass) killMarked(ctx context.Context) (map[int]string, error) {
+	ops := s.ops
+	deadline := time.Now().Add(ops.deadline)
 	for {
 		pids, err := ops.list()
 		if err != nil {
@@ -171,21 +236,14 @@ func killMarked(ctx context.Context, trees map[string]*sweptTree, ops sweepOps) 
 	}
 }
 
-// sweepPass is the state killMarked keeps across its scans.
-type sweepPass struct {
-	trees map[string]*sweptTree
-	// byGroup finds a record by its tree's process group, for a process whose
-	// environment cannot be read.
-	byGroup map[int]*sweptTree
-	// counted holds the processes already counted against their tree.
-	counted map[int]bool
-	ops     sweepOps
-}
-
 // visit looks at one process: it kills a live process carrying a recorded
 // token, returning the token and true, and notes an unreadable one in a
 // recorded group.
 func (s *sweepPass) visit(pid int) (string, bool) {
+	if pid == s.ops.self {
+		return "", false
+	}
+	s.current.Store(int64(pid))
 	info, err := s.ops.inspect(pid)
 	if err != nil || info.zombie {
 		return "", false

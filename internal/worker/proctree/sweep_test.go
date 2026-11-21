@@ -79,7 +79,9 @@ func (f *fakeTable) ops() sweepOps {
 			return nil
 		},
 		deadline: 2 * time.Second,
+		slack:    time.Second,
 		poll:     10 * time.Millisecond,
+		self:     -1,
 	}
 }
 
@@ -367,5 +369,64 @@ func TestSweep_ReportsUnreadableGroupMembers(t *testing.T) {
 	}
 	if unchecked["pgid"] != "10" || unchecked["processes"] != "2" || unchecked["attempt_id"] != "att-a" || unchecked["hint"] == "" {
 		t.Errorf("WARN = %v, want pgid 10, processes 2, attempt att-a and a hint", unchecked)
+	}
+}
+
+func TestSweep_NeverKillsItself(t *testing.T) {
+	l := testLedger(t)
+	putRecord(t, l, record{Token: "A", PGID: 10, Label: Label{Kind: "task"}})
+	tab := &fakeTable{procs: map[int]*fakeProc{10: {token: "A"}, 11: {token: "A"}}}
+	ops := tab.ops()
+	ops.self = 10 // the sweeping worker inherited a recorded token
+	runSweep(t, l, ops)
+	if got := tab.killedPIDs(); !slices.Equal(got, []int{11}) {
+		t.Errorf("killed %v, want [11]: the sweep must never kill its own process", got)
+	}
+}
+
+func TestSweep_BoundedWhenAReadHangs(t *testing.T) {
+	l := testLedger(t)
+	putRecord(t, l, record{Token: "A", PGID: 10, Label: Label{Kind: "task"}})
+	tab := &fakeTable{procs: map[int]*fakeProc{10: {token: "A"}}}
+	ops := tab.ops()
+	ops.deadline = 100 * time.Millisecond
+	ops.slack = 100 * time.Millisecond
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	ops.inspect = func(int) (procInfo, error) {
+		<-hang // a read stuck in the kernel, as on a dead NFS mount
+		return procInfo{}, os.ErrNotExist
+	}
+	start := time.Now()
+	logs := runSweep(t, l, ops)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("sweep took %s with a hung read, want it bounded by deadline+slack (200ms)", elapsed)
+	}
+	errs := logs.at(slog.LevelError)
+	if len(errs) != 1 || errs[0]["msg"] != "proctree: the sweep did not finish in time; starting without it" || errs[0]["pid"] != "10" {
+		t.Errorf("ERROR records = %v, want one naming the stuck pid 10", errs)
+	}
+}
+
+func TestSweep_StopsOnContextCancel(t *testing.T) {
+	l := testLedger(t)
+	putRecord(t, l, record{Token: "A", PGID: 10, Label: Label{Kind: "task"}})
+	tab := &fakeTable{procs: map[int]*fakeProc{10: {token: "A"}}}
+	ops := tab.ops()
+	ops.deadline = time.Minute
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	ops.inspect = func(int) (procInfo, error) {
+		<-hang
+		return procInfo{}, os.ErrNotExist
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	start := time.Now()
+	if err := l.sweepWith(ctx, slog.New(&logCapture{}), ops); err != nil {
+		t.Fatalf("sweepWith: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("sweep took %s after its context was canceled", elapsed)
 	}
 }

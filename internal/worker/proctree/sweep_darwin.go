@@ -4,6 +4,7 @@ package proctree
 
 import (
 	"errors"
+	"os"
 
 	"golang.org/x/sys/unix"
 )
@@ -18,7 +19,9 @@ func systemOps() sweepOps {
 		inspect:  inspectProc,
 		kill:     killProcess,
 		deadline: sweepDeadline,
+		slack:    sweepSlack,
 		poll:     sweepPoll,
+		self:     os.Getpid(),
 	}
 }
 

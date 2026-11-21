@@ -18,7 +18,9 @@ func systemOps() sweepOps {
 		inspect:  inspectProc,
 		kill:     killProcess,
 		deadline: sweepDeadline,
+		slack:    sweepSlack,
 		poll:     sweepPoll,
+		self:     os.Getpid(),
 	}
 }
 

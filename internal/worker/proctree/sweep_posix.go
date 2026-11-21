@@ -12,10 +12,12 @@ import (
 	"time"
 )
 
-// Sweep timing: the whole sweep waits at most sweepDeadline for the marked
-// processes to go, rescanning every sweepPoll.
+// Sweep timing: the sweep rescans for marked processes for sweepDeadline,
+// every sweepPoll, and gives a scan in progress sweepSlack more, so it waits
+// at most 5 seconds in all.
 const (
-	sweepDeadline = 5 * time.Second
+	sweepDeadline = 4 * time.Second
+	sweepSlack    = time.Second
 	sweepPoll     = 50 * time.Millisecond
 )
 
