@@ -33,26 +33,27 @@ const (
 	sddlWriteDAC = "0x40000"
 )
 
-// testTrusted is the trusted set the tests pass to checkPaths: SYSTEM,
-// Administrators, TrustedInstaller and the current user.
+// testTrusted is the trusted set the tests pass to checkPaths: trustedSet
+// with the current user.
 func testTrusted(t *testing.T) []*windows.SID {
 	t.Helper()
 	me, _ := currentAccount(t)
-	return append(builtinTrusted(t), me)
+	return mustTrustedSet(t, me)
 }
 
 // builtinTrusted is the trusted set without the current user.
 func builtinTrusted(t *testing.T) []*windows.SID {
 	t.Helper()
-	ti, err := windows.StringToSid(trustedInstallerSID)
+	return mustTrustedSet(t, nil)
+}
+
+func mustTrustedSet(t *testing.T, account *windows.SID) []*windows.SID {
+	t.Helper()
+	sids, err := trustedSet(account)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return []*windows.SID{
-		wellKnownSID(t, windows.WinLocalSystemSid),
-		wellKnownSID(t, windows.WinBuiltinAdministratorsSid),
-		ti,
-	}
+	return sids
 }
 
 // trustedACEs is SDDL granting full control to every SID in testTrusted.
@@ -150,20 +151,6 @@ func wantOneFailure(t *testing.T, err error, judged string, want ...string) Path
 	return f
 }
 
-// accountNameOf is a well-known account's DOMAIN\name, or its bare name when
-// it has no domain (Everyone).
-func accountNameOf(t *testing.T, wk windows.WELL_KNOWN_SID_TYPE) string {
-	t.Helper()
-	name, domain, _, err := wellKnownSID(t, wk).LookupAccount("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if domain == "" {
-		return name
-	}
-	return domain + `\` + name
-}
-
 func TestCheckPaths_PassesAProtectedDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "d")
 	me, _ := currentAccount(t)
@@ -201,7 +188,7 @@ func TestCheckPaths_IgnoresInheritOnlyCreatorOwner(t *testing.T) {
 func TestCheckPaths_FailsUsersWrite(t *testing.T) {
 	dir := securedDir(t, "(A;CI;"+sddlProgramDataUsers+";;;BU)")
 	f := wantOneFailure(t, checkOne(t, dir), dir,
-		accountNameOf(t, windows.WinBuiltinUsersSid)+" can write (WD,AD,WEA,WA)")
+		accountName(wellKnownSID(t, windows.WinBuiltinUsersSid))+" can write (WD,AD,WEA,WA)")
 	if f.Key != "config" || f.Path != dir {
 		t.Errorf("failure = %+v, want key config and path %s", f, dir)
 	}
@@ -210,13 +197,13 @@ func TestCheckPaths_FailsUsersWrite(t *testing.T) {
 func TestCheckPaths_FailsAuthenticatedUsersModify(t *testing.T) {
 	dir := securedDir(t, "(A;OICI;"+sddlModify+";;;AU)")
 	wantOneFailure(t, checkOne(t, dir), dir,
-		accountNameOf(t, windows.WinAuthenticatedUserSid)+" can write (WD,AD,WEA,WA,D)")
+		accountName(wellKnownSID(t, windows.WinAuthenticatedUserSid))+" can write (WD,AD,WEA,WA,D)")
 }
 
 func TestCheckPaths_FailsEveryoneWriteDAC(t *testing.T) {
 	dir := securedDir(t, "(A;;"+sddlWriteDAC+";;;WD)")
 	wantOneFailure(t, checkOne(t, dir), dir,
-		accountNameOf(t, windows.WinWorldSid)+" can write (WDAC)")
+		accountName(wellKnownSID(t, windows.WinWorldSid))+" can write (WDAC)")
 }
 
 func TestCheckPaths_FailsNullDACL(t *testing.T) {
@@ -351,7 +338,7 @@ func TestCheckPaths_File(t *testing.T) {
 	if err := checkOne(t, good); err != nil {
 		t.Errorf("checkPaths(<read-only file>) = %v, want nil", err)
 	}
-	wantOneFailure(t, checkOne(t, bad), bad, accountNameOf(t, windows.WinBuiltinUsersSid)+" can write")
+	wantOneFailure(t, checkOne(t, bad), bad, accountName(wellKnownSID(t, windows.WinBuiltinUsersSid))+" can write")
 }
 
 func TestCheckPaths_RefusesRelativePath(t *testing.T) {
@@ -377,7 +364,7 @@ func TestCheckPaths_TrustsAccount(t *testing.T) {
 // A group named as the account would trust every member of it.
 func TestCheckPaths_RefusesGroupAccount(t *testing.T) {
 	dir := securedDir(t, "(A;CI;"+sddlProgramDataUsers+";;;BU)")
-	users := accountNameOf(t, windows.WinBuiltinUsersSid)
+	users := accountName(wellKnownSID(t, windows.WinBuiltinUsersSid))
 	err := CheckPaths([]PathRef{{Key: "config", Path: dir}}, users)
 	var u *UntrustedPathsError
 	if err == nil || errors.As(err, &u) || !strings.Contains(err.Error(), "not a user account") {
@@ -496,7 +483,7 @@ func TestCheckPaths_FailsAncestorDeleteChild(t *testing.T) {
 	parent := securedDir(t, "(A;;0x40;;;BU)")
 	refs := underParent(t, parent)
 	wantAncestorFailures(t, checkPaths(refs, testTrusted(t)), refs, parent,
-		accountNameOf(t, windows.WinBuiltinUsersSid)+" can replace it or its children (DC)")
+		accountName(wellKnownSID(t, windows.WinBuiltinUsersSid))+" can replace it or its children (DC)")
 }
 
 // WRITE_DAC on an ancestor lets its holder grant themselves DC.
@@ -504,7 +491,7 @@ func TestCheckPaths_FailsAncestorWriteDAC(t *testing.T) {
 	parent := securedDir(t, "(A;;"+sddlWriteDAC+";;;AU)")
 	refs := underParent(t, parent)
 	wantAncestorFailures(t, checkPaths(refs, testTrusted(t)), refs, parent,
-		accountNameOf(t, windows.WinAuthenticatedUserSid)+" can replace it or its children (WDAC)")
+		accountName(wellKnownSID(t, windows.WinAuthenticatedUserSid))+" can replace it or its children (WDAC)")
 }
 
 // Adding files or folders to an ancestor cannot replace an existing child, so
@@ -556,7 +543,7 @@ func TestCheckPaths_FailsAncestorUntrustedOwner(t *testing.T) {
 	setSecurity(t, parent, "O:BAD:P"+aces.String())
 	setSecurity(t, dir, fmt.Sprintf("O:%sD:P%s", me, aces.String()))
 	failures := fixtureFailures(t, checkPaths([]PathRef{{Key: "config dir", Path: dir}}, trusted), root)
-	want := "ancestor " + parent + ": owner " + accountNameOf(t, windows.WinBuiltinAdministratorsSid) + " is not trusted"
+	want := "ancestor " + parent + ": owner " + accountName(wellKnownSID(t, windows.WinBuiltinAdministratorsSid)) + " is not trusted"
 	if len(failures) != 1 || failures[0].JudgedPath != parent || failures[0].Reason != want {
 		t.Errorf("failures in the fixture = %+v, want one judged at %s with reason %q", failures, parent, want)
 	}

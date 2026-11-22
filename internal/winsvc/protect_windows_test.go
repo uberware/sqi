@@ -347,11 +347,11 @@ func TestEnsureSqiDir_LeavesExistingAlone(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	before := securityOf(t, dir)
+	before := securityOf(t, dir, ownerGroupDACL)
 	if err := EnsureSqiDir(); err != nil {
 		t.Fatal(err)
 	}
-	if after := securityOf(t, dir); after != before {
+	if after := securityOf(t, dir, ownerGroupDACL); after != before {
 		t.Errorf("security changed:\n before %s\n after  %s", before, after)
 	}
 	entries, err := os.ReadDir(dir)
@@ -360,11 +360,15 @@ func TestEnsureSqiDir_LeavesExistingAlone(t *testing.T) {
 	}
 }
 
-// securityOf is path's owner, group and DACL as SDDL.
-func securityOf(t *testing.T, path string) string {
+// ownerGroupDACL asks securityOf for path's owner, group and DACL.
+const ownerGroupDACL = windows.OWNER_SECURITY_INFORMATION | windows.GROUP_SECURITY_INFORMATION | windows.DACL_SECURITY_INFORMATION
+
+// securityOf is the parts of path's security descriptor info names, as SDDL,
+// for an equality check (both sides use the same alias rendering, so SDDL is
+// safe here).
+func securityOf(t *testing.T, path string, info windows.SECURITY_INFORMATION) string {
 	t.Helper()
-	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION|windows.GROUP_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, info)
 	if err != nil {
 		t.Fatalf("read security of %s: %v", path, err)
 	}

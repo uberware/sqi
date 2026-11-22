@@ -42,11 +42,11 @@ func TestCreateLogDir_ExistingDirIsUntouched(t *testing.T) {
 	if err := os.Mkdir(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	before := sddl(t, dir)
+	before := securityOf(t, dir, windows.DACL_SECURITY_INFORMATION)
 	if err := createLogDir(dir); err != nil {
 		t.Fatal(err)
 	}
-	if after := sddl(t, dir); after != before {
+	if after := securityOf(t, dir, windows.DACL_SECURITY_INFORMATION); after != before {
 		t.Errorf("createLogDir changed an existing directory's DACL:\nbefore %s\nafter  %s", before, after)
 	}
 }
@@ -161,15 +161,4 @@ func TestRuntimeLogDirsAreProtected(t *testing.T) {
 			t.Error("appendTrace created an unprotected log directory")
 		}
 	})
-}
-
-// sddl renders dir's DACL for an equality check (both sides use the same
-// alias rendering, so SDDL is safe here).
-func sddl(t *testing.T, dir string) string {
-	t.Helper()
-	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return sd.String()
 }
