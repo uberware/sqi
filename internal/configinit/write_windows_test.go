@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/uberware/sqi/internal/fsutil/fsutiltest"
 	"github.com/uberware/sqi/internal/winsvc"
 )
 
@@ -210,6 +211,44 @@ func TestConfigInitWindows_UserNeedsConfig(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(pd, "sqi")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the default directory was created: %v", err)
+	}
+}
+
+// TestConfigInitWindows_UserRefusesInsideDefaultDir pins that --user refuses
+// a configuration directory inside %ProgramData%\sqi as it refuses that
+// directory itself, by spelling or through a junction, before it changes
+// anything: service install --user refuses a configuration there, which only
+// SYSTEM and Administrators can read.
+func TestConfigInitWindows_UserRefusesInsideDefaultDir(t *testing.T) {
+	pd := fakeProgramData(t)
+	sqiDir := filepath.Join(pd, "sqi")
+	tests := map[string]func(t *testing.T) string{
+		"by spelling": func(*testing.T) string { return filepath.Join(sqiDir, "render", "sqi-worker.yaml") },
+		"through a junction": func(t *testing.T) string {
+			if err := os.Mkdir(sqiDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(t.TempDir(), "elsewhere")
+			fsutiltest.Junction(t, link, sqiDir)
+			return filepath.Join(link, "render", "sqi-worker.yaml")
+		},
+	}
+	for name, target := range tests {
+		t.Run(name, func(t *testing.T) {
+			tgt := target(t)
+			f := &fakeWinOps{}
+			_, err := runInitWindows(t, workerSpec, f, "--user", "render", "--config", tgt)
+			want := `--user needs its own directory: pass --config, e.g. C:\ProgramData\sqi-render\sqi-worker.yaml`
+			if err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+			if want := []string{"requireElevated"}; !slices.Equal(f.calls, want) {
+				t.Errorf("calls = %q, want %q", f.calls, want)
+			}
+			if _, err := os.Lstat(filepath.Join(sqiDir, "render")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the configuration directory was created: %v", err)
+			}
+		})
 	}
 }
 

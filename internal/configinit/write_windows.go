@@ -163,11 +163,16 @@ func needsProtection(dir, pd, account string, ops winOps) (bool, error) {
 	return !exists, err
 }
 
-// checkAccount refuses the default pd\sqi (pd is %ProgramData%) for an
-// account, which would let it read every other service's configuration, and
-// an account that does not resolve to a user.
+// checkAccount refuses, for an account, the default pd\sqi (pd is
+// %ProgramData%), which would let it read every other service's
+// configuration, and any directory inside it, which service install --user
+// refuses; and an account that does not resolve to a user.
 func checkAccount(target, pd, account string, ops winOps) error {
-	isDefault, err := isDefaultDir(filepath.Dir(target), pd)
+	dir := filepath.Dir(target)
+	isDefault, err := isDefaultDir(dir, pd)
+	if err == nil && !isDefault {
+		isDefault, err = isUnderDir(dir, filepath.Join(pd, "sqi"))
+	}
 	if err != nil {
 		return err
 	}

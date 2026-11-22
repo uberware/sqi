@@ -115,16 +115,16 @@ func isDefaultDir(dir, pd string) (bool, error) {
 	return sameDir(filepath.Dir(dir), pd)
 }
 
-// isUnderDir reports whether dir is pd or inside it: by spelling, or by
-// identity, comparing pd with each directory on the path dir (or its nearest
-// existing ancestor) resolves to with every junction and symbolic link
-// followed. A directory that cannot be opened counts as inside: the answer
-// only adds a requirement.
-func isUnderDir(dir, pd string) (bool, error) {
-	if winsvc.PathWithin(dir, pd) {
+// isUnderDir reports whether dir is root or inside it: by spelling, or by
+// identity, comparing root with each directory on the path dir (or its
+// nearest existing ancestor) resolves to with every junction and symbolic
+// link followed. A directory that cannot be opened counts as inside: the
+// answer only adds a requirement or a refusal.
+func isUnderDir(dir, root string) (bool, error) {
+	if winsvc.PathWithin(dir, root) {
 		return true, nil
 	}
-	pdIDs, ok, err := identities(pd)
+	rootIDs, ok, err := identities(root)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -142,7 +142,7 @@ func isUnderDir(dir, pd string) (bool, error) {
 			return true, nil
 		case err != nil:
 			return false, err
-		case ok && sameFile(ids, pdIDs):
+		case ok && sameFile(ids, rootIDs):
 			return true, nil
 		}
 		if filepath.Dir(p) == p {

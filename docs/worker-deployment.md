@@ -803,8 +803,9 @@ and then:
   account could not create the directory each task runs in;
 - needs no password, and does not log the account on;
 - refuses the default `C:\ProgramData\sqi`, which would let the account read every
-  other service's configuration (the default directory is recognised however its
-  path is spelled), and an account name that does not resolve to a user.
+  other service's configuration, and any directory inside it, which
+  `service install --user` refuses (the default directory is recognised however
+  its path is spelled), and an account name that does not resolve to a user.
 
 It prints the `service install` command with `--user` and `--config` filled in,
 without `--start`.
