@@ -3,11 +3,11 @@
 package config
 
 import (
-	"fmt"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
+
+	"github.com/uberware/sqi/internal/config/pathseedtest"
 )
 
 // pathFieldExclusions are the path-valued Config fields NamedPaths
@@ -22,27 +22,13 @@ var pathFieldExclusions = map[string]string{}
 // here until it is checked or excluded.
 func TestNamedPaths_CoverEveryPathField(t *testing.T) {
 	var cfg Config
-	s := newPathSeeder()
-	s.walk(reflect.ValueOf(&cfg).Elem(), "")
-	got := map[string]bool{}
-	for _, p := range cfg.NamedPaths() {
-		got[p.Path] = true
-	}
-	for field, sentinel := range s.want {
-		_, excluded := pathFieldExclusions[field]
-		switch {
-		case excluded && got[sentinel]:
-			t.Errorf("%s is excluded but NamedPaths names it; remove the exclusion", field)
-		case !excluded && !got[sentinel]:
-			t.Errorf("%s holds a path and NamedPaths does not name it: add it to NamedPaths, "+
-				"or to pathFieldExclusions with the reason it need not be checked", field)
+	pathseedtest.CheckCoverage(t, reflect.ValueOf(&cfg).Elem(), "Config", pathFieldExclusions, func() []string {
+		var paths []string
+		for _, p := range cfg.NamedPaths() {
+			paths = append(paths, p.Path)
 		}
-	}
-	for field := range pathFieldExclusions {
-		if _, ok := s.want[field]; !ok {
-			t.Errorf("exclusion %s is not a path-valued Config field; remove it", field)
-		}
-	}
+		return paths
+	})
 }
 
 func TestNamedPaths_SkipsEmpty(t *testing.T) {
@@ -95,84 +81,4 @@ func TestNamedPaths_Keys(t *testing.T) {
 	if got := cfg.NamedPaths(); !slices.Equal(got, want) {
 		t.Errorf("NamedPaths():\n got %q\nwant %q", got, want)
 	}
-}
-
-// pathSeeder sets every path-valued field it walks to a unique sentinel and
-// records, by field path, the sentinel NamedPaths must return for it.
-type pathSeeder struct {
-	n    int
-	want map[string]string
-}
-
-func newPathSeeder() *pathSeeder { return &pathSeeder{want: map[string]string{}} }
-
-func (s *pathSeeder) sentinel(field string) string {
-	s.n++
-	v := fmt.Sprintf("/sentinel/%d", s.n)
-	s.want[field] = v
-	return v
-}
-
-// walk descends into v, giving each slice or map of structs one element.
-func (s *pathSeeder) walk(v reflect.Value, path string) {
-	switch v.Kind() {
-	case reflect.Pointer:
-		if v.IsNil() {
-			v.Set(reflect.New(v.Type().Elem()))
-		}
-		s.walk(v.Elem(), path)
-	case reflect.Struct:
-		for i := range v.NumField() {
-			f := v.Type().Field(i)
-			if f.IsExported() {
-				s.field(v.Field(i), f.Name, strings.TrimPrefix(path+"."+f.Name, "."))
-			}
-		}
-	case reflect.Slice:
-		if isStructLike(v.Type().Elem()) {
-			e := reflect.New(v.Type().Elem()).Elem()
-			s.walk(e, path+"[]")
-			v.Set(reflect.Append(reflect.MakeSlice(v.Type(), 0, 1), e))
-		}
-	case reflect.Map:
-		if isStructLike(v.Type().Elem()) {
-			e := reflect.New(v.Type().Elem()).Elem()
-			s.walk(e, path+"{}")
-			m := reflect.MakeMap(v.Type())
-			m.SetMapIndex(reflect.ValueOf("k").Convert(v.Type().Key()), e)
-			v.Set(m)
-		}
-	default:
-	}
-}
-
-func (s *pathSeeder) field(v reflect.Value, name, path string) {
-	isString := v.Kind() == reflect.String
-	isCommand := strings.HasSuffix(name, "Command")
-	switch {
-	case isString && isPathName(name):
-		v.SetString(s.sentinel(path))
-	case isString && isCommand:
-		v.SetString(s.sentinel(path) + " {src} {dest}")
-	case v.Kind() == reflect.Slice && v.Type().Elem().Kind() == reflect.String && isCommand:
-		v.Set(reflect.ValueOf([]string{s.sentinel(path), "--arg"}).Convert(v.Type()))
-	default:
-		s.walk(v, path)
-	}
-}
-
-func isPathName(name string) bool {
-	if name == "File" || name == "Exe" {
-		return true
-	}
-	for _, suffix := range []string{"File", "Dir", "Path", "Glob"} {
-		if strings.HasSuffix(name, suffix) {
-			return true
-		}
-	}
-	return false
-}
-
-func isStructLike(t reflect.Type) bool {
-	return t.Kind() == reflect.Struct || (t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.Struct)
 }
