@@ -205,11 +205,14 @@ func resolveUser(account string) (*windows.SID, error) {
 	return sid, nil
 }
 
-// checkPaths is CheckPaths with the trusted set given.
+// checkPaths is CheckPaths with the trusted set given. Refs share ancestors
+// (%ProgramData%\sqi, %ProgramData%, the volume root), so each ancestor is
+// read and judged once per call.
 func checkPaths(refs []PathRef, trusted []*windows.SID) error {
 	var failures []PathFailure
+	ancestors := map[string][]string{}
 	for _, ref := range refs {
-		f, err := judgeRef(ref, trusted)
+		f, err := judgeRef(ref, trusted, ancestors)
 		if err != nil {
 			return fmt.Errorf("check %s %s: %w", ref.Key, ref.Path, err)
 		}
@@ -222,8 +225,9 @@ func checkPaths(refs []PathRef, trusted []*windows.SID) error {
 }
 
 // judgeRef returns ref's failures: the judged path's, then each failing
-// ancestor's, nearest first.
-func judgeRef(ref PathRef, trusted []*windows.SID) ([]PathFailure, error) {
+// ancestor's, nearest first. ancestors holds the reasons of each ancestor
+// already judged, by path, and gains those judgeRef judges.
+func judgeRef(ref PathRef, trusted []*windows.SID, ancestors map[string][]string) ([]PathFailure, error) {
 	judged, reasons, err := judgePath(ref.Path, trusted)
 	if err != nil {
 		return nil, err
@@ -238,9 +242,13 @@ func judgeRef(ref PathRef, trusted []*windows.SID) ([]PathFailure, error) {
 	}
 	for p := judged; filepath.Dir(p) != p; {
 		p = filepath.Dir(p)
-		reasons, err := judgeExisting(p, trusted, ancestorRuleFor(p))
-		if err != nil {
-			return nil, err
+		reasons, seen := ancestors[p]
+		if !seen {
+			var err error
+			if reasons, err = judgeExisting(p, trusted, ancestorRuleFor(p)); err != nil {
+				return nil, err
+			}
+			ancestors[p] = reasons
 		}
 		if len(reasons) > 0 {
 			failures = append(failures, PathFailure{
