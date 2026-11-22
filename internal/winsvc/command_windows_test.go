@@ -108,7 +108,7 @@ func testSpec(drainCalls *int) CommandSpec {
 			*drainCalls++
 			return testDrain, nil
 		},
-		ConfigPaths: func(string, string) (ConfigPaths, error) { return ConfigPaths{}, nil },
+		ConfigPaths: func(string, string) ([]PathRef, error) { return nil, nil },
 		UserWarning: "the account also needs a privilege",
 	}
 }
@@ -633,7 +633,7 @@ func TestInstall_ChecksPathsBeforePasswordAndChanges(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &fakeOps{checkErr: tc.checkErr, sqiDirErr: tc.sqiDirErr}
 			spec := testSpec(new(int))
-			spec.ConfigPaths = func(string, string) (ConfigPaths, error) { return ConfigPaths{}, tc.pathsErr }
+			spec.ConfigPaths = func(string, string) ([]PathRef, error) { return nil, tc.pathsErr }
 			stdin := &recordingStdin{f: fake, r: strings.NewReader("s3cret\n")}
 			_, err := execute(t, spec, fake.operations(), stdin, "install", "--user", "render", "--config", writeConfig(t))
 			if !slices.Equal(fake.calls, tc.want) {
@@ -681,27 +681,26 @@ func TestInstall_CheckedRefs(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		cfgDir        string // "" for a directory of its own
-		paths         ConfigPaths
+		paths         []PathRef
 		logDir, named []PathRef
 	}{
 		{
 			name:   "log.file unset",
-			paths:  ConfigPaths{Paths: []PathRef{{"nats.tls_ca_file", `E:\pki\ca.pem`}}},
+			paths:  []PathRef{{"nats.tls_ca_file", `E:\pki\ca.pem`}},
 			logDir: defaults,
 			named:  []PathRef{{"nats.tls_ca_file", `E:\pki\ca.pem`}},
 		},
 		{
-			name: "log.file set",
-			paths: ConfigPaths{LogFile: `D:\logs\sqi\w.log`, Paths: []PathRef{
-				{"worker.data_dir", `E:\sqi\data`}, {"log.file", `D:\logs\sqi\w.log`},
-			}},
+			name:   "log.file set",
+			paths:  []PathRef{{"worker.data_dir", `E:\sqi\data`}, {"log.file", `D:\logs\sqi\w.log`}},
 			logDir: append([]PathRef{{"log directory", `D:\logs\sqi`}, {"log directory parent", `D:\logs`}}, defaults...),
 			named:  []PathRef{{"worker.data_dir", `E:\sqi\data`}, {"log.file", `D:\logs\sqi\w.log`}},
 		},
 		{
 			name:   "log.file in the default log directory",
-			paths:  ConfigPaths{LogFile: filepath.Join(defaultLogDir, "w.log")},
+			paths:  []PathRef{{"log.file", filepath.Join(defaultLogDir, "w.log")}},
 			logDir: []PathRef{{"log directory", defaultLogDir}, {"log directory parent", logs}},
+			named:  []PathRef{{"log.file", filepath.Join(defaultLogDir, "w.log")}},
 		},
 		{
 			name:   "configuration in the default log directory's parent",
@@ -723,7 +722,7 @@ func TestInstall_CheckedRefs(t *testing.T) {
 			fake := &fakeOps{}
 			spec := testSpec(new(int))
 			var loaded string
-			spec.ConfigPaths = func(p, _ string) (ConfigPaths, error) { loaded = p; return tc.paths, nil }
+			spec.ConfigPaths = func(p, _ string) ([]PathRef, error) { loaded = p; return tc.paths, nil }
 			if out, err := execute(t, spec, fake.operations(), &readSpy{}, "install", "--config", cfg); err != nil {
 				t.Fatalf("install: %v\n%s", err, out)
 			}
@@ -754,10 +753,8 @@ func TestServiceInstall_ResolvesRelativePathsAgainstConfigDir(t *testing.T) {
 	t.Chdir(t.TempDir())
 	fake := &fakeOps{}
 	spec := testSpec(new(int))
-	spec.ConfigPaths = func(string, string) (ConfigPaths, error) {
-		return ConfigPaths{LogFile: `logs\w.log`, Paths: []PathRef{
-			{"log.file", `logs\w.log`}, {"worker.data_dir", "data"},
-		}}, nil
+	spec.ConfigPaths = func(string, string) ([]PathRef, error) {
+		return []PathRef{{"log.file", `logs\w.log`}, {"worker.data_dir", "data"}}, nil
 	}
 	if out, err := execute(t, spec, fake.operations(), &readSpy{}, "install", "--config", cfg); err != nil {
 		t.Fatalf("install: %v\n%s", err, out)
@@ -788,7 +785,7 @@ func TestInstall_RefusesUnsetWorkerDataDir(t *testing.T) {
 	fake := &fakeOps{}
 	spec := testSpec(new(int))
 	var account string
-	spec.ConfigPaths = func(_, a string) (ConfigPaths, error) { account = a; return ConfigPaths{}, unset }
+	spec.ConfigPaths = func(_, a string) ([]PathRef, error) { account = a; return nil, unset }
 	stdin := &readSpy{}
 	out, err := execute(t, spec, fake.operations(), stdin, "install", "--user", "render", "--config", writeConfig(t))
 	if err != unset { //nolint:errorlint // returned as it is, not wrapped

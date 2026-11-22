@@ -26,5 +26,5 @@ import (
 // Everyone by default, so a task reaches its own session directory without
 // any right on the ancestors.
 func defaultSessionRoot() (path string, mode os.FileMode) {
-	return filepath.Join(winsvc.ProgramDataDir(), "sqi", "worker", "sessions"), 0o711
+	return filepath.Join(winsvc.SqiDir(), "worker", "sessions"), 0o711
 }

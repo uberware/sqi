@@ -117,7 +117,7 @@ func NormalizeAccount(user string) string {
 func ResolveConfigPath(flagValue, binary string) (string, error) {
 	path := flagValue
 	if path == "" {
-		path = filepath.Join(ProgramDataDir(), "sqi", binary+".yaml")
+		path = filepath.Join(SqiDir(), binary+".yaml")
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {

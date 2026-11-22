@@ -11,11 +11,3 @@ type PathRef struct {
 	// Path is the absolute path.
 	Path string
 }
-
-// ConfigPaths is every path a loaded configuration names.
-type ConfigPaths struct {
-	// LogFile is log.file, "" when unset.
-	LogFile string
-	// Paths is every config-named path, log.file included.
-	Paths []PathRef
-}

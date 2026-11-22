@@ -194,9 +194,9 @@ func refusal(what, path, pd string, err error) error {
 	}
 	var remedy string
 	if self && movable(path, pd) {
-		remedy = fmt.Sprintf("Someone other than SYSTEM and Administrators can change it. Move it aside from an elevated PowerShell:\n"+
-			"  Rename-Item -LiteralPath '%s' -NewName ('%s.suspect-' + (Get-Date -Format yyyyMMddHHmmss))\n"+
-			"then run config init again.", winsvc.QuotePowerShell(path), winsvc.QuotePowerShell(filepath.Base(path)))
+		remedy = "Someone other than SYSTEM and Administrators can change it. Move it aside from an elevated PowerShell:\n" +
+			"  " + winsvc.MoveAsideCommand(path) + "\n" +
+			"then run config init again."
 	}
 	if above || (self && !movable(path, pd)) {
 		if remedy != "" {
@@ -296,9 +296,9 @@ func createTemp(dir string, adminOwned bool) (*os.File, error) {
 		return nil, err
 	}
 	if adminOwned {
-		admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+		admins, err := winsvc.AdminsSID()
 		if err != nil {
-			return nil, fmt.Errorf("well-known SID: %w", err)
+			return nil, err
 		}
 		if err := sd.SetOwner(admins, false); err != nil {
 			return nil, err

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"iter"
 	"os"
 	"path/filepath"
 	"slices"
@@ -88,31 +89,40 @@ func EnsureLogDir(dir, account string) error {
 // inheritable: nothing below dir is the account's to reach but its own log
 // directory, which has its own protected DACL.
 func grantTraverse(dir string, sid *windows.SID) error {
-	if err := checkParent(dir); err != nil {
-		return err
+	return addGrant(dir, sid, sqiDirAccountAccess, windows.NO_INHERITANCE, true)
+}
+
+// objectACE is one ACE of a DACL that applies to the object itself.
+type objectACE struct {
+	typ  byte
+	mask windows.ACCESS_MASK
+	// sid is the trustee when typ is access-allowed, plain or callback (both
+	// keep it where ACCESS_ALLOWED_ACE does); nil for any other type.
+	sid *windows.SID
+}
+
+// objectACEs yields each ACE of dacl that applies to the object itself,
+// skipping inherit-only ones, in order. A read error is yielded once, last.
+func objectACEs(dacl *windows.ACL) iter.Seq2[objectACE, error] {
+	return func(yield func(objectACE, error) bool) {
+		for i := range uint32(dacl.AceCount) {
+			var ace *windows.ACCESS_ALLOWED_ACE
+			if err := windows.GetAce(dacl, i, &ace); err != nil {
+				yield(objectACE{}, fmt.Errorf("read ACE %d: %w", i, err))
+				return
+			}
+			if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
+				continue // applies only to children
+			}
+			e := objectACE{typ: ace.Header.AceType, mask: ace.Mask}
+			if e.typ == windows.ACCESS_ALLOWED_ACE_TYPE || e.typ == accessAllowedCallbackACEType {
+				e.sid = (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+			}
+			if !yield(e, nil) {
+				return
+			}
+		}
 	}
-	h, err := openDirForACL(dir)
-	if err != nil {
-		return err
-	}
-	defer windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
-	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		return fmt.Errorf("read ACL of %s: %w", dir, err)
-	}
-	existing, _, err := sd.DACL()
-	if err != nil {
-		return fmt.Errorf("read ACL of %s: %w", dir, err)
-	}
-	control, _, err := sd.Control()
-	if err != nil {
-		return fmt.Errorf("read ACL control of %s: %w", dir, err)
-	}
-	if has, err := allows(existing, sid, sqiDirAccountAccess); err != nil || has {
-		return err
-	}
-	return writeDACL(h, dir, []*windows.SID{sid}, sqiDirAccountAccess, windows.NO_INHERITANCE,
-		existing, control&windows.SE_DACL_PROTECTED != 0)
 }
 
 // allows reports whether dacl has an allow ACE for sid that applies to the
@@ -121,15 +131,11 @@ func allows(dacl *windows.ACL, sid *windows.SID, mask windows.ACCESS_MASK) (bool
 	if dacl == nil {
 		return false, nil
 	}
-	for i := range uint32(dacl.AceCount) {
-		var ace *windows.ACCESS_ALLOWED_ACE
-		if err := windows.GetAce(dacl, i, &ace); err != nil {
-			return false, fmt.Errorf("read ACE %d: %w", i, err)
+	for e, err := range objectACEs(dacl) {
+		if err != nil {
+			return false, err
 		}
-		if ace.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE &&
-			ace.Header.AceFlags&windows.INHERIT_ONLY_ACE == 0 &&
-			ace.Mask&mask == mask &&
-			(*windows.SID)(unsafe.Pointer(&ace.SidStart)).Equals(sid) {
+		if e.typ == windows.ACCESS_ALLOWED_ACE_TYPE && e.mask&mask == mask && e.sid.Equals(sid) {
 			return true, nil
 		}
 	}
@@ -143,11 +149,9 @@ func checkExistingDir(dir string) error {
 	if err := checkParent(dir); err != nil {
 		return err
 	}
-	h, err := openPlainDir(dir, windows.FILE_READ_ATTRIBUTES)
-	if err != nil {
+	if err := checkPlainDir(dir); err != nil {
 		return fmt.Errorf("cannot use directory: %w", err)
 	}
-	windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
 	return nil
 }
 
@@ -209,11 +213,28 @@ func protectedTrustees(account *windows.SID) ([]*windows.SID, error) {
 	return sids, nil
 }
 
+// AdminsSID is BUILTIN\Administrators, the owner given to what is created
+// administrators-only.
+func AdminsSID() (*windows.SID, error) {
+	sid, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return nil, fmt.Errorf("well-known SID: %w", err)
+	}
+	return sid, nil
+}
+
 // grantDir adds an inheritable ACE granting mask to sid onto dir's existing
 // DACL, keeping the DACL's other entries and its protection state. It reads
 // and writes through one handle to dir itself, so it refuses a junction or
 // symbolic link rather than changing the ACL of what it points to.
 func grantDir(dir string, sid *windows.SID, mask windows.ACCESS_MASK) error {
+	return addGrant(dir, sid, mask, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, false)
+}
+
+// addGrant is grantDir with the ACE's inheritance given. With unlessAllowed it
+// changes nothing when sid already holds an allow ACE on dir itself covering
+// mask.
+func addGrant(dir string, sid *windows.SID, mask windows.ACCESS_MASK, inheritance uint32, unlessAllowed bool) error {
 	if err := checkParent(dir); err != nil {
 		return err
 	}
@@ -234,8 +255,12 @@ func grantDir(dir string, sid *windows.SID, mask windows.ACCESS_MASK) error {
 	if err != nil {
 		return fmt.Errorf("read ACL control of %s: %w", dir, err)
 	}
-	return writeDACL(h, dir, []*windows.SID{sid}, mask, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-		existing, control&windows.SE_DACL_PROTECTED != 0)
+	if unlessAllowed {
+		if has, err := allows(existing, sid, mask); err != nil || has {
+			return err
+		}
+	}
+	return writeDACL(h, dir, []*windows.SID{sid}, mask, inheritance, existing, control&windows.SE_DACL_PROTECTED != 0)
 }
 
 // errReparsePoint is returned when a path this package must use as itself —
@@ -255,14 +280,12 @@ var errReparsePoint = errors.New("is a junction or symbolic link")
 // by path, so one swapped for a junction during the install itself is not
 // caught.
 func checkParent(dir string) error {
-	h, err := openPlainDir(filepath.Dir(dir), windows.FILE_READ_ATTRIBUTES)
-	switch {
-	case errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND):
+	switch err := checkPlainDir(filepath.Dir(dir)); {
+	case isNotFound(err):
 		return nil
 	case err != nil:
 		return fmt.Errorf("cannot secure %s: parent %w", dir, err)
 	}
-	windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
 	return nil
 }
 
@@ -343,7 +366,7 @@ func openPlain(path string, access uint32) (windows.Handle, uint32, error) {
 func writeDACL(h windows.Handle, dir string, sids []*windows.SID, mask windows.ACCESS_MASK, inheritance uint32,
 	base *windows.ACL, protected bool,
 ) error {
-	acl, err := buildDACLInheriting(sids, mask, inheritance, base)
+	acl, err := buildDACL(sids, mask, inheritance, base)
 	if err != nil {
 		return err
 	}
@@ -359,14 +382,9 @@ func writeDACL(h windows.Handle, dir string, sids []*windows.SID, mask windows.A
 	return nil
 }
 
-// buildDACL is a DACL of inheritable grants of mask to sids, merged onto base
-// when base is non-nil.
-func buildDACL(sids []*windows.SID, mask windows.ACCESS_MASK, base *windows.ACL) (*windows.ACL, error) {
-	return buildDACLInheriting(sids, mask, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, base)
-}
-
-// buildDACLInheriting is buildDACL with the grants' inheritance given.
-func buildDACLInheriting(sids []*windows.SID, mask windows.ACCESS_MASK, inheritance uint32, base *windows.ACL) (*windows.ACL, error) {
+// buildDACL is a DACL of grants of mask to sids, with inheritance, merged
+// onto base when base is non-nil.
+func buildDACL(sids []*windows.SID, mask windows.ACCESS_MASK, inheritance uint32, base *windows.ACL) (*windows.ACL, error) {
 	entries := make([]windows.EXPLICIT_ACCESS, 0, len(sids))
 	for _, sid := range sids {
 		entries = append(entries, windows.EXPLICIT_ACCESS{

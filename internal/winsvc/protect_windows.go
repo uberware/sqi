@@ -77,11 +77,9 @@ func prepareConfigDir(dir string, reader *windows.SID, trusted []*windows.SID) e
 	}
 	// Existing, and nobody untrusted can change it: the check refused a
 	// junction or symbolic link, but not a file.
-	h, err := openPlainDir(dir, windows.FILE_READ_ATTRIBUTES)
-	if err != nil {
+	if err := checkPlainDir(dir); err != nil {
 		return fmt.Errorf("cannot use configuration directory: %w", err)
 	}
-	windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
 	if reader == nil {
 		return nil
 	}
@@ -96,7 +94,7 @@ func prepareConfigDir(dir string, reader *windows.SID, trusted []*windows.SID) e
 // and a missing one would be judged by %ProgramData% itself, which every
 // user can write. Caller is elevated.
 func EnsureSqiDir() error {
-	_, err := createAdminOnly(filepath.Join(ProgramDataDir(), "sqi"), nil)
+	_, err := createAdminOnly(SqiDir(), nil)
 	return err
 }
 
@@ -118,9 +116,9 @@ func PrepareDataDir(dir, account string) error {
 	if err := checkParent(dir); err != nil {
 		return err
 	}
-	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	admins, err := AdminsSID()
 	if err != nil {
-		return fmt.Errorf("well-known SID: %w", err)
+		return err
 	}
 	created, err := createSecuredDir(dir, admins, nil)
 	switch {
@@ -145,21 +143,22 @@ func createAdminOnly(dir string, reader *windows.SID) ([]string, error) {
 	if err != nil || len(missing) == 0 {
 		return nil, err
 	}
-	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	admins, err := AdminsSID()
 	if err != nil {
-		return nil, fmt.Errorf("well-known SID: %w", err)
+		return nil, err
 	}
 	trustees, err := protectedTrustees(nil)
 	if err != nil {
 		return nil, err
 	}
-	parentDACL, err := buildDACL(trustees, fileAllAccess, nil)
+	parentDACL, err := buildDACL(trustees, fileAllAccess, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, nil)
 	if err != nil {
 		return nil, err
 	}
 	leafDACL := parentDACL
 	if reader != nil {
-		if leafDACL, err = buildDACL([]*windows.SID{reader}, readExecuteAccess, parentDACL); err != nil {
+		leafDACL, err = buildDACL([]*windows.SID{reader}, readExecuteAccess, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, parentDACL)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -257,7 +256,7 @@ func mkdirParent(dir string) error {
 		if !created {
 			// Someone else created it meanwhile: refuse it if it is a junction.
 			if err := checkPlainDir(p); err != nil {
-				return err
+				return fmt.Errorf("cannot use %s: %w", p, err)
 			}
 		}
 	}
@@ -269,7 +268,7 @@ func mkdirParent(dir string) error {
 // are the directories every sqi service shares, which `service install`
 // keeps SYSTEM and Administrators only.
 func sqiAncestors(dir string) []string {
-	sqi := filepath.Clean(filepath.Join(ProgramDataDir(), "sqi"))
+	sqi := SqiDir()
 	parent := filepath.Dir(filepath.Clean(dir))
 	if !PathWithin(parent, sqi) {
 		return nil
@@ -292,24 +291,23 @@ func sqiAncestors(dir string) []string {
 // two levels below it would otherwise resolve into the junction's target.
 func checkSqiAncestors(dir string) error {
 	for _, p := range sqiAncestors(dir) {
-		h, err := openPlainDir(p, windows.FILE_READ_ATTRIBUTES)
-		switch {
+		switch err := checkPlainDir(p); {
 		case isNotFound(err):
 			return nil // nor does anything below it
 		case err != nil:
 			return fmt.Errorf("cannot secure %s: %w", dir, err)
 		}
-		windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
 	}
 	return nil
 }
 
-// checkPlainDir fails unless dir is a plain directory, not a junction or
-// symbolic link.
+// checkPlainDir fails, with openPlainDir's error, unless dir is a plain
+// directory, not a junction or symbolic link. A caller can test the error for
+// a missing dir.
 func checkPlainDir(dir string) error {
 	h, err := openPlainDir(dir, windows.FILE_READ_ATTRIBUTES)
 	if err != nil {
-		return fmt.Errorf("cannot use %s: %w", dir, err)
+		return err
 	}
 	windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
 	return nil
@@ -330,9 +328,9 @@ func mkdirAll(dir string) error {
 func createProtected(path string, account *windows.SID) (bool, error) {
 	var owner *windows.SID // nil: the token's default
 	if isPrivileged() {
-		admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+		admins, err := AdminsSID()
 		if err != nil {
-			return false, fmt.Errorf("well-known SID: %w", err)
+			return false, err
 		}
 		owner = admins
 	}
@@ -340,7 +338,7 @@ func createProtected(path string, account *windows.SID) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	dacl, err := buildDACL(trustees, fileAllAccess, nil)
+	dacl, err := buildDACL(trustees, fileAllAccess, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, nil)
 	if err != nil {
 		return false, err
 	}

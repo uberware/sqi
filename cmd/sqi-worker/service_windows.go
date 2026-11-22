@@ -42,10 +42,10 @@ func workerDrainTimeout(configPath string) (time.Duration, error) {
 	return workerDrainBound(cfg.Worker.ShutdownGracePeriod), nil
 }
 
-// workerConfigPaths is the log.file and every path the configuration in
-// configPath names, with SQI_WORKER_* overrides from the installing shell
-// applied, for service install to check, plus the session root the worker
-// uses when worker.session_dir is unset.
+// workerConfigPaths is every path the configuration in configPath names,
+// with SQI_WORKER_* overrides from the installing shell applied, for service
+// install to check, plus the session root the worker uses when
+// worker.session_dir is unset.
 //
 // It refuses a configuration that leaves worker.data_dir unset. The default
 // is under the home directory of the account that loads it: here the
@@ -55,19 +55,19 @@ func workerDrainTimeout(configPath string) (time.Duration, error) {
 //
 // For an account ("" is LocalSystem) it also refuses a session root under
 // %ProgramData%\sqi (see userSessionRoot).
-func workerConfigPaths(configPath, account string) (winsvc.ConfigPaths, error) {
+func workerConfigPaths(configPath, account string) ([]winsvc.PathRef, error) {
 	cfg, src, err := workerconfig.LoadWithSources(configPath, workerconfig.FlagOverrides{})
 	if err != nil {
-		return winsvc.ConfigPaths{}, fmt.Errorf("load %s: %w", configPath, err)
+		return nil, fmt.Errorf("load %s: %w", configPath, err)
 	}
 	if !src.DataDir {
-		return winsvc.ConfigPaths{}, fmt.Errorf("%s does not set worker.data_dir, so a service would keep its "+
+		return nil, fmt.Errorf("%s does not set worker.data_dir, so a service would keep its "+
 			"identity and credential under its own account's profile, which install cannot check. "+
 			"Set it explicitly, for example:\n  worker:\n    data_dir: %s\nor write a new configuration "+
 			"with sqi-worker config init", configPath, filepath.Join(filepath.Dir(configPath), "worker"))
 	}
 	if err := userSessionRoot(configPath, account, cfg.Worker); err != nil {
-		return winsvc.ConfigPaths{}, err
+		return nil, err
 	}
 	named := cfg.NamedPaths()
 	paths := make([]winsvc.PathRef, 0, len(named)+1)
@@ -78,7 +78,7 @@ func workerConfigPaths(configPath, account string) (winsvc.ConfigPaths, error) {
 		root, _ := effectiveSessionRoot(cfg.Worker)
 		paths = append(paths, winsvc.PathRef{Key: "worker.session_dir (default)", Path: root})
 	}
-	return winsvc.ConfigPaths{LogFile: cfg.Log.File, Paths: paths}, nil
+	return paths, nil
 }
 
 // userSessionRoot refuses, for a service running as account, a session root
@@ -94,7 +94,7 @@ func userSessionRoot(configPath, account string, w workerconfig.WorkerSettings) 
 	if !filepath.IsAbs(root) {
 		root = filepath.Join(filepath.Dir(configPath), root)
 	}
-	sqiDir := filepath.Join(winsvc.ProgramDataDir(), "sqi")
+	sqiDir := winsvc.SqiDir()
 	if !winsvc.PathWithin(root, sqiDir) {
 		return nil
 	}

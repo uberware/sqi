@@ -32,8 +32,7 @@ func TestWorkerDrainTimeout_FromConfig(t *testing.T) {
 }
 
 // TestWorkerConfigPaths_FromConfig pins that service install checks the
-// paths the loaded configuration names, as written, log.file included and
-// carried separately for the log directory.
+// paths the loaded configuration names, as written, log.file included.
 func TestWorkerConfigPaths_FromConfig(t *testing.T) {
 	t.Setenv("SQI_WORKER_NATS_TLS_CA_FILE", "")
 	t.Setenv("SQI_WORKER_LOG_FILE", "")
@@ -47,9 +46,6 @@ func TestWorkerConfigPaths_FromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workerConfigPaths: %v", err)
 	}
-	if got.LogFile != "logs/w.log" {
-		t.Errorf("LogFile = %q, want logs/w.log", got.LogFile)
-	}
 	for _, want := range []winsvc.PathRef{
 		{Key: "nats.tls_ca_file", Path: "pki/ca.pem"},
 		{Key: "nats.credential_file", Path: filepath.Join("data", "worker.nk")},
@@ -57,13 +53,13 @@ func TestWorkerConfigPaths_FromConfig(t *testing.T) {
 		{Key: "worker.session_dir", Path: "sessions"},
 		{Key: "log.file", Path: "logs/w.log"},
 	} {
-		if !slices.Contains(got.Paths, want) {
-			t.Errorf("Paths lacks %q: %q", want, got.Paths)
+		if !slices.Contains(got, want) {
+			t.Errorf("Paths lacks %q: %q", want, got)
 		}
 	}
-	for _, p := range got.Paths {
+	for _, p := range got {
 		if p.Key == "worker.session_dir (default)" {
-			t.Errorf("Paths names the default session root although worker.session_dir is set: %q", got.Paths)
+			t.Errorf("Paths names the default session root although worker.session_dir is set: %q", got)
 		}
 	}
 }
@@ -85,8 +81,8 @@ func TestWorkerConfigPaths_DefaultSessionRoot(t *testing.T) {
 		t.Fatalf("workerConfigPaths: %v", err)
 	}
 	want := winsvc.PathRef{Key: "worker.session_dir (default)", Path: filepath.Join(pd, "sqi", "worker", "sessions")}
-	if !slices.Contains(got.Paths, want) {
-		t.Errorf("Paths lacks %q: %q", want, got.Paths)
+	if !slices.Contains(got, want) {
+		t.Errorf("Paths lacks %q: %q", want, got)
 	}
 }
 

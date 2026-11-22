@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// logFileKey is log.file's key among the paths a configuration names.
+const logFileKey = "log.file"
 
 // installRefs is every path `service install` checks for the service name
 // whose configuration is cfgPath and binary exe, in order: the configuration
@@ -28,9 +30,9 @@ import (
 // The default log directory is checked whatever log.file says: install
 // prepares it (ensureLogDir) and the service writes its trace log there. It
 // is left out where an earlier ref already names the same path.
-func installRefs(cfgPath, exe, name string, cp ConfigPaths) []PathRef {
+func installRefs(cfgPath, exe, name string, paths []PathRef) []PathRef {
 	base := filepath.Dir(cfgPath)
-	refs := make([]PathRef, 0, 8+len(cp.Paths))
+	refs := make([]PathRef, 0, 8+len(paths))
 	refs = append(
 		refs,
 		PathRef{"config", cfgPath},
@@ -38,8 +40,8 @@ func installRefs(cfgPath, exe, name string, cp ConfigPaths) []PathRef {
 		PathRef{"binary", exe},
 		PathRef{"binary directory", filepath.Dir(exe)},
 	)
-	if cp.LogFile != "" {
-		logDir := filepath.Dir(resolveAgainst(base, cp.LogFile))
+	if i := slices.IndexFunc(paths, func(p PathRef) bool { return p.Key == logFileKey }); i >= 0 {
+		logDir := filepath.Dir(resolveAgainst(base, paths[i].Path))
 		refs = append(refs, PathRef{"log directory", logDir}, PathRef{"log directory parent", filepath.Dir(logDir)})
 	}
 	defaultLogDir := filepath.Dir(DefaultLogPath(name))
@@ -51,7 +53,7 @@ func installRefs(cfgPath, exe, name string, cp ConfigPaths) []PathRef {
 			refs = append(refs, ref)
 		}
 	}
-	for _, p := range cp.Paths {
+	for _, p := range paths {
 		refs = append(refs, PathRef{p.Key, resolveAgainst(base, p.Path)})
 	}
 	return refs
@@ -88,9 +90,9 @@ func (c commands) untrustedError(u *UntrustedPathsError, exe, account string) er
 			"Copy %s into a directory only administrators can change, such as %s, from an elevated PowerShell "+
 				"(files an elevated Git Bash creates are owned by your own account, which this check refuses), "+
 				"and run service install with that copy:\n"+
-				"  New-Item -ItemType Directory -Force -Path '%s'\n"+
-				"  Copy-Item -LiteralPath '%s' -Destination '%s'",
-			filepath.Base(exe), dest, QuotePowerShell(dest), QuotePowerShell(exe), QuotePowerShell(dest),
+				"  New-Item -ItemType Directory -Force -Path %s\n"+
+				"  Copy-Item -LiteralPath %s -Destination %s",
+			filepath.Base(exe), dest, PowerShellLiteral(dest), PowerShellLiteral(exe), PowerShellLiteral(dest),
 		))
 	}
 	suspects, files, other := programDataSuspects(u)
@@ -141,9 +143,7 @@ func (c commands) userHint(u *UntrustedPathsError) string {
 			continue
 		}
 		for _, name := range modifyUsers(f.JudgedPath) {
-			if !slices.ContainsFunc(users, func(s string) bool { return strings.EqualFold(s, name) }) {
-				users = append(users, name)
-			}
+			users = appendDistinct(users, name)
 		}
 	}
 	if len(users) == 0 {
@@ -198,24 +198,19 @@ func untrustedAllows(dacl *windows.ACL) ([]*windows.SID, []windows.ACCESS_MASK, 
 	}
 	var sids []*windows.SID
 	var masks []windows.ACCESS_MASK
-	for i := range uint32(dacl.AceCount) {
-		var ace *windows.ACCESS_ALLOWED_ACE
-		if err := windows.GetAce(dacl, i, &ace); err != nil {
+	for e, err := range objectACEs(dacl) {
+		if err != nil {
 			return nil, nil, err
 		}
-		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
+		if e.typ != windows.ACCESS_ALLOWED_ACE_TYPE || isTrusted(e.sid, trusted) {
 			continue
 		}
-		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		if isTrusted(sid, trusted) {
+		if j := slices.IndexFunc(sids, e.sid.Equals); j >= 0 {
+			masks[j] |= e.mask
 			continue
 		}
-		if j := slices.IndexFunc(sids, sid.Equals); j >= 0 {
-			masks[j] |= ace.Mask
-			continue
-		}
-		sids = append(sids, sid)
-		masks = append(masks, ace.Mask)
+		sids = append(sids, e.sid)
+		masks = append(masks, e.mask)
 	}
 	return sids, masks, nil
 }
@@ -266,8 +261,7 @@ func (c commands) moveAsideRemedy(u *UntrustedPathsError, suspects []string) str
 	var sb strings.Builder
 	sb.WriteString("Move what someone else could change aside from an elevated PowerShell:\n")
 	for _, s := range suspects {
-		fmt.Fprintf(&sb, "  Rename-Item -LiteralPath '%s' -NewName ('%s.suspect-' + (Get-Date -Format yyyyMMddHHmmss))\n",
-			QuotePowerShell(s), QuotePowerShell(filepath.Base(s)))
+		sb.WriteString("  " + MoveAsideCommand(s) + "\n")
 	}
 	if slices.ContainsFunc(u.Failures, func(f PathFailure) bool { return f.Key == "config" || f.Key == "config directory" }) {
 		fmt.Fprintf(&sb, "then write a new configuration with %s config init, and run service install again.", c.spec.Binary)
@@ -275,6 +269,13 @@ func (c commands) moveAsideRemedy(u *UntrustedPathsError, suspects []string) str
 		sb.WriteString("then run service install again.")
 	}
 	return sb.String()
+}
+
+// MoveAsideCommand is the PowerShell command that renames path to
+// <name>.suspect-<timestamp> beside it.
+func MoveAsideCommand(path string) string {
+	return "Rename-Item -LiteralPath " + PowerShellLiteral(path) +
+		" -NewName (" + PowerShellLiteral(filepath.Base(path)+".suspect-") + " + (Get-Date -Format yyyyMMddHHmmss))"
 }
 
 // programFilesDir is %ProgramFiles%, or C:\Program Files when it is unset.

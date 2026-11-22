@@ -234,13 +234,12 @@ func nextStep(n nextInfo) string {
 // call operator, and every argument single-quoted. --start is left off for an
 // account, which may need more rights granted before its service can start.
 func windowsNextStep(n nextInfo) string {
-	q := func(s string) string { return "'" + winsvc.QuotePowerShell(s) + "'" }
-	line := "next: & " + q(n.Exe) + " service install"
+	line := "next: & " + winsvc.PowerShellLiteral(n.Exe) + " service install"
 	if n.User != "" {
-		line += " --user " + q(n.User)
+		line += " --user " + winsvc.PowerShellLiteral(n.User)
 	}
 	if n.Custom || n.User != "" {
-		line += " --config " + q(n.Target)
+		line += " --config " + winsvc.PowerShellLiteral(n.Target)
 	}
 	if n.User == "" {
 		line += " --start"

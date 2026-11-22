@@ -38,14 +38,14 @@ type CommandSpec struct {
 	// DrainTimeout returns the binary's graceful-shutdown bound for the given
 	// config file; the PreShutdown timeout is this plus ShutdownMargin.
 	DrainTimeout func(configPath string) (time.Duration, error)
-	// ConfigPaths loads configPath and returns its log.file and every path
-	// it names, as written: install resolves a relative one against the
-	// configuration's directory, where the service runs. account is the
+	// ConfigPaths loads configPath and returns every path it names, as
+	// written, log.file under the key "log.file": install resolves a relative
+	// one against the configuration's directory, where the service runs. account is the
 	// normalized --user ("" for LocalSystem), for a binary that must refuse a
 	// configuration the account could not run with. An error stops install,
 	// before it changes anything, and is returned as it is, so it should name
 	// configPath.
-	ConfigPaths func(configPath, account string) (ConfigPaths, error)
+	ConfigPaths func(configPath, account string) ([]PathRef, error)
 	// UserWarning, when non-empty, is printed if --user names an account.
 	UserWarning string
 }
@@ -298,14 +298,14 @@ func (c commands) checkInstallPaths(cfgPath, exe, name, account string) error {
 	if err := c.refuseUnreadableConfig(cfgPath, account); err != nil {
 		return err
 	}
-	cp, err := c.spec.ConfigPaths(cfgPath, account)
+	paths, err := c.spec.ConfigPaths(cfgPath, account)
 	if err != nil {
 		return err
 	}
 	if err := c.ops.ensureSqiDir(); err != nil {
 		return err
 	}
-	err = c.ops.checkPaths(installRefs(cfgPath, exe, name, cp), account)
+	err = c.ops.checkPaths(installRefs(cfgPath, exe, name, paths), account)
 	if u, ok := errors.AsType[*UntrustedPathsError](err); ok {
 		return c.untrustedError(u, exe, account)
 	}
@@ -317,17 +317,18 @@ func (c commands) checkInstallPaths(cfgPath, exe, name, account string) error {
 // SYSTEM and Administrators can read: the service could not load it.
 // config init --user writes one into a directory of the account's own.
 func (c commands) refuseUnreadableConfig(cfgPath, account string) error {
-	sqiDir := filepath.Join(ProgramDataDir(), "sqi")
+	sqiDir := SqiDir()
 	if account == "" || !PathWithin(filepath.Dir(cfgPath), sqiDir) {
 		return nil
 	}
+	ownDir := filepath.Join(ProgramDataDir(), "sqi-<name>", c.spec.Binary+".yaml")
 	return fmt.Errorf("%s is in %s, which only SYSTEM and Administrators can read, so a service running as %s "+
 		"could not load it. Write a configuration for the account in a directory of its own, then install with it:\n"+
 		"  %s config init --user %s --config %s\n"+
 		"  %s service install --user %s --config %s",
 		cfgPath, sqiDir, account,
-		c.spec.Binary, account, filepath.Join(ProgramDataDir(), "sqi-<name>", c.spec.Binary+".yaml"),
-		c.spec.Binary, account, filepath.Join(ProgramDataDir(), "sqi-<name>", c.spec.Binary+".yaml"))
+		c.spec.Binary, account, ownDir,
+		c.spec.Binary, account, ownDir)
 }
 
 // readPassword prompts for account's password, or reads it from piped stdin.

@@ -22,8 +22,8 @@ func TestServerDrainTimeout_IsShutdownTimeout(t *testing.T) {
 }
 
 // TestServerConfigPaths_FromConfig pins that service install checks the
-// paths the loaded configuration names, as written, defaults included and
-// log.file carried separately for the log directory.
+// paths the loaded configuration names, as written, defaults and log.file
+// included.
 func TestServerConfigPaths_FromConfig(t *testing.T) {
 	t.Setenv("SQI_STORE_SQLITE_PATH", "")
 	t.Setenv("SQI_LOG_FILE", "")
@@ -36,16 +36,13 @@ func TestServerConfigPaths_FromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("serverConfigPaths: %v", err)
 	}
-	if got.LogFile != "logs/s.log" {
-		t.Errorf("LogFile = %q, want logs/s.log", got.LogFile)
-	}
 	for _, want := range []winsvc.PathRef{
 		{Key: "nats.embedded.data_dir", Path: "data/nats"},
 		{Key: "store.sqlite_path", Path: "sqi.db"},
 		{Key: "log.file", Path: "logs/s.log"},
 	} {
-		if !slices.Contains(got.Paths, want) {
-			t.Errorf("Paths lacks %q: %q", want, got.Paths)
+		if !slices.Contains(got, want) {
+			t.Errorf("Paths lacks %q: %q", want, got)
 		}
 	}
 }

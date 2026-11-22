@@ -4,10 +4,11 @@ package winsvc
 
 import "strings"
 
-// QuotePowerShell escapes s for a PowerShell single-quoted string, which also
-// ends at the typographic single quotes.
-func QuotePowerShell(s string) string {
+// PowerShellLiteral is s as a PowerShell single-quoted string, with every
+// quote that would end one, the typographic single quotes included, doubled.
+func PowerShellLiteral(s string) string {
 	var sb strings.Builder
+	sb.WriteByte('\'')
 	for _, r := range s {
 		switch r {
 		case '\'', '\u2018', '\u2019', '\u201a', '\u201b':
@@ -15,5 +16,6 @@ func QuotePowerShell(s string) string {
 		}
 		sb.WriteRune(r)
 	}
+	sb.WriteByte('\'')
 	return sb.String()
 }

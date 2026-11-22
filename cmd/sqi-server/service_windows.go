@@ -24,20 +24,20 @@ func init() {
 	}))
 }
 
-// serverConfigPaths is the log.file and every path the configuration in
-// configPath names, with SQI_* overrides from the installing shell applied,
-// for service install to check.
-func serverConfigPaths(configPath, _ string) (winsvc.ConfigPaths, error) {
+// serverConfigPaths is every path the configuration in configPath names,
+// with SQI_* overrides from the installing shell applied, for service
+// install to check.
+func serverConfigPaths(configPath, _ string) ([]winsvc.PathRef, error) {
 	cfg, err := config.Load(configPath, config.FlagOverrides{})
 	if err != nil {
-		return winsvc.ConfigPaths{}, fmt.Errorf("load %s: %w", configPath, err)
+		return nil, fmt.Errorf("load %s: %w", configPath, err)
 	}
 	named := cfg.NamedPaths()
 	paths := make([]winsvc.PathRef, 0, len(named))
 	for _, p := range named {
 		paths = append(paths, winsvc.PathRef(p))
 	}
-	return winsvc.ConfigPaths{LogFile: cfg.Log.File, Paths: paths}, nil
+	return paths, nil
 }
 
 // serverDrainTimeout is the server's graceful-shutdown bound. It is a

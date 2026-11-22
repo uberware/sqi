@@ -167,7 +167,7 @@ func accountNameOf(t *testing.T, wk windows.WELL_KNOWN_SID_TYPE) string {
 func TestCheckPaths_PassesAProtectedDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "d")
 	me, _ := currentAccount(t)
-	dacl, err := buildDACL(testTrusted(t), fileAllAccess, nil)
+	dacl, err := buildDACL(testTrusted(t), fileAllAccess, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

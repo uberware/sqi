@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -169,23 +168,15 @@ func trustedPrincipals(account string) ([]*windows.SID, error) {
 // trustedSet is SYSTEM, Administrators, TrustedInstaller and, when non-nil,
 // account.
 func trustedSet(account *windows.SID) ([]*windows.SID, error) {
-	sids := make([]*windows.SID, 0, 4)
-	for _, wk := range []windows.WELL_KNOWN_SID_TYPE{windows.WinLocalSystemSid, windows.WinBuiltinAdministratorsSid} {
-		sid, err := windows.CreateWellKnownSid(wk)
-		if err != nil {
-			return nil, fmt.Errorf("well-known SID: %w", err)
-		}
-		sids = append(sids, sid)
+	sids, err := protectedTrustees(account)
+	if err != nil {
+		return nil, err
 	}
 	ti, err := windows.StringToSid(trustedInstallerSID)
 	if err != nil {
 		return nil, fmt.Errorf("TrustedInstaller SID: %w", err)
 	}
-	sids = append(sids, ti)
-	if account != nil {
-		sids = append(sids, account)
-	}
-	return sids, nil
+	return append(sids, ti), nil
 }
 
 // ResolveUser checks that account, normalized as NormalizeAccount does,
@@ -350,15 +341,11 @@ func judgeDACL(dacl *windows.ACL, trusted []*windows.SID, rule rightsRule) ([]st
 		masks   []windows.ACCESS_MASK
 		reasons []string
 	)
-	for i := range uint32(dacl.AceCount) {
-		var ace *windows.ACCESS_ALLOWED_ACE
-		if err := windows.GetAce(dacl, i, &ace); err != nil {
-			return nil, fmt.Errorf("read ACE %d: %w", i, err)
+	for e, err := range objectACEs(dacl) {
+		if err != nil {
+			return nil, err
 		}
-		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
-			continue // applies only to children
-		}
-		switch ace.Header.AceType {
+		switch e.typ {
 		case windows.ACCESS_DENIED_ACE_TYPE, accessDeniedObjectACEType,
 			accessDeniedCallbackACEType, accessDeniedCallbackObjectACEType:
 			continue
@@ -366,19 +353,18 @@ func judgeDACL(dacl *windows.ACL, trusted []*windows.SID, rule rightsRule) ([]st
 		default:
 			// Object, compound and anything newer: its SID is not where an
 			// ACCESS_ALLOWED_ACE keeps it, so fail closed.
-			reasons = append(reasons, fmt.Sprintf("has an access control entry of unsupported type %d", ace.Header.AceType))
+			reasons = append(reasons, fmt.Sprintf("has an access control entry of unsupported type %d", e.typ))
 			continue
 		}
-		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		if ace.Mask&rule.mask == 0 || isTrusted(sid, trusted) {
+		if e.mask&rule.mask == 0 || isTrusted(e.sid, trusted) {
 			continue
 		}
-		if j := slices.IndexFunc(holders, sid.Equals); j >= 0 {
-			masks[j] |= ace.Mask & rule.mask
+		if j := slices.IndexFunc(holders, e.sid.Equals); j >= 0 {
+			masks[j] |= e.mask & rule.mask
 			continue
 		}
-		holders = append(holders, sid)
-		masks = append(masks, ace.Mask&rule.mask)
+		holders = append(holders, e.sid)
+		masks = append(masks, e.mask&rule.mask)
 	}
 	for j, sid := range holders {
 		reasons = append(reasons, fmt.Sprintf("%s %s (%s)", accountName(sid), rule.verb, rightsString(masks[j])))
