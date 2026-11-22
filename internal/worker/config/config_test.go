@@ -634,11 +634,11 @@ func TestLoad_WorkerIDNotAffectedByLoad(t *testing.T) {
 	}
 }
 
-// TestLoadWithSources_DataDir pins Sources.DataDir: set by the file (even to
-// the default's value, or through a merge key), and unset when absent or null
-// in it, whatever SQI_WORKER_DATA_DIR holds: a service never sees the
-// installing shell's environment.
-func TestLoadWithSources_DataDir(t *testing.T) {
+// TestDataDirSetInFile pins DataDirSetInFile: set by the file (even to the
+// default's value, or through a merge key), and unset when absent or null in
+// it, whatever SQI_WORKER_DATA_DIR holds: a service never sees the installing
+// shell's environment.
+func TestDataDirSetInFile(t *testing.T) {
 	def := Default().Worker.DataDir
 	for _, tc := range []struct {
 		name, yaml, env string
@@ -655,12 +655,12 @@ func TestLoadWithSources_DataDir(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SQI_WORKER_DATA_DIR", tc.env)
-			_, src, err := LoadWithSources(writeTempYAML(t, tc.yaml), FlagOverrides{})
+			set, err := DataDirSetInFile(writeTempYAML(t, tc.yaml))
 			if err != nil {
-				t.Fatalf("LoadWithSources: %v", err)
+				t.Fatalf("DataDirSetInFile: %v", err)
 			}
-			if src.DataDir != tc.want {
-				t.Errorf("Sources.DataDir = %v, want %v", src.DataDir, tc.want)
+			if set != tc.want {
+				t.Errorf("DataDirSetInFile = %v, want %v", set, tc.want)
 			}
 		})
 	}

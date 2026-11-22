@@ -56,11 +56,15 @@ func workerDrainTimeout(configPath string) (time.Duration, error) {
 // For an account ("" is LocalSystem) it also refuses a session root under
 // %ProgramData%\sqi (see userSessionRoot).
 func workerConfigPaths(configPath, account string) ([]winsvc.PathRef, error) {
-	cfg, src, err := workerconfig.LoadWithSources(configPath, workerconfig.FlagOverrides{})
+	cfg, err := workerconfig.Load(configPath, workerconfig.FlagOverrides{})
 	if err != nil {
 		return nil, fmt.Errorf("load %s: %w", configPath, err)
 	}
-	if !src.DataDir {
+	dataDirSet, err := workerconfig.DataDirSetInFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("load %s: %w", configPath, err)
+	}
+	if !dataDirSet {
 		return nil, fmt.Errorf("%s does not set worker.data_dir, so a service would keep its "+
 			"identity and credential under its own account's profile, which install cannot check. "+
 			"Set it explicitly, for example:\n  worker:\n    data_dir: %s\nor write a new configuration "+
