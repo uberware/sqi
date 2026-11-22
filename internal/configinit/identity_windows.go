@@ -54,14 +54,20 @@ func identities(path string) (ids []fileID, ok bool, err error) {
 	return ids, true, nil
 }
 
-func openID(path string, flags uint32) (fileID, error) {
+// openAttrs opens path, which must exist, for its attributes alone, sharing
+// everything, with flags.
+func openAttrs(path string, flags uint32) (windows.Handle, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return fileID{}, err
+		return 0, err
 	}
-	h, err := windows.CreateFile(p, windows.FILE_READ_ATTRIBUTES,
+	return windows.CreateFile(p, windows.FILE_READ_ATTRIBUTES,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil, windows.OPEN_EXISTING, flags, 0)
+}
+
+func openID(path string, flags uint32) (fileID, error) {
+	h, err := openAttrs(path, flags)
 	if err != nil {
 		return fileID{}, err
 	}
@@ -159,13 +165,7 @@ func finalExisting(dir string) (string, error) {
 // finalPath is GetFinalPathNameByHandle of path, links followed, without
 // its \\?\ prefix.
 func finalPath(path string) (string, error) {
-	p, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		return "", err
-	}
-	h, err := windows.CreateFile(p, windows.FILE_READ_ATTRIBUTES,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	h, err := openAttrs(path, windows.FILE_FLAG_BACKUP_SEMANTICS)
 	if err != nil {
 		return "", err
 	}

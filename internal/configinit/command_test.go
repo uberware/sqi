@@ -76,7 +76,7 @@ func TestInit_RefusesExistingWithoutForce(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := newMemFS()
-	_, err := runInit(t, workerSpec, unixWriter(m.sys("linux"), "sqiworker"), "--config", tgt)
+	_, err := runInit(t, workerSpec, unixWriter(m.sys(), "sqiworker"), "--config", tgt)
 	if want := tgt + " exists; pass --force to replace it"; err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}

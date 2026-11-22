@@ -30,7 +30,6 @@ var errGroupNotFound = errors.New("group not found")
 // unixSys is every interaction writeUnix has with the operating system, so
 // the modes and owners it asks for can be checked on any host.
 type unixSys struct {
-	goos        string
 	lookupGroup func(name string) (gid int, err error)
 	chown       func(path string, uid, gid int) error
 	chmod       func(path string, mode os.FileMode) error
@@ -50,13 +49,10 @@ type unixOpts struct {
 	Shared bool
 	// Group is the service's group; only Shared uses it.
 	Group string
+	// GOOS is the host's operating system.
+	GOOS string
 	// DataDir is created 0700 on macOS, where nothing else creates it.
 	DataDir string
-}
-
-// useraddLine is the command that creates the account a service runs as.
-func useraddLine(group string) string {
-	return "sudo useradd --system --no-create-home --shell /usr/sbin/nologin " + group
 }
 
 // writeUnix writes content to target. The file is written under a temporary
@@ -79,7 +75,7 @@ func writeUnix(target string, content []byte, opts unixOpts, sys unixSys) error 
 	if err := ensureDir(dir, dirMode, sys); err != nil {
 		return err
 	}
-	if sys.goos == goosDarwin && opts.DataDir != "" {
+	if opts.GOOS == goosDarwin && opts.DataDir != "" {
 		if err := ensureDir(opts.DataDir, modePrivateDir, sys); err != nil {
 			return err
 		}
@@ -109,7 +105,8 @@ func sharedGroup(group string, sys unixSys) (int, error) {
 	gid, err := sys.lookupGroup(group)
 	switch {
 	case errors.Is(err, errGroupNotFound):
-		return 0, fmt.Errorf("group %q does not exist; create the service account first:\n  %s", group, useraddLine(group))
+		return 0, fmt.Errorf("group %q does not exist; create the service account first:\n"+
+			"  sudo useradd --system --no-create-home --shell /usr/sbin/nologin %s", group, group)
 	case err != nil:
 		return 0, fmt.Errorf("look up group %q: %w", group, err)
 	}
@@ -160,7 +157,7 @@ func unixWriter(sys unixSys, group string) writer {
 		if err := refuseExisting(req.Target, req.Force); err != nil {
 			return err
 		}
-		shared := sys.goos == "linux" && req.Target == DefaultTarget(req.Binary, req.Platform)
-		return writeUnix(req.Target, req.Content, unixOpts{Shared: shared, Group: group, DataDir: req.DataDir}, sys)
+		opts := unixOpts{Shared: req.Platform.GOOS == "linux" && req.Default, Group: group, GOOS: req.Platform.GOOS, DataDir: req.DataDir}
+		return writeUnix(req.Target, req.Content, opts, sys)
 	}
 }

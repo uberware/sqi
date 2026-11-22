@@ -27,8 +27,11 @@ type writeRequest struct {
 	Binary   Binary
 	Platform Platform
 	Target   string // absolute path of the file to write
-	Content  []byte
-	DataDir  string // the data directory the content names
+	// Default reports that Target is the file Binary's service reads when no
+	// --config is given.
+	Default bool
+	Content []byte
+	DataDir string // the data directory the content names
 	// SessionDir is the session directory the content names, created like
 	// DataDir; "" when it names none.
 	SessionDir string
@@ -101,15 +104,15 @@ func run(cmd *cobra.Command, spec Spec, w writer, force bool, natsURL, user stri
 		return err
 	}
 	req := writeRequest{
-		Binary: spec.Binary, Platform: p, Target: target, Content: content, DataDir: dataDir,
-		SessionDir: sessionDir, Force: force, Account: account,
+		Binary: spec.Binary, Platform: p, Target: target, Default: isDefaultTarget(target, spec.Binary, p),
+		Content: content, DataDir: dataDir, SessionDir: sessionDir, Force: force, Account: account,
 	}
 	if err := w(req); err != nil {
 		return err
 	}
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "wrote %s\n", target)
-	n := nextInfo{GOOS: p.GOOS, Binary: spec.Binary, Target: target, Custom: !isDefaultTarget(target, spec.Binary, p)}
+	n := nextInfo{GOOS: p.GOOS, Binary: spec.Binary, Target: target, Custom: !req.Default}
 	if account != "" {
 		n.User = user
 	}
@@ -163,29 +166,35 @@ func hostPlatform() (Platform, error) {
 }
 
 // resolveTarget is the file to write, absolute and in the one spelling the
-// platform opens (canonicalTarget), which everything after it uses: what is
+// platform opens (canonicalPath), which everything after it uses: what is
 // checked, what is written and what is printed are the same path.
 func resolveTarget(flag string, b Binary, p Platform) (string, error) {
 	if flag == "" {
 		flag = DefaultTarget(b, p)
 	}
-	return canonicalTarget(flag)
+	return canonicalPath(flag)
 }
 
 // refuseExisting refuses a file already at target unless force is set. The
 // platform writers call it, after any check that must come first.
 func refuseExisting(target string, force bool) error {
-	_, err := os.Lstat(target)
+	exists, err := fileExists(target)
+	if err != nil || !exists || force {
+		return err
+	}
+	return fmt.Errorf("%s exists; pass --force to replace it", target)
+}
+
+// fileExists reports whether something, a link included, is at path.
+func fileExists(path string) (bool, error) {
+	_, err := os.Lstat(path)
 	switch {
 	case err == nil:
-		if force {
-			return nil
-		}
-		return fmt.Errorf("%s exists; pass --force to replace it", target)
+		return true, nil
 	case errors.Is(err, fs.ErrNotExist):
-		return nil
+		return false, nil
 	default:
-		return fmt.Errorf("check %s: %w", target, err)
+		return false, fmt.Errorf("check %s: %w", path, err)
 	}
 }
 

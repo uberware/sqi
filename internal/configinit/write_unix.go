@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"runtime"
 	"strconv"
 )
 
@@ -21,7 +20,6 @@ func platformWriter(spec Spec) writer {
 
 func realUnixSys() unixSys {
 	return unixSys{
-		goos:        runtime.GOOS,
 		lookupGroup: lookupGroup,
 		chown:       os.Chown,
 		chmod:       os.Chmod,
@@ -74,8 +72,8 @@ func closeAndRemove(f *os.File, cause error) error {
 	return cause
 }
 
-// canonicalTarget is path made absolute.
-func canonicalTarget(path string) (string, error) {
+// canonicalPath is path made absolute.
+func canonicalPath(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s: %w", path, err)

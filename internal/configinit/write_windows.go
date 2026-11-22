@@ -53,21 +53,23 @@ func platformWriter(_ Spec) writer {
 
 func windowsWriter(ops winOps) writer {
 	return func(req writeRequest) error {
-		return writeWindows(req.Target, req.Content, req.Account, req.Force, req.DataDir, req.SessionDir, ops)
+		return writeWindows(req, ops)
 	}
 }
 
-// writeWindows puts content at target. A directory under %ProgramData%, a
-// missing one, or one for an account is made administrators-only (granting
-// account read) or must already be, which needs an elevated shell, checked
-// before anything else, even whether target exists (an administrators-only
-// directory denies that to anyone else). An existing directory of one's own
-// elsewhere is written into as it is. dataDir, and sessionDir when it is not "", are
-// created either way. account, when not "", must resolve to a user, may not
-// use the default %ProgramData%\sqi, and gets Modify on both. target must be in canonicalPath's spelling, as
-// run gives it, so the directory judged is the one written; %ProgramData% is
-// compared in that spelling too.
-func writeWindows(target string, content []byte, account string, force bool, dataDir, sessionDir string, ops winOps) error {
+// writeWindows puts req.Content at req.Target. A directory under
+// %ProgramData%, a missing one, or one for an account is made
+// administrators-only (granting the account read) or must already be, which
+// needs an elevated shell, checked before anything else, even whether the
+// target exists (an administrators-only directory denies that to anyone
+// else). An existing directory of one's own elsewhere is written into as it
+// is. req.DataDir, and req.SessionDir when it is not "", are created either
+// way. req.Account, when not "", must resolve to a user, may not use the
+// default %ProgramData%\sqi, and gets Modify on both. req.Target must be in
+// canonicalPath's spelling, as run gives it, so the directory judged is the
+// one written; %ProgramData% is compared in that spelling too.
+func writeWindows(req writeRequest, ops winOps) error {
+	target, account := req.Target, req.Account
 	pd, err := canonicalPath(winsvc.ProgramDataDir())
 	if err != nil {
 		return fmt.Errorf("%%ProgramData%%: %w", err)
@@ -82,7 +84,7 @@ func writeWindows(target string, content []byte, account string, force bool, dat
 			return err
 		}
 	}
-	if err := refuseExisting(target, force); err != nil {
+	if err := refuseExisting(target, req.Force); err != nil {
 		return err
 	}
 	if account != "" {
@@ -95,11 +97,11 @@ func writeWindows(target string, content []byte, account string, force bool, dat
 			return refusal("cannot use configuration directory "+dir, dir, pd, err)
 		}
 	}
-	replace, err := checkReplace(target, pd, account, force, protect, ops)
+	replace, err := checkReplace(target, pd, account, req.Force, protect, ops)
 	if err != nil {
 		return err
 	}
-	for _, d := range []string{sessionDir, dataDir} {
+	for _, d := range []string{req.SessionDir, req.DataDir} {
 		if d == "" {
 			continue
 		}
@@ -107,7 +109,7 @@ func writeWindows(target string, content []byte, account string, force bool, dat
 			return err
 		}
 	}
-	return ops.writeFile(target, content, replace, protect)
+	return ops.writeFile(target, req.Content, replace, protect)
 }
 
 // makeDataDir creates the data directory the starter names, which must
@@ -239,18 +241,6 @@ func dirExists(dir string) (bool, error) {
 		return false, fmt.Errorf("%s is not a directory", dir)
 	}
 	return true, nil
-}
-
-func fileExists(path string) (bool, error) {
-	_, err := os.Lstat(path)
-	switch {
-	case err == nil:
-		return true, nil
-	case errors.Is(err, fs.ErrNotExist):
-		return false, nil
-	default:
-		return false, fmt.Errorf("check %s: %w", path, err)
-	}
 }
 
 // writeFile writes content to a new file beside target, which takes the

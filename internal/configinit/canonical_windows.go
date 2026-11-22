@@ -15,12 +15,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// canonicalTarget is canonicalPath: the target is judged, written and
-// printed in the one spelling Win32 opens.
-func canonicalTarget(path string) (string, error) {
-	return canonicalPath(path)
-}
-
 // canonicalPath is the one spelling of path that config init compares,
 // checks and writes. Win32 opens many spellings of a directory as the same
 // one, so comparing the spelling given would let C:\ProgramData\sqi. or

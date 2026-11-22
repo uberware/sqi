@@ -44,9 +44,8 @@ func newMemFS() *memFS {
 	}
 }
 
-func (m *memFS) sys(goos string) unixSys {
+func (m *memFS) sys() unixSys {
 	return unixSys{
-		goos: goos,
 		lookupGroup: func(name string) (int, error) {
 			m.lookups = append(m.lookups, name)
 			gid, ok := m.groups[name]
@@ -122,7 +121,7 @@ func (m *memFS) paths() []string {
 func TestWriteUnix_EtcSqiIs0640RootGroup(t *testing.T) {
 	m := newMemFS()
 	m.groups["sqiworker"] = 1234
-	err := writeUnix("/etc/sqi/sqi-worker.yaml", []byte("body"), unixOpts{Shared: true, Group: "sqiworker"}, m.sys("linux"))
+	err := writeUnix("/etc/sqi/sqi-worker.yaml", []byte("body"), unixOpts{Shared: true, Group: "sqiworker"}, m.sys())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +148,7 @@ func TestWriteUnix_MissingGroupRefusesBeforeWriting(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.group, func(t *testing.T) {
 			m := newMemFS()
-			err := writeUnix("/etc/sqi/x.yaml", []byte("body"), unixOpts{Shared: true, Group: tt.group}, m.sys("linux"))
+			err := writeUnix("/etc/sqi/x.yaml", []byte("body"), unixOpts{Shared: true, Group: tt.group}, m.sys())
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want one containing %q", err, tt.want)
 			}
@@ -161,7 +160,7 @@ func TestWriteUnix_MissingGroupRefusesBeforeWriting(t *testing.T) {
 }
 
 func TestWriteUnix_GroupLookupFailureIsNotMissingGroup(t *testing.T) {
-	sys := newMemFS().sys("linux")
+	sys := newMemFS().sys()
 	sys.lookupGroup = func(string) (int, error) { return 0, errors.New("nss unavailable") }
 	err := writeUnix("/etc/sqi/x.yaml", nil, unixOpts{Shared: true, Group: "sqi"}, sys)
 	if err == nil || strings.Contains(err.Error(), "useradd") || !strings.Contains(err.Error(), "nss unavailable") {
@@ -171,7 +170,7 @@ func TestWriteUnix_GroupLookupFailureIsNotMissingGroup(t *testing.T) {
 
 func TestWriteUnix_OtherTargetIs0600(t *testing.T) {
 	m := newMemFS()
-	if err := writeUnix("/home/a/w.yaml", []byte("body"), unixOpts{Group: "sqiworker"}, m.sys("linux")); err != nil {
+	if err := writeUnix("/home/a/w.yaml", []byte("body"), unixOpts{Group: "sqiworker"}, m.sys()); err != nil {
 		t.Fatal(err)
 	}
 	f := m.files["/home/a/w.yaml"]
@@ -201,7 +200,7 @@ func TestWriteUnix_ReplaceResetsMode(t *testing.T) {
 			m := newMemFS()
 			m.groups["sqi"] = 7
 			m.files[tt.target] = &memFile{content: "old", mode: 0o644, uid: 500, gid: 500}
-			if err := writeUnix(tt.target, []byte("new"), tt.opts, m.sys("linux")); err != nil {
+			if err := writeUnix(tt.target, []byte("new"), tt.opts, m.sys()); err != nil {
 				t.Fatal(err)
 			}
 			f := m.files[tt.target]
@@ -230,8 +229,8 @@ func TestWriteUnix_DataDirOnlyOnDarwin(t *testing.T) {
 		t.Run(tt.goos, func(t *testing.T) {
 			m := newMemFS()
 			const data = "/Users/a/Library/Application Support/sqi-worker"
-			opts := unixOpts{DataDir: data}
-			if err := writeUnix("/Users/a/.sqi/sqi-worker.yaml", []byte("b"), opts, m.sys(tt.goos)); err != nil {
+			opts := unixOpts{GOOS: tt.goos, DataDir: data}
+			if err := writeUnix("/Users/a/.sqi/sqi-worker.yaml", []byte("b"), opts, m.sys()); err != nil {
 				t.Fatal(err)
 			}
 			mode, made := m.dirs[data]
@@ -275,7 +274,9 @@ func TestWriteUnix_CreatedDirectoryGetsItsModeWhateverTheUmask(t *testing.T) {
 			m := newMemFS()
 			m.groups["sqi"] = 7
 			m.umask = 0o077
-			if err := writeUnix(tt.target, []byte("b"), tt.opts, m.sys(tt.goos)); err != nil {
+			opts := tt.opts
+			opts.GOOS = tt.goos
+			if err := writeUnix(tt.target, []byte("b"), opts, m.sys()); err != nil {
 				t.Fatal(err)
 			}
 			for dir, want := range tt.want {
@@ -291,7 +292,7 @@ func TestWriteUnix_ExistingDirectoryKeepsItsMode(t *testing.T) {
 	m := newMemFS()
 	m.groups["sqi"] = 7
 	m.dirs["/etc/sqi"] = 0o750
-	if err := writeUnix("/etc/sqi/x.yaml", []byte("b"), unixOpts{Shared: true, Group: "sqi"}, m.sys("linux")); err != nil {
+	if err := writeUnix("/etc/sqi/x.yaml", []byte("b"), unixOpts{Shared: true, Group: "sqi"}, m.sys()); err != nil {
 		t.Fatal(err)
 	}
 	if got := m.dirs["/etc/sqi"]; got != 0o750 {
@@ -305,7 +306,7 @@ func TestWriteUnix_PermissionDeniedSaysSudo(t *testing.T) {
 			m := newMemFS()
 			m.groups["sqi"] = 7
 			m.fail[op] = fs.ErrPermission
-			err := writeUnix("/etc/sqi/x.yaml", []byte("b"), unixOpts{Shared: true, Group: "sqi"}, m.sys("linux"))
+			err := writeUnix("/etc/sqi/x.yaml", []byte("b"), unixOpts{Shared: true, Group: "sqi"}, m.sys())
 			if err == nil || !strings.Contains(err.Error(), "sudo") {
 				t.Fatalf("error = %v, want one that says to use sudo", err)
 			}
@@ -319,7 +320,7 @@ func TestWriteUnix_PermissionDeniedSaysSudo(t *testing.T) {
 func TestWriteUnix_OtherFailuresDoNotSaySudo(t *testing.T) {
 	m := newMemFS()
 	m.fail["rename"] = errors.New("cross-device link")
-	err := writeUnix("/home/a/x.yaml", []byte("b"), unixOpts{}, m.sys("linux"))
+	err := writeUnix("/home/a/x.yaml", []byte("b"), unixOpts{}, m.sys())
 	if err == nil || strings.Contains(err.Error(), "sudo") {
 		t.Errorf("error = %v, want a failure that does not mention sudo", err)
 	}
@@ -333,7 +334,7 @@ func TestWriteUnix_FailureRemovesTempAndKeepsOldFile(t *testing.T) {
 			m.fail[op] = errors.New("boom")
 			const target = "/etc/sqi/x.yaml"
 			m.files[target] = &memFile{content: "old", mode: 0o644}
-			err := writeUnix(target, []byte("new"), unixOpts{Shared: true, Group: "sqi"}, m.sys("linux"))
+			err := writeUnix(target, []byte("new"), unixOpts{Shared: true, Group: "sqi"}, m.sys())
 			if err == nil {
 				t.Fatal("expected an error")
 			}
@@ -352,21 +353,21 @@ func TestUnixWriter_SharedOnlyForTheLinuxDefault(t *testing.T) {
 	darwin := Platform{GOOS: "darwin", Home: "/Users/a"}
 	tests := []struct {
 		name       string
-		goos       string
 		p          Platform
 		target     string
+		isDefault  bool
 		wantShared bool
 	}{
-		{"linux default", "linux", linux, "/etc/sqi/sqi-worker.yaml", true},
-		{"linux elsewhere", "linux", linux, "/home/a/sqi-worker.yaml", false},
-		{"darwin default", "darwin", darwin, "/Users/a/.sqi/sqi-worker.yaml", false},
+		{"linux default", linux, "/etc/sqi/sqi-worker.yaml", true, true},
+		{"linux elsewhere", linux, "/home/a/sqi-worker.yaml", false, false},
+		{"darwin default", darwin, "/Users/a/.sqi/sqi-worker.yaml", true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := newMemFS()
 			m.groups["sqiworker"] = 9
-			w := unixWriter(m.sys(tt.goos), "sqiworker")
-			err := w(writeRequest{Binary: Worker, Platform: tt.p, Target: tt.target, Content: []byte("b")})
+			w := unixWriter(m.sys(), "sqiworker")
+			err := w(writeRequest{Binary: Worker, Platform: tt.p, Target: tt.target, Default: tt.isDefault, Content: []byte("b")})
 			if err != nil {
 				t.Fatal(err)
 			}

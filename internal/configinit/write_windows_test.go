@@ -89,7 +89,7 @@ func TestConfigInitWindows_ElevationFirst(t *testing.T) {
 	pd := fakeProgramData(t)
 	tgt := filepath.Join(pd, "sqi", "sqi-worker.yaml")
 	f := &fakeWinOps{elevatedErr: winsvc.ErrNotElevated}
-	err := writeWindows(tgt, []byte("x"), "", false, filepath.Join(pd, "sqi", "worker"), "", f.ops())
+	err := writeWindows(writeRequest{Target: tgt, Content: []byte("x"), DataDir: filepath.Join(pd, "sqi", "worker")}, f.ops())
 	if !errors.Is(err, winsvc.ErrNotElevated) {
 		t.Fatalf("error = %v, want ErrNotElevated", err)
 	}
@@ -156,7 +156,11 @@ func TestConfigInitWindows_ElevationFirstForMissingDirAndAccount(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &fakeWinOps{elevatedErr: winsvc.ErrNotElevated}
-			err := writeWindows(tt.target, []byte("x"), tt.account, false, filepath.Join(filepath.Dir(tt.target), "worker"), "", f.ops())
+			req := writeRequest{
+				Target: tt.target, Content: []byte("x"), Account: tt.account,
+				DataDir: filepath.Join(filepath.Dir(tt.target), "worker"),
+			}
+			err := writeWindows(req, f.ops())
 			if !errors.Is(err, winsvc.ErrNotElevated) {
 				t.Fatalf("error = %v, want ErrNotElevated", err)
 			}
