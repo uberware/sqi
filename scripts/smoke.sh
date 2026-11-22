@@ -377,6 +377,10 @@ export SQI_WORKER_DISCOVERY_ENABLE_MDNS="false"
 export SQI_WORKER_FARM_ID="$FARM_ID"
 export SQI_WORKER_QUEUE_IDS="$QUEUE_ID"
 export SQI_WORKER_DATA_DIR="${TMP_DIR}/worker-data"
+# Explicit, because the default session root on Windows (and for root on POSIX)
+# is machine-wide, and a user-owned %ProgramData%\sqi\worker makes a later
+# `service install` refuse.
+export SQI_WORKER_SESSION_DIR="${TMP_DIR}/worker-sessions"
 export SQI_WORKER_ALLOW_ROOT="true"
 export SQI_WORKER_LOG_LEVEL="warn"
 export SQI_WORKER_LOG_FORMAT="text"

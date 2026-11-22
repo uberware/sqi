@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/uberware/sqi/internal/winsvc"
 )
 
 func TestWinService_ServerLifecycle(t *testing.T) {
@@ -156,14 +158,16 @@ func TestWinService_UserAccount(t *testing.T) {
 			"not granting the account access to the existing protected directory; run the whole suite for that", logDir())
 	}
 
-	dir := testDir(t)
-	// The service account must be able to write sqi.db and data/nats here.
-	if out, err := exec.CommandContext(t.Context(), "icacls", dir, "/grant", account+":(OI)(CI)M").CombinedOutput(); err != nil {
-		t.Fatalf("icacls: %v\n%s", err, out)
+	// As `sqi-server config init --user` lays it out: the account reads the
+	// configuration directory and writes sqi.db and nats in its data directory.
+	dir := testDirFor(t, account)
+	dataDir := filepath.Join(dir, "data")
+	if err := winsvc.PrepareDataDir(dataDir, account); err != nil {
+		t.Fatal(err)
 	}
 	ports := freePorts(t, 2)
 	cfg := filepath.Join(dir, "sqi-server.yaml")
-	writeFile(t, cfg, serverYAML(ports[0], ports[1]))
+	writeFile(t, cfg, serverYAML(ports[0], ports[1], dataDir))
 	name := uniqueName(t, "sqi-test-user")
 	cleanupService(t, bin("sqi-server"), name)
 	// The password is piped on stdin, never passed as an argument or logged.
@@ -181,8 +185,29 @@ func TestWinService_UserAccount(t *testing.T) {
 	}
 	// The logs directory normally already exists (protected, created by the
 	// earlier LocalSystem installs); the --user service must still have
-	// written its log there.
+	// written its log, in its own directory there.
 	if _, err := os.Stat(defaultLogPath(name)); err != nil {
 		t.Errorf("--user service wrote no log: %v", err)
+	}
+	// Above its own directory the account may only pass through.
+	for _, dir := range []string{logDir(), filepath.Dir(logDir())} {
+		for _, a := range aceFor(t, dir, accountSID(t, account)) {
+			if a.Mask&^sqiDirTraverse != 0 || a.Header.AceFlags&inheritFlags != 0 {
+				t.Errorf("%s grants %s %#x (flags %#x), want only a non-inheritable %#x",
+					dir, account, a.Mask, a.Header.AceFlags, sqiDirTraverse)
+			}
+		}
+	}
+
+	// A LocalSystem service installed after it, with nothing undone in
+	// between, is accepted: the account's grants are on its own directory.
+	other := uniqueName(t, "sqi-test-after-user")
+	cleanupService(t, bin("sqi-server"), other)
+	otherDir := testDir(t)
+	otherPorts := freePorts(t, 2)
+	otherCfg := filepath.Join(otherDir, "sqi-server.yaml")
+	writeFile(t, otherCfg, serverYAML(otherPorts[0], otherPorts[1], ""))
+	if out, err := run(t.Context(), "", bin("sqi-server"), "service", "install", "--name", other, "--config", otherCfg); err != nil {
+		t.Fatalf("LocalSystem install after a --user install: %v\n%s", err, out)
 	}
 }

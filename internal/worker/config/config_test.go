@@ -634,6 +634,38 @@ func TestLoad_WorkerIDNotAffectedByLoad(t *testing.T) {
 	}
 }
 
+// TestDataDirSetInFile pins DataDirSetInFile: set by the file (even to the
+// default's value, or through a merge key), and unset when absent or null in
+// it, whatever SQI_WORKER_DATA_DIR holds: a service never sees the installing
+// shell's environment.
+func TestDataDirSetInFile(t *testing.T) {
+	def := Default().Worker.DataDir
+	for _, tc := range []struct {
+		name, yaml, env string
+		want            bool
+	}{
+		{"absent", "log:\n  level: info\n", "", false},
+		{"empty file", "", "", false},
+		{"null", "worker:\n  data_dir: ~\n", "", false},
+		{"set", "worker:\n  data_dir: 'C:\\ProgramData\\sqi\\worker'\n", "", true},
+		{"set to the default", "worker:\n  data_dir: '" + def + "'\n", "", true},
+		{"through a merge key", "worker:\n  <<: {data_dir: /srv/sqi}\n", "", true},
+		{"environment only", "log:\n  level: info\n", "/srv/sqi", false},
+		{"file and environment", "worker:\n  data_dir: /srv/a\n", "/srv/b", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SQI_WORKER_DATA_DIR", tc.env)
+			set, err := DataDirSetInFile(writeTempYAML(t, tc.yaml))
+			if err != nil {
+				t.Fatalf("DataDirSetInFile: %v", err)
+			}
+			if set != tc.want {
+				t.Errorf("DataDirSetInFile = %v, want %v", set, tc.want)
+			}
+		})
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func writeTempYAML(t *testing.T, content string) string {

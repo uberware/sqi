@@ -22,6 +22,11 @@ layers overriding earlier ones:
    (`--http-addr`, `--http-cors-origins`, `--openjd-enforce-limits`,
    `--auth-enabled`, `--auth-validate-job-owner`) are on `serve`.
 
+`sqi-server config init` writes a starter file holding the paths the server
+keeps its state in (`store.sqlite_path` and `nats.embedded.data_dir`) to the
+platform's default location, with the file permissions a service needs; see
+[First-run setup](operations.md#1-create-a-configuration-file).
+
 Print the effective merged configuration at any time with:
 
 ```sh
@@ -470,7 +475,7 @@ It holds only messages in transit, so it is not part of a backup;
 ```yaml
 nats:
   embedded:
-    data_dir: "/var/lib/sqi/nats"
+    data_dir: "/var/lib/sqi-server/nats"
 ```
 
 ---
@@ -893,7 +898,7 @@ See [One server per database](operations.md#one-server-per-database).
 
 ```yaml
 store:
-  sqlite_path: "/var/lib/sqi/sqi.db"
+  sqlite_path: "/var/lib/sqi-server/sqi.db"
 ```
 
 > The `migrate`, `backup`, `restore`, `store copy` and `worker` subcommands
@@ -1074,7 +1079,7 @@ must name a file: one that ends with a path separator, or names an existing
 directory, fails validation too.
 
 When `sqi-server` runs as a Windows service and `log.file` is empty, logs go to
-`%ProgramData%\sqi\logs\<service-name>.log` instead, since a service has no
+`%ProgramData%\sqi\logs\<service-name>\<service-name>.log` instead, since a service has no
 stderr to write to. That default directory is created for you.
 
 ```yaml
@@ -2837,11 +2842,11 @@ http:
 
 nats:
   embedded:
-    data_dir: "/var/lib/sqi/nats"
+    data_dir: "/var/lib/sqi-server/nats"
     max_store_mb: 4096
 
 store:
-  sqlite_path: "/var/lib/sqi/sqi.db"
+  sqlite_path: "/var/lib/sqi-server/sqi.db"
 
 log:
   level: "info"

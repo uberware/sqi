@@ -291,6 +291,20 @@ func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string,
 
 	dataDir := t.TempDir()
 	metricsPort := freePort(t)
+	// Not under t.TempDir: a renderer can leave a daemon running in a session
+	// directory after its task ends (RenderMan's prman starts sbrokerd, which
+	// keeps the directory as its working directory), and on Windows that makes
+	// the directory undeletable, so t.TempDir's cleanup would fail the test.
+	sessionRoot, err := os.MkdirTemp("", "sqi-worker-sessions-") //nolint:usetesting // t.TempDir's cleanup fails on a directory a renderer daemon still holds
+	if err != nil {
+		t.Fatalf("startRealWorker: create session root: %v", err)
+	}
+	// Registered before the worker's stop cleanup, so it runs after it.
+	t.Cleanup(func() {
+		if err := os.RemoveAll(sessionRoot); err != nil {
+			t.Logf("startRealWorker: leaving session root %s: %v", sessionRoot, err)
+		}
+	})
 
 	// Global flags (e.g. --config) precede the "start" subcommand.
 	args := make([]string, 0, len(extraArgs)+1)
@@ -300,7 +314,7 @@ func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string,
 	// Use context.Background so that the subprocess lifetime is controlled by
 	// t.Cleanup below rather than any caller-supplied context.
 	cmd := exec.CommandContext(context.Background(), binaryPath, args...)
-	cmd.Env = append(realWorkerEnv(ts, farmID, queueID, dataDir, metricsPort), extraEnv...)
+	cmd.Env = append(realWorkerEnv(ts, farmID, queueID, dataDir, sessionRoot, metricsPort), extraEnv...)
 
 	// Route subprocess stdout/stderr to test stderr so output appears in
 	// `go test -v` and in CI logs when the test fails.
@@ -336,9 +350,12 @@ func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string,
 
 // realWorkerEnv is the environment a real worker subprocess runs with: this
 // process's own, then the settings that point it at ts, serving queueID in
-// farmID from dataDir, with its metrics on metricsPort and test-friendly
-// timings.
-func realWorkerEnv(ts *testServer, farmID, queueID, dataDir string, metricsPort int) []string {
+// farmID from dataDir with its sessions under sessionRoot, with its metrics on
+// metricsPort and test-friendly timings. The session root is always set: the
+// default on Windows, and for root on POSIX, is a machine-wide directory, which
+// a test must not create (a user-owned %ProgramData%\sqi\worker makes service
+// install refuse).
+func realWorkerEnv(ts *testServer, farmID, queueID, dataDir, sessionRoot string, metricsPort int) []string {
 	return append(
 		os.Environ(),
 		"SQI_WORKER_NATS_URL=nats://"+ts.NATSAddr,
@@ -346,6 +363,7 @@ func realWorkerEnv(ts *testServer, farmID, queueID, dataDir string, metricsPort 
 		"SQI_WORKER_FARM_ID="+farmID,
 		"SQI_WORKER_QUEUE_IDS="+queueID,
 		"SQI_WORKER_DATA_DIR="+dataDir,
+		"SQI_WORKER_SESSION_DIR="+sessionRoot,
 		"SQI_WORKER_ALLOW_ROOT=true",
 		"SQI_WORKER_LOG_FORMAT=text",
 		"SQI_WORKER_LOG_LEVEL=warn",

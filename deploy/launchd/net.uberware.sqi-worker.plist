@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!--
+  sqi worker as a per-user launchd agent.
+  Install: copy to ~/Library/LaunchAgents/, then
+    launchctl load ~/Library/LaunchAgents/net.uberware.sqi-worker.plist
+  launchd sets HOME for an agent, so the config path needs no editing. launchd does
+  not expand variables in StandardOutPath/StandardErrorPath, hence the fixed /tmp path.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>net.uberware.sqi-worker</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>exec /usr/local/bin/sqi-worker start --config "$HOME/.sqi/sqi-worker.yaml"</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/sqi-worker.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/sqi-worker.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

@@ -28,6 +28,11 @@ layers overriding earlier ones:
    `--log-format` are root flags available on every subcommand; `--dry-run` and
    `--nats-insecure-skip-verify` belong to `start` only.
 
+`sqi-worker config init` writes a starter file holding the settings a worker
+needs to start (`nats.url` when you pass `--nats-url`, and `worker.data_dir`) to
+the platform's default location, with the file permissions a service needs; see
+[Configuration](worker-deployment.md#configuration) in the deployment guide.
+
 Print the effective merged configuration at any time with:
 
 ```sh
@@ -527,7 +532,12 @@ Left unset, the value is resolved at startup:
   running as LocalSystem has its home directory under
   `System32\config\systemprofile`, which is unsuitable for render scratch.
   Directory modes have no effect on Windows; each session directory is
-  protected by an NTFS DACL instead (see [Windows](#windows) below).
+  protected by an NTFS DACL instead (see [Windows](#windows) below). On a host
+  where `%ProgramData%\sqi` exists it is administrators-only, so a worker run by
+  any other account — a `--user` service, or a console `sqi-worker start` from
+  a shell that is not elevated — must set `worker.session_dir` to a directory
+  that account can write; `config init --user` writes one, and
+  `service install --user` refuses a configuration without one.
 - **Otherwise (non-root POSIX)**: `<data_dir>/sessions`, created at `0750`. A
   non-root worker cannot run tasks as another user, so session scratch needs no
   wider access.
@@ -1795,7 +1805,7 @@ that ends with a separator or names an existing directory also fails
 validation.
 
 When `sqi-worker` runs as a Windows service and `log.file` is empty, logs go to
-`%ProgramData%\sqi\logs\<service-name>.log` instead, since a service has no
+`%ProgramData%\sqi\logs\<service-name>\<service-name>.log` instead, since a service has no
 stderr to write to. That default directory is created for you.
 
 ```yaml

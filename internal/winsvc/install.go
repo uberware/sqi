@@ -69,9 +69,11 @@ func BuildServiceConfig(spec InstallSpec) (ServiceConfig, error) {
 
 // validateName checks a service name the way the SCM would, so `service
 // install` can reject a bad one before probing for it or changing anything.
+// The name is also its default log directory's (DefaultLogPath), so . and ..,
+// which would name a directory above it, are refused too.
 func validateName(name string) error {
-	if name == "" || strings.ContainsAny(name, `/\`) {
-		return fmt.Errorf("service name %q is invalid: it must be non-empty and contain no slashes", name)
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("service name %q is invalid: it must be non-empty, contain no slashes and be neither \".\" nor \"..\"", name)
 	}
 	return nil
 }
@@ -115,14 +117,14 @@ func NormalizeAccount(user string) string {
 func ResolveConfigPath(flagValue, binary string) (string, error) {
 	path := flagValue
 	if path == "" {
-		path = filepath.Join(ProgramDataDir(), "sqi", binary+".yaml")
+		path = filepath.Join(SqiDir(), binary+".yaml")
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve config path %q: %w", path, err)
 	}
 	if _, err := os.Stat(abs); err != nil {
-		return "", fmt.Errorf("config file %s not found (%w); create one first, e.g.:\n  %s config print > \"%s\"",
+		return "", fmt.Errorf("config file %s not found (%w); create one first, e.g.:\n  %s config init --config \"%s\"",
 			abs, err, binary, abs)
 	}
 	return abs, nil

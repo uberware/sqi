@@ -7,10 +7,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/uberware/sqi/internal/winsvc"
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
 
 // TestWorkerDrainTimeout_FromConfig pins that the drain timeout a service is
@@ -25,6 +28,147 @@ func TestWorkerDrainTimeout_FromConfig(t *testing.T) {
 	got, err := workerDrainTimeout(path)
 	if err != nil || got != 120*time.Second {
 		t.Fatalf("workerDrainTimeout = %v, %v; want 120s (90s grace + 30s kill window)", got, err)
+	}
+}
+
+// TestWorkerConfigPaths_FromConfig pins that service install checks the
+// paths the loaded configuration names, as written, log.file included.
+func TestWorkerConfigPaths_FromConfig(t *testing.T) {
+	t.Setenv("SQI_WORKER_NATS_TLS_CA_FILE", "")
+	t.Setenv("SQI_WORKER_LOG_FILE", "")
+	t.Setenv("SQI_WORKER_DATA_DIR", "")
+	path := filepath.Join(t.TempDir(), "sqi-worker.yaml")
+	body := "nats:\n  tls_ca_file: pki/ca.pem\nworker:\n  data_dir: data\n  session_dir: sessions\nlog:\n  file: logs/w.log\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := workerConfigPaths(path, "")
+	if err != nil {
+		t.Fatalf("workerConfigPaths: %v", err)
+	}
+	for _, want := range []winsvc.PathRef{
+		{Key: "nats.tls_ca_file", Path: "pki/ca.pem"},
+		{Key: "nats.credential_file", Path: filepath.Join("data", "worker.nk")},
+		{Key: "worker.data_dir", Path: "data"},
+		{Key: "worker.session_dir", Path: "sessions"},
+		{Key: "log.file", Path: "logs/w.log"},
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("Paths lacks %q: %q", want, got)
+		}
+	}
+	for _, p := range got {
+		if p.Key == "worker.session_dir (default)" {
+			t.Errorf("Paths names the default session root although worker.session_dir is set: %q", got)
+		}
+	}
+}
+
+// TestWorkerConfigPaths_DefaultSessionRoot pins that service install checks
+// the session root the worker uses when worker.session_dir is unset:
+// %ProgramData%\sqi\worker\sessions, computed as the worker computes it.
+func TestWorkerConfigPaths_DefaultSessionRoot(t *testing.T) {
+	t.Setenv("SQI_WORKER_SESSION_DIR", "")
+	t.Setenv("SQI_WORKER_DATA_DIR", "")
+	pd := t.TempDir()
+	t.Setenv("ProgramData", pd)
+	path := filepath.Join(t.TempDir(), "sqi-worker.yaml")
+	if err := os.WriteFile(path, []byte("worker:\n  data_dir: data\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := workerConfigPaths(path, "")
+	if err != nil {
+		t.Fatalf("workerConfigPaths: %v", err)
+	}
+	want := winsvc.PathRef{Key: "worker.session_dir (default)", Path: filepath.Join(pd, "sqi", "worker", "sessions")}
+	if !slices.Contains(got, want) {
+		t.Errorf("Paths lacks %q: %q", want, got)
+	}
+}
+
+// TestInstall_RefusesUnsetWorkerDataDir pins that service install refuses a
+// configuration that leaves worker.data_dir unset, naming the key and the
+// way out, and accepts one that sets it, even to the default's value. The
+// winsvc test of the same name pins that install returns this error before
+// the password prompt and before any operation after the existence probe.
+func TestInstall_RefusesUnsetWorkerDataDir(t *testing.T) {
+	t.Setenv("SQI_WORKER_DATA_DIR", "")
+	dir := t.TempDir()
+	write := func(body string) string {
+		path := filepath.Join(dir, "sqi-worker.yaml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	path := write("log:\n  level: info\n")
+	_, err := workerConfigPaths(path, "")
+	if err == nil {
+		t.Fatal("workerConfigPaths accepted a configuration without worker.data_dir")
+	}
+	for _, s := range []string{path, "worker.data_dir", "data_dir: " + filepath.Join(dir, "worker"), "sqi-worker config init"} {
+		if !strings.Contains(err.Error(), s) {
+			t.Errorf("refusal lacks %q:\n%v", s, err)
+		}
+	}
+	def := workerconfig.Default().Worker.DataDir
+	if _, err := workerConfigPaths(write("worker:\n  data_dir: '"+def+"'\n"), ""); err != nil {
+		t.Errorf("workerConfigPaths refused a data_dir equal to the default: %v", err)
+	}
+}
+
+// TestWorkerConfigPaths_UserNeedsSessionRootItCanWrite pins that a --user
+// install is refused when the worker's session root is under the
+// administrators-only %ProgramData%\sqi (worker.session_dir unset, or set
+// there), where the account could create no session and every task would
+// fail, with the way out; that another session root is accepted; and that a
+// LocalSystem install is not affected.
+func TestWorkerConfigPaths_UserNeedsSessionRootItCanWrite(t *testing.T) {
+	t.Setenv("SQI_WORKER_SESSION_DIR", "")
+	t.Setenv("SQI_WORKER_DATA_DIR", "")
+	pd := t.TempDir()
+	t.Setenv("ProgramData", pd)
+	dir := filepath.Join(pd, "sqi-render")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, sessionDir, account string
+		refused                   bool
+	}{
+		{"unset, --user", "", `.\render`, true},
+		{"under sqi, --user", filepath.Join(pd, "sqi", "scratch"), `.\render`, true},
+		{"its own, --user", filepath.Join(dir, "sessions"), `.\render`, false},
+		{"unset, LocalSystem", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "worker:\n  data_dir: '" + filepath.Join(dir, "worker") + "'\n"
+			if tc.sessionDir != "" {
+				body += "  session_dir: '" + tc.sessionDir + "'\n"
+			}
+			path := filepath.Join(dir, "sqi-worker.yaml")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := workerConfigPaths(path, tc.account)
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("workerConfigPaths: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("workerConfigPaths accepted a session root the account cannot write")
+			}
+			for _, s := range []string{
+				"worker.session_dir", filepath.Join(pd, "sqi"), tc.account,
+				"session_dir: " + filepath.Join(dir, "sessions"), "config init --user",
+			} {
+				if !strings.Contains(err.Error(), s) {
+					t.Errorf("refusal lacks %q:\n%v", s, err)
+				}
+			}
+		})
 	}
 }
 

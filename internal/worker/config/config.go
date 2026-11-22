@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/envvar"
 	sqilog "github.com/uberware/sqi/internal/log"
@@ -884,6 +886,30 @@ func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sour
 	}
 
 	return cfg, src, nil
+}
+
+// DataDirSetInFile reports whether the config file at path sets
+// worker.data_dir. An SQI_WORKER_DATA_DIR does not count: `service install`
+// asks, and the service it registers never sees the installing shell's
+// environment. When the file leaves it unset the value is [Default]'s, under
+// the home directory of whoever loads the configuration, unless the
+// environment changes it.
+//
+// It asks yaml.v3 rather than comparing values, so a value equal to the
+// default still counts as set, and one supplied through a merge key is found.
+// A null counts as unset, as it leaves the default. A file that does not
+// parse reports false; [Load] reports why.
+func DataDirSetInFile(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read config file %s: %w", path, err)
+	}
+	var probe struct {
+		Worker struct {
+			DataDir *string `yaml:"data_dir"`
+		} `yaml:"worker"`
+	}
+	return yaml.Unmarshal(data, &probe) == nil && probe.Worker.DataDir != nil, nil
 }
 
 // resolveConfigFile returns the config file path to use. If explicit is

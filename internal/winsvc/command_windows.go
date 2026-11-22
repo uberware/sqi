@@ -38,6 +38,14 @@ type CommandSpec struct {
 	// DrainTimeout returns the binary's graceful-shutdown bound for the given
 	// config file; the PreShutdown timeout is this plus ShutdownMargin.
 	DrainTimeout func(configPath string) (time.Duration, error)
+	// ConfigPaths loads configPath and returns every path it names, as
+	// written, log.file under the key "log.file": install resolves a relative
+	// one against the configuration's directory, where the service runs.
+	// account is the normalized --user ("" for LocalSystem), for a binary that
+	// must refuse a configuration the account could not run with. An error
+	// stops install before it changes anything and is returned as it is, so it
+	// should name configPath.
+	ConfigPaths func(configPath, account string) ([]PathRef, error)
 	// UserWarning, when non-empty, is printed if --user names an account.
 	UserWarning string
 }
@@ -50,6 +58,8 @@ type CommandSpec struct {
 type operations struct {
 	requireElevated     func() error
 	exists              func(name string) (bool, error)
+	ensureSqiDir        func() error
+	checkPaths          func(refs []PathRef, account string) error
 	grantLogonRight     func(account string) error
 	validateCredentials func(account, password string) error
 	ensureLogDir        func(dir, account string) error
@@ -65,6 +75,8 @@ func systemOperations() operations {
 	return operations{
 		requireElevated:     RequireElevated,
 		exists:              Exists,
+		ensureSqiDir:        EnsureSqiDir,
+		checkPaths:          CheckPaths,
 		grantLogonRight:     GrantServiceLogonRight,
 		validateCredentials: ValidateCredentials,
 		ensureLogDir:        EnsureLogDir,
@@ -130,7 +142,10 @@ func (c commands) installCmd() *cobra.Command {
 		Long: `Register ` + c.spec.Binary + ` as an automatic-start Windows service.
 
 The config file (--config, default %ProgramData%\sqi\` + c.spec.Binary + `.yaml) must
-exist; its absolute path is baked into the service's command line. The service
+exist; its absolute path is baked into the service's command line. Install
+refuses when anyone but ` + trustedNames + ` could
+change the config file, the binary, the log directory or any file or directory
+the config names, or a directory above one of them. The service
 runs as LocalSystem unless --user is given. With --user the password is
 prompted for (or read from piped stdin), the account is granted "Log on as a
 service", and the password is then checked with a service logon. That check
@@ -159,8 +174,9 @@ func configFlag(cmd *cobra.Command) string {
 
 // runInstall registers the service. The order is fixed: the name and the
 // existence probe (refuseExisting), everything else that can be checked
-// without changing the system (installConfig), then the account's logon right
-// and password, the log directory, and the service.
+// without changing the system (installConfig, which refuses files someone
+// else could change before it reads a password), then the account's logon
+// right and password, the log directory, and the service.
 func (c commands) runInstall(cmd *cobra.Command, f installFlags) error {
 	if err := c.refuseExisting(f.name); err != nil {
 		return err
@@ -193,11 +209,11 @@ func (c commands) runInstall(cmd *cobra.Command, f installFlags) error {
 }
 
 // refuseExisting rejects an invalid name, or one a service already has (no
-// overwrite), before install prompts for a password or changes
-// anything. Otherwise the logon right, a credential check (a wrong password
-// counts toward the account's lockout) and an ACE on the log directory every
-// sqi service shares would all come first. Install's own probe still catches
-// a service created after this one.
+// overwrite), before install prompts for a password or changes anything.
+// Otherwise the logon right, a credential check (a wrong password counts
+// toward the account's lockout) and ACEs on the log directories would all
+// come first. Install's own probe still catches a service created after this
+// one.
 func (c commands) refuseExisting(name string) error {
 	if err := validateName(name); err != nil {
 		return err
@@ -230,8 +246,8 @@ func (c commands) displayName(name, flagValue string, explicit bool) string {
 }
 
 // installConfig resolves the config file, the drain timeout, the account and
-// its password, and validates the registration they make, without changing
-// anything on the system.
+// its password, refuses files someone else could change, and validates the
+// registration they make, without changing anything on the system.
 func (c commands) installConfig(cmd *cobra.Command, f installFlags) (ServiceConfig, error) {
 	cfgPath, err := ResolveConfigPath(configFlag(cmd), c.spec.Binary)
 	if err != nil {
@@ -248,6 +264,9 @@ func (c commands) installConfig(cmd *cobra.Command, f installFlags) (ServiceConf
 	// Normalized before anything sees it: a bare name would reach LogonUserW
 	// with no domain, which it reads as a UPN.
 	account := NormalizeAccount(f.user)
+	if err := c.checkInstallPaths(cfgPath, exe, f.name, account); err != nil {
+		return ServiceConfig{}, err
+	}
 	password, err := c.readPassword(cmd, account)
 	if err != nil {
 		return ServiceConfig{}, err
@@ -264,6 +283,52 @@ func (c commands) installConfig(cmd *cobra.Command, f installFlags) (ServiceConf
 		DelayedAutoStart: c.spec.DelayedAutoStart,
 		DrainTimeout:     drain,
 	})
+}
+
+// checkInstallPaths refuses to register a service, to run as account, whose
+// configuration, binary, log directory or any path its configuration names
+// someone other than SYSTEM, Administrators and account could change: each
+// is a way to run code as the service's account, LocalSystem by default.
+//
+// It first creates %ProgramData%\sqi administrators-only when it is missing
+// (ensureSqiDir), so a fresh host's default log directory is judged by it
+// rather than by %ProgramData%, which every user can write. A refusal after
+// that leaves only that empty directory behind.
+func (c commands) checkInstallPaths(cfgPath, exe, name, account string) error {
+	if err := c.refuseUnreadableConfig(cfgPath, account); err != nil {
+		return err
+	}
+	paths, err := c.spec.ConfigPaths(cfgPath, account)
+	if err != nil {
+		return err
+	}
+	if err := c.ops.ensureSqiDir(); err != nil {
+		return err
+	}
+	err = c.ops.checkPaths(installRefs(cfgPath, exe, name, paths), account)
+	if u, ok := errors.AsType[*UntrustedPathsError](err); ok {
+		return c.untrustedError(u, exe, account)
+	}
+	return err
+}
+
+// refuseUnreadableConfig refuses a service running as account (not
+// LocalSystem, "") whose configuration is in %ProgramData%\sqi, which only
+// SYSTEM and Administrators can read: the service could not load it.
+// config init --user writes one into a directory of the account's own.
+func (c commands) refuseUnreadableConfig(cfgPath, account string) error {
+	sqiDir := SqiDir()
+	if account == "" || !PathWithin(filepath.Dir(cfgPath), sqiDir) {
+		return nil
+	}
+	ownDir := filepath.Join(ProgramDataDir(), "sqi-<name>", c.spec.Binary+".yaml")
+	return fmt.Errorf("%s is in %s, which only SYSTEM and Administrators can read, so a service running as %s "+
+		"could not load it. Write a configuration for the account in a directory of its own, then install with it:\n"+
+		"  %s config init --user %s --config %s\n"+
+		"  %s service install --user %s --config %s",
+		cfgPath, sqiDir, account,
+		c.spec.Binary, account, ownDir,
+		c.spec.Binary, account, ownDir)
 }
 
 // readPassword prompts for account's password, or reads it from piped stdin.

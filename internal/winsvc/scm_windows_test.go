@@ -663,3 +663,81 @@ func computerName(t *testing.T) string {
 	}
 	return n
 }
+
+// TestEnsureLogDir_GivesAccountItsOwnDirAndTraverse pins the per-service log
+// layout. Each service logs in its own %ProgramData%\sqi\logs\<name>; the
+// shared %ProgramData%\sqi and %ProgramData%\sqi\logs stay SYSTEM and
+// Administrators only. A --user service gets Modify on its own directory and,
+// on each shared directory above it, one non-inheritable allow ACE of
+// read-attributes, traverse and synchronize: at start it opens its log
+// directory's parent for its attributes (checkParent) to refuse a junction
+// there. A second call adds no duplicate, LocalSystem ("") gets none, another
+// service's directory is never touched, and every shared directory still
+// passes the install check with the account not trusted (none of those rights
+// can change it). NetworkService stands in for the account, named via its SID
+// so the test also passes on a localized Windows.
+func TestEnsureLogDir_GivesAccountItsOwnDirAndTraverse(t *testing.T) {
+	pd := t.TempDir()
+	t.Setenv("ProgramData", pd)
+	sqiDir := filepath.Join(pd, "sqi")
+	logs := filepath.Join(sqiDir, "logs")
+	server := filepath.Join(logs, "sqi-server")
+	own := filepath.Join(logs, "sqi-worker-render")
+	svc, account := wellKnownAccount(t, windows.WinNetworkServiceSid)
+
+	if err := EnsureLogDir(server, ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{sqiDir, logs, server} {
+		acl, _ := daclOf(t, d)
+		if got := allowedFor(aclEntries(t, acl), svc); len(got) != 0 {
+			t.Fatalf("LocalSystem install granted %s on %s: %+v", account, d, got)
+		}
+	}
+	for range 2 {
+		if err := EnsureLogDir(own, account); err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range []string{sqiDir, logs} {
+			acl, protected := daclOf(t, d)
+			if !protected {
+				t.Errorf("the grant unprotected %s", d)
+			}
+			got := allowedFor(aclEntries(t, acl), svc)
+			if len(got) != 1 || got[0].mask != sqiDirAccountAccess || got[0].flags != 0 {
+				t.Fatalf("ACEs for %s on %s = %+v, want exactly one non-inheritable %#x", account, d, got, sqiDirAccountAccess)
+			}
+		}
+		acl, protected := daclOf(t, own)
+		if !protected {
+			t.Errorf("%s has an unprotected DACL", own)
+		}
+		got := allowedFor(aclEntries(t, acl), svc)
+		if len(got) != 1 || got[0].mask&fileModifyAccess != fileModifyAccess || !inheritable(got[0]) {
+			t.Fatalf("ACEs for %s on %s = %+v, want one inheritable ACE of at least Modify", account, own, got)
+		}
+	}
+	acl, _ := daclOf(t, server)
+	if got := allowedFor(aclEntries(t, acl), svc); len(got) != 0 {
+		t.Errorf("another service's log directory %s got an ACE for %s: %+v", server, account, got)
+	}
+	refs := []PathRef{
+		{Key: "default log directory parent", Path: logs},
+		{Key: "default log directory", Path: server},
+		{Key: "config directory", Path: sqiDir},
+	}
+	if err := checkPaths(refs, testTrusted(t)); err != nil {
+		t.Errorf("the install check refuses a LocalSystem service after the --user grant: %v", err)
+	}
+
+	other := filepath.Join(t.TempDir(), "logs-parent")
+	if err := EnsureLogDir(filepath.Join(other, "logs"), account); err != nil {
+		t.Fatal(err)
+	}
+	acl, _ = daclOf(t, other)
+	for _, e := range allowedFor(aclEntries(t, acl), svc) {
+		if e.flags&windows.INHERITED_ACE == 0 {
+			t.Errorf("a parent outside %%ProgramData%%\\sqi got an ACE for %s: %+v", account, e)
+		}
+	}
+}

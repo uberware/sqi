@@ -10,7 +10,9 @@ This document covers installing, running, upgrading, and maintaining
 ### Pre-built binaries
 
 Download the latest release archive from the GitHub Releases page. One archive
-per platform contains both `sqi-server` and `sqi-worker`. Archives are named
+per platform contains both `sqi-server` and `sqi-worker`, the annotated example
+configuration files and the service files (Linux systemd units, the macOS
+launchd agent for the worker). Archives are named
 `sqi_<OS>_<arch>` — for example `sqi_Linux_x86_64.tar.gz`,
 `sqi_Linux_arm64.tar.gz`, `sqi_Darwin_arm64.tar.gz`,
 `sqi_Windows_x86_64.zip`.
@@ -18,10 +20,15 @@ per platform contains both `sqi-server` and `sqi-worker`. Archives are named
 ```sh
 # Linux (x86_64)
 curl -Lo sqi.tar.gz https://github.com/uberware/sqi/releases/latest/download/sqi_Linux_x86_64.tar.gz
-tar -xzf sqi.tar.gz sqi-server
-chmod +x sqi-server
-sudo mv sqi-server /usr/local/bin/
+mkdir sqi
+tar -xzf sqi.tar.gz -C sqi
+cd sqi
+sudo install -m 0755 sqi-server /usr/local/bin/sqi-server
 ```
+
+The sections below run from that extracted `sqi` directory, which is where
+`deploy/systemd/` is. [Worker deployment](worker-deployment.md#pre-built-binaries)
+lists what the archive holds.
 
 Verify the download against the published checksums:
 
@@ -67,20 +74,49 @@ make build
 
 ### 1. Create a configuration file
 
-Copy the example and edit it:
+`sqi-server config init` writes a starter file that names where the server keeps
+its state, the SQLite database and the embedded broker's JetStream directory.
+Every other setting keeps its default.
+
+| Platform | Default file | `store.sqlite_path` | `nats.embedded.data_dir` |
+|---|---|---|---|
+| Linux | `/etc/sqi/sqi-server.yaml` | `/var/lib/sqi-server/sqi.db` | `/var/lib/sqi-server/nats` |
+| macOS | `~/.sqi/sqi-server.yaml` | `~/Library/Application Support/sqi-server/sqi.db` | `~/Library/Application Support/sqi-server/nats` |
+| Windows | `C:\ProgramData\sqi\sqi-server.yaml` | `C:\ProgramData\sqi\data\sqi.db` | `C:\ProgramData\sqi\data\nats` |
+
+On Linux the file is readable by the `sqi` group, so create the service user
+first (the next section's unit runs as it); `config init` stops with this same
+command when the group is missing:
 
 ```sh
-mkdir -p /etc/sqi
-cp config/sqi-server.example.yaml /etc/sqi/sqi-server.yaml
-$EDITOR /etc/sqi/sqi-server.yaml
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin sqi
+sudo sqi-server config init
 ```
 
-Minimum required changes for production:
+```text
+wrote /etc/sqi/sqi-server.yaml
+next: sudo cp deploy/systemd/sqi-server.service /etc/systemd/system/ && sudo systemctl enable --now sqi-server
+```
 
-- `store.sqlite_path` — set to an absolute path on a local SSD, or set
+The file is `0640`, owned by root and the `sqi` group. On macOS it is `0600` in
+your home directory and the command creates the data directory `0700`. On Windows
+it is written into `C:\ProgramData\sqi`, which `config init` creates
+administrators-only; run it from an elevated PowerShell (see
+[Windows service](#windows-service)). The root `--config` flag writes the file
+elsewhere (on Linux only `/etc/sqi/sqi-server.yaml` itself is `0640`, root and
+`sqi`; a file at any other path is `0600`, owned by whoever ran the command),
+and `--force` replaces one that exists. The `next:` line then names that file:
+on Windows in the `service install` command, on Linux and macOS as what to
+change in the unit or agent, which reads the default path.
+
+Edit the file for production. The annotated
+[`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml)
+in the archive lists every setting. The ones to look at first:
+
+- `store.sqlite_path` — an absolute path on a local SSD, or set
   `store.driver: postgres` and `store.postgres.dsn` to keep the state in
   PostgreSQL instead (see [Running on PostgreSQL](#running-on-postgresql))
-- `nats.embedded.data_dir` — set to a persistent directory for JetStream
+- `nats.embedded.data_dir` — a persistent directory for JetStream
   storage. To run on a NATS cluster of your own instead of the embedded
   broker, see [Running on an external NATS cluster](#running-on-an-external-nats-cluster)
 - `http.addr` — restrict to `127.0.0.1:8080` if a reverse proxy handles TLS
@@ -125,43 +161,30 @@ curl -sf http://localhost:8080/readyz  && echo "ready"
 
 ### systemd (Linux)
 
-Create `/etc/systemd/system/sqi-server.service`:
-
-```ini
-[Unit]
-Description=sqi distributed task server
-After=network.target
-Wants=network.target
-
-[Service]
-Type=simple
-User=sqi
-Group=sqi
-ExecStart=/usr/local/bin/sqi-server serve --config /etc/sqi/sqi-server.yaml
-Restart=on-failure
-RestartSec=5s
-
-# Give the process time to drain in-flight work before SIGKILL
-TimeoutStopSec=60s
-
-# Logging goes to journald; no need to configure a log file.
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=sqi-server
-
-# Resource limits — tune to your hardware
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
-```
+The archive ships the unit as
+[`deploy/systemd/sqi-server.service`](https://github.com/uberware/sqi/blob/main/deploy/systemd/sqi-server.service).
+With the `sqi` user created and the configuration written
+([First-run setup](#1-create-a-configuration-file)), from the extracted archive:
 
 ```sh
-sudo useradd -r -s /sbin/nologin sqi
+sudo cp deploy/systemd/sqi-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now sqi-server
 sudo journalctl -u sqi-server -f
 ```
+
+The unit runs `/usr/local/bin/sqi-server serve --config /etc/sqi/sqi-server.yaml`
+as `sqi`, with `/var/lib/sqi-server` as its working and state directory (systemd
+creates it, owned by `sqi`, mode `0750`). It restarts the server after a failure,
+gives it `TimeoutStopSec=60s` to drain in-flight work before `SIGKILL`, raises
+`LimitNOFILE` to 65536, and sends its output to journald, so there is no log file
+to configure.
+
+The unit is confined with `NoNewPrivileges`, `PrivateTmp` and
+`ProtectSystem=strict`, which makes everything except `/var/lib/sqi-server`
+read-only for the service, so a backup written anywhere else is blocked. Add the
+backup directory to `ReadWritePaths=` in the unit, then
+`sudo systemctl daemon-reload`, before pointing `sqi-server backup` at it.
 
 ### Windows service
 
@@ -182,23 +205,43 @@ The command a service runs is different too: the server's is `serve`, not
 `sqi-server.exe serve --config C:\ProgramData\sqi\sqi-server.yaml` (stop the
 service first, or the two fight over the same ports and database).
 
-Prepare `C:\ProgramData\sqi` first, exactly as in
-[step 2 of the worker guide](worker-deployment.md#2-create-the-directory-administrators-only):
-created by you, as administrator, administrators-only, with the owner checked.
-The server's configuration, database and JetStream data end up there, and a user
-who created it first can edit the configuration a LocalSystem service runs with,
-and read or replace its database. Then, from an elevated PowerShell (every
-`service` subcommand needs one, `status` included):
+Copy `sqi-server.exe` to `C:\Program Files\sqi` from an elevated PowerShell, as
+in [step 1 of the worker guide](worker-deployment.md#1-install-the-binary): the
+service runs it as LocalSystem, so `service install` refuses a binary that
+anyone other than SYSTEM and Administrators can change, which includes one in
+your Downloads folder. Then write the configuration and install, from the same
+elevated PowerShell (every `service` subcommand needs one, `status` included):
 
 ```powershell
-& "C:\Program Files\sqi\sqi-server.exe" config print > C:\ProgramData\sqi\sqi-server.yaml
-# edit the file, then:
+New-Item -ItemType Directory -Force -Path 'C:\Program Files\sqi' | Out-Null
+Copy-Item .\sqi-server.exe 'C:\Program Files\sqi\'
+& "C:\Program Files\sqi\sqi-server.exe" config init
 & "C:\Program Files\sqi\sqi-server.exe" service install --start
 sqi-server service status   # a few seconds later
 ```
 
-`config print` writes the values in effect in the shell that ran it, `SQI_*`
-variables included, so run it from a shell without any you do not want kept.
+```text
+wrote C:\ProgramData\sqi\sqi-server.yaml
+next: & 'C:\Program Files\sqi\sqi-server.exe' service install --start
+```
+
+`config init` creates `C:\ProgramData\sqi` if it is missing, owned by
+Administrators and open only to SYSTEM and Administrators, and writes
+`sqi-server.yaml` into it with the database at `C:\ProgramData\sqi\data\sqi.db`
+and the JetStream directory at `C:\ProgramData\sqi\data\nats`. The server's
+configuration, database and JetStream data end up there, and a user who created
+the directory first could edit the configuration a LocalSystem service runs
+with, and read or replace its database, which is why `config init` makes it and
+refuses one that anyone else can change. See
+[why the directory is created for you](worker-deployment.md#why-the-directory-is-created-for-you)
+and [what `service install` checks](worker-deployment.md#what-service-install-checks)
+in the worker guide for what is refused and how to move a suspect directory
+aside.
+
+Edit the file for production as under [First-run setup](#1-create-a-configuration-file),
+before installing. `config print` lists every option with the values in effect in
+the shell that ran it, `SQI_*` variables included; it is for reading, not a
+template, so do not install its output as the configuration.
 There is no separate migration step: the server applies pending migrations
 when it starts. The service reports *Running* before the server has read its
 configuration, so `service install --start` (and `service start`) watches it for
@@ -229,14 +272,18 @@ create — see
   60 s);
 - is given 45 s to shut down when Windows reboots: the server's own 30 s
   shutdown bound (`server.ShutdownTimeout`, not configurable) plus 15 s;
-- runs in the configuration file's directory, so the default relative
-  `store.sqlite_path` (`sqi.db`) and `nats.embedded.data_dir` (`data\nats`) live beside the
-  config — `C:\ProgramData\sqi` by default. Set absolute paths, for example on a
-  data volume, if you would rather keep them elsewhere. A `--user` account
-  cannot read the administrators-only directory: give the server its own, as
+- runs in the configuration file's directory, so a relative `store.sqlite_path`
+  or `nats.embedded.data_dir` resolves beside the config. The file `config init`
+  writes names absolute paths, so this matters only for a configuration that
+  leaves them at their relative defaults (`sqi.db`, `data\nats`). A `--user`
+  account cannot read the administrators-only `C:\ProgramData\sqi`: give the
+  server a directory of its own with `sqi-server config init --user DOMAIN\name
+  --config C:\ProgramData\sqi-server\sqi-server.yaml`, which grants the account
+  read on that directory and Modify on its `data` folder (where the database and
+  JetStream directory go), as
   [choosing the account](worker-deployment.md#choosing-the-account) does for a
-  worker, with write access to the database and JetStream directories;
-- logs to `C:\ProgramData\sqi\logs\sqi-server.log` unless `log.file` is set
+  worker, and install with the same `--config`;
+- logs to `C:\ProgramData\sqi\logs\sqi-server\sqi-server.log` unless `log.file` is set
   (see [Writing to a file](#writing-to-a-file)).
 
 ```powershell
@@ -257,29 +304,23 @@ file (the fallback is described under
 [Logs](worker-deployment.md#logs) in the worker guide). Both are best effort.
 
 > `migrate`, `backup`, `restore`, `store copy` and `worker`, run from a
-> console, use the shell's working directory, not the service's. With the
-> default relative `store.sqlite_path` and `nats.embedded.data_dir`,
+> console, use the shell's working directory, not the service's. The file
+> `config init` writes names absolute paths, so it is not affected; a
+> configuration that leaves `store.sqlite_path` and `nats.embedded.data_dir`
+> relative is. There,
 > `sqi-server migrate up --config C:\ProgramData\sqi\sqi-server.yaml` looks for
 > `sqi.db` in the directory the shell is in (an elevated PowerShell usually starts in
 > `C:\Windows\System32`) and would create a new, empty database there, while
 > `backup` and `worker` would report `no database at …`. `restore` would put the
 > backup in `C:\Windows\System32` and leave the server's own database and NATS
 > directory untouched. Either set absolute paths in the configuration file, or
-> `Set-Location C:\ProgramData\sqi` first.
+> `Set-Location C:\ProgramData\sqi` first (the Windows commands in this guide do).
 
-The server's logs can carry job and environment detail, and every sqi service on
-a host shares the one `C:\ProgramData\sqi\logs` directory by default. Any service
-installed with `--user` — a worker on the same host, say — is always granted
-access to that directory, whatever its own `log.file` is. If the server shares a
-host with one, give the server a `log.file` outside that directory, in one only
-it and administrators can read and write (for example
-`log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`), restart the server
-(`service stop`, then `service start`: while it runs it holds
-`logs\sqi-server.log` open, and Windows will not let the file be moved or
-deleted), then move or delete that `sqi-server.log` and its `.1` to `.N` backups
-out of `logs\` (the account's permission already reaches those files), and read the
-[security notes](worker-deployment.md#security-notes-and-known-limitations) for
-what that costs. `service stop`, `start` and `uninstall` act on any service name
+The server's logs can carry job and environment detail. Each sqi service on a
+host logs to a directory of its own under `C:\ProgramData\sqi\logs`, which only
+SYSTEM, Administrators and that service's account can open, so a service
+installed with `--user` — a worker on the same host, say — cannot read the
+server's log. `service stop`, `start` and `uninstall` act on any service name
 you give `--name`, like `sc.exe`.
 
 ---
@@ -350,9 +391,9 @@ sudo systemctl stop sqi-server
 
 # 2. Back the database up with the binary still installed. This is the backup
 #    a rollback restores. Name the database file with --db (see below).
-sudo -u sqi sqi-server backup --db /var/lib/sqi/sqi.db \
+sudo -u sqi sqi-server backup --db /var/lib/sqi-server/sqi.db \
   --out /backups/sqi/pre-upgrade-$(date +%Y%m%d-%H%M%S).db
-ls -l /var/lib/sqi/sqi.db /backups/sqi/pre-upgrade-*.db   # check it (see below)
+ls -l /var/lib/sqi-server/sqi.db /backups/sqi/pre-upgrade-*.db   # check it (see below)
 
 # 3. Keep the old binary, and install the new one.
 sudo cp /usr/local/bin/sqi-server /usr/local/bin/sqi-server.old
@@ -397,24 +438,38 @@ sudo -u sqi sqi-server migrate up --config /etc/sqi/sqi-server.yaml
 Take the backup with the server stopped, not online, so that it is exactly the
 database the old binary last wrote and a rollback loses nothing.
 
+When the new release changed `deploy/systemd/sqi-server.service`, copy it over
+`/etc/systemd/system/sqi-server.service` and run `sudo systemctl daemon-reload`
+before step 4.
+
 ### Steps (Windows service)
 
-From an elevated PowerShell. `Set-Location` matters with the default relative
-`store.sqlite_path`: see the note under [Windows service](#windows-service).
+From an elevated PowerShell. `Set-Location` matters when the configuration leaves
+`store.sqlite_path` relative: see the note under
+[Windows service](#windows-service).
 
 ```powershell
 # While the old server still runs, check that the new binary loads the
 # configuration (it fails naming the line and the value it cannot read):
-.\sqi-server.exe config print --config C:\ProgramData\sqi\sqi-server.yaml > $null
+$new = (Resolve-Path .\sqi-server.exe).Path   # the new binary, from the extracted archive
+& $new config print --config C:\ProgramData\sqi\sqi-server.yaml > $null
 sqi-server service stop
 Set-Location C:\ProgramData\sqi
-sqi-server backup --db C:\ProgramData\sqi\sqi.db `
+sqi-server backup --db C:\ProgramData\sqi\data\sqi.db `
   --out "D:\backups\sqi\pre-upgrade-$(Get-Date -Format yyyyMMdd-HHmmss).db"
-Get-ChildItem C:\ProgramData\sqi\sqi.db, D:\backups\sqi\pre-upgrade-*.db   # compare sizes
+Get-ChildItem C:\ProgramData\sqi\data\sqi.db, D:\backups\sqi\pre-upgrade-*.db   # compare sizes
 Copy-Item "C:\Program Files\sqi\sqi-server.exe" "C:\Program Files\sqi\sqi-server.exe.old"
-# Replace C:\Program Files\sqi\sqi-server.exe with the new binary, then:
+Copy-Item $new "C:\Program Files\sqi\sqi-server.exe" -Force
 sqi-server service start
 ```
+
+Copy the new binary in from an elevated PowerShell, as above, so that it stays
+owned by Administrators in an administrators-only directory. The installed service
+keeps running the file at its registered path and `service start` does not look at
+it again, but `service install` (after a `service uninstall`, to change `--user`,
+say) refuses a binary that anyone other than SYSTEM and Administrators owns or
+can change: see
+[what `service install` checks](worker-deployment.md#what-service-install-checks).
 
 The backup directory must already exist; `backup` creates only the file.
 `--db` names the database for the same reason as on Linux.
@@ -498,14 +553,14 @@ older release silently runs on its defaults.
 
 ```sh
 sudo systemctl stop sqi-server
-# store.sqlite_path is /var/lib/sqi/sqi.db and the JetStream directory
-# /var/lib/sqi/nats here; every step runs as the service account, which owns
+# store.sqlite_path is /var/lib/sqi-server/sqi.db and the JetStream directory
+# /var/lib/sqi-server/nats here; every step runs as the service account, which owns
 # that directory.
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-for f in /var/lib/sqi/sqi.db /var/lib/sqi/sqi.db-wal /var/lib/sqi/sqi.db-shm /var/lib/sqi/nats; do
+for f in /var/lib/sqi-server/sqi.db /var/lib/sqi-server/sqi.db-wal /var/lib/sqi-server/sqi.db-shm /var/lib/sqi-server/nats; do
   if sudo -u sqi test -e "$f"; then sudo -u sqi mv "$f" "$f.pre-restore-$stamp"; fi
 done
-sudo -u sqi cp /backups/sqi/pre-upgrade-20261013-020000.db /var/lib/sqi/sqi.db
+sudo -u sqi cp /backups/sqi/pre-upgrade-20261013-020000.db /var/lib/sqi-server/sqi.db
 sudo install -m 0755 /usr/local/bin/sqi-server.old /usr/local/bin/sqi-server
 ```
 
@@ -712,15 +767,15 @@ owner-only, so one restored by `root` cannot be opened by a server running as
 `sqi`. On Windows the file grants its owner, `SYSTEM` and `Administrators`,
 which a LocalSystem service can read; a service installed with `--user` needs
 access granted to its account
-(`icacls C:\ProgramData\sqi\sqi.db /grant "DOMAIN\name:M"`).
+(`icacls C:\ProgramData\sqi\data\sqi.db /grant "DOMAIN\name:M"`).
 
 `restore` prints what it did:
 
 ```
 restored a schema-39 backup; schema is now 39
-previous database file moved to /var/lib/sqi/sqi.db.pre-restore-20261013T143216Z
+previous database file moved to /var/lib/sqi-server/sqi.db.pre-restore-20261013T143216Z
 fenced 1 attempt(s): their tasks are ready again
-NATS data directory moved to /var/lib/sqi/nats.pre-restore-20261013T143216Z
+NATS data directory moved to /var/lib/sqi-server/nats.pre-restore-20261013T143216Z
 ```
 
 There is one `previous database file` line for each file moved: a server that
@@ -767,7 +822,7 @@ sudo systemctl start sqi-server
 ```
 restored a schema-39 backup; schema is now 39
 fenced 0 attempt(s): their tasks are ready again
-NATS data directory moved to /var/lib/sqi/nats.pre-restore-20261013T143307Z
+NATS data directory moved to /var/lib/sqi-server/nats.pre-restore-20261013T143307Z
 ```
 
 A database that is not empty is refused before anything is loaded:
@@ -832,7 +887,7 @@ sudo systemctl start sqi-server
 
 ```
 restored a schema-39 backup; schema is now 39
-previous database file moved to /var/lib/sqi/sqi.db.pre-restore-20261013T143216Z
+previous database file moved to /var/lib/sqi-server/sqi.db.pre-restore-20261013T143216Z
 fenced 1 attempt(s): their tasks are ready again
 purged sqi's JetStream state on the external broker: its streams are empty and the server's durable consumers deleted
 ```
@@ -889,7 +944,7 @@ sudo -u sqi sqi-server restore --in-place --config /etc/sqi/sqi-server.yaml
 
 ```
 fenced 1 attempt(s): their tasks are ready again
-NATS data directory moved to /var/lib/sqi/nats.pre-restore-20261013T143953Z
+NATS data directory moved to /var/lib/sqi-server/nats.pre-restore-20261013T143953Z
 ```
 
 `--in-place` takes the lock, migrates, fences and moves the NATS directory
@@ -960,13 +1015,13 @@ copies; the old database holds password and token hashes, so do not leave it
 lying about:
 
 ```sh
-sudo rm /var/lib/sqi/sqi.db*.pre-restore-*
-sudo rm -r /var/lib/sqi/nats.pre-restore-*
+sudo rm /var/lib/sqi-server/sqi.db*.pre-restore-*
+sudo rm -r /var/lib/sqi-server/nats.pre-restore-*
 dropdb -h db.example.com -U postgres sqi_pre_restore_20261013   # PostgreSQL, if you kept it
 ```
 
 ```powershell
-Remove-Item C:\ProgramData\sqi\sqi.db*.pre-restore-*
+Remove-Item C:\ProgramData\sqi\data\sqi.db*.pre-restore-*
 Remove-Item -Recurse C:\ProgramData\sqi\data\nats.pre-restore-*
 ```
 
@@ -1117,7 +1172,7 @@ stops every server for one that changes it (see
 
 The server takes an exclusive operating-system lock (`flock` on Linux and
 macOS, `LockFileEx` on Windows) on `<database>.lock`, for example
-`/var/lib/sqi/sqi.db.lock`, created owner-only beside the database. The path
+`/var/lib/sqi-server/sqi.db.lock`, created owner-only beside the database. The path
 is the database file's own, with symlinks resolved, so every symlinked name
 for one database locks the same file. A hard link is the exception: the
 filesystem cannot tell it from the original, so it gets a lock file of its
@@ -1125,14 +1180,14 @@ own. A second server, or one of the commands above, fails at once, naming the
 database file it resolved:
 
 ```
-startup failed: open store: another sqi-server is using /var/lib/sqi/sqi.db (lock file /var/lib/sqi/sqi.db.lock is held); stop it first: fslock: lock is held
+startup failed: open store: another sqi-server is using /var/lib/sqi-server/sqi.db (lock file /var/lib/sqi-server/sqi.db.lock is held); stop it first: fslock: lock is held
 ```
 
 The lock, not the file, is the guard. The operating system drops it when the
 process exits however it exits, so a crashed server leaves nothing stale, and
 the file stays on disk. Do not delete it: that frees nothing, and a
 process opening it at that moment would lock a file the next one cannot see. To
-find the holder on Linux, `sudo fuser -v /var/lib/sqi/sqi.db.lock`.
+find the holder on Linux, `sudo fuser -v /var/lib/sqi-server/sqi.db.lock`.
 
 SQLite on a network filesystem is not supported, and the lock is only as good
 as that filesystem's locking (NFS and SMB emulate it with varying fidelity).
@@ -1406,7 +1461,7 @@ PostgreSQL.
 
    ```sh
    sudo systemctl stop sqi-server
-   sudo -u sqi sqi-server migrate up --db /var/lib/sqi/sqi.db
+   sudo -u sqi sqi-server migrate up --db /var/lib/sqi-server/sqi.db
    ```
 
 3. In the configuration, set `store.driver: postgres` and
@@ -1417,10 +1472,10 @@ PostgreSQL.
    ```yaml
    nats:
      embedded:
-       data_dir: "/var/lib/sqi/nats"   # unchanged
+       data_dir: "/var/lib/sqi-server/nats"   # unchanged
    store:
      driver: postgres
-     sqlite_path: "/var/lib/sqi/sqi.db"   # the copy's source; remove it afterwards
+     sqlite_path: "/var/lib/sqi-server/sqi.db"   # the copy's source; remove it afterwards
      postgres:
        dsn: "postgres://sqi@db.example.com:5432/sqi?sslmode=verify-full"
    ```
@@ -1486,7 +1541,7 @@ On Windows, the same steps from an elevated PowerShell:
 ```powershell
 sqi-server service stop
 Set-Location C:\ProgramData\sqi
-sqi-server migrate up --db C:\ProgramData\sqi\sqi.db
+sqi-server migrate up --db C:\ProgramData\sqi\data\sqi.db
 # Edit C:\ProgramData\sqi\sqi-server.yaml as in step 3, then:
 $env:PGPASSWORD = '<the sqi role password>'
 sqi-server store copy --config C:\ProgramData\sqi\sqi-server.yaml
@@ -2229,7 +2284,7 @@ The environment variables are `SQI_LOG_FILE`, `SQI_LOG_MAX_SIZE_MB` and
   current file and tries again after another `max_size_mb` of output, so the file
   can temporarily grow past its limit.
 - **A Windows service always logs to a file.** With `log.file` empty it writes
-  `C:\ProgramData\sqi\logs\<service-name>.log` (`sqi-server.log` by default),
+  `C:\ProgramData\sqi\logs\<service-name>\<service-name>.log` (`sqi-server\sqi-server.log` by default),
   creating that directory. See [Windows service](#windows-service).
 
 ### Routing logs

@@ -70,9 +70,16 @@ func ProgramDataDir() string {
 	return `C:\ProgramData`
 }
 
-// DefaultLogPath is where a service logs when log.file is not configured.
+// SqiDir is %ProgramData%\sqi, the directory every sqi service shares.
+func SqiDir() string {
+	return filepath.Join(ProgramDataDir(), "sqi")
+}
+
+// DefaultLogPath is where a service logs when log.file is not configured:
+// %ProgramData%\sqi\logs\<name>\<name>.log. Each service has a directory of
+// its own, so the account of one never gains access to another's logs.
 func DefaultLogPath(serviceName string) string {
-	return filepath.Join(ProgramDataDir(), "sqi", "logs", serviceName+".log")
+	return filepath.Join(SqiDir(), "logs", serviceName, serviceName+".log")
 }
 
 // requireConfigFile refuses to run a Windows service that was given no
@@ -102,7 +109,7 @@ func requireConfigFile(binary, configPath string) error {
 // (already absolute, see Run), or %ProgramData%\sqi when it is empty.
 func workDir(configPath string) string {
 	if configPath == "" {
-		return filepath.Join(ProgramDataDir(), "sqi")
+		return SqiDir()
 	}
 	return filepath.Dir(configPath)
 }

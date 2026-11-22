@@ -1,0 +1,457 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//go:build windows
+
+package winsvc
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
+
+// readExecuteAccess is Explorer's "Read & execute".
+const readExecuteAccess = windows.ACCESS_MASK(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_EXECUTE)
+
+// configDirKey names the configuration directory in a refusal, as
+// `service install` names it.
+const configDirKey = "config directory"
+
+// isPrivileged reports whether this process is elevated or LocalSystem, and so
+// may make BUILTIN\Administrators the owner of what it creates. A variable so
+// a test can take the unprivileged branch from an elevated process.
+var isPrivileged = func() bool {
+	token := windows.GetCurrentProcessToken()
+	if token.IsElevated() {
+		return true
+	}
+	tu, err := token.GetTokenUser()
+	return err == nil && tu.User.Sid.IsWellKnown(windows.WinLocalSystemSid)
+}
+
+// PrepareConfigDir makes dir the directory config init writes into. A missing
+// dir is created owned by BUILTIN\Administrators with a protected DACL of
+// inheritable full control for SYSTEM and Administrators, plus inheritable
+// read-and-execute for account when account != "". An existing dir must pass
+// CheckPaths (account trusted) and then gets the account's read-and-execute
+// ACE when account != "". The ACL of a directory that fails the check is never
+// edited. The caller is elevated.
+//
+// Missing parents are created the same way, without the account's ACE. A
+// directory it created whose ancestors then fail the check is removed again,
+// and the check's *UntrustedPathsError returned.
+func PrepareConfigDir(dir, account string) error {
+	reader, err := resolveUser(account)
+	if err != nil {
+		return err
+	}
+	trusted, err := trustedSet(reader)
+	if err != nil {
+		return err
+	}
+	return prepareConfigDir(dir, reader, trusted)
+}
+
+// prepareConfigDir is PrepareConfigDir with the account resolved (reader nil
+// for none) and the trusted set given.
+func prepareConfigDir(dir string, reader *windows.SID, trusted []*windows.SID) error {
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("configuration directory %q is not an absolute path", dir)
+	}
+	dir = filepath.Clean(dir)
+	created, err := createAdminOnly(dir, reader)
+	if err != nil {
+		return err
+	}
+	if err := checkPaths([]PathRef{{Key: configDirKey, Path: dir}}, trusted); err != nil {
+		removeDirs(created)
+		return err
+	}
+	if slices.Contains(created, dir) {
+		return nil
+	}
+	// Existing, and nobody untrusted can change it: the check refused a
+	// junction or symbolic link, but not a file.
+	if err := checkPlainDir(dir); err != nil {
+		return fmt.Errorf("cannot use configuration directory: %w", err)
+	}
+	if reader == nil {
+		return nil
+	}
+	return grantDir(dir, reader, readExecuteAccess)
+}
+
+// EnsureSqiDir creates %ProgramData%\sqi when it is missing, as
+// PrepareConfigDir creates a directory: owned by BUILTIN\Administrators with
+// a protected DACL of inheritable full control for SYSTEM and Administrators.
+// An existing one is left as it is, for CheckPaths to judge. `service
+// install` calls it before its check: the default log directory lives there,
+// and a missing one would be judged by %ProgramData% itself, which every
+// user can write. Caller is elevated.
+func EnsureSqiDir() error {
+	_, err := createAdminOnly(SqiDir(), nil)
+	return err
+}
+
+// PrepareDataDir creates dir if missing (inheriting its parent's DACL) and
+// grants account an inheritable Modify ACE (fileModifyAccess).
+//
+// A created dir is owned by BUILTIN\Administrators, as PrepareConfigDir's
+// are, so the check `service install` makes passes it; the caller is
+// elevated. dir's parent must exist. Either way a dir that is, or sits under,
+// a junction or symbolic link is refused.
+func PrepareDataDir(dir, account string) error {
+	sid, err := resolveUser(account)
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("data directory %q is not an absolute path", dir)
+	}
+	if err := checkParent(dir); err != nil {
+		return err
+	}
+	admins, err := AdminsSID()
+	if err != nil {
+		return err
+	}
+	created, err := createSecuredDir(dir, admins, nil)
+	switch {
+	case err != nil:
+		return err
+	case sid != nil:
+		return grantDir(dir, sid, fileModifyAccess)
+	case !created:
+		return checkExistingDir(dir)
+	}
+	return nil
+}
+
+// createAdminOnly creates dir and each of its missing parents, outermost
+// first, owned by Administrators with a protected DACL of inheritable full
+// control for SYSTEM and Administrators, dir's also granting reader (when
+// non-nil) inheritable read-and-execute. It returns those it created; one
+// that appeared meanwhile is left as it is, for the caller's check. On an
+// error it removes what it created.
+func createAdminOnly(dir string, reader *windows.SID) ([]string, error) {
+	missing, err := missingDirs(dir)
+	if err != nil || len(missing) == 0 {
+		return nil, err
+	}
+	admins, err := AdminsSID()
+	if err != nil {
+		return nil, err
+	}
+	trustees, err := protectedTrustees(nil)
+	if err != nil {
+		return nil, err
+	}
+	parentDACL, err := buildDACL(trustees, fileAllAccess, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, nil)
+	if err != nil {
+		return nil, err
+	}
+	leafDACL := parentDACL
+	if reader != nil {
+		leafDACL, err = buildDACL([]*windows.SID{reader}, readExecuteAccess, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, parentDACL)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var created []string
+	for _, p := range missing {
+		dacl := parentDACL
+		if p == dir {
+			dacl = leafDACL
+		}
+		ok, err := createSecuredDir(p, admins, dacl)
+		if err != nil {
+			removeDirs(created)
+			return nil, err
+		}
+		if ok {
+			created = append(created, p)
+		}
+	}
+	return created, nil
+}
+
+// missingDirs is dir and each of its ancestors that does not exist, outermost
+// first; empty when dir exists.
+func missingDirs(dir string) ([]string, error) {
+	var missing []string
+	for p := dir; ; {
+		_, err := os.Lstat(p)
+		switch {
+		case err == nil:
+			slices.Reverse(missing)
+			return missing, nil
+		case !errors.Is(err, fs.ErrNotExist):
+			return nil, fmt.Errorf("stat %s: %w", p, err)
+		}
+		missing = append(missing, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			return nil, fmt.Errorf("no part of %s exists", dir)
+		}
+		p = parent
+	}
+}
+
+// removeDirs removes the directories createAdminOnly created, innermost
+// first. They are empty: nobody else could create anything in them.
+func removeDirs(dirs []string) {
+	for _, d := range slices.Backward(dirs) {
+		os.Remove(d) // best-effort cleanup; the caller returns the error that caused it
+	}
+}
+
+// mkdirParent creates dir's missing parents for mkdirProtected.
+//
+// Below %ProgramData%\sqi (see sqiAncestors), each missing directory from
+// %ProgramData%\sqi down to dir's parent — the shared %ProgramData%\sqi\logs
+// above every service's own log directory — is created protected rather than
+// inheriting ProgramData's ACL, which lets every local user create and write
+// files in it. A privileged process (`service install`, a LocalSystem
+// service's first start) gives it SYSTEM and Administrators only, owned by
+// Administrators, as PrepareConfigDir does. An unprivileged one (a
+// hand-registered service running as an ordinary account, on its first start)
+// cannot make Administrators the owner, and could not create its log
+// directory in one only they may change, so it owns the directory and adds its
+// own account: the service account controlling its own directory is not an
+// escalation. An existing one is left as it is (mkdirProtected has already
+// refused a junction among them). Every other parent is created by
+// os.MkdirAll and inherits as usual.
+func mkdirParent(dir string) error {
+	tree := sqiAncestors(dir)
+	if len(tree) == 0 {
+		return mkdirAll(filepath.Dir(dir))
+	}
+	if err := mkdirAll(filepath.Dir(tree[0])); err != nil {
+		return err
+	}
+	var self *windows.SID
+	if !isPrivileged() {
+		me, err := processUser()
+		if err != nil {
+			return err
+		}
+		self = me
+	}
+	for _, p := range tree {
+		switch _, err := os.Lstat(p); {
+		case err == nil:
+			continue
+		case !errors.Is(err, fs.ErrNotExist):
+			return fmt.Errorf("stat %s: %w", p, err)
+		}
+		created, err := createProtected(p, self)
+		if err != nil {
+			return err
+		}
+		if !created {
+			// Someone else created it meanwhile: refuse it if it is a junction.
+			if err := checkPlainDir(p); err != nil {
+				return fmt.Errorf("cannot use %s: %w", p, err)
+			}
+		}
+	}
+	return nil
+}
+
+// sqiAncestors is each directory from %ProgramData%\sqi down to dir's parent,
+// outermost first, when dir is below %ProgramData%\sqi; otherwise none. These
+// are the directories every sqi service shares, which `service install`
+// keeps SYSTEM and Administrators only.
+func sqiAncestors(dir string) []string {
+	sqi := SqiDir()
+	parent := filepath.Dir(filepath.Clean(dir))
+	if !PathWithin(parent, sqi) {
+		return nil
+	}
+	var tree []string
+	for p := parent; ; p = filepath.Dir(p) {
+		tree = append(tree, p)
+		if strings.EqualFold(p, sqi) || filepath.Dir(p) == p {
+			break
+		}
+	}
+	slices.Reverse(tree)
+	return tree
+}
+
+// checkSqiAncestors refuses dir when one of its sqiAncestors that exists is a
+// junction, symbolic link or anything but a plain directory. Checking each
+// from the outermost down means none is reached through a redirected one: any
+// local user can create %ProgramData%\sqi as a junction, and a log directory
+// two levels below it would otherwise resolve into the junction's target.
+func checkSqiAncestors(dir string) error {
+	for _, p := range sqiAncestors(dir) {
+		switch err := checkPlainDir(p); {
+		case isNotFound(err):
+			return nil // nothing below it exists either
+		case err != nil:
+			return fmt.Errorf("cannot secure %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+// checkPlainDir fails, with openPlainDir's error, unless dir is a plain
+// directory, not a junction or symbolic link. A caller can test the error for
+// a missing dir.
+func checkPlainDir(dir string) error {
+	h, err := openPlainDir(dir, windows.FILE_READ_ATTRIBUTES)
+	if err != nil {
+		return err
+	}
+	windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
+	return nil
+}
+
+func mkdirAll(dir string) error {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	return nil
+}
+
+// createProtected creates path, whose parent must exist, with a protected
+// DACL of inheritable full control for SYSTEM, Administrators and account
+// (when non-nil), owned by Administrators when this process is privileged and
+// by the token's default owner, its own account, otherwise. It reports false,
+// changing nothing, when path already exists.
+func createProtected(path string, account *windows.SID) (bool, error) {
+	var owner *windows.SID // nil: the token's default
+	if isPrivileged() {
+		admins, err := AdminsSID()
+		if err != nil {
+			return false, err
+		}
+		owner = admins
+	}
+	trustees, err := protectedTrustees(account)
+	if err != nil {
+		return false, err
+	}
+	dacl, err := buildDACL(trustees, fileAllAccess, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, nil)
+	if err != nil {
+		return false, err
+	}
+	return createSecuredDir(path, owner, dacl)
+}
+
+func processUser() (*windows.SID, error) {
+	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, fmt.Errorf("read process account: %w", err)
+	}
+	return tu.User.Sid, nil
+}
+
+// createSecuredDir creates path, whose parent must exist, owned by owner
+// (nil: the token's default owner) and, when dacl is non-nil, with dacl as its
+// protected DACL (nil inherits the parent's). Both are in the security
+// descriptor CreateDirectory is given, so they are in place from the moment
+// path exists: nothing can be created in it under an inherited DACL first.
+// Callers that need Administrators as the owner pass it, since the default
+// depends on the creating token. A restricted token may refuse even its own
+// account as an explicit owner, so the unprivileged callers leave it to the
+// default.
+//
+// It reports false, changing nothing, when path already exists. It then reads
+// the security back through a handle to path itself and removes path, failing,
+// unless it is what was asked for — a file system without ACLs ignores the
+// descriptor.
+func createSecuredDir(path string, owner *windows.SID, dacl *windows.ACL) (bool, error) {
+	sd, err := newSecurityDescriptor(owner, dacl)
+	if err != nil {
+		return false, fmt.Errorf("secure %s: %w", path, err)
+	}
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return false, fmt.Errorf("encode path %q: %w", path, err)
+	}
+	sa := windows.SecurityAttributes{SecurityDescriptor: sd}
+	sa.Length = uint32(unsafe.Sizeof(sa))
+	if err := windows.CreateDirectory(p, &sa); err != nil {
+		if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+			return false, nil
+		}
+		return false, fmt.Errorf("create %s: %w", path, err)
+	}
+	if err := verifySecurity(path, owner, dacl != nil); err != nil {
+		os.Remove(path) // leave nothing behind; returning the reason
+		return false, err
+	}
+	return true, nil
+}
+
+// newSecurityDescriptor is an absolute security descriptor carrying owner
+// and dacl, as a protected DACL, each when non-nil.
+func newSecurityDescriptor(owner *windows.SID, dacl *windows.ACL) (*windows.SECURITY_DESCRIPTOR, error) {
+	sd, err := windows.NewSecurityDescriptor()
+	if err != nil {
+		return nil, err
+	}
+	if owner != nil {
+		if err := sd.SetOwner(owner, false); err != nil {
+			return nil, err
+		}
+	}
+	if dacl == nil {
+		return sd, nil
+	}
+	if err := sd.SetDACL(dacl, true, false); err != nil {
+		return nil, err
+	}
+	if err := sd.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED); err != nil {
+		return nil, err
+	}
+	return sd, nil
+}
+
+// verifySecurity fails unless path has an owner, which is owner when owner is
+// non-nil, and, when protected, a protected DACL. It opens path itself for
+// READ_CONTROL only, which its owner holds whatever its DACL grants.
+func verifySecurity(path string, owner *windows.SID, protected bool) error {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return fmt.Errorf("encode path %q: %w", path, err)
+	}
+	h, err := windows.CreateFile(p, windows.READ_CONTROL,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("read security of %s: %w", path, err)
+	}
+	got, _, err := sd.Owner()
+	switch {
+	case err != nil:
+		return fmt.Errorf("read owner of %s: %w", path, err)
+	case got == nil:
+		return fmt.Errorf("secure %s: it was created with no owner", path)
+	case owner != nil && !got.Equals(owner):
+		return fmt.Errorf("secure %s: it was not created owned by %s", path, accountName(owner))
+	}
+	control, _, err := sd.Control()
+	switch {
+	case err != nil:
+		return fmt.Errorf("read ACL control of %s: %w", path, err)
+	case protected && control&windows.SE_DACL_PROTECTED == 0:
+		return fmt.Errorf("secure %s: it was not created with a protected ACL", path)
+	}
+	return nil
+}

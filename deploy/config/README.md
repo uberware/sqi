@@ -6,6 +6,8 @@ under [`config/`](../../config/):
 - [`config/sqi-server.example.yaml`](../../config/sqi-server.example.yaml)
 - [`config/sqi-worker.example.yaml`](../../config/sqi-worker.example.yaml)
 
+The release archives ship both files under `config/`.
+
 Copy the relevant file to one of the search locations
 (`./config/`, `~/.sqi/`, `/etc/sqi/`) and edit. They are kept at the repo root
 so the dev workflow and the deployment docs reference one source of truth.

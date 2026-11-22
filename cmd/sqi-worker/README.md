@@ -147,6 +147,7 @@ curl -s http://localhost:8080/api/v1/workers | jq '.[].name'
 | `sqi-worker start` | Start the worker agent |
 | `sqi-worker start --dry-run` | Validate config and capabilities without connecting |
 | `sqi-worker start --nats-insecure-skip-verify` | Skip TLS cert verification (dev only) |
+| `sqi-worker config init [--nats-url URL]` | Write a starter configuration file to the platform's default location (`--force` replaces one; `--user ACCOUNT` on Windows) |
 | `sqi-worker config print` | Print the effective merged configuration |
 | `sqi-worker capabilities` | Print every tag this worker would advertise, with its source |
 | `sqi-worker isolation set-credential <user>` | Store a run-as-user account's password (Windows; reads the secret from stdin) |

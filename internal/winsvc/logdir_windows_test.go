@@ -42,11 +42,11 @@ func TestCreateLogDir_ExistingDirIsUntouched(t *testing.T) {
 	if err := os.Mkdir(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	before := sddl(t, dir)
+	before := securityOf(t, dir, windows.DACL_SECURITY_INFORMATION)
 	if err := createLogDir(dir); err != nil {
 		t.Fatal(err)
 	}
-	if after := sddl(t, dir); after != before {
+	if after := securityOf(t, dir, windows.DACL_SECURITY_INFORMATION); after != before {
 		t.Errorf("createLogDir changed an existing directory's DACL:\nbefore %s\nafter  %s", before, after)
 	}
 }
@@ -99,6 +99,46 @@ func TestCreateLogDir_RefusesExistingDirUnderReparsePointParent(t *testing.T) {
 	}
 }
 
+// TestCreateLogDir_RefusesJunctionedSqiDir pins that a per-service log
+// directory two levels below %ProgramData%\sqi is not reached through a
+// junction at %ProgramData%\sqi itself, whether or not the target already
+// holds logs\<name>: nothing is created in the target and its DACLs do not
+// change.
+func TestCreateLogDir_RefusesJunctionedSqiDir(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "missing", true: "existing"}[existing], func(t *testing.T) {
+			pd := t.TempDir()
+			t.Setenv("ProgramData", pd)
+			target := filepath.Join(t.TempDir(), "target")
+			targetLogs := filepath.Join(target, "logs")
+			if err := os.MkdirAll(filepath.Join(targetLogs, "svc"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if !existing {
+				if err := os.Remove(filepath.Join(targetLogs, "svc")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := daclBytes(t, targetLogs)
+			fsutiltest.Junction(t, filepath.Join(pd, "sqi"), target)
+			dir := filepath.Join(pd, "sqi", "logs", "svc")
+			if err := createLogDir(dir); !errors.Is(err, errReparsePoint) {
+				t.Errorf("createLogDir(<junction>\\logs\\svc) = %v, want errReparsePoint", err)
+			}
+			_, account := currentAccount(t)
+			if err := EnsureLogDir(dir, account); !errors.Is(err, errReparsePoint) {
+				t.Errorf("EnsureLogDir(<junction>\\logs\\svc) = %v, want errReparsePoint", err)
+			}
+			if after := daclBytes(t, targetLogs); after != before {
+				t.Errorf("the junction target's logs DACL changed:\nbefore %s\nafter  %s", before, after)
+			}
+			if _, err := os.Lstat(filepath.Join(targetLogs, "svc")); existing == errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("logs\\svc in the junction's target: lstat %v, want it to exist only if it did before", err)
+			}
+		})
+	}
+}
+
 // TestRuntimeLogDirsAreProtected pins that both runtime sites that create the
 // default log directory go through createLogDir.
 func TestRuntimeLogDirsAreProtected(t *testing.T) {
@@ -121,15 +161,4 @@ func TestRuntimeLogDirsAreProtected(t *testing.T) {
 			t.Error("appendTrace created an unprotected log directory")
 		}
 	})
-}
-
-// sddl renders dir's DACL for an equality check (both sides use the same
-// alias rendering, so SDDL is safe here).
-func sddl(t *testing.T, dir string) string {
-	t.Helper()
-	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return sd.String()
 }
