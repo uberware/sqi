@@ -276,7 +276,7 @@ func launchActWorker(bin string, ts *testServer, farmID, queueID, dataDir string
 		return nil, fmt.Errorf("pick a metrics port: %w", err)
 	}
 	cmd := exec.Command(bin, append(slices.Clone(args), "start")...) //nolint:noctx // stopped by stop or kill, not a context
-	cmd.Env = append(realWorkerEnv(ts, farmID, queueID, dataDir, port), env...)
+	cmd.Env = append(realWorkerEnv(ts, farmID, queueID, dataDir, filepath.Join(dataDir, "sessions"), port), env...)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	setStoppableAttrs(cmd)
