@@ -150,6 +150,44 @@ func TestInit_UsesConfigFlag(t *testing.T) {
 	})
 }
 
+// TestInit_DefaultMarksOnlyTheDefaultTarget pins the Default the writers
+// act on: on Linux it is what makes the file 0640 root:<group> rather than
+// 0600, so a service account can read it.
+func TestInit_DefaultMarksOnlyTheDefaultTarget(t *testing.T) {
+	p, err := hostPlatform()
+	if err != nil {
+		t.Fatal(err)
+	}
+	def, err := resolveTarget("", Worker, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"no --config", nil, true},
+		{"--config naming the default", []string{"--config", def}, true},
+		{"--config elsewhere", []string{"--config", target(t)}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &recorder{}
+			if _, err := runInit(t, workerSpec, r.write, tt.args...); err != nil {
+				t.Fatal(err)
+			}
+			got := r.reqs[0]
+			if got.Default != tt.want {
+				t.Errorf("request for %s: Default = %v, want %v", got.Target, got.Default, tt.want)
+			}
+			if tt.want && got.Target != def {
+				t.Errorf("target = %s, want the default %s", got.Target, def)
+			}
+		})
+	}
+}
+
 func TestInit_RequestCarriesWhatTheWriterNeeds(t *testing.T) {
 	tests := []struct {
 		name string

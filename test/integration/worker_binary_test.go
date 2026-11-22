@@ -300,6 +300,12 @@ func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string,
 	if err != nil {
 		t.Fatalf("startRealWorker: create session root: %v", err)
 	}
+	// Registered before the worker's stop cleanup, so it runs after it.
+	t.Cleanup(func() {
+		if err := os.RemoveAll(sessionRoot); err != nil {
+			t.Logf("startRealWorker: leaving session root %s: %v", sessionRoot, err)
+		}
+	})
 
 	// Global flags (e.g. --config) precede the "start" subcommand.
 	args := make([]string, 0, len(extraArgs)+1)
@@ -338,9 +344,6 @@ func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string,
 		case <-time.After(10 * time.Second):
 			_ = cmd.Process.Kill() //nolint:errcheck // best-effort force-kill
 			<-done                 // join the Wait goroutine; never call Wait again
-		}
-		if err := os.RemoveAll(sessionRoot); err != nil {
-			t.Logf("startRealWorker: leaving session root %s: %v", sessionRoot, err)
 		}
 	})
 	return cmd

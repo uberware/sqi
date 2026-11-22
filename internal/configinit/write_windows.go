@@ -166,7 +166,9 @@ func needsProtection(dir, pd, account string, ops winOps) (bool, error) {
 // checkAccount refuses, for an account, the default pd\sqi (pd is
 // %ProgramData%), which would let it read every other service's
 // configuration, and any directory inside it, which service install --user
-// refuses; and an account that does not resolve to a user.
+// refuses; and an account that does not resolve to a user. A directory whose
+// ancestry cannot be read counts as inside (isUnderDir), so it gets the same
+// refusal: rare for the elevated caller, and safe.
 func checkAccount(target, pd, account string, ops winOps) error {
 	dir := filepath.Dir(target)
 	isDefault, err := isDefaultDir(dir, pd)
