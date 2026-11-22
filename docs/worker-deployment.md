@@ -904,7 +904,8 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker\sqi-worker.log -Wait -Tail 50
   creates it at its first start. A directory that already exists is left as it
   is, except that `service install --user` always adds its account to it,
   whatever `log.file` says, and that `service install` refuses one that anyone
-  other than SYSTEM, Administrators and the service's account can change (see
+  other than SYSTEM, Administrators, TrustedInstaller and the service's account
+  can change (see
   [What `service install` checks](#what-service-install-checks)) and both it and
   the starting service refuse one that is, or sits under, a junction or symbolic
   link (see the [known limitations](#security-notes-and-known-limitations)).
@@ -1045,7 +1046,7 @@ completes.
 | Error **1069**, "the service did not start due to a logon failure" | The account's password is wrong or has changed, or the account no longer holds "Log on as a service" (a domain policy can remove it). Add the account to the policy if one applies, then run `service uninstall` and `service install --user …` again, which prompts for the password and grants the right. |
 | The service stops straight after starting | `service status` shows `exit codes: 1066 (service-specific 1)`: the worker exited with an error. `service start` and `install --start` report a stop within 3 s of the service running as a failed start; a later one they miss, having printed `is running` (see above). Read the [log](#logs); the reason is the last `"service exited with error"` line — or, when the log directory could not be used, the line in `sqi-worker.trace.log` beside the configuration file. The SCM keeps restarting it (5 s, 30 s, then every 60 s) until the configuration is fixed. |
 | `stopped` with `exit codes: 0` that you did not ask for | Unless someone else stopped it, the worker lost its NATS connection for good and shut itself down cleanly, which the SCM does not treat as a failure. See the [known limitations](#security-notes-and-known-limitations). |
-| `refusing to install sqi-worker: someone other than SYSTEM, Administrators and the service's account can change what it would trust or run` | `service install` found a path that someone else could change. The lines after it name each path and the setting it came from. See [What `service install` checks](#what-service-install-checks): typically the binary is in a user profile (copy it to `C:\Program Files\sqi` from an elevated PowerShell) or the configuration is in a `C:\ProgramData` folder you made by hand (write it with `config init`). |
+| `refusing to install sqi-worker: someone other than SYSTEM, Administrators, TrustedInstaller and the service's account can change what it would trust or run` | `service install` found a path that someone else could change. The lines after it name each path and the setting it came from. See [What `service install` checks](#what-service-install-checks): typically the binary is in a user profile (copy it to `C:\Program Files\sqi` from an elevated PowerShell) or the configuration is in a `C:\ProgramData` folder you made by hand (write it with `config init`). |
 | `cannot use configuration directory …` from `config init` | The directory exists and someone other than SYSTEM and Administrators can change it, or a directory above it. Run the `Rename-Item` command it prints, or pass `--config` for another directory. See [Why the directory is created for you](#why-the-directory-is-created-for-you). |
 | `service already exists: …` | The name is taken. `service uninstall --name <name>` first, or choose another `--name`. |
 | `must be run from an elevated (Administrator) shell` | Open PowerShell with *Run as administrator*. |

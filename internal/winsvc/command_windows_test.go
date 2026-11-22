@@ -602,6 +602,40 @@ func (s *recordingStdin) Read(p []byte) (int, error) {
 	return s.r.Read(p)
 }
 
+// TestInstall_TextsNameEveryTrustedPrincipal pins that install's help and its
+// refusal name every principal CheckPaths trusts.
+func TestInstall_TextsNameEveryTrustedPrincipal(t *testing.T) {
+	sids, err := trustedSet(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sid := range sids {
+		name := accountName(sid)
+		if short := name[strings.LastIndex(name, `\`)+1:]; !strings.Contains(trustedNames, short) {
+			t.Errorf("trustedNames %q does not name %s", trustedNames, name)
+		}
+	}
+	if !strings.HasSuffix(trustedNames, "the service's account") {
+		t.Errorf("trustedNames %q does not name the service's account", trustedNames)
+	}
+
+	help, err := execute(t, testSpec(new(int)), (&fakeOps{}).operations(), strings.NewReader(""), "install", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(help, "anyone but "+trustedNames+" could") {
+		t.Errorf("install --help does not name the trusted principals:\n%s", help)
+	}
+
+	fake := &fakeOps{checkErr: &UntrustedPathsError{Failures: []PathFailure{
+		{Key: "nats.tls_ca_file", Path: `C:\ca.pem`, JudgedPath: `C:\ca.pem`, Reason: `BUILTIN\Users can write (WD)`},
+	}}}
+	_, err = execute(t, testSpec(new(int)), fake.operations(), strings.NewReader(""), "install", "--config", writeConfig(t))
+	if err == nil || !strings.Contains(err.Error(), "someone other than "+trustedNames+" can change") {
+		t.Errorf("refusal = %v, want it to name the trusted principals", err)
+	}
+}
+
 // TestInstall_ChecksPathsBeforePasswordAndChanges pins where the path check
 // sits: after the existence probe and the creation of %ProgramData%\sqi
 // (without which a fresh host's default log directory would be judged by

@@ -118,9 +118,13 @@ func (c commands) untrustedError(u *UntrustedPathsError, exe, account string) er
 			remedies = append(remedies, hint)
 		}
 	}
-	return fmt.Errorf("refusing to install %s: someone other than SYSTEM, Administrators and the service's "+
-		"account can change what it would trust or run:\n%w\n%s", c.spec.Binary, u, strings.Join(remedies, "\n"))
+	return fmt.Errorf("refusing to install %s: someone other than %s can change what it would trust or run:\n%w\n%s",
+		c.spec.Binary, trustedNames, u, strings.Join(remedies, "\n"))
 }
+
+// trustedNames names, for install's help and refusal, the principals
+// CheckPaths trusts (trustedPrincipals): trustedSet's members plus the --user account.
+const trustedNames = "SYSTEM, Administrators, TrustedInstaller and the service's account"
 
 func isBinaryFailure(f PathFailure) bool { return f.Key == "binary" || f.Key == "binary directory" }
 

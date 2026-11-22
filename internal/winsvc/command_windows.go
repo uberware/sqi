@@ -143,7 +143,7 @@ func (c commands) installCmd() *cobra.Command {
 
 The config file (--config, default %ProgramData%\sqi\` + c.spec.Binary + `.yaml) must
 exist; its absolute path is baked into the service's command line. Install
-refuses when anyone but SYSTEM, Administrators and the service's account could
+refuses when anyone but ` + trustedNames + ` could
 change the config file, the binary, the log directory or any file or directory
 the config names, or a directory above one of them. The service
 runs as LocalSystem unless --user is given. With --user the password is
