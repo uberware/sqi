@@ -16,7 +16,7 @@ const detectedApps = "detected application install locations are the operator's;
 	"no run_as_user queue these run as the service account (documented gap)"
 
 // pathFieldExclusions are the path-valued WorkerConfig fields NamedPaths
-// deliberately leaves out, by field path, each with the reason.
+// leaves out, by field path, each with the reason.
 var pathFieldExclusions = map[string]string{
 	"Capabilities.Detect[].Checks[].Exe":             detectedApps,
 	"Capabilities.Detect[].Checks[].PathGlob":        detectedApps,

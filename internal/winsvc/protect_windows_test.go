@@ -91,9 +91,8 @@ func assertOnlyAdmins(t *testing.T, entries []aceInfo, extra ...aceInfo) {
 
 // TestPrepareConfigDir_CreatesProtected pins that a missing configuration
 // directory, and a missing parent of it, are created owned by Administrators
-// with a protected DACL of SYSTEM and Administrators only — whatever owner the
-// creating shell's token would give by default (an elevated process started
-// from Git Bash owns what it creates).
+// with a protected DACL of SYSTEM and Administrators only, whatever owner the
+// creating token would give by default.
 func TestPrepareConfigDir_CreatesProtected(t *testing.T) {
 	requireElevated(t)
 	dir := filepath.Join(t.TempDir(), "parent", "sqi")
@@ -255,8 +254,9 @@ func TestPrepareDataDir_GrantsModify(t *testing.T) {
 // local user create files in them. A privileged process creates them owned by
 // Administrators for SYSTEM and Administrators only; an unprivileged one (a
 // hand-registered service running as an ordinary account) owns them and adds
-// its own account, so it can then create its log directory. The unprivileged branch is taken through the isPrivileged seam,
-// since an elevated test process cannot drop its elevation.
+// its own account, so it can then create its log directory. The unprivileged
+// branch is taken through the isPrivileged seam, since an elevated test
+// process cannot drop its elevation.
 func TestMkdirProtected_CreatesSqiParentProtected(t *testing.T) {
 	me, _ := currentAccount(t)
 	admins := wellKnownSID(t, windows.WinBuiltinAdministratorsSid)
@@ -275,9 +275,8 @@ func TestMkdirProtected_CreatesSqiParentProtected(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Unprivileged, the owner is the token's default: the process
-			// account for an ordinary token, but Administrators for an
-			// elevated one started from PowerShell, which the forced branch
-			// may be running in.
+			// account for an ordinary token, but Administrators for some
+			// elevated ones, which the forced branch may be running in.
 			wantOwner := defaultOwner(t)
 			if isPrivileged() {
 				wantOwner = admins
@@ -300,8 +299,9 @@ func TestMkdirProtected_CreatesSqiParentProtected(t *testing.T) {
 	}
 }
 
-// TestMkdirProtected_OtherParentsInherit pins that only %ProgramData%\sqi is
-// created protected; another missing parent inherits as before.
+// TestMkdirProtected_OtherParentsInherit pins that only parents from
+// %ProgramData%\sqi down are created protected; another missing parent
+// inherits its own parent's DACL.
 func TestMkdirProtected_OtherParentsInherit(t *testing.T) {
 	me, _ := currentAccount(t)
 	t.Setenv("ProgramData", filepath.Join(t.TempDir(), "elsewhere"))

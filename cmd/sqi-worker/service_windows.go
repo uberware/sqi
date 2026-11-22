@@ -88,8 +88,8 @@ func workerConfigPaths(configPath, account string) ([]winsvc.PathRef, error) {
 // userSessionRoot refuses, for a service running as account, a session root
 // under %ProgramData%\sqi: the default when worker.session_dir is unset, or
 // one set there. Only SYSTEM and Administrators can write that directory, so
-// the worker would register and then fail every task it was given, creating
-// its session directory. LocalSystem ("") can use it.
+// the worker would register and then fail every task when it creates its
+// session directory. LocalSystem ("") can use it.
 func userSessionRoot(configPath, account string, w workerconfig.WorkerSettings) error {
 	if account == "" {
 		return nil

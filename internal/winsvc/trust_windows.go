@@ -104,8 +104,8 @@ type PathFailure struct {
 	// Key and Path are the PathRef's.
 	Key, Path string
 	// JudgedPath is the path whose security failed: Path; its nearest
-	// existing ancestor when Path does not exist; or an ancestor whoever
-	// controls could replace Path.
+	// existing ancestor when Path does not exist; or an ancestor whose
+	// controller could replace Path.
 	JudgedPath string
 	// Reason says what is wrong, such as "owner DESKTOP\bob is not trusted",
 	// "BUILTIN\Users can write (WD,AD)" or "ancestor C:\x: BUILTIN\Users can

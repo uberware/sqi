@@ -11,7 +11,8 @@ import (
 )
 
 // pathFieldExclusions are the path-valued Config fields NamedPaths
-// deliberately leaves out, by field path, each with the reason. None today.
+// leaves out, by field path, each with the reason. It is empty: every
+// path-valued field is checked.
 var pathFieldExclusions = map[string]string{}
 
 // TestNamedPaths_CoverEveryPathField pins that every path-valued field of

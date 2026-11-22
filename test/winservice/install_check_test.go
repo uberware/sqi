@@ -166,8 +166,8 @@ func TestWinService_InstallRefusesSquattedSqiDirWithConfigElsewhere(t *testing.T
 
 	out, err := runEnv(t.Context(), []string{"ProgramData=" + root}, "",
 		bin("sqi-server"), "service", "install", "--name", name, "--config", cfg)
-	// The default log directory's parent, sqi\logs, does not exist yet: it is
-	// judged by sqi.
+	// The default log directory's parent, sqi\logs, does not exist, so sqi's
+	// permissions are what is judged.
 	requireRefusal(t, err, out, "default log directory parent "+filepath.Join(sqi, "logs")+": ", usersCanWrite)
 	requireNotInstalled(t, bin("sqi-server"), name)
 	if after := securityString(t, sqi); after != before {

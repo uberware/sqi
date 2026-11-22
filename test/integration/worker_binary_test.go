@@ -293,9 +293,8 @@ func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string,
 	metricsPort := freePort(t)
 	// Not under t.TempDir: a renderer can leave a daemon running in a session
 	// directory after its task ends (RenderMan's prman starts sbrokerd, which
-	// keeps the directory as its working directory for a minute or more), and
-	// on Windows that makes the directory undeletable, so t.TempDir's cleanup
-	// would fail a test whose assertions passed.
+	// keeps the directory as its working directory), and on Windows that makes
+	// the directory undeletable, so t.TempDir's cleanup would fail the test.
 	sessionRoot, err := os.MkdirTemp("", "sqi-worker-sessions-") //nolint:usetesting // t.TempDir's cleanup fails on a directory a renderer daemon still holds
 	if err != nil {
 		t.Fatalf("startRealWorker: create session root: %v", err)

@@ -243,6 +243,6 @@ func TestLaunchdPlist_WellFormed(t *testing.T) {
 		}
 	}
 	if strings.Contains(strings.Join(got, " "), "YOURUSERNAME") {
-		t.Error("plist still carries a placeholder user name")
+		t.Error("plist carries a placeholder user name")
 	}
 }

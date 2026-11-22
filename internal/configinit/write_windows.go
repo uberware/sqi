@@ -134,7 +134,7 @@ func makeDataDir(dataDir, pd, account string, protect bool, ops winOps) error {
 // first. The new file replaces the old one rather than overwriting it, so it
 // takes none of the old ACL; but a file someone else can change, in a
 // directory that passed, means they once could write here, and what else
-// they left is unknown. It is refused, never papered over.
+// they left is unknown. It is refused.
 func checkReplace(target, pd, account string, force, protect bool, ops winOps) (bool, error) {
 	if !force {
 		return false, nil

@@ -210,7 +210,7 @@ type nextInfo struct {
 
 // nextStep is the line that tells the operator how to start what was
 // configured. Where the shipped systemd unit or launchd agent would read the
-// default file instead of a custom one, it says so rather than give a
+// default file instead of a custom one, it says so instead of giving a
 // command that starts the service on the wrong file.
 func nextStep(n nextInfo) string {
 	switch n.GOOS {

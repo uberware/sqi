@@ -36,11 +36,13 @@ var isPrivileged = func() bool {
 	return err == nil && tu.User.Sid.IsWellKnown(windows.WinLocalSystemSid)
 }
 
-// PrepareConfigDir makes dir the directory config init writes into. Missing: created owned by
-// BUILTIN\Administrators with a protected DACL of inheritable full control for SYSTEM and
-// Administrators, plus inheritable read-and-execute for account when account != "". Existing:
-// must pass CheckPaths (account trusted), then gets the account's read-and-execute ACE when
-// account != "". Never edits the ACL of a directory that failed. Caller is elevated.
+// PrepareConfigDir makes dir the directory config init writes into. A missing
+// dir is created owned by BUILTIN\Administrators with a protected DACL of
+// inheritable full control for SYSTEM and Administrators, plus inheritable
+// read-and-execute for account when account != "". An existing dir must pass
+// CheckPaths (account trusted) and then gets the account's read-and-execute
+// ACE when account != "". The ACL of a directory that fails the check is never
+// edited. The caller is elevated.
 //
 // Missing parents are created the same way, without the account's ACE. A
 // directory it created whose ancestors then fail the check is removed again,
@@ -98,8 +100,8 @@ func EnsureSqiDir() error {
 	return err
 }
 
-// PrepareDataDir creates dir if missing (inheriting its parent's DACL) and grants account an
-// inheritable Modify ACE (fileModifyAccess).
+// PrepareDataDir creates dir if missing (inheriting its parent's DACL) and
+// grants account an inheritable Modify ACE (fileModifyAccess).
 //
 // A created dir is owned by BUILTIN\Administrators, as PrepareConfigDir's
 // are, so the check `service install` makes passes it; the caller is
@@ -293,7 +295,7 @@ func checkSqiAncestors(dir string) error {
 	for _, p := range sqiAncestors(dir) {
 		switch err := checkPlainDir(p); {
 		case isNotFound(err):
-			return nil // nor does anything below it
+			return nil // nothing below it exists either
 		case err != nil:
 			return fmt.Errorf("cannot secure %s: %w", dir, err)
 		}
@@ -359,10 +361,9 @@ func processUser() (*windows.SID, error) {
 // descriptor CreateDirectory is given, so they are in place from the moment
 // path exists: nothing can be created in it under an inherited DACL first.
 // Callers that need Administrators as the owner pass it, since the default
-// depends on the creating token (an elevated process started from Git Bash
-// owns what it creates; one started from PowerShell gives it to
-// Administrators). A restricted token may refuse even its own account as an
-// explicit owner, so the unprivileged callers leave it to the default.
+// depends on the creating token. A restricted token may refuse even its own
+// account as an explicit owner, so the unprivileged callers leave it to the
+// default.
 //
 // It reports false, changing nothing, when path already exists. It then reads
 // the security back through a handle to path itself and removes path, failing,

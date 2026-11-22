@@ -24,8 +24,8 @@ const logFileKey = "log.file"
 // and its parent (the logs directory every service's own one sits in), then
 // each path the configuration names. Another service's log directory is
 // never judged: what its account was granted there reaches nothing of this
-// one's. A relative path is resolved
-// against the configuration's directory, which the service runs in.
+// one's. A relative path is resolved against the configuration's directory,
+// which the service runs in.
 //
 // The default log directory is checked whatever log.file says: install
 // prepares it (ensureLogDir) and the service writes its trace log there. It
@@ -216,11 +216,12 @@ func untrustedAllows(dacl *windows.ACL) ([]*windows.SID, []windows.ACCESS_MASK, 
 }
 
 // programDataSuspects is the distinct judged paths under %ProgramData% (never
-// %ProgramData% itself) of every failure but the binary's, which moving
-// aside replaces with directories config init or the service creates again.
-// files is those that are files a setting names, such as a TLS certificate
-// or a credential, which nothing would create again: they are not suspects.
-// other reports a failure, again not the binary's, that moving cannot fix.
+// %ProgramData% itself) of every failure but the binary's, which config init
+// or the service creates again once they are moved aside. files is those that
+// are files a setting names, such as a TLS certificate or a credential, which
+// nothing would create again: they are not suspects. The configuration file
+// itself is a suspect, since config init writes it again. other reports a
+// failure, again not the binary's, that moving cannot fix.
 func programDataSuspects(u *UntrustedPathsError) (suspects, files []string, other bool) {
 	pd := filepath.Clean(ProgramDataDir())
 	for _, f := range u.Failures {

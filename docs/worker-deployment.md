@@ -545,7 +545,7 @@ with `found unknown escape character`), or, worse, one it does, which loads
 silently as something else — `"D:\render\tmp"` becomes `D:`, a carriage return,
 `ender`, a tab and `mp`.
 
-> **`config print` is not a template for this file.** It prints the values in
+> `config print` is not a template for this file. It prints the values in
 > effect *in the shell that ran it*: your own profile as `worker.data_dir` and as
 > `nats.credential_file`, the host name as `worker.name`, and any `SQI_WORKER_*`
 > variables you have set. Installed as it is, a LocalSystem service would keep its
@@ -554,12 +554,12 @@ silently as something else — `"D:\render\tmp"` becomes `D:`, a carriage return
 
 #### Why the directory is created for you
 
-`C:\ProgramData` lets **any local user create folders**, and whoever creates
+`C:\ProgramData` lets any local user create folders, and whoever creates
 `C:\ProgramData\sqi` first owns it: they keep the right to change its
 permissions, and those of everything they put in it, however much you tighten it
 afterwards. That includes a configuration file they put there in advance:
 overwriting a file keeps its permissions, so it stays theirs to edit. A squatted
-directory is code execution as SYSTEM, not just a look at some logs.
+directory gives its creator code execution as SYSTEM.
 
 So `config init` makes the directory itself, as administrator, and
 `service install` makes it too when it is missing. Neither repairs one that
@@ -574,7 +574,7 @@ Someone other than SYSTEM and Administrators can change it. Move it aside from a
 then run config init again.
 ```
 
-**If you get this,** keep the directory only if you created it, as administrator,
+If you get this, keep the directory only if you created it, as administrator,
 and its contents are ones you recognise; otherwise treat whoever created it as
 hostile. Run the `Rename-Item` command it prints, which renames a junction or
 symbolic link as itself and touches nothing it points at; copy nothing out of the
@@ -704,7 +704,7 @@ For `sqi-server` the configuration paths are `http.tls.*`, `nats.embedded.*`
 and TLS files), `store.sqlite_path`, `auth.ldap.ca_file` and each
 `capacity.providers.<name>.command`; it has no session directory.
 
-**The rule.** A path passes when all of these hold:
+The rule: a path passes when all of these hold:
 
 - it is a real file or directory, never a junction, symbolic link or other
   reparse point, so a folder-mounted volume or a folder under OneDrive is
@@ -716,8 +716,8 @@ and TLS files), `store.sqlite_path`, `auth.ldap.ca_file` and each
   in it.
 
 A path that does not exist yet is judged by its nearest existing ancestor,
-because whoever can create children there could create it first. **Every
-directory above the path, up to the volume root, is judged too:** one fails if
+because whoever can create children there could create it first. Every
+directory above the path, up to the volume root, is judged too: one fails if
 someone else owns it or can delete or rename what it holds, because they could
 move the path aside and plant their own. Being able to *add* files to a parent
 is fine, which is why a path under `C:\ProgramData` can pass. (A volume
@@ -752,8 +752,8 @@ administrators-only or to point the setting at a path that is.
 
 **What the check does not cover.**
 
-- It judges a directory and everything above it, **not what is already inside
-  it**. If a setting names a folder that existed before you set the service up,
+- It judges a directory and everything above it, not what is already inside
+  it. If a setting names a folder that existed before you set the service up,
   look at what is in it.
 - File paths inside `store.postgres.dsn` (`sslrootcert`, `sslcert`, `sslkey`,
   `passfile`) are not checked.
@@ -792,13 +792,13 @@ directory of its own. Write the configuration for it, then install:
 `config init --user` does the same as without `--user`, in the directory you name,
 and then:
 
-- gives the account **read** on the configuration directory, so it reads the
+- gives the account read on the configuration directory, so it reads the
   configuration file but cannot edit it (an account that can edit the file
   chooses what it runs, and `service install` would trust it for that);
 - creates the worker's data directory, `C:\ProgramData\sqi-render\worker`, and
-  gives the account **Modify** on it;
+  gives the account Modify on it;
 - creates a session directory, `C:\ProgramData\sqi-render\sessions`, gives the
-  account **Modify** on it, and writes it as `worker.session_dir`: the default
+  account Modify on it, and writes it as `worker.session_dir`: the default
   session root is under the administrators-only `C:\ProgramData\sqi`, where the
   account could not create the directory each task runs in;
 - needs no password, and does not log the account on;
@@ -818,14 +818,14 @@ says to write one with `config init --user`. The other way round, when
 grants a user account Modify, the refusal adds that the configuration looks
 written for `--user` with that account.
 
-`--start` is left out on purpose: before the service first starts, give the
-account whatever else it needs — the privilege below for run-as-user queues,
-access to the shares its jobs use, Modify on a `log.file` directory — then run
-`service start`, or add `--start` when it needs nothing more.
+The printed command has no `--start`, so that you can first give the account
+whatever else it needs: the privilege below for run-as-user queues, access to the
+shares its jobs use, Modify on a `log.file` directory. Then run `service start`,
+or add `--start` when it needs nothing more.
 
 Anything else the worker writes needs Modify for the account too: a `log.file`
 belongs in the data directory (`C:\ProgramData\sqi-render\worker`) or another directory the
-account has Modify on, **not** in `C:\ProgramData\sqi-render` itself, where the
+account has Modify on, not in `C:\ProgramData\sqi-render` itself, where the
 account can only read — the path passes validation there, and the service then
 fails to open the file at every start.
 
@@ -847,8 +847,8 @@ The installer then, in this order:
 8. creates the service.
 
 The right is granted *before* the password is checked because the check needs
-it. **A wrong password therefore stops the install at step 6 with the right
-still granted; nothing is rolled back.** To take it back, remove the account
+it. A wrong password therefore stops the install at step 6 with the right
+still granted; nothing is rolled back. To take it back, remove the account
 under *Local Security Policy* (`secpol.msc`) → *Local Policies* → *User Rights
 Assignment* → *Log on as a service* (Windows Home has no `secpol.msc`).
 

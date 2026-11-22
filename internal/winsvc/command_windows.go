@@ -40,11 +40,11 @@ type CommandSpec struct {
 	DrainTimeout func(configPath string) (time.Duration, error)
 	// ConfigPaths loads configPath and returns every path it names, as
 	// written, log.file under the key "log.file": install resolves a relative
-	// one against the configuration's directory, where the service runs. account is the
-	// normalized --user ("" for LocalSystem), for a binary that must refuse a
-	// configuration the account could not run with. An error stops install,
-	// before it changes anything, and is returned as it is, so it should name
-	// configPath.
+	// one against the configuration's directory, where the service runs.
+	// account is the normalized --user ("" for LocalSystem), for a binary that
+	// must refuse a configuration the account could not run with. An error
+	// stops install before it changes anything and is returned as it is, so it
+	// should name configPath.
 	ConfigPaths func(configPath, account string) ([]PathRef, error)
 	// UserWarning, when non-empty, is printed if --user names an account.
 	UserWarning string
@@ -209,11 +209,11 @@ func (c commands) runInstall(cmd *cobra.Command, f installFlags) error {
 }
 
 // refuseExisting rejects an invalid name, or one a service already has (no
-// overwrite), before install prompts for a password or changes
-// anything. Otherwise the logon right, a credential check (a wrong password
-// counts toward the account's lockout) and ACEs on the log directories would
-// all come first. Install's own probe still catches
-// a service created after this one.
+// overwrite), before install prompts for a password or changes anything.
+// Otherwise the logon right, a credential check (a wrong password counts
+// toward the account's lockout) and ACEs on the log directories would all
+// come first. Install's own probe still catches a service created after this
+// one.
 func (c commands) refuseExisting(name string) error {
 	if err := validateName(name); err != nil {
 		return err

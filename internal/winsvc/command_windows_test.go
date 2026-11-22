@@ -663,11 +663,11 @@ func TestInstall_ChecksPathsBeforePasswordAndChanges(t *testing.T) {
 
 // TestInstall_CheckedRefs pins the paths install checks, in order: the
 // configuration and its directory, the binary and its directory, log.file's
-// directory and its parent when it is set, the service's own default log
-// directory and its parent, the shared logs directory (always: install
-// prepares it and the service's trace log goes there), then every path the
-// configuration names. A default log directory already checked under another
-// key is not checked again.
+// directory and its parent when it is set, the service's default log
+// directory and its parent, the shared logs directory (always checked:
+// install prepares the default log directory and the service writes its trace
+// log there), then every path the configuration names. A default log
+// directory already checked under another key is not checked again.
 func TestInstall_CheckedRefs(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {

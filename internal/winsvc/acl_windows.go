@@ -45,19 +45,18 @@ const (
 // environment detail.
 //
 // An existing dir keeps its DACL and its protection state. When account is
-// set, one inheritable Modify ACE for it is added: a LocalSystem service of
-// the same name installed earlier may already have created dir without it,
-// and this service could not then create its log. Either way an existing dir
-// that is, or sits under, a junction or symbolic link is refused
-// (errReparsePoint; see mkdirProtected).
+// set, one inheritable Modify ACE for it is added, because dir may have been
+// created without one by a LocalSystem service of the same name, and this
+// service could not then create its log. Either way an existing dir that is,
+// or sits under, a junction or symbolic link is refused (errReparsePoint; see
+// mkdirProtected).
 //
 // When account is set and dir is below %ProgramData%\sqi, the account also
 // gets one non-inheritable ACE of read-attributes, traverse and synchronize
 // (sqiDirAccountAccess) on each shared directory above dir (sqiAncestors),
 // which are SYSTEM and Administrators only: the service opens them for their
-// attributes at every start to refuse a junction, and would otherwise stop
-// before it could log anything. Nothing it is given reaches another service's
-// log directory.
+// attributes at every start to refuse a junction, and could not otherwise
+// start. Nothing it is given reaches another service's log directory.
 func EnsureLogDir(dir, account string) error {
 	var sid *windows.SID
 	if account != "" {
@@ -274,11 +273,10 @@ var errReparsePoint = errors.New("is a junction or symbolic link")
 // its logs, can be created as junctions by any local user without privilege
 // (ProgramData grants Users create-folder and write-data), or empty ones
 // converted into them; every path below would then resolve into the
-// junction's target — and every host has C:\Windows\Logs (see also
-// checkSqiAncestors). A missing parent is fine: MkdirAll
-// creates it. Residual TOCTOU, accepted: the parent is checked and then used
-// by path, so one swapped for a junction during the install itself is not
-// caught.
+// junction's target, such as C:\Windows\Logs, which every host has (see also
+// checkSqiAncestors). A missing parent is fine: MkdirAll creates it. The
+// parent is checked and then used by path, so one swapped for a junction
+// between the check and the use is not caught.
 func checkParent(dir string) error {
 	switch err := checkPlainDir(filepath.Dir(dir)); {
 	case isNotFound(err):
@@ -297,9 +295,9 @@ func checkParent(dir string) error {
 // plant `logs` as a junction (a junction needs no privilege), and a DACL
 // write that followed it would give the service account Modify on the
 // target. Whether path-based Get/SetNamedSecurityInfo follow a final
-// junction is undocumented (Windows 11 build 26200 does not), so the ACL is
-// read and written through this handle instead, and the attributes are read
-// from the same handle so nothing can be swapped in between. Adapted from
+// junction is undocumented, so the ACL is read and written through this
+// handle instead, and the attributes are read from the same handle so nothing
+// can be swapped in between. Adapted from
 // internal/worker/isolation's openForACL, which this leaf package may not
 // import. FILE_FLAG_BACKUP_SEMANTICS is required to open a directory at all.
 func openDirForACL(dir string) (windows.Handle, error) {
