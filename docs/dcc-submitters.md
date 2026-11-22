@@ -404,13 +404,10 @@ the take's effective render settings. A scene with no such take has no targets,
 so every product is treated as whole-scene. Takes that share a name (under
 different parents, say) are disambiguated by the dialog with `(#<position>)`.
 
-**The plug-in ID is a placeholder.** Cinema 4D identifies a plug-in by a number
-that must be registered with Maxon. The file carries `PLUGIN_ID = 1000001`,
-from the range Maxon documents for testing, with a `TODO(release)` comment.
-Register an ID at developers.maxon.net and replace it before this plug-in is
-used outside a test machine. Until then, any other plug-in that uses the same
-test ID collides with it, and so can a second sqi install: Cinema 4D registers
-only one plug-in per ID.
+**The plug-in ID** is `1074697`, registered with Maxon at developers.maxon.net
+under the label `sqiSubmit`. Cinema 4D registers only one plug-in per ID, so
+when two copies of `sqi_submit.pyp` are installed (in two `plugins` folders,
+say), only one of them registers.
 
 > **For a submitted job to run,** the rendering worker needs the `cinema4d=true`
 > capability tag and Cinema 4D's `Commandline` on its `PATH`. Without a tagged
@@ -1668,9 +1665,6 @@ After installing per [Installation per host](#installation-per-host):
 
 **Verified only against fakes or documentation:**
 
-- The plug-in ID `1000001` is a placeholder (see [Cinema 4D](#cinema-4d)).
-  It must be replaced with an ID registered at developers.maxon.net before
-  release.
 - `RegisterCommandPlugin(..., icon=None, ...)` is accepted by a real Cinema 4D
   (the registration call is only run against a fake).
 - That the command appears under **Extensions**, and that a `.pyp` in the user

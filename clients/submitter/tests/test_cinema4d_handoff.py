@@ -222,14 +222,10 @@ def _doc(
     )
 
 
-def test_c4d_plugin_id_is_a_marked_placeholder() -> None:
+def test_c4d_plugin_id_is_the_registered_id() -> None:
     plugin = _plugin()
-    assert plugin.PLUGIN_ID == 1000001
-    lines = PYP.read_text(encoding="utf-8").splitlines()
-    index = next(i for i, line in enumerate(lines) if line.startswith("PLUGIN_ID"))
-    assert lines[index - 1] == (
-        "# TODO(release): replace with an ID registered at developers.maxon.net before release"
-    )
+    # Registered with Maxon under the label "sqiSubmit".
+    assert plugin.PLUGIN_ID == 1074697
 
 
 def test_c4d_frame_range_modes(c4d: C4D) -> None:
