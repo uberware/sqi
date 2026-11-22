@@ -141,10 +141,9 @@ def launch(command: str, context_path: str) -> None:
 # --- sqi handoff end ---
 
 
-# Cinema 4D plugin IDs must be registered with Maxon; 1000001 is from the range Maxon documents
-# for testing and must never ship.
-# TODO(release): replace with an ID registered at developers.maxon.net before release
-PLUGIN_ID = 1000001
+# Registered with Maxon at developers.maxon.net under the label "sqiSubmit". Cinema 4D registers
+# only one plug-in per ID, so this number must never be reused for another plug-in.
+PLUGIN_ID = 1074697
 
 _UNSAVED_MESSAGE = "Save your scene before submitting — the farm renders the file on disk."
 _SAVE_FAILED_MESSAGE = "Cinema 4D could not save the scene, so nothing was submitted."
