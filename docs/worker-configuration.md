@@ -482,6 +482,18 @@ the worker. Four cases are not covered:
   `could not check processes in a previous worker's process group; they were
   left running` and leaves them.
 
+On macOS 27 the kernel withholds the environment of Apple's own binaries
+(`/bin/sh`, `/bin/sleep`), which run inside a task's tree whenever its command
+is a shell line. The sweep identifies such a process by its process group
+instead. The record holds the group leader's start time, and if a process
+holds the leader's number it must have started then. When the leader has gone
+and members remain, the members are taken to be the recorded tree's, so an
+unrelated process is protected only while the leader is alive or the group
+number has not been reused. An Apple-supplied process that left the group with
+`setsid` cannot be found, because nothing identifies it. Processes from other
+software (Blender, Python, a render) still expose their environment and are
+matched by token.
+
 Session working directories are configured separately by
 [`worker.session_dir`](#workersession_dir). With it unset, they live outside
 `data_dir` on any worker that can use run-as-user isolation (a root POSIX

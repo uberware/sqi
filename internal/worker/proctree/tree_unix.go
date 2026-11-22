@@ -55,11 +55,12 @@ func (t *Tree) Track(l *Ledger, label Label) error {
 		return errors.New("proctree: the command's environment carries no " + EnvVar + "; set it with MarkEnv before Start")
 	}
 	path, err := l.write(record{
-		Token:     token,
-		PGID:      t.proc.Process.Pid,
-		BootID:    l.bootID,
-		Label:     label,
-		StartedAt: time.Now().UTC(),
+		Token:       token,
+		PGID:        t.proc.Process.Pid,
+		LeaderStart: leaderStartTime(t.proc.Process.Pid),
+		BootID:      l.bootID,
+		Label:       label,
+		StartedAt:   time.Now().UTC(),
 	})
 	if err != nil {
 		return err
