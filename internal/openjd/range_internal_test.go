@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// TestParseIntRangeExpr_HugeRange is the resource-exhaustion regression guard:
-// a range whose arithmetic value count exceeds maxRangeValues must return an
-// error WITHOUT materializing the slice (no OOM), and must do so quickly.
+// TestParseIntRangeExpr_HugeRange is the resource-exhaustion guard: a range
+// whose arithmetic value count exceeds maxRangeValues must return an error
+// without materializing the slice (no OOM), and must do so quickly.
 func TestParseIntRangeExpr_HugeRange(t *testing.T) {
 	cases := []struct {
 		name string
@@ -40,7 +40,7 @@ func TestParseIntRangeExpr_HugeRange(t *testing.T) {
 	}
 }
 
-// TestParseIntRangeExpr_InBoundsUnchanged confirms normal ranges still expand
+// TestParseIntRangeExpr_InBoundsUnchanged confirms normal ranges expand
 // exactly (dedupe + ordering preserved).
 func TestParseIntRangeExpr_InBoundsUnchanged(t *testing.T) {
 	cases := []struct {
@@ -109,8 +109,8 @@ func TestValidateIntRangeExpr_MatchesParse(t *testing.T) {
 }
 
 // TestValidateIntRangeExpr_LargeInBoundsNoMaterialize is the efficiency
-// regression guard: a range whose value count equals maxRangeValues is valid but
-// must validate WITHOUT materializing the ~maxRangeValues-element slice (the
+// guard: a range whose value count equals maxRangeValues is valid but
+// must validate without materializing the ~maxRangeValues-element slice (the
 // reason the submit path calls validateIntRangeExpr rather than
 // parseIntRangeExpr). It must return nil promptly.
 func TestValidateIntRangeExpr_LargeInBoundsNoMaterialize(t *testing.T) {
@@ -132,13 +132,12 @@ func TestValidateIntRangeExpr_LargeInBoundsNoMaterialize(t *testing.T) {
 }
 
 // TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged pins the exact error
-// strings parseIntRangeExpr and validateIntRangeExpr have always produced, as
-// literals — not merely against each other the way
-// TestValidateIntRangeExpr_MatchesParse does. That test compares the two
-// functions to EACH OTHER, so it stays green even if both drift together
-// (e.g. in a change to range.go or internal/openjd/intrange); this test
-// exists so such a drift is caught. The strings must remain byte-identical,
-// since callers (e.g. job submission validation) surface them verbatim.
+// strings parseIntRangeExpr and validateIntRangeExpr produce, as literals.
+// TestValidateIntRangeExpr_MatchesParse compares the two functions with each
+// other, so it stays green if both drift together (e.g. in a change to
+// range.go or internal/openjd/intrange); this test catches that drift. The
+// strings must stay byte-identical, since callers (e.g. job submission
+// validation) surface them verbatim.
 func TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged(t *testing.T) {
 	cases := []struct {
 		expr string

@@ -1676,8 +1676,9 @@ not log the one-time warning described under `staging.defaults`.
 >   will not copy a file that may alias content beyond scratch`
 >
 > The stage-out message gives the path relative to the scratch directory. A
-> hardlink shares its inode with the original file, so chowning the staged
-> copy to the run-as-user account would chown the original too. Inputs
+> file with a second hardlink may be another name for a file outside the
+> staged tree, and the worker reads it with its own privileges, so it is
+> refused as a symlink would be. Inputs
 > delivered by a content-addressed or deduplicating asset store, or by
 > `cp -al` / `rsync --link-dest`, are multiply linked and will be refused.
 > Deliver them with a real copy (`rsync -a` without `--link-dest`, `cp`

@@ -124,7 +124,7 @@ func isPasswordKey(key string) bool {
 }
 
 // parseKeywordValueDSN tokenizes a keyword/value DSN by the rules of pgx
-// v5.11.0's parseKeywordValueSettings (pgconn/config.go), and reports false
+// v5.13.0's parseKeywordValueSettings (pgconn/config.go), and reports false
 // wherever pgx would return an error:
 //
 //   - a NUL byte anywhere;

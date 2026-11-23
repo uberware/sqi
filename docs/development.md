@@ -122,6 +122,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make release` | Build a release with goreleaser |
 | `make release-snapshot` | Build a local snapshot release (no publish, no git tag required) |
 | `make docker-build` | Build the `sqi-server` Docker image |
+| `make docker-build-worker` | Build the `sqi-worker` Docker image |
 | `make docker-run` | Run the `sqi-server` Docker image with default config |
 | `make deps` | Download and tidy Go module dependencies |
 | `make deps-upgrade` | Upgrade all Go dependencies to the latest minor/patch versions |
@@ -532,7 +533,7 @@ skips. A skip verifies nothing. Confirm the run with `--- PASS` lines for
 `postgres-integration` job runs each of the three passes as its own job, on
 PostgreSQL 18 for pull requests and on 16 and 18 for pushes to `main` and manual
 dispatch. Each job fails when Docker is unavailable; when any named test of its
-pass does not pass (the `TestPGRace_G1_…` to `TestPGRace_G12_…` race tests, the
+pass does not pass (the `TestPGRace_*` race tests, the
 schema parity, atomic-submission, readiness and backup round-trip tests, the
 PostgreSQL stress test and the restore and store copy tests in the first pass;
 the EXPR end-to-end job and the restore, store copy and upgrade tests that run
@@ -572,14 +573,16 @@ is taken. `interleave(t, p, paused, competitor)` runs `paused` until it parks,
 runs `competitor` until it either finishes or shows in `pg_stat_activity` as
 waiting on a lock, then resumes `paused`, and reports both errors and whether
 `competitor` had to wait. The race tests are `TestPGRace_*` in
-`internal/store/sqlstore/pgrace_test.go`; CI asserts the
-`TestPGRace_G<n>_…` ones by name. To add one:
+`internal/store/sqlstore/pgrace_test.go`, and CI asserts each of them by name.
+To add one:
 
 1. Write the test first and run it against the code without the fix: it
    must fail on every run, for the reason it names. Also assert on
    `p.matched()`, so the test checks that it parked at the statement it meant,
    not at another that contains the armed text.
 2. Make the fix, and run it green.
+3. Add its name to the `postgres-integration` job's list of asserted tests in
+   `.github/workflows/ci.yml`.
 
 The hook runs on PostgreSQL only, so these tests skip without a DSN, and
 under `SQI_TEST_PG_FORCE_TX_RETRY=1`, where the pause would fire in the

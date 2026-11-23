@@ -143,8 +143,8 @@ func TestLogChecks_Validate(t *testing.T) {
 			wantOK:     true,
 		},
 		{
-			// 905 bytes, under the byte cap, but ~226,000 compiled instructions:
-			// matching one line would take seconds.
+			// 905 bytes, under the byte cap, but about 226,000 compiled
+			// instructions, far over the instruction cap.
 			name:        "oversized compiled program",
 			extensions:  declared,
 			stepExtra:   block("{failOn: [x, '" + strings.Repeat(".{0,999}", 113) + "x']}"),

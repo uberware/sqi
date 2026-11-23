@@ -35,8 +35,9 @@ type Metrics struct {
 	// HTTPRequestsTotal counts completed HTTP requests, labeled by HTTP
 	// method, request path, and response status code.
 	//
-	// The "path" label is the raw request path, so a parameterised route such
-	// as /api/v1/jobs/{id} produces one series per ID.
+	// The "path" label is the chi route pattern, such as /api/v1/jobs/{id};
+	// see middleware.RequestMetrics for the values it takes when no route
+	// matched. The "method" label is OTHER for a non-standard method.
 	HTTPRequestsTotal *prometheus.CounterVec
 
 	// HTTPRequestDuration records request latency in seconds, labeled by HTTP

@@ -10,8 +10,8 @@ package openjd
 // This is a package-openjd (white-box) file, not an addition to
 // submit_test.go's package-openjd_test suite, because
 // TestCheckExpressionsAtSubmit_PhaseDistinction and
-// TestCheckExpressionsAtSubmit_NoOpWithoutEXPR call checkExpressionsAtSubmit
-// directly -- an unexported function.
+// TestCheckExpressionsAtSubmit_NoOpWithoutEXPR call the unexported
+// checkExpressionsAtSubmit directly.
 
 import (
 	"context"
@@ -45,15 +45,14 @@ func TestCheckExpressionsAtSubmit_PhaseDistinction(t *testing.T) {
 		}},
 	}
 
-	// Phase 1: Param.N unresolved -- accepted. (Mirrors what
+	// Phase 1: Param.N unresolved, accepted. This mirrors what
 	// ValidateWithOptions does inside Submit before parameter binding, via
-	// the same checkTemplateExpressions(tmpl, nil) call this function
-	// wraps.)
+	// the same checkTemplateExpressions(tmpl, nil) call this function wraps.
 	if err := checkExpressionsAtSubmit(tmpl, nil); err != nil {
 		t.Fatalf("phase 1 (Param.N unresolved) must accept the expression; got: %v", err)
 	}
 
-	// Phase 2: Param.N concrete and zero -- rejected.
+	// Phase 2: Param.N concrete and zero, rejected.
 	err := checkExpressionsAtSubmit(tmpl, map[string]string{"N": "0"})
 	if err == nil {
 		t.Fatal("phase 2 (Param.N == \"0\") must reject the division by zero")
@@ -68,20 +67,18 @@ func TestCheckExpressionsAtSubmit_PhaseDistinction(t *testing.T) {
 		t.Fatalf("error should mention the division by zero; got: %v", subErr)
 	}
 
-	// Sanity check: a NON-zero concrete value is accepted at phase 2 too --
-	// confirms the rejection above is really about the value being zero,
-	// not some other break introduced by supplying params at all.
+	// A nonzero concrete value is accepted at phase 2, so the rejection above
+	// is due to the zero value and not to supplying parameters at all.
 	if err := checkExpressionsAtSubmit(tmpl, map[string]string{"N": "2"}); err != nil {
 		t.Fatalf("phase 2 with a nonzero Param.N must accept the expression; got: %v", err)
 	}
 }
 
 // TestCheckExpressionsAtSubmit_NoOpWithoutEXPR pins that checkExpressionsAtSubmit
-// is inert for a template that does not declare the EXPR extension --
-// checkTemplateExpressions itself no-ops in that case (see its own doc
-// comment), so a parameter that would divide by zero under EXPR is not
-// evaluated at all for a base-spec template, and Submit's behavior for the
-// common EXPR-off case is unchanged.
+// is inert for a template that does not declare the EXPR extension:
+// checkTemplateExpressions no-ops in that case (see its doc comment), so a
+// parameter that would divide by zero under EXPR is not evaluated at all for a
+// base-spec template.
 func TestCheckExpressionsAtSubmit_NoOpWithoutEXPR(t *testing.T) {
 	tmpl := &JobTemplate{
 		Name:                 "T",
@@ -101,12 +98,11 @@ func TestCheckExpressionsAtSubmit_NoOpWithoutEXPR(t *testing.T) {
 	}
 }
 
-// TestSubmit_PhaseDistinction_ThroughRealSubmit is the end-to-end proof that
-// the phase-2 check works when driven through the public Submitter.Submit API
-// -- not merely that checkExpressionsAtSubmit behaves correctly in isolation
-// (TestCheckExpressionsAtSubmit_PhaseDistinction, above, already covers
-// that). The division-by-zero template clears ValidateWithOptions's phase 1
-// call exactly as a submitted one does and reaches parameter binding.
+// TestSubmit_PhaseDistinction_ThroughRealSubmit drives the phase-2 check
+// through the public Submitter.Submit API
+// (TestCheckExpressionsAtSubmit_PhaseDistinction covers
+// checkExpressionsAtSubmit in isolation). The division-by-zero template clears
+// ValidateWithOptions's phase 1 call and reaches parameter binding.
 //
 // Submitting with N="0" must fail at the phase 2 call with a
 // division-by-zero *SubmitValidationError; submitting the same template with
@@ -160,7 +156,7 @@ steps:
 		t.Fatalf("N=\"0\": expected a division-by-zero message; got: %v", subErr)
 	}
 
-	// N == "2": phase 2 must accept -- the job submits successfully.
+	// N == "2": phase 2 accepts and the job is created.
 	res, err := sub.Submit(ctx, tmpl, store.TemplateFormatYAML, SubmitOptions{
 		FarmID: farm.ID, QueueID: queue.ID, Parameters: map[string]string{"N": "2"},
 	})

@@ -12,8 +12,8 @@ import (
 // Integer template fields (minLength/maxLength, action timeout, chunk
 // defaultTaskCount/targetRuntimeSeconds, cancelation notifyPeriodInSeconds) are
 // typed as plain integers and hold no template references, so a non-integer
-// value is malformed. Parsing must reject it rather than silently coercing it
-// to 0 — a coerced zero passes validation and quietly drops the limit/timeout.
+// value is malformed. Parsing must reject it rather than coerce it to 0: a
+// coerced zero passes validation and drops the limit or timeout.
 func TestParse_IntFields_RejectNonInteger(t *testing.T) {
 	cases := []struct {
 		name    string

@@ -9,11 +9,10 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 )
 
-// Parsing must reject a non-scalar anyOf/allOf element rather than silently
-// stringifying a nested mapping into a bogus value like "map[min:1]". That
-// silent coercion produced a permanently-unschedulable job: an
-// `amount.worker.vcpu` reservation mistakenly written as the attribute
-// `worker.vcpu` with `anyOf: [{min: 1}]` matched no worker, so its tasks sat
+// Parsing must reject a non-scalar anyOf/allOf element rather than
+// stringifying a nested mapping into a value like "map[min:1]", which no
+// worker matches: an `amount.worker.vcpu` reservation miswritten as the
+// attribute `worker.vcpu` with `anyOf: [{min: 1}]` would leave its tasks
 // ready forever while the job stayed pending.
 func TestParse_HostRequirements_RejectsNonScalarAttributeValues(t *testing.T) {
 	cases := []struct {
@@ -73,10 +72,10 @@ func TestParse_HostRequirements_RejectsNonScalarAttributeValues(t *testing.T) {
 	runHostRequirementParseCases(t, cases)
 }
 
-// An amount min/max must be a scalar (number, or a template-reference string)
-// — never a nested mapping or sequence silently stringified into "map[...]". A
+// An amount min/max must be a scalar (a number or a template-reference
+// string), never a nested mapping or sequence stringified into "map[...]". A
 // non-scalar bound on a non-reserved capability name would otherwise be stored
-// verbatim and never numerically validated, silently corrupting the reservation.
+// verbatim and never validated as a number, corrupting the reservation.
 func TestParse_HostRequirements_RejectsNonScalarAmountBounds(t *testing.T) {
 	cases := []struct {
 		name    string

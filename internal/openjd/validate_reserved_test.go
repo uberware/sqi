@@ -23,7 +23,7 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 		mutate  func(*openjd.JobTemplate)
 		wantPtr string // "" → mutation is valid; no error expected
 	}{
-		// ── Reserved AMOUNT minimums ──────────────────────────────────────────
+		// ── Reserved amount minimums ──────────────────────────────────────────
 
 		{
 			name: "amount.worker.vcpu min 1 ok (at reserved minimum)",
@@ -36,7 +36,7 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 		{
 			// min is <nonnegativefloat>, so 0 is valid even on a reserved
 			// capability. The spec's per-capability "Minimum Value" table is
-			// the default used when min is OMITTED, not a floor on an explicit
+			// the default used when min is omitted, not a floor on an explicit
 			// value. Conformance: 3.3.1--amount-min-zero-valid.yaml.
 			name: "amount.worker.vcpu min 0 ok (explicit zero is non-negative)",
 			mutate: func(t *openjd.JobTemplate) {
@@ -99,7 +99,7 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 
 		// Non-reserved names are unconstrained — any value is accepted.
 		{
-			// A CUSTOM scope is unconstrained. "amount.worker.custom" is not a
+			// A custom scope is unconstrained. "amount.worker.custom" is not a
 			// valid stand-in: "worker" is a reserved scope, so an undefined name
 			// under it is rejected by validateReservedScope — see
 			// TestValidate_ReservedCapabilityScope.
@@ -161,7 +161,7 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 			wantPtr: "/steps/0/hostRequirements/amounts/0/max",
 		},
 
-		// ── Reserved ATTRIBUTE allowed values ─────────────────────────────────
+		// ── Reserved attribute allowed values ─────────────────────────────────
 
 		{
 			name: "attr.worker.os.family anyOf linux ok",
@@ -262,7 +262,7 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 			wantPtr: "/steps/0/hostRequirements/attributes/0/anyOf/0",
 		},
 
-		// Attribute VALUES are compared case-insensitively (OpenJD
+		// Attribute values are compared case-insensitively (OpenJD
 		// jobtemplate-2023-09: "This comparison is case-insensitive"), matching the
 		// matcher's EqualFold value comparison: "Linux" is accepted as "linux".
 		{
@@ -297,7 +297,7 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 
 		// ── Non-numeric reserved-amount bound is a validation error ────────────
 		// A non-numeric bound (that is not a template reference) is a structural
-		// error, not a silently-skipped value.  Ensures the nilerr fix is correct.
+		// error, not a skipped value.
 
 		{
 			name: "amount.worker.vcpu min non-numeric string error",

@@ -454,7 +454,7 @@ func TestCancelDependents_PartialFailure_CancelsWhenAnyDepFailed(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 
-	// step3 depends on TWO steps: one completed, one failed. A single failed
+	// step3 depends on two steps: one completed, one failed. A single failed
 	// dependency means step3 can never become ready, so it must be canceled.
 	submitSteps(t, s, []store.Step{
 		{ID: "step1", Name: "Step1", Status: store.StepStatusCompleted},
@@ -568,7 +568,7 @@ func TestExtractJobLevelLocRefs_EnvAndParam(t *testing.T) {
 		t.Errorf("expected 1 deduplicated ref, got %v", got)
 	}
 
-	// job_assets is referenced at job scope; step_only must NOT appear.
+	// job_assets is referenced at job scope; step_only must not appear.
 	if !slices.Contains(got, "job_assets") {
 		t.Errorf("expected job_assets in %v", got)
 	}
@@ -583,7 +583,7 @@ func TestCancelDependents_LeavesHealthyAndNonPendingSteps(t *testing.T) {
 	ctx := context.Background()
 
 	submitSteps(t, s, []store.Step{
-		// step1 completed (healthy) — its dependent must NOT be canceled.
+		// step1 completed (healthy) — its dependent must not be canceled.
 		{ID: "step1", Name: "Step1", Status: store.StepStatusCompleted},
 		{ID: "step2", Name: "Step2", Status: store.StepStatusPending, DependsOn: []string{"Step1"}},
 		// A running step depending on a failed one is not pending — must be left alone.

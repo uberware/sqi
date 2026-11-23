@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -24,35 +23,9 @@ import (
 // maxMetricsBytes bounds a /metrics body the scrape will read.
 const maxMetricsBytes = 64 << 20
 
-// maxRoutes bounds the distinct route series. The server labels its latency
-// histogram with the raw request path, so without a bound every distinct URL
-// requested would add a series; routes past the bound share "other".
-const maxRoutes = 100
-
-// otherRoute is the route of every path beyond maxRoutes.
-const otherRoute = "other"
-
 // quietRoutes get no latency series: the scrape itself, probes, profiling, and
 // the WebSocket upgrade, whose duration is the connection's lifetime.
 var quietRoutes = []string{"/metrics", "/healthz", "/readyz", "/api/v1/ws", "/debug/pprof"}
-
-var (
-	uuidSegment    = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	ulidSegment    = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$`)
-	numericSegment = regexp.MustCompile(`^\d+$`)
-)
-
-// collapseRoute turns a raw request path into a route pattern by replacing
-// each segment that is a UUID, a ULID or a number with {id}.
-func collapseRoute(path string) string {
-	segs := strings.Split(path, "/")
-	for i, s := range segs {
-		if s != "" && (uuidSegment.MatchString(s) || ulidSegment.MatchString(s) || numericSegment.MatchString(s)) {
-			segs[i] = "{id}"
-		}
-	}
-	return strings.Join(segs, "/")
-}
 
 func isQuietRoute(route string) bool {
 	for _, q := range quietRoutes {
@@ -82,13 +55,12 @@ type scrapeState struct {
 	prevAt   time.Time
 	prevCPU  float64
 	prevHist map[string]histogram
-	routes   map[string]struct{}
 }
 
 // newScrapeState returns a state that names queue gauges by queueNames (queue
 // id to scenario name) where it knows the id, and by the raw label otherwise.
 func newScrapeState(queueNames map[string]string) *scrapeState {
-	return &scrapeState{queueNames: queueNames, routes: map[string]struct{}{}}
+	return &scrapeState{queueNames: queueNames}
 }
 
 // apply parses one /metrics body taken at t and records its series.
@@ -225,25 +197,10 @@ func (s *scrapeState) recordScheduler(rec *measure.Recorder, t time.Time, fams m
 	})
 }
 
-// routeOf returns the series route for a raw path, folding paths beyond
-// maxRoutes into otherRoute. It reports false for routes not worth a series.
-func (s *scrapeState) routeOf(path string) (string, bool) {
-	route := collapseRoute(path)
-	if isQuietRoute(route) {
-		return "", false
-	}
-	if _, known := s.routes[route]; known {
-		return route, true
-	}
-	if len(s.routes) >= maxRoutes {
-		return otherRoute, true
-	}
-	s.routes[route] = struct{}{}
-	return route, true
-}
-
-// routeHistograms merges the request-duration histograms by route.
-func (s *scrapeState) routeHistograms(fams map[string]*dto.MetricFamily) map[string]histogram {
+// routeHistograms merges the request-duration histograms by route. The
+// server labels them with the route pattern, so the routes are bounded by
+// the server's code, not by the URLs requested.
+func (*scrapeState) routeHistograms(fams map[string]*dto.MetricFamily) map[string]histogram {
 	f, ok := fams["sqi_http_request_duration_seconds"]
 	if !ok {
 		return nil
@@ -254,8 +211,8 @@ func (s *scrapeState) routeHistograms(fams map[string]*dto.MetricFamily) map[str
 		if h == nil {
 			continue
 		}
-		route, ok := s.routeOf(labelValue(m, "path"))
-		if !ok {
+		route := labelValue(m, "path")
+		if isQuietRoute(route) {
 			continue
 		}
 		byBound := merged[route]

@@ -50,7 +50,7 @@ func TestParseLetBinding(t *testing.T) {
 }
 
 func TestParseLetBinding_NameLengthBoundary(t *testing.T) {
-	// 512 is legal, 513 is not -- the boundary itself, not a value near it.
+	// 512 is legal and 513 is not: the boundary itself.
 	if _, _, err := parseLetBinding(strings.Repeat("a", 512) + " = 1"); err != nil {
 		t.Errorf("512-character name rejected: %v", err)
 	}

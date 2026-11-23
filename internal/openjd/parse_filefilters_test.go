@@ -396,7 +396,7 @@ steps:
 
 // patternFilterYAML builds a single-parameter template whose one fileFilters
 // entry carries the given pattern, and whose fileFilterDefault carries the
-// same pattern -- so both fields exercise the same check.
+// same pattern, so both fields exercise the same check.
 func patternFilterYAML(pattern string) string {
 	return fmt.Sprintf(`
 specificationVersion: jobtemplate-2023-09

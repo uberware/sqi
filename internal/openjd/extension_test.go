@@ -142,9 +142,9 @@ func TestRegistryVendorNamespacing(t *testing.T) {
 	}
 }
 
-// TestValidateExtensions_RegisteredButNotSupported pins the two-part gate. An
-// extension may be present in the registry while still being rejected, which is
-// what lets the conformance harness reach the real validation path for a
+// TestValidateExtensions_RegisteredButNotSupported pins the two-part status
+// check: an extension may be present in the registry and still be rejected, so
+// the conformance harness can reach the real validation path for a
 // partially-implemented extension without production accepting it.
 //
 // The registry has no StatusInProgress entry, so the test registers a
@@ -179,7 +179,7 @@ func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
 }
 
 // TestValidateExtensions_SupportedStillPass checks that supported extensions
-// still pass the status check, which every extension flows through.
+// pass the status check, which every extension goes through.
 func TestValidateExtensions_SupportedStillPass(t *testing.T) {
 	for _, name := range []string{
 		"TASK_CHUNKING", "REDACTED_ENV_VARS", "SQI_PATH_TRANSLATION", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS", "SQI_LOG_PROGRESS",

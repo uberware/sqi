@@ -540,9 +540,11 @@ func builtinCopy(ctx context.Context, src, dest string) error {
 // The link-count refusal applies on both platforms, so a job input asset with
 // a second NTFS hardlink is refused at stage-in on Windows too, as are inputs
 // delivered by content-addressed or dedup asset stores and
-// "rsync --link-dest"-style delivery. A hardlink is the file itself: chowning
-// the scratch copy to the run-as-user identity would chown the original too
-// (see docs/worker-configuration.md). This refuses some legitimate work;
+// "rsync --link-dest"-style delivery. A file with a second link may be
+// another name for a file outside the asset tree; the worker reads it with
+// its own privileges and gives the copy to the task, as it would through a
+// followed symlink. The copy itself is a new file, so the original's owner is
+// unaffected. This refuses some legitimate work;
 // TestCopyFile_RefusesHardlinkedStageInSourceOnWindows pins it.
 func copyFile(src, dest string, mode os.FileMode) error {
 	in, err := os.OpenFile(src, os.O_RDONLY|noFollowFlag, 0)

@@ -2332,8 +2332,8 @@ described in [Writing to a file](#writing-to-a-file).
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `sqi_http_requests_total` | counter | `method`, `path`, `status_code` | HTTP requests by method, path, and status |
-| `sqi_http_request_duration_seconds` | histogram | `method`, `path` | HTTP request latency |
+| `sqi_http_requests_total` | counter | `method`, `path`, `status_code` | HTTP requests by method, route and status. `path` is the route pattern, such as `/api/v1/jobs/{id}`. An unknown API path and a rate-limited (429) API request are `/api/v1/*`, a path served by the web UI's catch-all is `/*`, and a request answered before routing (an HA standby's 503, an unknown method's 405) is `unrouted`. `method` is `OTHER` for a non-standard method |
+| `sqi_http_request_duration_seconds` | histogram | `method`, `path` | HTTP request latency, labeled like `sqi_http_requests_total` |
 | `sqi_scheduler_queue_depth` | gauge | `queue` | Leasable ready tasks waiting for assignment, by queue ID (excludes tasks in retry backoff, tasks on a paused queue and tasks under a paused, parked or terminal job); falls back to `0` when a queue drains |
 | `sqi_scheduler_tasks_total` | counter | `queue`, `status` | Tasks processed by final status |
 | `sqi_scheduler_assignment_duration_seconds` | histogram | `result` | Wall-clock time for a single task-assignment attempt, by `result` (`assigned`, `deferred`, `error`) — not queue residency |

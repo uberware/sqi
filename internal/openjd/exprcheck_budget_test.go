@@ -32,7 +32,7 @@ import (
 // itself is live.
 //
 // Do not raise defaultTemplatePositions/defaultTemplateRetainedBytes to
-// remove the bound: three of the five tests below size their construction
+// remove the bound: three of the tests below size their construction
 // from the constant (manyArgs(int(defaultTemplatePositions) + 50), and
 // int(defaultTemplatePositions) - 10 in FreshPerCall), so a huge value makes
 // them try to allocate billions of entries and hang. Setting the knob on a
@@ -41,7 +41,7 @@ import (
 // manyArgs returns n trivial, cheap-to-evaluate EXPR args entries: no
 // retained bytes (checkFormatString discards every result) and negligible
 // per-position operation/memory cost, so a construction built from these
-// isolates the POSITIONS dimension from the retained-bytes dimension.
+// isolates the positions dimension from the retained-bytes dimension.
 func manyArgs(n int) []string {
 	args := make([]string, n)
 	for i := range args {
@@ -50,17 +50,17 @@ func manyArgs(n int) []string {
 	return args
 }
 
-// TestCheckTemplateExpressions_TemplateWideBudget_CatchesWhatThePreWalkGuardAdmits reproduces
+// TestCheckTemplateExpressions_TemplateWideBudget_CatchesWhatThePreWalkGuardAdmits builds
 // a construction of 16 task-parameter definitions x 1024 RangeList entries in
 // one step. With an expensive payload such as `{{ ("x" * 900000).upper() }}`
 // in every entry, it stays inside every per-evaluation budget while costing
 // the resolver a long run.
 //
-// The payload here is a trivial `{{ 'a' }}`: the test proves that the
+// The payload here is a trivial `{{ 'a' }}`: the test checks that the
 // position count trips the budget, and the budget charges one position per
-// checkFormatString call whatever the call evaluates. An expensive payload
-// would make a broken position bound run for minutes, which reads as a hang
-// on CI, instead of failing fast.
+// checkFormatString call whatever the call evaluates. With an expensive
+// payload, a broken position bound would run for minutes instead of failing
+// fast.
 //
 // It is within the two count caps parameterSpaceOverCaps checks
 // (maxTaskParameterDefinitions = 16, maxTaskParamValues = 1024, both "at
@@ -121,11 +121,11 @@ func TestCheckTemplateExpressions_TemplateWideBudget_CatchesWhatThePreWalkGuardA
 }
 
 // TestCheckTemplateExpressions_TemplateWideBudget_PositionsDimension isolates
-// the POSITIONS dimension: many CHEAP positions (manyArgs -- no retained
-// bytes, negligible per-position cost), well over defaultTemplatePositions.
-// Mutation target: commenting out chargePositions' cap check (or raising
-// defaultTemplatePositions past this construction's size) must make this
-// test -- and ONLY this dimension's tests -- start passing/accepting.
+// the positions dimension: many cheap positions (manyArgs: no retained bytes,
+// negligible per-position cost), over defaultTemplatePositions. Removing
+// chargePositions' cap check, or raising defaultTemplatePositions past this
+// construction's size, makes the template accepted and fails this
+// dimension's tests only.
 func TestCheckTemplateExpressions_TemplateWideBudget_PositionsDimension(t *testing.T) {
 	n := int(defaultTemplatePositions) + 50
 	tmpl := &JobTemplate{
@@ -162,24 +162,22 @@ func TestCheckTemplateExpressions_TemplateWideBudget_PositionsDimension(t *testi
 }
 
 // TestCheckTemplateExpressions_TemplateWideBudget_RetainedBytesDimension
-// isolates the RETAINED-BYTES dimension: many let: blocks, each
-// INDIVIDUALLY well within every per-block bound (maxLetBindings = 50
-// bindings; each binding's own Eval under defaultSubmissionMemoryBytes =
-// 1,000,000 bytes), that are cumulatively rejected only because the
-// template-wide budget sums bytes ACROSS blocks.
+// isolates the retained-bytes dimension: many let: blocks, each within every
+// per-block bound (maxLetBindings = 50 bindings; each binding's own Eval
+// under defaultSubmissionMemoryBytes = 1,000,000 bytes), rejected together
+// because the template-wide budget sums bytes across blocks.
 //
-// Without that sum, nothing bounds it: checkLetBindings caps a single
-// block's BINDING COUNT but not the BYTES those bindings retain, so a
-// template with many individually-compliant blocks could retain tens of
-// megabytes with no guard seeing it -- the server-side counterpart of the
-// worker's let: retained-bytes limit (internal/worker/fmtres).
+// Nothing else bounds that sum: checkLetBindings caps a block's binding
+// count but not the bytes those bindings retain, so a template with many
+// compliant blocks could retain tens of megabytes unchecked. This is the
+// server-side counterpart of the worker's let: retained-bytes limit
+// (internal/worker/fmtres).
 //
-// Each binding retains 900,064 bytes (64-byte header + a 900,000-byte
-// string, expr.SizeOf). 3 bindings/step x 900,064 = 2,700,192 bytes/step --
-// comfortably under the 10,000,000-byte budget on its own (the first
-// sub-test), so a single block is never the thing that trips it. 4 steps'
-// worth (10,800,768 bytes) crosses it (the second sub-test): the ONLY
-// difference between the two is how many equally-compliant blocks exist.
+// Each binding retains 900,064 bytes (a 64-byte header plus a 900,000-byte
+// string, per expr.SizeOf). 3 bindings per step x 900,064 = 2,700,192 bytes
+// per step, under the 10,000,000-byte budget on its own (the first
+// sub-test). 4 steps (10,800,768 bytes) cross it (the second sub-test); the
+// two sub-tests differ only in how many compliant blocks exist.
 func TestCheckTemplateExpressions_TemplateWideBudget_RetainedBytesDimension(t *testing.T) {
 	const bindingsPerStep = 3
 	const bytesPerBinding = 900_000 // + 64-byte header = 900,064 via expr.SizeOf
@@ -240,13 +238,12 @@ func TestCheckTemplateExpressions_TemplateWideBudget_RetainedBytesDimension(t *t
 }
 
 // TestCheckTemplateExpressions_TemplateWideBudget_FreshPerCall pins one
-// budget per phase: checkTemplateExpressions allocates a
-// NEW templateBudget every call (it is a local variable, not package state),
-// so back-to-back calls on the SAME template each get their own full
-// allowance -- exactly what phase 1 (ValidateWithOptions) and phase 2
-// (checkExpressionsAtSubmit) rely on, since they are two separate calls to
-// this same function. A template sized to land just under the position cap
-// must be accepted on every call, not merely the first.
+// budget per phase: checkTemplateExpressions allocates a new templateBudget
+// on every call (a local variable, not package state), so back-to-back calls
+// on the same template each get a full allowance. Phase 1
+// (ValidateWithOptions) and phase 2 (checkExpressionsAtSubmit) rely on this,
+// as two separate calls to this function. A template sized just under the
+// position cap is accepted on every call.
 func TestCheckTemplateExpressions_TemplateWideBudget_FreshPerCall(t *testing.T) {
 	n := int(defaultTemplatePositions) - 10 // comfortably under the cap
 	tmpl := &JobTemplate{
@@ -273,11 +270,11 @@ func TestCheckTemplateExpressions_TemplateWideBudget_FreshPerCall(t *testing.T) 
 
 // TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected pins
 // the base-spec cost floor: a template without extensions: [EXPR] never
-// enters the walk, so the budget costs it nothing. A
-// construction that WOULD trip the positions budget if the walk ever ran
-// over it must still report zero errors when the template does not declare
-// the extension -- proving the hasExtension("EXPR") gate at the top of
-// checkTemplateExpressions, not the budget, is what decides this.
+// enters the walk, so the budget costs it nothing. A construction that would
+// trip the positions budget if the walk ran over it reports zero errors when
+// the template does not declare the extension, which shows the
+// hasExtension("EXPR") check at the top of checkTemplateExpressions decides
+// this, not the budget.
 func TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected(t *testing.T) {
 	n := int(defaultTemplatePositions) + 50
 	tmpl := &JobTemplate{
@@ -330,13 +327,13 @@ func TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected(t *testi
 // job to a worker tighter than the limits the template was accepted under
 // (internal/scheduler/exprcaps.go,
 // TestExprCaps_ViolationThroughConfigurationIsCaught). This test covers the
-// defaults, so a fresh install cannot violate the relation out of the box.
+// defaults, so a default install satisfies the relation.
 //
 // The relation is also satisfiable at every legal setting:
 // fmtres.MaxExprAssignmentPositions is >= MaxExprTemplatePositions, so no
 // server value is beyond what a worker can legally match. internal/scheduler's
-// TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting extends that
-// check to all four related dimensions.
+// TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting checks the same
+// for all five gated dimensions.
 func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
 	if fmtres.DefaultAssignmentPositions < defaultTemplatePositions {
 		t.Fatalf("the worker's per-assignment position cap (%d) is tighter than the server's "+
@@ -347,13 +344,11 @@ func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
 			"a per-assignment sub-budget so the rejection happens at submit.",
 			fmtres.DefaultAssignmentPositions, defaultTemplatePositions)
 	}
-	// The same relation, one level up: an operator may raise this package's
-	// cap as far as MaxExprTemplatePositions, so the worker's configurable
-	// ceiling must reach at least that far, or some legal server setting
-	// would have no matching legal worker setting.
-	//
-	// The assertion is worker ceiling >= server ceiling, not equality: only
-	// lowering the worker's ceiling or raising this one past it fails here.
+	// The same relation for the ceilings: an operator may raise this
+	// package's cap as far as MaxExprTemplatePositions, so the worker's
+	// configurable ceiling must reach at least that far, or some legal server
+	// setting would have no matching legal worker setting. The assertion is
+	// worker ceiling >= server ceiling.
 	if fmtres.MaxExprAssignmentPositions < MaxExprTemplatePositions {
 		t.Fatalf("the worker's configurable position ceiling (%d) is below the server's (%d): "+
 			"an operator could set openjd.expr_template_positions to a value no worker's "+

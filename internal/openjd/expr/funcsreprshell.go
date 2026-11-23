@@ -21,7 +21,7 @@ import "strings"
 // one unit for the string it builds, which sqi does not (rule 3 charges what
 // a function processes, not what it produces); see
 // test/oracle/baseline-ops.txt's repr_* section and
-// TestOperationCount_ReprFunctionsListChargesElementsDespiteReferenceOmission.
+// TestOperationCount_ReprFunctionsListChargesElements.
 var reprShellFuncs = map[string][]Shape{
 	"repr_sh": {
 		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {

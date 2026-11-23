@@ -2,11 +2,9 @@
 
 package openjd_test
 
-// Additional validate tests — item 7 of the test roadmap.
-//
-// openjd_test.go already covers the major validation paths. This file adds
-// the one genuinely uncovered branch: duplicate environment name in
-// jobEnvironments (the validateEnvironments duplicate-name check).
+// Tests for validateEnvironments' duplicate-name check, in jobEnvironments and
+// in a step's stepEnvironments. The major validation paths are covered in
+// openjd_test.go.
 
 import (
 	"strings"

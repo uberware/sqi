@@ -56,7 +56,7 @@ func TestSymbolsFor_JobParameterTypes(t *testing.T) {
 		{"Param.S", "unresolved[string]"},
 		{"Param.N", "unresolved[int]"},
 		// Section 1.2.2: a PATH parameter is `path` via Param and `string` via
-		// RawParam -- the raw value may be a path for another OS.
+		// RawParam: the raw value may be a path for another OS.
 		{"Param.P", "unresolved[path]"},
 		{"RawParam.P", "unresolved[string]"},
 	}
@@ -73,8 +73,8 @@ func TestSymbolsFor_JobParameterTypes(t *testing.T) {
 	}
 }
 
-// TestSymbolsFor_ConcreteParamsAtPhaseTwo pins the ONLY difference between the
-// two evaluation phases: the symbol table, not the code path.
+// TestSymbolsFor_ConcreteParamsAtPhaseTwo pins that the two evaluation phases
+// differ only in the symbol table: with values supplied, Param.* is concrete.
 func TestSymbolsFor_ConcreteParamsAtPhaseTwo(t *testing.T) {
 	tmpl := &JobTemplate{
 		Name:                 "T",
@@ -94,13 +94,12 @@ func TestSymbolsFor_ConcreteParamsAtPhaseTwo(t *testing.T) {
 }
 
 // TestSymbolsFor_FloatParamPreservesSubmittedText pins section 1.3.4: a FLOAT
-// job parameter submitted as "3.500" must keep that exact text, not the
+// job parameter submitted as "3.500" keeps that exact text rather than the
 // canonical "3.5" strconv.FormatFloat would produce. concreteJobParamValue
-// binds it via expr.FloatText, which rides on Value's fs field (value.go) --
-// String() reports fs when it is set, which is how this test observes the
-// carry without depending on template substitution. This test asserts only
-// the BINDING: that the Value produced at phase 2 carries the text. It does
-// not touch template rendering/substitution, which is tested elsewhere.
+// binds it via expr.FloatText, which stores it in Value's fs field
+// (value.go); String() reports fs when it is set, so the test observes the
+// text without template substitution. It asserts only the binding at
+// phase 2; rendering and substitution are tested elsewhere.
 func TestSymbolsFor_FloatParamPreservesSubmittedText(t *testing.T) {
 	tmpl := &JobTemplate{
 		Name:                 "T",
@@ -127,11 +126,9 @@ func TestSymbolsFor_FloatParamPreservesSubmittedText(t *testing.T) {
 		t.Errorf("RawParam.Scale.String() = %q, want %q (submitted text)", got, "3.500")
 	}
 
-	// The carry does not change VALUE equality or arithmetic -- only String().
-	// A canonically-formatted float with the same number must still compare
-	// equal and compute identically, per the fs field's own invariants
-	// (value.go): a carry that leaked into Equal or an operation would be the
-	// wrong kind of "preserve the text".
+	// The stored text affects only String(), not equality or arithmetic: a
+	// canonically formatted float with the same number compares equal and
+	// computes identically, per the fs field's invariants (value.go).
 	v, err := expr.Eval("Param.Scale + 0", syms, expr.TFloat)
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
@@ -143,9 +140,9 @@ func TestSymbolsFor_FloatParamPreservesSubmittedText(t *testing.T) {
 
 // TestSymbolsFor_FamilyMembersScopedCorrectly builds a template with real
 // Task.Param., Task.File. and Env.File. members and checks each lands only in
-// the scopes that expose its family -- not merely that fixed symbols do,
-// which is all the other tests here check. It also pins that Env.File. comes
-// from the ENVIRONMENT's own script, not from the step's task script:
+// the scopes that expose its family; the other tests here check only fixed
+// symbols. It also pins that Env.File. comes from the environment's own
+// script, not from the step's task script:
 // ScopeStepEnvironment (which exposes Env.File. but not Task.File.) must not
 // bind "Env.File.TaskScript" from the step's script, and must bind the
 // environment's own "EnvScript" file.
@@ -263,15 +260,14 @@ func TestCheckFormatString(t *testing.T) {
 //
 // A STRING parameter against an int target cannot demonstrate a rejection:
 // section 1.2.3 lists "string -> int" as a legal non-destructive coercion
-// (deferred to runtime: "3" succeeds, "3.75" fails, checked only once a
-// concrete value exists), so a STRING placeholder against TargetInt
-// type-checks CLEAN at this unresolved, no-params-supplied phase --
-// expr.Eval("Param.S", MapSymbols{"Param.S": Unresolved(TString)}, TInt)
-// returns unresolved[int], nil. A PATH parameter has no such rule in either
-// direction (scalarCoercible's "to == CodeInt" case admits only float and
-// string; coercibleConditional's "from == CodePath" case admits only a
-// target that includes string) -- see internal/openjd/expr/coerce.go -- so it
-// is used here instead.
+// (checked once a concrete value exists: "3" succeeds, "3.75" fails), so a
+// STRING placeholder against TargetInt type-checks clean when no parameter
+// values are supplied: expr.Eval("Param.S", MapSymbols{"Param.S":
+// Unresolved(TString)}, TInt) returns unresolved[int], nil. A PATH parameter
+// has no such rule in either direction (in internal/openjd/expr/coerce.go,
+// scalarCoercible's "to == CodeInt" case admits only float and string, and
+// coercibleConditional's "from == CodePath" case admits only a target that
+// includes string), so the test uses one.
 func TestCheckFormatString_LoneRefInheritsTheTarget(t *testing.T) {
 	tmpl := &JobTemplate{
 		Name:                 "T",
@@ -290,9 +286,9 @@ func TestCheckFormatString_LoneRefInheritsTheTarget(t *testing.T) {
 
 // TestCheckFormatString_HostOnlyFunctionPlacement pins that a host-context-only
 // function is rejected in a submission-time scope and accepted in a host one.
-// apply_path_mapping is registered FLAT in the leaf -- it has no scope model --
-// so this gate is the only thing enforcing section "Host-Context Function
-// Availability".
+// The expr package registers apply_path_mapping with no scope restriction, so
+// this check is what enforces the specification's "Host-Context Function
+// Availability" section.
 func TestCheckFormatString_HostOnlyFunctionPlacement(t *testing.T) {
 	tmpl := &JobTemplate{
 		Name:                 "T",
@@ -316,17 +312,17 @@ func TestCheckFormatString_HostOnlyFunctionPlacement(t *testing.T) {
 }
 
 // TestCheckFormatString_HostOnlyFunctionPlacement_EmbeddedAndMethodForm
-// covers the shapes TestCheckFormatString_HostOnlyFunctionPlacement above
-// does not (it only exercises a LONE reference calling apply_path_mapping as
-// a plain function): checkHostOnlyFunctions also fires when the call sits
-// inside an embedded segment (surrounded by other text) and when it is
-// written in method-call syntax (RawParam.P.apply_path_mapping()).
-// checkHostOnlyFunctions walks
-// Expression.CalledFunctions(), which collects a call's function name
-// regardless of whether it was written as a free call or a method call, and
-// runs BEFORE Eval -- so the method form is rejected for the host-context
-// reason here, not for lacking a "(path)" overload of apply_path_mapping as
-// a method (which internal/openjd/expr/doc.go notes it does not have).
+// covers the shapes TestCheckFormatString_HostOnlyFunctionPlacement does not
+// (it exercises only a lone reference calling apply_path_mapping as a plain
+// function): checkHostOnlyFunctions also fires when the call sits inside an
+// embedded segment (surrounded by other text) and when it is written in
+// method-call syntax (RawParam.P.apply_path_mapping()).
+// checkHostOnlyFunctions walks Expression.CalledFunctions(), which collects a
+// call's function name whether it was written as a free call or a method
+// call, and runs before Eval. The method form is therefore rejected for the
+// host-context reason, not for lacking a "(path)" method overload of
+// apply_path_mapping (which internal/openjd/expr/doc.go says it does not
+// have).
 func TestCheckFormatString_HostOnlyFunctionPlacement_EmbeddedAndMethodForm(t *testing.T) {
 	tmpl := &JobTemplate{
 		Name:                 "T",
@@ -360,27 +356,25 @@ func TestCheckFormatString_HostOnlyFunctionPlacement_EmbeddedAndMethodForm(t *te
 // TestCheckFormatString_ArgItemShapes pins section 1.3.2's list-item rule for
 // TargetArgItem, the union expr.UnionOf(expr.OptionalOf(expr.TString),
 // expr.ListOf(expr.TString)): a string is one argument, None drops it, and a
-// list[string] flattens inline -- but a list[list[string]] (nesting one level
+// list[string] flattens inline, while a list[list[string]] (nested one level
 // too deep) does not type-check. checkActionExpressions (exprcheck.go) is
 // TargetArgItem's caller in the template walk; this test pins the contract
-// at the checkFormatString level, which the substitution (performed
-// elsewhere; TargetArgItem only type-checks here) relies on.
+// at the checkFormatString level, which substitution (performed elsewhere)
+// relies on.
 //
-// Both the concrete-literal shapes AND their UNRESOLVED equivalents are
-// covered, and this is not redundancy: a concrete literal is not what a real
-// template produces at this position. checkTemplateExpressions runs phase 1
-// with params == nil, so every Param./RawParam. reference is an unresolved
-// placeholder (symbolsFor), and the canonical section 1.3.2 example --
-// "a value that is a string is one argument, None means no argument is added,
-// and a list[string] adds each element" -- is written as a CONDITIONAL
-// picking between those shapes based on another parameter, e.g.
-// "{{ Param.S if Param.Flag else None }}". That conditional's result type is
-// a UNION of its branches (here string? = string | nulltype) precisely
-// because Param.Flag has no phase-1 value to pick a branch with. Concrete
-// 'x'/None/['a','b'] alone would not catch a checker that rejects this
-// unresolved-union shape (a null member of a source union coerced to a
-// target union that names nulltype) while every concrete form of the same
-// shapes passes -- see the CodeNull branch this pins in
+// Both the concrete-literal shapes and their unresolved equivalents are
+// covered, because a concrete literal is not what a real template produces
+// at this position. checkTemplateExpressions runs phase 1 with params == nil,
+// so every Param./RawParam. reference is an unresolved placeholder
+// (symbolsFor), and section 1.3.2's example ("a value that is a string is one
+// argument, None means no argument is added, and a list[string] adds each
+// element") is written as a conditional picking between those shapes based
+// on another parameter, e.g. "{{ Param.S if Param.Flag else None }}". That
+// conditional's result type is the union of its branches (here string? =
+// string | nulltype), because Param.Flag has no phase-1 value to pick a
+// branch with. Concrete 'x'/None/['a','b'] alone would not catch a checker
+// that rejects this unresolved-union shape (a null member of a source union
+// coerced to a target union that names nulltype); see the CodeNull branch in
 // internal/openjd/expr/coerce.go's coercible().
 func TestCheckFormatString_ArgItemShapes(t *testing.T) {
 	tmpl := &JobTemplate{
@@ -402,12 +396,12 @@ func TestCheckFormatString_ArgItemShapes(t *testing.T) {
 		{"a list[string] flattens inline", "{{ ['a', 'b'] }}", false},
 		{"a list[list[string]] does not type-check", "{{ [['a'], ['b']] }}", true},
 
-		// The same three accepted shapes, but UNRESOLVED -- what phase 1
-		// produces, via a conditional whose condition (Param.Flag)
-		// has no concrete value. Each branch's own type is still a concrete
-		// member (string, nulltype, or list[string]); what makes the WHOLE
-		// expression's result type a union is that evaluation cannot pick
-		// which branch runs without a value for Param.Flag.
+		// The same three accepted shapes, unresolved as phase 1 produces
+		// them, via a conditional whose condition (Param.Flag) has no
+		// concrete value. Each branch's type is a concrete member (string,
+		// nulltype, or list[string]); the expression's result type is a union
+		// because evaluation cannot pick a branch without a value for
+		// Param.Flag.
 		{"an unresolved string (a Param reference) is one argument", "{{ Param.S }}", false},
 		{"an unresolved list[string] flattens inline", "{{ [Param.S] }}", false},
 		{
@@ -437,17 +431,15 @@ func TestCheckFormatString_ArgItemShapes(t *testing.T) {
 // TestCheckFormatString_TimeoutTarget pins the target-type contract
 // checkActionExpressions applies at the "action timeout" position (TargetInt).
 //
-// This exercises checkFormatString directly rather than through
-// checkTemplateExpressions and a full YAML round trip, because decodeAction
-// (parse.go) decodes "timeout" as a STRICT integer for every template, EXPR
-// or not -- scalarToInt has no case for a "{{ ... }}" string, so it errors
-// "timeout must be an integer" at PARSE time before ValidateWithOptions ever
-// runs. There is therefore no field on Action that can carry an unresolved
-// format-string body at this position; checkActionExpressions'
-// strconv.Itoa(a.TimeoutSeconds) call is wired for the position but is
-// necessarily a no-op against a real template until that decoder changes
-// (see checkActionExpressions' doc comment). This test pins the contract that
-// call applies, independent of whether decodeAction can reach it.
+// It calls checkFormatString directly rather than going through
+// checkTemplateExpressions and a YAML round trip, because decodeAction
+// (parse.go) decodes "timeout" as a strict integer for every template, EXPR
+// or not: scalarToInt has no case for a "{{ ... }}" string, so parsing fails
+// with "timeout must be an integer" before ValidateWithOptions runs. No
+// Action field can carry an unresolved format string at this position, so
+// checkActionExpressions' strconv.Itoa(a.TimeoutSeconds) call is wired but
+// has no effect on a real template (see checkActionExpressions' doc
+// comment). This test pins the contract that call applies.
 func TestCheckFormatString_TimeoutTarget(t *testing.T) {
 	tmpl := &JobTemplate{
 		Name:                 "T",
@@ -458,8 +450,8 @@ func TestCheckFormatString_TimeoutTarget(t *testing.T) {
 	if errs := checkFormatString(nil, "{{ [Param.S] }}", "/p", ScopeStepScript, syms, TargetInt); len(errs) == 0 {
 		t.Error("a list value was accepted against an int timeout target")
 	}
-	// What a real, already-decoded timeout looks like: a plain decimal
-	// string with no "{{" reference. Must stay accepted.
+	// A decoded timeout is a plain decimal string with no "{{" reference,
+	// and is accepted.
 	if errs := checkFormatString(nil, "30", "/p", ScopeStepScript, syms, TargetInt); len(errs) != 0 {
 		t.Errorf("a plain decoded timeout value must not be rejected: %v", errs)
 	}
@@ -490,9 +482,8 @@ func TestCheckTemplateExpressions_NoOpWithoutEXPR(t *testing.T) {
 
 // TestCheckTemplateExpressions_HostRequirements pins the "host requirement
 // values" position (ScopeJob, TargetString). A Session.* reference is out of
-// scope at ScopeJob (scope.go's
-// scopeFixed(ScopeJob) returns none), so it must be rejected at the amount's
-// min pointer.
+// scope at ScopeJob (scope.go's scopeFixed(ScopeJob) returns none), so it is
+// rejected at the amount's min pointer.
 func TestCheckTemplateExpressions_HostRequirements(t *testing.T) {
 	minRef := "{{ Session.WorkingDirectory }}"
 	tmpl := &JobTemplate{
@@ -555,13 +546,12 @@ func TestCheckTemplateExpressions_RangeEntries(t *testing.T) {
 }
 
 // TestCheckTemplateExpressions_RangeExprOutOfScope pins the whole-field
-// RangeExpr form of the range position (distinct from
-// TestCheckTemplateExpressions_RangeEntries above, which only covers the
-// RangeList array form): an out-of-scope reference in RangeExpr must still
-// be rejected regardless of the target checkParameterSpaceExpressions checks
-// it against (rangeExprFieldType(TaskParamTypeString)). A permissive or a
-// tight target changes only the RESULT type check; an unknown-symbol failure
-// happens at evaluation's symbol lookup, before any target coercion runs.
+// RangeExpr form of the range position (TestCheckTemplateExpressions_RangeEntries
+// covers the RangeList array form): an out-of-scope reference in RangeExpr is
+// rejected whatever target checkParameterSpaceExpressions checks it against
+// (rangeExprFieldType(TaskParamTypeString)). The target affects only the
+// result type check; an unknown-symbol failure happens at symbol lookup,
+// before any target coercion runs.
 func TestCheckTemplateExpressions_RangeExprOutOfScope(t *testing.T) {
 	tmpl := &JobTemplate{
 		Name:       "T",
@@ -592,13 +582,11 @@ func TestCheckTemplateExpressions_RangeExprOutOfScope(t *testing.T) {
 	}
 }
 
-// TestCheckTemplateExpressions_RangeExprListValuedAccepted is the
-// accompanying sanity check: checkParameterSpaceExpressions must accept
-// section 1.3.11's list-valued RangeExpr fixtures
-// (expr1.3.11--*-range-expression.yaml). It checks this one against
-// rangeExprFieldType(TaskParamTypeFloat) (list[float]), which this
-// expression's actual result type matches directly rather than merely
-// surviving an unconstrained target.
+// TestCheckTemplateExpressions_RangeExprListValuedAccepted pins that
+// checkParameterSpaceExpressions accepts section 1.3.11's list-valued
+// RangeExpr fixtures (expr1.3.11--*-range-expression.yaml). It checks this one
+// against rangeExprFieldType(TaskParamTypeFloat) (list[float]), which the
+// expression's result type matches directly.
 // TestCheckParameterSpaceExpressions_RangeTargetTypes is the fuller table,
 // covering every declared type and both the accept and reject side at both
 // the whole-field and per-entry positions.
@@ -630,69 +618,65 @@ func TestCheckTemplateExpressions_RangeExprListValuedAccepted(t *testing.T) {
 // TestCheckParameterSpaceExpressions_RangeTargetTypes is the per-type range
 // target table, exercised end to end through checkParameterSpaceExpressions: for
 // each declared task-parameter type, an expression of the position's own
-// target type is ACCEPTED, and one of the wrong shape is REJECTED at the
-// position's own JSON pointer -- at BOTH the whole-field RangeExpr position
-// and a RangeList entry, since the two positions have different targets
-// (rangeExprFieldType -- a list, or for INT/CHUNK[INT] a range_expr -- versus
-// rangeListItemType -- §1.3.2's list item, T? | list[T]).
+// target type is accepted, and one of the wrong shape is rejected at the
+// position's own JSON pointer, at both the whole-field RangeExpr position and
+// a RangeList entry, since the two positions have different targets
+// (rangeExprFieldType: a list, or a range_expr for INT/CHUNK[INT];
+// rangeListItemType: §1.3.2's list item, T? | list[T]).
 //
-// The shape-mismatch reject case at each position is built from the SAME
+// The shape-mismatch reject case at each position is built from the same
 // expression as the accept case, wrapped or unwrapped in a list literal: a
-// whole-field RangeExpr (list/range_expr target) rejects the entry's own
-// accepted scalar, and a RangeList entry rejects the whole-field's own
-// accepted list wrapped in one more list. The whole-field list itself is
-// legal at an entry, where it flattens (§1.3.12).
+// whole-field RangeExpr (list/range_expr target) rejects the entry's
+// accepted scalar, and a RangeList entry rejects the whole field's accepted
+// list wrapped in one more list. The whole-field list itself is legal at an
+// entry, where it flattens (§1.3.12).
 //
-// entryReject is a SECOND, narrower reject case at the entry position only,
-// present for every type except STRING: a value of the WRONG scalar type
-// (not merely the wrong shape) that TargetString -- every scalar's superset
-// -- would have ACCEPTED. Without threading rangeExprElemType through the
-// entry position too, this subtest cannot fail: TargetString accepts a bool,
-// or a non-integral float, exactly as readily as it accepts a string. STRING
-// has no entryReject because rangeExprElemType(STRING) IS TargetString.
+// entryReject is a second reject case at the entry position only, present
+// for every type except STRING: a value of the wrong scalar type (not only
+// the wrong shape) that TargetString, which accepts every scalar, would
+// accept. The value is rejected only if rangeExprElemType is threaded through
+// the entry position: TargetString accepts a bool or a non-integral float as readily
+// as a string. STRING has no entryReject because rangeExprElemType(STRING)
+// is TargetString.
 //
 // wholeReject is entryReject's whole-field counterpart, present for every
-// type except STRING: a LIST whose elements are the wrong scalar type --
-// not merely a bare scalar, which "whole-field rejected (wrong shape)" above
-// already covers and which every list-shaped target rejects identically
-// regardless of its element type. Without this row, mutating
-// rangeExprFieldType to return expr.ListOf(expr.TString) unconditionally --
-// discarding the declared type's element entirely, keeping only "it's a
-// list" -- leaves this whole test, and the rest of the package, green.
-// wholeAccept's own list literals ({{ [1,2,3] }}, {{ [1.0,2.5] }},
-// {{ [path('/a'),path('/b')] }}) all coerce to list[string] as readily as to
-// their own element type (section 1.2.3's scalar->string catch-all applies
-// elementwise), so only wholeReject distinguishes "a list" from "THIS
-// type's list". STRING again has none: a list[string] literal is what
-// list[string] (STRING's own target) already accepts, so there is no
-// wrong-element-type list left to construct.
+// type except STRING: a list whose elements are the wrong scalar type. A bare
+// scalar is already covered by "whole-field rejected (wrong shape)" and is
+// rejected by every list-shaped target regardless of element type, so
+// without this row a rangeExprFieldType that returned
+// expr.ListOf(expr.TString) unconditionally would pass this test and the
+// rest of the package. wholeAccept's list literals ({{ [1,2,3] }},
+// {{ [1.0,2.5] }}, {{ [path('/a'),path('/b')] }}) all coerce to list[string]
+// as readily as to their own element type (section 1.2.3's scalar->string
+// coercion applies elementwise), so only wholeReject checks the element
+// type. STRING has none: list[string] is STRING's own target, so no
+// wrong-element-type list exists for it.
 //
 // Neither reject expression references an unbound symbol, so a failure here
-// can only be the target-type coercion -- not the scope check
-// TestCheckTemplateExpressions_RangeEntries/_RangeExprOutOfScope already
-// cover.
+// comes from target-type coercion, not from the scope check that
+// TestCheckTemplateExpressions_RangeEntries/_RangeExprOutOfScope cover.
 func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 	tests := []struct {
 		name        string
 		typ         TaskParamType
 		wholeAccept string
-		wholeReject string // "" when there is no wrong-ELEMENT-type list to build (STRING)
-		// wholeShapeReject is a BARE SCALAR the whole-field target rejects.
+		wholeReject string // "" when there is no wrong-element-type list to build (STRING)
+		// wholeShapeReject is a bare scalar the whole-field target rejects.
 		// It defaults to entryAccept, because for FLOAT/STRING/PATH the field
 		// target is a plain list and every bare scalar is the wrong shape.
-		// INT/CHUNK[INT] must name their own: section 1.3.12's RangeString
-		// note makes an int and a string LEGAL at that position (they are
-		// range TEXT -- see rangeExprFieldType), so those two rows need a
-		// scalar that is neither.
+		// INT/CHUNK[INT] name their own: section 1.3.12's RangeString note
+		// makes an int and a string legal at that position (they are range
+		// text; see rangeExprFieldType), so those rows need a scalar that is
+		// neither.
 		//
-		// A bool does not work: under openjd-specifications#175's rules
-		// bool's destination is string, the target offers string, so a bool
-		// becomes the range TEXT "true" -- which is not a valid
-		// <IntRangeExpr> and is rejected by EXPANSION, exactly as
-		// "{{ 'abc' }}" is (resolve substitutes the text without parsing it;
-		// ExpandParameterSpace is the only layer that reads it -- pinned by
-		// TestExpandParameterSpace_NonRangeTextIsRejected). The checker's job
-		// at this position is the type, not the text.
+		// A bool does not work: under openjd-specifications#175's rules a
+		// bool's destination is string and the target offers string, so a
+		// bool becomes the range text "true", which is not a valid
+		// <IntRangeExpr> and is rejected at expansion, as "{{ 'abc' }}" is
+		// (resolve substitutes the text without parsing it, and
+		// ExpandParameterSpace is the only layer that reads it; see
+		// TestExpandParameterSpace_NonRangeTextIsRejected). The checker
+		// checks the type at this position, not the text.
 		//
 		// null works because no conversion produces null, so nulltype is
 		// never a destination, and a target that does not name nulltype
@@ -706,16 +690,15 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 			wholeAccept: "{{ [1, 2, 3] }}", entryAccept: "{{ 5 }}",
 			wholeShapeReject: "{{ null }}",
 			// A list of strings: string->int coercion needs a value that
-			// parses as an int, and "a" does not -- so this is rejected on
-			// the VALUE, not merely the type (list[string] -> list[int] is
-			// type-level coercible, per scalarCoercible's string->int rule).
-			// It still discriminates: expr.ListOf(expr.TString) accepts it
-			// outright (no conversion attempted), so it catches the
-			// mutation.
+			// parses as an int, and "a" does not, so this is rejected on the
+			// value (list[string] -> list[int] is coercible at the type
+			// level, per scalarCoercible's string->int rule). An
+			// expr.ListOf(expr.TString) target would accept it with no
+			// conversion, so the row still tells the two targets apart.
 			wholeReject: "{{ ['a'] }}",
 			// 2.5 is not integral: TargetString would render it "2.5"
-			// unchanged, but TInt performs the real float->int narrowing and
-			// rejects a non-exact value (the INT/Scale=2.5 case
+			// unchanged, while TInt narrows float to int and rejects a
+			// non-exact value (the INT/Scale=2.5 case
 			// TestResolveParameterSpaceParams_RangeListEntryINTNonIntegralRejected
 			// covers, here as a literal rather than a job-parameter
 			// reference).
@@ -731,12 +714,12 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 		{
 			name: "FLOAT", typ: TaskParamTypeFloat,
 			wholeAccept: "{{ [1.0, 2.5] }}", entryAccept: "{{ 2.5 }}",
-			// "abc" does not parse as a float -- rejected on the value,
-			// exactly as expand.go's validateFloatList would reject it
-			// downstream, but here at submit and at the field's own pointer.
+			// "abc" does not parse as a float, so it is rejected on the
+			// value, as expand.go's validateFloatList would reject it later,
+			// here at the field's own pointer.
 			wholeReject: "{{ ['abc'] }}",
-			// A bool coerces to string unconditionally (section 1.2.3's
-			// catch-all) but has no bool->float rule at all.
+			// A bool coerces to string unconditionally (section 1.2.3) but
+			// has no bool->float rule.
 			entryReject: "{{ true }}",
 		},
 		{
@@ -747,9 +730,9 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 			name: "PATH", typ: TaskParamTypePath,
 			wholeAccept: "{{ [path('/a'), path('/b')] }}", entryAccept: "{{ path('/a') }}",
 			// An int coerces to string unconditionally but only a string
-			// coerces to path (section 1.2.3: path <- string only) -- so a
-			// list[int] is rejected by list[path] on the TYPE, not the
-			// value, unlike the INT/FLOAT rows above.
+			// coerces to path (section 1.2.3: path <- string only), so
+			// list[path] rejects a list[int] on its type, unlike the
+			// value-based INT/FLOAT rows above.
 			wholeReject: "{{ [1, 2] }}",
 			// An int coerces to string unconditionally but only a string
 			// coerces to path (section 1.2.3: path <- string only).
@@ -768,9 +751,9 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 			t.Run("whole-field rejected (wrong shape)", func(t *testing.T) {
 				// A bare scalar that is not one of the shapes section 1.3.12
 				// admits at this position. For FLOAT/STRING/PATH that is any
-				// scalar at all, so the one the ENTRY position accepts is the
-				// natural choice; INT/CHUNK[INT] name their own, because an
-				// int and a string are legal range TEXT there.
+				// scalar, so the one the entry position accepts is used;
+				// INT/CHUNK[INT] name their own, because an
+				// int and a string are legal range text there.
 				body := tc.wholeShapeReject
 				if body == "" {
 					body = tc.entryAccept
@@ -850,8 +833,8 @@ func rangeCheckTemplate(typ TaskParamType, rangeList []string, rangeExpr *string
 }
 
 // assertRejectedAt fails t unless errs contains a ValidationError at exactly
-// wantPtr -- the position's own pointer, since the rejection half is what
-// catches a target wired too loosely.
+// wantPtr, the position's own pointer; the rejection cases are what catch a
+// target wired too loosely.
 func assertRejectedAt(t *testing.T, errs ValidationErrors, wantPtr, body string) {
 	t.Helper()
 	if len(errs) == 0 {
@@ -890,30 +873,28 @@ func TestCheckTemplateExpressions_ArgsPositionUsesArgItemTarget(t *testing.T) {
 
 // TestCheckTemplateExpressions_AppliesSubmissionLimits pins that the walk
 // applies [ExprLimits.evalOptions] (a much tighter budget than expr.Eval's own
-// execution-time defaults) end to end, not just when checkFormatString is
-// called directly with no opts.
+// execution-time defaults) through the template walk, as well as when
+// checkFormatString is called directly with no opts.
 //
-// Each of the two budgets is pinned with a value chosen to sit on ONE side of
-// ONE limit only, so the two sub-tests cannot pass for the wrong reason. A
-// value such as 'a' * 3_000_000 exceeds BOTH defaultSubmissionMemoryBytes and
-// defaultSubmissionOperations at once, and because the operation charge
-// (callShape's chargeResult, ceil(len/256) per section 1.3.10 rule 3) runs
-// BEFORE the memory charge (evalNode's ec.m.alloc, per section 1.3.9) for a
-// string repeat, the memory check would never be reached, and a caller who
-// mixed up which Option went where would not be caught.
+// Each budget is pinned with a value that exceeds one limit only, so neither
+// sub-test can pass for the wrong reason. A value such as 'a' * 3_000_000
+// exceeds both defaultSubmissionMemoryBytes and defaultSubmissionOperations,
+// and for a string repeat the operation charge (callShape's chargeResult,
+// ceil(len/256) per section 1.3.10 rule 3) runs before the memory charge
+// (evalNode's ec.m.alloc, per section 1.3.9), so the memory check would never
+// be reached and swapped Options would not be detected.
 //
 //   - "over memory, under operations": 'a' * 1,500,000 costs
-//     ceil(1,500,000/256) = 5,860 operations (well under
+//     ceil(1,500,000/256) = 5,860 operations (under
 //     defaultSubmissionOperations's 10,000) but allocates a 1,500,000-byte
-//     string (over defaultSubmissionMemoryBytes's 1,000,000) -- and stays under
-//     limits.go's fixed, unrelated maxStringBytes floor (10,000,000), so
-//     that hard cap cannot be what rejects it either.
+//     string (over defaultSubmissionMemoryBytes's 1,000,000), and stays under
+//     limits.go's separate maxStringBytes cap (10,000,000), so that cap does
+//     not reject it either.
 //   - "over operations, under memory": a comprehension iterating range(11,000)
-//     with a filter that is always false (`x > 999999`, impossible for any
-//     element range() produces) costs one operation per iteration plus the
-//     call itself -- 11,001 operations, over defaultSubmissionOperations -- but
-//     the filtered-out result list stays EMPTY, so live memory never
-//     approaches defaultSubmissionMemoryBytes.
+//     with a filter that is always false (`x > 999999`) costs one operation
+//     per iteration plus the call itself, 11,001 operations, over
+//     defaultSubmissionOperations, while the result list stays empty, so live
+//     memory stays far below defaultSubmissionMemoryBytes.
 func TestCheckTemplateExpressions_AppliesSubmissionLimits(t *testing.T) {
 	newTmpl := func(arg string) *JobTemplate {
 		return &JobTemplate{

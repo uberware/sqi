@@ -223,12 +223,12 @@ func TestOperationCount_ReprShListChargesElementsNotBytes(t *testing.T) {
 	}
 }
 
-// TestOperationCount_ReprFunctionsListChargesElementsDespiteReferenceOmission
-// is the divergence's own dedicated test: repr_py, repr_json, repr_pwsh and
-// repr_cmd all charge ArgElements over a list, as rule 2, which names all five
-// repr_* functions, requires. The reference also adds a unit for the string it
-// builds, which sqi does not; see test/oracle/baseline-ops.txt.
-func TestOperationCount_ReprFunctionsListChargesElementsDespiteReferenceOmission(t *testing.T) {
+// TestOperationCount_ReprFunctionsListChargesElements checks that repr_py,
+// repr_json, repr_pwsh and repr_cmd charge ArgElements over a list, as rule 2,
+// which names all five repr_* functions, requires. The reference also adds a
+// unit for the string it builds, which sqi does not; see
+// test/oracle/baseline-ops.txt.
+func TestOperationCount_ReprFunctionsListChargesElements(t *testing.T) {
 	lst5 := "['a','a','a','a','a']"
 	lst20 := "[" + strings.Repeat("'a',", 19) + "'a']"
 	for _, fn := range []string{"repr_py", "repr_json", "repr_pwsh", "repr_cmd"} {

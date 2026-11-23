@@ -5,9 +5,8 @@ package openjd
 import "testing"
 
 // TestCheckParamValueAgainstType covers the shared core directly. Each case is
-// a declared type plus a candidate value; the same function serves the
-// template's default and a submitted value, which is the whole reason it
-// exists.
+// a declared type plus a candidate value; the same function checks both the
+// template's default and a submitted value.
 func TestCheckParamValueAgainstType(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -69,7 +68,7 @@ func TestCheckParamValueAgainstType(t *testing.T) {
 }
 
 // TestCheckParamValueAgainstType_SkipsFormatStrings mirrors the scalar rule: a
-// DECLARED DEFAULT containing "{{" is not known until it is resolved, so
+// declared default containing "{{" is not known until it is resolved, so
 // checking it against its declared type here would reject a valid template.
 // This pins the allowFormatString=true (validate_paramtypes.go) path.
 func TestCheckParamValueAgainstType_SkipsFormatStrings(t *testing.T) {
@@ -80,12 +79,11 @@ func TestCheckParamValueAgainstType_SkipsFormatStrings(t *testing.T) {
 }
 
 // TestCheckParamValueAgainstType_RejectsFormatStringsWhenSubmitted covers the
-// bind.go path (allowFormatString=false): a SUBMITTED value is never a format
-// string -- nothing resolves "{{ }}" inside a bound parameter value -- so a
-// "{{"-containing submission must be checked like any other value, not
-// skipped. Skipping it would accept a submitted "{{x}}" for every one of the
-// eight RFC 0007 types, which would then fail at runtime on the worker
-// instead of at submission.
+// bind.go path (allowFormatString=false): a submitted value is never a format
+// string, since nothing resolves "{{ }}" inside a bound parameter value, so a
+// "{{"-containing submission must be checked like any other value. Skipping it
+// would accept a submitted "{{x}}" for every one of the eight RFC 0007 types,
+// which would then fail at runtime on the worker instead of at submission.
 func TestCheckParamValueAgainstType_RejectsFormatStringsWhenSubmitted(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -94,11 +92,11 @@ func TestCheckParamValueAgainstType_RejectsFormatStringsWhenSubmitted(t *testing
 	}{
 		{"bool", JobParameter{Type: JobParamTypeBool}, "{{Param.Other}}"},
 		{"range expr", JobParameter{Type: JobParamTypeRangeExpr}, "{{Param.Other}}"},
-		// A "{{"-containing element that fails the declared element type --
-		// a top-level skip would hide this by never decoding the list at all.
+		// A "{{"-containing element that fails the declared element type; a
+		// top-level skip would hide this by never decoding the list at all.
 		{"list of ints, bad element", JobParameter{Type: JobParamTypeListInt}, `[1, "{{Param.Other}}"]`},
 		// A "{{"-containing value that is well-formed JSON but violates a
-		// list-level constraint -- a top-level skip would hide the minLength violation.
+		// list-level constraint; a top-level skip would hide the minLength violation.
 		{
 			"list of strings, below minLength",
 			JobParameter{Type: JobParamTypeListString, MinLength: new(5)},

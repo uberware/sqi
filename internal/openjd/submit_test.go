@@ -345,7 +345,7 @@ func TestSubmitter_Submit_JobEnvMissingDefaultRoot(t *testing.T) {
 	st := fake.New()
 	farmID, queueID := seedSubmitPrereqs(t, st)
 
-	// Location exists but has ONLY a compute-location-specific root, no default.
+	// Location exists but has only a compute-location-specific root, no default.
 	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{
 		ID:    uuid.NewString(),
 		Name:  "job_assets",
@@ -357,7 +357,7 @@ func TestSubmitter_Submit_JobEnvMissingDefaultRoot(t *testing.T) {
 
 	sub := openjd.NewSubmitter(st)
 
-	// loc:// referenced in a JOB environment variable (job scope, no affinity).
+	// loc:// referenced in a job environment variable (job scope, no affinity).
 	template := `{
   "specificationVersion": "jobtemplate-2023-09",
   "name": "JobEnvLocJob",
@@ -399,7 +399,7 @@ func TestSubmitter_Submit_JobParamDefaultMissingDefaultRoot(t *testing.T) {
 
 	sub := openjd.NewSubmitter(st)
 
-	// loc:// referenced in a JOB PARAMETER default (job scope, no affinity).
+	// loc:// referenced in a job parameter default (job scope, no affinity).
 	template := `{
   "specificationVersion": "jobtemplate-2023-09",
   "name": "JobParamLocJob",
@@ -1085,12 +1085,12 @@ func TestSubmit_DependsOn_Rejections(t *testing.T) {
 
 // ── Submit-time expression re-check ─────────────────────────────────────────
 //
-// The tests below cover what Submit does for an EXPR template and for the
-// common EXPR-off case: that the phase-2 re-check with concrete parameters
-// surfaces as a SubmitValidationError, and that the same call site is inert --
-// no false rejection -- without the extension declared, even when a job
-// parameter used in a format string is submitted as "0". The white-box tests
-// of the same wiring are in submit_exprcheck_test.go.
+// The tests below cover what Submit does for an EXPR template and for a
+// template without EXPR: the phase-2 re-check with concrete parameters
+// surfaces as a SubmitValidationError, and without the extension declared the
+// same call site rejects nothing, even when a job parameter used in a format
+// string is submitted as "0". The white-box tests of the same wiring are in
+// submit_exprcheck_test.go.
 
 // TestSubmitter_Submit_EXPRTemplateRejectedByPhase2Recheck drives a
 // division-by-zero template through the public Submit API and asserts the
@@ -1141,9 +1141,9 @@ steps:
 // TestSubmitter_Submit_ParamZeroWithoutEXPRUnaffected confirms the
 // checkExpressionsAtSubmit call site does not change behavior for a template
 // that does not declare EXPR: a job parameter referenced in a base-spec
-// format string and submitted as "0" -- the same value that trips the
-// division-by-zero check under EXPR -- must submit normally, because
-// checkTemplateExpressions no-ops without the EXPR extension declared.
+// format string and submitted as "0" (the value that trips the
+// division-by-zero check under EXPR) must submit normally, because
+// checkTemplateExpressions does nothing without the EXPR extension declared.
 func TestSubmitter_Submit_ParamZeroWithoutEXPRUnaffected(t *testing.T) {
 	st := fake.New()
 	farmID, queueID := seedSubmitPrereqs(t, st)
