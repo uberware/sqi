@@ -66,6 +66,116 @@ func TestWakeQueue_WakesWildcardParkedWorkers(t *testing.T) {
 	}
 }
 
+// readBeforeCommitStore makes the first ListReadyTasks see no ready tasks, as
+// a selection that read the store just before a submission committed does,
+// and then runs afterRead, standing in for that submission's wake.
+type readBeforeCommitStore struct {
+	store.Store
+
+	once      sync.Once
+	afterRead func()
+}
+
+func (s *readBeforeCommitStore) ListReadyTasks(ctx context.Context, farmID string, now time.Time, limit int) ([]store.Task, error) {
+	first := false
+	s.once.Do(func() { first = true })
+	if !first {
+		return s.Store.ListReadyTasks(ctx, farmID, now, limit)
+	}
+	s.afterRead()
+	return nil, nil
+}
+
+// TestHandleLeaseRequest_WakeBetweenSelectionAndParkIsNotLost covers a
+// submission whose wake fires after a lease request's selection found no work
+// but before the request parked: the request must not sleep through it for the
+// whole hold (H13f23, where a simulated worker sat idle for the full 30 s hold
+// beside a ready task).
+func TestHandleLeaseRequest_WakeBetweenSelectionAndParkIsNotLost(t *testing.T) {
+	for _, queue := range []string{"q1", bus.WildcardQueueToken} {
+		t.Run(queue, func(t *testing.T) {
+			inner := newCheckedFake(t)
+			st := &readBeforeCommitStore{Store: inner}
+			s := newMetricsScheduler(st, &recordBus{}, "f1")
+			s.leaseHoldTimeout = 5 * time.Second
+			st.afterRead = func() { s.WakeQueue("q1") }
+			one := 1
+			w, _ := seedLeaseFixture(t, inner, []*int{&one})
+
+			req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			start := time.Now()
+			reply := s.handleLeaseRequest(w.ID, queue, req)
+			var got leaseReply
+			if err := json.Unmarshal(reply, &got); err != nil {
+				t.Fatalf("unmarshal reply: %v", err)
+			}
+			if len(got.Assignments) != 1 {
+				t.Fatalf("leased %d tasks after %v, want 1 without waiting out the %v hold",
+					len(got.Assignments), time.Since(start).Round(time.Millisecond), s.leaseHoldTimeout)
+			}
+			if d := time.Since(start); d > time.Second {
+				t.Errorf("reply took %v, want well under the %v hold", d.Round(time.Millisecond), s.leaseHoldTimeout)
+			}
+		})
+	}
+}
+
+// readBeforeEnableStore makes the first GetWorker see the worker disabled, as a
+// read just before an enable committed does, and then runs afterRead, standing
+// in for the enable handler's wake.
+type readBeforeEnableStore struct {
+	store.Store
+
+	once      sync.Once
+	afterRead func()
+}
+
+func (s *readBeforeEnableStore) GetWorker(ctx context.Context, id string) (store.Worker, error) {
+	w, err := s.Store.GetWorker(ctx, id)
+	first := false
+	s.once.Do(func() { first = true })
+	if first && err == nil {
+		w.Disabled = true
+		s.afterRead()
+	}
+	return w, err
+}
+
+// TestHandleLeaseRequest_EnableBetweenReadAndHoldIsNotLost covers an enable
+// whose wake fires after a lease request read the worker as disabled but before
+// the request was held: the request must lease the worker's work then, not
+// after the whole hold.
+func TestHandleLeaseRequest_EnableBetweenReadAndHoldIsNotLost(t *testing.T) {
+	inner := newCheckedFake(t)
+	st := &readBeforeEnableStore{Store: inner}
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.leaseHoldTimeout = 5 * time.Second
+	one := 1
+	w, _ := seedLeaseFixture(t, inner, []*int{&one})
+	st.afterRead = func() { s.WakeWorker(w.ID) }
+
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	start := time.Now()
+	reply := s.handleLeaseRequest(w.ID, "q1", req)
+	var got leaseReply
+	if err := json.Unmarshal(reply, &got); err != nil {
+		t.Fatalf("unmarshal reply: %v", err)
+	}
+	if len(got.Assignments) != 1 {
+		t.Fatalf("leased %d tasks after %v, want 1 without waiting out the %v hold",
+			len(got.Assignments), time.Since(start).Round(time.Millisecond), s.leaseHoldTimeout)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("reply took %v, want well under the %v hold", d.Round(time.Millisecond), s.leaseHoldTimeout)
+	}
+}
+
 // minimalRenderJSON is a minimal OpenJD template with a step named "render".
 const minimalRenderJSON = `{
   "specificationVersion": "jobtemplate-2023-09",

@@ -81,6 +81,9 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 		return marshalLeaseReply(nil)
 	}
 
+	// Taken before the worker read that decides whether to hold the request,
+	// so an enable that lands between the read and the hold still ends it.
+	enabled := s.disabledWaiters.ticket(workerID)
 	worker, err := s.store.GetWorker(ctx, workerID)
 	if err != nil {
 		return marshalLeaseReply(nil)
@@ -96,13 +99,17 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	// its Debug log. A worker whose credential was revoked is held the same
 	// way ([Scheduler.NoteWorkerRevoked]).
 	if !worker.MayTakeNewWork() || s.workerRevoked(workerID) {
-		return marshalLeaseReply(s.holdDisabledLease(ctx, workerID, req.InstanceID))
+		return marshalLeaseReply(s.holdDisabledLease(ctx, workerID, req.InstanceID, enabled))
 	}
 	if s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
 		return s.refuseLeaseAfterDelay(ctx)
 	}
 	s.instanceRefusals.Delete(instanceRefusalKey{workerID, req.InstanceID})
 
+	// Taken before selection reads the ready tasks, so a submission that
+	// commits after that read and wakes the queue before the park below is not
+	// slept through for the whole hold.
+	woken := s.waiters.ticket(queueID)
 	batch, err := s.selectLeaseBatchLocked(ctx, worker)
 	if err != nil {
 		// A store error part way through a batch still delivers what was leased
@@ -123,7 +130,7 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	s.logger.DebugContext(ctx, "scheduler: no work for the lease request; parking it",
 		slog.String("worker_id", workerID), slog.String("queue_id", queueID),
 		slog.Duration("hold", s.leaseHoldTimeout))
-	if s.waiters.wait(ctx, queueID, s.leaseHoldTimeout) {
+	if s.waiters.waitSince(ctx, queueID, woken, s.leaseHoldTimeout) {
 		return marshalLeaseReply(s.leaseAfterPark(ctx, workerID, req.InstanceID))
 	}
 	return marshalLeaseReply(nil)
@@ -139,9 +146,10 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 // [Scheduler.WakeWorker], called when the worker is enabled or registers awake
 // again, ends the park early, and the request then makes the one retry a
 // parked request makes, which leases work only if the worker may take it by
-// then. It holds no lock while parked.
-func (s *Scheduler) holdDisabledLease(ctx context.Context, workerID, instanceID string) [][]byte {
-	if s.disabledWaiters.wait(ctx, workerID, s.leaseHoldTimeout) {
+// then. It holds no lock while parked. enabled is the wake ticket taken before
+// the worker read that found it unable to take work.
+func (s *Scheduler) holdDisabledLease(ctx context.Context, workerID, instanceID string, enabled waitTicket) [][]byte {
+	if s.disabledWaiters.waitSince(ctx, workerID, enabled, s.leaseHoldTimeout) {
 		return s.leaseAfterPark(ctx, workerID, instanceID)
 	}
 	return nil

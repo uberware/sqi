@@ -487,7 +487,7 @@ func parkLease(t *testing.T, s *Scheduler, workerID string) <-chan []string {
 	done := make(chan []string, 1)
 	go func() {
 		var ids []string
-		for _, raw := range s.holdDisabledLease(s.ctx, workerID, "") {
+		for _, raw := range s.holdDisabledLease(s.ctx, workerID, "", s.disabledWaiters.ticket(workerID)) {
 			var m protocol.AssignMsg
 			if err := json.Unmarshal(raw, &m); err == nil {
 				ids = append(ids, m.TaskID)
@@ -912,7 +912,7 @@ func TestRegister_WakingMemberBecomesAwakeAndReleasesLease(t *testing.T) {
 			done := make(chan []string, 1)
 			go func() {
 				var ids []string
-				for _, raw := range f.s.holdDisabledLease(f.s.ctx, "m1", "") {
+				for _, raw := range f.s.holdDisabledLease(f.s.ctx, "m1", "", f.s.disabledWaiters.ticket("m1")) {
 					var m protocol.AssignMsg
 					if err := json.Unmarshal(raw, &m); err == nil {
 						ids = append(ids, m.TaskID)
