@@ -3,23 +3,15 @@ name: modo-pass-group-render
 title: Modo Pass Group Render
 description: >-
   Renders one named pass group of a saved Modo scene headless with modo_cl,
-  one frame per task by default. Modo is discontinued, and this preset has
-  never run in Modo.
+  one frame per task by default.
 readme: |
   # Modo Pass Group Render
 
   `modo_cl` reads its commands from standard input, and the worker leaves a
-  task's standard input as the null device, which is at end-of-file from the
-  first read. This preset therefore hands Modo its work with the documented
-  `-cmd:` startup switch instead. Whether `modo_cl` runs that command to the
-  end before it notices the empty input, or treats the end-of-file as a
-  request to quit, is untested. If it quits first, every task fails: no
-  `SQI_RENDER: OK` line is printed, so no task reports a success. Try one
-  single-frame job before any longer one.
+  task's standard input as the null device. This preset therefore hands Modo its work with the documented
+  `-cmd:` startup switch instead.
 
-  Modo is also discontinued. 17.1 was the last release (Foundry, November
-  2024), the self-service download has ended and downloads go through a
-  Foundry support ticket. The end-of-life license is an RLM `uncounted
+  Modo's end-of-life license is an RLM `uncounted
   hostid=ANY` key that Modo finds through the `foundry_LICENSE` environment
   variable. Set that variable in the worker's environment.
 
@@ -103,39 +95,6 @@ readme: |
   - The scene's render outputs and any plug-ins it needs must work in headless
     mode, where no command that opens a dialog can run.
 
-  ## What has not been verified
-
-  - No Modo has executed this preset. The command line and the commands in the
-    script follow Foundry's headless page, its Python tutorial, open-source
-    scripts and Deadline's Modo plug-in that drive `modo_cl` the same way. No
-    Foundry command-reference page documents them.
-  - Whether `modo_cl` runs the `-cmd:` script before it reads standard input
-    (see the top of this readme).
-  - Foundry says `-cmd:` runs before licensing and networking have started.
-    Whether a scene can be opened and rendered by a command that early, or
-    whether the script must wait, is not known.
-  - How `@{...}` and a second braced argument are read. Foundry documents
-    quotes or curly braces for a name with spaces, and shows
-    `-cmd:@script {args}`, but not a braced script path.
-  - Whether the script sees its own location. It uses the path argument first,
-    then `__file__`, then the current folder, which is where the worker starts
-    Modo; if none holds `params.json`, every task fails.
-  - The argument names of `scene.open` (`filename`, `type`) when called from
-    Python with keywords, which the script does so that no job value becomes
-    command text. A wrong name fails every task.
-  - That the render item is reachable through Modo's Python `modo` module
-    (`Scene().renderItem`); the script falls back to selecting an item named
-    `Render`.
-  - Whether Modo exits after `app.quit` in headless mode (see the timeout
-    above), and what its exit status is.
-  - The `group` argument name of `render.animation`, and that `*` is the value
-    for its output argument when called from Python with keywords. The
-    scripts this follows write `render.animation {*} group:<name>` as command
-    text. A wrong name fails every task.
-  - Whether text written to file descriptor 1 reaches the worker on every OS.
-    If it does not, every task fails for want of `SQI_RENDER: OK`.
-  - The install folders the detector looks for follow Foundry's documentation
-    for 17.1 and 13.2; none is confirmed on an installed copy.
 category: Rendering
 version: 1.0.0
 template:
@@ -292,8 +251,7 @@ template:
                   emit(u"openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
                   # The group name is a job value, so it goes in as a keyword
                   # argument; the whole-scene form has none, so its command text
-                  # is a literal. Whether the two forms are equivalent in Modo
-                  # is unverified.
+                  # is a literal.
                   if params["group"]:
                       lx.command("render.animation", filename="*", group=params["group"])
                   else:

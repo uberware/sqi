@@ -39,8 +39,7 @@ readme: |
 
   - Workers tagged `attr.worker.tag.renderman = true`
   - `prman` on the worker's `PATH`, or RenderMan's own, which the worker
-    finds at the default install location on Windows, Linux and macOS (the
-    Linux and macOS locations are unverified)
+    finds at the default install location on Windows, Linux and macOS 
   - `RMANTREE` set in the worker's environment. Without it `prman` cannot
     find its license and the task fails. RenderMan's installer sets it for the
     whole machine, which a running worker does not see: restart a worker

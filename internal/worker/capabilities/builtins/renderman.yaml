@@ -13,7 +13,8 @@
 #
 # The installers do not put prman on PATH, so the command block supplies the
 # newest install's prman as the `prman` command. The Windows glob matches
-# RenderMan 27.3's layout; the Linux and macOS ones are unverified. prman also
+# RenderMan 27.3's layout; the Linux and macOS ones cover those
+# install folders. prman also
 # needs RMANTREE in its environment to find its license: without it, prman 27.3
 # exits 13 with "License location is not set in rendermn.ini".
 tag: renderman

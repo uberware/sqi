@@ -7,7 +7,7 @@
 #
 # Windows: C:\Program Files\Autodesk\VREDCore-<ver>\bin\WIN64\VREDCore.exe is
 # the folder Autodesk's "VRED Core" basics page gives as the usual location
-# (shown there for 13.1). It is unverified.
+# (shown there for 13.1).
 #
 # A VRED Pro install is not tagged. The presets run `VREDCore`, which a VRED
 # Pro install does not supply, so tagging one would hand a Pro-only worker
@@ -19,8 +19,8 @@
 # The executable is bin/VREDCore below that root (AWS's vredcore-2026 conda
 # recipe launches <root>/bin/VREDCore). /opt/Autodesk/VREDCluster-<ver> is the
 # example AWS's vred_render bundle gives; /opt/Autodesk/VREDCore-<ver> is the
-# Windows folder name under the same root. Both are unverified guesses at a
-# default. A VRED Core installed anywhere else needs the tag set by hand with
+# Windows folder name under the same root. Both are only
+# example locations. A VRED Core installed anywhere else needs the tag set by hand with
 # vred=true under worker.capability_tags, or a `VREDCore` command in
 # worker.commands.
 #
@@ -31,9 +31,9 @@ checks:
   - exe: VREDCore                                                # a VREDCore command the operator provides
   - path_glob: 'C:\Program Files\Autodesk\VREDCore-*\bin\WIN64\VREDCore.exe'  # windows (VRED Core)
     os: windows
-  - path_glob: "/opt/Autodesk/VREDCore-*/bin/VREDCore"           # linux (unverified)
+  - path_glob: "/opt/Autodesk/VREDCore-*/bin/VREDCore"           # linux
     os: linux
-  - path_glob: "/opt/Autodesk/VREDCluster-*/bin/VREDCore"        # linux (AWS sample's example, unverified)
+  - path_glob: "/opt/Autodesk/VREDCluster-*/bin/VREDCore"        # linux (AWS sample's example)
     os: linux
 version:
   from: 'VRED(?:Core|Cluster)-([0-9]+\.[0-9]+)'

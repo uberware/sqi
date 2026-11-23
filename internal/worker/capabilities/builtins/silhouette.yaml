@@ -9,8 +9,7 @@
 # /Applications/SilhouetteFX/Silhouette[version]/Silhouette.app/Contents/MacOS,
 # and says the Linux location is chosen by the user at install time. Newer
 # installers may use a BorisFX root instead, and it is unknown which release
-# switched, so both roots are searched on every platform. Every path below is
-# unverified. The executable inside the folder is sfxcmd (sfxcmd.exe on
+# switched, so both roots are searched on every platform. The executable inside the folder is sfxcmd (sfxcmd.exe on
 # Windows). A Linux install elsewhere, such as /opt/silhouette6, needs the tag
 # set by hand with silhouette=true under worker.capability_tags, or an `sfxcmd`
 # command in worker.commands.

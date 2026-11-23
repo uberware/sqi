@@ -110,40 +110,6 @@ readme: |
     `-subscription`) are not job parameters: set them with `worker.commands`
     arguments or KeyShot's `-generateconfig`.
 
-  ## What has not been verified
-
-  - No KeyShot has executed this preset. The command line and the `lux`
-    calls follow KeyShot's headless manual and its headless scripting
-    reference (2024), which documents `keyshot_headless`, `-script`,
-    `-progress` and `-floating_feature`, and `lux.renderImage`,
-    `setAnimationFrame`, `getRenderOptions` and `RenderOptions.setAddToQueue`.
-  - Frame numbering. KeyShot's reference does not say whether animation frames
-    start at 0 or 1. Its own scripting quick start renders frames with
-    `range(1, frames + 1)`, so the preset treats them as 1-based and passes
-    Frames through unchanged. Check the first output against the scene's
-    animation before a long run.
-  - Whether `lux.renderImage` returns a value in headless mode. The script
-    treats only an explicit `False` as a failure, and otherwise relies on the
-    file check.
-  - Whether the script finds `params.json`. KeyShot does not document
-    whether it sets `__file__` for a script given to `-script`. The script
-    uses `__file__` when set, then a command-line entry named `render.py`,
-    then the current folder, which is where the worker starts KeyShot and
-    writes the files; if KeyShot changes its working folder first, every task
-    fails with a missing `params.json`.
-  - Whether KeyShot exits after the script ends (see the timeout above;
-    KeyShot's manual does not say), and whether a script error alone changes
-    its exit status.
-  - Whether text written to file descriptor 1 reaches the worker on macOS.
-    If it does not, every task fails for want of `SQI_RENDER: OK`.
-  - Whether the macOS bundle ships a `keyshot_headless` (a third-party
-    source says so; KeyShot's manual does not), and whether one on `PATH`
-    accepts the `-headless` the worker puts first.
-  - The install folders the detector looks for are inferred, not confirmed on
-    an installed copy. The worker's version tag takes the number in the folder
-    name, whether `KeyShot12` or a year.
-  - `-floating_feature` also accepts a core count after the feature name,
-    which this preset does not expose.
 category: Rendering
 version: 1.0.0
 template:

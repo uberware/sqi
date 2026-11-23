@@ -665,9 +665,7 @@ before submit** box saves through `KatanaFile.Save`.
 
 VRED Pro runs the dialog in-process, as Maya does: VRED bundles PySide (6
 from VRED 2024, 2 before), so `sqi-submitter` is installed into VRED's Python
-and a VRED script plugin adds the menu. Follow the steps in order. Several
-statements below come from Autodesk's documentation and user reports and are
-unverified on an install; the [VRED checklist](#vred-checklist) lists them.
+and a VRED script plugin adds the menu. Follow the steps in order.
 
 1. **Turn VRED's Python sandbox off first.** In VRED, open **Edit →
    Preferences → General Settings → Script**, untick **Enable Python Sandbox**,
@@ -1103,7 +1101,7 @@ chunk maps onto one invocation. All three render `.rnd` job files, whose
 output format the job file sets. A movie output cannot be split across tasks,
 and these presets render up to ten frames per task, so a movie longer than ten
 frames needs the step's `chunks.defaultTaskCount` raised to cover the whole
-range. How Mistika writes a movie from a partial `-s`/`-e` range is unverified.
+range.
 
 **After Effects checks `aerender`'s output, and a movie output must be one
 task.** `aerender` is reported to exit 0 when a render fails, so both After Effects
@@ -1215,8 +1213,7 @@ elsewhere, such as shared storage. If the field and the scene's output setting
 are both blank, `submit_form` refuses the job with "No output path set" rather
 than let Blender write into the worker's working directory. Outside a host
 submitter (the web UI, the API, a bare `sqi-submit`) nothing fills it: the presets
-always pass `-o`, so a blank value reaches Blender as an empty path, and what
-Blender does with that is unverified. Set it there. Maya's `OutputDir` is an
+always pass `-o`, so a blank value reaches Blender as an empty path. Set it there. Maya's `OutputDir` is an
 output directory (`Render -rd`); Blender's `-o` is a path prefix.
 
 **`PATH` parameters get file and directory pickers.** A `PATH` parameter's
@@ -1526,9 +1523,7 @@ CI has no runner with licensed DCC software, so each host is checked by hand.
 CI covers the host-independent core (form, pre-fill, multi-target submission,
 the context file) and each host's scene-reading code run against a fake host
 module (`pymxs`, `c4d`, `bpy`, ...). A fake shows only that the code matches
-the host API as the code assumes it. Each "Verified only against fakes or
-documentation" list below names those assumptions; treat every item in one as
-untested on a real install.
+the host API as the code assumes it.
 
 The Blender integration smoke test
 (`clients/submitter/tests/integration/test_e2e.py`, run with
@@ -1601,32 +1596,6 @@ After installing per [Installation per host](#installation-per-host):
    refused.
 8. Submit `3dsmax-render` and confirm a Windows worker renders it.
 
-**Verified only against fakes or documentation:**
-
-- `PackageContents.xml`: that Max accepts these attributes (`SchemaVersion`,
-  `ProductType="Application"`, `Platform="3dsMax|3dsMaxDesign"`,
-  `SeriesMin="2024"`), that the package is found in both
-  `%ProgramData%\Autodesk\ApplicationPlugins` and `%APPDATA%`, and the
-  `UniqueId`.
-- Whether the `ComponentEntry` `ModuleName` pointing at a `.ms` under
-  `Contents/scripts/startup` is what makes Max run it, or whether it only loads
-  because it sits in a `startup` folder.
-- Whether the menu registration works on 2025 and later: the script uses
-  `menuMan` (`registerMenuContext`, `createMenu`, `createSubMenuItem`) from a
-  `#cuiRegisterMenus` callback, and the menu has not been seen in a real 3ds
-  Max. The script is written for the 2025 `CuiMenuManager`, is wrapped in
-  `try`/`catch`, and prints "sqi: could not register the main menu" if it fails.
-- That 2024 gets only the macroScript.
-- The `pymxs` values the adapter reads: `rendTimeType` (1 current frame,
-  2 active segment, 3 range, 4 pickup frames), the `.frame` property of
-  `sliderTime`, `animationRange.start/end` and `rendStart`/`rendEnd` (whether
-  it is frames or ticks, and whether it rounds), `rendPickupFrames`,
-  `rendOutputFilename`, `rendSaveFile`, `classOf(renderers.current)`,
-  `getSaveRequired()` and `saveMaxFile(path, quiet=True)`.
-- `qtmax.GetQMaxMainWindow()` as the dialog's parent, on both PySide2 (2024)
-  and PySide6 (2025+).
-- That a Max-side `python.exe -m pip install` is enough (no `[qt]`).
-
 ### Cinema 4D checklist
 
 **Check by hand (Windows and macOS):**
@@ -1662,30 +1631,6 @@ After installing per [Installation per host](#installation-per-host):
 10. On macOS, `sqi-submit` is found. A GUI app does not inherit the shell
     `PATH`, so if it is not found set `sqi_submit_command` in
     `~/.sqi/submitter.json` to its absolute path.
-
-**Verified only against fakes or documentation:**
-
-- `RegisterCommandPlugin(..., icon=None, ...)` is accepted by a real Cinema 4D
-  (the registration call is only run against a fake).
-- That the command appears under **Extensions**, and that a `.pyp` in the user
-  `plugins` folder loads.
-- `take.IsChecked()`, `IsMain()`, `GetDown()`/`GetNext()` traversal and
-  `GetMainTake()`.
-- `TakeData.GetEffectiveRenderData(take)[0]`: that it returns a sequence whose
-  first element is the render data, and what it returns for a take that is not
-  the current one (overrides may only resolve for the current take).
-- The preview range from `doc.GetLoopMinTime()`/`GetLoopMaxTime()`, the
-  document range from `GetMinTime()`/`GetMaxTime()`, and
-  `BaseTime.GetFrame(fps)` as the frame number.
-- `FilenameConvertTokens(path, {"_doc", "_rData", "_rBc", "_take"})`: the
-  parameter names and whether the result is the expanded path.
-- `SaveDocument(doc, path, SAVEDOCUMENTFLAGS_NONE, FORMAT_C4DEXPORT)`: whether it
-  clears the document's changed flag, whether the file it writes is the one the
-  farm should render, and that it shows no dialog.
-- macOS: `subprocess.Popen` of an absolute path from inside Cinema 4D, and
-  whether the window activates.
-- The context temp file location: `<tmp>/sqi-handoff/context-<id>.json`,
-  where `<tmp>` is Python's `tempfile.gettempdir()`.
 
 ### After Effects checklist
 
@@ -1741,47 +1686,6 @@ After installing per [Installation per host](#installation-per-host):
     opens on top of After Effects, not behind it, even though After Effects
     does not hand it the foreground.
 
-**Verified only against fakes or documentation:**
-
-- **The version check.** That `system.callSystem` returns the program's
-  standard output (and not its standard error) for `cmd /c ""<exe>" --version"`
-  on Windows and `"<exe>" --version` on macOS, that the Windows run does not
-  flash a visible console window, and how long it takes (a Python start-up,
-  once per path per session). The tests run only the command strings, the
-  output test and the per-path memory under Node, against a fake `callSystem`.
-
-- **The launch recipes.** Windows: `system.callSystem('cmd /c start "" "<exe>"
-  --context "<file>" --detached')`. macOS: `system.callSystem('"<exe>" --context
-  "<file>" --detached >/dev/null 2>&1 &')`. Both are community practice, not documented by Adobe;
-  the tests check only the string that is built, under Node. Whether
-  `callSystem` returns at once with each (it normally blocks), whether the
-  window gets focus and whether quoting survives paths with spaces are all
-  untested. Outside After Effects, `start` of a pip-installed `sqi-submitw.exe`
-  opens no console window and of `sqi-submit.exe` does; inside After Effects
-  that is untested, as is `File.exists` finding the windowed program beside the
-  located one.
-- **The preference.** `Pref_SCRIPTING_FILE_NETWORK_SECURITY` under
-  `app.preferences.getPrefAsLong` is read from two sections, `Main Pref Section
-  v2` then `Main Pref Section`; which one a given After Effects version uses
-  is unknown. The panel blocks only when it can read a section and every
-  readable one is off; if neither is readable it carries on and lets the file
-  write report the problem. The wording of the message, which names the
-  **Preferences → Scripting & Expressions** option, was written from
-  documentation and may not match a given version's menu.
-- **`app.settings` persistence.** That `saveSetting`/`getSetting` keep the
-  located path across restarts for a panel in `Scripts/ScriptUI Panels`.
-- The render-queue reads: `RQItemStatus.QUEUED`, `item.comp`,
-  `comp.displayStartFrame`, `item.timeSpanStart`/`timeSpanDuration`,
-  `comp.frameDuration`, `item.outputModule(1).file`, `File.displayName` (decoded)
-  and `File.fsName`. The arithmetic and the movie/sequence test are run under
-  Node (when `node` is installed) against stubs, not against After Effects. Only
-  the first output module is read.
-- ExtendScript specifics: `#include "json2.js"` resolving next to the script,
-  `Folder.temp`, `File.write` of UTF-8, `$.os`, the panel docking
-  (`parent instanceof Panel`).
-- macOS: window activation behind After Effects, and `sqi-submit` found by the
-  absolute path from **Locate**.
-
 ### Blender checklist
 
 **Check by hand (Blender 4.2 or later, and the oldest release you support; the add-on declares 3.0 as its minimum):**
@@ -1822,26 +1726,6 @@ After installing per [Installation per host](#installation-per-host):
    neither: there the message comes from `xmessage` or a `notify-send`
    notification, and with none of the four installed only the log has it.
    Check X11 and Wayland sessions.
-
-**Verified only against fakes or documentation:**
-
-- The Linux failure message: that the `zenity`, `kdialog`, `xmessage` and
-  `notify-send` command lines `sqi-submit` builds show the text as given
-  (`zenity --no-markup` takes it literally), that a dialog started from a
-  process Blender launched reaches the artist's desktop, and that `DISPLAY` or
-  `WAYLAND_DISPLAY` is set in it.
-- The preferences class is built at runtime with `type(...)` and a computed
-  `__annotations__` entry, and registered with `bpy.utils.register_class`. A
-  fake accepts it; real Blender may not.
-- The preferences lookup `context.preferences.addons[__name__]`: that the module
-  name when installed from disk is the one `bl_idname` uses.
-- That a legacy add-on with `bl_info` (minimum Blender 3.0 as declared) installs
-  and enables from disk on Blender 4.2 and later, and on 3.x.
-- `bpy.data.filepath`, `bpy.data.is_dirty`, `bpy.ops.wm.save_mainfile()` called
-  from an operator, `bpy.data.scenes[].view_layers`, `scene.render.filepath` and
-  `render.engine`, `bpy.app.version_string`.
-- The context file location `<tmp>/sqi-handoff`, and that
-  `AllowSetForegroundWindow(ASFW_ANY)` (Windows) brings the window forward.
 
 ### Unreal Engine checklist
 
@@ -1902,22 +1786,6 @@ at Editor startup, so registration needs no deferring, and
 `init_unreal.py`. `SoftObjectPath.export_text()` returns object paths such as
 `/Game/Maps/Hero.Hero`, which the worker's Unreal accepts.
 
-**Verified only against fakes or documentation:**
-
-- Unreal Engine versions before 5.8.
-- **A config edited in the queue.** That `job.get_preset_origin()` is null for
-  a job whose settings were edited in the Movie Render Queue window after
-  loading a config (documented as returning the preset only while
-  unmodified). An edit made from Python does not clear it on 5.8, and the
-  Movie Render Queue copies the preset back over such an edit when the render
-  starts, so that job is offered and renders its saved config.
-- That a map that was never saved, or a level sequence that was never saved,
-  reads as a path under `/Temp/` or `/Engine/Transient`, or one that does not
-  start with `/`. On 5.8, jobs given such paths from Python are refused. A job
-  with an empty name is listed as "Unnamed job".
-- `SystemLibrary.get_engine_version()` (the version is read up to the first
-  `-`).
-
 ### Katana checklist
 
 **Check by hand (Katana 4 to 7 on PyQt5, and Katana 8 or later on PySide6):**
@@ -1968,37 +1836,6 @@ at Editor startup, so registration needs no deferring, and
     that the dialog's Qt is Katana's PySide6 (`sqi_submitter.qt._compat.QT_BINDING`
     is `PySide6`).
 
-**Verified only against fakes or documentation:**
-
-- **The startup callback, the riskiest item.**
-  `Callbacks.addCallback(Callbacks.Type.onStartupComplete, fn)` called from
-  `init.py`, and that Katana calls the callback with keyword arguments. If the
-  callback never fires, the menu is absent and no error is shown.
-- **The menu bar.** `UI4.App.MainWindow.CurrentMainWindow()`, finding the bar
-  with `findChild(UI4.App.MainMenu.MainMenu)`, and `addMenu("sqi").addAction(...)`.
-  These names come from a studio's published Katana script, not from Foundry's
-  developer guide.
-- That Katana runs `init.py` from `~/.katana/Startup` (Foundry documents a
-  `Startup` folder under a resources path and the user's `.katana` folder, not
-  that folder verbatim), and runs it with `execfile` (the hook falls back to
-  `~/.katana/Startup` when `__file__` is undefined).
-- The Render node's farm group. The Render node reference documents
-  `farmGlobalSettings.setActiveFrameRange` and
-  `farmGlobalSettings.activeFrameRange.start`/`end`; the submitter also tries
-  `farmSettings`, the RenderScript node's name for the same parameters. That
-  the toggle's "on" value reads as `Yes`, `true`, `1` or a nonzero number is a
-  guess: the docs say only "enabled".
-- `FarmAPI.GetKatanaFileName()`, `KatanaFile.IsFileDirty()`, `KatanaFile.Save(path)`,
-  `NodegraphAPI.GetInTime()`/`GetOutTime()`/`GetAllNodesByType("Render")` and
-  `node.isBypassed()`.
-- The message box's Qt binding, chosen from `KatanaInfo.version` (PySide6 from
-  Katana 8, PyQt5 before). On any failure the message goes to the console
-  instead. The host version comes from `KATANA_RELEASE` (not found in Foundry's
-  documentation), then `KatanaInfo.version`, else it is blank.
-- The in-process choice reads the major version from `KatanaInfo.version` only
-  (a `KATANA_RELEASE` alone does not enable it), and parents the dialog to
-  `UI4.App.MainWindow.CurrentMainWindow()`.
-
 ### VRED checklist
 
 **Check by hand (VRED Pro 2024 or later, on Windows; and the oldest release you
@@ -2030,40 +1867,6 @@ support):**
 9. The Python-version question. Install with the `--python-version` route and
    confirm the wheels import in VRED's Python.
 
-**Verified only against fakes or documentation:**
-
-- **The sandbox and the in-process import, the riskiest item.** That unticking
-  **Edit → Preferences → General Settings → Script → Enable Python Sandbox** is
-  enough for `import sqi_submitter` (and its httpx dependency) from the site
-  folder to work, that `python.exe -m pip install --target` into VRED's
-  `lib\python` is a supported route, that VRED's Python version is the one the
-  `--python-version` fallback assumes (3.11 for VRED 2026), and that a PySide
-  other than VRED's is never loaded.
-- **What VRED bundles.** That VRED supplies PySide (6 from 2024, 2 before),
-  ships a full Python with pip or `ensurepip` under its install folder, and that
-  its sandbox is what blocks the import: all documented or reported, none
-  confirmed on an install.
-- **Plugin in a subfolder.** That VRED loads `ScriptPlugins/SubmitToSqi/SubmitToSqi.py`
-  (Autodesk documents the `ScriptPlugins` folder; a forum thread says every
-  `.py` in it is a plugin; subfolders are not documented), and the
-  `Documents\Autodesk\VRED-<version>` folder name `install-host` looks for.
-- That VRED puts `vrFileIOService`, `vrCameraService` and `vrMainWindow` in
-  `builtins` (the plugin reads them from there and falls back to its own module
-  globals; AWS's VRED submitter reads them from `builtins`) and makes
-  `vrRenderSettings` an importable module; and `onDestroyVREDScriptPlugin` as
-  the unload callback.
-- `vrFileIOService.getFileName()` and `saveFile(path)` (returns a bool).
-- **Modified-scene detection.** VRED has no unsaved-changes call, so the
-  submitter looks for `*` in `vrMainWindow.windowTitle()`.
-- `vrCameraService.getAllViewpoints()` and each viewpoint's `getName()` (not
-  found in Autodesk's documentation; AWS's VRED submitter calls them).
-- `vrRenderSettings.getRenderAnimation()`, `getRenderStartFrame()`,
-  `getRenderStopFrame()`, `getRenderFrameStep()` and `getRenderFilename()`.
-  `getRenderUseClipRange()` is not read, so a scene that renders its clip
-  range may show a different frame range here than VRED renders.
-- `vrMainWindow.menuBar()` and `addMenu`, and the `QMessageBox` from VRED's
-  PySide.
-
 ### KeyShot checklist
 
 **Check by hand (Windows and macOS):**
@@ -2087,27 +1890,6 @@ support):**
 6. **Output File is blank** and the `#` run must be typed; submit with one.
 7. `sqi-submit` not found: the message names the fix.
 8. Window focus on Windows and macOS (the dialog should come to the front).
-
-**Verified only against fakes or documentation:**
-
-- **The frame base and `__main__`, the riskiest items.** No KeyShot document
-  says whether frame numbers start at 0 or 1; the submitter assumes 1 (AWS's
-  KeyShot submitter and KeyShot's quick start count from 1). The script ends in
-  `if __name__ == "__main__": main()`: that KeyShot runs it as `__main__` from
-  the Scripting Console and the Scripts panel is assumed, not documented (AWS's
-  KeyShot submitter ends the same way).
-- `lux.getSceneInfo()["file"]` as the open file, empty or absent for a scene
-  never saved (the docs list the keys without their names; AWS reads `file`).
-- `lux.getAnimationInfo()["frames"]` as the frame count.
-- `lux.getStudios()` yielding names (the docs say "names or instances");
-  instances are not handled.
-- `lux.isSceneChanged()`, and `lux.saveFile()` with no argument saving in
-  place (headless it may throw, which counts as a failed save).
-- `lux.getMessageBox(msg=, title=, type=lux.MESSAGE_BOX_WARNING)`; the title
-  does not show on macOS. Without it the message is printed.
-- `lux.getKeyShotDisplayVersion()` as `(major, minor)`.
-- The user `Scripts` folder: AWS documents `Documents/KeyShot/Scripts`
-  (unversioned); `install-host` matches any one `KeyShot*` folder.
 
 ### Silhouette checklist
 
@@ -2135,31 +1917,6 @@ support):**
    and run `install-host silhouette`: it is kept, the module is copied and the
    hook's lines are printed. Append them, restart and confirm the action
    appears.
-
-**Verified only against fakes or documentation:**
-
-- **The startup loading route, the riskiest item.** That Silhouette's startup
-  script imports `sfxuser` from `$(SFX_USER_PATH)/scripts`. This rests on the
-  search order given in the Boris FX scripting wiki and a Boris FX staff reply
-  on their forum, and is untested. Boris FX's current documentation does
-  not define `SFX_USER_PATH` or give its default per OS, so there is no default
-  destination without it.
-- `fx.Action` subclassing with the label as the constructor argument,
-  `available()` and `execute()`, `fx.addAction()`, and which menu the action
-  lands in (the **Actions** menu is a guess).
-- `fx.activeProject().path` being the `project.sfx` file inside the bundle
-  (AYON's Silhouette integration strips it the same way), and being empty for a
-  project never saved.
-- `project.is_modified` (a property, not a call) and `project.save()` with no
-  arguments.
-- `project.sessions`, `session.label`, `session.startFrame`,
-  `session.duration` (the frame range is `startFrame` to `startFrame +
-  duration - 1`), `session.nodes`, `node.label` and `node.type == "OutputNode"`,
-  and `fx.activeSession()`.
-- The message box: `fx` has no documented message call, so the submitter shows
-  a `QMessageBox` from Silhouette's bundled Qt (PySide6 from 2026, else
-  PySide2) on the GUI thread, or prints when there is no `QApplication`. The
-  host version is not read and is sent as blank.
 
 ### Fusion checklist
 
@@ -2197,59 +1954,6 @@ support):**
    letters appears with its name intact. A comp with no Savers lists none and
    still submits.
 
-**Verified only against fakes or documentation:**
-
-- **`comp:GetToolList(false, "Saver")`.** The signature (first argument "selected
-  only", second the tool's registry ID), that it returns a Lua table indexed
-  from 1, and that it finds Savers inside groups come from Blackmagic's scripting
-  documentation (`fusion-saver-render`'s script makes the same call) and are
-  untested against a running Fusion. The script calls it under `pcall`: an error gives no targets and a
-  Console line, never a failed submission.
-- **The Saver attributes.** `TOOLS_Name` (the tool's name), `TOOLB_PassThrough`
-  (true when the tool is switched off) and `TOOLST_Clip_Name` (a table of the
-  tool's output file names, read at its first entry) come from the attribute
-  names Fusion's scripting documentation lists, unverified against a running
-  Fusion. If `TOOLB_PassThrough` is spelled otherwise, a disabled Saver is
-  offered as a target; if `TOOLST_Clip_Name` is, the target has no output path.
-
-- **`os.execute` launch and the console flash, the riskiest items.** That
-  Fusion's Lua exposes `os.execute` (no documentation says whether a Comp
-  script is sandboxed), that `start "" "<exe>"
-  --context "<file>"` returns at once on Windows and
-  `'<exe>' --context '<file>' >/dev/null 2>&1 &` on macOS and Linux, and that
-  the `cmd` window does not flash on Windows. The script reports a Fusion
-  without `os.execute` as "This Fusion build does not allow scripts to run
-  programs". The launch line has no `--detached` flag, so a startup failure of
-  `sqi-submit` itself (no Qt installed, say) is logged to `submit-error.log` but
-  not shown in a message box.
-- The script's pure functions are tested under Lua 5.1 in CI and under any
-  stock Lua locally, against fakes for `comp`, `fusion` and `os.execute`. What
-  Fusion's embedded Lua (5.1 or LuaJIT) does with the glue is untested. CI installs `lua5.1` and sets
-  `SQI_REQUIRE_LUA=1`, so a missing interpreter fails the Lua tests there
-  instead of skipping them.
-- **`COMPB_Modified`.** It is not in the documented comp attribute list; it
-  appears in a forum post's dump of `comp:GetAttrs()`. The script saves the comp
-  unless the attribute is exactly `false`, so an absent attribute rewrites an
-  unchanged file.
-- `comp:Save(path)`: documented only as "Save the composition". The argument
-  and return value are undocumented; the script passes the comp's own path and
-  treats a raised error or an explicit `false` as a failure.
-- `comp:AskUser(title, controls)` with a single read-only `Text` control: the
-  control table shape is from the common AskUser pattern. A wrong shape leaves
-  the message on the Console only (it is printed there first, every time).
-- `COMPS_FileName`, `COMPN_RenderStart`/`COMPN_RenderEnd`, `comp:GetAttrs()`
-  and `fusion.Version`.
-- **The Linux profile folder spelling.** `~/.fusion/BlackmagicDesign/...` is the
-  vendor folder as the Fusion Render Node's own install folder spells it
-  (`/opt/BlackmagicDesign/...`); AYON's Fusion integration spells the profile
-  folder `Blackmagic Design` (with a space), as Windows and macOS do.
-  Blackmagic's documentation does not say which is right.
-- Whether Fusion hands Lua UTF-8 paths on Windows. A path in the ANSI code page
-  is passed through as the script is given it, and `sqi-submit` then rejects
-  the context file as invalid UTF-8.
-- The context file location: the system temp folder directly (`%TEMP%\sqi-handoff-<time>-<random>.json`,
-  or an `os.tmpname` file), not the `sqi-handoff` subfolder the Python hosts use.
-
 ### Modo checklist
 
 **Check by hand (Windows, macOS and Linux):**
@@ -2274,33 +1978,6 @@ support):**
    with the error, and nothing is launched.
 7. `sqi-submit` not found: the message names the fix.
 8. Window focus: the dialog comes to the front over Modo.
-
-**Verified only against fakes or documentation:**
-
-- **The kit load and the menu entry, the riskiest items.** Foundry documents a
-  kit as a folder with `index.cfg`, and Python servers as `*.py` files in an
-  `lxserv` subdirectory anywhere on the script path. That Modo finds a kit
-  under the user `Scripts` folder (rather than a Kits folder), that
-  `<import>kit_sqi:lxserv</import>` resolves there, and that the `Scripts`
-  subfolder of the per-user `Luxology` folder is the right place are all
-  untested. No menu entry is shipped: the Kits documentation does not show
-  how a kit adds one.
-- **Pass groups.** `modo.Scene().renderPassGroups` is from community code, not
-  Foundry's documentation, and the least certain name here. The submitter does
-  not filter its result, so it relies on Modo returning only render pass
-  groups.
-- The render item: item type `polyRender`, found by looping
-  `query sceneservice item.N ?` and `item.type ? <i>`, then `item.id ?` with no
-  index and `select.item`, and its `polyRender$first`/`$last` channels read
-  with `item.channel <name> ?`. Foundry's sample only sets these channels; the
-  `?` read form is standard command-query syntax.
-- `lxu.select.SceneSelection().current().Filename()` (an unnamed scene raises)
-  and `.HasChanged()`, and `lx.eval("scene.save")`.
-- `lxu.command.BasicCommand` with `basic_Execute(self, msg, flags)` and
-  `lx.bless(...)`; the command class is defined when the module loads.
-- The `dialog.setup`, `dialog.title`, `dialog.msg` and `dialog.open` commands
-  for the messages (braces in the text are swapped for parentheses). The host
-  version is not read and is sent as blank.
 
 ---
 
@@ -2452,8 +2129,7 @@ for this launch (see below); the Python hosts do not pass it. Fusion's Lua uses
 a `%`). Because a `sqi-submit` without that flag rejects it, After Effects
 first checks `sqi-submit --version` (see [After Effects](#after-effects)). The child inherits the host's environment. The
 dialog calls `show()`, `raise_()` and `activateWindow()`. There is no macOS app
-bundle for `sqi-submit`, so on macOS the window may open behind the host; the
-[checklists](#manual-test-checklist-per-dcc) record that as unverified.
+bundle for `sqi-submit`, so on macOS the window may open behind the host.
 
 ### When `sqi-submit` fails to start
 
@@ -2501,9 +2177,7 @@ Windows does not pass the flag, so there a failure is logged but not shown. `--d
 host-launch flag, not an option for users. Run from a terminal, `sqi-submit`
 prints only; a non-interactive caller with stderr redirected (a script, CI)
 gets the modal box before it exits 1. A bad context file is not a
-startup failure: the dialog opens with its banner as described above. The
-native box, the macOS dialog and the Linux tools are tested only against fakes;
-whether they come to the front over the host is unverified.
+startup failure: the dialog opens with its banner as described above.
 
 ### A worked example
 

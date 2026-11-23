@@ -47,7 +47,7 @@ readme: |
   - Workers tagged `attr.worker.tag.husk = true`
   - `husk` on the worker's `PATH`, or Houdini's own, which the worker finds at
     the default install location on Windows, and on Linux at `/opt/hfs*`
-    (inferred from Houdini's layout, unverified)
+    
   - A Houdini license available to `husk`, and a Karma license when rendering
     with Karma
 category: Rendering

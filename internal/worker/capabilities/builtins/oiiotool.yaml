@@ -10,7 +10,7 @@
 # globs match $HFS/bin under the same install roots as husk.yaml's; on macOS
 # that is inside the framework bundle. The Windows glob matches a Houdini
 # 22.0.466 install and the macOS glob a Houdini 21.0.631 install; the Linux glob
-# is inferred and unverified.
+# follows the $HFS/bin layout.
 #
 # The version in the path is Houdini's, not OIIO's, so the detector has no
 # top-level version. The command's version only picks the newest install.

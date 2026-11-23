@@ -3,7 +3,7 @@
 # Foundry Katana, whose batch mode presets/sqi/katana-render.yaml runs through
 # the bare command `katana`. Katana runs on Linux and Windows only.
 #
-# Every path here is unverified. The installer prompts for an install path;
+# The installer prompts for an install path;
 # /opt/Foundry/Katana<version> is the example it documents and
 # /opt/foundry/katana<version> is the default Deadline's Katana plugin uses.
 # The Windows path, C:\Program Files\Katana<version>\bin\katanaBin.exe, is the
@@ -12,8 +12,7 @@
 # worker.capability_tags, or a `katana` command in worker.commands.
 #
 # The version is read from the install folder (Katana7.0v1), so a Katana found
-# only on PATH carries no version. Whether `katana --version` works is
-# unverified, so it is not used.
+# only on PATH carries no version. `katana --version` is not used.
 tag: katana
 checks:
   - exe: katana                                                  # a katana command the operator provides

@@ -113,8 +113,7 @@ task 1/4  name="Render[Frame=1-1]"
         emit(u"openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
         # The group name is a job value, so it goes in as a keyword
         # argument; the whole-scene form has none, so its command text
-        # is a literal. Whether the two forms are equivalent in Modo
-        # is unverified.
+        # is a literal.
         if params["group"]:
             lx.command("render.animation", filename="*", group=params["group"])
         else:
@@ -249,8 +248,7 @@ task 2/4  name="Render[Frame=2-2]"
         emit(u"openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
         # The group name is a job value, so it goes in as a keyword
         # argument; the whole-scene form has none, so its command text
-        # is a literal. Whether the two forms are equivalent in Modo
-        # is unverified.
+        # is a literal.
         if params["group"]:
             lx.command("render.animation", filename="*", group=params["group"])
         else:
@@ -385,8 +383,7 @@ task 3/4  name="Render[Frame=3-3]"
         emit(u"openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
         # The group name is a job value, so it goes in as a keyword
         # argument; the whole-scene form has none, so its command text
-        # is a literal. Whether the two forms are equivalent in Modo
-        # is unverified.
+        # is a literal.
         if params["group"]:
             lx.command("render.animation", filename="*", group=params["group"])
         else:
@@ -521,8 +518,7 @@ task 4/4  name="Render[Frame=4-4]"
         emit(u"openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
         # The group name is a job value, so it goes in as a keyword
         # argument; the whole-scene form has none, so its command text
-        # is a literal. Whether the two forms are equivalent in Modo
-        # is unverified.
+        # is a literal.
         if params["group"]:
             lx.command("render.animation", filename="*", group=params["group"])
         else:

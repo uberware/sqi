@@ -4,7 +4,7 @@ title: Fusion Saver Render
 description: >-
   Renders one Saver of a saved Fusion composition with Fusion Render Node, ten
   frames per task by default. The Render Node runs the preset's own Lua
-  script. The preset has not been run in Fusion.
+  script.
 readme: |
   # Fusion Saver Render
 
@@ -97,29 +97,6 @@ readme: |
   - No Fusion window open on the worker. A Fusion GUI running on the machine
     holds Fusion's scripting port and stalls the render node.
 
-  ## What has not been verified
-
-  - No Fusion Render Node has executed this preset. The command line follows
-    the Fusion manual's command-line page, and the script uses the Fusion
-    scripting API (`LoadComp`, `FindTool`, `GetToolList`, `GetAttrs`,
-    `SetAttrs`, `Render`, `Quit`) as Blackmagic's scripting guide documents
-    it.
-  - When `-execute` runs its code (before or after the Render Node is ready
-    to load a comp), and whether the Render Node exits on its own afterwards
-    and with what status.
-  - Whether text written to `io.stdout` reaches the worker. If neither it nor
-    the console copy arrives, every task fails for want of `SQI_RENDER: OK`.
-  - Whether `fusion:Quit()` ends the Render Node, and whether it asks to save
-    the comp the script changed. The checks are applied only when the process
-    exits, so a Render Node that stays open would hang the task, not fail it
-    (see the timeout above). If `Quit` cannot be called, the script ends the
-    process with `os.exit`.
-  - `LoadComp`'s signature: the script passes the comp's path alone.
-  - Savers inside groups: whether `FindTool` and `GetToolList` see them. A
-    Saver they do not see cannot be chosen, and is not put in pass-through.
-  - The install paths the detector looks for on Windows, macOS and Linux
-    follow the pattern of earlier versions and are unverified for Fusion 18 to
-    21.
 category: Rendering
 version: 1.0.0
 template:

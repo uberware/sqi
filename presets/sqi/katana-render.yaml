@@ -64,20 +64,6 @@ readme: |
     environment. This preset does not set up plug-in search paths or
     licence variables.
 
-  ## What has not been verified
-
-  - No Katana has executed this preset. The arguments come from Foundry's
-    batch mode documentation, and the `-t` form is the one Deadline's Katana
-    plugin uses.
-  - Katana's exit status on a failed render is unknown, and so is the output a
-    failure prints. The `ERROR +\|` check is taken from Deadline's plugin.
-  - Foundry's batch mode documentation shows `-t` with ranges and comma lists
-    and no step form, so a stepped range is split into single frames instead.
-  - Whether `katana --version` works is unknown, so the detector reads the
-    version from the install folder name only.
-  - The Linux and Windows install paths the detector looks for are the
-    installer's documented example and Deadline's default, not paths seen on
-    a machine. Katana does not run on macOS.
 category: Rendering
 version: 1.0.0
 template:

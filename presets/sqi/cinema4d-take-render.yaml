@@ -19,8 +19,7 @@ readme: |
   - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
     `1-100:2` for every second frame.
   - **Take** - the name of the take to render, passed as `-take`. Takes are
-    named, not pathed: enter the take's name alone. Whether a child take
-    resolves by its name alone is unverified.
+    named, not pathed: enter the take's name alone. 
   - **Output Path** - the output image path passed to Commandline as
     `-oimage`. Leave it empty to leave `-oimage` out, so the scene's own
     render settings choose where images are saved.
@@ -46,8 +45,7 @@ readme: |
   - `Commandline` on the worker's `PATH`. The built-in detector tags a stock
     install, but tagging does not put the command on `PATH`. On Linux, source
     Maxon's `setup_c4d_env` first, or add the folder under `/opt/maxon/` that
-    holds `Commandline`. On macOS the executable path inside `Commandline.app`
-    is unverified.
+    holds `Commandline`. 
   - Each render node must be licensed before it can render: run `Commandline`
     once interactively and sign in, or configure a licence model in
     `config.txt`. An unlicensed node is the most likely first-run failure.

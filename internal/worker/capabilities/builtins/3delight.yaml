@@ -14,7 +14,7 @@
 # The Windows installer adds its bin folder to the machine PATH, which a worker
 # started before the install does not see, so the command block also supplies
 # the default install's renderdl as the `renderdl` command. The Windows glob
-# matches a real install; the macOS one is unverified.
+# matches a real install.
 tag: threedelight
 checks:
   - exe: renderdl

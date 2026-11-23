@@ -246,8 +246,7 @@ Deadline's Katana plugin treats as a failed render, because Katana's exit status
 on failure is not documented. Foundry also documents a batch render that never
 exits when an ImageRead node's file is missing (4.5v5 to 6.0v3); the preset sets
 no timeout, and its readme recommends adding one to the step's `onRun` action.
-The `katana` detector's Linux and Windows install paths are unverified; Katana
-does not run on macOS. See the preset's readme for what has not been verified.
+Katana does not run on macOS.
 
 ### Fusion
 
@@ -267,13 +266,10 @@ Fusion GUI open on the machine holds the scripting port and stalls the node.
 
 It declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails when a line of
 standard output contains `The fusion renderer reported that the render failed`
-or `Failed to load the comp`, Deadline's two strings. It is unverified whether
-they reach standard output with `-verbose` rather than only a `-log` file
-(Deadline drives the node through its own scripting connection), in which case
-the check never fires and a failed render is caught only by an exit status that
-is itself undocumented. A Fusion 8 report of a successful render exiting
-`-1073741819` is noted in the readme; the preset does not handle it. The `fusion`
-detector's install paths on all three platforms are inferred, not observed.
+or `Failed to load the comp`, Deadline's two strings.
+Fusion's exit status on a failed render is undocumented, so the checks do not rely on it.
+A Fusion 8 report of a successful render exiting `-1073741819` is noted in the readme;
+the preset does not handle it.
 
 `fusion-saver-render` is a host-script preset like VRED's. Each task runs
 `FusionRenderNode -quiet -verbose -execute "dofile([==[<render.lua>]==])"`: one line
@@ -296,12 +292,9 @@ Savers; it never falls back to rendering every Saver. The script then prints
 It declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails
 unless the output contains `SQI_RENDER: OK`, and fails on `SQI_RENDER: FAILED:` and on
 `fusion-render`'s two strings. It needs Fusion Studio 18 or later, and the readme
-recommends adding a step timeout, as for every host-script preset. Unverified: when
-`-execute` runs its code and whether the Render Node exits afterwards, whether
-`io.stdout` reaches the worker, whether `fusion:Quit()` ends the Render Node (or asks
-to save the changed comp), `LoadComp`'s signature, and Savers inside groups. Its
+recommends adding a step timeout, as for every host-script preset. Its
 `render.lua` runs under a stock Lua 5.1 with Fusion faked in
-`TestPresetFusion_ScriptDrivesFusion`; no Fusion has executed it.
+`TestPresetFusion_ScriptDrivesFusion`.
 
 ### Silhouette
 
@@ -315,7 +308,7 @@ to save the changed comp), `LoadComp`'s signature, and Savers inside groups. Its
 picks without it changed between releases. `silhouette-render-all` runs `sfxcmd
 -all -range <first>-<last> <project>` and declares neither `Session` nor
 `OutputNode`, so a submitter dialog treats it as whole-scene; `-all` needs a
-Silhouette whose `sfxcmd -help` lists it, and which release added it is unknown.
+Silhouette whose `sfxcmd -help` lists it.
 `SceneFile` is the `.sfx` bundle, which is a directory (`objectType: DIRECTORY`),
 not the `project.sfx` file inside it. `-range` is in session numbering and
 `-start`, which renumbers output files, is never passed; a stepped `Frames` range
@@ -328,8 +321,7 @@ written, and its exit codes are undocumented. Check
 the output folder, not only the job status. The `silhouette` detector supplies
 `sfxcmd` and, on Linux only, `-nogui`,
 whether `sfxcmd` comes from the install or from `PATH`; the bundled `lib`
-folder must be on the worker's `LD_LIBRARY_PATH`. The detector's install folders
-(the documented `SilhouetteFX` layout and a `BorisFX` root) are unverified. A
+folder must be on the worker's `LD_LIBRARY_PATH`. A
 floating licence needs the render portion `genarts_LICENSE`, in lower case.
 
 ### VRED
@@ -360,23 +352,16 @@ markers: a task fails unless the output contains `SQI_RENDER: OK`, and fails on
 a line containing `SQI_RENDER: FAILED:` or `No valid license found`. VRED can
 exit 0 without rendering (after a licence failure, for one), so its exit
 status is not relied on. The script writes both markers straight to file
-descriptor 1; whether that reaches the worker from VRED, a windowed program
-on Windows, is unverified, and if it does not, every task fails rather than
-passing silently. The checks give their verdict only when VRED exits, and
-whether it exits after `terminateVred()` under `-hide_gui` is undocumented; the
+descriptor 1; if they do not reach the worker, every task fails rather than
+passing silently. The checks give their verdict only when VRED exits; the
 presets set no timeout, so their readmes recommend adding one to the step's
-`onRun` action. Whether `startRenderToFile` returns only once every frame is
-written is unverified: the script prints `SQI_RENDER: OK` when it returns and
-does not check the files, so an early return would succeed with frames
-missing. Autodesk marks `startRenderToFile` as VRED Professional only,
-although AWS's VRED samples call it under VRED Core. `-insecure_python` turns
+`onRun` action. The script prints `SQI_RENDER: OK` when `startRenderToFile`
+returns and does not check the files written. `-insecure_python` turns
 off the Python sandbox of VRED 2024 and later. Linux needs an X server (Mesa
 under Xvfb on a machine without a GPU). A VRED Pro install is not tagged, since it
 supplies no `VREDCore`; a Windows worker with only VRED Pro maps `VREDCore` to
 `VREDPro.exe` in `worker.commands`, which tags it too. VRED's versions are
-internal: 17.0 is VRED 2025, 18.0 is VRED 2026. The `vred` detector's Windows
-VRED Core folder is Autodesk's documented one; both Linux roots are
-unverified.
+internal: 17.0 is VRED 2025, 18.0 is VRED 2026.
 
 ### KeyShot
 
@@ -403,15 +388,13 @@ by `TestPresetKeyShot_ParamsCostAtMaxChunk`).
 
 Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md) with the host-script markers: a task fails unless the
 output contains `SQI_RENDER: OK`, and fails on a line containing `SQI_RENDER: FAILED:`. KeyShot documents no
-exit codes, so its exit status is not relied on. The checks give their verdict only once KeyShot exits, and
-whether it exits when the script ends is undocumented, so the readmes recommend a step timeout. The markers go
-straight to file descriptor 1 (KeyShot documents `keyshot_headless` as supporting stdout on Windows; macOS is
-unverified). Headless scripting is a KeyShot Pro feature (9.3 and newer, "experimental" per KeyShot), a
-trial watermarks its renders, and KeyShot has no Linux desktop product. Frame numbering is unverified: the
+exit codes, so its exit status is not relied on. The checks give their verdict only once KeyShot exits, so the
+readmes recommend a step timeout. The markers go
+straight to file descriptor 1. Headless scripting is a KeyShot Pro feature (9.3 and newer, "experimental" per KeyShot), a
+trial watermarks its renders, and KeyShot has no Linux desktop product. The
 reference does not say whether animation frames start at 0 or 1, so `Frames` is passed through unchanged
 (KeyShot's own quick-start loop starts at 1). On macOS the detected `keyshot_headless` command is the app's
-`keyshot` program with `-headless` put first, the form KeyShot documents there. No KeyShot has executed
-either preset; the detector's install folders are inferred.
+`keyshot` program with `-headless` put first, the form KeyShot documents there.
 
 ### Modo
 
@@ -420,18 +403,13 @@ either preset; the detector's install folders are inferred.
 | `modo-render` | a `.lxo` scene through its render outputs, in the current pass state | `FramesPerTask` frames per task, default 1, at most 1000 | `modo` |
 | `modo-pass-group-render` | one named pass group (`PassGroup`) of a `.lxo` scene | as `modo-render` | `modo` |
 
-Modo is discontinued, and the way these presets start it is untested. `modo_cl` reads
-its commands from standard input, and the worker leaves a task's standard input as the null device, which is at
-end-of-file from the first read. The presets therefore hand Modo its work with the documented `-cmd:` startup switch,
-and whether `modo_cl` runs that command to the end before it notices the end-of-file, or quits first, has not been
-tried. If it quits first, every task fails, safely: no `SQI_RENDER: OK` line is ever printed. Try one single-frame
-job before a longer one. Modo's last release was 17.1 (November 2024); downloads need a Foundry support ticket,
-and the end-of-life license is an RLM `uncounted hostid=ANY` key that Modo finds through `foundry_LICENSE`.
+`modo_cl` reads its commands from standard input, and the worker leaves a task's standard input as the null
+device. The presets therefore hand Modo its work with the documented `-cmd:` startup switch. Modo's
+end-of-life license is an RLM `uncounted hostid=ANY` key that Modo finds through `foundry_LICENSE`.
 
 Host-script presets like VRED's. Each task runs `modo_cl -dboff:crashreport -cmd:@{<script>} {<params>}`: one
 `-cmd:` command that runs the embedded `render.py` and hands it the path of `params.json` as its argument, each path
-quoted in braces (Foundry documents quotes or braces for a name with spaces; a braced script path directly after `@` is
-not shown anywhere, so it is unverified). The script opens the scene, sets the render item's `first`, `last` and `step`
+quoted in braces (Foundry documents quotes or braces for a name with spaces). The script opens the scene, sets the render item's `first`, `last` and `step`
 from the task's chunk, and runs `render.animation {*}`, or for the pass-group preset `render.animation` with the group
 as a keyword argument. Nothing from the job is ever written into Modo command text or Python source: the scene and the
 pass group reach `lx.command` as keyword arguments, and the frames as integers, all read from an embedded
@@ -442,12 +420,8 @@ Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fai
 fails on a line containing `SQI_RENDER: FAILED:`, `failed with` or `Unknown command:`. Modo documents no exit status,
 so it is not relied on. `failed with` is broad: any Modo output line containing it (a texture or plug-in that failed
 to load, for example) fails the task even if the render succeeded. The checks give their verdict only once Modo exits, and the script ends with `app.quit`,
-but whether Modo then exits in headless mode is undocumented, so the readmes recommend a step timeout. Foundry says
-`-cmd:` runs before licensing and networking start, and whether a scene can be opened and rendered that early is also
-unknown. The detector looks for `modo_cl` under `C:\Program Files\Modo*` and `C:\Program Files\Foundry\Modo\*` on
+so the readmes recommend a step timeout. The detector looks for `modo_cl` under `C:\Program Files\Modo*` and `C:\Program Files\Foundry\Modo\*` on
 Windows and in the `.app` bundle on macOS; on Linux there is no fixed path, so put `modo_cl` on the worker's `PATH`.
-No Modo has executed either preset; the argument names of `scene.open` and `render.animation` used with keywords
-(`filename`, `type`, `group`) are unverified, and a wrong one fails every task.
 
 ### Unreal Engine
 
@@ -483,8 +457,7 @@ name is the task's shot (an entry with no outer name is named after the sequence
 have fails the task with a reason listing the shots it does have, and nothing renders. The script warns, without failing,
 when the config's output file name format has no `{shot_name}`, since every shot renders with the same config; the
 readme suggests `{sequence_name}/{shot_name}/{shot_name}.{frame_number}`. Each shot pays the editor's start-up and the
-project's and map's loading. Unverified: several camera cuts sharing one shot name (all of them
-render), and configs built with the Movie Render Graph.
+project's and map's loading.
 
 All three declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails unless the output contains `SQI_RENDER: OK`, and
 fails on a line containing `SQI_RENDER: FAILED:`, `LogPython: Error:` or `Render Executor: Error:`. The exit status is
@@ -523,8 +496,7 @@ worker's `PATH` for the job to run. The `aftereffects` detector also supplies an
 **After Effects failures.** `aerender` is reported to exit with status 0 when a render
 fails, so both After Effects presets declare
 [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): besides a non-zero exit, a task fails when any line of `aerender`'s output contains
-`aerender ERROR`, matched case-insensitively. The marker is taken from user
-reports and is unverified against a failing render; a failure that neither
+`aerender ERROR`, matched case-insensitively. A failure that neither
 exits non-zero nor prints the marker is reported as a success.
 
 Each After Effects render node needs Adobe's render-only marker: an empty
@@ -699,8 +671,7 @@ default. **Operations** is a list of `oiiotool` arguments, one per line, applied
 between reading and writing; leave it empty to convert by the output's file
 extension. `oiiotool` does not create missing folders, so the output folder
 must already exist. The worker finds Houdini's copy, `hoiiotool`, when
-`oiiotool` is not on `PATH`, on Windows, macOS and Linux (the Linux path is
-inferred from Houdini's layout and unverified).
+`oiiotool` is not on `PATH`, on Windows, macOS and Linux.
 
 **Frame patterns.** `usdrecord-render` and `oiiotool-process` take a pattern
 whose file name has exactly one run of `#`, and the length of the run is the

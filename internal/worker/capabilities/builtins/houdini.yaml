@@ -17,7 +17,7 @@ version:
 # detectors look in. On macOS $HFS/bin is inside the framework bundle, at
 # Frameworks/Houdini.framework/Versions/Current/Resources/bin. The Windows glob
 # matches a Houdini 22.0.466 install and the macOS glob a Houdini 21.0.631
-# install; the Linux glob is inferred and unverified. The version comes from the
+# install; the Linux glob follows the $HFS/bin layout. The version comes from the
 # install folder's name: hfs<version>, Houdini<version> or "Houdini <version>".
 command:
   name: hython

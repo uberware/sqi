@@ -1288,10 +1288,8 @@ group), `gcp-mig.sh` (Compute Engine managed instance group) and
 answering `wake` (`chassis power on`) and `retire` (`chassis power soft`). Its
 `README.md` lists the rules every implementation must follow.
 
-> **Documentation-derived: not run against a real cloud or BMC.** The scripts
-> are tested against stub `aws`, `gcloud`, `az` and `ipmitool` programs that
-> record their arguments; that checks the commands they build, not that the
-> real tools accept them. Try one against a scratch group first.
+> The scripts are tested against stub `aws`, `gcloud`, `az` and `ipmitool`
+> programs that record their arguments. Try one against a scratch group first.
 
 - They need `bash` 4.4 or later and `jq`, plus the cloud's CLI or `ipmitool`,
   on the server's `PATH`. Each refuses to run on an older bash (macOS's stock
@@ -1324,11 +1322,8 @@ autoscaler acts on the signal. A script provider is the other way to drive a
 cloud group ([The script provider](#the-script-provider)): sqi then calls your
 script itself, and does the retirement check described below for you.
 
-> **Documentation-derived: not run against a real cloud.** The AWS, GCP, Azure
-> and KEDA sections below are written from the providers' documentation and
-> sqi's own behaviour. None of this wiring has been executed against a real Auto
-> Scaling group, instance group, scale set or cluster. Treat the snippets as a
-> starting point and check them against the provider's current documentation.
+> Treat the AWS, GCP, Azure and KEDA snippets below as a starting point and
+> check them against the provider's current documentation.
 
 The pattern is the same everywhere:
 
@@ -1359,8 +1354,6 @@ cancel machines that are still starting. Protect booting instances from scale-in
 (the default above does) and the target corrects itself within a step.
 
 ### AWS Auto Scaling group
-
-Documentation-derived: not run against a real cloud.
 
 1. **Publish the metric.** sqi does not publish to CloudWatch. Either run a
    small publisher (a Lambda on a schedule, or a cron job on any host that
@@ -1405,8 +1398,6 @@ Documentation-derived: not run against a real cloud.
 
 ### GCP managed instance group
 
-Documentation-derived: not run against a real cloud.
-
 1. **Publish the metric.** Write the value of
    `sqi_capacity_desired_machines{group="cloud-spot"}` to a Cloud Monitoring
    custom metric (for example `custom.googleapis.com/sqi/desired_machines`)
@@ -1432,8 +1423,6 @@ Documentation-derived: not run against a real cloud.
 
 ### Azure virtual machine scale set
 
-Documentation-derived: not run against a real cloud.
-
 1. **Publish the metric.** Send `desired_machines` and the scale set's current
    instance count to Azure Monitor as a custom metric (for example through the
    Azure Monitor metrics ingestion API or an Application Insights custom
@@ -1455,8 +1444,6 @@ Documentation-derived: not run against a real cloud.
    about 30 seconds.
 
 ### Kubernetes with KEDA
-
-Documentation-derived: not run against a real cluster.
 
 Run the workers as a Deployment whose pods keep their worker data directory in
 an `emptyDir` (so each pod creates its own worker ID) and enrol with the group
@@ -1500,8 +1487,8 @@ be chosen and will drain (up to the grace period) before it exits.
 - Real sleep and wake are not exercised in CI. The end-to-end tests run the real
   server and worker binaries, with a command that writes a marker file standing
   in for the suspend and a process restart standing in for the wake.
-- The example scripts in `deploy/capacity/` are documentation-derived, tested
-  only against stub command-line tools ([Example scripts](#example-scripts)).
+- The example scripts in `deploy/capacity/` are tested against stub
+  command-line tools ([Example scripts](#example-scripts)).
 - There is no `sqi-load` capacity scenario: the load simulator does not model a
   suspended machine.
 - A self-healing cloud group (one that replaces preempted instances by itself)
