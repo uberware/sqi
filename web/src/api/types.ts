@@ -324,7 +324,13 @@ export interface Worker {
    */
   has_wake_address: boolean
   last_heartbeat_at?: string
+  /** When the worker first registered; a restart keeps it. */
   registered_at: string
+  /**
+   * When the worker's current process started, which uptime counts from:
+   * a restart resets it, a reconnect keeps it. Absent when not recorded.
+   */
+  started_at?: string
   updated_at: string
 }
 

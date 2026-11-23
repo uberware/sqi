@@ -122,8 +122,12 @@ type workerResponse struct {
 	// the detail only, so a list stays small.
 	HasWakeAddress  bool       `json:"has_wake_address"`
 	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
-	RegisteredAt    time.Time  `json:"registered_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	// RegisteredAt is the worker's first registration; StartedAt is when its
+	// current process started, left out when not recorded
+	// ([store.Worker.StartedAt]).
+	RegisteredAt time.Time  `json:"registered_at"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // netInterfaceResponse is one network interface a worker reported: what a
@@ -509,6 +513,7 @@ func toWorkerResponse(wk store.Worker) workerResponse {
 		HasWakeAddress:  wk.HasWakeAddress(),
 		LastHeartbeatAt: wk.LastHeartbeatAt,
 		RegisteredAt:    wk.RegisteredAt,
+		StartedAt:       wk.StartedAt,
 		UpdatedAt:       wk.UpdatedAt,
 	}
 }

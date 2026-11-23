@@ -1591,10 +1591,11 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 // same stamp orders heartbeats, so an out-of-order redelivery is ignored. At
 // is still what the reconciler checks for a delayed or skewed worker.
 //
-// The handler reads WorkerID and At and passes AttemptsReported and
-// ActiveAttemptIDs to the reconciler (see attemptreconcile.go), but decodes the
-// whole [protocol.HeartbeatMsg], including the fields it ignores (active task
-// IDs and counts, uptime, last-assignment time). Decoding into a narrower local
+// The handler reads WorkerID, At and UptimeSeconds (which dates the worker's
+// process, [processStart]) and passes AttemptsReported and ActiveAttemptIDs to
+// the reconciler (see attemptreconcile.go), but decodes the whole
+// [protocol.HeartbeatMsg], including the fields it ignores (active task IDs and
+// counts, last-assignment time). Decoding into a narrower local
 // struct would drop every field outside it whatever the version says, which
 // defeats the version gate below.
 //
@@ -1634,7 +1635,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		seen = *stamp
 		brokerStamp = *stamp
 	}
-	out, err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, seen, stamp)
+	out, err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, seen, stamp, processStart(stamp, m.UptimeSeconds))
 	if err != nil {
 		if s.stopIfFenced(ctx, err) {
 			return
@@ -1681,6 +1682,25 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 			slog.String("worker_id", m.WorkerID), slog.Time("worker_at", at))
 	}
 	s.ackMsg(ctx, msg)
+}
+
+// maxReportedUptime bounds the uptime a heartbeat may report and still date
+// the worker's process. A longer one is ignored: it is far past any real
+// process lifetime, and converting it to a time could overflow a
+// [time.Duration] or fall outside the range a timestamp column holds.
+const maxReportedUptime = 10 * 365 * 24 * time.Hour
+
+// processStart estimates when a worker's process started from a heartbeat:
+// the broker's stamp less the uptime the worker reports. The uptime is a
+// duration the worker measures, so no worker clock is read. It is nil when
+// the heartbeat has no stamp or the uptime is not positive or exceeds
+// [maxReportedUptime].
+func processStart(stamp *time.Time, uptimeSeconds float64) *time.Time {
+	if stamp == nil || !(uptimeSeconds > 0) || uptimeSeconds > maxReportedUptime.Seconds() {
+		return nil
+	}
+	start := stamp.Add(-time.Duration(uptimeSeconds * float64(time.Second)))
+	return &start
 }
 
 // runHeartbeatSweep periodically finds workers whose last heartbeat is older

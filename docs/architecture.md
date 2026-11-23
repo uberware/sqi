@@ -1462,6 +1462,29 @@ The server treats reports, registrations and cancels as follows.
   reclaimed by that registration while the process runs it). The refusal is
   held for `leaseRefusalDelay` (1 s), about as long as a registration takes to
   land.
+- `started_at` (migration pair `00049`) is when the worker's current process
+  started, which the web UI's Uptime counts from. `registered_at` is written
+  once, by the worker's first registration, and kept by every later one, so it
+  says nothing about the process running now. Two writes set `started_at`:
+  - A registration sets it to the time of the write on insert, and when its
+    non-empty `instance_id` differs from the stored one, even an empty stored
+    one (an upgrade from a build that sent none is a new process, though it
+    reclaims nothing). A reconnect of the same process and a registration with
+    no `instance_id` keep it.
+  - A heartbeat refines it. The heartbeat carries `uptime_seconds`, a duration
+    the worker measures, and the scheduler subtracts it from the broker's
+    stamp of the heartbeat, so no worker clock is read. `UpdateWorkerHeartbeat`
+    keeps the earliest such estimate: a heartbeat that waited in the worker's
+    outbound buffer estimates late and changes nothing. It ignores the
+    estimate from an unstamped heartbeat, from one stamped before
+    `registration_broker_at` (it may come from the process a restart
+    replaced, and would undo the restart), and from an uptime that is not
+    positive or exceeds ten years (`maxReportedUptime`).
+
+  The registration's value is a little late (it is when the server applied
+  the registration), and the first heartbeat corrects it. A worker that was
+  running when the migration ran gets one from its next heartbeat, with no
+  restart. The UI shows `—` for an offline worker.
 - A late or redelivered registration cannot roll a worker back to an
   earlier process. After a scheduler failover JetStream can redeliver an older
   registration after a newer one; applied, it would restore the earlier

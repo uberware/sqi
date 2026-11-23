@@ -33,8 +33,8 @@ export function formatTimespan(
  * Compact uptime string: "Ns" / "Nm" / "Nh Nm" / "Nd Nh". Returns "—" for
  * negative durations.
  */
-export function formatUptime(registeredAt: string, now: number): string {
-  const ms = now - new Date(registeredAt).getTime()
+export function formatUptime(startedAt: string, now: number): string {
+  const ms = now - new Date(startedAt).getTime()
   if (ms < 0) return '—'
   const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}s`

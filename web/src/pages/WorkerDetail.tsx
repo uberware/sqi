@@ -348,6 +348,10 @@ export default function WorkerDetail() {
     }
 
     const status = payload.status
+    // Back from offline is a new process whose started_at the event does not
+    // carry: refetch so Uptime does not show the previous process's.
+    const cached = queryClient.getQueryData<WorkerDetailType>(queryKeys.workers.detail(workerId))
+    const cameBack = cached?.status === 'offline' && status !== 'offline'
     queryClient.setQueryData<WorkerDetailType>(queryKeys.workers.detail(workerId), (old) => {
       if (!old) return old
       return {
@@ -357,6 +361,9 @@ export default function WorkerDetail() {
         ...(payload.hostname !== undefined ? { hostname: payload.hostname } : {}),
       }
     })
+    if (cameBack) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workers.detail(workerId) })
+    }
   })
 
   // ── Manual refresh ────────────────────────────────────────────────────────
@@ -478,7 +485,13 @@ export default function WorkerDetail() {
           </div>
           <div className={styles.metaField}>
             <dt>Uptime</dt>
-            <dd className={styles.metaValue}>{formatUptime(worker.registered_at, now)}</dd>
+            <dd className={styles.metaValue}>
+              {/* The current process's uptime: started_at, which a restart
+                  resets. registered_at is the first registration ever. */}
+              {worker.status !== 'offline' && worker.started_at
+                ? formatUptime(worker.started_at, now)
+                : '—'}
+            </dd>
           </div>
         </dl>
       </div>
