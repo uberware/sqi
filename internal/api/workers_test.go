@@ -916,7 +916,12 @@ func TestWorkerResponse_PowerAndInterfaces(t *testing.T) {
 			name:   "an unmanaged worker",
 			worker: store.Worker{ID: "w1"},
 			want:   map[string]any{"power_state": "awake", "has_wake_address": false},
-			absent: []string{"power_state_at", "power_reason", "cloud_instance_id", "interfaces"},
+			absent: []string{"power_state_at", "power_reason", "cloud_instance_id", "interfaces", "started_at"},
+		},
+		{
+			name:   "a worker whose process start is recorded",
+			worker: store.Worker{ID: "w5", StartedAt: &at},
+			want:   map[string]any{"started_at": at.Format(time.RFC3339)},
 		},
 		{
 			name: "interfaces with no MAC",

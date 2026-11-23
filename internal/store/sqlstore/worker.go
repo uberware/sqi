@@ -17,7 +17,7 @@ const workerCols = `
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
 	last_heartbeat_at, registered_at, updated_at, instance_id, disabled, registration_broker_at,
 	heartbeat_broker_at, capacity_group_id, ephemeral,
-	power_state, power_state_at, power_reason, interfaces, cloud_instance_id`
+	power_state, power_state_at, power_reason, interfaces, cloud_instance_id, started_at`
 
 // sqlWorkerHasWorkInFlight is true when the worker row's id holds an assigned
 // or running task. It is a fragment for a WHERE clause over workers.
@@ -45,6 +45,9 @@ const (
 	// awake, and a re-registration never changes disabled, heartbeat_broker_at,
 	// capacity_group_id or ephemeral.
 	//
+	// started_at is set on insert and when a non-empty instance ID differs
+	// from the stored one (a new process), and kept otherwise.
+	//
 	// interfaces and cloud_instance_id are written from the registration, except
 	// that an empty report ('[]', '') keeps the stored value: a failed interface
 	// or metadata read on one start must not erase the only record of the
@@ -57,8 +60,8 @@ INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
 	last_heartbeat_at, registered_at, updated_at, instance_id, registration_broker_at,
-	interfaces, cloud_instance_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	interfaces, cloud_instance_id, started_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
 	queue_id          = excluded.queue_id,
@@ -80,6 +83,8 @@ ON CONFLICT (id) DO UPDATE SET
 	last_heartbeat_at = excluded.last_heartbeat_at,
 	updated_at        = excluded.updated_at,
 	instance_id       = CASE WHEN excluded.instance_id = '' THEN workers.instance_id ELSE excluded.instance_id END,
+	started_at        = CASE WHEN excluded.instance_id <> '' AND excluded.instance_id <> workers.instance_id
+	                         THEN excluded.started_at ELSE workers.started_at END,
 	registration_broker_at = COALESCE(excluded.registration_broker_at, workers.registration_broker_at),
 	interfaces        = CASE WHEN excluded.interfaces = '[]' THEN workers.interfaces ELSE excluded.interfaces END,
 	cloud_instance_id = CASE WHEN excluded.cloud_instance_id = '' THEN workers.cloud_instance_id
@@ -109,9 +114,18 @@ RETURNING ` + workerCols
 	// stored one does, so an unstamped heartbeat is recorded unconditionally
 	// and keeps the stored stamp. It returns the status and power state the
 	// row holds, which the heartbeat does not change.
+	//
+	// started_at takes the process-start estimate when it is earlier than the
+	// stored value or the stored value is NULL, unless the heartbeat's stamp
+	// is earlier than registration_broker_at; a NULL estimate keeps it. The stamp is bound three times (heartbeat_broker_at,
+	// the registration guard, the WHERE) and the estimate twice.
 	sqlUpdateWorkerHeartbeat = `
 UPDATE workers SET last_heartbeat_at = ?, updated_at = ?,
-	heartbeat_broker_at = COALESCE(?, heartbeat_broker_at)
+	heartbeat_broker_at = COALESCE(?, heartbeat_broker_at),
+	started_at = CASE
+		WHEN ? < registration_broker_at THEN started_at
+		WHEN started_at IS NULL OR ? < started_at THEN COALESCE(?, started_at)
+		ELSE started_at END
 WHERE id = ? AND (heartbeat_broker_at IS NULL OR heartbeat_broker_at <= COALESCE(?, heartbeat_broker_at))
 RETURNING status, power_state`
 
@@ -206,7 +220,7 @@ RETURNING ` + workerCols
 
 func scanWorker(row scanner) (store.Worker, error) {
 	var w store.Worker
-	var farmID, queueID, lastHeartbeat, registrationBroker, heartbeatBroker, capacityGroupID, powerAt sql.NullString
+	var farmID, queueID, lastHeartbeat, registrationBroker, heartbeatBroker, capacityGroupID, powerAt, startedAt sql.NullString
 	var gpuJSON, tagsJSON, exprJSON, extJSON, ifaceJSON, status, powerState string
 	var registeredAt, updatedAt string
 	var disabled, ephemeral dbBool
@@ -216,7 +230,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &extJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &disabled, &registrationBroker,
 		&heartbeatBroker, &capacityGroupID, &ephemeral,
-		&powerState, &powerAt, &w.PowerReason, &ifaceJSON, &w.CloudInstanceID,
+		&powerState, &powerAt, &w.PowerReason, &ifaceJSON, &w.CloudInstanceID, &startedAt,
 	); err != nil {
 		return store.Worker{}, err
 	}
@@ -234,6 +248,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 	w.Ephemeral = bool(ephemeral)
 	w.PowerState = store.PowerState(powerState)
 	w.PowerStateAt = nullTextToTime(powerAt)
+	w.StartedAt = nullTextToTime(startedAt)
 
 	gpu, err := unmarshalJSON(gpuJSON, store.GPUInfo{})
 	if err != nil {
@@ -317,7 +332,7 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 		w.ID, nullString(w.FarmID), nullString(w.QueueID), w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
 		w.OS, w.OSVersion, w.Arch, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, exprJSON, extJSON, string(w.Status),
 		nullTimeToText(w.LastHeartbeatAt), now, now, w.InstanceID, nullTimeToText(w.RegistrationBrokerAt),
-		ifaceJSON, w.CloudInstanceID,
+		ifaceJSON, w.CloudInstanceID, now,
 	}, nil
 }
 
@@ -504,9 +519,15 @@ func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool)
 
 // UpdateWorkerHeartbeat implements [store.WorkerStore].
 func (s *Store) UpdateWorkerHeartbeat(
-	ctx context.Context, id string, at time.Time, brokerAt *time.Time,
+	ctx context.Context, id string, at time.Time, brokerAt, startedAt *time.Time,
 ) (store.HeartbeatOutcome, error) {
 	now, beat, stamp := TimeText(time.Now().UTC()), TimeText(at), nullTimeToText(brokerAt)
+	// An unstamped heartbeat cannot be ordered against the registration, so
+	// its estimate is dropped ([store.WorkerStore.UpdateWorkerHeartbeat]).
+	var start any
+	if brokerAt != nil {
+		start = nullTimeToText(startedAt)
+	}
 	var (
 		out     store.HeartbeatOutcome
 		unknown bool
@@ -514,7 +535,7 @@ func (s *Store) UpdateWorkerHeartbeat(
 	err := s.write(ctx, "update worker heartbeat", func(w writer) error {
 		out, unknown = store.HeartbeatOutcome{}, false
 		var status, power string
-		err := w.Stmt(ctx, s.stmtUpdateWorkerHeartbeat).QueryRowContext(ctx, beat, now, stamp, id, stamp).
+		err := w.Stmt(ctx, s.stmtUpdateWorkerHeartbeat).QueryRowContext(ctx, beat, now, stamp, stamp, start, start, id, stamp).
 			Scan(&status, &power)
 		if err == nil {
 			out = store.HeartbeatOutcome{

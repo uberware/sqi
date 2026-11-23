@@ -27,6 +27,7 @@ import (
 // process, whose assigned and running tasks are reclaimed as the offline
 // transitions reclaim them, with [store.FailureReasonWorkerRestarted]; the
 // store lock stands in for the SQL stores' worker-row and job-row anchors.
+// StartedAt is stamped as the SQL upsert stamps it ([registeredStartedAt]).
 func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, store.Registration, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -53,6 +54,7 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	worker.Ephemeral = existing.Ephemeral                 // false for a new worker
 	worker.HeartbeatBrokerAt = existing.HeartbeatBrokerAt // nil for a new worker
 	worker.PowerState, worker.PowerStateAt, worker.PowerReason = registeredPowerState(existing, isUpdate)
+	worker.StartedAt = registeredStartedAt(existing, isUpdate, worker.InstanceID)
 	if isUpdate {
 		worker.RegisteredAt = existing.RegisteredAt
 		if worker.RegistrationBrokerAt == nil {
@@ -261,9 +263,10 @@ func (s *Store) deleteEphemeralWorkerLocked(id string, now time.Time, also func(
 // UpdateWorkerHeartbeat records the most recent heartbeat time for the given
 // worker and reports its status and power state. A heartbeat the broker stamped
 // before the recorded one is ignored; an unstamped one is recorded
-// unconditionally and keeps the recorded stamp.
+// unconditionally and keeps the recorded stamp. startedAt moves StartedAt as
+// the SQL stores move it ([heartbeatStartedAt]).
 func (s *Store) UpdateWorkerHeartbeat(
-	ctx context.Context, id string, at time.Time, brokerAt *time.Time,
+	ctx context.Context, id string, at time.Time, brokerAt, startedAt *time.Time,
 ) (store.HeartbeatOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -283,6 +286,7 @@ func (s *Store) UpdateWorkerHeartbeat(
 		stamp := *brokerAt
 		worker.HeartbeatBrokerAt = &stamp
 	}
+	worker.StartedAt = heartbeatStartedAt(worker, brokerAt, startedAt)
 	worker.LastHeartbeatAt = &at
 	worker.UpdatedAt = time.Now()
 	s.workers[id] = worker
@@ -484,4 +488,35 @@ func cloneWorker(w store.Worker) store.Worker {
 		}
 	}
 	return w
+}
+
+// registeredStartedAt is the StartedAt a registration from instance leaves on
+// existing, as the SQL upsert decides it: now for a new worker and for a
+// non-empty instance ID other than the stored one, the stored value otherwise.
+func registeredStartedAt(existing store.Worker, isUpdate bool, instance string) *time.Time {
+	if !isUpdate || (instance != "" && instance != existing.InstanceID) {
+		now := time.Now().UTC()
+		return &now
+	}
+	if existing.StartedAt == nil {
+		return nil
+	}
+	t := *existing.StartedAt
+	return &t
+}
+
+// heartbeatStartedAt is the StartedAt a recorded heartbeat stamped brokerAt,
+// estimating its process started at startedAt, leaves on w: the estimate when
+// it is earlier than w's or w has none, w's otherwise. The estimate is
+// ignored without a stamp, and from a heartbeat stamped before w's
+// registration.
+func heartbeatStartedAt(w store.Worker, brokerAt, startedAt *time.Time) *time.Time {
+	switch {
+	case brokerAt == nil || startedAt == nil,
+		w.RegistrationBrokerAt != nil && brokerAt.Before(*w.RegistrationBrokerAt),
+		w.StartedAt != nil && !startedAt.Before(*w.StartedAt):
+		return w.StartedAt
+	}
+	t := *startedAt
+	return &t
 }

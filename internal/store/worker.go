@@ -188,8 +188,18 @@ type Worker struct {
 	// worker reported at registration, or empty.
 	CloudInstanceID string
 	LastHeartbeatAt *time.Time
-	RegisteredAt    time.Time
-	UpdatedAt       time.Time
+	// RegisteredAt is when the worker first registered. A re-registration
+	// keeps it, so it says nothing about the process running now.
+	RegisteredAt time.Time
+	// StartedAt is when the worker's current process started. A first
+	// registration and one with a new instance ID set it to the time of the
+	// write; a reconnect of the same process and a registration that sends no
+	// instance ID keep it. Heartbeats then refine it from the uptime the
+	// worker reports, moving it only earlier
+	// ([WorkerStore.UpdateWorkerHeartbeat]). Nil until either has recorded
+	// one. The value passed to RegisterWorker is ignored.
+	StartedAt *time.Time
+	UpdatedAt time.Time
 }
 
 // Registration is what [WorkerStore.RegisterWorker] did besides writing the
@@ -402,7 +412,17 @@ type WorkerStore interface {
 	// This is a hot path; implementations should use a single UPDATE
 	// statement, reading only to tell an unknown worker from an ignored
 	// heartbeat. Returns [ErrNotFound] if the worker does not exist.
-	UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time, brokerAt *time.Time) (HeartbeatOutcome, error)
+	//
+	// startedAt, when not nil, is the caller's estimate of when the worker's
+	// process started (the broker stamp less the uptime the worker reports).
+	// A recorded heartbeat lowers StartedAt to it when it is earlier, or sets
+	// it when StartedAt is nil, so the earliest estimate wins: a heartbeat
+	// that waited in a buffer before it was sent estimates late and changes
+	// nothing. It is ignored when brokerAt is nil, and when brokerAt is
+	// earlier than the worker's RegistrationBrokerAt: such a heartbeat may
+	// come from the process a restart replaced, whose estimate would undo the
+	// restart's StartedAt.
+	UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time, brokerAt, startedAt *time.Time) (HeartbeatOutcome, error)
 
 	// ListStaleWorkers returns workers whose last heartbeat is older than
 	// before and whose status is [WorkerStatusOnline], disabled or not (a dead

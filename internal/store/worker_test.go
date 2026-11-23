@@ -134,6 +134,165 @@ func TestRegisterWorker_ReclaimsAfterARestart(t *testing.T) {
 	}
 }
 
+// TestRegisterWorker_StartedAtMarksTheProcess pins the StartedAt a
+// registration records for the worker's current process, which the web UI's
+// Uptime counts from. A first registration sets it, a new instance ID resets it, and a reconnect of
+// the same process or a registration with no instance ID keeps it, while
+// RegisteredAt stays at the first registration throughout.
+func TestRegisterWorker_StartedAtMarksTheProcess(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			register := func(instance string) store.Worker {
+				t.Helper()
+				// Each registration lands at a later instant than the last, at
+				// PostgreSQL's microsecond precision.
+				time.Sleep(2 * time.Millisecond)
+				now := time.Now().UTC()
+				w, _, err := st.RegisterWorker(t.Context(), store.Worker{
+					ID: fixtureWorkerID, FarmID: farm.ID, Hostname: "node", Status: store.WorkerStatusOnline,
+					LastHeartbeatAt: &now, InstanceID: instance,
+				})
+				if err != nil {
+					t.Fatalf("RegisterWorker(%q): %v", instance, err)
+				}
+				if stored := mustWorker(t, st, fixtureWorkerID); !equalTimes(stored.StartedAt, w.StartedAt) {
+					t.Fatalf("RegisterWorker(%q) returned StartedAt %v, GetWorker has %v", instance, w.StartedAt, stored.StartedAt)
+				}
+				return w
+			}
+
+			before := time.Now().UTC().Add(-time.Second)
+			first := register("i1")
+			if first.StartedAt == nil || first.StartedAt.Before(before) {
+				t.Fatalf("first registration: StartedAt = %v, want set to about now", first.StartedAt)
+			}
+			for _, instance := range []string{"i1", ""} {
+				if got := register(instance).StartedAt; !equalTimes(got, first.StartedAt) {
+					t.Fatalf("registration with instance %q: StartedAt = %v, want %v kept", instance, got, first.StartedAt)
+				}
+			}
+			restarted := register("i2")
+			if restarted.StartedAt == nil || !restarted.StartedAt.After(*first.StartedAt) {
+				t.Fatalf("new instance: StartedAt = %v, want later than %v", restarted.StartedAt, first.StartedAt)
+			}
+			if !restarted.RegisteredAt.Equal(first.RegisteredAt) {
+				t.Fatalf("new instance: RegisteredAt = %v, want %v kept", restarted.RegisteredAt, first.RegisteredAt)
+			}
+		})
+	}
+}
+
+// TestRegisterWorker_StartedAtSetForALegacyFirstRegistration pins that a new
+// worker row gets a StartedAt even when its registration carries no instance
+// ID: a first registration is a process starting.
+func TestRegisterWorker_StartedAtSetForALegacyFirstRegistration(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			if got := registerAs(t, st, farm.ID, "").StartedAt; got == nil {
+				t.Fatal("StartedAt = nil, want set")
+			}
+		})
+	}
+}
+
+// TestRegisterWorker_StartedAtResetByAFirstInstanceID pins the one case where
+// the StartedAt rule is wider than the reclaim rule: a worker upgraded from a
+// build that sent no instance ID is a new process, so its first registration
+// with an ID resets StartedAt, though there is no prior instance to reclaim
+// from.
+func TestRegisterWorker_StartedAtResetByAFirstInstanceID(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			legacy := registerAs(t, st, farm.ID, "")
+			time.Sleep(2 * time.Millisecond) // a later instant at PostgreSQL's microsecond precision
+			upgraded := registerAs(t, st, farm.ID, "i1")
+			if legacy.StartedAt == nil || upgraded.StartedAt == nil || !upgraded.StartedAt.After(*legacy.StartedAt) {
+				t.Fatalf("StartedAt = %v after the legacy registration, %v after the first with an ID; want it later",
+					legacy.StartedAt, upgraded.StartedAt)
+			}
+		})
+	}
+}
+
+// TestUpdateWorkerHeartbeat_StartedAtFromUptime pins how a heartbeat's
+// estimate of the process start (the broker stamp less the uptime the worker
+// reports) moves StartedAt: it lowers it to the earliest estimate, so a
+// heartbeat that sat in a buffer before it was sent (a later estimate) changes
+// nothing; it is ignored from a heartbeat with no broker stamp, and from one
+// stamped before the current registration, which may come from the process a
+// restart replaced; and no estimate changes nothing.
+func TestUpdateWorkerHeartbeat_StartedAtFromUptime(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			// Every stamp is an hour in the past, so each estimate is earlier
+			// than the server-clock StartedAt a registration writes.
+			r := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+			if _, _, err := registerStamped(t, st, farm.ID, "i1", &r); err != nil {
+				t.Fatalf("register i1: %v", err)
+			}
+			beat := func(stamp, start *time.Time) *time.Time {
+				t.Helper()
+				if _, err := st.UpdateWorkerHeartbeat(t.Context(), fixtureWorkerID, time.Now().UTC(), stamp, start); err != nil {
+					t.Fatalf("UpdateWorkerHeartbeat(stamp %v, start %v): %v", stamp, start, err)
+				}
+				return mustWorker(t, st, fixtureWorkerID).StartedAt
+			}
+			at := func(d time.Duration) *time.Time { v := r.Add(d); return &v }
+
+			if got := beat(at(15*time.Second), at(-5*time.Second)); !equalTimes(got, at(-5*time.Second)) {
+				t.Fatalf("first estimate: StartedAt = %v, want %v", got, at(-5*time.Second))
+			}
+			if got := beat(at(30*time.Second), at(-4*time.Second)); !equalTimes(got, at(-5*time.Second)) {
+				t.Fatalf("later estimate: StartedAt = %v, want the earlier %v kept", got, at(-5*time.Second))
+			}
+			if got := beat(nil, at(-time.Minute)); !equalTimes(got, at(-5*time.Second)) {
+				t.Fatalf("unstamped heartbeat: StartedAt = %v, want %v kept", got, at(-5*time.Second))
+			}
+			if got := beat(at(31*time.Second), nil); !equalTimes(got, at(-5*time.Second)) {
+				t.Fatalf("no estimate: StartedAt = %v, want %v kept", got, at(-5*time.Second))
+			}
+
+			// A restart: the new registration's StartedAt is the server's now.
+			if _, _, err := registerStamped(t, st, farm.ID, "i2", at(time.Minute)); err != nil {
+				t.Fatalf("register i2: %v", err)
+			}
+			restarted := mustWorker(t, st, fixtureWorkerID).StartedAt
+			// The old process's heartbeat, stamped after the last recorded one
+			// but before the restart's registration, cannot undo the restart.
+			if got := beat(at(45*time.Second), at(-5*time.Second)); !equalTimes(got, restarted) {
+				t.Fatalf("heartbeat stamped before the registration: StartedAt = %v, want %v kept", got, restarted)
+			}
+			if got := beat(at(75*time.Second), at(59*time.Second)); !equalTimes(got, at(59*time.Second)) {
+				t.Fatalf("new process's estimate: StartedAt = %v, want %v", got, at(59*time.Second))
+			}
+		})
+	}
+}
+
+func registerAs(t *testing.T, st store.Store, farmID, instance string) store.Worker {
+	t.Helper()
+	now := time.Now().UTC()
+	w, _, err := st.RegisterWorker(t.Context(), store.Worker{
+		ID: fixtureWorkerID, FarmID: farmID, Hostname: "node", Status: store.WorkerStatusOnline,
+		LastHeartbeatAt: &now, InstanceID: instance,
+	})
+	if err != nil {
+		t.Fatalf("RegisterWorker(%q): %v", instance, err)
+	}
+	return w
+}
+
+func equalTimes(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
 // TestDisabledWorker_StaysDisabledAndIsReclaimed pins the disabled flag's
 // independence from liveness: a dead disabled worker is swept like any online
 // worker (it goes offline and its task is reclaimed) and stays disabled, an

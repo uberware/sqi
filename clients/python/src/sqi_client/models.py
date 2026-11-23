@@ -859,6 +859,11 @@ class Worker:
     ram_mb: int | None = None
     tags: dict[str, str] = field(default_factory=dict)
     last_heartbeat_at: datetime | None = None
+    started_at: datetime | None = None
+    """When the worker's current process started: a restart resets it, a
+    reconnect of the same process keeps it, unlike ``registered_at``, which is
+    the worker's first registration. ``None`` until the server has recorded
+    it from a registration or heartbeat."""
     current_tasks: list[CurrentTask] = field(default_factory=list)
     removable: bool = False
     """Whether the worker may be removed via
@@ -899,6 +904,7 @@ class Worker:
             ram_mb=_opt_int(data.get("ram_mb")),
             tags=_str_dict(data.get("tags")),
             last_heartbeat_at=_opt_datetime(data.get("last_heartbeat_at")),
+            started_at=_opt_datetime(data.get("started_at")),
             current_tasks=current_tasks,
             removable=_as_bool(data.get("removable")),
         )

@@ -209,6 +209,50 @@ func TestHandleHeartbeat_OrderedByBrokerStampNotWorkerClock(t *testing.T) {
 	}
 }
 
+// TestHandleHeartbeat_StartedAtFromUptime pins that a heartbeat dates the
+// worker's process from the uptime it reports, measured back from the broker's
+// stamp so the worker's clock is never read; and that an uptime that is not a
+// usable duration (none, negative, or past maxReportedUptime) is ignored, the
+// heartbeat itself still recorded.
+func TestHandleHeartbeat_StartedAtFromUptime(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, _, _ := seedStaleWorkerWithTask(t, st, 0)
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.ctx = t.Context()
+			send := func(stamp time.Time, uptime float64) *time.Time {
+				t.Helper()
+				m := heartbeatMsgStamped(t, workerID, stamp.Add(-10*time.Minute), stamp)
+				m.data = workerMsgJSON(t, protocol.HeartbeatMsg{
+					Version: protocol.ProtocolVersion, Type: protocol.TypeHeartbeat, WorkerID: workerID,
+					At: stamp.Add(-10 * time.Minute), UptimeSeconds: uptime,
+				})
+				s.handleWorkerMessage(m)
+				if !m.acked || m.nacked {
+					t.Fatalf("heartbeat (uptime %v) acked=%v nacked=%v, want acked", uptime, m.acked, m.nacked)
+				}
+				got, err := st.GetWorker(t.Context(), workerID)
+				if err != nil || got.HeartbeatBrokerAt == nil || !got.HeartbeatBrokerAt.Equal(stamp) {
+					t.Fatalf("heartbeat (uptime %v) not recorded: HeartbeatBrokerAt = %v, err %v", uptime, got.HeartbeatBrokerAt, err)
+				}
+				return got.StartedAt
+			}
+
+			stamp := time.Now().UTC().Truncate(time.Microsecond)
+			want := stamp.Add(-90 * time.Second)
+			if got := send(stamp, 90); got == nil || !got.Equal(want) {
+				t.Fatalf("StartedAt = %v, want the broker stamp less the uptime, %v", got, want)
+			}
+			for i, uptime := range []float64{0, -5, maxReportedUptime.Seconds() + 1} {
+				later := stamp.Add(time.Duration(i+1) * time.Second)
+				if got := send(later, uptime); got == nil || !got.Equal(want) {
+					t.Fatalf("uptime %v: StartedAt = %v, want %v kept", uptime, got, want)
+				}
+			}
+		})
+	}
+}
+
 // TestHandleHeartbeat_NoBrokerMetadataRecordedUnordered pins the fallback: a
 // heartbeat whose metadata cannot be read, or carries no timestamp, is recorded
 // unordered at the server's receipt time (never the worker's), keeps the

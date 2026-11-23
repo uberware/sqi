@@ -462,6 +462,17 @@ def test_worker_removable_defaults_false_when_absent() -> None:
     assert Worker.from_dict(raw).removable is False
 
 
+def test_worker_started_at() -> None:
+    worker = Worker.from_dict(load("worker"))
+    assert worker.started_at == datetime(2026, 1, 15, 9, 30, tzinfo=timezone.utc)
+
+
+def test_worker_started_at_none_when_absent() -> None:
+    raw = load("worker")
+    del raw["started_at"]
+    assert Worker.from_dict(raw).started_at is None
+
+
 def test_worker_version_none_when_absent() -> None:
     raw = load("worker")
     del raw["version"]

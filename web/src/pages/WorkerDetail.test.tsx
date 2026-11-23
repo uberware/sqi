@@ -291,6 +291,33 @@ describe('WorkerDetail', () => {
       expect(screen.getByText('Uptime')).toBeInTheDocument()
     })
 
+    // Uptime is the current process's, so it counts from started_at, which a
+    // restart resets, and never from registered_at, which a restart keeps.
+    describe('Uptime value', () => {
+      async function uptimeShown(worker: WorkerDetailType): Promise<string | null | undefined> {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        vi.setSystemTime(new Date('2024-01-01T10:30:00Z'))
+        fetchMock.mockResolvedValue(okJson(worker))
+        render(<WorkerDetail />, { wrapper: Wrapper })
+        await waitFor(() => screen.getByText('Uptime'))
+        return screen.getByText('Uptime').nextElementSibling?.textContent
+      }
+
+      it('counts from started_at, not registered_at', async () => {
+        expect(await uptimeShown(makeWorker({ started_at: '2024-01-01T10:00:00Z' }))).toBe('30m')
+      })
+
+      it('shows — when the process start is not recorded', async () => {
+        expect(await uptimeShown(makeWorker())).toBe('—')
+      })
+
+      it('shows — for an offline worker', async () => {
+        expect(
+          await uptimeShown(makeWorker({ status: 'offline', started_at: '2024-01-01T10:00:00Z' })),
+        ).toBe('—')
+      })
+    })
+
     it('renders the ip_address when present', async () => {
       fetchMock.mockResolvedValue(okJson(makeWorker({ ip_address: '10.0.1.42' })))
 
@@ -672,6 +699,36 @@ describe('WorkerDetail', () => {
 
       await waitFor(() =>
         expect(screen.getAllByLabelText('Status: Disabled').length).toBeGreaterThan(0),
+      )
+    })
+
+    // A worker coming back online may be a new process, whose started_at the
+    // event does not carry, so the page refetches rather than showing the
+    // previous process's uptime until the next poll.
+    it('refetches when the worker comes back online, so Uptime is the new process', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      vi.setSystemTime(new Date('2024-01-01T10:30:00Z'))
+      fetchMock
+        .mockResolvedValueOnce(
+          okJson(makeWorker({ status: 'offline', started_at: '2024-01-01T08:00:00Z' })),
+        )
+        .mockResolvedValue(okJson(makeWorker({ started_at: '2024-01-01T10:29:00Z' })))
+
+      render(<WorkerDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Offline'))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'workers',
+          payload: { worker_id: 'worker-aabbccdd', status: 'online' },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() =>
+        expect(screen.getByText('Uptime').nextElementSibling?.textContent).toBe('1m'),
       )
     })
 

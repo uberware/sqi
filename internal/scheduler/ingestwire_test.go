@@ -180,7 +180,7 @@ func (failingIngestStore) RegisterWorker(context.Context, store.Worker) (store.W
 	return store.Worker{}, store.Registration{}, errIngestStore
 }
 
-func (failingIngestStore) UpdateWorkerHeartbeat(context.Context, string, time.Time, *time.Time) (store.HeartbeatOutcome, error) {
+func (failingIngestStore) UpdateWorkerHeartbeat(context.Context, string, time.Time, *time.Time, *time.Time) (store.HeartbeatOutcome, error) {
 	return store.HeartbeatOutcome{}, errIngestStore
 }
 

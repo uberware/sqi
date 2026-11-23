@@ -944,6 +944,20 @@ components:
         registered_at:
           type: string
           format: date-time
+          description: >-
+            When the worker first registered. A re-registration, including
+            one from a restarted worker process, keeps it.
+        started_at:
+          type: string
+          format: date-time
+          description: >-
+            When the worker's current process started, which the web UI's
+            Uptime counts from. A restart's registration resets it and a
+            reconnect of the same process keeps it. Each heartbeat then dates
+            the process from the uptime the worker reports, measured back
+            from the broker's timestamp of the heartbeat (never the worker's
+            clock), and keeps the earliest such time. Left out until a
+            registration or heartbeat has recorded one.
         updated_at:
           type: string
           format: date-time
