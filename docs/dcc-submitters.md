@@ -3,9 +3,9 @@
 `sqi-submitter` is a Python package that adds in-application job submission to
 Maya, Houdini, Nuke, 3ds Max, VRED, Blender, Cinema 4D, After Effects, Unreal
 Engine, Katana, KeyShot, Silhouette, Fusion and Modo, on top of
-[`sqi-sdk`](python-client.md). It is a separate PyPI package
-(`pip install sqi-submitter`) because it needs a DCC host or a Qt binding,
-while `sqi-sdk` is a scripting library with no UI.
+[`sqi-sdk`](python-client.md). It is a separate Python package
+(`sqi-submitter`) because it needs a DCC host or a Qt binding, while `sqi-sdk`
+is a scripting library with no UI.
 
 ---
 
@@ -2183,8 +2183,8 @@ support):**
 6. **Linux profile folder.** In Fusion open **Preferences → Path Map** and read
    `Scripts:`. Compare it with the folder `install-host` copied into
    (`~/.fusion/BlackmagicDesign/Fusion/Scripts/Comp`); if Fusion uses
-   `Blackmagic Design` (with a space) instead, the default is wrong for that
-   install and needs fixing.
+   `Blackmagic Design` (with a space) instead, the default does not match that
+   install: pass `--dest`.
 7. `sqi-submit` not found (rename it or clear `PATH`): the message names the
    fix. A path to `sqi-submit` that contains a `%` on Windows is refused with a
    message, not launched.

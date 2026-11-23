@@ -21,9 +21,10 @@
 //
 // # JSON columns
 //
-// Fields that are stored as JSON in SQLite (e.g. Worker.Tags, Task.Parameters)
-// are typed as Go maps or slices. The SQLite implementation is responsible for
-// marshaling and unmarshaling; callers work with native Go types throughout.
+// Fields that are stored as JSON text (e.g. Worker.Tags, Task.Parameters) are
+// typed as Go maps or slices. The shared SQL implementation
+// (internal/store/sqlstore) marshals and unmarshals them; callers work with
+// native Go types throughout.
 //
 // # Errors
 //

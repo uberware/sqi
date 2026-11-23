@@ -106,11 +106,11 @@ func (s *Service) FetchIndex(ctx context.Context, forceRefresh bool) ([]IndexEnt
 // opts.
 //
 // opts carries the operator's EXPR limits and this request's wall-clock
-// backstop, because both preset routes that call this are reachable from an
-// anonymous HTTP request when auth is off. The sha256 pinning bounds WHAT is
-// validated -- the body is vouched for by the operator's index, not chosen by
-// the caller -- but it does not bound how often, or for how long, this server
-// is asked to validate it. See [product.ValidateOptions].
+// deadline, because both preset routes that call this are reachable from an
+// anonymous HTTP request when auth is off. The sha256 pinning bounds what is
+// validated (the body is vouched for by the operator's index, not chosen by
+// the caller), but not how often, or for how long, this server is asked to
+// validate it. See [product.ValidateOptions].
 func (s *Service) FetchDefinition(
 	ctx context.Context, entry IndexEntry, opts product.ValidateOptions,
 ) (store.Product, error) {

@@ -21,8 +21,8 @@ import (
 var presetTemplates sync.Map
 
 // capturePreset expands one shipped preset under params through the production
-// pipeline (presettest.Capture, which resolves phase 3 against the worker's
-// default EXPR limits) and returns the snapshot.
+// pipeline (presettest.Capture, which runs the worker-side resolution against
+// the worker's default EXPR limits) and returns the snapshot.
 func capturePreset(t *testing.T, preset string, params map[string]string) (presettest.Snapshot, error) {
 	t.Helper()
 	cached, ok := presetTemplates.Load(preset)

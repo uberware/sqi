@@ -24,14 +24,13 @@ type Element = string | number | boolean
  * Null means "render a raw text field": a stored default must never break
  * the form.
  *
- * This is NOT a value-preserving round trip in general -- a Go-produced
- * default can never contain a non-scalar (encodeListDefault in
+ * This is not a value-preserving round trip in general. A Go-produced default
+ * never contains a non-scalar (encodeListDefault in
  * internal/openjd/paramjson.go rejects them), but a hand-edited or otherwise
- * malformed stored value could. Rather than laundering a `null`, an object,
- * or a nested array through String() -- which would silently rewrite it, and
- * because every edit re-encodes the whole array, would rewrite an unrelated
- * row on the next edit -- any non-scalar element falls back to the raw-JSON
- * field, same as an unparsable value. */
+ * malformed stored value could. Passing a `null`, an object or a nested array
+ * through String() would rewrite it, and because every edit re-encodes the
+ * whole array, an unrelated row's edit would rewrite it too. So any non-scalar
+ * element falls back to the raw-JSON field, as an unparsable value does. */
 function decode(value: string): Element[] | null {
   if (value.trim() === '') return []
   let parsed: unknown
@@ -63,12 +62,12 @@ function encode(elements: Element[]): string {
  *
  * The second half of that check is what a plain `Number.isNaN` test misses:
  * `Number("1.")` is `1`, not NaN. Without it, a controlled input showing "1"
- * that the user extends to "1." would re-render back to "1" -- React's
- * controlled-input restore -- eating the "." the user just typed. Keeping
+ * that the user extends to "1." would re-render back to "1" (React's
+ * controlled-input restore), dropping the "." the user typed. Keeping
  * "1.", "1.50" and "01" as strings (they fail String(Number(raw)) === raw)
  * means the rendered value always matches what was typed; validateElement
- * reports them as "must be a number" at submit, the same behaviour a
- * mid-typing "-" already has. */
+ * reports them as "must be a number" at submit, as it does a mid-typing
+ * "-". */
 function toElement(raw: string, elementType: string | null): Element {
   if (elementType === 'INT' || elementType === 'FLOAT') {
     const trimmed = raw.trim()
@@ -126,19 +125,17 @@ export default function ListParamField({ param, id, value, onChange }: Props) {
             />
           ) : (
             <input
-              // Deliberately type="text", not type="number": the HTML value
-              // sanitization algorithm zeroes a type="number" input's DOM
-              // value to "" for any in-progress entry that isn't yet a valid
-              // number ("-", "1e"), and it does this on every set — including
-              // a controlled component's own re-render — not just on blur. A
-              // controlled numeric field built on type="number" can
-              // therefore never read back a mid-typing draft; it would
-              // silently coerce or drop it. inputMode keeps the numeric
-              // keyboard on mobile without that loss. This is a genuine text
-              // field (see toElement below), so it keeps the default
-              // textbox role rather than overriding to spinbutton, which
-              // would need aria-valuenow/min/max and arrow-key stepping to
-              // be a correct override — see docs/web-accessibility.md.
+              // type="text", not type="number": the HTML value sanitization
+              // algorithm sets a type="number" input's DOM value to "" for
+              // any in-progress entry that is not a valid number ("-", "1e"),
+              // on every set, a controlled component's own re-render
+              // included. A controlled numeric field built on type="number"
+              // cannot read back a mid-typing draft; it would coerce or drop
+              // it. inputMode keeps the numeric keyboard on mobile. This is a
+              // text field (see toElement below), so it keeps the default
+              // textbox role; a spinbutton override would need
+              // aria-valuenow/min/max and arrow-key stepping (see
+              // docs/web-accessibility.md).
               type="text"
               inputMode={elementType === 'INT' || elementType === 'FLOAT' ? 'decimal' : 'text'}
               value={String(element)}

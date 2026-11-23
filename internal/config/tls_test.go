@@ -183,13 +183,11 @@ func TestValidate_DefaultConfigHasTLSOff(t *testing.T) {
 	}
 }
 
-// TestLoad_TLSFromFileAndEnv covers the loader wiring for all seven new keys.
+// TestLoad_TLSFromFileAndEnv covers the loader wiring for all seven TLS keys.
 //
 // Validation tests exercise the structs directly, so nothing else here would
 // notice a wrong `yaml:` tag, a key omitted from fileConfig, or a missing env
-// binding — the value would simply never arrive and TLS would stay off with no
-// error. nats.embedded.tls.client_ca_file in particular has no other coverage in any
-// suite.
+// binding: the value would never arrive and TLS would stay off with no error.
 func TestLoad_TLSFromFileAndEnv(t *testing.T) {
 	cert, key, ca := writeCerts(t, time.Hour)
 	path := filepath.Join(t.TempDir(), "sqi.yaml")

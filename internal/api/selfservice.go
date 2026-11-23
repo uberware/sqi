@@ -33,7 +33,7 @@ type changePasswordRequest struct {
 // destroys every session for the account, and issues a fresh session for this
 // caller so the active device stays logged in while others are evicted.
 //
-// A wrong current password is 403, not 401: the caller IS authenticated, and
+// A wrong current password is 403, not 401: the caller is authenticated, and
 // the web installs a 401 -> login interceptor that would eject them mid-form.
 func (h *authHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -84,14 +84,12 @@ func (h *authHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	// The new password and the session eviction land together or not at all.
 	// The client reports "other devices have been signed out" on success, so
-	// a partial result here would make that message a lie with nothing to
-	// detect it — exactly the wrong outcome for someone rotating a password
-	// after a suspected compromise. On failure nothing changed and the caller
-	// can safely retry.
+	// a partial result would make that message false, undetectably, for
+	// someone rotating a password after a suspected compromise. On failure
+	// nothing changed and the caller can retry.
 	//
-	// API keys are deliberately NOT revoked: they are an independent
-	// credential, and silently killing a user's automation because they
-	// rotated a password would be a nasty surprise.
+	// API keys are not revoked: they are an independent credential, and a
+	// password rotation must not stop a user's automation.
 	if err := h.store.SetUserPasswordAndEvictSessions(ctx, u.ID, hash); err != nil {
 		h.logger.ErrorContext(ctx, "selfservice: set password failed", slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to change password")
@@ -100,15 +98,15 @@ func (h *authHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 
 	// The password is changed and every session is gone, including the
 	// caller's. Re-issuing one keeps this device signed in; if it fails the
-	// change still stands, so this is logged rather than surfaced — the
-	// caller simply logs in again with the new password.
+	// change still stands, so this is logged rather than surfaced, and the
+	// caller logs in again with the new password.
 	if err := h.issueSession(w, r, u); err != nil {
 		h.logger.ErrorContext(ctx, "selfservice: re-issue session failed", slog.Any("error", err))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// updateMeRequest carries only display_name — deliberately. `role`,
+// updateMeRequest carries only display_name. `role`,
 // `disabled`, and `username` are absent from this struct, so a request body
 // carrying them is ignored by the decoder. Keeping them out of the type makes
 // self-service privilege escalation unrepresentable rather than merely
@@ -120,9 +118,8 @@ type updateMeRequest struct {
 // updateMe changes the caller's own profile and returns the same principal
 // shape GET /auth/me returns, so the client refreshes identity from one shape.
 //
-// The record is re-read and mutated field-by-field rather than built from the
-// request: every field the caller may not touch keeps its stored value by
-// construction.
+// Only display_name is written, so every field the caller may not touch keeps
+// its stored value by construction.
 func (h *authHandler) updateMe(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	userID, ok := requireCallerSubject(w, r, selfServiceUnavailable)
@@ -143,10 +140,10 @@ func (h *authHandler) updateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A targeted single-column update, NOT a read-modify-write through
+	// A targeted single-column update, not a read-modify-write through
 	// UpdateUser: that writes display_name, role, and disabled together, so a
 	// save racing a concurrent admin demotion or disable would write the
-	// stale values back and silently revert it.
+	// stale values back and revert it.
 	updated, err := h.store.SetUserDisplayName(ctx, userID, *req.DisplayName)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {

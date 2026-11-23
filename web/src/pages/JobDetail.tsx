@@ -885,7 +885,7 @@ function JobDetail({ jobId }: { jobId: string }) {
     return map
   }, [tasksPage])
 
-  // Steps sorted by step_order (the server should already return them ordered).
+  // Steps sorted by step_order (the server returns them in that order too).
   const sortedSteps = useMemo(
     () => [...(job?.steps ?? [])].sort((a, b) => a.step_order - b.step_order),
     [job?.steps],

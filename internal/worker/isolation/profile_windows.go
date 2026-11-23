@@ -12,15 +12,13 @@ import (
 )
 
 // LoadUserProfileW/UnloadUserProfile have no wrapper in
-// golang.org/x/sys/windows v0.47.0, so they are declared here the same way
+// golang.org/x/sys/windows, so they are declared here the same way
 // provider_windows.go declares LogonUserW.
 //
-// Note the asymmetry in the names, which is NOT a typo: userenv.dll exports
-// LoadUserProfileA/W but a single, unsuffixed UnloadUserProfile, because
-// unloading takes only handles and so has no string-encoding variants. A
-// symmetry-seeking "UnloadUserProfileW" does not exist — it panicked every
-// Credential.Close (LazyProc.Call calls mustFind), taking the worker down on
-// task teardown. TestWin32ProcsResolve pins all three names.
+// The names are asymmetric: userenv.dll exports LoadUserProfileA/W but a
+// single, unsuffixed UnloadUserProfile, because unloading takes only handles
+// and so has no string-encoding variants. There is no "UnloadUserProfileW".
+// TestWin32ProcsResolve pins all three names.
 var (
 	modUserenv            = windows.NewLazySystemDLL("userenv.dll")
 	procLoadUserProfileW  = modUserenv.NewProc("LoadUserProfileW")
@@ -47,11 +45,10 @@ type profileInfo struct {
 }
 
 // mustResolve reports a missing export as an error. Every LazyProc.Call in
-// this package goes through it first, because LazyProc.Call PANICS when the
-// procedure cannot be found — an unrecoverable crash of the worker daemon,
-// reached on a path (task teardown) that has no business being fatal. An
-// export this package names wrongly, or one a future Windows drops, must
-// surface as a failed task, not a dead worker.
+// this package goes through it first, because LazyProc.Call panics when the
+// procedure cannot be found, which would crash the worker on a path such as
+// task teardown. An export this package names wrongly, or one a Windows
+// release drops, must surface as a failed task, not a dead worker.
 func mustResolve(proc *windows.LazyProc) error {
 	if err := proc.Find(); err != nil {
 		return fmt.Errorf("resolve %s: %w", proc.Name, err)
@@ -62,8 +59,8 @@ func mustResolve(proc *windows.LazyProc) error {
 // loadProfile mounts user's registry hive and ensures their profile directory
 // exists, returning the handle UnloadUserProfile needs.
 //
-// This is not optional polish. CreateProcessAsUser does NOT load a profile:
-// without this call the task gets the .DEFAULT hive rather than its own
+// CreateProcessAsUser does not load a profile: without this call the task
+// gets the .DEFAULT hive rather than its own
 // HKEY_CURRENT_USER, and an account that has never logged on interactively
 // has no profile directory at all, so GetUserProfileDirectory fails for it.
 // Every DCC writes preferences, license caches, and crash dumps through
@@ -92,7 +89,7 @@ func loadProfile(tok windows.Token, user string) (windows.Handle, error) {
 }
 
 // unloadProfile releases a hive mounted by loadProfile. Called from
-// Credential.Close BEFORE the token is closed: UnloadUserProfile needs the
+// Credential.Close before the token is closed: UnloadUserProfile needs the
 // same token that loaded it.
 func unloadProfile(tok windows.Token, h windows.Handle) error {
 	if h == 0 {

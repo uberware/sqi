@@ -158,7 +158,7 @@ func TestAssignMsg_EXPRFieldsOmittedForBaseSpec(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	// None of the nine new keys may appear anywhere on the wire, including
+	// None of the nine keys may appear anywhere on the wire, including
 	// nested inside an environment object.
 	forbidden := []string{
 		`"expr"`,

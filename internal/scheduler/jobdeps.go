@@ -11,7 +11,7 @@ package scheduler
 // store.JobStatusCompleted (released to pending) or any upstream fails, is
 // canceled, or is deleted (the dependent is canceled — its dependency can
 // never be satisfied). Cancellation cascades transitively: canceling a job
-// re-reconciles ITS dependents, so a chain of blocked jobs unwinds in one
+// re-reconciles its dependents, so a chain of blocked jobs unwinds in one
 // pass. ReconcileDependents is called event-driven whenever an upstream job
 // reaches a terminal status; sweepBlockedJobs is the periodic backstop that
 // catches any dependent missed by a dropped event or an upstream removed by
@@ -121,7 +121,7 @@ func (s *Scheduler) releaseBlockedJob(ctx context.Context, job store.Job) error 
 }
 
 // cancelAndCascade cancels a blocked job whose dependency can never be satisfied,
-// then reconciles ITS dependents so the cancellation cascades transitively.
+// then reconciles its dependents so the cancellation cascades transitively.
 func (s *Scheduler) cancelAndCascade(ctx context.Context, jobID string) error {
 	if err := s.cancelBlockedJob(ctx, jobID); err != nil {
 		return err

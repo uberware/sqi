@@ -15,29 +15,21 @@ type Group struct {
 	Name string
 	// Passed counts live tests that passed.
 	Passed int
-	// Baselined and Regressed split the live FAILURES: a failure listed in the
-	// baseline has been adjudicated and written down, while one that is not is
-	// a break. Both are failures and both are counted in the live total; only
-	// one of them is news. A single failure count would summarize an unlisted
-	// failure as "449/450 pass  1 baselined" directly above the line calling
-	// the same fixture a REGRESSION.
+	// Baselined and Regressed split the live failures: a failure listed in the
+	// baseline has been adjudicated, while one that is not is a regression.
+	// Both count toward the live total.
 	Baselined, Regressed int
 	// NotApplicable counts tests for extensions sqi has not registered, or for
-	// a document kind sqi does not implement at all (env_templates). These
-	// are never folded into Passed — see StateNotApplicable.
+	// a document kind sqi does not implement (env_templates). These are never
+	// counted in Passed; see StateNotApplicable.
 	NotApplicable int
 }
 
 // Rollup tallies results per "<extension>/<kind>" directory, sorted by name.
 //
-// The baseline is a parameter rather than something the caller applies
-// afterwards because the tally is wrong without it: "failed" and
-// "failed in a way we already accepted" are different facts about a run.
-//
-// It classifies through DiffBaseline rather than re-deriving membership from
-// the map, so the counts here and the REGRESSION lines a caller prints from the
-// same diff are one judgement rendered twice. Re-deriving would be two lines of
-// code and a standing opportunity for them to disagree.
+// The baseline is needed to tell a baselined failure from a regression. It
+// classifies through DiffBaseline, so these counts always agree with the
+// REGRESSION lines a caller prints from the same diff.
 func Rollup(results []Result, baseline map[string]struct{}) []Group {
 	regressions, _, _ := DiffBaseline(results, baseline)
 	isRegression := make(map[string]bool, len(regressions))
@@ -77,11 +69,9 @@ func Rollup(results []Result, baseline map[string]struct{}) []Group {
 //
 // Not-applicable counts are reported in their own column and never as a pass
 // ratio, so an unimplemented extension or unimplemented document kind (such as
-// env_templates) can never look like a green one. Regressions are reported in
-// their own words and in CAPITALS, ahead of the baselined count, for the same
-// reason: this table is the first thing a reader sees, and the one number on it
-// that means "something broke" must not be spelled like the one that means
-// "something is known and accepted".
+// env_templates) cannot look like a passing one. Regressions are reported as
+// "REGRESSION" ahead of the baselined count, so they cannot be mistaken for
+// known, accepted failures.
 func FormatRollup(groups []Group) string {
 	width := 0
 	for _, g := range groups {

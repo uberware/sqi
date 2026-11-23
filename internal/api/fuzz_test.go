@@ -14,13 +14,12 @@ package api
 //  2. The handler must always return a well-formed HTTP response (status ≥ 100).
 //  3. Error responses (4xx/5xx) must have a valid JSON body.
 //
-// Note: a 5xx response is NOT treated as a fuzz failure here.  The handlers are
-// designed to return 5xx only for genuine internal errors (storage failures,
-// unexpected state); triggering one via a crafted payload would indicate a real
-// bug, but crafted payloads that slip past validation are expected to produce
-// 4xx responses.  If the fuzzer discovers a 5xx path, investigate — it likely
-// reveals a missing validation gate, but it is not an invariant violation in
-// the same sense as a panic.
+// A 5xx response is not treated as a fuzz failure. The handlers return 5xx
+// only for internal errors (storage failures, unexpected state), and crafted
+// payloads that slip past validation are expected to produce 4xx responses.
+// A 5xx path the fuzzer finds likely reveals a missing validation gate and is
+// worth investigating, but it is not an invariant violation in the same sense
+// as a panic.
 
 import (
 	"bytes"

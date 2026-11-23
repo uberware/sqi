@@ -45,9 +45,9 @@ const (
 	// domain is the standard mDNS multicast domain.
 	domain = "local."
 
-	// hostLookupTimeout bounds the check in resolveHost. It is short on
-	// purpose: a name that needs longer than this is not one a worker should
-	// wait on at every boot, and the advertised IP is right there.
+	// hostLookupTimeout bounds the check in resolveHost. It is short: a name
+	// that needs longer than this is not one a worker should wait on at every
+	// boot, and the advertised IP is available as a fallback.
 	hostLookupTimeout = 2 * time.Second
 )
 
@@ -70,7 +70,7 @@ type Result struct {
 	// true exactly when the advertised nats_url has the tls scheme. An
 	// explicit URL discovers nothing and leaves this false.
 	//
-	// This is an INPUT to nats.tls_enabled's "auto" mode: it is the one signal
+	// This is an input to nats.tls_enabled's "auto" mode: it is the one signal
 	// that can tell a worker the broker needs TLS without the operator having
 	// configured anything locally.
 	NATSTLS bool
@@ -121,8 +121,8 @@ func Browse(ctx context.Context, timeout time.Duration, logger *slog.Logger) (Re
 // on the developer's network cannot satisfy the browse and mask the timeout.
 func browseService(ctx context.Context, service string, timeout time.Duration, logger *slog.Logger) (Result, error) {
 	if timeout <= 0 {
-		// Belt-and-suspenders: the canonical default lives in
-		// workerconfig.DiscoveryConfig.MDNSTimeout (5 s). This guard protects
+		// The configured default lives in
+		// workerconfig.DiscoveryConfig.MDNSTimeout (5 s). This guard covers
 		// callers that invoke Browse directly with a zero timeout.
 		timeout = 5 * time.Second
 	}
@@ -138,7 +138,7 @@ func browseService(ctx context.Context, service string, timeout time.Duration, l
 		return Result{}, fmt.Errorf("discovery: create mDNS resolver: %w", err)
 	}
 
-	// entries is owned by the zeroconf resolver. Do NOT close it here; the
+	// entries is owned by the zeroconf resolver. Do not close it here; the
 	// resolver closes it when browseCtx is canceled (via defer cancelBrowse).
 	// Closing it a second time would panic. The buffer of 8 prevents the
 	// resolver's goroutines from blocking on a write after we return.
@@ -243,7 +243,7 @@ func entryToResult(entry *zeroconf.ServiceEntry) (Result, error) {
 // which cannot be dialed without a zone index, so a worker that picked it would
 // fail with "no route to host" having had a working address in the same entry.
 //
-// IPv4 is preferred simply because it is likelier to be reachable and to appear
+// IPv4 is preferred because it is likelier to be reachable and to appear
 // in a certificate's SANs.
 func advertisedIP(entry *zeroconf.ServiceEntry) string {
 	for _, ip := range entry.AddrIPv4 {
@@ -277,14 +277,14 @@ func usableIP(ip net.IP) bool {
 var lookupHost = net.DefaultResolver.LookupHost
 
 // resolveHost returns r with NATSURL rewritten to the advertised IP when the
-// advertised HOSTNAME cannot be resolved on this machine.
+// advertised hostname cannot be resolved on this machine.
 //
 // The server's default broker URL names the host its SRV record names:
 // "<hostname>.local". Resolving that needs an mDNS NSS module. macOS has one
 // built in; a headless Linux worker generally does not (no avahi/nss-mdns),
 // and there the worker would discover its server correctly and then fail to
-// dial it — "no servers available", which names neither the cause nor the fix.
-// The address was in the advertisement all along.
+// dial it ("no servers available", which names neither the cause nor the
+// fix), although the advertisement carries the address.
 //
 // Only a URL that names the SRV host is touched. Any other host was put there
 // by the operator (advertise_url, advertise_urls) and is used as written.
@@ -293,8 +293,8 @@ var lookupHost = net.DefaultResolver.LookupHost
 // certificate names hosts far more often than IPs: `sqi-server tls init` puts
 // the machine's hostname in the SANs, not its LAN address. Falling back to an
 // IP against a TLS broker therefore trades an unresolvable name for a
-// certificate mismatch — better, because that error says what is wrong, but
-// worth warning about.
+// certificate mismatch, whose error says what is wrong; the fallback logs a
+// warning.
 func resolveHost(ctx context.Context, r Result, logger *slog.Logger) Result {
 	if r.ipHost == "" || r.srvHost == "" {
 		return r // nothing to fall back to
@@ -373,7 +373,7 @@ func Resolve(ctx context.Context, explicitURL string, mdnsEnabled bool, timeout 
 		return Result{NATSURL: explicitURL}, nil
 	}
 
-	// MDNS disabled — log clearly and return actionable error.
+	// mDNS disabled: log the settings to change and return the sentinel.
 	if !mdnsEnabled {
 		logger.ErrorContext(ctx, "discovery: mDNS is disabled and no explicit NATS URL is configured; "+
 			"set nats.url in configuration or enable discovery.enable_mdns")

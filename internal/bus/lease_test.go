@@ -39,8 +39,8 @@ func TestLeaseRequestReply(t *testing.T) {
 	}
 }
 
-// TestLeaseRequestReply_WildcardTokenRoutes guards the queueless-worker
-// regression: a request on the wildcard token reaches the server's work.lease.>
+// TestLeaseRequestReply_WildcardTokenRoutes checks that a queueless worker's
+// request on the wildcard token reaches the server's work.lease.>
 // subscription, whereas an empty queue token ("work.lease.w1.") routes to no
 // responder.
 func TestLeaseRequestReply_WildcardTokenRoutes(t *testing.T) {
@@ -88,7 +88,7 @@ func TestSubscribeLease_IgnoresUnparsableSubject(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() }) //nolint:errcheck // test cleanup
 
-	// The pre-identity subject shape: a queue token with no worker before it.
+	// A queue token with no worker before it.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if _, err := worker.nc.RequestWithContext(ctx, SubjectWorkLeasePrefix+".q1", []byte("payload")); err == nil {

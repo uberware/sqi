@@ -47,17 +47,10 @@ func TestSaveSeed_WritesOwnerOnly(t *testing.T) {
 // assertSecretRestricted asserts that path holds key material only its owner
 // can read.
 //
-// The POSIX mode is still asserted where it is meaningful. On Windows it is
-// not: os.Chmod maps only to the read-only ATTRIBUTE and cannot deny read
-// access to anyone, so `perm == 0o600` is unsatisfiable there however well the
-// file is protected — fsutil.IsRestricted inspects the real DACL instead.
-// Asserting the POSIX mode on both platforms is what let the nkey seed ship
-// with no confidentiality on Windows while CI stayed green on Linux.
-//
-// The two sibling tests below still skip on Windows, and correctly so: they
-// are about os.WriteFile's create-only mode semantics and LoadSeed's
-// reader-side mode check, both of which are genuinely POSIX-specific
-// questions rather than this one, which is about the property itself.
+// The POSIX mode is asserted on POSIX only. On Windows os.Chmod maps only to
+// the read-only attribute and cannot deny read access to anyone, so
+// `perm == 0o600` is unsatisfiable there however well the file is protected;
+// fsutil.IsRestricted inspects the DACL instead.
 func assertSecretRestricted(t *testing.T, path string) {
 	t.Helper()
 	if runtime.GOOS != "windows" {
@@ -82,9 +75,8 @@ func assertSecretRestricted(t *testing.T, path string) {
 // TestSaveSeed_RestrictsAnExistingPermissiveFile does not skip on Windows:
 // through fsutil.WriteSecret, SaveSeed restricts on both platforms, so
 // overwriting a permissive leftover must produce a restricted file on both.
-// Only the way the "permissive leftover" is CONSTRUCTED differs, and
-// os.WriteFile at 0644 constructs it on either — a real mode on POSIX,
-// inherited directory access on Windows.
+// os.WriteFile at 0644 constructs the permissive leftover on either: a real
+// mode on POSIX, inherited directory access on Windows.
 func TestSaveSeed_RestrictsAnExistingPermissiveFile(t *testing.T) {
 	seed, _, err := brokerauth.GenerateSeed()
 	if err != nil {
@@ -191,15 +183,14 @@ func TestSaveSeed_NoTempFileSurvivesCreateFailure(t *testing.T) {
 	}
 }
 
-// TestLoadSeed_RejectsPermissiveSeed proves the reader-side guard on EVERY
+// TestLoadSeed_RejectsPermissiveSeed checks the reader-side guard on every
 // platform.
 //
-// It does not skip on Windows. Writing a restricted seed and then chmod'ing it
-// to 0644 is a POSIX-only move — os.Chmod on Windows toggles the read-only
-// attribute and cannot widen read access to anybody. Writing the seed with a
-// plain os.WriteFile constructs the bad state on both: 0644 on POSIX, and on
-// Windows a file that inherits its directory's access instead of carrying a
-// protected DACL — the state a seed written without fsutil.WriteSecret is in.
+// Chmod'ing a restricted seed to 0644 works only on POSIX: os.Chmod on Windows
+// toggles the read-only attribute and cannot widen read access. A plain
+// os.WriteFile constructs the bad state on both: 0644 on POSIX, and on Windows
+// a file that inherits its directory's access instead of carrying a protected
+// DACL.
 func TestLoadSeed_RejectsPermissiveSeed(t *testing.T) {
 	seed, _, err := brokerauth.GenerateSeed()
 	if err != nil {
@@ -207,8 +198,7 @@ func TestLoadSeed_RejectsPermissiveSeed(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "worker.nk")
 
-	// Deliberately NOT SaveSeed: this is the pre-fix on-disk state, a valid
-	// seed written with ordinary inherited access.
+	// Not SaveSeed: a valid seed written with ordinary inherited access.
 	if err := os.WriteFile(path, seed, 0o644); err != nil {
 		t.Fatalf("seed pre-write: %v", err)
 	}
@@ -222,7 +212,7 @@ func TestLoadSeed_RejectsPermissiveSeed(t *testing.T) {
 	}
 
 	// The same bytes must load once the file is properly restricted, so the
-	// rejection is about ACCESS and not about the seed itself.
+	// rejection is about access and not about the seed itself.
 	if err := brokerauth.SaveSeed(path, seed); err != nil {
 		t.Fatalf("SaveSeed: %v", err)
 	}

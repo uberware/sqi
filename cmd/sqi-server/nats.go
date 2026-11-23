@@ -64,7 +64,7 @@ and never leave the machine that runs sqi-server; sqi-accounts.conf holds only
 public keys and goes to the cluster.
 
 Existing files are never replaced without --force, because a regenerated key
-no longer matches the fragment already loaded by the cluster.`,
+does not match the fragment the cluster has already loaded.`,
 	Args: cobra.NoArgs,
 	RunE: runNATSExternalInit,
 }
@@ -173,7 +173,7 @@ func refuseExistingNATSFiles(dir string) error {
 		return nil
 	}
 	return errors.New(strings.Join(existing, ", ") + " already exist(s); pass --force to replace them " +
-		"(a regenerated key no longer matches the fragment your cluster already loaded)")
+		"(a regenerated key does not match the fragment your cluster has already loaded)")
 }
 
 // printNATSExternalInit reports the files written and prints what to do with

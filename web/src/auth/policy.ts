@@ -4,9 +4,9 @@
 // nav, gate routes, and hide mutating controls.
 //
 // The authorization matrix itself lives only on the server
-// (internal/auth/policy/policy.go); this file deliberately does NOT mirror it.
-// The names below are the permission vocabulary, kept as a union so call sites
-// are typo-checked at compile time — not a second copy of who-gets-what.
+// (internal/auth/policy/policy.go); this file does not mirror it. The names
+// below are the permission vocabulary, kept as a union so call sites are
+// typo-checked at compile time. They say nothing about who gets what.
 
 import type { Principal } from '@/api/types'
 
@@ -32,13 +32,12 @@ export type Permission =
 // PERMISSION_SET exists only for compile-time exhaustiveness and to give a
 // test something with a runtime representation to check: the Permission
 // union above has none. Record<Permission, true> requires an object literal
-// assigned to it to have EXACTLY one key per union member — add a member to
-// Permission without adding a matching key here (or vice versa) and this
-// file fails to typecheck, so the two cannot silently drift apart from each
-// other. policy.test.ts separately pins ALL_PERMISSIONS (derived from this)
-// against a hand-mirrored copy of internal/auth/policy/policy.go's grants, so
-// a permission added on the server without ever reaching this file also
-// fails a test, not just silently working with no client-side gate.
+// assigned to it to have exactly one key per union member: a member of
+// Permission without a matching key here (or the reverse) fails to typecheck.
+// policy.test.ts pins ALL_PERMISSIONS (derived from this) against a
+// hand-mirrored copy of the permission constants in
+// internal/auth/policy/policy.go, so a permission added on the server but not
+// here fails a test instead of working with no client-side gate.
 const PERMISSION_SET: Record<Permission, true> = {
   'jobs.read': true,
   'jobs.read.all': true,
@@ -73,9 +72,8 @@ export const ALL_PERMISSIONS: readonly Permission[] = (
  * server sends a Superuser principal whose permission list is the full set, so
  * gating vanishes when auth is off without the client deciding that for itself.
  *
- * A principal with no `permissions` array at all — a server predating the field
- * — denies rather than throwing, so a version skew degrades to a read-only-
- * looking UI instead of crashing the nav that renders it.
+ * A principal with no `permissions` array denies rather than throwing, so the
+ * UI degrades to read-only instead of crashing the nav that renders it.
  */
 export function can(principal: Principal | null, perm: Permission): boolean {
   if (!principal || !Array.isArray(principal.permissions)) return false

@@ -38,7 +38,7 @@ type User struct {
 	//
 	// This, not Username, is what an external login matches on. Matching on a
 	// name lets a recycled address inherit a departed user's account and lets
-	// a provider-side rename orphan one — both silently. Set at creation and
+	// a provider-side rename orphan one, both without notice. Set at creation and
 	// never changed: UpdateUser does not write it.
 	ExternalID string
 	Disabled   bool
@@ -63,7 +63,7 @@ type UserStore interface {
 	// ListUsers returns all users ordered by username.
 	ListUsers(ctx context.Context) ([]User, error)
 	// UpdateUser replaces display_name, role and disabled, and bumps
-	// UpdatedAt. Returns [ErrNotFound]. It is deliberately unguarded: it may
+	// UpdatedAt. Returns [ErrNotFound]. It has no last-admin guard: it may
 	// demote or disable the last admin, which directory sync relies on. Use
 	// [UserStore.UpdateUserKeepingAdmin] where the last admin must survive.
 	UpdateUser(ctx context.Context, u User) (User, error)

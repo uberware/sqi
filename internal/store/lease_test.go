@@ -426,7 +426,7 @@ func TestLeaseTask_PoolsVisitedInIDOrder(t *testing.T) {
 }
 
 // TestLeaseTask_SamePoolTwice pins the outcome of a request that names one
-// pool twice. SQLite visits the two claims in turn, so the second sees the
+// pool twice. The store visits the two claims in turn, so the second sees the
 // first: it is PoolFull when that fills the pool, and otherwise the unique
 // (attempt, pool) index refuses it. Either way nothing is written.
 func TestLeaseTask_SamePoolTwice(t *testing.T) {

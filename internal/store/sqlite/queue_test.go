@@ -114,7 +114,7 @@ func TestCreateQueue_RunAsGroupWithoutRunAsUser_Rejected(t *testing.T) {
 }
 
 // TestUpdateQueue_ClearingRunAsUserWhileGroupPreserved_Rejected proves the
-// invalid-combo check runs against the RESOLVED post-write values (after the
+// invalid-combo check runs against the resolved post-write values (after the
 // UPDATE statement's own CASE WHEN preserve substitution), not the raw
 // request: a PUT clearing run_as_user while omitting run_as_group (preserved
 // from an existing non-empty value) must be rejected, and the transaction

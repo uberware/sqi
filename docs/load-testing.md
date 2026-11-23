@@ -923,7 +923,8 @@ the measured window, from the end of warmup to the end of submissions. The
 latencies are the whole-run histograms. **Peak server CPU** is in cores, so
 2.3 on a 4-CPU host is 58% of the machine. It is the `sqi-server` process's
 CPU only: on a PostgreSQL row the database runs in its own process, which this
-column does not include. **Invariants** is how many of the six held. Every row
+column does not include. **Invariants** is how many held of the six checked
+at that commit, which did not have `submission-atomic`. Every row
 is a VALID run: the generator peaked at 0.41 cores or less of 12.
 
 ### Observations
@@ -1067,7 +1068,7 @@ after a restart's reclaim, leaving the re-leased attempt open as running.
 Attempt reconciliation closes it: the server reclaims an attempt a live
 worker's heartbeats stop reporting, after `scheduler.reconcile_grace` (default
 2 minutes). `chaos-churn-instant-restart`, whose churn restarts a worker at
-once, is a regression guard for it.
+once, tests this path.
 
 ---
 

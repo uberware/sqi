@@ -27,9 +27,9 @@ type ssoProvider struct {
 }
 
 type authProvidersResponse struct {
-	// Password reports whether username/password login is offered. Always true
-	// today; present so the web never has to infer it, and so a future
-	// SSO-only deployment is a config change rather than a web change.
+	// Password reports whether username/password login is offered. It is always
+	// true; it is sent so the web never has to infer it, and so offering an
+	// SSO-only deployment would need no web change.
 	Password bool `json:"password"`
 	// SSO is never nil: an empty JSON array is what the web iterates over, and
 	// a null would force every consumer to guard for it.

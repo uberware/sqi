@@ -11,9 +11,9 @@ import listStyles from './entityList.module.css'
 
 /**
  * Admin view of another user's API keys, gated on `apikeys.admin` by the
- * route. There is deliberately no create form: admins may list and revoke,
- * but minting a credential someone else is accountable for is a materially
- * different act, and the server exposes no route for it.
+ * route. There is no create form: admins may list and revoke, but minting a
+ * credential someone else is accountable for is a different act, and the
+ * server exposes no route for it.
  */
 export default function UserApiKeys() {
   const { id } = useParams<{ id: string }>()

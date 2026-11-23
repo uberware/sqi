@@ -54,12 +54,11 @@ func TestLoadOrCreateWorkerID_DataDirStaysPrivate(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits")
 	}
-	// A path that does NOT exist yet, so LoadOrCreateWorkerID's own
-	// os.MkdirAll(dataDir, 0o700) is what creates it — deliberately not
-	// t.TempDir() itself, which the testing package creates via
-	// os.Mkdir(dir, 0777) (masked by umask, typically 0755), an unrelated
-	// artifact of how `go test` lays out temp directories that would make
-	// this assertion depend on umask rather than on the function under test.
+	// A path that does not exist yet, so LoadOrCreateWorkerID's own
+	// os.MkdirAll(dataDir, 0o700) creates it. Not t.TempDir() itself, which
+	// the testing package creates via os.Mkdir(dir, 0777) (masked by umask,
+	// typically 0755), which would make this assertion depend on umask
+	// rather than on the function under test.
 	dir := filepath.Join(t.TempDir(), "workerdata")
 
 	if _, err := LoadOrCreateWorkerID(dir); err != nil {

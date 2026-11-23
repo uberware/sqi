@@ -7,152 +7,28 @@ import (
 	"testing"
 )
 
-// PROBE: .venv-oracle/bin/python -c "..." against openjd-model 0.11.1 -- an
-// initial command plus follow-ups run to resolve every row of funcsconv.go
-// (19 rows) and funcslist.go (13). Pasted verbatim as evidence: run something
-// first, decide against the spec text second.
+// TestOperationCount_ConversionAndListFunctions pins section 1.3.10's charges
+// for funcsconv.go's and funcslist.go's rows. The reasoning for each Cost is
+// beside the row; in brief:
 //
-// Initial command:
-//
-//	  1  len([1,2,3])
-//	  1  len("abc")
-//	  2  len(range_expr("1-100"))
-//	 11  range(10)
-//	102  list(range_expr("1-100"))
-//	  4  sum([1,2,3])
-//	  4  sorted([3,1,2])
-//	  5  flatten([[1],[2]])
-//	  4  unique([1,1,2])
-//	  2  any([True])
-//	  1  string([1,2,3])
-//	  1  int("5")
-//	  1  float("1.5")
-//	  1  range_expr("1-100")
-//
-// sum/min/max are funcsmath.go rows, out of scope here despite appearing in
-// the probe command; the other twelve resolve rows covered in this file.
-//
-// Follow-ups, len() and the other exemption-shaped conversions -- confirming
-// the exemption does not depend on WHAT is inside, and that int/float/bool
-// are flat regardless of input size (see the divergence-free rows below):
-//
-//	3  len(path("/a/b"))                (path()'s own construction cost
-//	                                      is declared in funcspath.go --
-//	                                      see the len(path(...)) case in
-//	                                      TestOperationCount_ConversionAndListFunctions)
-//	1  int(5)
-//	1  bool(True)  /  bool(1)  /  bool("true")
-//	7  float("1"+"2"*300)                isolates to 1: the 301-byte
-//	                                      string's own build cost (an
-//	                                      already-charged "*" then "+")
-//	                                      is 6, leaving float()
-//	                                      itself at 7-6=1
-//	5  int("0"*250+"5")                  isolates to 1 the same way
-//	6  string("a"*1000)                  isolates to 1 the same way
-//	                                      ("a"*1000 alone is 5)
-//	9  string(path("/a"*300))            isolates to 1 (path("/a"*300)
-//	                                      alone was not isolated further;
-//	                                      see the smaller pair below)
-//	3  string(path("/a"))                isolates to 1 (path("/a") alone
-//	                                      is 2, per path("/a/b")'s
-//	                                      sibling measurement above)
-//	2  string(range_expr("1-1000"))      isolates to 1 (range_expr(...)
-//	                                      alone is 1, regardless of the
-//	                                      range's span)
-//
-// list() and range_expr(list[int]) -- confirmed to charge; the second shows
-// up only by probing every row:
-//
-//	 4  range_expr([1,2,3])               1 (call) + 3 (elements)
-//	11  range_expr([1,2,3,4,5,6,7,8,9,10]) 1 (call) + 10 (elements):
-//	                                       proves it SCALES
-//
-// string(list) -- discriminating on size to prove the reference does NOT
-// scale, unlike every genuinely-charged row above:
-//
-//	1  string([1,2,3])
-//	1  string([1,2,3,4,5,6,7,8,9,10])     same count at 3x the length --
-//	                                      the reference does not charge
-//	                                      this row at all. sqi diverges
-//	                                      on purpose; see the Cost
-//	                                      comment on this row in
-//	                                      funcsconv.go and
-//	                                      TestOperationCount_StringOverListDivergesFromReference.
-//
-// flatten -- the three rows discriminated by making the outer count and the
-// flattened result count DIFFER, which a single-charge hypothesis cannot
-// explain but ArgElements{0}+ResultElements can:
-//
-//	 5  flatten([[1],[2]])          1 + 2 (outer) + 2 (result)
-//	 8  flatten([[1,2,3],[4,5]])    1 + 2 (outer) + 5 (result) -- outer
-//	                                and result now DIFFER, which is what
-//	                                proves both charges are real
-//	 4  flatten([[],[],[]])         1 + 3 (outer) + 0 (result)
-//	 4  flatten([1,2,3])            1 + 3 -- the FLAT row, a single
-//	                                charge despite Fn being a plain
-//	                                identity that iterates nothing itself
-//	11  flatten([1,2,3,4,5,6,7,8,9,10])  1 + 10, confirming the flat
-//	                                row's charge scales too
-//	 1  flatten([])                 the empty-list tie documented on the
-//	                                flatten table in funcslist.go always
-//	                                resolves to the FLAT row, never the
-//	                                list[nulltype] row -- see that row's
-//	                                own comment for why it is Cost{}
-//
-// sorted/reversed/unique -- confirmed linear, matching the reference exactly
-// (no short-circuit, unlike any/all below):
-//
-//	 4  sorted([3,1,2])                    1 + 3
-//	11  sorted([5,4,3,2,1,9,8,7,6,0])       1 + 10
-//	 6  reversed([1,2,3,4,5])               1 + 5
-//	 3  reversed([1,2])                     1 + 2
-//	 4  unique([1,1,2])                     1 + 3
-//	11  unique([1,1,1,1,1,1,1,1,1,1])       1 + 10
-//
-// unique's own two numbers above are the REFERENCE's, reproducible by
-// rerunning the same probe -- the reference charges unique() by input length
-// alone, with no accounting for its comparison count. sqi's own unique()
-// deliberately does not match them: a linear charge lets unique()'s real
-// O(n^2) valuesEqual scan run uncounted underneath it -- charged linearly,
-// unique(range(20000)) returns successfully in under 4 seconds with 4*10^8
-// comparisons actually performed and only ~20001 operations charged, nowhere
-// near the 10-million default limit. sqi charges one operation per
-// valuesEqual call instead (uniqueList, funcslist.go, FnCtx), which is what
-// makes the SAME call fail fast with errOperationLimit
-// (TestUnique_IsBoundedByTheOperationLimit). See
-// TestOperationCount_ConversionAndListFunctions's
-// unique() row below for sqi's own resulting count, and
-// test/oracle/baseline-ops.txt for the adjudication of this divergence
-// against the oracle.
-//
-// any/all -- the reference SHORT-CIRCUITS, so its own count does not equal
-// "1 + list length" once the answer is decided early; this is the one
-// divergence here that is NOT "the reference failed to charge
-// something", but "the reference charges LESS than a flat per-call Cost can
-// express" -- see the Cost comment on the any/all list[bool] rows in
-// funcslist.go and TestOperationCount_AnyAllDivergeOnShortCircuit. All six
-// lines below are the COMMA-SEPARATED LITERAL form, copy-paste-runnable as
-// printed. Deliberately NOT written with "*" list-repetition syntax --
-// "[True]*10" is itself a rule-2-charged operation (the OpMul row,
-// ArgElements/ResultElements over the repeated-out list), so a probe of
-// "any([True]*10)" measures any() PLUS the repetition's own charge baked
-// in (13, not 2) and "all([True]*10)" measures 22, not 11. The literal form
-// has no such extra charge to strip out, which is also why
-// TestOperationCount_AnyAllDivergeOnShortCircuit builds its lists directly
-// via a boolList helper rather than parsing a source string with "*" in it.
-//
-//	 1  any([])                             list[nulltype] row, trivial
-//	 6  any([False,False,False,False,False])          1 + 5, forced to
-//	                                                   scan all of them
-//	 2  any([True,True,True,True,True,True,True,True,True,True])
-//	                                                   1 + 1, stops at
-//	                                                   the FIRST element
-//	 1  all([])                             list[nulltype] row, trivial
-//	11  all([True,True,True,True,True,True,True,True,True,True])
-//	                                                   1 + 10, forced to
-//	                                                   scan all of them
-//	 2  all([False,False,False,False,False])          1 + 1, stops at
-//	                                                   the FIRST element
+//   - len() is exempt (rule 3's "simple lookups like len()"), whatever it is
+//     given; int(), float(), bool() and string() of a scalar cost a flat 1
+//     however long the input.
+//   - list(range_expr) and range_expr(list[int]) charge one per element.
+//   - string(list) charges the argument list's length (rule 2's general
+//     clause); see TestOperationCount_StringOverListDivergesFromReference.
+//   - flatten's nested row charges the outer length plus the result's
+//     (flatten([[1,2,3],[4,5]]) costs 1 + 2 + 5 = 8); its flat row charges the
+//     list's length once; flatten([]) resolves to the flat row.
+//   - sorted and reversed are linear in the input.
+//   - unique charges one operation per valuesEqual comparison (uniqueList,
+//     FnCtx), so its quadratic scan is bounded
+//     (TestUnique_IsBoundedByTheOperationLimit); the reference charges the
+//     input length only.
+//   - any and all charge the full list length, where the reference stops at
+//     the deciding element; see TestOperationCount_AnyAllDivergeOnShortCircuit.
+//     A list here is written as a literal: "[True]*10" would add the
+//     repetition's own rule-2 charge.
 func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 	tests := []struct {
 		src  string
@@ -166,7 +42,7 @@ func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 		{"len([1,2,3])", 1, "len is exempt from rule 2"},
 		{"len('abc')", 1, "len is exempt from rule 3"},
 		// len(range_expr(...)) is 2: one call for range_expr(), one for
-		// len(). len itself charges nothing, and in particular does NOT
+		// len(). len itself charges nothing, and in particular does not
 		// expand the range to count it -- see TestLenRangeExpr_DoesNotMaterialize.
 		{"len(range_expr('1-100'))", 2, "range_expr() call + len() call, no expansion"},
 		// path(string) declares Cost{ArgBytes: {0}} (funcspath.go), so
@@ -197,12 +73,12 @@ func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 		// exemption -- parsing compact range text is not proportional to the
 		// expanded count.
 		{"range_expr('1-100')", 1, "range_expr(string) parses compact text, not proportional to the expanded count"},
-		// range_expr(list[int]) DOES charge: it must scan the whole input
+		// range_expr(list[int]) does charge: it must scan the whole input
 		// list to sort and de-duplicate it.
 		{"range_expr([1,2,3])", 4, "range_expr(list) scans every input element (1 call + 3 elements)"},
 
 		// list() over a range_expr materializes every value: charged by the
-		// PRODUCED list's size.
+		// produced list's size.
 		{"list(range_expr('1-3'))", 5, "list() over range_expr: 1 call + 1 (range_expr() itself) + 3 produced elements"},
 
 		// range()'s three arities all charge by the produced list.
@@ -210,21 +86,21 @@ func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 		{"range(0, 5)", 6, "range(start, stop): 1 call + 5 produced elements"},
 		{"range(0, 10, 2)", 6, "range(start, stop, step): 1 call + 5 produced elements (0,2,4,6,8)"},
 
-		// sorted/reversed/unique all charge the input list's length, and the
-		// reference confirms the charge is exact (no short-circuit, unlike
-		// any/all).
+		// sorted/reversed charge the input list's length, as the reference
+		// does (no short-circuit, unlike any/all).
 		{"sorted([3,1,2])", 4, "sorted(): 1 call + 3 elements"},
 		{"reversed([1,2,3,4,5])", 6, "reversed(): 1 call + 5 elements"},
 		// unique() declares no Cost{ArgElements: {0}} at all -- it charges
 		// itself, per valuesEqual comparison, via FnCtx. For
 		// [1,1,2]: comparing the second 1 against the kept [1] costs 1
 		// comparison and finds a duplicate; comparing 2 against the kept [1]
-		// costs 1 more and finds none. 1 call + 2 comparisons = 3. This is a
-		// deliberate divergence from the reference's own linear count (4, see
-		// the probe comment above) -- baselined in test/oracle/baseline-ops.txt.
+		// costs 1 more and finds none. 1 call + 2 comparisons = 3. This
+		// diverges from the reference's linear count (4), as baselined in
+		// test/oracle/baseline-ops.txt.
 		{"unique([1,1,2])", 3, "unique(): 1 call + 2 comparisons (quadratic scan, charged per comparison, not per input element)"},
 
-		// flatten's three rows, discriminated in the probe comment above.
+		// flatten's three rows; the second case's outer and result counts
+		// differ.
 		{"flatten([[1],[2]])", 5, "flatten(nested): 1 call + 2 outer + 2 result"},
 		{"flatten([[1,2,3],[4,5]])", 8, "flatten(nested), outer and result now DIFFER (2 vs 5), proving both charges are real"},
 		{"flatten([[],[],[]])", 4, "flatten(nested), empty inners: 1 call + 3 outer + 0 result"},
@@ -241,9 +117,9 @@ func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 }
 
 // TestOperationCount_IntFloatBoolStayFlatOverBigInput isolates int(), float()
-// and string()'s own charge from the ALREADY-CHARGED cost of building a
+// and string()'s own charge from the already-charged cost of building a
 // large operand (string repetition/concatenation), using callFunction
-// directly so no other operator's charge is mixed in. A sub-256-byte probe
+// directly so no other operator's charge is mixed in. A sub-256-byte input
 // cannot discriminate "charges nothing" from "charges nothing because the
 // input happened to be small" (the same trap applies to string "+"). These
 // use inputs over 256 bytes and confirm the count does not move.
@@ -296,8 +172,8 @@ func TestOperationCount_IntFloatBoolStayFlatOverBigInput(t *testing.T) {
 // divergence: sqi charges string() over a list by its element count, the
 // reference does not, at any size. See the Cost comment on this row in
 // funcsconv.go for the spec-text justification (rule 2's general sentence,
-// not its "such as" enumeration, is what covers it) and the probe comment at
-// the top of this file for the reference's own flat measurements.
+// not its "such as" enumeration, is what covers it) and
+// test/oracle/baseline-ops.txt for how the reference's count differs.
 func TestOperationCount_StringOverListDivergesFromReference(t *testing.T) {
 	small := opsFor(t, "string([1,2,3])")
 	if small != 4 {
@@ -312,9 +188,9 @@ func TestOperationCount_StringOverListDivergesFromReference(t *testing.T) {
 	}
 }
 
-// TestOperationCount_AnyAllDivergeOnShortCircuit pins the OTHER kind of
+// TestOperationCount_AnyAllDivergeOnShortCircuit pins the other kind of
 // divergence: unlike every other row, the reference charges
-// LESS than sqi's flat "1 + list length" here, because it short-circuits.
+// less than sqi's flat "1 + list length" here, because it short-circuits.
 // sqi's declarative Cost mechanism charges arguments before Fn ever runs
 // (chargeArgs in callShape, ops.go), so it cannot know how many elements a
 // short-circuiting Fn will actually visit -- charging the full length is a
@@ -335,7 +211,7 @@ func TestOperationCount_AnyAllDivergeOnShortCircuit(t *testing.T) {
 	}
 
 	t.Run("any() charges the full length even when the first element is true", func(t *testing.T) {
-		// The reference short-circuits here and measures 2 (1 call + 1
+		// The reference short-circuits here and charges 2 (1 call + 1
 		// element visited). sqi's declarative Cost cannot see that the loop
 		// would stop after one element, so it charges the full list.
 		ec := testCtx()

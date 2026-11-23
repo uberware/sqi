@@ -4,14 +4,14 @@ package integration
 
 // preset_exec_test.go — Tier 3 of the preset validation harness.
 //
-// Runs every preset the registry claims Tier 3 for through a REAL server and a
-// REAL sqi-worker subprocess with the vendor command replaced by test/stubproc
+// Runs every preset the registry claims Tier 3 for through a real server and a
+// real sqi-worker subprocess with the vendor command replaced by test/stubproc
 // on PATH, so the whole lease → assign → execute → status → log path runs with
 // no license and no vendor install. Then it cross-checks the argv the stub
-// RECORDED against the computed Tier-1 golden: the goldens are only evidence
-// because something independent confirms them.
+// recorded against the computed Tier-1 golden, an independent check on the
+// goldens.
 //
-// NOT tagged `integration` — see preset_argv_test.go's header for why.
+// Not tagged `integration`; see preset_argv_test.go's header for why.
 
 import (
 	"encoding/json"
@@ -76,9 +76,9 @@ func newTier3Env(t *testing.T, names []string, extra ...string) tier3Env {
 
 // records decodes everything the stub wrote, in invocation order.
 //
-// A missing file means the stub was never invoked at all, which is a real
-// outcome rather than an I/O error: it is what a preset whose command the stub
-// failed to shadow looks like. Returning no records lets
+// A missing file means the stub was never invoked, an outcome rather than an
+// I/O error: it is what a preset whose command the stub failed to shadow looks
+// like. Returning no records lets
 // [assertInvocationCounts] say "ffmpeg invoked 0 times, fixture expects 3"
 // instead of failing on a confusing ENOENT.
 func (e tier3Env) records(t *testing.T) []stubrecord.Record {
@@ -147,8 +147,8 @@ func capturePresetCase(t *testing.T, entry presettest.Entry, c presettest.Case) 
 // (internal/api/jobs.go) expects. presettest.Case.Params holds bare parameter
 // names (they are also fed straight to openjd.SubmitOptions in
 // presettest.Capture, which has no such prefix), so this prefixing is required:
-// without it every param is silently dropped and a preset with a required
-// parameter like SceneFile fails submission outright.
+// without it every param is dropped and a preset with a required parameter
+// like SceneFile fails submission.
 //
 // This is a local, untagged equivalent of retry_test.go's submitJobWithParams:
 // that helper lives behind `//go:build integration`, so a preset_exec_test.go
@@ -179,8 +179,8 @@ func submitPresetJob(t *testing.T, ts *testServer, farmID, queueID, tmpl string,
 //
 // Each subtest records its outcome — including its skip — through
 // presettest.RecordOutcome, because the registry treats a skip on a platform it
-// lists in required_on as a FAILURE. A target that can pass while running
-// nothing is worse than no target.
+// lists in required_on as a failure, so a required case cannot pass having run
+// nothing.
 func TestPresetTier3(t *testing.T) {
 	reg, err := presettest.LoadRegistry()
 	if err != nil {
@@ -216,14 +216,12 @@ func TestPresetTier3(t *testing.T) {
 }
 
 // trackOutcome marks caseName as running in the registry's outcome sink, and
-// re-marks it as SKIPPED if anything below this call skips the test. Every
+// re-marks it as skipped if anything below this call skips the test. Every
 // test the registry names (tier 2 and tier 3) calls it first.
 //
 // A bare RecordOutcome records {Ran: true, Skipped: false} and leaves it
-// there, so a t.Skip from any helper -- the worker start, the stub build, the
-// toolchain check -- would read back as a successful run. That is the
-// registry's own failure mode ("a skipped test verifies nothing") reproduced
-// one level down.
+// there, so a t.Skip from any helper (the worker start, the stub build, the
+// toolchain check) would read back as a successful run.
 func trackOutcome(t *testing.T, caseName string) {
 	t.Helper()
 	presettest.RecordOutcome(caseName, false, "")
@@ -258,10 +256,10 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	snap := capturePresetCase(t, entry, c)
 	names := presettest.CommandNames(snap)
 	if c.StubInner {
-		// The onRun command cannot be shadowed on PATH -- an absolute path the
-		// worker execs directly, or a real shell we want to actually run. The
-		// commands it invokes INSIDE are what the stub intercepts, so install
-		// those instead; the fixture names them.
+		// The onRun command cannot be shadowed on PATH: it is an absolute path
+		// the worker execs directly, or a real shell that must run. The stub
+		// intercepts the commands it invokes, so install those instead; the
+		// fixture names them.
 		names = invocationNames(c)
 	}
 	if len(names) == 0 {
@@ -279,8 +277,8 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	startRealWorkerAnyOS(t, ts, farmID, queueID, env.env...)
 
 	jobID := submitPresetJob(t, ts, farmID, queueID, presetCaseTemplate(t, entry, c), c.Params)
-	// Job statuses are "completed"/"failed"/"canceled"/"paused" (store.JobStatus)
-	// -- "succeeded" is a TASK status, not a job one.
+	// Job statuses are "completed"/"failed"/"canceled"/"paused" (store.JobStatus);
+	// "succeeded" is a task status.
 	wantStatus := c.ExpectStatus
 	if wantStatus == "" {
 		wantStatus = presettest.StatusCompleted
@@ -307,9 +305,9 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	// Both assertions below are vacuous on an empty recording:
 	// assertInvocationCounts returns early when the fixture names no expected
 	// invocations (which Case's doc comment permits), and
-	// assertObservedMatchesComputed iterates OVER recs, so its body never runs.
+	// assertObservedMatchesComputed iterates over recs, so its body never runs.
 	// Without this guard such a case would pass having observed only that the job
-	// reached "completed" -- which the stub was installed precisely to go beyond.
+	// reached "completed".
 	if len(recs) == 0 {
 		t.Fatalf("stub recorded nothing; Tier 3 observed only that the job completed")
 	}
@@ -356,13 +354,13 @@ func stubEnvPairs(c presettest.Case) []string {
 // TestPresetOutcomes runs every fixture case that states an outcome
 // (expect_status) through a real server and a real worker, with the stub
 // behaving as the case's stub_env says, and asserts the job's status and
-// failure reason rather than an argv. It is how a preset's failure handling --
-// an SQI_LOG_CHECKS pattern, a wrapper's exit status -- is tested without the
-// vendor application: "the stub prints this line and exits 0, the job fails".
+// failure reason rather than an argv. It tests a preset's failure handling (an
+// SQI_LOG_CHECKS pattern, a wrapper's exit status) without the vendor
+// application: "the stub prints this line and exits 0, the job fails".
 //
-// Tier 1 still snapshots every one of these cases (assertRegistryCasesMatchFixture
+// Tier 1 also snapshots every one of these cases (assertRegistryCasesMatchFixture
 // requires the registry to claim them), so the argv an outcome case runs under
-// is as reviewed as any other.
+// has a golden like any other.
 func TestPresetOutcomes(t *testing.T) {
 	reg, err := presettest.LoadRegistry()
 	if err != nil {
@@ -385,8 +383,8 @@ func TestPresetOutcomes(t *testing.T) {
 			})
 		}
 	}
-	// A fixture rename or a loader regression that dropped the key would
-	// otherwise leave this test green having run nothing.
+	// A fixture rename or a loader change that dropped the key would otherwise
+	// leave this test green having run nothing.
 	if ran == 0 {
 		t.Fatal("no fixture case sets expect_status; TestPresetOutcomes ran nothing")
 	}
@@ -394,9 +392,9 @@ func TestPresetOutcomes(t *testing.T) {
 
 // TestTrackOutcome_ReportsAHelperSkip pins what a bare outcome record cannot
 // see: a case that records "running" and is then skipped by a helper
-// BELOW that record. Every execution-tier helper in this file can skip on its
-// own -- startRealWorkerWithOptions on an unsupported platform, newTier3Env
-// with no Go toolchain, buildWorkerBinary on a build failure -- and without the
+// below that record. Every execution-tier helper in this file can skip on its
+// own (startRealWorkerWithOptions on an unsupported platform, newTier3Env
+// with no Go toolchain, buildWorkerBinary on a build failure), and without the
 // Cleanup this drives, each of those reads back as a successful run and
 // TestZZPresetTierRegistrySatisfied treats the claim as verified.
 //
@@ -441,7 +439,7 @@ func invocationNames(c presettest.Case) []string {
 // preset's steps declare, read out of the parsed template.
 //
 // Parsed rather than pattern-matched over the template text: the same
-// requirements decide BOTH which capability tags the worker must advertise and
+// requirements decide both which capability tags the worker must advertise and
 // whether this host can run the preset at all, and a regexp cannot tell an
 // `anyOf` value from an `allOf` one or a requirement from a mention.
 func hostAttributeRequirements(t *testing.T, entry presettest.Entry) []openjd.AttributeRequirement {
@@ -467,10 +465,10 @@ func hostAttributeRequirements(t *testing.T, entry presettest.Entry) []openjd.At
 // workerTagEnv returns the SQI_WORKER_CAPABILITY_TAGS entry that satisfies this
 // preset's attr.worker.tag.* requirements, or nothing when it declares none.
 //
-// The tags are FORCED rather than left to detection: the stub happens to satisfy
-// a binary-on-PATH detector, but relying on that coincidence would make this
-// test's scheduling depend on it, and a detector change would surface here as a
-// job stuck in `pending` rather than as a failure in the detector's own test.
+// The tags are set explicitly rather than left to detection. The stub can
+// satisfy a binary-on-PATH detector, but then this test's scheduling would
+// depend on detection, and a detector change would surface here as a job stuck
+// in `pending` rather than as a failure in the detector's own test.
 //
 // They are spelled key=value with the value the requirement names, not as bare
 // names: a bare tag means "true" (capabilities.MergeManualTags), and a
@@ -510,23 +508,24 @@ func requiredAttributeValue(attr openjd.AttributeRequirement) string {
 // unsatisfiableOSFamily returns the attr.worker.os.family requirement this host
 // cannot meet, or "" when every such requirement is satisfiable here.
 //
-// Three registry entries reach it: script (linux|macos), and script-powershell
-// and ffmpeg-segment-transcode-powershell (windows). Each one's tier3
+// Every preset gated on attr.worker.os.family reaches it: script and
+// command-sequence (linux|macos), the After Effects and Unreal presets
+// (windows|macos), and the Windows-only ones such as script-powershell,
+// 3dsmax-render and ffmpeg-segment-transcode-powershell. Each one's tier3
 // required_on names only the platforms its gate admits, so the skip this
-// produces is never a registry failure. It exists because the requirement is a
-// property of the HOST that no test
-// environment can fake: the worker reports runtime.GOOS at
-// registration (capabilities.Detect) and the scheduler translates it
-// (internal/scheduler/matcher.go osFamily) — unlike a capability tag, which
-// SQI_WORKER_CAPABILITY_TAGS can assert. Without this gate such a preset's
-// job never leaves `pending` and the case fails on the 90s timeout with nothing
-// naming the cause.
+// produces is never a registry failure. The gate is needed because the
+// requirement is a property of the host that no test environment can fake: the
+// worker reports runtime.GOOS at registration (capabilities.Detect) and the
+// scheduler translates it (internal/scheduler/matcher.go osFamily), unlike a
+// capability tag, which SQI_WORKER_CAPABILITY_TAGS can assert. Without it such
+// a preset's job never leaves `pending` and the case fails on the 90s timeout
+// with nothing naming the cause.
 //
 // Both anyOf and allOf are inspected. os.family is single-valued per worker, so
 // an allOf listing anything other than exactly this host's family is
-// unsatisfiable here for the same reason; checking only anyOf would leave a
-// future allOf preset hanging for the whole 90s timeout instead of skipping with
-// a reason.
+// unsatisfiable here for the same reason; checking only anyOf would leave an
+// allOf preset hanging for the whole 90s timeout instead of skipping with a
+// reason.
 func unsatisfiableOSFamily(t *testing.T, entry presettest.Entry) string {
 	t.Helper()
 	host := hostOSFamily()
@@ -549,9 +548,9 @@ func unsatisfiableOSFamily(t *testing.T, entry presettest.Entry) string {
 // hostOSFamily mirrors internal/scheduler's unexported osFamily translation for
 // the platforms sqi builds for.
 //
-// Duplicated deliberately and kept to one line: package integration cannot
-// reach the scheduler's copy, and the only consequence of the two drifting apart
-// is a skip that should have run — never a pass that should have failed.
+// Duplicated because package integration cannot reach the scheduler's copy.
+// If the two drift apart, the only consequence is a skip that should have run,
+// never a pass that should have failed.
 func hostOSFamily() string {
 	if runtime.GOOS == "darwin" {
 		return "macos"
@@ -559,12 +558,12 @@ func hostOSFamily() string {
 	return runtime.GOOS
 }
 
-// assertInvocationCounts compares what the stub actually recorded against the
-// case fixture's expect_invocations.
+// assertInvocationCounts compares what the stub recorded against the case
+// fixture's expect_invocations.
 //
 // It prints both maps on failure: "ffmpeg ran 2 times" is not actionable
-// without knowing the fixture said 3, and a segmented preset that silently
-// transcodes one slice fewer is the bug this tier exists to catch.
+// without knowing the fixture said 3, and a segmented preset that transcodes
+// one slice fewer is one of the defects this tier catches.
 func assertInvocationCounts(t *testing.T, c presettest.Case, recs []stubrecord.Record) {
 	t.Helper()
 	if len(c.ExpectInvocations) == 0 {
@@ -588,33 +587,32 @@ func assertInvocationCounts(t *testing.T, c presettest.Case, recs []stubrecord.R
 }
 
 // assertObservedMatchesComputed is the cross-check: the set of argvs the stub
-// recorded must EQUAL the set the computed snapshot predicted — every observed
+// recorded must equal the set the computed snapshot predicted: every observed
 // argv has a computed counterpart, and every computed argv was observed.
 //
-// Both directions are asserted because each catches a different regression.
+// Both directions are asserted because each catches a different defect.
 // Containment alone (observed ⊆ computed) cannot see a phase-3 resolution that
-// collapses every task of a preset onto the SAME argv: the repeated argv is a
+// collapses every task of a preset onto the same argv: the repeated argv is a
 // member of the computed set, so containment holds, and assertInvocationCounts
 // only totals invocations per command name, never their distinctness. The
-// reverse direction (computed ⊆ observed) is what notices that two of a
-// three-chunk preset's bounds never appeared.
+// reverse direction (computed ⊆ observed) notices that two of a three-chunk
+// preset's bounds never appeared.
 //
-// Order is not asserted — tasks are leased concurrently, so the run order is
-// genuinely nondeterministic. Set equality is the real claim. It is a set, not
-// a multiset, so a failed task's retries (the same argv once per attempt) do
-// not matter; assertInvocationCounts is what counts attempts.
+// Order is not asserted: tasks are leased concurrently, so the run order is
+// nondeterministic. The comparison is over sets, not multisets, so a failed
+// task's retries (the same argv once per attempt) do not matter;
+// assertInvocationCounts counts attempts.
 //
 // subsetOnly relaxes the first direction for a job that failed: its tasks need
 // not all have run, so only "nothing observed that was not computed" is checked.
 //
-// Arguments that are absolute paths to one of this preset's MATERIALIZED
-// EMBEDDED FILES are folded to a placeholder first. They cannot be compared
+// Arguments that are absolute paths to one of this preset's materialized
+// embedded files are folded to a placeholder first. They cannot be compared
 // verbatim: such a path contains the session directory, which is a different
 // temp directory in presettest's computed pipeline than in the real worker's
 // session root. Comparing them raw would fail for every preset that delivers a
-// script or a concat list — python, houdini-rop-render, and both runnable
-// segment-transcode variants — i.e. the presets whose argv most needs
-// an independent witness.
+// script or a concat list, such as python, houdini-rop-render and both
+// runnable segment-transcode variants.
 func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs []stubrecord.Record, subsetOnly bool) {
 	t.Helper()
 	files := materializedFileNames(snap)
@@ -625,7 +623,7 @@ func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs 
 			// The real worker puts a detector's arguments for this OS in front of
 			// the job's own (silhouette's -nogui on Linux), for a command it found
 			// on PATH as it finds the stub. Model them from the shipped detector,
-			// so the observation is a witness that the worker really applied them.
+			// so the observation shows the worker applied them.
 			lead := append([]string{name}, detectorLeadingArgs(t, name)...)
 			computed = append(computed, append(lead, foldFilePaths(task.Args, files)...))
 		}
@@ -717,9 +715,9 @@ func foldQuotedFilePaths(s string, files map[string]bool) string {
 	return s
 }
 
-// TestPresetTier3_StubFailureSurfacesAsFailedTask proves the harness can see a
-// failure, not just a success: a non-zero vendor exit must reach the API as a
-// failed task carrying a failure_reason.
+// TestPresetTier3_StubFailureSurfacesAsFailedTask checks the harness can see a
+// failure: a non-zero vendor exit must reach the API as a failed task carrying
+// a failure_reason.
 func TestPresetTier3_StubFailureSurfacesAsFailedTask(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -736,7 +734,7 @@ func TestPresetTier3_StubFailureSurfacesAsFailedTask(t *testing.T) {
 	}
 }
 
-// TestPresetTier3_StubHangIsKilledByTimeout proves the timeout path: a vendor
+// TestPresetTier3_StubHangIsKilledByTimeout checks the timeout path: a vendor
 // command that never returns must not wedge the task forever.
 func TestPresetTier3_StubHangIsKilledByTimeout(t *testing.T) {
 	ts := startServer(t)
@@ -753,18 +751,18 @@ func TestPresetTier3_StubHangIsKilledByTimeout(t *testing.T) {
 
 // TestScriptPowerShell_ExitStatus pins the exit-status contract of
 // script-powershell, which no other tier can reach: Tier 3's stub always exits
-// 0, so only a REAL powershell.exe running a command that really fails (or
-// really succeeds noisily) can show the wrapper in the product's command.ps1
-// doing its job. Each row was first measured directly against powershell.exe;
-// every "failed" row except the plain cmdlet error exits 0 without the wrapper,
-// and the redirected-stderr row exits 1 under $ErrorActionPreference = 'Stop'.
+// 0, so only a real powershell.exe running a command that fails (or succeeds
+// while writing to stderr) can exercise the exit-status wrapper in the
+// product's command.ps1. Without the wrapper, every "failed" row except the
+// plain cmdlet error exits 0, and under $ErrorActionPreference = 'Stop' the
+// redirected-stderr row exits 1.
 //
 // One server and one worker serve every row: the jobs are all submitted up
 // front and then polled in turn, so the table costs one worker start-up rather
 // than one per row.
 //
-// Windows-only by construction -- the product declares attr.worker.os.family
-// anyOf ["windows"], so no other host can lease the task at all.
+// Windows-only: the product declares attr.worker.os.family anyOf ["windows"],
+// so no other host can lease the task.
 func TestScriptPowerShell_ExitStatus(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skipf("script-powershell requires a windows worker; GOOS=%s", runtime.GOOS)
@@ -783,8 +781,8 @@ func TestScriptPowerShell_ExitStatus(t *testing.T) {
 		// $LASTEXITCODE outlives the native command that set it, so a later
 		// successful cmdlet does not hide the failure.
 		{"native failure before a cmdlet", "cmd /c exit 3; Write-Host done", "failed"},
-		// The reason the command is a file and not -Command text: a trailing
-		// comment on a `;`-joined line swallows the wrapper and exits 0.
+		// Why the command is a file rather than -Command text: a trailing
+		// comment on a `;`-joined line would swallow the wrapper and exit 0.
 		{"trailing comment", "cmd /c exit 3 # trailing comment", "failed"},
 		{"comment on the last line", "cmd /c exit 3\n# done", "failed"},
 		{"thrown exception", "throw 'boom'; Write-Host after", "failed"},
@@ -794,7 +792,7 @@ func TestScriptPowerShell_ExitStatus(t *testing.T) {
 		// $?, which must not fail a command that exited 0.
 		{"redirected native stderr", `cmd /c "echo progress 1>&2" 2>&1`, "completed"},
 		// command.ps1 opens with a UTF-8 BOM; without it 5.1 reads the file in
-		// the ANSI code page and this string is no longer eight characters.
+		// the ANSI code page and this string is not eight characters.
 		{"non-ascii text", "if ('Überwäre'.Length -ne 8) { exit 9 }", "completed"},
 		{"plain success", "Write-Host ok", "completed"},
 	}

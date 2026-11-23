@@ -5,8 +5,8 @@
 :class:`SqiClient` owns an :class:`httpx.Client`, applies default headers, joins
 request paths under the ``/api/v1`` prefix, maps non-2xx responses to typed
 errors, retries idempotent requests with backoff, and exposes health probes.
-Resource-specific methods (jobs, tasks, workers, ...) are layered on top in later
-sections; this module provides the shared request machinery they call.
+The resource-specific methods (jobs, tasks, workers, ...) further down call this
+shared request machinery.
 """
 
 from __future__ import annotations
@@ -1655,10 +1655,9 @@ class SqiClient:
                 The wire field is ``name``; this parameter is named ``job_name``
                 to avoid shadowing the positional product ``name`` argument.
             owner: Job owner; see :meth:`submit_job` for the permission rules.
-            submitter: Ignored (deprecated). The server derives the
-                submitter from the authenticated credential and discards any
-                client value. Retained so existing callers keep working; it will
-                be removed in a future major release.
+            submitter: Optional submitter label. When the server authenticates
+                the caller it records the caller's username instead and
+                discards this value; with auth disabled it is stored as given.
             priority, project: Optional job metadata.
             parameters: Job-parameter values (name → string).
             max_attempts, retry_delay_seconds, failure_limit: Per-job retry

@@ -75,18 +75,18 @@ func TestDeadline_ZeroMeansNoDeadline(t *testing.T) {
 }
 
 // TestDeadline_TripsAnExpressionTooShortToReachTheInterval pins the
-// first-charge check, which is NOT a rounding detail and is the one behavior
+// first-charge check, which is not a rounding detail and is the one behavior
 // here that the four contract tests cannot see.
 //
-// deadlineCheckInterval counts charge CALLS, and section 1.3.10 prices 256
+// deadlineCheckInterval counts charge calls, and section 1.3.10 prices 256
 // bytes at one operation — so byte-heavy work is charged in a handful of bulk
-// calls, not many small ones. Measured with an every-1024-charges-only check,
-// every expression below read the clock ZERO times and ran to completion with
-// an already-expired deadline, including '("x" * 900000).title()', the ~57 ms
-// case the deadline exists for.
+// calls, not many small ones. With an every-1024-charges-only check, every
+// expression below would read the clock zero times and run to completion with
+// an already-expired deadline, including '("x" * 900000).title()', the
+// CPU-heavy case the deadline exists for.
 //
 // That matters beyond one expression: a template is walked position by
-// position, each position a separate evaluation with a FRESH meter, so without
+// position, each position a separate evaluation with a fresh meter, so without
 // this a template built from small expressions could run arbitrarily far past
 // an expired deadline while every meter sat below the interval forever.
 func TestDeadline_TripsAnExpressionTooShortToReachTheInterval(t *testing.T) {
@@ -121,7 +121,7 @@ func TestDeadline_TripsAnExpressionTooShortToReachTheInterval(t *testing.T) {
 	}
 }
 
-// TestDeadline_ClockIsSampledNotReadOnEveryCharge pins that charge SAMPLES the
+// TestDeadline_ClockIsSampledNotReadOnEveryCharge pins that charge samples the
 // clock rather than reading it every time, because every other test in this
 // file passes unchanged under an implementation that reads it on every single
 // charge.
@@ -134,13 +134,13 @@ func TestDeadline_TripsAnExpressionTooShortToReachTheInterval(t *testing.T) {
 // test fails, find out why the clock is being read this often rather than
 // relaxing the bound.
 //
-// It asserts on the SURVIVING path — an ample deadline, so both halves run to
+// It asserts on the surviving path — an ample deadline, so both halves run to
 // completion — because that is where the cost is paid. An evaluation that
 // trips reads the clock once and stops.
 func TestDeadline_ClockIsSampledNotReadOnEveryCharge(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 
-	// Part one drives the meter directly, so both counts are EXACT: charges are
+	// Part one drives the meter directly, so both counts are exact: charges are
 	// counted by the loop and reads by the clock.
 	t.Run("meter", func(t *testing.T) {
 		const charges = 100_000
@@ -193,7 +193,7 @@ func TestDeadline_ClockIsSampledNotReadOnEveryCharge(t *testing.T) {
 }
 
 // TestDeadline_ReserveRefusesBeforeMaterializing pins the check in
-// meter.reserve, which is the one that bounds the SIZE of the window rather
+// meter.reserve, which is the one that bounds the size of the window rather
 // than its length in charges.
 //
 // reserve is called with a count in hand immediately before a large
@@ -201,7 +201,7 @@ func TestDeadline_ClockIsSampledNotReadOnEveryCharge(t *testing.T) {
 // iterable, a range_expr coercion. Checking the deadline there is what turns
 // "the biggest construction in the sampling window runs to completion and is
 // caught on the charge after it" into "it never starts". The expressions below
-// are chosen so that the FIRST metered thing each does is a reservation, and
+// are chosen so that the first metered thing each does is a reservation, and
 // each would otherwise build tens of megabytes before any charge noticed.
 func TestDeadline_ReserveRefusesBeforeMaterializing(t *testing.T) {
 	for _, src := range []string{
@@ -227,7 +227,7 @@ func TestDeadline_ReserveRefusesBeforeMaterializing(t *testing.T) {
 }
 
 // TestDeadline_OperationLimitBeatsTheDeadline pins the precedence in charge and
-// in reserve: when ONE call breaches both bounds, it reports the operation
+// in reserve: when one call breaches both bounds, it reports the operation
 // limit.
 //
 // The order is a deliberate design property, not an accident of statement
@@ -239,7 +239,7 @@ func TestDeadline_ReserveRefusesBeforeMaterializing(t *testing.T) {
 //
 // It drives the meter directly rather than an expression, because "one call
 // breaches both" is not something an expression can be relied on to arrange:
-// the deadline is checked on the FIRST charge, and the first charge of almost
+// the deadline is checked on the first charge, and the first charge of almost
 // every expression is a single rule-1 operation that no realistic operation
 // limit refuses. The precedence would then never be exercised at all, and a
 // test written against an expression would pass while asserting nothing.
@@ -277,7 +277,7 @@ func TestDeadline_OperationLimitBeatsTheDeadline(t *testing.T) {
 }
 
 // TestDeadline_MessageDoesNotRepeatItself pins the rendered text, because the
-// error surfaces verbatim in an HTTP response body. The wrap must ADD
+// error surfaces verbatim in an HTTP response body. The wrap must add
 // information (how far past the deadline the check landed), not restate
 // ErrDeadlineExceeded's own sentence, as "expr: evaluation deadline exceeded:
 // evaluation exceeded its wall-clock deadline" would.
@@ -304,7 +304,7 @@ func TestDeadline_MessageDoesNotRepeatItself(t *testing.T) {
 }
 
 // TestDeadline_TripsWithRealClock is the only test in this package that runs
-// PRODUCTION'S OWN CLOCK.
+// production's own clock.
 //
 // Every other test here passes WithClock, so every other test exercises the
 // m.now != nil branch of deadlinePassed and none of them ever reaches the

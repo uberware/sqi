@@ -39,7 +39,7 @@ type PathTranslation struct {
 }
 
 // DefaultPathDeliveries is the implicit delivery set used when the extension is
-// not declared: today's automatic behavior (swap in place + translation file).
+// not declared: swap in place plus a translation file.
 func DefaultPathDeliveries() []PathDelivery {
 	return []PathDelivery{
 		{Kind: DeliverySwapInPlace},

@@ -4,17 +4,17 @@
 
 package integration
 
-// End-to-end coverage of the mDNS discovery path over REAL multicast.
+// End-to-end coverage of the mDNS discovery path over real multicast.
 //
 // Everything else in this suite sets DiscoveryEnabled: false, and the unit
 // tests cover the two halves separately: the server's advertised TXT records
 // and the worker's parsing of them. These tests join the halves, in
-// particular for the TLS signals: a server advertising a tls:// nats_url achieves
-// nothing unless the worker reads it.
+// particular for the TLS signals: a server advertising a tls:// nats_url has no
+// effect unless the worker reads it.
 //
-// These tests use real multicast on a real interface. See multicast_test.go
-// for the preflight and for why a foreign sqi-server on the network makes the
-// real-binary test refuse to run.
+// These tests use real multicast, advertised on loopback only. See
+// multicast_test.go for the preflight and for why a foreign sqi-server on the
+// network makes these tests refuse to run.
 
 import (
 	"context"
@@ -48,7 +48,7 @@ func advertise(t *testing.T, httpTLS, natsTLS bool) string {
 		NATSURL:      natsURL,
 		HTTPTLS:      httpTLS,
 		// Loopback only: a test must not announce a service on the network it
-		// happens to be running on.
+		// runs on.
 		Interfaces: loopbackIfaces(),
 	}, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -79,8 +79,8 @@ func browseOnce(t *testing.T) workerdiscovery.Result {
 // carries no address. The responder is given its addresses explicitly for
 // this: given none, zeroconf takes a reply's addresses from the interface the
 // query arrived on, which the network stack does not report on Windows, so
-// every reply there would carry none. On Linux and macOS this pins the
-// behavior; only a Windows run can show the failure it guards against.
+// every reply there would carry none. Only a Windows run can show that
+// failure.
 func TestDiscovery_FoundAfterTheAnnouncements(t *testing.T) {
 	requireMulticast(t)
 	noForeignServer(t)
@@ -116,8 +116,8 @@ func TestDiscovery_TLSRecordsCrossTheWire(t *testing.T) {
 			instance := advertise(t, tt.httpTLS, tt.natsTLS)
 			found := browseOnce(t)
 
-			// Guard against having discovered something else entirely: a
-			// wrong-server result would otherwise look like a parsing bug.
+			// A result from another server would otherwise look like a
+			// parsing error.
 			if found.InstanceName != instance {
 				t.Fatalf("discovered %q, want this test's %q", found.InstanceName, instance)
 			}
@@ -188,8 +188,8 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 	// test-discovery` or the CI job), never as part of `make
 	// test-integration`.
 	//
-	// It cannot avoid the listener. The advertisement carries this machine's
-	// hostname (entryToResult prefers entry.HostName), so the worker dials that
+	// It needs that listener. The advertisement carries this machine's
+	// hostname (entryToResult keeps entry.HostName), so the worker can dial that
 	// name whatever interface the announcement went out on, and a
 	// loopback-bound broker is unreachable there: bound to 127.0.0.1, the
 	// worker discovers the server and then fails with "no servers
@@ -202,7 +202,7 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 	noForeignServer(t)
 
 	// Two consequences of the advertisement carrying a hostname, both of them
-	// what a real deployment does anyway:
+	// what a real deployment does:
 	//
 	//  1. The broker must bind all interfaces, per the note above.
 	//  2. The certificate must cover the name or the address the worker ends up
@@ -231,7 +231,6 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 		cfg.NATS.Auth.EnrollmentEndpointEnabled = true
 		// Reachable at the advertised hostname, per (1) above.
 		cfg.NATS.Embedded.Addr = strings.Replace(cfg.NATS.Embedded.Addr, "127.0.0.1", "0.0.0.0", 1)
-		// Advertise, so the worker can find the server.
 		cfg.DiscoveryEnabled = true
 		cfg.DiscoveryInstanceName = instance
 		cfg.DiscoveryInterfaces = loopbackIfaces()
@@ -241,7 +240,7 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 	caFile := filepath.Join(dir, "ca.crt")
 
 	// No SQI_WORKER_NATS_URL: the worker must find the broker over mDNS, and
-	// the scheme of the discovered nats_url is what tells it the transport.
+	// the scheme of the discovered nats_url tells it the transport.
 	startRealWorkerNoWait(t, ts, farmID, queueID, nil, []string{
 		// Blank out the harness default so the worker has no URL to fall back
 		// on: applyNATSEnv ignores an empty value, so nats.url stays unset and

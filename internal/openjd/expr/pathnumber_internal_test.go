@@ -14,8 +14,8 @@ import (
 // expectation was produced by the reference implementation, and every one
 // matches the specification's own table.
 //
-// The rule that makes this non-obvious: the scan runs from the END of the STEM
-// and replaces the LAST match. That is what preserves a shot number —
+// The rule that makes this non-obvious: the scan runs from the end of the stem
+// and replaces the last match. That is what preserves a shot number —
 // "shot01_####" replaces only the hashes — and what makes "a12_b34" replace the
 // "34" rather than the "12".
 func TestWithNumber(t *testing.T) {
@@ -37,7 +37,7 @@ func TestWithNumber(t *testing.T) {
 		{`with_number('shot_003.exr', 72)`, "shot_072.exr"},
 		// mixed_hash_after_printf / mixed_digits_after_printf from the
 		// upstream conformance corpus: with two candidates in the stem, the
-		// one that starts LATER wins, regardless of which pattern kind
+		// one that starts later wins, regardless of which pattern kind
 		// either one is.
 		{`path('/out/f_%d_abc_###.exr').with_number(42)`, "/out/f_%d_abc_042.exr"},
 		{`path('/out/file_%04d_003.exr').with_number(72)`, "/out/file_%04d_072.exr"},
@@ -47,17 +47,16 @@ func TestWithNumber(t *testing.T) {
 		// reference.
 		{`path('/r/...').with_number(3)`, "/r/..._0003"},
 		// A DIGIT RUN INSIDE THE SUFFIX is not a candidate, because the scan
-		// runs over the STEM alone — the case pathnumber.go's own doc comment
+		// runs over the stem alone — the case pathnumber.go's own doc comment
 		// names ("file.v2.003.exr"). The .exr row alone does not pin it:
-		// scanning the whole NAME instead of the stem gives the identical
+		// scanning the whole name instead of the stem gives the identical
 		// answer there, since ".exr" holds no digits at all. The .mp4 row is
 		// the one that separates the two readings — scanning the name would
 		// take the "4" as the last candidate and answer "render.0001.mp72",
-		// destroying the container extension. Both values measured against the
-		// reference at openjd-model 0.11.1, which agrees on both.
+		// destroying the container extension. The reference agrees on both.
 		{`with_number('file.v2.003.exr', 7)`, "file.v2.007.exr"},
 		{`path('/r/render.0001.mp4').with_number(72)`, "/r/render.0072.mp4"},
-		// Several suffixes: splitStemSuffix cuts at the LAST dot only, so
+		// Several suffixes: splitStemSuffix cuts at the last dot only, so
 		// "a.tar.gz" has stem "a.tar" (no digit pattern in it) and suffix
 		// ".gz" — the no-pattern fallback applies to the stem, not the whole
 		// name. Measured against the reference.
@@ -103,7 +102,7 @@ func TestWithNumber_ReturnTypes(t *testing.T) {
 	}
 }
 
-// TestWithNumber_PaddingCap checks the bound AT the limit and one past it, not
+// TestWithNumber_PaddingCap checks the bound at the limit and one past it, not
 // near it: a defect such as a float-to-int narrowing shows only at the bound.
 func TestWithNumber_PaddingCap(t *testing.T) {
 	wide32 := `path('/r/f_%032d.exr').with_number(1)`
@@ -129,7 +128,7 @@ func TestWithNumber_PaddingCap(t *testing.T) {
 // maxNumberPadding) surfaces as errPaddingTooWide, not a raw
 // *strconv.NumError from printfReplacement. A width that doesn't fit in an int
 // at all necessarily exceeds 32, so folding the overflow into the same
-// sentinel is correct, not just convenient. The reference ACCEPTS this input
+// sentinel is correct, not just convenient. The reference accepts this input
 // with no padding at all (with_number("f_%0999999999999999999999d", 1) is
 // "f_1" there) — a second reference defect against RFC 0006 line 831's
 // "wider printf or hash patterns are an error" rule, in the same family as
@@ -148,16 +147,16 @@ func TestWithNumber_PaddingCap_WidthOverflowsInt(t *testing.T) {
 
 // TestWithNumber_HashThenDigits pins that a hash run immediately followed by
 // a digit run (or a non-digit, non-hash
-// character) is TWO independent candidates, and withNumber replaces only the
-// LAST one — never everything from the last match to the end of the stem.
+// character) is two independent candidates, and withNumber replaces only the
+// last one — never everything from the last match to the end of the stem.
 //
 // RFC 0006 line 822 says with_number "searches the filename stem from the
 // end for these patterns and replaces the last match found" — a match, not a
 // suffix of the stem starting at a match. The reference implementation
-// (openjd-model 0.11.1) disagrees: it lets a hash run swallow the rest of the
-// stem, which for "##a3" DESTROYS the literal "a" that was in the input
+// disagrees: it lets a hash run swallow the rest of the
+// stem, which for "##a3" destroys the literal "a" that was in the input
 // (reference: "07"; sqi, matching the spec text: "##a7"). The reference is
-// wrong here, sqi is not, so every "sqi" value below is pinned as CORRECT, not
+// wrong here, sqi is not, so every "sqi" value below is pinned as correct, not
 // as a known divergence to eventually match. Each row that disagrees with the
 // reference is baselined in test/oracle/baseline.txt; the "reference"
 // comments give its value.
@@ -180,18 +179,18 @@ func TestWithNumber_HashThenDigits(t *testing.T) {
 		// same rule — only the trailing digit run is the last candidate.
 		// reference: "a007"
 		{`with_number('a###5', 9)`, "a###9"},
-		// Digit run, then hash run, then digit run: the LAST digit run is
+		// Digit run, then hash run, then digit run: the last digit run is
 		// the last candidate; the leading digit run and the hash run are
 		// both untouched.
 		// reference: "1207"
 		{`with_number('12##34', 7)`, "12##07"},
 		// Hash run immediately followed by a non-digit, non-hash character
-		// with NO further digit run after it: the hash run itself is then
+		// with no further digit run after it: the hash run itself is then
 		// the last (and only) candidate, same as "shot_####" with no
 		// trailing digits.
 		{`with_number('##a3', 7)`, "##a7"},
 		{`with_number('##a', 7)`, "07a"},
-		// Cases where sqi and the reference already AGREE, included so a
+		// Cases where sqi and the reference already agree, included so a
 		// later change that "fixes" sqi toward the reference on the
 		// disagreeing rows above fails loudly here too if it goes too far.
 		{`with_number('##b##', 7)`, "##b07"},
@@ -214,90 +213,64 @@ func TestWithNumber_HashThenDigits(t *testing.T) {
 }
 
 // TestWithNumber_ScanIsAllocationBounded pins that withNumber, which needs
-// only the LAST candidate in the stem, does not materialize EVERY candidate
+// only the last candidate in the stem, does not materialize every candidate
 // first (numberPattern.FindAllStringIndex(stem, -1)) to get it. The "-1" is
 // unbounded, the rule funcsre.go's reSub states as "an unbounded -1 here
 // would let a zero-width pattern enumerate maxStringBytes+1 matches before
-// anything downstream could object". Measured with the enumerating form:
-// with_number('#a' * 5000000, 7), every operand inside maxStringBytes,
-// allocated 794 MB to produce a 10 MB result.
+// anything downstream could object".
 //
-// WHAT IS ASSERTED, AND WHY IT IS THE ONLY THING THAT CAN BE. The invariant is
-// "no candidate but the current best is still reachable when the last one is
-// chosen", so the assertion is on LIVE HEAP across the call — with the
-// collector's pace forced for the duration, which is what makes it a
-// measurement of retention rather than of the pacer. Two cheaper-looking
-// metrics were measured and rejected, each for a concrete reason:
+// The invariant is "no candidate but the current best is still reachable when
+// the last one is chosen", so the assertion is on live heap across the call,
+// with the collector's pace forced for the duration so it reads retention
+// rather than the pacer. Two cheaper metrics cannot separate the forms:
 //
-//   - ALLOCATION COUNT is blind to the defect. Both forms enter the regexp
-//     engine once per candidate, so their malloc counts land within 0.02% of
-//     each other (1,000,192 against 1,000,045 for a million candidates). A
+//   - allocation count: both forms enter the regexp engine once per
+//     candidate, so their malloc counts are nearly equal and a
 //     testing.AllocsPerRun assertion passes either way.
 //
-//   - CUMULATIVE BYTES (MemStats.TotalAlloc) separates them only in a plain
-//     build — 160 MB against 16 MB — and NOT under the race detector, whose
-//     per-call instrumentation swamps the difference (1.71 GB against 1.63 GB).
-//     make test and make ci run -race by default. NORMALIZING IT AS A RATIO
-//     AGAINST A ONE-CANDIDATE STEM OF THE SAME LENGTH DOES NOT RESCUE IT, and
-//     that was measured rather than assumed: under -race the ratios come out
-//     47,000 for the scan against 43,000 for the enumerating form, i.e.
-//     INVERTED as well as indistinguishable, because the per-call constant the
-//     ratio is meant to cancel does not appear in a two-call baseline at all.
+//   - cumulative bytes (MemStats.TotalAlloc): the race detector's per-call
+//     instrumentation swamps the difference, and make test and make ci run
+//     -race by default. Normalizing it against a one-candidate stem of the
+//     same length does not help, because the per-call constant the ratio is
+//     meant to cancel does not appear in a two-call baseline.
 //
-//   - LIVE HEAP does separate them, but only once the collector is taken out of
-//     the measurement. Left to the default pacer it measures garbage
-//     accumulated since whichever collection happened to fire mid-call, which
-//     is a function of GOGC, GOMEMLIMIT, the live heap left by preceding tests
-//     and the pacer's own state — under -race that put a correct
-//     implementation at 76% of a candidate bound, and GOGC=off failed
-//     outright, because the scanning form still allocates ~377 MB
-//     cumulatively for this input under -race even though it retains almost
-//     none of it. debug.SetGCPercent below overrides the environment for the
-//     measurement window and restores it afterwards, so collection runs often
-//     enough that transient garbage never accumulates and what remains is what
-//     is genuinely REACHABLE. The enumerating form's match list is reachable by
-//     construction and no pacer setting can collect it.
+//   - live heap separates them once the collector is taken out of the
+//     reading. Left to the default pacer it reads garbage accumulated since
+//     whichever collection fired mid-call, which depends on GOGC, GOMEMLIMIT,
+//     the live heap left by preceding tests and the pacer's state.
+//     debug.SetGCPercent below overrides the environment for the measurement
+//     window and restores it afterwards, so collection runs often enough that
+//     transient garbage never accumulates and what remains is reachable. The
+//     enumerating form's match list is reachable by construction and no pacer
+//     setting can collect it.
 //
-// MEASURED SPREAD at the 400,000 candidates below, on one development machine.
-// SCANNING, 90 runs: 25 isolated under -race (max 1,956,192), 20 plain
-// (max 1,125,296), 20 under -cover (max 1,173,456), 10 whole-package runs in
-// the make ci shape, -race -cover, so preceding tests' live heap is present
-// (max 1,810,496), and 5 each under GOGC=off, GOGC=400 and GOGC=1000 to show
-// the forced pace neutralizes a hostile environment (maxima 1,806,064,
-// 1,738,448, 1,475,336). Worst case over all 90: 1.96 MB. ENUMERATING, 32
-// runs: 8 each under plain (min 32,577,304), -race (min 14,501,312), -cover (min
-// 32,577,288) and -race GOGC=off (min 14,245,016); it went RED in every one of
-// those modes and in the whole-package make ci shape. Best case over all 32:
-// 14.2 MB.
-//
-// The bound sits between them at 6 MB — 3.07x of room on the passing side,
-// 2.37x on the failing side, deliberately biased toward the passing side
-// because a test that fails on correct code is worse than the gap it closes.
-// The measured value and the live heap it was taken against are logged on every
-// run, so a future engine or runtime change moving either side shows up before
-// it becomes a flake or a false green.
+// At the 400,000 candidates below, the scanning form retains under 2 MB in
+// every build mode (plain, -race, -cover, and under hostile GOGC settings),
+// and the enumerating form retains over 14 MB. The 6 MB bound sits between
+// them, biased toward the passing side because a test that fails on correct
+// code is worse than the gap it closes. The retained figure and the live heap
+// it was taken against are logged on every run, so an engine or runtime change
+// moving either side shows up before it becomes a flake or a false green.
 func TestWithNumber_ScanIsAllocationBounded(t *testing.T) {
-	// 400,000 candidates rather than 200,000. Raising the count does NOT
-	// widen the RATIO: measured separation is 7.3x here against 7.7x at
-	// 200,000, because under -race the enumerating form's retained reading is
-	// itself affected by collection timing and grew only 18% when the candidate
-	// count doubled. What the larger count buys is a bigger ABSOLUTE gap
-	// (12.3 MB against 10.7 MB) so the bound can sit further from both sides in
-	// bytes, at a cost of about one extra second under -race.
+	// 400,000 candidates rather than 200,000. Raising the count does not
+	// widen the ratio between the two forms, because under -race the
+	// enumerating form's retained reading is itself affected by collection
+	// timing; what the larger count buys is a bigger absolute gap, so the
+	// bound can sit further from both sides in bytes.
 	const pairs = 400_000
 	// gcPercentDuringMeasurement is low enough that collection is frequent
 	// relative to what one call allocates, so HeapAlloc tracks the live set.
 	// It is not zero-cost — it is why the -race run takes a few seconds — and
 	// it is the price of an assertion that does not depend on the pacer.
 	const gcPercentDuringMeasurement = 10
-	// maxRetainedBytes is chosen from the measurements in the doc comment
-	// above, not by guessing, and is stated absolutely rather than as a
+	// maxRetainedBytes sits between the two forms' readings in the doc comment
+	// above, and is stated absolutely rather than as a
 	// multiple of the input because the two sides scale differently.
 	const maxRetainedBytes = 6_000_000
 
 	name := strings.Repeat("#a", pairs)
 
-	// Correctness first: only the LAST candidate — the final "#", every other
+	// Correctness first: only the last candidate — the final "#", every other
 	// one being separated from it by an "a" — is replaced.
 	got, err := withNumber(name, 7)
 	if err != nil {
@@ -319,11 +292,11 @@ func TestWithNumber_ScanIsAllocationBounded(t *testing.T) {
 		t.Fatalf("withNumber failed: %v", err)
 	}
 	// The result must stay reachable across the reading, so that what is
-	// measured is the SCAN's retention and not an artifact of the result
+	// measured is the scan's retention and not an artifact of the result
 	// itself having become collectable early.
 	runtime.KeepAlive(out)
 
-	// Signed, because the scan's transient garbage can leave the heap SMALLER
+	// Signed, because the scan's transient garbage can leave the heap smaller
 	// than it started after a collection runs mid-call — a negative delta is a
 	// pass, not an underflow to a huge unsigned number.
 	retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
@@ -339,8 +312,7 @@ func TestWithNumber_ScanIsAllocationBounded(t *testing.T) {
 // TestWithNumber_WindowsFlavor pins that the path row's reconstruction goes
 // through withName under the Windows flavor too, same as every other with_*
 // function. The oracle evaluates path functions under POSIX only, so it
-// cannot adjudicate these — they are pinned by test alone, not measured
-// against the reference.
+// cannot adjudicate these; they are pinned by test alone.
 func TestWithNumber_WindowsFlavor(t *testing.T) {
 	tests := []struct{ src, want string }{
 		{`path('C:/shot_003.exr').with_number(72)`, `C:\shot_072.exr`},

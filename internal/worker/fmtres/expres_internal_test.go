@@ -11,16 +11,15 @@ import (
 // White-box test for the path flavor in ExprEvalOptions: expres_test.go's
 // TestExprEvalOptions_CarriesNativePathFlavor (package fmtres_test) can only
 // build its expectation through expr.WithPathFormat(expr.PathNative), which
-// resolves to expr.PathPOSIX on every POSIX host -- the SAME
-// resolution expr.Eval's own unconfigured default uses. That test's own doc
-// comment states that deleting expr.WithPathFormat(pathFlavor)
-// from ExprEvalOptions produces IDENTICAL output on this host either way, so
-// it cannot behaviorally prove the call survives.
+// resolves to expr.PathPOSIX on every POSIX host, the same resolution
+// expr.Eval's unconfigured default uses. As that test's doc comment states,
+// removing expr.WithPathFormat(pathFlavor) from ExprEvalOptions gives
+// identical output on such a host, so it cannot prove the call is there.
 //
-// This test closes that gap by going around pathFlavor's runtime.GOOS-driven
-// resolution entirely: exprEvalOptionsFor takes the flavor as a direct
-// parameter, so this test can force expr.PathWindows regardless of what host
-// it runs on, independent of exprsyms.go's own pathFlavor constant.
+// This test bypasses pathFlavor's runtime.GOOS-driven resolution:
+// exprEvalOptionsFor takes the flavor as a parameter, so the test can force
+// expr.PathWindows on any host, independent of exprsyms.go's pathFlavor
+// constant.
 func TestExprEvalOptionsFor_CarriesRequestedPathFlavor(t *testing.T) {
 	opts := exprEvalOptionsFor(ExprLimits{}, nil, expr.PathWindows)
 	v, err := expr.Eval("path('/a/b') / 'c'", expr.MapSymbols{}, expr.TString, opts...)

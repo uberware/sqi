@@ -72,9 +72,9 @@ type Job struct {
 	TemplateFormat TemplateFormat
 	// Parameters holds the fully-bound job-parameter values produced by
 	// BindJobParameters at submission time, including applied defaults.
-	// Nil or empty for jobs with no declared parameters or submitted before
-	// the parameters-persistence migration (back-compat: scheduler falls back
-	// to template defaults).
+	// Nil or empty for a job with no declared parameters, or one written
+	// before migration 00009 added the column; the scheduler then falls back
+	// to the template defaults.
 	Parameters map[string]string
 	// DeclaredExtensions holds the OpenJD extension names the template declared
 	// (its top-level `extensions:` list), as internal/openjd decoded and
@@ -129,7 +129,7 @@ type Job struct {
 }
 
 // DeclaresExtension reports whether the job's template declares the OpenJD
-// extension name, and — in recorded — whether that answer is known at all.
+// extension name, and, in recorded, whether that answer is known at all.
 //
 // A caller must branch on recorded before believing declared: recorded == false
 // means the row predates migration 00027 and carries no extension list, and
@@ -186,12 +186,10 @@ type JobStore interface {
 	// CreateJobSubmission atomically creates a job, its dependency edges, its
 	// steps and its tasks. On any error nothing is written.
 	//
-	// Creating those rows through separate calls would have two failure modes
-	// the caller cannot cure: a failed submission strands a pending job that no
-	// sweep reaps, and a submission whose write fails after some steps were
-	// persisted produces a job whose missing steps make checkJobCompletion,
-	// which derives job status from the steps that exist, report it
-	// completed. One transaction rules out both.
+	// The rows must not be written by separate calls: a failure partway would
+	// strand a pending job that no sweep reaps, or leave a job whose missing
+	// steps make the scheduler's checkJobCompletion, which derives job status
+	// from the steps that exist, report it completed.
 	//
 	// The returned JobSubmission carries the rows as stored. Read the edges
 	// back from its DependsOn field, not from its Job.DependsOn: the returned
@@ -208,8 +206,8 @@ type JobStore interface {
 	// fill both, because the submitter words its 422 from them. The
 	// submitter's own pre-read runs before the transaction, so an upstream can
 	// change in between. An upstream completing in that window is not
-	// refused: the job is
-	// created blocked and sweepBlockedJobs releases it on its next tick.
+	// refused: the job is created blocked and sweepBlockedJobs releases it on
+	// its next tick.
 	CreateJobSubmission(ctx context.Context, sub JobSubmission) (JobSubmission, error)
 
 	// GetJob returns the job with the given ID, or [ErrNotFound].

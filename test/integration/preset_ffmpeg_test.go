@@ -4,30 +4,27 @@ package integration
 
 // preset_ffmpeg_test.go — executes the shipped ffmpeg reference presets
 // (presets/sqi/ffmpeg-*.yaml) through a real sqi-server and a real sqi-worker,
-// then asserts on the VIDEO THEY PRODUCE.
+// then asserts on the video they produce.
 //
-// Why this file exists. The other ffmpeg-preset tests check shape:
+// The other ffmpeg-preset tests check shape:
 // internal/product/sqipresets_test.go validates each preset against the real
 // schema, and internal/product/exprpresetcost_test.go pins the portable
-// variant's submission cost. Neither runs ffmpeg, so a preset could ship with a
-// command that parses perfectly and transcodes nothing. Two examples of that
-// class of bug, both invisible to shape checks:
+// variant's submission cost. Neither runs ffmpeg, so a command that parses and
+// transcodes nothing passes them. Two such failures these assertions catch:
 //
-//   - the PowerShell join writing its concat list as BOM'd UTF-8, which the
-//     concat demuxer rejects on the first "file" line.
+//   - a PowerShell join that writes its concat list as UTF-8 with a BOM, which
+//     the concat demuxer rejects on the first "file" line.
 //   - the same join as an embedded file with no .ps1 filename, which
 //     `powershell -File` refuses to execute.
 //
-// The assertions below are chosen so that each fails here.
+// This file is not tagged `integration`: the CI `test` job runs
+// `make test-cover`, which passes no `-tags`, so a tagged file compiles and
+// lints but never executes in CI. worker_binary_test.go, the other real-worker
+// test, is untagged for the same reason, and this file shares its cached
+// binary, so each case adds one ffmpeg run.
 //
-// NOT tagged `integration`, deliberately: the CI `test`
-// job runs `make test-cover`, which passes no `-tags`, so a file behind that
-// tag compiles and lints but NEVER EXECUTES in CI. worker_binary_test.go — the
-// other real-worker test — is untagged for the same reason, and this file
-// shares its cached binary, so the marginal cost is one ffmpeg run per case.
-//
-// Skips when ffmpeg or ffprobe is absent, which means A LOCAL PASS PROVES
-// NOTHING ON ITS OWN — look for the "--- PASS: TestFFmpegPreset" lines.
+// The tests skip when ffmpeg or ffprobe is absent, so a local run has passed
+// only when it prints the "--- PASS: TestFFmpegPreset" lines.
 
 import (
 	"context"
@@ -193,8 +190,8 @@ func presetPath(t *testing.T, name string) string {
 // submitPreset parses a shipped preset exactly as the server does, then submits
 // its template as a job with params supplied as param.<Name> query values.
 //
-// Parsing the real file (rather than an inline copy) is the point: a preset
-// edited in the repository is the thing under test here.
+// It parses the real file rather than an inline copy, so the preset as it
+// stands in the repository is what is tested.
 func submitPreset(t *testing.T, ts *testServer, farmID, queueID, name string, params map[string]string) string {
 	t.Helper()
 
@@ -294,11 +291,11 @@ func taskLogs(t *testing.T, ts *testServer, taskID string) string {
 // reportFailedTasks renders every non-succeeded task of a job with its failure
 // reason and the tail of its log.
 //
-// It reports the FAILED tasks specifically rather than the job's first task,
-// because these presets fan out: a segmented run's first task is a Transcode
-// slice that almost always succeeded, so dumping it buries the Join step's
-// actual error under a full ffmpeg banner. Only the tail is kept for the same
-// reason — ffmpeg's diagnosis is its last few lines.
+// It reports the failed tasks rather than the job's first task, because these
+// presets fan out: a segmented run's first task is a Transcode slice that
+// usually succeeded, and its log would bury the Join step's error under a full
+// ffmpeg banner. Only the tail is kept because ffmpeg's diagnosis is in its
+// last few lines.
 func reportFailedTasks(t *testing.T, ts *testServer, jobID string) string {
 	t.Helper()
 	var resp struct {
@@ -425,7 +422,7 @@ func runSegmentPreset(t *testing.T, caseName, name string, wantSlicesKept bool) 
 	assertDuration(t, output, ffmpegSourceSeconds)
 
 	// Slice retention is a documented, per-variant promise: the shell variants
-	// clean up after a successful join, the portable one deliberately does not.
+	// clean up after a successful join, the portable one keeps them.
 	slices := sliceFiles(t, output)
 	if wantSlicesKept {
 		if len(slices) != ffmpegWantSlices {
@@ -442,9 +439,9 @@ func runSegmentPreset(t *testing.T, caseName, name string, wantSlicesKept bool) 
 }
 
 // TestFFmpegPreset_PortableSegmentTranscodeJoins runs the shell-free variant.
-// It is the highest-value case in this file: its concat list is rendered by the
-// TEMPLATE, so the assertion covers EXPR embedded-file generation on top of the
-// ffmpeg command lines, and it is the one variant that runs on every platform.
+// Its concat list is rendered by the template, so the assertion covers EXPR
+// embedded-file generation as well as the ffmpeg command lines, and it is the
+// one variant that runs on every platform.
 func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
 	const caseName = "TestFFmpegPreset_PortableSegmentTranscodeJoins"
 	trackOutcome(t, caseName)
@@ -452,26 +449,22 @@ func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
 }
 
 // TestFFmpegPreset_BashSegmentTranscodeJoins runs the bash-joined variant,
-// whose template gates on attr.worker.tag.ffmpeg ALONE — it carries no
-// attr.worker.os.family requirement, because bash is not a POSIX-only
-// interpreter: git-bash puts it on Windows too. The skip below therefore keys
-// on bash being on PATH rather than on GOOS, which is the preset's actual
-// requirement restated.
+// whose template gates on attr.worker.tag.ffmpeg only. It has no
+// attr.worker.os.family requirement, because Git Bash provides bash on Windows
+// too, so the skip below checks for bash on PATH rather than GOOS.
 //
-// It runs on darwin as well as linux on purpose: a Mac worker reports GOOS
-// "darwin" while a requirement can only legally say "macos", and
-// scheduler.osFamily translates between them. Without that translation this
-// preset validates, submits, and then waits forever for a worker that cannot
-// exist. Running here is the end-to-end proof that a Mac can take the work — a
-// regression would show up as this test timing out rather than failing fast.
+// It also runs on darwin: a Mac worker reports GOOS "darwin" while a
+// requirement can only say "macos", and scheduler.osFamily translates between
+// them. Without that translation the job would be accepted and then wait for a
+// worker that cannot exist, so a broken translation shows up here as a
+// timeout rather than a fast failure.
 //
 // The template invokes "command: bash" with the script as an argument rather
-// than exec'ing the shebang script directly, since direct shebang execution is
-// a POSIX kernel feature (binfmt_script) Windows has no equivalent of. On a
-// Windows host this case is the only automated coverage of that invocation and
-// of the script's backslash folding. It passes on a Windows host with Git Bash,
-// but is not yet required there: see the tier2 note in
-// presets/validation-tiers.yaml.
+// than executing the shebang script directly, since shebang execution is a
+// POSIX kernel feature (binfmt_script) Windows lacks. On a Windows host this
+// case is the only automated coverage of that invocation and of the script's
+// backslash folding. It passes on a Windows host with Git Bash but is not
+// required there: see the tier2 note in presets/validation-tiers.yaml.
 func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
 	const caseName = "TestFFmpegPreset_BashSegmentTranscodeJoins"
 	trackOutcome(t, caseName)
@@ -483,8 +476,8 @@ func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
 
 // TestFFmpegPreset_PowerShellSegmentTranscodeJoins runs the PowerShell-joined
 // variant. Its template gates on attr.worker.os.family = windows, so a Windows
-// runner is the only place this preset's join script — the subject of both
-// runtime-only bugs in this file's header — can be executed at all.
+// runner is the only place this preset's join script, the subject of both
+// runtime-only failures in this file's header, can run.
 func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
 	const caseName = "TestFFmpegPreset_PowerShellSegmentTranscodeJoins"
 	trackOutcome(t, caseName)
@@ -496,24 +489,22 @@ func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
 
 // ── Slice arithmetic ──────────────────────────────────────────────────────────
 //
-// The three cases below exist because the fixture geometry the tests above
-// share — 6 seconds cut into 2-second slices — is a WHOLE MULTIPLE, and a whole
-// multiple hides two mistakes that the segmented presets are specifically at
-// risk of. Both are properties of the EXPR expressions rather than of ffmpeg,
-// and neither is visible to the schema tests in internal/product.
+// The fixture geometry the tests above share, 6 seconds cut into 2-second
+// slices, is a whole multiple, which hides two mistakes the segmented presets
+// can make. Both are properties of the EXPR expressions rather than of ffmpeg,
+// and the schema tests in internal/product cannot see either; the cases below
+// cover them.
 
 // TestFFmpegPreset_SegmentCountUsesCeilingNotTruncation pins the slice-count
 // expression, `ceil(Param.DurationSeconds / Param.SegmentSeconds)`.
 //
-// 6/2 divides exactly, so the tests above pass identically whether that
-// expression ceils, floors, or truncates — at that geometry the arithmetic is
-// unpinned. 5 seconds in
-// 2-second slices needs ceil(2.5) = 3; truncation yields 2, which transcodes
-// only the first 4 seconds and loses the tail. The duration assertion catches
-// that: 4s against an expected 5s is ten times the tolerance.
+// 6/2 divides exactly, so the tests above pass whether that expression ceils,
+// floors or truncates. 5 seconds in 2-second slices needs ceil(2.5) = 3;
+// truncation yields 2, which transcodes only the first 4 seconds. The duration
+// assertion catches that: 4s against an expected 5s is twice the tolerance.
 //
-// It runs the portable variant because that is the one that executes on every
-// platform, so this arithmetic is covered wherever the suite runs.
+// It runs the portable variant, which executes on every platform, so this
+// arithmetic is covered wherever the suite runs.
 func TestFFmpegPreset_SegmentCountUsesCeilingNotTruncation(t *testing.T) {
 	requireFFmpeg(t, "")
 
@@ -559,16 +550,15 @@ var sliceIndexRe = regexp.MustCompile(`_seg_(\d{5})\.`)
 // TestFFmpegPreset_SliceNamesAreZeroPadded pins the `zfill(..., 5)` in the
 // slice-path expression, which the tests above cannot see.
 //
-// Padding exists so that LEXICAL order is NUMERIC order. That matters because
-// the bash and PowerShell variants build their concat list by globbing the
-// directory and sorting by name — with unpadded indices, `_seg_10` sorts
-// between `_seg_1` and `_seg_2`, and those two variants would join the slices
-// out of order. Fewer than ten slices cannot distinguish the two orderings at
-// all, and every other case in this file uses three.
+// Padding makes lexical order numeric order. The bash and PowerShell variants
+// build their concat list by globbing the directory and sorting by name; with
+// unpadded indices, `_seg_10` sorts between `_seg_1` and `_seg_2` and those
+// variants would join the slices out of order. Fewer than ten slices cannot
+// distinguish the two orderings, and every other case in this file uses three.
 //
-// A duration assertion would NOT catch it: a mis-ordered join still contains
-// every slice and still runs the full length. So this asserts the filenames the
-// glob actually sorts, which is the property the ordering rests on.
+// A duration assertion would not catch it, because a mis-ordered join still
+// contains every slice and runs the full length, so this asserts the filenames
+// the glob sorts.
 func TestFFmpegPreset_SliceNamesAreZeroPadded(t *testing.T) {
 	requireFFmpeg(t, "")
 
@@ -635,24 +625,23 @@ func TestFFmpegPreset_SliceNamesAreZeroPadded(t *testing.T) {
 }
 
 // TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling asserts the HTTP contract
-// a user actually meets when they ask the portable variant for more slices than
-// its submission budget allows.
+// a user meets when they ask the portable variant for more slices than its
+// submission budget allows.
 //
-// internal/product/exprpresetcost_test.go already pins the ceiling at the
-// submitter, but it asserts on a Go error value. What a pipeline sees is a
-// status code: a 422 says the request is wrong and
-// retrying is pointless, while the 503 this must NOT be says the server gave up
-// under load and a retry may work. Nothing else asserts that mapping for a
-// shipped preset, and no worker is needed to prove it.
+// internal/product/exprpresetcost_test.go pins the ceiling at the submitter,
+// but asserts on a Go error value. A pipeline sees a status code: a 422 says
+// the request is wrong and retrying is pointless, while a 503 says the server
+// gave up under load and a retry may work, so the answer must be 422. No other
+// test asserts that mapping for a shipped preset, and no worker is needed.
 func TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling(t *testing.T) {
 	requireFFmpeg(t, "")
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
-	// Far past the documented 400-slice ceiling, so this stays true if the
-	// per-slice cost is tuned. 60-second slices keeps the count equal to the
-	// minutes asked for.
+	// Far past the documented 400-slice ceiling, so this holds if the per-slice
+	// cost changes. With 60-second slices the slice count equals the minutes
+	// requested.
 	const wildlyTooManySlices = 4000
 
 	detail := submitPresetExpecting(t, ts, farmID, queueID,
@@ -679,9 +668,9 @@ func TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling(t *testing.T) {
 //
 // The output path is not a parameter: the template derives it with
 // `rstrip(split(Param.SourcePattern.stem, '%')[0], '_-.') + '.mp4'`, so
-// frame_%04d.png must become frame.mp4. Asserting the file exists at exactly
-// that path is what pins the expression; a change that left the trailing
-// separator on would write frame_.mp4 and fail here.
+// frame_%04d.png must become frame.mp4. Asserting the file exists at that exact
+// path pins the expression: one that kept the trailing separator would write
+// frame_.mp4 and fail here.
 func TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern(t *testing.T) {
 	const caseName = "TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern"
 	trackOutcome(t, caseName)

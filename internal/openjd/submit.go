@@ -42,7 +42,7 @@ type SubmitterOptions struct {
 	// both phases of the pipeline: phase 1, through the [ValidateOptions]
 	// prepareTemplate builds, and phase 2, through the two [templateBudget]s it
 	// allocates for checkExpressionsAtSubmit and for every step's
-	// ResolveParameterSpaceParams call.
+	// parameter-space and host-requirement resolution.
 	//
 	// The zero value means "use the defaults" ([ExprLimits.orDefaults]).
 	//
@@ -53,10 +53,9 @@ type SubmitterOptions struct {
 	// prepareTemplate copies onto the ExprLimits behind phase 1 and both phase-2
 	// budgets, overwriting this field (zero included).
 	//
-	// That overwrite makes a Deadline set here inert, not harmless: it holds
-	// only because all three copies overwrite the field, which is a property of
-	// three call sites rather than a guarantee. If one stopped overwriting,
-	// every submission after the boot instant would fail with no obvious cause.
+	// A Deadline set here has no effect only because all three call sites
+	// overwrite it. If one stopped doing so, every submission after the boot
+	// instant would fail with no obvious cause.
 	ExprLimits ExprLimits
 }
 
@@ -161,7 +160,7 @@ type SubmitResult struct {
 	// BoundParameters is the fully-resolved name→value map produced by
 	// [BindJobParameters].  Defaults from the template are merged in; every
 	// declared parameter is guaranteed to have an entry here.
-	// Later tasks ({{Param.*}} resolution, worker carry) consume this map.
+	// Later stages ({{Param.*}} resolution, worker carry) consume this map.
 	BoundParameters map[string]string
 }
 
@@ -185,8 +184,8 @@ func declaredExtensions(tmpl *JobTemplate) []string {
 // *SubmitValidationError. It is separate from Submit to keep Submit's
 // cyclomatic complexity within bounds.
 //
-// resolverBudget is the [templateBudget] that every step's
-// ResolveParameterSpaceParams call spends against for this submission. It is
+// resolverBudget is the [templateBudget] that every step's parameter-space
+// and host-requirement resolution spends against for this submission. It is
 // allocated per call (never a Submitter field) and returned so Submit can
 // thread it through the step loop. It is nil whenever err != nil.
 //
@@ -259,7 +258,7 @@ func (s *Submitter) prepareTemplate(
 	// the submitted values, re-run the same walk with those symbols concrete, so
 	// an expression that only fails for a real value (dividing by a parameter
 	// submitted as zero) is rejected here rather than while expanding the
-	// parameter space. It must run before ResolveParameterSpaceParams (called
+	// parameter space. It must run before parameter-space resolution (called
 	// per step in Submit's step loop).
 	//
 	// checkerBudget is spent here only; resolverBudget is a separate object (see
@@ -655,7 +654,7 @@ func (s *Submitter) expandStepTaskParams(
 // checkExpressionsAtSubmit re-runs checkTemplateExpressions with boundParams
 // now concrete (phase 2 of the specification's Progressive Expression
 // Evaluation model). Submit calls it after parameter binding and before any
-// per-step ResolveParameterSpaceParams call. It is a free function because it
+// per-step parameter-space resolution. It is a free function because it
 // touches neither ctx nor the store: it re-checks the already-parsed template
 // against the already-bound parameter map, so tests can call it directly on a
 // *JobTemplate. See TestCheckExpressionsAtSubmit_PhaseDistinction
@@ -1011,12 +1010,12 @@ func hasPrefixFold(s, prefix string) bool {
 }
 
 // requiredCoresFromAmounts extracts the task CPU reservation from a step's host
-// requirements: the floor of amount.worker.vcpu min, parsed as an int.
+// requirements: the floor of amount.worker.vcpu min, and at least 1.
 //
 // A present amount.worker.vcpu with no explicit min defaults to a 1-core
 // reservation: per OpenJD jobtemplate-2023-09, an omitted min defaults to the
-// capability's reserved minimum, which is 1 for amount.worker.vcpu (see
-// reservedAmountMinimums in validate.go). Returns nil only when the step
+// capability's minimum, which is 1 for amount.worker.vcpu (the spec's
+// "Minimum Value" table). Returns nil only when the step
 // declares no amount.worker.vcpu at all (undeclared = full machine at lease
 // time) or when an explicit min cannot be parsed as a positive number.
 func requiredCoresFromAmounts(amts []store.StepAmountRequirement) *int {

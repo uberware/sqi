@@ -20,10 +20,9 @@ import (
 // OpenJD identifier -- it is only meaningful as an EXPR expression. Plain
 // substitution (fmtstring.Resolve) rejects it as a malformed reference before
 // ever asking what it means; only an EXPR-aware evaluator would parse and run
-// it. If resolveAssignment were ever rerouted to the EXPR-aware family for a
-// base-spec assignment (msg.EXPR left false), this task would wrongly
-// SUCCEED with a computed value instead of failing here -- making this the
-// cheapest possible detector for that regression.
+// it. If resolveAssignment routed a base-spec assignment (msg.EXPR false) to
+// the EXPR-aware family, this task would succeed with a computed value
+// instead of failing here.
 func TestExecutor_Dispatch_BaseSpec_ExpressionSyntaxStaysMalformed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses POSIX shell commands")
@@ -61,11 +60,10 @@ func TestExecutor_Dispatch_BaseSpec_ExpressionSyntaxStaysMalformed(t *testing.T)
 }
 
 // TestExecutor_Dispatch_EXPR_ResolvesExpressionInArgs is the EXPR-flag
-// positive counterpart to the base-spec test above: the SAME shape of
-// reference, now with msg.EXPR true and the declared parameter type EXPR
-// needs, evaluates as a real expression and its computed value reaches the
-// command line -- the first point in the whole EXPR program where that
-// happens.
+// positive counterpart to the base-spec test above: the same shape of
+// reference, with msg.EXPR true and the declared parameter type EXPR needs,
+// evaluates as an expression and its computed value reaches the command
+// line.
 func TestExecutor_Dispatch_EXPR_ResolvesExpressionInArgs(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses POSIX shell commands")
@@ -103,7 +101,7 @@ func TestExecutor_Dispatch_EXPR_ResolvesExpressionInArgs(t *testing.T) {
 }
 
 // TestExecutor_Dispatch_EXPR_LetBindingAppliedOnceSharedByActionAndFile
-// proves fmtres.ApplyTaskLet is called EXACTLY ONCE per resolveAssignment
+// proves fmtres.ApplyTaskLet is called once per resolveAssignment
 // call, reusing the same symbol table for both the OnRun action and the step
 // embedded file -- not once per resolution. ApplyTaskLet's own doc comment
 // warns that calling it a second time over the same table makes every
@@ -155,17 +153,16 @@ func TestExecutor_Dispatch_EXPR_LetBindingAppliedOnceSharedByActionAndFile(t *te
 }
 
 // TestExecutor_Dispatch_EXPR_ConfiguredLimitsReachSymbolBuilding is the
-// end-to-end wiring proof for the ONE phase-3 evaluation that is not a
+// end-to-end wiring proof for the one phase-3 evaluation that is not a
 // format-string resolution: the apply_path_mapping call fmtres.TaskSymbols
 // makes for every PATH-declared parameter.
 //
-// It is here rather than in fmtres because the defect it catches is an
-// ORDERING one that only this file can have: if resolveAssignmentExpr built
-// the symbol table BEFORE obtaining sess.ExprBudget(), the table's evaluation
-// would use the compiled-in defaults on a host configured otherwise --
-// with every fmtres-level test green. Moving the TaskSymbols call above
-// `budget := sess.ExprBudget()` (or dropping the budget argument) must turn
-// this red.
+// It is here rather than in fmtres because it checks an ordering in this
+// package: if resolveAssignmentExpr built the symbol table before obtaining
+// sess.ExprBudget(), the table's evaluation would use the compiled-in
+// defaults on a host configured otherwise, with every fmtres-level test
+// passing. Moving the TaskSymbols call above `budget := sess.ExprBudget()`
+// (or dropping the budget argument) makes this test fail.
 //
 // The worker is configured with a 16-byte per-evaluation memory limit, which
 // cannot hold even a short mapped path, so symbol building itself must fail

@@ -322,13 +322,13 @@ func TestValueString_ListElementsAreQuoted(t *testing.T) {
 	}
 }
 
-// TestValueString_VersusStringFunction asserts that the two renderings AGREE
+// TestValueString_VersusStringFunction asserts that the two renderings agree
 // -- byte-for-byte, quoting and escaping both -- on every case below. doc.go
 // cites this test by name; update that citation if the two ever drift apart.
 //
-// The assertion compares the two outputs to EACH OTHER rather than against a
+// The assertion compares the two outputs to each other rather than against a
 // hand-typed expected string on purpose: transcribing an escaped literal by
-// hand is error-prone, and the property under test IS "these two agree",
+// hand is error-prone, and the property under test is "these two agree",
 // which a direct comparison states without needing to predict either side's
 // exact spelling.
 func TestValueString_VersusStringFunction(t *testing.T) {
@@ -397,13 +397,13 @@ func TestValueString_ListQuotingIsJSONEverywhere(t *testing.T) {
 		{"vertical tab U+000B", "\v", `["\u000b"]`},
 		// DEL is not a C0 control, so #176's "below U+0020" does not reach
 		// it and it stays literal -- which is also what the reference
-		// implementation renders (probed at openjd-model 0.11.5). repr_json
+		// implementation renders. repr_json
 		// is the spelling that escapes it.
 		{"DEL U+007F", "\x7f", "[\"\u007f\"]"},
 		// Invalid UTF-8 has no JSON spelling; the encoder substitutes
 		// U+FFFD REPLACEMENT CHARACTER, and writes it as the six-character
-		// \ufffd ESCAPE rather than as the rune itself. The point of the row
-		// is that both renderings make the SAME substitution, not that the
+		// \ufffd escape rather than as the rune itself. The point of the row
+		// is that both renderings make the same substitution, not that the
 		// bytes survive.
 		{"invalid UTF-8", "\xff\xfe", `["\ufffd\ufffd"]`},
 	}
@@ -441,7 +441,7 @@ func TestValueString_ListQuotingIsJSONEverywhere(t *testing.T) {
 // by the specification, checked here by hand, and invisible to every
 // automated suite otherwise.
 //
-// The PATHS rows matter most, because they pin the INTERPOLATED rendering
+// The paths rows matter most, because they pin the interpolated rendering
 // rather than string()'s: the fixture writes "{{ paths }}" with no call, which
 // is Value.String() on a bare list.
 func TestStringConversion_MatchesSpecFixture(t *testing.T) {
@@ -471,10 +471,10 @@ func TestStringConversion_MatchesSpecFixture(t *testing.T) {
 		}
 	})
 
-	// The fixture builds its list in TEMPLATE-scoped let so path() uses the
+	// The fixture builds its list in template-scoped let so path() uses the
 	// POSIX flavor, then renders it in each host's own flavor. sqi's
 	// path_format is an evaluation option rather than a host default (doc.go's
-	// PATH FORMAT bullet), so the two host rows are two evaluations here.
+	// path format bullet), so the two host rows are two evaluations here.
 	t.Run("PATHS rows", func(t *testing.T) {
 		const src = `[path("/out/a.exr"), path("/out/b.exr")]`
 		for _, tt := range []struct {

@@ -25,8 +25,8 @@ export default defineConfig([
   },
 
   // Test files: spread the full Vitest recommended config (plugins + globals +
-  // rules) on top of the source config above.  Using just .rules would drop the
-  // vitest globals declaration and silently mis-lint tests that use global vi/it.
+  // rules) on top of the source config above.  Spreading only .rules would drop
+  // the vitest globals declaration and mis-lint tests that use global vi/it.
   {
     files: ['src/**/*.{test,spec}.{ts,tsx}'],
     ...vitest.configs.recommended,

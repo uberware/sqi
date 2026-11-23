@@ -22,7 +22,7 @@ func openWithoutShareDelete(t *testing.T, path string) windows.Handle {
 		t.Fatal(err)
 	}
 	h, err := windows.CreateFile(p, windows.GENERIC_READ,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, // deliberately no FILE_SHARE_DELETE
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, // no FILE_SHARE_DELETE
 		nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
 	if err != nil {
 		t.Fatal(err)

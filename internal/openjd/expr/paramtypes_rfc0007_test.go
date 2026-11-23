@@ -8,9 +8,9 @@ import "testing"
 // each of RFC 0007's BOOL and LIST[*] parameter types; without one, a
 // parameter of that type never resolves past a placeholder in phase 3.
 //
-// It asserts CONCRETENESS rather than correctness, because that is where the
+// It asserts concreteness rather than correctness, because that is where the
 // hazard is: an unhandled type falls to the default branch and returns
-// Unresolved(t), which is a LEGITIMATE phase-1 result. Nothing errors, nothing
+// Unresolved(t), which is a legitimate phase-1 result. Nothing errors, nothing
 // logs, and every expression referencing the parameter never resolves.
 func TestValueFromText_ResolvesTheRFC0007Types(t *testing.T) {
 	tests := []struct {
@@ -108,7 +108,7 @@ func TestValueFromText_ListElementTypeMismatchStaysUnresolved(t *testing.T) {
 // aligned with internal/openjd's parseBoolParamValue. The two live in
 // different packages because the worker binary must never import
 // internal/openjd, so nothing but a matching pair of tests relates them: a
-// value the VALIDATOR admits but this function rejects would pass submission
+// value the validator admits but this function rejects would pass submission
 // and then resolve to nothing on the host.
 func TestValueFromText_BoolRejectsUnknownSpelling(t *testing.T) {
 	for _, raw := range []string{"maybe", "2", "y", "", "2.0"} {
@@ -133,9 +133,9 @@ func TestValueFromText_BoolRejectsUnknownSpelling(t *testing.T) {
 //
 // JobParamTypes special-cases LIST[PATH] and otherwise falls through to
 // ParseType(strings.ToLower(declared)), which understands these names. A
-// regression would be SILENT: an unrecognized spelling floors to TAny, which
+// regression would be silent: an unrecognized spelling floors to TAny, which
 // type-checks against everything, so the failure would surface as an
-// expression that wrongly PASSES rather than as an error.
+// expression that wrongly passes rather than as an error.
 func TestJobParamTypes_RFC0007Types(t *testing.T) {
 	tests := []struct {
 		declared           string

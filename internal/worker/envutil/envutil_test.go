@@ -203,10 +203,9 @@ func TestBaseEnvMinimalBaseIsCaseSensitiveOnPOSIX(t *testing.T) {
 	}
 }
 
-// The critical test: job-supplied variables must NEVER be filtered. The
-// allowlist governs only what is inherited from the daemon. A job's own
-// openjd_env exports have names no operator allowlist would contain, and eating
-// them would silently break jobs.
+// Job-supplied variables are never filtered. The allowlist governs only what
+// is inherited from the daemon; a job's own openjd_env exports have names no
+// operator allowlist would contain, and dropping them would break jobs.
 func TestBuildFromBaseNeverFiltersJobData(t *testing.T) {
 	base := map[string]string{"PATH": "/usr/bin"}
 	overrides := map[string]string{

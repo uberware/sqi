@@ -151,8 +151,8 @@ describe('Tabs', () => {
       expect(onChange).not.toHaveBeenCalled()
     })
 
-    // Arrow keys must step OVER a disabled tab rather than landing on it,
-    // otherwise the keyboard user gets stuck on a tab that cannot activate.
+    // Arrow keys must step over a disabled tab rather than landing on it, or
+    // the keyboard user gets stuck on a tab that cannot activate.
     it('skips a disabled tab when arrowing', async () => {
       const user = userEvent.setup()
       const onChange = vi.fn()

@@ -12,9 +12,8 @@ package server
 // and metrics and answering everything else 503. It then campaigns for the
 // lease. On winning it promotes itself (ha_promote.go) and holds the lease;
 // on any loss of authority it exits with [ExitDemoted], for its supervisor to
-// restart it as a standby. A fresh process has no stale state, which making
-// the scheduler, the consumers and the hub stoppable in place could not
-// promise.
+// restart it as a standby. The scheduler, the consumers and the hub are not
+// stopped in place; a fresh process starts with no stale state.
 //
 // Nothing here runs without HA: [Server.Run] branches to runHA once.
 

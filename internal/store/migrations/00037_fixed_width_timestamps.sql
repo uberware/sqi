@@ -4,7 +4,7 @@
 
 -- Rewrites every stored timestamp to the form the store writes: RFC 3339 in
 -- UTC with all nine fractional digits, 30 characters
--- (YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ; sqlite.timeLayout). SQLite compares and
+-- (YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ; sqlstore.timeLayout). SQLite compares and
 -- orders these columns as TEXT, and the shorter forms sort wrong against it
 -- within one second ("…:05Z" sorts after "…:05.5Z").
 --

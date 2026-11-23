@@ -22,9 +22,9 @@ const discoveryTimeout = 15 * time.Second
 
 // discoveryFailureBackoff is how long a failed discovery attempt is remembered.
 // Within the window, callers are handed the recorded error immediately instead
-// of queueing behind their own full-timeout attempt. It is deliberately short:
-// the point is to collapse a thundering herd into one attempt, not to cache the
-// failure — an unreachable provider must recover without a process restart.
+// of queueing behind their own full-timeout attempt. It is short because it
+// exists to collapse a thundering herd into one attempt, not to cache the
+// failure: an unreachable provider must recover without a process restart.
 const discoveryFailureBackoff = 5 * time.Second
 
 // Errors returned by a Provider. Callers must not distinguish them in what
@@ -65,24 +65,21 @@ type Provider interface {
 
 // provider implements Provider against a real identity provider.
 //
-// Discovery is lazy and is retried after failure. Deliberately NOT sync.Once:
+// Discovery is lazy and is retried after failure. It does not use sync.Once:
 // Once would cache the first failure forever, so a provider that was
-// unreachable during the boot-time first login would require a server restart
-// to recover. Configuration faults abort boot; network faults must not.
+// unreachable at the first login would need a server restart to recover.
+// Configuration faults abort boot; network faults must not.
 //
-// The fetch itself happens OUTSIDE the mutex, with one attempt elected and the
-// rest of a concurrent batch waiting on its result. Holding the lock across the
-// network call was fine against a healthy provider — the first caller
-// populated the cache before releasing the lock, so the rest just read it.
-// Against a dead provider, with nothing cached, every queued caller ran its
-// own full discoveryTimeout attempt, each pinning an HTTP handler goroutine.
+// The fetch runs outside the mutex, with one attempt elected and the rest of
+// a concurrent batch waiting on its result. Holding the lock across the
+// network call would make every queued caller run its own full
+// discoveryTimeout attempt against a dead provider, each pinning an HTTP
+// handler goroutine.
 type provider struct {
 	cfg Config
 	// scopes is cfg.Scopes with "openid" guaranteed present, computed once in
-	// New. Without "openid" the provider returns no ID token at all and every
-	// downstream check would have nothing to verify — but the list is fixed at
-	// boot, so re-deriving it on each AuthCodeURL and Exchange was work with a
-	// constant answer.
+	// New. Without "openid" the provider returns no ID token and every
+	// downstream check has nothing to verify.
 	scopes []string
 
 	mu       sync.Mutex
@@ -299,11 +296,10 @@ func (p *provider) Exchange(ctx context.Context, code, codeVerifier, nonce strin
 	}
 
 	// Nonce is not the library's job. Reject an empty nonce on either side
-	// BEFORE comparing: subtle.ConstantTimeCompare(nil, nil) returns 1, so two
-	// empty nonces would compare equal and the only hand-written check in this
-	// package would silently pass. The caller's OpenState happens to reject an
-	// empty nonce today, but a security check must not rest on an invariant
-	// enforced in another file.
+	// before comparing: subtle.ConstantTimeCompare(nil, nil) returns 1, so two
+	// empty nonces would compare equal and this check would pass. The
+	// caller's OpenState also rejects an empty nonce, but this check does not
+	// rely on an invariant enforced in another file.
 	if nonce == "" || idToken.Nonce == "" {
 		return Identity{}, fmt.Errorf("%w: nonce missing", ErrTokenInvalid)
 	}
@@ -342,9 +338,9 @@ func (p *provider) Exchange(ctx context.Context, code, codeVerifier, nonce strin
 // EndSessionURL implements Provider.
 //
 // It never emits an id_token_hint. sqi does not store ID tokens: doing so
-// would put the first plaintext bearer secret into a schema that otherwise
-// holds only hashes, to save a redirect. Providers that require the hint will
-// simply re-prompt, which is the correct outcome for a logout.
+// would put a plaintext bearer secret into a schema that otherwise holds only
+// hashes, to save a redirect. Providers that require the hint re-prompt,
+// which is an acceptable outcome for a logout.
 func (p *provider) EndSessionURL(ctx context.Context) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()

@@ -26,15 +26,16 @@ ARG GOVERSION=unknown
 WORKDIR /src
 
 # Copy dependency manifests first so Docker can cache the download layer
-# separately from the source. Re-downloading only happens when go.mod changes.
+# separately from the source. Dependencies are downloaded again only when
+# go.mod or go.sum changes.
 COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 
 # Copy the full source tree.
 COPY . .
 
-# Build the worker binary with CGO disabled (modernc.org/sqlite is pure Go)
-# and version metadata injected via ldflags.
+# Build a static worker binary with CGO disabled and version metadata
+# injected via ldflags.
 RUN CGO_ENABLED=0 go build \
     -trimpath \
     -ldflags="-s -w \
@@ -48,8 +49,8 @@ RUN CGO_ENABLED=0 go build \
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 #
 # Alpine provides a minimal shell environment and ca-certificates/tzdata for
-# TLS and timezone support. The shell is intentionally retained — render workers
-# sometimes need to exec shell scripts as task commands. A dedicated non-root
+# TLS and timezone support. The shell stays because task commands can be shell
+# scripts. A dedicated non-root
 # user (sqiworker) limits the blast radius of a compromised task process.
 
 FROM alpine:3.21 AS runtime

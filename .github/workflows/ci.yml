@@ -2673,7 +2673,7 @@ jobs:
   python-test:
     name: Python client tests (${{ matrix.python-version }})
     # Pinned: ubuntu-latest is 26.04, and setup-python has no Python 3.9 for it,
-    # so the 3.9 floor cannot be tested there. Use ubuntu-latest again when 3.9
+    # so the 3.9 floor cannot be tested there. Switch to ubuntu-latest when 3.9
     # is available on it or when 3.9 is dropped.
     runs-on: ubuntu-24.04
     needs: changes

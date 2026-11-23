@@ -33,8 +33,8 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
-# Single runtime dependency — the library is embedded in DCC Python environments,
-# so the dependency tree is kept deliberately small. PyYAML and websockets are
+# Single runtime dependency: the library is embedded in DCC Python environments,
+# so the dependency tree is kept small. PyYAML and websockets are
 # optional extras, never hard requirements. The floor is 0.23: the transport
 # relies on base-URL raw-path merging (changed in httpx 0.21) and the modern
 # exception hierarchy, and 0.23 is the first release with both on all platforms.
@@ -115,19 +115,17 @@ warn_unused_configs = true
 # httpx pulls in anyio transitively, and modern anyio (>= 4.x) uses 3.10+ `match`
 # statements internally. mypy parses followed imports with the 3.9 target grammar,
 # so following anyio's source makes `mypy src` fail to parse it (a [syntax] error)
-# even though our code never touches anyio directly. Skip following it — the public
-# httpx surface we depend on stays fully typed. Drop this when the floor is 3.10+.
+# even though the SDK never uses anyio directly. Skip following it; the public
+# httpx surface the SDK uses stays fully typed. Drop this when the floor is 3.10+.
 [[tool.mypy.overrides]]
 module = ["anyio.*"]
 follow_imports = "skip"
 
-# websockets joined anyio in the same situation as of 17.0.1, which uses 3.10+
-# `match` statements. Unlike anyio it is a DIRECT dependency (the `ws` extra and
-# the dev set), so `mypy src` follows it while parsing at the 3.9 floor and fails
-# on its syntax rather than on anything we wrote. The dependency is deliberately
-# unpinned — pinning it to dodge a type-checker grammar mismatch would constrain
-# every consumer of the SDK for our convenience. Drop this when the floor is
-# 3.10+.
+# websockets (17.0.1 and later) also uses 3.10+ `match` statements. Unlike anyio
+# it is a direct dependency (the `ws` extra and the dev set), so `mypy src`
+# follows it while parsing at the 3.9 floor and fails on its syntax. It stays
+# unpinned: pinning it to suit the type checker would constrain every consumer
+# of the SDK. Drop this when the floor is 3.10+.
 [[tool.mypy.overrides]]
 module = ["websockets.*"]
 follow_imports = "skip"

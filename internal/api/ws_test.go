@@ -9,7 +9,7 @@ package api
 // tests fast and independent of the rest of the router.
 //
 // The fake bus is the real [ws.Hub] wired to the handler; the hub itself is
-// fully tested in internal/ws/hub_test.go.  Here we only test the HTTP
+// fully tested in internal/ws/hub_test.go. These tests cover only the HTTP
 // upgrade, subscription flow, fan-out delivery, and disconnect semantics as
 // seen through the wire protocol.
 //
@@ -592,7 +592,7 @@ func TestWSHandler_NoPushAfterUnsubscribe(t *testing.T) {
 
 	hub.NotifyJob(internalws.JobEvent{JobID: "j1", Status: "running"})
 
-	// Confirm the connection is still live via ping/pong — no push should arrive.
+	// Confirm the connection is still live via ping/pong; no push should arrive.
 	wsWrite(t, ctx, conn, internalws.Envelope{Type: internalws.TypePing})
 	env := wsRead(t, ctx, conn)
 	if env.Type != internalws.TypePong {
@@ -615,8 +615,8 @@ func TestWSHandler_Disconnect_HubNotifyDoesNotBlock(t *testing.T) {
 
 	// Allow the server read loop to detect the close and run its cleanup defers
 	// (Deregister removes the client from the hub's subscription set).
-	// There is no exported signal for "cleanup complete", so we use a short
-	// sleep.  300 ms is generous on any CI host.
+	// There is no exported signal for "cleanup complete", so the test uses a
+	// short sleep.
 	time.Sleep(300 * time.Millisecond)
 
 	// Post-disconnect notifications must complete without blocking.
@@ -657,7 +657,7 @@ func TestWSHandler_MultipleClients_IndependentSubscriptions(t *testing.T) {
 		t.Fatalf("connA: expected jobs push, got type=%q subject=%q", envA.Type, envA.Subject)
 	}
 
-	// connB must not receive anything — confirm it is alive via ping.
+	// connB must not receive anything; confirm it is alive via ping.
 	wsWrite(t, ctx, connB, internalws.Envelope{Type: internalws.TypePing})
 	envB := wsRead(t, ctx, connB)
 	if envB.Type != internalws.TypePong {
@@ -761,9 +761,9 @@ func TestWSHandler_Subscribe_MalformedPayload_ReturnsError(t *testing.T) {
 // ── Origin hardening (CSWSH) ──────────────────────────────────────────────────
 //
 // These three tests exercise wsOriginConfig end to end through the real
-// websocket.Accept/Dial handshake (not just the originPatterns helper in
+// websocket.Accept/Dial handshake (not only the originPatterns helper in
 // isolation), because the security property that matters is what the library
-// actually does with OriginPatterns vs InsecureSkipVerify.
+// does with OriginPatterns vs InsecureSkipVerify.
 
 func TestWSHandler_OriginHardening_AuthOn_ForeignOriginRejected(t *testing.T) {
 	srv := newWSTestServerWithOrigin(t, nil, wsOriginConfig{
@@ -796,7 +796,7 @@ func TestWSHandler_OriginHardening_AuthOn_SameOriginAllowed(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// The Origin equals srv.URL itself, i.e. same-origin with the request Host —
+	// The Origin equals srv.URL itself, i.e. same-origin with the request Host:
 	// coder/websocket authorizes this unconditionally, even with an
 	// OriginPatterns list that doesn't mention it.
 	conn, resp, err := websocket.Dial(ctx, wsTestURL(srv), &websocket.DialOptions{
@@ -952,7 +952,7 @@ func TestWSSubscribeJobSubjectsEnforceOwnership(t *testing.T) {
 // TestWSSubscribeJobSubjects_NoStoreFailsClosed pins the fail-closed
 // requirement that a scoped client whose connection has no store wired
 // (wc.store == nil) must be refused a per-job subscription rather than
-// granted it — the ownership check has nothing to consult, so it must not
+// granted it: the ownership check has nothing to consult, so it must not
 // default to allow.
 func TestWSSubscribeJobSubjects_NoStoreFailsClosed(t *testing.T) {
 	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
@@ -1016,11 +1016,10 @@ func TestWSSubscribeJobSubjects_UnresolvableJobFailsClosed(t *testing.T) {
 }
 
 // TestWSSubscribeJobSubjects_StoreErrorFailsClosed pins the fail-closed
-// requirement that a genuine (non-ErrNotFound) store error on the ownership
-// gate denies the subscription rather than granting it. Uses storeErr
-// (jobs_error_test.go), the same package's existing error-injection wrapper
-// built for exactly this — contrary to an earlier version of this task's
-// report, no new error-injection hook was needed. Covers both routes into
+// requirement that a (non-ErrNotFound) store error on the ownership gate
+// denies the subscription rather than granting it. Uses storeErr
+// (jobs_error_test.go), the package's error-injection wrapper. Covers both
+// routes into
 // subjectAllowed: GetJob (via "jobs/{id}/tasks") and GetTask (via
 // "tasks/{id}/logs").
 func TestWSSubscribeJobSubjects_StoreErrorFailsClosed(t *testing.T) {
@@ -1067,14 +1066,14 @@ func TestWSSubscribeJobSubjects_StoreErrorFailsClosed(t *testing.T) {
 
 // TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents pins two things:
 //
-//  1. readLoop's Register call (ws.go) must actually pass the connection's
-//     real scope (internalws.Scope{Owner: owner, All: !scoped}) derived from
-//     scopeFilter, not a Scope{All: true} placeholder — this is exercised end
+//  1. readLoop's Register call (ws.go) must pass the connection's scope
+//     (internalws.Scope{Owner: owner, All: !scoped}) derived from
+//     scopeFilter, not a Scope{All: true} placeholder. This is exercised end
 //     to end via a real WebSocket connection over newWSTestServerScoped, not
 //     by calling hub.Register directly.
-//  2. NotifyJob's owner resolution: JobEvent.Owner is left empty here on
-//     purpose, matching the real production call sites — the hub must
-//     resolve ownership via the injected owner-cache resolver.
+//  2. NotifyJob's owner resolution: JobEvent.Owner is left empty here,
+//     matching the production call sites, so the hub must resolve ownership
+//     via the injected owner-cache resolver.
 //
 // A scoped client subscribed to the global "jobs" subject must receive the
 // push for its own job and must never receive the push for another owner's
@@ -1104,9 +1103,9 @@ func TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents(t *testing.T) {
 	wsWrite(t, ctx, conn, internalws.Envelope{Type: internalws.TypeSubscribe, Subject: internalws.SubjectJobs, Seq: 1})
 	mustAck(t, ctx, conn, 1)
 
-	// Own job's status transition — JobEvent.Owner deliberately left empty.
+	// Own job's status transition; JobEvent.Owner left empty.
 	hub.NotifyJob(internalws.JobEvent{JobID: "job-alice", Status: "running"})
-	// Another owner's job transition — must never reach alice's connection.
+	// Another owner's job transition: must never reach alice's connection.
 	hub.NotifyJob(internalws.JobEvent{JobID: "job-bob", Status: "running"})
 
 	env := wsRead(t, ctx, conn)
@@ -1128,8 +1127,8 @@ func TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents(t *testing.T) {
 	if pong.Type != internalws.TypePong {
 		// Name the job in the unexpected frame. The two ways this can fail are
 		// not equally serious and the frame type alone cannot tell them apart:
-		// a push for job-bob is a cross-owner leak — the security property this
-		// test exists to protect — whereas a second push for job-alice is a
+		// a push for job-bob is a cross-owner leak (the security property this
+		// test exists to protect), whereas a second push for job-alice is a
 		// duplicate-delivery bug: the hub replaying events it had already
 		// fanned out live (see TestHub_Subscribe_NoDuplicateAcrossRegisterAndReplay).
 		// Say which one happened rather than making the next reader guess.

@@ -29,20 +29,17 @@ func nopLogger() *slog.Logger {
 // noopAction returns an environment action that starts a real process and
 // exits 0, on any host.
 //
-// `true` is a POSIX executable, and hardcoding it made a test pass on a
-// developer's Windows box while failing on a GitHub windows-latest runner: Git
-// for Windows ships `usr/bin/true.exe`, so whether the command resolves comes
-// down to whether that directory happens to be on PATH. It usually is locally
-// and is not on the runner. The assertion that tripped over this
-// (TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation) is about EXPR
-// budget accounting, which has nothing to do with the host -- so the command is
-// made portable rather than the test skipped, which is what the POSIX-shell
-// tests in dynamicenv_test.go correctly do when the SHELL SYNTAX is the point.
+// `true` is a POSIX executable. On Windows it resolves only when Git for
+// Windows' `usr/bin` is on PATH, which it is on many developer machines and
+// not on a GitHub windows-latest runner. The tests using this helper (such as
+// TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation) are about EXPR
+// budget accounting, not the host, so the command is portable rather than the
+// test skipped; the POSIX-shell tests in dynamicenv_test.go skip because
+// there the shell syntax is the point.
 //
-// cmd.exe is reached through COMSPEC when it is set, since that is the value
-// Windows itself defines for exactly this purpose, and falls back to a bare
-// "cmd" (System32 is always on a Windows PATH) so an unset COMSPEC cannot
-// reintroduce the same class of failure this helper exists to remove.
+// cmd.exe is reached through COMSPEC when it is set, the variable Windows
+// defines for this purpose, and otherwise through a bare "cmd" (System32 is
+// always on a Windows PATH).
 func noopAction() *protocol.Action {
 	if runtime.GOOS != "windows" {
 		return &protocol.Action{Command: "true"}
@@ -623,15 +620,13 @@ func TestWriteEmbeddedFiles_FallbackToName(t *testing.T) {
 	}
 }
 
-// TestWriteEmbeddedFiles_DuplicateNameLastWins is the regression guard for a
-// hardlink-TOCTOU fix (isolation.WriteFileFchown's O_EXCL-only predecessor)
-// that had turned a shape the codebase explicitly documents as legal into a
-// hard task failure: two embedded files sharing the same Name — two
-// environments each declaring one named "run", or an environment and the
-// step both declaring "run" — must overwrite in declaration order
-// (last-wins, matching fmtres.AddFileVars's own doc: "If two files share the
-// same Name, the later entry overwrites the earlier in the scope"), not
-// fail the write. This is the no-isolation path (nil credential); see
+// TestWriteEmbeddedFiles_DuplicateNameLastWins: two embedded files sharing a
+// Name (two environments each declaring one named "run", or an environment
+// and the step both declaring "run") overwrite in declaration order
+// (last-wins, matching fmtres.AddFileVars's doc: "If two files share the same
+// Name, the later entry overwrites the earlier in the scope") rather than
+// failing the write. isolation.WriteFileFchown's O_EXCL create must not turn
+// this into a task failure. This is the no-isolation path (nil credential); see
 // TestWriteEmbeddedFiles_DuplicateNameLastWins_Isolated for the isolated one.
 func TestWriteEmbeddedFiles_DuplicateNameLastWins(t *testing.T) {
 	dir := t.TempDir()

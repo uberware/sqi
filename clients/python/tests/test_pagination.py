@@ -136,9 +136,9 @@ def test_offset_with_exact_page_boundary_makes_no_extra_request() -> None:
 
 def test_server_clamped_limit_does_not_truncate() -> None:
     # sqi-server clamps `limit` to its MaxLimit (1000) instead of rejecting it.
-    # A clamped full page must not read as a short page — that would silently
-    # drop the rest of the result set. The page's `limit` field carries the
-    # size the server actually applied.
+    # A clamped full page must not read as a short page, which would drop the
+    # rest of the result set. The page's `limit` field carries the size the
+    # server applied.
     items = list(range(8))
     server_max = 3
     calls: list[tuple[int, int]] = []

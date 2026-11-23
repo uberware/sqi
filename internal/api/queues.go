@@ -195,7 +195,7 @@ type queueListResponse struct {
 // router.go). userSet/groupSet report whether the JSON body contained the
 // run_as_user / run_as_group key (by any value, including null); a *string
 // cannot distinguish an omitted key from null (see decodeQueueBody). A request
-// that touches neither key is unaffected: this gate must never turn an
+// that touches neither key is unaffected: this gate must not turn an
 // ordinary queue write by an operator into a 403. Returns true if the request may
 // proceed; on false it has already written the 403 response.
 func requireIsolationManage(w http.ResponseWriter, r *http.Request, userSet, groupSet bool) bool {

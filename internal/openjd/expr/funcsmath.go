@@ -13,31 +13,29 @@ import (
 // ceil, round.
 var mathFuncs = map[string][]Shape{
 	// Section 2.2.3's round(). Three rows, and the two-argument row's return
-	// type is a union because RFC 0006 makes it depend on the VALUE of ndigits:
+	// type is a union because RFC 0006 makes it depend on the value of ndigits:
 	// int when ndigits <= 0, float when positive. That cannot be decided
 	// statically, so the declared type names both and the runtime picks.
 	//
-	// NOTE a deliberate divergence from the reference implementation, which
+	// This diverges from the reference implementation, which
 	// returns 1230.0 typed float for round(1234.5, -1). RFC 0006's signature
 	// table says "returns int when ndigits <= 0", and the specification
 	// outranks the reference; see test/oracle/baseline.txt.
 	//
-	// COST: Cost{} on all three -- round takes no string, path or list
-	// argument, so neither rule 2 nor rule 3 names any charge here. NOT
-	// REPRODUCED: the reference's own count for the (float, int) and (int, int)
-	// rows is NOT flat -- it adds ceil(ndigits/256) when ndigits is POSITIVE
-	// (round(2.0,1) measures 2, round(2.0,300) measures 3, round(2.0,600)
-	// measures 4) and stays flat for ndigits <= 0 no matter its magnitude
-	// (round(2.0,-600) still measures 2). This tracks the RENDERED decimal
-	// string's length, but that string lives on Value.fs (floatRendered,
-	// value.go), a field Cost's ArgBytes/ResultBytes deliberately never read
+	// Cost: Cost{} on all three -- round takes no string, path or list
+	// argument, so neither rule 2 nor rule 3 names any charge here. Not
+	// reproduced: the reference's own count for the (float, int) and (int, int)
+	// rows is not flat: it adds ceil(ndigits/256) when ndigits is positive
+	// (round(2.0,1) costs 2 there, round(2.0,300) 3, round(2.0,600) 4) and
+	// stays flat for ndigits <= 0 whatever its magnitude. This tracks the
+	// rendered decimal string's length, but that string lives on Value.fs
+	// (floatRendered, value.go), a field Cost's ArgBytes/ResultBytes never read
 	// (value.go's own doc: "nothing propagates it" -- section 1.3.4's rule, not
 	// a shortcut). Reproducing the reference's count would require charging
 	// bytes for a presentation-only field no other Cost row in this package
 	// touches, on an argument (ndigits, an int) that rule 3 does not name ("a
-	// string or path value"). Left uncharged, per the standing rule that an
-	// unreproducible reference count is not chased absent spec text to justify
-	// it. See cost_misc_internal_test.go's PROBE.
+	// string or path value"). Left uncharged: a reference count with no spec
+	// text to justify it is not reproduced. See cost_misc_internal_test.go.
 	"round": {
 		{Params: []Type{TFloat}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			n, err := floatToInt(math.RoundToEven(args[0].AsFloat()))
@@ -59,11 +57,9 @@ var mathFuncs = map[string][]Shape{
 	// lands on the int row and abs(-2.5) on the float row, and a constrained
 	// variable would only re-derive that ranking by hand.
 	//
-	// COST: Cost{} on both rows -- abs takes a single scalar and does no list
-	// or string/path work; confirmed flat at 1 (rule 1 only) in the reference
-	// for both int and float, isolated from unary minus's own separate charge
-	// (abs(-1) measures 2, but "-1" alone already measures 1 -- abs's own share
-	// is exactly 1).
+	// Cost: Cost{} on both rows -- abs takes a single scalar and does no list
+	// or string/path work. It costs a flat 1 (rule 1 only) for both int and
+	// float, as in the reference (abs(-1) costs 2, of which "-1" is 1).
 	"abs": {
 		{Params: []Type{TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			n := args[0].AsInt()
@@ -82,13 +78,13 @@ var mathFuncs = map[string][]Shape{
 			return floatValue(math.Abs(args[0].AsFloat()))
 		}},
 	},
-	// floor and ceil both return int from EITHER argument type, which is RFC
+	// floor and ceil both return int from either argument type, which is RFC
 	// 0006's signature and not an oversight: their whole purpose is the
 	// destructive conversion int() refuses to perform.
 	//
-	// COST: Cost{} on all four rows (floor and ceil together) -- same reasoning
-	// as abs: a single scalar in, a single scalar out, confirmed flat at 1 in
-	// the reference for both argument types.
+	// Cost: Cost{} on all four rows (floor and ceil together) -- same reasoning
+	// as abs: a single scalar in, a single scalar out, a flat 1 for both
+	// argument types, as in the reference.
 	"floor": {
 		{Params: []Type{TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			return args[0], nil
@@ -113,53 +109,50 @@ var mathFuncs = map[string][]Shape{
 			return Int(n), nil
 		}},
 	},
-	// COST, min and max together: rule 2 names both by name ("built-in
-	// functions that iterate lists such as ... min(), max() ..."). The two LIST
-	// rows (ListOf(TInt), ListOf(TFloat)) declare Cost{ArgElements: {0}},
-	// confirmed scaling in the reference (min([3,1,2]) measures 4 = 1 call + 3
-	// elements).
+	// Cost, min and max together: rule 2 names both by name ("built-in
+	// functions that iterate lists such as ... min(), max() ..."). The two list
+	// rows (ListOf(TInt), ListOf(TFloat)) declare Cost{ArgElements: {0}}, as
+	// the reference charges (min([3,1,2]) costs 4 = 1 call + 3 elements).
 	//
-	// The FIXED-ARITY (T,T) and (T,T,T) rows and the list[nulltype] row are
-	// Cost{}, and the range_expr rows charge -- two separate DIVERGENCES from
+	// The fixed-arity (T,T) and (T,T,T) rows and the list[nulltype] row are
+	// Cost{}, and the range_expr rows charge -- two separate divergences from
 	// the reference:
 	//
-	//  1. The reference's own count for the SCALAR 2-arg and 3-arg rows is
-	//     NOT flat: min(1,2) measures 3 and min(1,2,3) measures 4 -- exactly
-	//     1 (the call) plus N (the argument COUNT), the identical formula the
+	//  1. The reference's own count for the scalar 2-arg and 3-arg rows is
+	//     not flat: min(1,2) costs 3 there and min(1,2,3) 4 -- exactly
+	//     1 (the call) plus N (the argument count), the identical formula the
 	//     list rows use, as if the reference internally treats every
 	//     min/max call as "iterate a slice of N values" regardless of whether
 	//     the N came from unpacking a list argument or from N separate
 	//     positional arguments. RFC 0006 declares min(T,T) and min(T,T,T) as
-	//     distinct, FIXED-ARITY overloads from min(list[T]) -- neither takes a
+	//     distinct, fixed-arity overloads from min(list[T]) -- neither takes a
 	//     list value at all -- and rule 2's own text requires "iterates through
-	//     every element of A LIST" for the charge to apply. Reproducing the
-	//     reference's count here would need a NEW Cost mechanism: an
+	//     every element of a list" for the charge to apply. Reproducing the
+	//     reference's count here would need a new Cost mechanism: an
 	//     unconditional per-Shape charge equal to len(Params), unrelated to any
-	//     argument's VALUE, which every other charge in this package keys off.
+	//     argument's value, which every other charge in this package keys off.
 	//     It also would not serve section 1.3.10's own stated purpose: the
 	//     arity here is fixed by the overload (2 or 3), so there is no
 	//     template-author-controlled quantity to bound.
 	//
 	//  2. The range_expr rows below are Cost{ArgElements: {0}}, although the
-	//     reference's count does NOT scale with the range's size
-	//     (min(range_expr('1-5')) and min(range_expr('1-100000')) both
-	//     measure 3). "Nothing scales" is a fact about the REFERENCE, and
-	//     this package's standing rule subordinates the reference to the
-	//     specification. Rule 2's own test decides it, and sqi's own Fn
-	//     bodies below meet it plainly: both call rangeInts(args[0]), which
-	//     expands the range in full, with no early exit and no arithmetic
-	//     shortcut from the endpoints. The reference may find its answer
-	//     without touching each value; sqi does touch each one. Uncharged,
-	//     min(Param.R) and max(Param.R) with R = range_expr("1-1000000")
-	//     would each charge 1 operation while expanding a million integers.
-	//     sum's range_expr row (below) and ops.go's OpIn/OpNotIn range_expr
-	//     rows charge the same way for the same reason. Each is a count
-	//     divergence from the reference, baselined in
+	//     reference's count does not scale with the range's size
+	//     (min(range_expr('1-5')) and min(range_expr('1-100000')) both cost
+	//     3 there). The specification outranks the reference, and rule 2's
+	//     test decides it; sqi's Fn bodies below meet it: both call
+	//     rangeInts(args[0]), which expands the range in full, with no early
+	//     exit and no arithmetic shortcut from the endpoints. The reference may
+	//     find its answer without touching each value; sqi does touch each one.
+	//     Uncharged, min(Param.R) and max(Param.R) with R =
+	//     range_expr("1-1000000") would each charge 1 operation while expanding
+	//     a million integers. sum's range_expr row (below) and ops.go's
+	//     OpIn/OpNotIn range_expr rows charge the same way for the same reason.
+	//     Each is a count divergence from the reference, baselined in
 	//     test/oracle/baseline-ops.txt; the flat +1 residual described above
 	//     remains the reference's own.
 	//
-	// See cost_misc_internal_test.go's PROBE for the transcribed measurements
-	// of both divergences, and TestMinMax_EmptyList_SelectsNoReturnRow
+	// See cost_misc_internal_test.go for both divergences, and
+	// TestMinMax_EmptyList_SelectsNoReturnRow
 	// (below the tables) for why the list[nulltype] row's own Cost{} needs no
 	// separate justification: it never reaches a success path to charge
 	// anything from.
@@ -182,10 +175,10 @@ var mathFuncs = map[string][]Shape{
 		{Params: []Type{ListOf(TFloat)}, Ret: TFloat, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return extremumFloat(args[0].AsList(), true)
 		}},
-		// The empty literal's own row. list[nulltype] matches it EXACTLY (cost
+		// The empty literal's own row. list[nulltype] matches it exactly (cost
 		// 0, via shape.go's argCostList), while the list[int] row above only
 		// reaches the empty argument by section 1.2.6 rule 6's widening (cost
-		// 1) — so this row wins outright ON COST, not by tying and falling
+		// 1) — so this row wins outright on cost, not by tying and falling
 		// back to registration order, and RFC 0006's wording is what the user
 		// sees. shape.go's argCostList carves out list[nulltype] vs
 		// list[nulltype] as an exact match; scoring it as the same cost-1
@@ -238,31 +231,30 @@ var mathFuncs = map[string][]Shape{
 	// explicitly, and it is the mathematically empty sum. That is the one place
 	// sum and min/max part company on the same argument.
 	//
-	// This row wins against list[int]/list[float] below ON COST (shape.go's
+	// This row wins against list[int]/list[float] below on cost (shape.go's
 	// argCostList scores list[nulltype] vs list[nulltype] as an exact match,
 	// cost 0, against those rows' cost-1 widen), not because it happens to be
 	// registered first — TestSum_EmptyListIsOrderIndependent pins that
 	// reordering these rows does not change the result, which is what a
 	// position-dependent tie would let happen.
 	//
-	// COST: rule 2 names sum() by name. The two list rows declare
+	// Cost: rule 2 names sum() by name. The two list rows declare
 	// Cost{ArgElements: {0}} (list[nulltype] is Cost{}: its element count is
-	// always zero, so there is nothing to charge). The range_expr row ALSO
-	// declares Cost{ArgElements: {0}}, and here it costs no divergence at all:
-	// the reference is confirmed SCALING on this one (sum(range_expr("1-100"))
-	// measures 102, sum(range_expr("1-1000")) measures 1002, both exactly 1 +
-	// N) and sqi reproduces it exactly, since range_expr's own construction
-	// already charges nothing (funcsconv.go), leaving sum's own share at 1 (the
-	// call) + N (elementCount, which resolves a range_expr via rangeExprCount,
-	// ops.go's elementCount).
+	// always zero, so there is nothing to charge). The range_expr row also
+	// declares Cost{ArgElements: {0}}, and here it matches the reference,
+	// which scales on this one (sum(range_expr("1-100")) costs 102,
+	// sum(range_expr("1-1000")) 1002, both 1 + N), and sqi reproduces it, since
+	// range_expr's own construction already charges nothing (funcsconv.go),
+	// leaving sum's own share at 1 (the call) + N (elementCount, which resolves
+	// a range_expr via rangeExprCount, ops.go's elementCount).
 	//
-	// The reference does NOT scale on min/max's identical range_expr row --
+	// The reference does not scale on min/max's identical range_expr row --
 	// apparently finding its answer arithmetically from the range's
 	// endpoints. That is a difference in the reference's implementations,
 	// not a license for sqi to differ in its own: sqi's min, max and sum
 	// range_expr bodies all call rangeInts and all expand in full, so all
 	// three charge ArgElements{0}, and min/max's rows diverge from the
-	// reference where this row agrees with it; see min's own COST comment
+	// reference where this row agrees with it; see min's own cost comment
 	// above.
 	"sum": {
 		{Params: []Type{ListOf(TNull)}, Ret: TInt, Fn: func([]Value) (Value, error) {
@@ -299,7 +291,7 @@ var mathFuncs = map[string][]Shape{
 // on any float value at all rather than one fixed one.
 //
 // Both bounds are exactly representable as float64 (2^63 and -2^63), so the
-// comparison is exact. This deliberately does NOT use toInt's (coerce.go)
+// comparison is exact. This does not use toInt's (coerce.go)
 // "float64(i) != f" round-trip test: floor, ceil and round exist precisely to
 // discard a fraction, so that test would reject the very input these
 // functions are meant to accept.
@@ -316,11 +308,11 @@ func floatToInt(f float64) (int64, error) {
 // done on f's exact rational value: scaling in float64 and rounding the product
 // would round a value f does not have.
 //
-// A positive ndigits returns a FLOAT carrying its own rendered form, because
+// A positive ndigits returns a float carrying its own rendered form, because
 // RFC 0006 requires round(3.5, 2) to render "3.50" — strconv's 'f' format with
 // an explicit precision is exactly that text. The float is the double nearest
 // the exactly rounded decimal, as CPython's is. A non-positive ndigits returns
-// an INT, per RFC 0006's signature table, and an int outside int64 is an
+// an int, per RFC 0006's signature table, and an int outside int64 is an
 // integer overflow.
 func roundToDigits(f float64, ndigits int64) (Value, error) {
 	if ndigits > 0 {
@@ -427,7 +419,7 @@ func roundRatHalfEven(r *big.Rat) *big.Int {
 // representable. The scale exceeds MaxInt64 and so exceeds |n|, which makes the
 // quotient 0; the only question is whether the remainder — all of n — reaches
 // half the scale and rounds away from zero. If it does the result is ±scale,
-// which is not representable and IS a genuine overflow; if it does not, the
+// which is not representable and is an overflow; if it does not, the
 // result is 0. roundToDigits' float branch already returns 0 for the same
 // shape of question (round(3.5, -400)), and bailing out here would make
 // round(1234, -19) an error where round(1234.0, -19) is 0.
@@ -469,10 +461,10 @@ func roundIntToDigits(n, ndigits int64) (Value, error) {
 	}
 	// q*scale, not Int(q*scale) directly: the multiplication itself can leave
 	// int64's range even though both the accumulation loop above and the
-	// half-adjustment just before it were individually guarded — measured for
-	// "round(9223372036854775807, -1)" and "round(9223372036854775806, -1)",
-	// both of which return the wrong, sign-flipped -9223372036854775806
-	// without the checked multiply.
+	// half-adjustment before it were individually guarded:
+	// "round(9223372036854775807, -1)" and "round(9223372036854775806, -1)"
+	// would both return the wrong, sign-flipped -9223372036854775806 without
+	// the checked multiply.
 	out, err := mulInt(q, scale)
 	if err != nil {
 		return Value{}, err
@@ -506,8 +498,8 @@ func extremumInt(vals []Value, wantMin bool) (Value, error) {
 // extremumInts is extremumInt for already-unboxed int64 values, used by
 // min/max's range_expr rows. rangeInts (rangeexpr.go) hands back a plain
 // []int64; boxing it into []Value only to immediately unbox it again inside
-// extremumInt would cost a real allocation for nothing — measured at half a
-// gigabyte extra on a ten-million-value range — so this operates on the slice
+// extremumInt would cost an allocation for nothing (hundreds of megabytes on a
+// ten-million-value range), so this operates on the slice
 // rangeInts already produced instead.
 func extremumInts(ints []int64, wantMin bool) (Value, error) {
 	if len(ints) == 0 {

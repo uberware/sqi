@@ -7,17 +7,15 @@ import "github.com/uberware/sqi/internal/openjd/expr"
 // Scope identifies the symbol environment of a template position: which
 // symbols exist there, and whether the position runs on a worker host.
 //
-// This is the SINGLE declaration of scope in the package. It has two consumers,
-// which is why it exists:
+// This is the package's single declaration of scope, with two consumers:
 //
 //   - The EXPR path builds a typed symbol table from it, so a reference to a
 //     symbol the scope does not expose fails as an unknown symbol from the
-//     evaluator rather than from a second, parallel mechanism.
-//   - The base-spec path keeps prefix-matching, against prefixes DERIVED from
-//     this declaration (derivedPrefixes) rather than a hand-maintained list.
+//     evaluator.
+//   - The base-spec path prefix-matches against prefixes derived from this
+//     declaration (derivedPrefixes) rather than a hand-maintained list.
 //
-// Keeping hand-written base-spec prefixes AND an EXPR scope model would put
-// scope knowledge in two places, free to drift apart.
+// One declaration keeps the two from drifting apart.
 type Scope int
 
 const (
@@ -36,9 +34,8 @@ const (
 	// section 3.6.2 row 1), evaluated at submission before any host exists.
 	// It is not derivable from any other scope: ScopeJob is the closest
 	// (also submission-time) but exposes neither Job.Name nor Step.Name,
-	// while this scope needs both -- and unlike every host-context scope it
-	// gets no Session.*, no Task.* and no Env.File.*. Appended at the end so
-	// the four scopes above keep their existing values.
+	// while this scope needs both, and unlike every host-context scope it
+	// gets no Session.*, no Task.* and no Env.File.*.
 	ScopeStepTemplate
 )
 
@@ -61,28 +58,18 @@ func (s Scope) String() string {
 // IsHostContext reports whether expressions in this scope are evaluated on a
 // worker host, where session state exists.
 //
-// It gates the host-context-only functions. The specification does NOT commit
-// to a single such function: its FunctionLibrary.with_host_context() enables
-// "host-only functions like apply_path_mapping()" (wiki
-// 2026-02-Expression-Language.md:527). apply_path_mapping is the only one in
-// sqi's registry today because it is the only function that reads session
-// state; the gate is a set (hostOnlyFunctions, exprcheck.go) rather than a
-// name comparison so a second entrant costs one edit. (RFC 0005's
-// "Host-Context Function Availability" states the rule at more length, but the
-// RFC is the
-// proposal behind the specification, not the specification -- see
-// hostOnlyFunctions' own comment.)
+// It gates the host-context-only functions. The specification's
+// FunctionLibrary.with_host_context() enables "host-only functions like
+// apply_path_mapping()" (wiki 2026-02-Expression-Language.md:527), so the
+// gate is a set (hostOnlyFunctions, exprcheck.go) rather than a name
+// comparison; apply_path_mapping is its only member because it is the only
+// function that reads session state.
 //
-// This is deliberately an explicit positive list of the host-context scopes,
-// not a negation of the non-host ones. A negation (such as "s != ScopeJob")
-// is an every-scope-but-this-one claim: it is correct only for as long as
-// every scope added later happens to be a host context, which is not a
-// property Go's type system -- or anything else -- enforces. A positive list
-// fails CLOSED: a sixth scope that nobody adds a case for here is not a host
-// context, and apply_path_mapping stays unavailable there until someone
-// deliberately decides otherwise. ScopeStepTemplate shows why -- it is not
-// ScopeJob, so "s != ScopeJob" would grant it host-only functions despite
-// section 3.6.2 row 1 placing it at submission time, before any host exists.
+// This is a positive list of the host-context scopes, not a negation of the
+// non-host ones, so a new scope with no case here is not a host context and
+// apply_path_mapping stays unavailable there. ScopeStepTemplate shows why: a
+// rule such as "s != ScopeJob" would grant it host-only functions although
+// section 3.6.2 row 1 places it at submission time, before any host exists.
 func (s Scope) IsHostContext() bool {
 	switch s {
 	case ScopeJobEnvironment, ScopeStepEnvironment, ScopeStepScript:
@@ -105,7 +92,7 @@ type fixedSymbol struct {
 	EXPROnly bool
 }
 
-// symbolFamily is a symbol whose MEMBERS come from the template rather than the
+// symbolFamily is a symbol whose members come from the template rather than the
 // specification -- Param.<name> for each declared job parameter, and so on. The
 // member types are resolved per template by exprcheck.go; only the prefix and
 // its availability are scope facts.
@@ -123,16 +110,13 @@ const numScopes = int(ScopeStepTemplate) + 1
 
 // The three scope-derived answers, precomputed once per Scope at package init.
 //
-// Each is a pure function of a Scope, of which there are numScopes compile-time
-// constants, but every one of them was recomputed PER CALL -- and
-// derivedPrefixes is called once per format-string position on every submission,
-// EXPR or not (validateFormatString). Building the same handful of slices again
-// at each position is the whole reason these exist.
+// Each is a pure function of a Scope, and derivedPrefixes is called once per
+// format-string position on every submission, EXPR or not
+// (validateFormatString), so the slices are built once rather than per call.
 //
-// THE SHARED SLICES ARE READ-ONLY. Nothing in this package appends to or writes
-// through what scopeFixed, scopeFamilies or derivedPrefixes return -- callers
-// range over them, join them, or prefix-match against them -- and a caller that
-// started appending would now be writing into every other caller's copy.
+// The shared slices are read-only. Callers of scopeFixed, scopeFamilies and
+// derivedPrefixes range over, join or prefix-match against them; a caller
+// that appended would write into every other caller's copy.
 var (
 	scopeFixedTable    [numScopes][]fixedSymbol
 	scopeFamiliesTable [numScopes][]symbolFamily
@@ -156,7 +140,7 @@ func init() {
 // 7.3.1--job-name-requires-expr and 7.3.1--step-name-requires-expr are invalid
 // without the extension.
 //
-// The result is the SHARED slice built at init; see the table declaration above
+// The result is the shared slice built at init; see the table declaration above
 // for why no caller may modify it.
 func scopeFixed(s Scope) []fixedSymbol {
 	if s >= 0 && int(s) < len(scopeFixedTable) {
@@ -194,10 +178,10 @@ func computeScopeFixed(s Scope) []fixedSymbol {
 }
 
 // scopeFamilies returns the template-populated symbol families a scope exposes,
-// in a fixed order. Order matters: derivedPrefixes feeds validateFormatString's "allowed: ..." message, and
-// reordering it would change text users read.
+// in a fixed order. Order matters: derivedPrefixes feeds validateFormatString's
+// "allowed: ..." message, and reordering it would change text users read.
 //
-// The result is the SHARED slice built at init; see the table declaration above
+// The result is the shared slice built at init; see the table declaration above
 // for why no caller may modify it.
 func scopeFamilies(s Scope) []symbolFamily {
 	if s >= 0 && int(s) < len(scopeFamiliesTable) {
@@ -233,27 +217,21 @@ func computeScopeFamilies(s Scope) []symbolFamily {
 // prefixes that are not EXPR-only, plus "Session." where the scope has session
 // symbols.
 //
-// "Session." is a prefix in the base-spec lists but a set of three FIXED
+// "Session." is a prefix in the base-spec lists but a set of three fixed
 // symbols in the EXPR model, so it is reconstructed here rather than living in
-// scopeFamilies. That asymmetry is real and deliberate: the base spec never
-// enumerated which Session symbols exist, and EXPR does.
+// scopeFamilies: the base spec does not enumerate which Session symbols
+// exist, and EXPR does.
 //
-// ScopeStepTemplate returns nil unconditionally, for a different reason than
-// ScopeJob's nil scopeFixed: a <StepTemplate>.let block has no base-spec
-// existence at all. Structural validation (validate.go) rejects it before the
-// EXPR extension is enabled, so no base-spec template ever reaches a position
-// this function would be consulted for -- there is no "allowed: ..." message
-// to build here, because there is no legal base-spec reference to reject.
-// Falling through to the general computation below would produce a
-// plausible-looking but never-exercised list, and worse, a wrong one: the
-// "s != ScopeJob" rule would append "Session." even though section 3.6.2 row
-// 1 grants a step template no Session symbols at all. Returning nil here says plainly that this scope is out of scope for
-// the base-spec path.
+// ScopeStepTemplate returns nil: a <StepTemplate>.let block has no base-spec
+// existence. validateLetExtension (validate.go) rejects one on a template
+// without EXPR, so no base-spec reference is ever checked at this scope. The
+// general computation below would wrongly append "Session." (by the
+// "s != ScopeJob" rule), although section 3.6.2 row 1 grants a step template
+// no Session symbols.
 //
-// The result is the SHARED slice built at init; see the table declaration above
-// for why no caller may modify it. This is the hottest of the three -- one
-// lookup per format-string position on every submission -- and the reason the
-// tables exist.
+// The result is the shared slice built at init; see the table declaration above
+// for why no caller may modify it. This is the most frequently called of the
+// three: one lookup per format-string position on every submission.
 func derivedPrefixes(s Scope) []string {
 	if s >= 0 && int(s) < len(derivedPrefixTable) {
 		return derivedPrefixTable[s]

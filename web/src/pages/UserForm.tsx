@@ -50,11 +50,11 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
   const [newPassword, setNewPassword] = useState('')
 
   // Straight from the server's `role_editable`, which it computes from the
-  // same predicate that guards PATCH /users/{id}. Deliberately not inferred
-  // from auth_source: the guard is two conditions (auth_source=ldap AND
-  // role_source=directory) and role_source is not on the wire, so inferring
-  // would disable the control for LDAP accounts under role_source=local,
-  // where the server does accept a role change.
+  // same predicate that guards PATCH /users/{id}. Not inferred from
+  // auth_source: the guard is two conditions (auth_source ldap or oidc, and
+  // that source's role_source=directory) and role_source is not on the wire,
+  // so inferring would disable the control for LDAP and OIDC accounts under
+  // role_source=local, where the server does accept a role change.
   const roleManagedExternally = !defaults.roleEditable
 
   // Same contract, for the set-password control: straight from the server's
@@ -83,11 +83,11 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
         await createUser.mutateAsync(input)
         showToast(`User "${trimmedUsername}" created`, 'success')
       } else {
-        // The role is omitted when the server says it is not editable. A
-        // no-op role (equal to the stored one) would in fact be accepted —
-        // the server compares against the current value before rejecting —
-        // but the control is disabled here, so there is nothing to send and
-        // omitting it keeps the request limited to what the form changed.
+        // The role is omitted when the server says it is not editable. The
+        // server would accept a role equal to the stored one, since it
+        // compares against the current value before rejecting, but the
+        // control is disabled here, so there is nothing to send and omitting
+        // it keeps the request limited to what the form changed.
         const input: UserUpdateInput = roleManagedExternally
           ? { display_name: trimmedDisplayName, disabled }
           : { display_name: trimmedDisplayName, disabled, role }

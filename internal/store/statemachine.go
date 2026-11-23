@@ -43,8 +43,8 @@ var ErrInvalidTransition = errors.New("store: invalid state transition")
 // the background until the stream acknowledges it, and drops one still pending
 // when the task's terminal status is ready to send. A task that ends before
 // its process starts (a refused or failed dispatch) sends no "running" at all.
-// The terminal message then lands on a row still in 'assigned'. Rejecting it would strand
-// finished work until the heartbeat sweep reclaimed it.
+// The terminal message then lands on a row still in 'assigned'. Rejecting it
+// would strand finished work until the heartbeat sweep reclaimed it.
 //
 // A transition from a status to itself is not listed here and is not valid:
 // callers that must tolerate duplicate delivery treat same-status writes as a
@@ -81,13 +81,12 @@ var validTaskTransitions = map[TaskStatus]map[TaskStatus]struct{}{
 // another is permitted by the state machine, or a descriptive error wrapping
 // [ErrInvalidTransition] otherwise.
 //
-// This lives in package store rather than package openjd because the store is
-// what enforces it on every write; openjd imports store, so the store cannot
-// import openjd. There is no openjd counterpart to call instead: package openjd
-// owns only the STEP machine ([github.com/uberware/sqi/internal/openjd.ValidateStepTransition]),
-// with its own separate [ErrInvalidTransition] sentinel — match errors against
-// the sentinel from the same package as the machine you called, or errors.Is
-// silently stops matching.
+// It lives in package store because [TaskStore.CompleteTaskAttempt] enforces
+// it, and openjd imports store, so store cannot import openjd. Package openjd
+// owns only the step machine
+// ([github.com/uberware/sqi/internal/openjd.ValidateStepTransition]), with its
+// own [ErrInvalidTransition] sentinel: match an error against the sentinel of
+// the package whose machine returned it, or errors.Is does not match.
 func ValidateTaskTransition(from, to TaskStatus) error {
 	targets, known := validTaskTransitions[from]
 	if !known {

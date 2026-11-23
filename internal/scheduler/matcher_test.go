@@ -282,12 +282,11 @@ func TestEligible_AttrOSFamily_AnyOf_Match(t *testing.T) {
 }
 
 // A macOS worker self-reports runtime.GOOS, which is "darwin", but OpenJD's
-// reserved attr.worker.os.family takes the token "macos" — and the template
-// validator (internal/openjd, reservedAttributeAllowed) accepts ONLY
-// {linux, windows, macos}, rejecting "darwin" outright. So "macos" is the sole
-// spelling a template can legally use for a Mac, and it is the one that has to
-// match here. Before this was fixed, no valid template could ever schedule on a
-// Mac: the job was accepted and its tasks then waited forever.
+// reserved attr.worker.os.family takes the token "macos", and the template
+// validator (internal/openjd, reservedAttributeAllowed) accepts only
+// {linux, windows, macos}, rejecting "darwin". So "macos" is the only spelling
+// a template can use for a Mac, and it must match here, or no valid template
+// could schedule on a Mac.
 func TestEligible_AttrOSFamily_DarwinSatisfiesMacos_AnyOf(t *testing.T) {
 	w := baseWorker()
 	w.OS = "darwin"
@@ -316,11 +315,11 @@ func TestEligible_AttrOSFamily_DarwinSatisfiesMacos_AllOf(t *testing.T) {
 	}
 }
 
-// The mapping is one-way on purpose: this attribute carries the SPEC's os
+// The mapping is one-way: this attribute carries the specification's os
 // family, not the Go runtime's. "darwin" is not a legal value for it — the
 // validator rejects a template containing it — so a worker must not match it
-// either, or the two halves disagree again in the opposite direction. A
-// template that genuinely wants the Go spelling has attr.worker.tag.os, which
+// either, or the two halves disagree in the opposite direction. A
+// template that wants the Go spelling has attr.worker.tag.os, which
 // capabilities.Detect populates with runtime.GOOS verbatim.
 func TestEligible_AttrOSFamily_DarwinDoesNotSatisfyDarwin(t *testing.T) {
 	w := baseWorker()
@@ -358,12 +357,10 @@ func TestEligible_AttrOSFamily_NonDarwinPassThrough(t *testing.T) {
 
 // ── attr.worker.cpu.arch ──────────────────────────────────────────────────────
 //
-// Same shape as the os.family bug above, and worse while it lasted: cpu.arch is
-// a reserved attribute the template validator accepts (with the enum
-// {x86_64, arm64}), but the scheduler had no case for it at all, so it resolved
-// to "" and could never match on ANY platform — the worker did not even report
-// its architecture. A template gating on it validated, submitted, and then
-// waited forever.
+// Same shape as os.family above: cpu.arch is a reserved attribute the template
+// validator accepts with the enum {x86_64, arm64}, while the worker reports
+// runtime.GOARCH. Without the mapping a template gating on it would validate,
+// submit, and then wait forever.
 
 func TestEligible_AttrCPUArch_Amd64SatisfiesX86_64(t *testing.T) {
 	w := baseWorker()
@@ -498,10 +495,9 @@ func TestEligible_AttrCustomTag_Missing(t *testing.T) {
 }
 
 // TestEligible_AttrAutoDetectedTag_ValueTrue mirrors the DCC preset convention
-// (presets/sqi/*.yaml declare attr.worker.tag.maya anyOf: ["true"]) to guard
-// against the auto-detection regression where detected tags were recorded
-// with an empty value instead of "true", which silently rejected every
-// auto-detected worker.
+// (presets/sqi/*.yaml declare attr.worker.tag.maya anyOf: ["true"]): a
+// detected tag carries the value "true", and a tag recorded with an empty
+// value would reject every auto-detected worker.
 func TestEligible_AttrAutoDetectedTag_ValueTrue(t *testing.T) {
 	s := baseStep()
 	s.HostRequirements = &store.StepHostRequirements{

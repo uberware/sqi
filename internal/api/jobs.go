@@ -168,7 +168,7 @@ type jobDetailResponse struct {
 	// FailureSummary aggregates the job's failed tasks by failure reason. Nil
 	// when the job has no failed tasks with a recorded reason.
 	FailureSummary *failureSummaryResponse `json:"failure_summary,omitempty"`
-	// EffectiveRetry is the RESOLVED retry policy the job runs under, after
+	// EffectiveRetry is the resolved retry policy the job runs under, after
 	// job -> queue -> farm -> server-default inheritance. Omitted only when
 	// the queue or farm lookup fails.
 	EffectiveRetry *effectiveRetryResponse `json:"effective_retry,omitempty"`
@@ -849,8 +849,7 @@ func (h *jobHandler) validateQueueMove(w http.ResponseWriter, r *http.Request, q
 
 // applyRetryOverridePatch validates the PATCH request's optional retry
 // override fields and applies the present ones to job. On an out-of-range
-// value it writes the 400 response and reports false. Extracted from patchJob
-// to keep its cyclomatic complexity in check.
+// value it writes the 400 response and reports false.
 func applyRetryOverridePatch(w http.ResponseWriter, r *http.Request, req *patchJobRequest, job *store.Job) bool {
 	if problem := validateRetryOverrides(req.MaxAttempts, req.RetryDelaySeconds, req.FailureLimit); problem != "" {
 		writeProblem(w, r, http.StatusBadRequest, problem)
@@ -956,7 +955,7 @@ func (h *jobHandler) applyStatusChange(
 // resumedJob reconciles a just-resumed job and returns it as stored. A job
 // still holding its cross-job dependencies resumes to blocked, and its
 // upstreams may have completed (it is released) or failed (it is canceled)
-// while it was paused; reconciling now decides it at once instead of at the
+// while it was paused; reconciling here decides it at once instead of at the
 // sweep's next pass. ReconcileBlockedJob leaves any job that is not blocked
 // alone, and a failure is logged and left to that sweep. A job that ends up
 // pending wakes its queue's parked workers, as a submission does. If the job
@@ -1048,8 +1047,8 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A canceled upstream can never satisfy jobs blocked on it — cancel them
-	// now rather than waiting for the periodic sweep, matching deleteJob.
+	// A canceled upstream can never satisfy jobs blocked on it, so cancel them
+	// immediately rather than waiting for the periodic sweep, as deleteJob does.
 	if err := h.sched.ReconcileDependents(ctx, id); err != nil {
 		h.logger.ErrorContext(ctx, "jobs: reconcile dependents after cancel failed",
 			slog.String("job_id", id), slog.Any("error", err))
@@ -1097,7 +1096,7 @@ func (h *jobHandler) retryJob(w http.ResponseWriter, r *http.Request) {
 
 // deleteJob hard-deletes a job and all of its data. If the job is still active
 // (not in a terminal state) its tasks are canceled first via the scheduler so
-// assigned workers stop work, exactly as cancelJob does. The delete itself is
+// assigned workers stop work, as cancelJob does. The delete itself is
 // always permitted regardless of job state.
 func (h *jobHandler) deleteJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -1150,8 +1149,8 @@ func (h *jobHandler) deleteJob(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// A deleted upstream can never satisfy jobs blocked on it — cancel them now
-	// rather than waiting for the periodic sweep.
+	// A deleted upstream can never satisfy jobs blocked on it, so cancel them
+	// immediately rather than waiting for the periodic sweep.
 	if err := h.sched.ReconcileDependents(ctx, id); err != nil {
 		h.logger.ErrorContext(ctx, "jobs: reconcile dependents after delete failed",
 			slog.String("job_id", id), slog.Any("error", err))
@@ -1163,7 +1162,7 @@ func (h *jobHandler) deleteJob(w http.ResponseWriter, r *http.Request) {
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
 // resolveQueueNames builds a map of queue ID → queue name for the unique queue
-// IDs present in jobs. Missing or erroring queues are silently omitted so a
+// IDs present in jobs. Missing or erroring queues are omitted so a
 // deleted queue does not break the job list response.
 func resolveQueueNames(ctx context.Context, s store.Store, jobs []store.Job) map[string]string {
 	seen := make(map[string]struct{}, len(jobs))
@@ -1358,7 +1357,7 @@ func exprDeadlineAt(d time.Duration) time.Time {
 
 // writeExprDeadlineProblem reports err as a 503 when it is the submission
 // pipeline's wall-clock deadline tripping, and reports whether it did. A false
-// return means err is something else entirely and the caller's own mapping
+// return means err is something else and the caller's own mapping
 // applies unchanged.
 //
 // Every route that walks a client-supplied template shares this 503 contract.
@@ -1396,7 +1395,7 @@ func writeExprDeadlineProblem(
 //
 //	map[string]string{"FrameStart": "1", "FrameEnd": "100"}
 //
-// Keys that do not start with "param." are silently ignored.  The returned
+// Keys that do not start with "param." are ignored. The returned
 // map is nil when no matching keys are present.
 func parseParamQueryParams(query map[string][]string) map[string]string {
 	const prefix = "param."
@@ -1414,4 +1413,4 @@ func parseParamQueryParams(query map[string][]string) map[string]string {
 	return result
 }
 
-// writeProblem, writeJSON, and the problemDetail type are defined in errors.go.
+// writeProblem and writeJSON are defined in errors.go.

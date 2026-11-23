@@ -33,8 +33,8 @@ type claimSeed struct {
 // is reached through production writes: a healthy claim (a running task whose
 // attempt is running) is a lease and a start, and a released claim is that
 // lease driven to its terminal report, which releases it. Every other seed is a
-// leak, exactly a combination the guarded store operations no longer produce,
-// so seedLeakedClaim injects it.
+// leak, a combination the guarded store operations do not produce, so
+// seedLeakedClaim injects it.
 func seedClaimOn(t *testing.T, s *sqlite.Store, seed claimSeed, poolID string) string {
 	t.Helper()
 	healthy := seed.taskStatus == store.TaskStatusRunning && seed.attemptStatus == store.AttemptStatusRunning
@@ -224,7 +224,7 @@ func queryStrings(t *testing.T, db *sql.DB, query string) []string {
 	return out
 }
 
-// claimReleasedAt reads a claim's raw released_at text. No sqlite method parses
+// claimReleasedAt reads a claim's raw released_at text. No store method parses
 // that column (nothing reads it back into a Go value), so the test reads it
 // directly and parses it with the layout the rest of the store writes.
 func claimReleasedAt(t *testing.T, db *sql.DB, id string) sql.NullString {
@@ -277,18 +277,18 @@ func TestMigration00031_ReleasesLeakedClaims(t *testing.T) {
 		seedClaimOn(t, s, claimSeed{store.TaskStatusCanceled, store.AttemptStatusCanceled, false}, poolID),
 		// A lease claimed a slot after the cancel released the job's claims.
 		seedClaimOn(t, s, claimSeed{store.TaskStatusCanceled, store.AttemptStatusRunning, false}, poolID),
-		// A terminal report whose claim release never landed: v0.3.0 closed the
-		// attempt and moved the task, then released the claims in a separate call
-		// whose error it treated as non-fatal. (This is not the v0.3.0 reaper
-		// race, which left the older attempt running, claims active, on a task
-		// still in flight, and which this predicate leaves alone.)
+		// A terminal report whose claim release never landed: the attempt was
+		// closed and the task moved, then the claims released in a separate call
+		// whose error was treated as non-fatal. (This is not the reaper race,
+		// which leaves the older attempt running, claims active, on a task still
+		// in flight, and which this predicate leaves alone.)
 		seedClaimOn(t, s, claimSeed{store.TaskStatusSucceeded, store.AttemptStatusSucceeded, false}, poolID),
 	}
 	// An already-released claim on a finished attempt is neither healthy-active
 	// nor leaked, and the repair must leave its released_at as it is.
 	alreadyReleased := seedClaimOn(t, s, claimSeed{store.TaskStatusSucceeded, store.AttemptStatusSucceeded, true}, poolID)
 
-	// The fixture really holds the damage: the I3 checker names exactly the four
+	// The fixture holds the damage: the I3 checker names exactly the four
 	// leaked claims, so the assertions below are not vacuous.
 	violations, err := s.ClaimInvariantViolations(t.Context())
 	if err != nil {

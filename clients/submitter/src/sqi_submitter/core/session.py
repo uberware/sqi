@@ -99,9 +99,9 @@ class SubmitterSession:
     def permissions(self) -> frozenset[str] | None:
         """Effective permissions for this session's credential.
 
-        ``None`` means they could not be determined — an older server without
-        ``permissions`` in ``/auth/me``, or any error resolving it. Resolved once
-        per session and cached; ``/auth/me`` is cheap but this runs on a UI path.
+        ``None`` means they could not be determined: ``/auth/me`` carried no
+        ``permissions``, or resolving them failed. Resolved once per session and
+        cached, because this runs on a UI path.
         """
         if not self._permissions_resolved:
             self._permissions_resolved = True
@@ -115,16 +115,11 @@ class SubmitterSession:
     def may_submit_as(self) -> bool:
         """Whether this session may set a job owner other than itself.
 
-        Defaults to True when permissions are unknown: an artist submitting
-        against a server that predates this endpoint must not lose the field.
-        Failing open here is deliberate — this is a UI affordance, not a
-        security control. The server independently enforces
-        ``jobs.submit_as`` and rejects an unauthorized owner with 403
-        regardless of what this property returns, so hiding the field on an
-        unknown/failed check would only punish legitimate operators (and
-        break the submitter entirely against a server that predates this
-        endpoint) without adding any actual protection. Do not change this to
-        fail closed.
+        True when permissions are unknown. This is a UI affordance, not a
+        security control: the server enforces ``jobs.submit_as`` and rejects an
+        unauthorized owner with 403 whatever this returns, so failing closed
+        would hide the field from operators entitled to it and add no
+        protection. Keep it failing open.
         """
         perms = self.permissions
         return perms is None or "jobs.submit_as" in perms

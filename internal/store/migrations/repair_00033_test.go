@@ -45,7 +45,7 @@ func submitJob(t *testing.T, s *sqlite.Store, jobStatus store.JobStatus, stepSta
 
 // seedStep creates a job (jobStatus) with one step (stepStatus) holding tasks
 // in the given statuses through one submission: the point is a combination
-// the guarded operations no longer produce. No caller passes a task in flight
+// the guarded operations do not produce. No caller passes a task in flight
 // (assigned or running), so none needs an attempt.
 func seedStep(t *testing.T, s *sqlite.Store, jobStatus store.JobStatus, stepStatus store.StepStatus, tasks ...store.TaskStatus) string {
 	t.Helper()

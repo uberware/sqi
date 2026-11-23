@@ -60,12 +60,10 @@ func newOwnerLookup(st store.Store, validate bool) ownerLookup {
 //
 // When auth is disabled the principal is the anonymous superuser: it holds
 // every permission and carries no username, so both client values pass through
-// verbatim. That passthrough
-// is keyed on the principal actually being the anonymous/auth-off identity
-// (auth.KindAnonymous), never on an empty Username — a future authenticator
-// could hand back an authenticated, permission-bearing principal with no
-// local username, and such a principal must still be run through the
-// jobs.submit_as check rather than silently bypassing it.
+// verbatim. That passthrough is keyed on the principal being the
+// anonymous/auth-off identity (auth.KindAnonymous), never on an empty
+// Username: an authenticated, permission-bearing principal with no local
+// username must still go through the jobs.submit_as check.
 //
 // A zero status means success. Otherwise problem carries the message and
 // status the HTTP code the caller should write.
@@ -74,8 +72,8 @@ func bindSubmitIdentity(
 ) (owner, submitter, problem string, status int) {
 	p, ok := auth.FromContext(ctx)
 	if !ok || p.Kind == auth.KindAnonymous {
-		// No authenticated identity to bind to (auth disabled). Preserve
-		// today's client-supplied behavior.
+		// No authenticated identity to bind to (auth disabled): keep the
+		// client-supplied values.
 		return clientOwner, clientSubmitter, "", 0
 	}
 

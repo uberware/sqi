@@ -82,7 +82,7 @@ type Options struct {
 	// Pprof mounts the /debug/pprof endpoints.
 	Pprof bool
 	// WorkerTimeout, HeartbeatSweepInterval and BusReconnectGrace, when set,
-	// replace the scheduler's 60 s heartbeat timeout, 30 s sweep interval and
+	// replace the 60 s heartbeat timeout and 30 s sweep interval Start sets, and
 	// the reconnect grace the server derives from the timeout (which stands
 	// the liveness sweep down for its first minute or so), so a test can have
 	// a live worker marked offline quickly.

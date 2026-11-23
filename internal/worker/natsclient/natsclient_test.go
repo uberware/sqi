@@ -159,8 +159,8 @@ func TestBuildOptions_AddsNkeyOptionWhenSeedPresent(t *testing.T) {
 		t.Fatal("Options.SignatureCB is nil; want a signing callback")
 	}
 
-	// The callback must actually sign with the given seed, not just be
-	// present — verify a nonce signs against the matching public key.
+	// The callback must sign with the given seed: a nonce it signs must
+	// verify against the matching public key.
 	nonce := []byte("test-nonce")
 	sig, err := applied.SignatureCB(nonce)
 	if err != nil {
@@ -264,9 +264,9 @@ func (e *enrolment) revoke() {
 
 // startTestBroker boots a real embedded NATS broker with auth enabled and
 // exactly one enrolled worker credential, on a throwaway loopback port and
-// JetStream dir. It exists to prove [Connect]'s classification of a rejected
-// credential against a REAL broker, not a mock — an nkey auth handshake is
-// exactly the kind of wire behavior a fake cannot reproduce faithfully.
+// JetStream dir. It tests [Connect]'s classification of a rejected credential
+// against a real broker, because a fake cannot reproduce the wire behavior of
+// an nkey auth handshake.
 func startTestBroker(t *testing.T, enrolled *enrolment) *bus.Embedded {
 	t.Helper()
 	return startTestBrokerWithTTL(t, enrolled, time.Hour)
@@ -444,17 +444,16 @@ func TestConnect_LiveRevocationNamesCauseAndRemediation(t *testing.T) {
 
 	cfg := workerconfig.NATSConfig{
 		URL: b.ClientURL(),
-		// Reconnect enabled (unlimited, a short wait) deliberately —
-		// matching a real worker's config, NOT nats.NoReconnect(). nats.go
-		// only lands nats.ErrAuthorization in nc.LastError() by way of the
-		// RECONNECT handshake itself hitting the same rejected credential
-		// twice (see nats.go's processConnectInit / nc.ar): the very first
-		// disconnect races an async "-ERR authorization violation" against
-		// the raw TCP close, and that race's loser is whichever error
-		// happened to land in nc.err last — with reconnect enabled, that
-		// race is irrelevant because a fresh CONNECT attempt reproduces the
-		// auth error deterministically, which is what makes this
-		// classification reliable in production rather than a coin flip.
+		// Reconnect enabled (unlimited, a short wait), matching a real
+		// worker's config rather than nats.NoReconnect(). nats.go lands
+		// nats.ErrAuthorization in nc.LastError() only when the reconnect
+		// handshake hits the same rejected credential twice (see nats.go's
+		// processConnectInit / nc.ar): the first disconnect races an async
+		// "-ERR authorization violation" against the raw TCP close, and
+		// whichever error lands in nc.err last wins. With reconnect enabled
+		// a fresh CONNECT attempt reproduces the auth error
+		// deterministically, so the classification does not depend on that
+		// race.
 		MaxReconnectAttempts: -1,
 		ReconnectWait:        5 * time.Millisecond,
 	}

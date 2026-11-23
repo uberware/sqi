@@ -11,17 +11,16 @@ package api
 // "this username is taken by a local account" — would turn login into a
 // user-enumeration oracle.
 //
-// Security posture, stated plainly: the 401 *bodies* are equalized across
-// every failure path, but the *latencies* are not. An observer who times
-// /auth/login can still tell an immediate rejection (disabled account,
-// unrecognized auth_source) from a local argon2id check from a directory
-// round trip, and so can learn something about which backend owns a
-// username. Equalizing that is not achievable — an argon2id derivation and a
-// WAN LDAP bind cannot be made to cost the same — so the mitigation is rate
-// limiting, not a timing fix in this file. Note that sqi ships only a generic
-// per-IP limiter over all of /api/v1 (20 req/s, burst 40), which is not a
-// brute-force control; see "Brute force" in docs/auth.md for what that does
-// and does not cover, including AD badPwdCount lockout.
+// The 401 bodies are equalized across every failure path; the latencies are
+// not. An observer who times /auth/login can tell an immediate rejection
+// (disabled account, unrecognized auth_source) from a local argon2id check
+// from a directory round trip, and so can learn which backend owns a
+// username. An argon2id derivation and a WAN LDAP bind cannot be made to cost
+// the same, so the mitigation is rate limiting rather than a timing fix in
+// this file. sqi ships only a generic per-IP limiter over all of /api/v1
+// (20 req/s, burst 40), which is not a brute-force control; see "Brute force"
+// in docs/auth.md for what that does and does not cover, including AD
+// badPwdCount lockout.
 
 import (
 	"context"
@@ -36,7 +35,7 @@ import (
 // loginLDAP authenticates username/password against the directory. existing
 // is the row the login lookup found under the typed username, or nil when
 // there is none. It is consulted only to refuse a locally disabled account
-// before the bind: which account the identity actually belongs to is decided
+// before the bind: which account the identity belongs to is decided
 // afterwards by resolveExternalUser, from the directory's stable identifier
 // rather than the name the caller typed.
 func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username, pw string, existing *store.User) {
@@ -104,40 +103,35 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 // logPreC2Account explains the one login failure whose cause is invisible from
 // every other vantage point.
 //
-// LDAP rows provisioned before stable-identifier matching (legacy rows) carry
-// an empty users.external_id. Since accounts are matched on the directory's
-// stable identifier, such a user's login traces:
-// the username lookup finds the row, the directory bind succeeds, the identity
-// lookup misses because the stored identifier is empty, provisioning then
-// collides on the username, and the login is refused — permanently, on every
-// future attempt.
+// A legacy LDAP row carries an empty users.external_id. Accounts are matched
+// on the directory's stable identifier, so such a user's login goes: the
+// username lookup finds the row, the directory bind succeeds, the identity
+// lookup misses because the stored identifier is empty, provisioning collides
+// on the username, and the login is refused, on every attempt.
 //
-// That refusal is deliberate and is not a bug to be fixed here. The tempting
-// repair — adopt the row when its stored identifier is empty — is username
-// matching wearing a different name, and would preserve the recycled-identity
-// hazard that stable-identifier matching removes, for the accounts most likely
-// to be long-lived and privileged. Legacy rows are instead recreated by an
-// operator.
+// The refusal is intended. Adopting the row when its stored identifier is
+// empty would be username matching under another name, and would keep the
+// recycled-identity hazard for the accounts most likely to be long-lived and
+// privileged. An operator recreates legacy rows instead.
 //
-// What would be a bug is failing silently, since the symptom is
-// indistinguishable from a wrong password. Hence this error log, which names
-// the account and the remedy. It is the only thing that differs: the response
-// is the same equalized 401 as every other failure, because a distinguishable
-// body would turn the legacy state into a user-enumeration oracle.
+// Because the symptom is indistinguishable from a wrong password, this error
+// log names the account and the remedy. It is the only thing that differs:
+// the response is the same equalized 401 as every other failure, because a
+// distinguishable body would turn the legacy state into a user-enumeration
+// oracle.
 //
-// Gated on ErrConflict specifically. A verified identity that carried no
-// identifier at all is a different fault (auth.ldap.unique_id_attr is wrong
-// for this server) with its own log in resolveExternalUser, and blaming a
-// legacy row for it would send the operator to the wrong fix.
+// Gated on ErrConflict. A verified identity that carried no identifier at all
+// is a different fault (auth.ldap.unique_id_attr is wrong for this server)
+// with its own log in resolveExternalUser, and blaming a legacy row for it
+// would send the operator to the wrong fix.
 //
-// existing is nil when the caller was reached under an alias — the login
+// existing is nil when the caller was reached under an alias: the login
 // lookup runs on the typed username (say the UPN "alice@example.com"), which
 // misses a row stored under the directory's own spelling ("alice"), the
-// spelling the collision actually happened on. Re-reading by directoryUsername
-// (id.Username from the verified identity, i.e. the name provisioning just
-// collided on) recovers the row so the diagnostic still fires for the alias
-// case docs/auth.md promises it covers. A failed re-read just means there is
-// nothing more to say than the equalized 401 already says.
+// spelling the collision happened on. Re-reading by directoryUsername
+// (id.Username from the verified identity, the name provisioning collided on)
+// recovers the row so the diagnostic also fires for the alias case
+// docs/auth.md covers. A failed re-read logs nothing.
 func (h *authHandler) logPreC2Account(ctx context.Context, existing *store.User, directoryUsername string, err error) {
 	if !errors.Is(err, store.ErrConflict) {
 		return
@@ -153,11 +147,11 @@ func (h *authHandler) logPreC2Account(ctx context.Context, existing *store.User,
 		return
 	}
 	h.logger.ErrorContext(ctx,
-		"auth: ldap account predates stable-identifier matching and can no longer log in; "+
-			"it carries no external_id, so the directory identity cannot be matched to it and "+
+		"auth: ldap account has no external_id and cannot log in: "+
+			"the directory identity cannot be matched to it and "+
 			"provisioning collides on the username. Delete and recreate the account (the next "+
-			"login will provision it with the directory's identifier). Adopting it automatically "+
-			"is deliberately not done: that is username matching, which lets a recycled directory "+
+			"login will provision it with the directory's identifier). It is not adopted "+
+			"automatically: that would be username matching, which lets a recycled directory "+
 			"identity inherit this account.",
 		slog.String("username", existing.Username),
 		slog.String("user_id", existing.ID))

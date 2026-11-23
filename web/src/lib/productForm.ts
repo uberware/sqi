@@ -10,7 +10,7 @@ const CONTROL_WIDGET: Record<string, Widget> = {
   CHECK_BOX: 'checkbox',
   SPIN_BOX: 'number',
   HIDDEN: 'hidden',
-  // No file-picker widget exists yet; these render as text inputs.
+  // There is no file-picker widget; these render as text inputs.
   CHOOSE_INPUT_FILE: 'text',
   CHOOSE_OUTPUT_FILE: 'text',
   CHOOSE_DIRECTORY: 'text',
@@ -53,7 +53,7 @@ export function selectWidget(p: ProductParameter): Widget {
     return CONTROL_WIDGET[control] as Widget
   }
   if (p.allowed_values && p.allowed_values.length > 0) return 'select'
-  // LIST[LIST[INT]] is deliberately absent: RFC 0007 gives it no control but
+  // LIST[LIST[INT]] is absent: RFC 0007 gives it no control but
   // HIDDEN and describes its use case as programmatic, so it falls through to
   // a raw JSON text field rather than a doubly-nested row editor.
   if (
@@ -84,10 +84,9 @@ export function productLabel(product: Product): string {
  * the booleans true/false, the numbers 1/1.0 and 0/0.0, and the
  * case-insensitive strings true/yes/on/1/1.0 and false/no/off/0/0.0.
  *
- * This is deliberately NOT validation. The accepted-values table is not
- * duplicated for validation -- the server owns that, and a second copy is a
- * drift hazard. But a checkbox that cannot render the correct state for a
- * value the server accepts is a different problem: this copy is
+ * This is not validation: the server owns the accepted-values table, and a
+ * second copy used for validation would drift from it. A checkbox still has to
+ * render the right state for every value the server accepts, so this copy is
  * display-only and never decides whether a value is accepted. */
 export function isBoolTruthy(v: unknown): boolean {
   if (typeof v === 'boolean') return v

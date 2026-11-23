@@ -91,7 +91,7 @@ func TestParse_emptyDestinationPath(t *testing.T) {
 }
 
 // TestParse_validatesSourcePathNotFormat verifies that validation keys on
-// SourcePath (the new field), not SourcePathFormat: a rule that carries only a
+// SourcePath, not SourcePathFormat: a rule that carries only a
 // format enum but no SourcePath is a no-op and must not error, while a rule with
 // a SourcePath but no DestinationPath must error and name the SourcePath.
 func TestParse_validatesSourcePathNotFormat(t *testing.T) {

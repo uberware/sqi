@@ -9,16 +9,16 @@ import "strings"
 //
 // Terms are ANDed by callers and matched as case-insensitive substrings, so a
 // multi-word query narrows results and is order-independent: "foo bar" keeps
-// "fool-grabbing-rebar" and "barfoo". This mirrors the web UI's client-side
-// filter (utils/filterBySearch.ts) so search behaves identically everywhere.
+// "fool-grabbing-rebar" and "barfoo". This matches the web UI's client-side
+// filter (web/src/utils/filterBySearch.ts).
 func SearchTerms(query string) []string {
 	return strings.Fields(strings.ToLower(query))
 }
 
 // MatchesSearch reports whether every term in query (per [SearchTerms]) appears
 // as a case-insensitive substring in at least one of fields. An empty query
-// matches. It is the in-memory fake store's equivalent of the SQLite LIKE
-// search, kept in the shared package so both stay in lockstep.
+// matches. It is the in-memory fake store's equivalent of the SQL stores'
+// case-insensitive LIKE search, kept in this package so the two agree.
 func MatchesSearch(query string, fields ...string) bool {
 	terms := SearchTerms(query)
 	if len(terms) == 0 {

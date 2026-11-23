@@ -4,7 +4,7 @@
 # roots/bases/exe triple the .psx products spell in a [FindLatestExecutable]
 # section); see mistika.yaml for why the search is <Root>/<Base>*/<Exe>.
 #
-# As with mistikavr, there is deliberately no `exe: workflows` check: a bare
+# As with mistikavr, there is no `exe: workflows` check: a bare
 # "workflows" on PATH is far too generic to treat as evidence of Mistika.
 tag: mistikaworkflows
 checks:

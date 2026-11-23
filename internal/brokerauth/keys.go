@@ -3,9 +3,9 @@
 // Package brokerauth holds the credential primitives shared by sqi-server and
 // sqi-worker for NATS broker authentication.
 //
-// It is deliberately a LEAF package: it imports neither internal/store nor
-// internal/openjd, so the worker binary — which can never import the latter —
-// may use it directly.
+// It is a leaf package: it imports neither internal/store nor internal/openjd,
+// so the worker binary, which can never import the latter, may use it
+// directly.
 package brokerauth
 
 import (
@@ -69,39 +69,26 @@ func PublicKeyFromSeed(seed []byte) (string, error) {
 // directories as needed.
 //
 // The write is atomic: seed is written to a temporary file in the same
-// directory as path, synced, and moved into place with os.Rename. A plain
-// os.WriteFile truncates the target before writing, so a crash, power loss,
-// or full disk between the truncate and the write would otherwise leave a
-// zero-length seed file — a state worse than a missing one, since it is
-// indistinguishable from "enrolled" to every caller that only checks
-// existence, and the worker can never recover without an operator deleting
-// the file by hand. Renaming within one directory is atomic on every
-// platform sqi supports, so a reader always observes either the previous
-// seed or the new one, never a truncated one. The temp file is created in
-// filepath.Dir(path) rather than the system temp directory because a rename
-// across filesystems is not atomic and can fail outright.
+// directory as path, synced, and moved into place with os.Rename, so a reader
+// always sees either the previous seed or the new one. A truncated or
+// zero-length seed file would read as "enrolled" to every caller that checks
+// only existence, and the worker could not recover without an operator
+// deleting it. The temp file lives in filepath.Dir(path), not the system temp
+// directory, because a rename across filesystems is not atomic and can fail.
+// The sync before the rename keeps a hard power loss from reverting a saved
+// seed to the previous contents.
 //
-// The temp file is synced before the rename so the new bytes are not left
-// sitting only in the page cache: a rename is atomic with respect to
-// ordering, but on a hard power loss an unsynced write can still vanish,
-// silently reverting a saved seed to whatever was on disk before it. The
-// file is small enough (an nkey seed is a few dozen bytes) that this costs
-// nothing worth avoiding.
+// The result is owner-only whatever existed at path before:
+// fsutil.WriteSecret restricts the temp file before its first byte is
+// written, and the rename replaces any more permissive file (a leftover from
+// key rotation, or one an operator chmod'd to inspect it) with one that was
+// never readable by others. On NTFS the rename carries the file's own
+// security descriptor, which is protected, so the seed does not re-inherit
+// the directory's access.
 //
-// The result is owner-only regardless of what, if anything, existed at path
-// before: fsutil.WriteSecret restricts the temp file before its first byte is
-// written, and the rename replaces whatever was there — a more permissive
-// leftover from key rotation, an earlier bug, or an operator who chmod'd it to
-// look at it — with a file that was never observable unrestricted. On NTFS the
-// rename carries the file's own security descriptor with it, and that
-// descriptor is PROTECTED, so the seed does not re-inherit the directory's
-// access on arrival.
-//
-// Because the write goes through a temporary file created in the same
-// directory as path, the caller needs write permission on that CONTAINING
-// DIRECTORY, not just on the seed file itself: a directory an operator locked
-// down to 0500 while leaving an owner-writable seed inside it will fail here
-// even though a direct write to the existing file would have succeeded.
+// The caller needs write permission on the directory containing path, not
+// only on the seed file: a directory locked down to 0500 around an
+// owner-writable seed fails here.
 func SaveSeed(path string, seed []byte) error {
 	dir := filepath.Dir(path)
 	if err := fsutil.MkdirSecret(dir); err != nil {
@@ -110,11 +97,10 @@ func SaveSeed(path string, seed []byte) error {
 
 	// os.CreateTemp reserves a unique name; it is closed immediately and the
 	// seed goes in through fsutil.WriteSecret, which reopens with the access
-	// rights needed to set an ACL and applies that ACL BEFORE the first byte
+	// rights needed to set an ACL and applies that ACL before the first byte
 	// is written. Chmod(0o600) on the CreateTemp handle would be a no-op on
 	// Windows, where os.Chmod maps only to the read-only attribute and cannot
-	// deny read access to anyone, so the nkey seed would land with whatever
-	// DACL it inherited. The empty placeholder that exists in
+	// deny read access to anyone. The empty placeholder that exists in
 	// between carries no secret, so its inherited access discloses nothing.
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -144,16 +130,12 @@ func SaveSeed(path string, seed []byte) error {
 
 // LoadSeed reads a seed file, refusing one that is readable beyond its owner.
 //
-// The check is a real one: this seed IS the worker's
-// identity, and a seed readable by other accounts on a shared render node hands
-// that identity to every one of them.
+// The seed is the worker's identity: a seed readable by other accounts on a
+// shared render node hands that identity to every one of them.
 //
-// It runs on EVERY platform. POSIX bits do not carry the same meaning on
-// Windows, but the property being asserted is not "the mode is 0600", it is
-// "nobody else can read this". Windows expresses that through a DACL instead,
-// and skipping the check there would leave the platform where SaveSeed is
-// least able to restrict the file as the one that never checks.
-// fsutil.IsRestricted answers the real question on both.
+// The check runs on every platform. The property is "nobody else can read
+// this", which POSIX expresses through mode bits and Windows through a DACL;
+// fsutil.IsRestricted checks whichever applies.
 func LoadSeed(path string) ([]byte, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("brokerauth: stat seed %s: %w", path, err)

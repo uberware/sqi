@@ -47,8 +47,7 @@ def test_permissions_are_cached(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_may_submit_as_defaults_true_when_me_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An older server has no permissions in /auth/me — keep the field usable
-    rather than breaking submission against it."""
+    """When /auth/me cannot be read, the Owner field stays usable."""
     session = SubmitterSession(server_url="http://x")
     session.client = _StubClient(None, raises=RuntimeError("404"))  # type: ignore[assignment]
     assert session.may_submit_as is True

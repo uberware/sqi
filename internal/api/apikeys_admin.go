@@ -28,7 +28,7 @@ func (h *apiKeysHandler) listForUser(w http.ResponseWriter, r *http.Request) {
 	// Resolve the user first. ListAPIKeysForUser cannot distinguish "no keys"
 	// from "no such user" — it returns an empty slice for both — and answering
 	// 200 [] for a deleted or mistyped id tells an admin the account has no
-	// outstanding credentials when the question was never actually answered.
+	// outstanding credentials when the question was never answered.
 	// That is the wrong reply during a credential-revocation incident.
 	if _, err := h.store.GetUser(ctx, userID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

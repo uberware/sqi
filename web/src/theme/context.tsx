@@ -14,7 +14,7 @@ export type Theme = 'light' | 'dark'
 
 const STORAGE_KEY = 'sqi:theme'
 
-// NOTE: The pre-mount anti-flash script in index.html duplicates this resolution
+// The pre-mount anti-flash script in index.html duplicates this resolution
 // logic (it can't import this module). Keep the two in sync: same storage key and
 // same fallback order (stored value -> prefers-color-scheme -> light).
 export function resolveInitialTheme(): Theme {

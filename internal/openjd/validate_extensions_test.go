@@ -108,7 +108,7 @@ func TestValidateExtensions_UnknownExtension_Error(t *testing.T) {
 }
 
 // TestValidateExtensions_TaskChunkingWithoutUsage_OK confirms that declaring
-// TASK_CHUNKING without actually using CHUNK[INT] is allowed.
+// TASK_CHUNKING without using CHUNK[INT] is allowed.
 func TestValidateExtensions_TaskChunkingWithoutUsage_OK(t *testing.T) {
 	tmpl := mustParse(t, minimalValidYAML())
 	tmpl.Extensions = []string{"TASK_CHUNKING"}

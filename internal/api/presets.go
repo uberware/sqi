@@ -60,7 +60,7 @@ func newPresetHandler(
 	}
 }
 
-// validateOptions bounds ONE preset definition's validation: the operator's
+// validateOptions bounds one preset definition's validation: the operator's
 // EXPR budget, plus this request's share of wall-clock time taken per call via
 // [exprDeadlineAt] and never stored (see [openjd.ExprLimits]' Deadline field
 // for what storing one on a long-lived value does).
@@ -80,7 +80,7 @@ func (h *presetHandler) validateOptions() product.ValidateOptions {
 // and reporting that as an unprocessable definition would make acceptance
 // depend on machine load.
 func (h *presetHandler) writeDefinitionProblem(w http.ResponseWriter, r *http.Request, err error) {
-	// The detail differs from [exprDeadlineProblemDetail] on purpose: what the
+	// The detail differs from [exprDeadlineProblemDetail] because what the
 	// caller asked this server to load is a preset definition, not a template
 	// it supplied, so naming a template would misdescribe the thing that ran
 	// out of time.

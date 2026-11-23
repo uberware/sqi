@@ -13,30 +13,23 @@ type State int
 
 const (
 	// StateLive means sqi implements the fixture's extension (or it is a base
-	// spec fixture) AND the document kind the fixture exercises, so pass/fail
+	// spec fixture) and the document kind the fixture exercises, so pass/fail
 	// is a meaningful signal.
 	StateLive State = iota
 	// StateNotApplicable means either the fixture's extension is not in sqi's
-	// registry, or the fixture is a document kind sqi does not implement at
-	// all (standalone "environment-2023-09" templates — env_templates). Its
-	// result is reported separately and NEVER counted as a pass.
+	// registry, or the fixture is a document kind sqi does not implement
+	// (standalone "environment-2023-09" templates, env_templates). Its result
+	// is reported separately and never counted as a pass.
 	//
-	// This distinction guards against two false-green failure modes:
+	// This prevents two kinds of false pass:
 	//
-	//  1. sqi rejects templates declaring an unregistered extension, which is
-	//     correct behavior — but it means every ".invalid" fixture for such
-	//     an extension is rejected for the wrong reason and would score as a
-	//     pass under naive pass/fail classification. All 209 EXPR template
-	//     fixtures would report green before a single line of EXPR existed.
-	//  2. sqi does not implement standalone environment-2023-09 templates at
-	//     all: every env_templates fixture is rejected on
-	//     "/specificationVersion: unsupported version", regardless of the
-	//     fixture's own defect. A ".invalid" env_templates fixture is
-	//     therefore rejected for the wrong reason too, and would score as a
-	//     pass the same way an unregistered-extension fixture does — this is
-	//     the same bug class, just keyed on document kind instead of
-	//     extension. base/env_templates alone has 24 fixtures that would score
-	//     as false passes this way if Classify ignored kind.
+	//  1. sqi rejects templates declaring an unregistered extension, so every
+	//     ".invalid" fixture for such an extension is rejected for the wrong
+	//     reason and would score as a pass.
+	//  2. sqi rejects every env_templates fixture on "/specificationVersion:
+	//     unsupported version", regardless of the fixture's own defect, so a
+	//     ".invalid" env_templates fixture would score as a pass the same way.
+	//     base/env_templates alone has 24 such fixtures.
 	StateNotApplicable
 )
 
@@ -72,16 +65,14 @@ func KindFor(path string) string {
 // Classify reports whether fixtures for the given extension directory and
 // template kind ("job_templates" or "env_templates") should be scored.
 //
-// kind is checked first and unconditionally: sqi does not implement
-// standalone environment-2023-09 templates at all, so every env_templates
-// fixture — regardless of extension, including "base" and EXPR — is not
-// applicable. Only once kind clears that gate does extension matter: "base" is
-// always live, and any other extension is live only when it is registered in
-// internal/openjd's extension registry AND marked openjd.StatusSupported.
-// A registered-but-in-progress extension does not count as live: validateExtensions
-// rejects every such template on the status gate alone, so scoring its fixtures
-// through this path would report a false failure for every valid one and a
-// false pass for every ".invalid" one, instead of "not applicable".
+// kind is checked first: sqi does not implement standalone
+// environment-2023-09 templates, so every env_templates fixture, whatever its
+// extension, is not applicable. Otherwise "base" is always live, and any other
+// extension is live only when it is in internal/openjd's extension registry
+// and marked openjd.StatusSupported. A registered extension that is in
+// progress is not live: validateExtensions rejects every such template on its
+// status, so scoring its fixtures would report a false failure for every
+// valid one and a false pass for every ".invalid" one.
 func Classify(extension, kind string) State {
 	if kind == "env_templates" {
 		return StateNotApplicable

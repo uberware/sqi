@@ -13,31 +13,29 @@ import (
 // maxRangeValues is a hard resource-exhaustion safety bound on the number of
 // integers an INT/CHUNK[INT] range expression may materialize. It is
 // independent of the spec's gated per-parameter value limit
-// (maxTaskParamValues): this guard ALWAYS applies — even when
-// EnforceLimits=false — to keep a hostile template (e.g. "1-2000000000") from
+// (maxTaskParamValues): this guard always applies, even when
+// EnforceLimits=false, to keep a hostile template (e.g. "1-2000000000") from
 // triggering a multi-gigabyte allocation reachable from POST /api/v1/jobs.
 const maxRangeValues = 10_000_000
 
 // errRangeTooLarge is returned (wrapped) when a range expression's arithmetic
 // value count exceeds maxRangeValues, before any slice is allocated.
 //
-// Its text carries NO "openjd: " prefix and does not name the range expression
-// again: both call sites wrap it in "openjd: range expression %q: " already, so
-// a prefix here produced "openjd: range expression \"1-2000000000\": openjd:
-// range expression expands to too many values". Every other error reaching those
-// same call sites (from internal/openjd/intrange) is likewise a bare phrase.
+// Its text has no "openjd: " prefix and does not name the range expression:
+// both call sites wrap it in "openjd: range expression %q: ", as they do every
+// other error from internal/openjd/intrange, which are likewise bare phrases.
 var errRangeTooLarge = errors.New("expands to too many values")
 
-// intRange is the shared range element type. internal/openjd is STRICTER than
-// the base specification about what it accepts — see openjdRangePolicy — and
-// that strictness is preserved deliberately: relaxing it would start accepting
-// templates this package rejects today.
+// intRange is the shared range element type. internal/openjd accepts less
+// than the base specification (see openjdRangePolicy), and that strictness
+// must be kept: relaxing it would start accepting templates this package
+// rejects.
 type intRange = intrange.Range
 
-// openjdRangePolicy is this package's long-standing acceptance rule, now stated
-// explicitly rather than baked into the parser: a step must be positive and a
-// range must not run backwards. The specification permits both; see the
-// intrange package doc.
+// openjdRangePolicy is this package's acceptance rule: a step must be
+// positive and a range must not run backwards. The specification permits
+// both; see the intrange package doc. Expansion also keeps first-seen order
+// rather than the specification's increasing order.
 var openjdRangePolicy = intrange.Policy{PositiveStepOnly: true, AscendingOnly: true}
 
 // parseIntRangeExpr parses an OpenJD integer range expression string.
@@ -52,9 +50,9 @@ var openjdRangePolicy = intrange.Policy{PositiveStepOnly: true, AscendingOnly: t
 // Example inputs: "1", "1-100", "1-100:2", "1,5,10", "1-10,20-30", "0-100:5,200".
 //
 // Before materializing, the arithmetic value count is summed across all
-// elements; if it exceeds [maxRangeValues] an error is returned WITHOUT
-// allocating the result slice. Valid (in-bounds) expressions expand exactly as
-// before, preserving de-duplication and first-seen ordering.
+// elements; if it exceeds [maxRangeValues] an error is returned without
+// allocating the result slice. Values are de-duplicated and kept in
+// first-seen order.
 func parseIntRangeExpr(expr string) ([]int, error) {
 	ranges, err := parseIntRangeElements(expr)
 	if err != nil {
@@ -104,7 +102,7 @@ func sumRangeCounts(ranges []intRange) (total int, ok bool) {
 
 // validateIntRangeExpr reports the first error an INT/CHUNK[INT] range
 // expression would raise during expansion — a parse error, the
-// resource-exhaustion guard, or an expression that yields no values — WITHOUT
+// resource-exhaustion guard, or an expression that yields no values — without
 // materializing the value slice. It mirrors the errors of [parseIntRangeExpr]
 // so submit-time validation can run cheaply even for large in-bounds ranges.
 func validateIntRangeExpr(expr string) error {
@@ -151,17 +149,17 @@ func intRangeHasOverlap(expr string) (overlap bool, err error) {
 }
 
 // parseIntRangeElements parses an INT range expression into its sub-ranges
-// WITHOUT materializing the integers, applying openjdRangePolicy. Empty
+// without materializing the integers, applying openjdRangePolicy. Empty
 // comma-separated parts are skipped.
 //
-// Two special cases preserve error strings that predate intrange and are
-// pinned by TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged: a wholly
-// empty (or whitespace-only) expression reports "range expression is empty"
-// directly, and an expression that is non-empty but whose parts are ALL empty
-// (e.g. ",,") reports no error here at all — intrange.ParseWithPolicy
-// collapses both cases to the same "range expression is empty" error, but
-// this package's callers (parseIntRangeExpr, validateIntRangeExpr) tell the
-// two apart themselves, reporting "produced no values" for the latter.
+// Two special cases keep this package's error strings, which
+// TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged pins: a wholly empty
+// (or whitespace-only) expression reports "range expression is empty"
+// directly, and an expression that is non-empty but whose parts are all empty
+// (e.g. ",,") reports no error here. intrange.ParseWithPolicy reports both as
+// "range expression is empty", but this package's callers
+// (parseIntRangeExpr, validateIntRangeExpr) report "produced no values" for
+// the latter.
 func parseIntRangeElements(expr string) ([]intRange, error) {
 	if strings.TrimSpace(expr) == "" {
 		return nil, errors.New("openjd: range expression is empty")

@@ -339,7 +339,7 @@ func TestBuildAssignPayload_EXPRFields(t *testing.T) {
 	// buildTaskName): this step declares task parameters, so TaskName and
 	// StepName must differ.
 	// buildFixture sets store.Job.Name to "TestJob" regardless of the
-	// template's own "name" field — JobName carries the STORE record's
+	// template's own "name" field. JobName carries the store record's
 	// name, which is what submission persisted, not the raw template text.
 	if msg.JobName != "TestJob" {
 		t.Errorf("JobName = %q, want TestJob", msg.JobName)
@@ -537,7 +537,7 @@ func TestBuildAssignPayload_JobParametersFallbackToDefaults(t *testing.T) {
 // TestBuildAssignPayload_JobParameterLocURIResolved verifies that a loc:// URI
 // in a persisted job-parameter value is concretized server-side (so the worker
 // never substitutes a raw loc:// URI into a {{Param.*}} expansion), and that the
-// resolution does NOT mutate the caller's job.Parameters map.
+// resolution does not mutate the caller's job.Parameters map.
 func TestBuildAssignPayload_JobParameterLocURIResolved(t *testing.T) {
 	st := newCheckedFake(t)
 	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{

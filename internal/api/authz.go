@@ -47,13 +47,13 @@ func (a *authz) require(perm policy.Permission) func(http.Handler) http.Handler 
 				slog.String("path", r.URL.Path),
 				slog.String("permission", string(perm)),
 			)
-			// Key the audit row on the route PATTERN, not the raw request
+			// Key the audit row on the route pattern, not the raw request
 			// path: the path is attacker-controlled (any authenticated
 			// caller can vary it freely, e.g. /jobs/<random-id>) and would
 			// give the audit table unbounded cardinality. The pattern
 			// collapses all such requests to one entry per gated route. The
-			// raw path is still recorded, just inside Details rather than as
-			// the indexed EntityID.
+			// raw path is recorded in Details rather than as the indexed
+			// EntityID.
 			routePattern := chi.RouteContext(r.Context()).RoutePattern()
 			if routePattern == "" {
 				routePattern = r.URL.Path

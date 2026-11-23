@@ -244,17 +244,17 @@ func (h *usersHandler) delete(w http.ResponseWriter, r *http.Request) {
 // provider's groups at every login, making a local edit a no-op that reverts
 // silently.
 //
-// This is the single source of truth for the rule, and it is deliberately a
-// package-level function rather than a method: the PATCH guard below and the
-// role_editable field on the wire format (see toUserResponse) must never be
-// able to disagree. Both conditions matter per source — an LDAP account under
-// role_source=local IS editable, and so is an OIDC one.
+// This is the single source of truth for the rule, and it is a package-level
+// function rather than a method so that the PATCH guard below and the
+// role_editable field on the wire format (see toUserResponse) cannot
+// disagree. Both conditions matter per source: an LDAP account under
+// role_source=local is editable, and so is an OIDC one.
 //
 // The two role sources are separate parameters, not one value, because LDAP
 // and OIDC are configured independently: an operator may trust one provider's
 // group memberships and not the other's.
 //
-// A no-op "change" (same role in, same role out) is deliberately allowed by
+// A no-op "change" (same role in, same role out) is allowed by
 // the caller's *req.Role != orig.Role check: a client that PATCHes the whole
 // object back unchanged should not be rejected for a field it did not alter.
 func directoryOwnsRole(u store.User, ldapRoleSource, oidcRoleSource string) bool {
@@ -273,12 +273,12 @@ func directoryOwnsRole(u store.User, ldapRoleSource, oidcRoleSource string) bool
 // the provider, and its stored hash is an unusable placeholder that no password
 // would ever match.
 //
-// Like directoryOwnsRole above, this is deliberately a package-level function
-// and the single source of truth for the rule. Its three consumers — the admin
-// guard in setPassword, the self-service guard in changePassword, and the
-// password_editable field on the wire format (see toUserResponse) — must never
-// be able to disagree, because a client that is told a password is settable and
-// then gets a 409 is exactly the bug the field exists to prevent.
+// Like directoryOwnsRole above, this is a package-level function and the
+// single source of truth for the rule. Its three consumers (the admin guard in
+// setPassword, the self-service guard in changePassword, and the
+// password_editable field on the wire format, see toUserResponse) must not
+// disagree: the field exists so a client is never told a password is settable
+// and then gets a 409.
 //
 // Unlike directoryOwnsRole this needs no role-source arguments: the rule turns
 // on auth_source alone. It stays a named predicate anyway so the wire field and
@@ -290,9 +290,9 @@ func passwordEditable(u store.User) bool {
 
 // externalAuthority names the system that owns an externally-authenticated
 // account, and the config block an operator would go to in order to change its
-// behavior. Both differ per source — pointing an SSO deployment at "the
-// directory" and auth.ldap.* sends them looking for a system they may not even
-// have — and the messages below are the only reason the distinction exists, so
+// behavior. Both differ per source (pointing an SSO deployment at "the
+// directory" and auth.ldap.* sends them looking for a system they may not
+// have), and the messages below are the only reason the distinction exists, so
 // it is made once here rather than re-branched in each of them.
 func externalAuthority(u store.User) (noun, configPrefix string) {
 	if u.AuthSource == store.AuthSourceOIDC {

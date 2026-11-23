@@ -1,10 +1,10 @@
 # `api/`
 
-Reserved for API contract artifacts that are not Go source — JSON Schemas for
-OpenJD payloads and config files, and any future Protobuf / gRPC definitions for
-the worker wire protocol.
+Reserved for API contract artifacts that are not Go source, such as JSON
+Schemas for OpenJD payloads and config files, or Protobuf / gRPC definitions
+for the worker wire protocol.
 
-**The directory is currently empty.** The authoritative OpenAPI 3.1
+The directory holds only this README. The authoritative OpenAPI 3.1
 specification lives at [`internal/api/openapi.yaml`](../internal/api/openapi.yaml),
 next to the handlers it describes; it is embedded into `sqi-server` and served
 at `GET /api/v1/openapi.yaml`.

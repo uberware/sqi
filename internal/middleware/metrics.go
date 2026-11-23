@@ -18,10 +18,10 @@ import (
 //   - sqi_http_request_duration_seconds — histogram observed after the handler
 //     returns, labeled by method and path.
 //
-// The "path" label is currently set to r.URL.Path. Once REST endpoints with
-// path parameters are added, replace this with chi's route pattern
-// via chi.RouteContext(r.Context()).RoutePattern() to prevent high cardinality
-// from parameterised segments such as /api/v1/jobs/{id}.
+// The "path" label is r.URL.Path, so a parameterised route such as
+// /api/v1/jobs/{id} produces one series per ID. chi's route pattern
+// (chi.RouteContext(r.Context()).RoutePattern()) would bound that
+// cardinality.
 func RequestMetrics(m *metrics.Metrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -6,9 +6,9 @@ package api
 // GET /auth/oidc/callback.
 //
 // These routes are unlike every other route in this package in three ways the
-// tests below pin deliberately:
+// tests below pin:
 //
-//   - they are browser NAVIGATIONS, so every outcome is a 302 and every failure
+//   - they are browser navigations, so every outcome is a 302 and every failure
 //     is the same generic 302 (a distinguishable failure would make the
 //     callback an enumeration oracle);
 //   - they are registered only when SSO is configured, so an unconfigured
@@ -39,11 +39,11 @@ import (
 
 // oidcProviderBase is the fake provider's authorization endpoint. Tests assert
 // the login redirect points at it, so it must be an absolute cross-origin URL:
-// the whole point of the login route is to leave this server.
+// the login route exists to leave this server.
 const oidcProviderBase = "https://idp.example.com/authorize"
 
 // fakeOIDCProvider is a scripted oidc.Provider. Every test drives this, so none
-// of them needs a real identity provider. The mutex is not decoration: the
+// of them needs a real identity provider. The mutex is needed because the
 // handler runs on the httptest server's goroutine while assertions run on the
 // test's.
 type fakeOIDCProvider struct {
@@ -59,7 +59,7 @@ type fakeOIDCProvider struct {
 	lastVerifier  string
 	exchanges     int
 	// endSessionURL/endSessionOK script EndSessionURL. The zero value models a
-	// provider that advertises no end-session endpoint — which is also what an
+	// provider that advertises no end-session endpoint, which is also what an
 	// unreachable discovery document looks like from the caller's side.
 	endSessionURL   string
 	endSessionOK    bool
@@ -200,7 +200,7 @@ func (s ssoResponse) sessionIssued() bool {
 }
 
 // getNoRedirect issues a GET carrying cookies and captures the response without
-// following the redirect — the redirect target IS the assertion.
+// following the redirect: the redirect target is the assertion.
 func getNoRedirect(t *testing.T, rawURL string, cookies ...*http.Cookie) ssoResponse {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, rawURL, nil)
@@ -299,8 +299,8 @@ func TestOIDCLogin_RedirectsToProviderAndSealsState(t *testing.T) {
 		t.Errorf("state cookie MaxAge = %d, want %d", c.MaxAge, int(oidc.StateTTL.Seconds()))
 	}
 
-	// The state in the URL must be the state that was sealed into the cookie —
-	// otherwise the comparison the callback makes proves nothing.
+	// The state in the URL must be the state that was sealed into the cookie,
+	// or the comparison the callback makes proves nothing.
 	fs, err := oidc.OpenState(ts.key, c.Value)
 	if err != nil {
 		t.Fatalf("OpenState on the cookie the server just set: %v", err)
@@ -339,7 +339,7 @@ func TestOIDCRoutes_NotRegisteredWhenSSODisabled(t *testing.T) {
 // TestOIDCRoutes_NotRegisteredWhenStateKeyEmpty pins that a provider is not on
 // its own enough to mount these routes. They are public, so middleware.CSRF
 // cannot cover them and the HMAC-signed state cookie is their only defense
-// against a forged callback — and an HMAC keyed with nothing is one any
+// against a forged callback, and an HMAC keyed with nothing is one any
 // attacker can compute. A provider wired up without a key must 404, not serve a
 // login whose callback anyone can forge.
 func TestOIDCRoutes_NotRegisteredWhenStateKeyEmpty(t *testing.T) {
@@ -648,16 +648,16 @@ func assertNoLeakedDetail(t *testing.T, resp ssoResponse) {
 	}
 }
 
-// TestOIDCCallback_ClearsStateCookieSoABrowserReplayFindsNothing pins exactly
-// what it says and no more: the callback clears the state cookie, so a browser
-// that honored the clearing Set-Cookie sends none on a second navigation to the
+// TestOIDCCallback_ClearsStateCookieSoABrowserReplayFindsNothing pins only
+// what its name says: the callback clears the state cookie, so a browser that
+// honored the clearing Set-Cookie sends none on a second navigation to the
 // same URL and is refused.
 //
-// It is NOT a server-side replay defense, and must not be read as one. An
-// attacker holding both the callback URL and the captured cookie VALUE can
-// present them again and, within oidc.StateTTL, sqi will accept the state — the
-// server keeps no record of a state having been spent. What actually stops that
-// replay is the identity provider refusing to redeem an authorization code a
+// It is not a server-side replay defense. An attacker holding both the
+// callback URL and the captured cookie value can present them again and,
+// within oidc.StateTTL, sqi will accept the state: the server keeps no record
+// of a state having been spent. What stops that replay is the identity
+// provider refusing to redeem an authorization code a
 // second time (OAuth 2.1 §4.1.3 requires single-use codes), which is outside
 // this process. The server-side bound sqi does enforce is the TTL; see
 // TestOIDCCallback_ExpiredStateIsRefused.
@@ -683,11 +683,11 @@ func TestOIDCCallback_ClearsStateCookieSoABrowserReplayFindsNothing(t *testing.T
 	assertGenericSSOFailure(t, replay)
 }
 
-// TestOIDCCallback_ExpiredStateIsRefused is the refusal the server really does
-// make on its own: a state cookie older than oidc.StateTTL is rejected even
+// TestOIDCCallback_ExpiredStateIsRefused is the refusal the server makes on
+// its own: a state cookie older than oidc.StateTTL is rejected even
 // when the client presents it verbatim alongside a matching state parameter.
 // This is the case a captured-cookie replay eventually runs into, and the one
-// the cookie's MaxAge alone could never enforce — MaxAge binds a cooperating
+// the cookie's MaxAge alone cannot enforce: MaxAge binds a cooperating
 // browser, not an attacker holding the cookie's value.
 func TestOIDCCallback_ExpiredStateIsRefused(t *testing.T) {
 	tests := []struct {
@@ -703,8 +703,8 @@ func TestOIDCCallback_ExpiredStateIsRefused(t *testing.T) {
 			p := &fakeOIDCProvider{identity: aliceOIDCIdentity()}
 			ts := newOIDCServer(t, fake.New(), p, oidcTestCfg())
 
-			// Seal a genuinely-signed state with a backdated issued-at: this is
-			// the exact cookie the server itself minted `age` ago.
+			// Seal a validly signed state with a backdated issued-at: this is
+			// the cookie the server itself would have minted `age` ago.
 			fs, err := oidc.NewFlowState()
 			if err != nil {
 				t.Fatalf("NewFlowState: %v", err)

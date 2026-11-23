@@ -136,9 +136,9 @@ func TestLoadCA_RoundTripsAndIssues(t *testing.T) {
 		t.Errorf("CommonName = %q, want %q", loaded.Cert.Subject.CommonName, "sqi farm CA")
 	}
 
-	// The whole point: a certificate issued from the RELOADED CA must verify
-	// against the ORIGINAL one. Anything less means an operator adding a worker
-	// later gets a certificate their farm rejects.
+	// A certificate issued from the reloaded CA must verify against the
+	// original one, or an operator adding a worker later gets a certificate
+	// their farm rejects.
 	leaf, err := loaded.NewClientCert("render-07", 2*365*24*time.Hour)
 	if err != nil {
 		t.Fatalf("NewClientCert from a loaded CA: %v", err)

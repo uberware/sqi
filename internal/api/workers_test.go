@@ -131,8 +131,8 @@ func seedWorkerTask(
 // so owner-scoping tests can look up the job's real owner via store.GetJob. The
 // job, its step and its task are one submission: a task cannot be added to a
 // job that already exists. An assigned or running task is leased to workerID
-// (see [storetest.SubmitLeasing]); a succeeded one is run to completion on workerID, so
-// it stays attributed to the worker the way a finished task is.
+// (see [storetest.SubmitLeasing]); a succeeded one is run to completion on
+// workerID, so it stays attributed to the worker the way a finished task is.
 func seedWorkerTaskForJob(
 	t *testing.T,
 	st *fake.Store,
@@ -357,7 +357,7 @@ func TestGetWorker(t *testing.T) {
 		if resp.Version != "v0.1.0" {
 			t.Errorf("version = %q, want v0.1.0", resp.Version)
 		}
-		// No active task seeded — current_tasks should be empty.
+		// No active task seeded: current_tasks should be empty.
 		if len(resp.CurrentTasks) != 0 {
 			t.Errorf("expected empty current_tasks, got %+v", resp.CurrentTasks)
 		}
@@ -376,8 +376,8 @@ func TestGetWorker(t *testing.T) {
 		seedWorkerTask(t, st, "other-worker", store.TaskStatusRunning, "elsewhere")
 
 		req := newReq(t, http.MethodGet, "/api/v1/workers/"+w.ID, nil)
-		// In production the auth middleware always attaches a principal —
-		// the anonymous superuser when auth is disabled — before a request
+		// In production the auth middleware always attaches a principal
+		// (the anonymous superuser when auth is disabled) before a request
 		// reaches this handler; scopeFilter's "no principal" branch is a
 		// fail-closed guard against misordered middleware, not the normal
 		// path this test exercises.
@@ -419,9 +419,9 @@ func TestGetWorker(t *testing.T) {
 }
 
 // TestGetWorker_OwnerScoping pins that an owner-scoped caller (no
-// jobs.read.all) must not see another owner's task — including its name,
-// which for an expanded OpenJD task can carry parameter values such as scene
-// paths — in current_tasks. Unscoped principals (operator, and the auth-off
+// jobs.read.all) must not see another owner's task in current_tasks,
+// including its name, which for an expanded OpenJD task can carry parameter
+// values such as scene paths. Unscoped principals (operator, and the auth-off
 // anonymous superuser) must keep seeing every current task.
 func TestGetWorker_OwnerScoping(t *testing.T) {
 	newSeededRouter := func(t *testing.T) (chi.Router, store.Worker) {
@@ -833,9 +833,8 @@ func TestRemoveWorker(t *testing.T) {
 
 	t.Run("revoker failure blocks the delete", func(t *testing.T) {
 		// The worker row must survive a revoke failure: revoking runs
-		// BEFORE deleting specifically so that a failure here never leaves
-		// a deleted worker whose credential nothing revoked and nothing
-		// will ever reap.
+		// before deleting so that a failure here never leaves a deleted
+		// worker whose credential nothing revoked and nothing will reap.
 		st := fake.New()
 		rev := &recordingRevoker{err: errors.New("store write failed")}
 		r := newWorkerRouterWithRevoker(st, rev)
@@ -903,7 +902,8 @@ func TestWorkerResponse_Removable(t *testing.T) {
 // worker: power_state is always present (awake when the row holds none), the
 // optional fields are left out when empty, and has_wake_address says whether
 // an interface carries a MAC and an IPv4 address. The interfaces themselves
-// are the detail's alone (TestWorkerDetailResponse_Interfaces), so a list row stays small.
+// are in the detail only (TestWorkerDetailResponse_Interfaces), so a list row
+// stays small.
 func TestWorkerResponse_PowerAndInterfaces(t *testing.T) {
 	at := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	tests := []struct {

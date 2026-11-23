@@ -150,7 +150,7 @@ func assertSubmissionLeftNothing(t *testing.T, st store.Store, jobID, upstreamID
 // TestDeleteTerminalJobsBefore_SkipsNonTerminal pins that a job that is not
 // terminal is never purged nor reported.
 //
-// It does NOT reach the re-check branch. On SQLite the store's single write
+// It does not reach the re-check branch. On SQLite the store's single write
 // connection serializes the whole sweep, so a job cannot turn live between
 // the eligibility SELECT and its delete, and the fake holds one lock across
 // both. The re-check exists for a PostgreSQL store, where a concurrent

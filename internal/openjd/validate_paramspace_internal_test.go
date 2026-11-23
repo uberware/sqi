@@ -12,7 +12,7 @@ import (
 // bigNonOverlappingIntRangeExpr returns a range expression of n
 // non-overlapping single-value sub-ranges ("0-0,1-1,2-2,...") -- large
 // enough that [intRangeHasOverlap]'s parse and sort (range.go) are
-// visible in allocation volume, deliberately worth exactly n values so the
+// visible in allocation volume, worth exactly n values so the
 // package's count caps never fire on their own.
 func bigNonOverlappingIntRangeExpr(n int) string {
 	var b strings.Builder

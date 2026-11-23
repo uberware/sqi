@@ -8,24 +8,24 @@ import (
 	"testing"
 )
 
-// This file pins meter.reserve: the rule that a BULK operation must be
-// refused BEFORE it allocates, not billed after it has.
+// This file pins meter.reserve: the rule that a bulk operation must be
+// refused before it allocates, not billed after it has.
 //
 // Every Cost.ResultElements/Cost.ResultBytes charge is levied by chargeResult
 // (ops.go) once the produced value exists. Without reserve, under the server's
 // submission budget of 10,000 operations, "[0] * 10000000" materializes ten
-// million elements -- 1.1 GB of allocator traffic, 108 ms -- and only THEN
-// reports "10000001 operations exceeds the limit of 10000". The limit
-// overshoots by a factor of a THOUSAND, and the only thing that stops the
-// expression is limits.go's fixed maxElements floor three orders of magnitude
-// above it. The template-wide budget (internal/openjd/exprcheck.go) derives
-// its cumulative operation ceiling from that per-evaluation limit, so the
-// derived ceiling would be false by the same factor.
+// million elements and only then reports "10000001 operations exceeds the limit
+// of 10000". The limit overshoots by a factor of a thousand, and the only thing
+// that stops the expression is limits.go's fixed maxElements floor three orders
+// of magnitude above it. The template-wide budget
+// (internal/openjd/exprcheck.go) derives its cumulative operation ceiling from
+// that per-evaluation limit, so the derived ceiling would be false by the same
+// factor.
 //
 // Two properties are pinned, as separate tests:
 //
 //   - a refusal costs no allocation (TestReserve_BulkOperationsRefuseBeforeAllocating)
-//   - a SUCCESS is charged exactly what it would be charged without reserve
+//   - a success is charged exactly what it would be charged without reserve
 //     (TestReserve_DoesNotChangeSuccessfulCounts)
 //
 // The second keeps reserve invisible to the differential oracle
@@ -36,19 +36,18 @@ import (
 
 // reserveOpLimit and reserveMemLimit mirror internal/openjd's submissionLimits
 // (submissionOperationLimit, submissionMemoryLimit) -- the budget the server
-// actually applies at validate and submit, and the one the overshoot was
-// measured against. Restated as literals rather than imported: internal/openjd
-// imports this package, not the other way round.
+// applies at validate and submit. Restated as literals rather than imported:
+// internal/openjd imports this package, not the other way round.
 const (
 	reserveOpLimit  int64 = 10_000
 	reserveMemLimit int64 = 1_000_000
 )
 
 // allocCeilingBytes is the per-expression allocation budget the refusal test
-// allows. Without reserve these expressions allocate 1.1-1.6 GB; with it,
-// under 1 MB. 16 MB sits two orders of magnitude below the first and one above
-// the second, so this asserts the allocation is refused without pinning an
-// exact allocator figure that a Go release could move.
+// allows. Without reserve these expressions allocate over a gigabyte; with
+// it, under 1 MB. 16 MB sits two orders of magnitude below the first and one
+// above the second, so this asserts the allocation is refused without pinning
+// an exact allocator figure that a Go release could move.
 const allocCeilingBytes = 16 << 20
 
 func TestReserve_BulkOperationsRefuseBeforeAllocating(t *testing.T) {
@@ -93,7 +92,7 @@ func TestReserve_DoesNotChangeSuccessfulCounts(t *testing.T) {
 	// The operation counts here are the ones the differential oracle already
 	// agrees with the reference implementation on (see
 	// cost_ops_internal_test.go and cost_eval_internal_test.go). Restated in
-	// this file so that a reserve() that wrongly ACCUMULATED, or that was
+	// this file so that a reserve() that wrongly accumulated, or that was
 	// placed where it double-charges, fails here as well as in the oracle --
 	// which needs python3 and does not run in `make test`.
 	tests := []struct {
@@ -125,7 +124,7 @@ func TestReserve_DoesNotChangeSuccessfulCounts(t *testing.T) {
 	}
 }
 
-// TestReserve_DoesNotTightenTheLanguage pins that reserve stops the OVERSHOOT
+// TestReserve_DoesNotTightenTheLanguage pins that reserve stops the overshoot
 // without making the language stricter. An expression that genuinely needs
 // millions of operations must still succeed under the specification's own
 // default limit (10,000,000 operations, section 1.3.10).

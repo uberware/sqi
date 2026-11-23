@@ -154,7 +154,7 @@ func TestSweep_WaitsForTaskConsumer(t *testing.T) {
 // SQI_WORKER's MaxAge lets heartbeats expire before the worker consumer reads
 // them. The first marker read after them must not move the cutoff past
 // heartbeats that never reached the store; once the consumer has read a whole
-// WorkerTimeout past them, a worker that is really dead is swept as before.
+// WorkerTimeout past them, a dead worker is swept.
 func TestSweep_HeldAfterHeartbeatsExpireUnread(t *testing.T) {
 	st := newCheckedFake(t)
 	workerID, taskID, t0 := seedIngestSweepWorker(t, st)

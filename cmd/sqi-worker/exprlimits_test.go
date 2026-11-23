@@ -2,12 +2,12 @@
 
 package main
 
-// Tests for exprlimits.go -- the one place in the worker binary that sees both
+// Tests for exprlimits.go, the one place in the worker binary that sees both
 // the operator-facing expr: section and the enforcement type it configures.
 //
 // Two things can go wrong at a boundary like this and neither shows up as a
-// compile error: the five same-typed fields can be TRANSPOSED, and the two
-// packages' copies of the defaults and ranges can DRIFT apart (config would
+// compile error: the five same-typed fields can be transposed, and the two
+// packages' copies of the defaults and ranges can drift apart (config would
 // then accept a value the enforcement side considers out of range, or reject
 // one it considers fine).
 
@@ -18,9 +18,8 @@ import (
 	"github.com/uberware/sqi/internal/worker/fmtres"
 )
 
-// TestExprLimitsFromConfig passes five DISTINCT values, so a transposed pair
-// fails rather than compiling and silently enforcing the wrong bound on the
-// wrong dimension.
+// TestExprLimitsFromConfig passes five distinct values, so a transposed pair
+// fails rather than enforcing the wrong bound on the wrong dimension.
 func TestExprLimitsFromConfig(t *testing.T) {
 	got := exprLimitsFromConfig(workerconfig.ExprConfig{
 		OperationLimit:          11,
@@ -41,10 +40,9 @@ func TestExprLimitsFromConfig(t *testing.T) {
 	}
 }
 
-// TestExprLimitsFromConfig_DefaultsAreTheEnforcementDefaults is the property
-// that makes "a fresh install changes nothing" true end to end: the worker's
-// built-in configuration must map to exactly the limits fmtres would have used
-// with no configuration at all.
+// TestExprLimitsFromConfig_DefaultsAreTheEnforcementDefaults pins that the
+// worker's built-in configuration maps to the limits fmtres uses with no
+// configuration at all.
 func TestExprLimitsFromConfig_DefaultsAreTheEnforcementDefaults(t *testing.T) {
 	got := exprLimitsFromConfig(workerconfig.Default().Expr)
 	if want := fmtres.DefaultExprLimits(); got != want {
@@ -54,13 +52,13 @@ func TestExprLimitsFromConfig_DefaultsAreTheEnforcementDefaults(t *testing.T) {
 
 // TestExprLimitsBounds_MatchFmtres pins the two packages' copies of the
 // defaults and the ranges against each other. internal/worker/config carries
-// its own numbers on purpose (it must not import the enforcement leaf), and
-// this is the only place that can see both -- exactly the role
-// internal/server's TestExprLimits_ConfigMatchesOpenJD plays on the server.
+// its own numbers (it must not import the enforcement leaf), and this is the
+// only place that can see both: the role internal/server's
+// TestExprLimits_ConfigMatchesOpenJD plays on the server.
 //
-// A drift here is not cosmetic: config would accept a value fmtres documents
-// as out of range, or reject one it documents as fine, and the operator-facing
-// message would name a bound nothing enforces.
+// On a drift, config would accept a value fmtres documents as out of range,
+// or reject one it documents as fine, and the operator-facing message would
+// name a bound nothing enforces.
 func TestExprLimitsBounds_MatchFmtres(t *testing.T) {
 	tests := []struct {
 		name         string

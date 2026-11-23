@@ -3,13 +3,13 @@
 package scheduler
 
 // Provenance tests: the subject a worker publishes on is the only identity
-// NATS itself can vouch for, and these seven tests prove the server actually
+// NATS itself can vouch for, and these seven tests check that the server
 // enforces it rather than trusting the payload's own WorkerID field.
 //
-// Each test has worker A publish on its OWN subject (the only one NATS would
-// let it publish on) while the payload claims — or the store already holds —
-// worker B's identity, and asserts on STORE STATE that the forgery was
-// discarded, not merely that it was logged.
+// Each test has worker A publish on its own subject (the only one NATS would
+// let it publish on) while the payload claims, or the store already holds,
+// worker B's identity, and asserts on store state that the forgery was
+// discarded, not only that it was logged.
 
 import (
 	"encoding/json"
@@ -35,11 +35,9 @@ func mustMarshal(t *testing.T, v any) []byte {
 	return b
 }
 
-// newFakeJetStreamMsg is an alias over the package's existing fakeJSMsg
-// (logingest_test.go), which already implements jetstream.Msg with a
-// settable Subject, Data, Ack and Nak. Given as a constructor matching the
-// shape described for these tests so the subject — the whole point of a
-// provenance test — is set at the call site.
+// newFakeJetStreamMsg builds the package's fakeJSMsg (logingest_test.go), which
+// implements jetstream.Msg with a settable Subject, Data, Ack and Nak, so the
+// subject a provenance test is about is set at the call site.
 func newFakeJetStreamMsg(_ *testing.T, subject string, data []byte) *fakeJSMsg {
 	return &fakeJSMsg{subject: subject, data: data}
 }
@@ -96,9 +94,8 @@ func seedRunnableTask(t *testing.T, st *fake.Store, workerID string) (store.Job,
 // TestProvenance_StatusFromWrongWorker proves that a status message whose
 // subject names worker A cannot complete a task held by worker B.
 //
-// Before this check, the handler read WorkerID only to log it. The only thing
-// standing between an attacker and a forged completion was that attempt_id is
-// an unguessable UUID — capability-by-obscurity, not authorization.
+// Without the check, the only thing between an attacker and a forged
+// completion would be that attempt_id is an unguessable UUID.
 func TestProvenance_StatusFromWrongWorker(t *testing.T) {
 	st := newCheckedFake(t)
 	ctx := t.Context()
@@ -110,8 +107,8 @@ func TestProvenance_StatusFromWrongWorker(t *testing.T) {
 	s := newTestScheduler(st, &stubBus{}) // existing helper in this package
 	s.ctx = ctx
 
-	// Worker A forges a completion on its OWN subject — which is the only
-	// subject NATS would let it publish on — for a task it does not hold.
+	// Worker A forges a completion on its own subject (the only subject NATS
+	// would let it publish on) for a task it does not hold.
 	forged := protocol.TaskStatusMsg{
 		Version:   protocol.ProtocolVersion,
 		Type:      protocol.TypeTaskStatus,
@@ -152,9 +149,9 @@ func TestProvenance_StatusFromWrongWorker(t *testing.T) {
 // TestProvenance_LogsFromWrongWorker proves that a log chunk whose subject
 // names worker A is not persisted against a task held by worker B.
 //
-// LogChunkMsg carries no worker-identity field at all — the subject is the
-// ONLY identity available for this channel — so this is the case where
-// dropping the subject check would leave zero provenance signal whatsoever.
+// LogChunkMsg carries no worker-identity field, so the subject is the only
+// identity available for this channel and dropping the subject check would
+// leave no provenance check at all.
 func TestProvenance_LogsFromWrongWorker(t *testing.T) {
 	st := newCheckedFake(t)
 	ctx := t.Context()
@@ -198,14 +195,14 @@ func TestProvenance_LogsFromWrongWorker(t *testing.T) {
 }
 
 // TestProvenance_LogsForAnotherWorkersTask proves that a worker holding a
-// live attempt of its own cannot pair that attempt with a DIFFERENT task in
-// the payload to inject log content there. This is distinct from
-// TestProvenance_LogsFromWrongWorker: here the subject and the attempt's
-// WorkerID genuinely agree (worker A really does hold attemptA), so the
-// worker-ID check alone would let it through. The broker grant is
-// task.logs.<workerID>.* — any trailing leaf is a valid subject for worker A
-// to publish on — so the leaf cannot be relied on either; only comparing the
-// attempt's own TaskID against the payload's TaskID catches this.
+// live attempt of its own cannot pair that attempt with a different task in
+// the payload to inject log content there. Unlike
+// TestProvenance_LogsFromWrongWorker, the subject and the attempt's WorkerID
+// agree (worker A holds attemptA), so the worker-ID check alone would let it
+// through. The broker grant is task.logs.<workerID>.*, so any trailing leaf is
+// a valid subject for worker A and the leaf cannot be relied on either; only
+// comparing the attempt's own TaskID against the payload's TaskID catches
+// this.
 func TestProvenance_LogsForAnotherWorkersTask(t *testing.T) {
 	st := newCheckedFake(t)
 	ctx := t.Context()
@@ -221,7 +218,7 @@ func TestProvenance_LogsForAnotherWorkersTask(t *testing.T) {
 
 	forged := protocol.LogChunkMsg{
 		TaskID:    taskB.ID,    // names worker B's task…
-		AttemptID: attemptA.ID, // …paired with worker A's own, genuinely-held attempt
+		AttemptID: attemptA.ID, // …paired with worker A's own, held attempt
 		SeqNum:    1,
 		At:        time.Now().UTC(),
 		Stream:    "stdout",
@@ -250,7 +247,7 @@ func TestProvenance_LogsForAnotherWorkersTask(t *testing.T) {
 // ── worker.register ────────────────────────────────────────────────────────
 
 // TestProvenance_RegisterOfAnotherWorker proves that worker A cannot
-// overwrite worker B's row — CPU count, tags, EXPR caps and all — by
+// overwrite worker B's row (CPU count, tags, EXPR caps and all) by
 // publishing a registration on its own subject with B's ID in the payload.
 func TestProvenance_RegisterOfAnotherWorker(t *testing.T) {
 	st := newCheckedFake(t)
@@ -304,7 +301,7 @@ func TestProvenance_RegisterOfAnotherWorker(t *testing.T) {
 // ── worker.heartbeat ───────────────────────────────────────────────────────
 
 // TestProvenance_HeartbeatOfAnotherWorker proves that worker A cannot keep
-// worker B looking alive — and therefore un-reclaimed — by publishing a
+// worker B looking alive, and therefore un-reclaimed, by publishing a
 // heartbeat on its own subject with B's ID in the payload.
 func TestProvenance_HeartbeatOfAnotherWorker(t *testing.T) {
 	st := newCheckedFake(t)
@@ -412,7 +409,7 @@ func TestProvenance_LeaseAsAnotherWorker(t *testing.T) {
 
 	const workerA, workerB = "worker-a", "w1"
 
-	// Worker A is ALSO real, eligible and in the same farm/queue, so an
+	// Worker A is also real, eligible and in the same farm/queue, so an
 	// unforged request from it would legitimately be offered this same ready
 	// task. That is what pins the assertion below to the check: if the reply
 	// were empty merely because worker A didn't exist or wasn't eligible,

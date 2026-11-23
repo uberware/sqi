@@ -97,9 +97,7 @@ func TestDiffBaseline(t *testing.T) {
 			baseline: nil,
 		},
 		{
-			// A normal listed-failure entry (the common case, exercised above
-			// too) must NOT be reported as orphaned just because it is
-			// present in baseline.
+			// A listed failure is not orphaned.
 			name:            "listed failure is not orphaned",
 			results:         []conformance.Result{result("base/job_templates/a.yaml", conformance.StateLive, false)},
 			baseline:        []string{"base/job_templates/a.yaml"},
@@ -108,18 +106,17 @@ func TestDiffBaseline(t *testing.T) {
 		},
 		{
 			// The fixture was removed or renamed upstream: nothing in
-			// results matches the baseline entry at all.
+			// results matches the baseline entry.
 			name:         "baseline entry with no matching result is orphaned",
 			results:      []conformance.Result{result("base/job_templates/a.yaml", conformance.StateLive, true)},
 			baseline:     []string{"base/job_templates/deleted-upstream.yaml"},
 			wantOrphaned: []string{"base/job_templates/deleted-upstream.yaml"},
 		},
 		{
-			// The fixture still exists but was reclassified to
-			// StateNotApplicable (e.g. env_templates) — its
-			// baseline entry is now dead too, even though the ID still
-			// matches a result.
-			name:         "baseline entry for a now-not-applicable fixture is orphaned",
+			// The fixture exists but is StateNotApplicable (e.g.
+			// env_templates), so its baseline entry is orphaned even though
+			// the ID matches a result.
+			name:         "baseline entry for a not-applicable fixture is orphaned",
 			results:      []conformance.Result{result("base/env_templates/x.yaml", conformance.StateNotApplicable, false)},
 			baseline:     []string{"base/env_templates/x.yaml"},
 			wantOrphaned: []string{"base/env_templates/x.yaml"},

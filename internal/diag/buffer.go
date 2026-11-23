@@ -2,7 +2,7 @@
 
 // Package diag holds the server-side in-memory ring buffer of diagnostic
 // (operational) log records gathered from sqi-server itself and from connected
-// workers.  It is deliberately bounded and ephemeral: it provides a "recent
+// workers.  It is bounded and ephemeral: it provides a "recent
 // glance" in the web UI, not a durable searchable archive.  The buffer is lost
 // on server restart by design.
 package diag
@@ -68,7 +68,7 @@ type Buffer struct {
 
 // NewBuffer creates a Buffer retaining up to perComponent records per component.
 // notify, if non-nil, is called synchronously for every appended record (used
-// to fan out to the WebSocket hub).  notify MUST NOT emit slog records.
+// to fan out to the WebSocket hub).  notify must not emit slog records.
 func NewBuffer(perComponent int, notify func(Record)) *Buffer {
 	if perComponent <= 0 {
 		perComponent = 1

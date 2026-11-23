@@ -66,7 +66,7 @@ func (c Code) String() string {
 
 // Type is a type in the expression language: a code plus its type parameters.
 //
-// Because Params is a slice, Type is NOT comparable — "==" on two Types is a
+// Because Params is a slice, Type is not comparable — "==" on two Types is a
 // compile error and a struct containing a Type cannot be a Go map key. Use
 // Equal. That single fact is why operator dispatch is a list of shapes
 // (shape.go) rather than a map keyed on kinds.
@@ -436,15 +436,15 @@ func isTypeNameByte(c byte) bool {
 
 // checkListElem enforces section 1.2.1's two constraints on a list's element
 // type: it may be a list but not nested a third time, and it may not be
-// optional. Note that list[nulltype] is valid — it is the empty-list type — so
-// only a UNION containing nulltype is rejected, not bare nulltype.
+// optional. list[nulltype] is valid (it is the empty-list type), so
+// only a union containing nulltype is rejected, not bare nulltype.
 //
 // ListOf hoists an outer "unresolved" wrapper on the element outward, so an
 // element written as unresolved[...] does not end up nested inside the list
 // the way it appears here — it ends up wrapping the whole list. Checking
 // against the pre-hoist shape would let an element like "unresolved[int?]" or
 // "unresolved[list[list[int]]]" smuggle a forbidden shape past both checks, so
-// unwrap the wrapper first and validate what ListOf will actually place inside
+// unwrap the wrapper first and validate what ListOf will place inside
 // the list.
 func checkListElem(elem Type) error {
 	if listNestsTooDeep(elem) {
@@ -461,7 +461,7 @@ func checkListElem(elem Type) error {
 // reports false when t is not a placeholder at all — or is a malformed one
 // carrying something other than exactly one constraint.
 //
-// This and unwrapUnresolved below are the ONE definition of "look through an
+// This and unwrapUnresolved below are the one definition of "look through an
 // unresolved wrapper"; do not hand-inline
 // "t.Code == CodeUnresolved && len(t.Params) == 1". Both live here because the
 // rule is a property of Type and every part of the package asks it.
@@ -469,7 +469,7 @@ func checkListElem(elem Type) error {
 // The length check matters, which is why the guard form stays a
 // function of its own rather than being folded away: UnresolvedOf normalizes
 // to exactly one parameter, so a Type failing it was hand-built and is
-// malformed, and every call site deliberately declines to look through such a
+// malformed, and every call site declines to look through such a
 // type rather than recursing on an unchanged value forever.
 func unresolvedConstraint(t Type) (Type, bool) {
 	if t.Code == CodeUnresolved && len(t.Params) == 1 {

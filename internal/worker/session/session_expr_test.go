@@ -63,19 +63,18 @@ func TestManagerCreate_EnterEnvironment_BaseSpec_ExpressionSyntaxStaysMalformed(
 }
 
 // TestManagerCreate_EnterEnvironment_EXPR_LetBindingSharedAcrossEnterAndFiles
-// proves fmtres.ApplyEnvLet is called EXACTLY ONCE per environment entry,
-// with the resulting table reused for BOTH onEnter and EmbeddedFiles -- not
-// once per resolution. Had enterOne (via resolveEnvEntry) instead called
-// ApplyEnvLet before each of those resolutions, the second call would fail
-// the shadow check ("greeting" already a key in the table) and Create would
-// return an error instead of succeeding with the expected content.
+// proves fmtres.ApplyEnvLet is called once per environment entry, with the
+// resulting table reused for both onEnter and EmbeddedFiles. If enterOne (via
+// resolveEnvEntry) called ApplyEnvLet before each of those resolutions, the
+// second call would fail the shadow check ("greeting" already a key in the
+// table) and Create would return an error.
 //
-// Variables deliberately references Param.Scene, NOT the let binding: an
-// environment script's let: names are Script's children's to see (actions,
-// embeddedFiles), and Variables is a SIBLING of Script -- see
+// Variables references Param.Scene, not the let binding: an environment
+// script's let: names are visible to Script's children (actions,
+// embeddedFiles), and Variables is a sibling of Script (see
 // TestManagerCreate_EnterEnvironment_EXPR_VariablesCannotSeeEnvLet below,
-// and fmtres.ApplyEnvLet's doc comment. Resolving MY_VAR from "{{greeting}}"
-// would itself be a divergence from phase 2.
+// and fmtres.ApplyEnvLet's doc comment). Resolving MY_VAR from "{{greeting}}"
+// would diverge from phase 2.
 func TestManagerCreate_EnterEnvironment_EXPR_LetBindingSharedAcrossEnterAndFiles(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses POSIX shell commands")
@@ -131,11 +130,11 @@ func TestManagerCreate_EnterEnvironment_EXPR_LetBindingSharedAcrossEnterAndFiles
 }
 
 // TestManagerCreate_EnterEnvironment_EXPR_VariablesCannotSeeEnvLet pins the
-// ORDERING half of Template Schemas §3.6.2 row 4: an environment script's
+// ordering half of Template Schemas §3.6.2 row 4: an environment script's
 // let: names reach the script's own children (actions, embeddedFiles) and
-// nothing else, so a variable value referencing one is an unknown symbol --
-// exactly what phase 2 reports for the same template
-// (checkEnvironmentExpressions checks Variables against baseSyms, BEFORE the
+// nothing else, so a variable value referencing one is an unknown symbol,
+// which is what phase 2 reports for the same template
+// (checkEnvironmentExpressions checks Variables against baseSyms, before the
 // environment's own let is bound). Phase 3 matches it by resolving Variables
 // before calling ApplyEnvLet; reversing those two lines in resolveEnvEntry
 // makes this test fail.
@@ -174,7 +173,7 @@ func TestManagerCreate_EnterEnvironment_EXPR_VariablesCannotSeeEnvLet(t *testing
 // step's stepEnvironments use it in both a variable value and an onEnter
 // argument. Template Schemas §3.6.2 row 1 grants the name to the whole
 // stepEnvironments subtree, and phase 2 accepts the template with zero
-// expression errors; if phase 3 did not see the name, BOTH positions would
+// expression errors; if phase 3 did not see the name, both positions would
 // fail with unknown symbol "outdir", failing Manager.Create and therefore
 // every task in the step.
 func TestManagerCreate_EnterEnvironment_EXPR_StepEnvironmentSeesStepTemplateLet(t *testing.T) {
@@ -217,8 +216,8 @@ func TestManagerCreate_EnterEnvironment_EXPR_StepEnvironmentSeesStepTemplateLet(
 }
 
 // TestManagerCreate_EnterEnvironment_EXPR_JobEnvironmentIgnoresStepTemplateLet
-// is the negative half of the test above: a JOB environment has no enclosing
-// step, so §3.6.2 row 1 grants it nothing -- the
+// is the negative half of the test above: a job environment has no enclosing
+// step, so §3.6.2 row 1 grants it nothing; the
 // 7.3.1--step-name-in-job-environment-let.invalid.yaml fixture requires the
 // step-template block to stay invisible here. AssignEnvironment.StepEnvironment
 // (absent/false below) is the only bit that distinguishes the two levels on
@@ -253,9 +252,9 @@ func TestManagerCreate_EnterEnvironment_EXPR_JobEnvironmentIgnoresStepTemplateLe
 }
 
 // TestSession_ExitEnvironments_EXPR_LetBindingAppliedOnce is the onExit
-// counterpart: resolveEnvAction builds its OWN fresh table (EnvSymbols is
+// counterpart: resolveEnvAction builds its own fresh table (EnvSymbols is
 // called again at exit time, separate from enterOne's table) and must call
-// ApplyEnvLet exactly once over it. A second call over the same table would
+// ApplyEnvLet once over it. A second call over the same table would
 // fail the shadow check and ExitEnvironments would report an error instead
 // of running onExit with the let-bound value available.
 //
@@ -309,7 +308,7 @@ func TestSession_ExitEnvironments_EXPR_LetBindingAppliedOnce(t *testing.T) {
 
 // TestSession_ExitEnvironments_EXPR_StepEnvironmentSeesStepTemplateLet is
 // the teardown half. resolveEnvAction builds a fresh table at exit
-// time, so the step-template block has to be folded in there too — otherwise
+// time, so the step-template block has to be folded in there too; otherwise
 // an onExit action referencing a step-template binding fails with unknown
 // symbol and the session cannot tear down cleanly.
 func TestSession_ExitEnvironments_EXPR_StepEnvironmentSeesStepTemplateLet(t *testing.T) {
@@ -355,7 +354,7 @@ func TestSession_ExitEnvironments_EXPR_StepEnvironmentSeesStepTemplateLet(t *tes
 	}
 }
 
-// TestSession_ExitEnvironments_EXPR_VariablesCannotSeeEnvLet is the EXIT-path
+// TestSession_ExitEnvironments_EXPR_VariablesCannotSeeEnvLet is the exit-path
 // twin of TestManagerCreate_EnterEnvironment_EXPR_VariablesCannotSeeEnvLet.
 // resolveEnvAction builds its own fresh table and orders Variables against
 // ApplyEnvLet independently of resolveEnvEntry, so reversing those two lines

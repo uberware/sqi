@@ -14,7 +14,7 @@ import (
 // base specification's <IntRangeExpr> grammar (2023-09 Template Schemas,
 // section 3.4.1.1.1).
 //
-// The TEXT is what the value carries; the integers are expanded only when an
+// The text is what the value carries; the integers are expanded only when an
 // operation needs them. That is the point of section 1.2.2 giving CHUNK[INT] the
 // type range_expr rather than list[int] — a frame range need not be expanded to
 // be passed around — and it is what lets range_expr -> string (section 1.2.3)
@@ -110,13 +110,12 @@ func canonicalRangeText(rs []intrange.Range, text string) string {
 // range_expr.
 func (v Value) AsRangeExpr() string { v.mustBe(CodeRangeExpr); return v.s }
 
-// rangeInts expands a range_expr to its integers, in INCREASING order and
+// rangeInts expands a range_expr to its integers, in increasing order and
 // de-duplicated, which is what section 3.4.1.1.1 specifies ("combined to form a
 // list of values in increasing order").
 //
-// Note that internal/openjd expands the same grammar in first-seen order
-// instead. That divergence is deliberate and is not changed here — see the
-// intrange package doc.
+// internal/openjd expands the same grammar in first-seen order instead. Keep
+// that divergence; see the intrange package doc.
 //
 // The base spec forbids overlapping elements (section 3.4.1.1.1:
 // "1-9:2,2-10:2" is an error, since the elements' spans intersect). That
@@ -126,7 +125,7 @@ func (v Value) AsRangeExpr() string { v.mustBe(CodeRangeExpr); return v.s }
 // EXPR language's range_expr type. The EXPR spec (2026-02
 // Expression-Language.md) defines range_expr(s: string) -> range_expr and
 // list(value: range_expr) -> list[int] with no overlap restriction at all, so
-// overlapping sub-ranges here are legal and simply de-duplicate, matching
+// overlapping sub-ranges here are legal and de-duplicate, matching
 // "1-5,3-7" -> [1,2,3,4,5,6,7] below.
 func rangeInts(v Value) ([]int64, error) {
 	ranges, err := intrange.Parse(v.AsRangeExpr())
@@ -154,29 +153,29 @@ func rangeInts(v Value) ([]int64, error) {
 // This is section 1.3.10 rule 2's element count for a range_expr: charging the
 // cost of counting must not itself cost an expansion. len(range_expr) reuses
 // this same helper; rangeInts stays the right function for every caller that
-// genuinely needs the values, such as list(range_expr).
+// needs the values, such as list(range_expr).
 //
-// A SINGLE sub-range is the case that matters for avoiding materialization,
+// A single sub-range is the case that matters for avoiding materialization,
 // and the only case handled purely arithmetically: its values are strictly
 // monotonic (expandOneRange's own comment — "no two are equal" — is the same
 // fact stated for the expansion path), so intrange.Range.Count() needs no
 // deduplication to already be exact. It is also the only shape in which a
 // caller can ask for an astronomically large count — len(range_expr(
-// '1-20000000')) is the motivating case — without this function allocating
-// anything to answer. That is also why it is returned BEFORE checkElementCount
+// '1-20000000')) is the example — without this function allocating
+// anything to answer. That is also why it is returned before checkElementCount
 // runs, unlike the multi-sub-range path below: checkElementCount guards
 // materialization, which this branch never does, so 20,000,000 (twice
 // maxElements) is a legitimate arithmetic answer here, not a value to refuse.
 // TestLenRangeExpr_DoesNotMaterialize pins it.
 //
-// TWO OR MORE sub-ranges may overlap — expandRanges's own comment says so ("may
+// Two or more sub-ranges may overlap — expandRanges's own comment says so ("may
 // overlap ... must be de-duplicated"), and rangeInts's doc comment pins
 // "1-5,3-7" at 7 distinct values, not 5+5 — and there is no general arithmetic
 // shortcut to size the union of several arithmetic progressions with different
 // steps short of finding the overlap itself; summing Count() across every
-// sub-range overcounts exactly this case. The multi-sub-range case IS bounded,
+// sub-range overcounts exactly this case. The multi-sub-range case is bounded,
 // unlike the single-range one above, because it falls back to a real expansion
-// that allocates: the running total below is the SAME conservative pre-dedup
+// that allocates: the running total below is the same conservative pre-dedup
 // bound rangeInts itself checks before expanding — so falling back to the real
 // expansion here, reusing the ranges already parsed, costs no more than
 // list(range_expr(...)) already pays for the identical value.
@@ -199,31 +198,30 @@ func rangeExprCount(v Value) (int, error) {
 	return len(expandRanges(ranges, total)), nil
 }
 
-// rangeExprCountBounds returns a LOWER and an UPPER bound on how many integers
+// rangeExprCountBounds returns a lower and an upper bound on how many integers
 // v expands to, computed purely arithmetically -- nothing is materialized, for
 // any shape of input, which is the one property [rangeExprCount] cannot offer.
 //
-// It exists because rangeExprCount is arithmetic ONLY for a single sub-range.
+// It exists because rangeExprCount is arithmetic only for a single sub-range.
 // With two or more it calls expandRanges to produce the count, so a caller
-// that wants a count in order to decide whether the expansion FITS would do
-// the expansion to find out. Measured without this pair:
-// len(range_expr("1-5000000,6000000-9000000")) answers 8000001 after 645 ms
-// and 687 MB while charging TWO operations, and the same expression reached
-// through list(), a subscript or a comprehension pays the identical 687 MB
-// before a count-based reservation refuses it. See
+// that wants a count in order to decide whether the expansion fits would do
+// the expansion to find out: len(range_expr("1-5000000,6000000-9000000"))
+// would expand eight million values while charging two operations, and the
+// same expression reached through list(), a subscript or a comprehension would
+// pay that expansion before a count-based reservation refused it. See
 // reserveRangeExprExpansion, which is what this pair is for.
 //
-// THE UPPER BOUND is the pre-deduplication sum of every sub-range's own count,
+// The upper bound is the pre-deduplication sum of every sub-range's own count,
 // guarded by checkElementCount exactly as rangeInts guards the same running
-// total before expanding. It is >= the true count always, and EQUAL to it
+// total before expanding. It is >= the true count always, and equal to it
 // unless sub-ranges overlap.
 //
-// THE LOWER BOUND is the LARGEST single sub-range's count. A single sub-range
+// The lower bound is the largest single sub-range's count. A single sub-range
 // is an arithmetic progression with a non-zero step, so its own values are
 // strictly monotonic and contain no duplicates (expandOneRange's comment
 // states the same fact) -- every one of them survives deduplication, so the
 // union cannot be smaller than the largest of them. It is <= the true count
-// always, and again EQUAL to it when one sub-range subsumes all the others.
+// always, and again equal to it when one sub-range subsumes all the others.
 //
 // A single sub-range collapses both bounds onto the exact count, which is why
 // the common case needs no expansion and no fallback at all.
@@ -251,18 +249,18 @@ func rangeExprCountBounds(v Value) (low, high int, err error) {
 }
 
 // reserveRangeExprCount is [reserveRangeExprExpansion] for a caller that needs
-// only the COUNT and never the values -- len(range_expr) is the only one.
+// only the count and never the values -- len(range_expr) is the only one.
 //
 // The difference is the single-sub-range case: there,
 // rangeExprCount is pure arithmetic on the parsed bounds and allocates
 // nothing, so there is no work to refuse. len(range_expr('1-20000000'))
-// answering 20,000,000 in constant time is a DOCUMENTED, tested property
+// answering 20,000,000 in constant time is a documented, tested property
 // (funcsconv.go's len row, TestLenRangeExpr_DoesNotMaterialize) -- reserving
 // 20,000,000 operations for it would reject the exact query the arithmetic
 // path exists to serve, under any budget tighter than the count itself. That
 // is why the two helpers are separate functions.
 //
-// With TWO OR MORE sub-ranges counting DOES expand, so from there on this is
+// With two or more sub-ranges counting does expand, so from there on this is
 // identical to reserving the expansion.
 func reserveRangeExprCount(ec evalCtx, v Value) error {
 	ranges, err := intrange.Parse(v.AsRangeExpr())
@@ -276,7 +274,7 @@ func reserveRangeExprCount(ec evalCtx, v Value) error {
 	return reserveRangeExprExpansion(ec, v)
 }
 
-// reserveRangeExprExpansion refuses, BEFORE anything is expanded, when
+// reserveRangeExprExpansion refuses, before anything is expanded, when
 // expanding v could not fit the evaluation's remaining operation budget.
 //
 // Every site that is about to expand a range_expr should reach this first,
@@ -285,48 +283,46 @@ func reserveRangeExprCount(ec evalCtx, v Value) error {
 // reserveRangeExprCoercion (the section 1.2.3 range_expr -> list[int] rule)
 // and reserveEqualityExpansion (listOrRangeEqual's operands). Section 1.3.10
 // rule 2 charges an expansion by its element count, but the charge lands once
-// the elements exist -- and for a range_expr even COUNTING them can cost the
+// the elements exist -- and for a range_expr even counting them can cost the
 // expansion (rangeExprCount), so a count-based reservation cannot help: its
 // own input would be the thing doing the work.
 //
-// "EVERY SITE" IS A CLAIM that reading charge sites cannot verify. Four sites
-// expand inside other constructs -- equality's right-hand operand,
-// callShape's argument coercion, coerceTop's target coercion and
-// evalListLit's element coercion -- each of them 1.6-2.8 GB under the
-// server's submission budget unreserved. Three of the four have NO charge in
-// front of them at all (a coercion is not a call, and list equality is
-// charged left-only), so they are found by measuring every construction that
-// could reach rangeInts, not by reading charge sites. The enumeration, with
-// those measurements, is
+// "Every site" is a claim that reading charge sites cannot verify. Four sites
+// expand inside other constructs: equality's right-hand operand, callShape's
+// argument coercion, coerceTop's target coercion and evalListLit's element
+// coercion. Three of the four have no charge in front of them at all (a
+// coercion is not a call, and list equality is charged left-only), so they are
+// found by exercising every construction that could reach rangeInts, not by
+// reading charge sites. The enumeration is
 // TestReserveRangeExpr_CoercionAndEqualityDoNotExpand and
 // TestReserveRangeExpr_RefusalDoesNotExpand
 // (reservework_internal_test.go) -- extend those first if a new expansion
 // site appears, because the claim in this paragraph is only as good as they
 // are.
 //
-// THREE OUTCOMES, in the order they are tried, and the ordering matters:
+// Three outcomes, in the order they are tried, and the ordering matters:
 //
-//  1. The UPPER bound fits. Accept immediately. An over-estimate that fits
+//  1. The upper bound fits. Accept immediately. An over-estimate that fits
 //     proves the true count fits, so this can never reject wrongly, and it is
 //     the path every legitimate expression takes -- at no allocation.
 //
-//  2. The upper bound does not fit, and neither does the LOWER bound. Refuse
+//  2. The upper bound does not fit, and neither does the lower bound. Refuse
 //     immediately, still at no allocation. The lower bound is a real count of
 //     values that must survive deduplication, so this refusal is exact, not
-//     conservative. Every range_expr with NON-overlapping sub-ranges lands
-//     here, including the 687 MB case above: its largest sub-range alone is
+//     conservative. Every range_expr with non-overlapping sub-ranges lands
+//     here, including the case above: its largest sub-range alone is
 //     5,000,000 values against a 10,000-operation budget.
 //
-//  3. The upper bound does not fit but the lower one does. The answer genuinely
+//  3. The upper bound does not fit but the lower one does. The answer
 //     depends on how much the sub-ranges overlap, and there is no arithmetic
 //     shortcut for the size of a union of arithmetic progressions with
-//     different steps (rangeExprCount's own comment says so). ONLY here is an
+//     different steps (rangeExprCount's own comment says so). Only here is an
 //     expansion worth paying for, and it buys the exact count rather than a
 //     verdict -- so an expression whose sub-ranges overlap enough to fit is
 //     still accepted, and this is not a tightening of the language.
 //
-// THE RESIDUAL: case 3 still expands, and is bounded only by
-// checkElementCount's maxElements floor. It needs OVERLAPPING sub-ranges whose
+// The residual: case 3 still expands, and is bounded only by
+// checkElementCount's maxElements floor. It needs overlapping sub-ranges whose
 // largest member fits the budget while their sum does not -- e.g. a thousand
 // copies of "1-10000" -- and such text is bulky enough (~8 KB per position)
 // that the submission body cap limits how many positions can carry it. It is
@@ -344,10 +340,10 @@ func reserveRangeExprExpansion(ec evalCtx, v Value) error {
 	if errors.Is(rerr, ErrDeadlineExceeded) {
 		// meter.reserve reports the wall-clock backstop as well as the
 		// operation bound, and case 1 reads a reserve failure as a verdict
-		// about SIZE -- which a deadline error is not. Today the fall-through
-		// would still surface it, because reserve checks the deadline even for
-		// a zero count and case 2 would return the same error; this is here so
-		// that the refusal does not DEPEND on that, since a lower bound of zero
+		// about size -- which a deadline error is not. The fall-through would
+		// also surface it, because reserve checks the deadline even for a zero
+		// count and case 2 would return the same error; this is here so that
+		// the refusal does not depend on that, since a lower bound of zero
 		// otherwise lands in case 3 -- expanding, which is the one thing every
 		// branch here exists to avoid.
 		return rerr
@@ -367,18 +363,18 @@ func reserveRangeExprExpansion(ec evalCtx, v Value) error {
 // section 1.2.3 (coerce.go). Any other pair reserves nothing: no other
 // coercion in the language materializes a collection out of a compact one.
 //
-// It exists because a COERCION is an expansion that no charge sits in front
-// of. Three of them, measured unreserved under submissionLimits():
+// It exists because a coercion is an expansion that no charge sits in front
+// of. Three of them:
 //
-//	range_expr("1-10000000") to a list[int] TARGET      373 ms   2768 MB
-//	sorted([1] + range_expr("1-10000000"))              305 ms   2768 MB
-//	[1] == range_expr("1-10000000")                      97 ms   1624 MB
+//	range_expr("1-10000000") to a list[int] target
+//	sorted([1] + range_expr("1-10000000"))
+//	[1] == range_expr("1-10000000")
 //
-// The first two are this function's; the third is reserveEqualityExpansion's,
-// below. Unreserved, each runs to completion and is caught only afterwards --
-// by the memory limit, by a charge levied on the already-expanded value, or in
-// the equality case not at all, since section 1.3.10 charges list equality
-// against the LEFT operand only.
+// Each expands ten million integers. The first two are this function's; the
+// third is reserveEqualityExpansion's, below. Unreserved, each runs to
+// completion and is caught only afterwards -- by the memory limit, by a charge
+// levied on the already-expanded value, or in the equality case not at all,
+// since section 1.3.10 charges list equality against the left operand only.
 func reserveRangeExprCoercion(ec evalCtx, v Value, target Type) error {
 	if v.Type.Code != CodeRangeExpr {
 		return nil
@@ -390,19 +386,19 @@ func reserveRangeExprCoercion(ec evalCtx, v Value, target Type) error {
 }
 
 // reserveEqualityExpansion reserves the expansion listOrRangeEqual (ops.go) is
-// about to perform, WITHOUT charging for it.
+// about to perform, without charging for it.
 //
 // Section 1.3.10's rule for "list/range equality comparisons" is charged
-// against the LEFT operand only -- a ruling pinned by
-// TestOperationCount_ListEquality that this deliberately does not touch. But
-// listOrRangeEqual expands whichever side is a range_expr, and for a RIGHT-hand
+// against the left operand only -- a ruling pinned by
+// TestOperationCount_ListEquality that this does not touch. But
+// listOrRangeEqual expands whichever side is a range_expr, and for a right-hand
 // one nothing else stands in front of that: unreserved, "[1] == range_expr(
-// "1-5000000,6000000-9000000")" allocates 1603 MB in 651 ms and returns false,
-// having charged three operations. Reserving is exactly the right instrument
+// "1-5000000,6000000-9000000")" expands eight million values and returns
+// false, having charged three operations. Reserving is the right instrument
 // here, because it refuses without pricing: the charge stays left-only and no
 // operation count moves.
 //
-// The IDENTICAL-TEXT case reserves nothing, because listOrRangeEqual answers it
+// The identical-text case reserves nothing, because listOrRangeEqual answers it
 // without expanding either side (see its own doc comment):
 // "range_expr('1-9000000') == range_expr('1-9000000')" is true, costs two
 // parses, and fits the default operation limit -- reserving both sides would
@@ -418,8 +414,8 @@ func reserveEqualityExpansion(ec evalCtx, l, r Value) error {
 }
 
 // rangeExprValues expands a range_expr to its integers as a boxed []Value,
-// for the one caller that actually needs the boxed form: list(range_expr)
-// (funcsconv.go) becomes a list[int], so boxing there is the RESULT, not
+// for the one caller that needs the boxed form: list(range_expr)
+// (funcsconv.go) becomes a list[int], so boxing there is the result, not
 // throwaway work. min, max and sum's own range_expr rows (funcsmath.go) work
 // from rangeInts's []int64 directly instead, since boxing there would only be
 // unboxed again inside their reducer.
@@ -435,18 +431,17 @@ func rangeExprValues(v Value) ([]Value, error) {
 	return vals, nil
 }
 
-// expandOneRange expands a range expression with exactly ONE sub-range, which
+// expandOneRange expands a range expression with exactly one sub-range, which
 // needs neither of the two things the general path below does.
 //
 // A single sub-range is an arithmetic progression with a non-zero step, so its
 // values are strictly monotonic: no two are equal, which retires the
 // de-duplication map, and they are already ordered, which retires the sort —
-// they are merely in the WRONG order for a negative step, and reversing a
+// they are merely in the wrong order for a negative step, and reversing a
 // slice in place is linear where sorting it is not. Every operation
-// re-expands from scratch, so skipping both compounds: measured on a
-// 10,000,000-value range, one expansion takes 64 ms here against 861 ms on
-// the general path, and "Param.Big[:][:][:][:][:]" — which expands six
-// times — 0.32 s against 4.06 s.
+// re-expands from scratch, so skipping both compounds: on a large range this
+// path is an order of magnitude faster than the general one, and
+// "Param.Big[:][:][:][:][:]" expands six times.
 //
 // Correctness rests entirely on the "exactly one" test, so the general path is
 // still what runs for anything else — two sub-ranges may overlap and may be

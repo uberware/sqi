@@ -246,7 +246,7 @@ func TestMinMaxSum(t *testing.T) {
 	}
 }
 
-// TestMinMax_EmptyList covers BOTH routes to RFC 0006's wording. The literal
+// TestMinMax_EmptyList covers both routes to RFC 0006's wording. The literal
 // matches the dedicated list[nulltype] row; the symbol is typed list[int] and
 // matches the int row, whose Fn must raise the same message. Only the first is
 // reachable from a literal, which is what makes the second easy to miss.
@@ -292,9 +292,9 @@ func TestSum_ReportsOverflow(t *testing.T) {
 	}
 }
 
-// TestMinMax_EmptyList_SelectsNoReturnRow pins the REAL behavior behind
+// TestMinMax_EmptyList_SelectsNoReturnRow pins the real behavior behind
 // TestMinMax_EmptyList's error text, which a defect could satisfy by accident:
-// if shape.go's argCostList scored list[nulltype] against EVERY
+// if shape.go's argCostList scored list[nulltype] against every
 // concrete-element list row (list[int], list[float], and the dedicated
 // list[nulltype] row itself) as the same cost-1 widen, the three rows would tie
 // and matchShapesExactFirst's earliest-wins tiebreak would pick list[int] —
@@ -318,7 +318,7 @@ func TestMinMax_EmptyList_SelectsNoReturnRow(t *testing.T) {
 }
 
 // TestSum_EmptyListIsOrderIndependent pins that sum([]) returns int because
-// its list[nulltype] row wins ON COST against the list[int]/list[float] rows
+// its list[nulltype] row wins on cost against the list[int]/list[float] rows
 // (shape.go's argCostList scores list[nulltype] vs list[nulltype] as an exact
 // match, cost 0, against those rows' cost-1 widen) — not because it
 // happens to be registered first. Reordering the rows must not change the
@@ -351,8 +351,8 @@ func TestSum_EmptyListIsOrderIndependent(t *testing.T) {
 // TestFloorCeilRound_RejectAnUnrepresentableFloat pins that floor, ceil and a
 // bare round(float) report an integer overflow for a magnitude outside
 // int64's range, rather than the architecture-dependent wrong answer Go's raw
-// "int64(f)" conversion gives for such a value: measured on the same source,
-// math.MaxInt64 on arm64 and math.MinInt64 on amd64 for the exact same input.
+// "int64(f)" conversion gives for such a value (math.MaxInt64 on arm64 and
+// math.MinInt64 on amd64 for the same input).
 // floatToInt (funcsmath.go) is the shared guard all three (and roundToDigits's
 // non-positive-ndigits branch, covered separately below) go through.
 func TestFloorCeilRound_RejectAnUnrepresentableFloat(t *testing.T) {
@@ -476,7 +476,7 @@ func TestRoundToDigits_NegativeNdigitsBeyondFloatRange(t *testing.T) {
 // the window depends on the magnitude of f, not on ndigits alone.
 //
 // None of these is an error case. Rounding a float64 to that many decimal
-// places is the IDENTITY: no float64 carries enough precision for a rounding
+// places is the identity: no float64 carries enough precision for a rounding
 // at 1e-308 resolution to change it, so the answer is f itself, rendered to
 // ndigits places. round(2.0, 307) already returns 2.000...0 and there is no
 // mathematical discontinuity at 308 -- only an artifact of the multiply.
@@ -590,7 +590,7 @@ func TestRoundIntToDigits_CoarserThanTheValueIsZeroNotOverflow(t *testing.T) {
 // keeps the already-even quotient 0, and one above it rounds away. The
 // reference disagrees on that single value — it answers 0 for
 // round(5000000000000000001, -19) because it scales through float64, where
-// 5000000000000000001 IS 5e18 and the +1 is gone. roundIntToDigits exists to
+// 5000000000000000001 is 5e18 and the +1 is gone. roundIntToDigits exists to
 // avoid exactly that ("without going through float64 and its precision"), so
 // sqi is right here; see test/oracle/baseline.txt.
 func TestRoundIntToDigits_BeyondScaleStillReportsRealOverflow(t *testing.T) {

@@ -13,7 +13,7 @@ package middleware
 // implementation with the REST handlers without inverting the dependency
 // direction (api imports middleware, never the reverse).
 //
-// Current wire shape:
+// Wire shape:
 //
 //	{
 //	  "type":     "about:blank",
@@ -23,9 +23,7 @@ package middleware
 //	  "instance": "a1b2c3d4e5f60708"
 //	}
 //
-// TODO: replace "about:blank" with sqi-specific problem type
-// URIs (e.g. "https://sqi.dev/problems/not-found") once the domain and a
-// problem-type registry are established.
+// The type is always "about:blank": sqi defines no problem-type URIs.
 
 import (
 	"encoding/json"
@@ -34,8 +32,7 @@ import (
 
 // problemDetail is the RFC 7807 problem-details object written by WriteProblem.
 type problemDetail struct {
-	// Type is a URI that identifies the problem type. We use "about:blank"
-	// until sqi-specific problem URIs are defined (see TODO above).
+	// Type is a URI that identifies the problem type; always "about:blank".
 	Type string `json:"type"`
 
 	// Title is a short, human-readable summary of the problem type.

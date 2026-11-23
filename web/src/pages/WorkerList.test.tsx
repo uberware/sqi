@@ -678,7 +678,7 @@ describe('WorkerList', () => {
 
   describe('capability tag overflow', () => {
     it('renders up to 3 capability tags inline without overflow badge', async () => {
-      // OS is its own column, so capability tags are: cpu, ram, gpu (model absent here) — 2 tags
+      // OS is its own column and a GPU with no model adds no tag, so the tags are cpu and ram
       const worker = makeWorker({
         hostname: 'tag-node',
         os: 'Linux',
@@ -728,7 +728,7 @@ describe('WorkerList', () => {
           nuke_17_1: 'true',
           maya: 'true',
           maya_2025: 'true',
-          // A tag written by hand in the older hyphenated form still collapses.
+          // A hand-written tag in the hyphenated form also collapses.
           houdini: 'true',
           'houdini-20.5': 'true',
         },

@@ -39,7 +39,7 @@ readme: |
 
   ## Requirements
 
-  - **Windows workers only.** 3ds Max does not run elsewhere, so the step
+  - Windows workers only. 3ds Max does not run elsewhere, so the step
     requires `attr.worker.os.family` = `windows` as well as the tag.
   - Workers tagged `attr.worker.tag.threedsmax = true`
   - `3dsmaxcmd` on the worker's `PATH`: add the install folder, for example
@@ -104,6 +104,6 @@ template:
               - "-start:{{ min(Task.Param.Frame) }}"
               - "-end:{{ max(Task.Param.Frame) }}"
               # Left out when empty, so the scene's own setting applies. The
-              # test reads RawParam: under EXPR an empty PATH binds as '.'.
+              # condition reads RawParam: under EXPR an empty PATH binds as '.'.
               - "{{ '-outputName:' + string(Param.OutputPath) if RawParam.OutputPath != '' else [] }}"
               - "{{Param.SceneFile}}"

@@ -29,12 +29,11 @@ import (
 // anonymous superuser injected when auth is disabled, which is what keeps
 // auth-off behavior unchanged.
 //
-// A context carrying no principal fails closed: ("", true). Note that ""
-// is also store.ListJobsOptions.Owner's zero value for "unfiltered" —
-// callers MUST NOT assign this owner straight into ListJobsOptions.Owner;
-// doing so would silently turn the fail-closed signal into "return
-// everything". Callers must special-case owner == "" with scoped == true
-// and short-circuit to an empty result instead of querying the store.
+// A context carrying no principal fails closed: ("", true). "" is also
+// store.ListJobsOptions.Owner's zero value for "unfiltered", so assigning
+// this owner straight into ListJobsOptions.Owner would turn the fail-closed
+// signal into "return everything". Callers must special-case owner == ""
+// with scoped == true and return an empty result without querying the store.
 func scopeFilter(ctx context.Context) (owner string, scoped bool) {
 	p, ok := auth.FromContext(ctx)
 	if !ok {
@@ -74,14 +73,10 @@ func (a *authz) requireJobAccessByTaskID() func(http.Handler) http.Handler {
 // maps the request to the job whose ownership governs it.
 //
 // The resolver is chosen per-route at mount time rather than inferred inside
-// the middleware. An earlier version string-matched chi's accumulated route
-// pattern for "/tasks/{id}" to decide whether {id} was a job or a task, which
-// made the classification depend on a param name and path shape that nothing
-// enforced: a route added with a differently-spelled task id would silently
-// take the job branch and 404. Worse, that failure was invisible in testing —
-// the middleware short-circuits for principals holding jobs.read.all, so an
-// admin-run test suite never reaches the branch at all and only owner-scoped
-// non-admins would hit it in production.
+// the middleware from the route pattern, so whether {id} names a job or a
+// task never depends on a param name or path shape. The middleware
+// short-circuits for principals holding jobs.read.all, so only an
+// owner-scoped principal exercises the resolver.
 func (a *authz) requireJobAccess(resolve func(*http.Request) (store.Job, error)) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -15,27 +15,20 @@ import (
 // filesystem entry a job could have swapped in at that deterministic name.
 //
 // path_mapping.json is written by the root daemon at points that can run
-// AFTER job code has already executed as the target uid — the rewrite in
-// executor's buildEffectiveLookup specifically runs after the environment
-// onEnter action. Between a plain os.WriteFile and completion, the target uid
-// could have replaced the entry with a SYMLINK (a naive open would follow it
-// and write through to the target) or a HARDLINK to some other file on the
-// same filesystem (O_TRUNC would follow the existing directory entry and
-// overwrite THAT inode's content).
+// after job code has executed as the target uid: the rewrite in executor's
+// buildEffectiveLookup runs after the environment onEnter action. By then the
+// target uid could have replaced the entry with a symlink (an open would
+// follow it and write through to the target) or a hardlink to another file on
+// the same filesystem (O_TRUNC would overwrite that inode's content).
 //
-// This file needs no chown (it is always mode 0644, world-readable by
-// design — see WritePathMappingFile), so unlike isolation.WriteFileFchown
-// there is nothing to fchown here; the remove-then-O_EXCL-create shape below
-// is otherwise identical to isolation.WriteFileFchown's own, so the two
-// secure-write helpers in this codebase behave consistently. Any existing
-// entry is removed first (best-effort; ErrNotExist is not an error — there
-// may be nothing there yet, e.g. the very first write of a session), then
-// the file is created fresh with O_EXCL|O_NOFOLLOW: if anything recreates an
-// entry at
-// path in the tiny window between the remove and this create, the O_EXCL
-// open fails closed (EEXIST) rather than writing through whatever was
-// recreated — the caller already treats a write failure here as a
-// pre-execution task failure, so failing safe costs nothing correctness-wise.
+// The file needs no chown (it is always mode 0644; see WritePathMappingFile),
+// so unlike isolation.WriteFileFchown there is nothing to fchown; otherwise
+// it uses the same remove-then-O_EXCL-create shape. Any existing entry is
+// removed first (ErrNotExist is not an error: the first write of a session
+// finds nothing), then the file is created with O_EXCL|O_NOFOLLOW. If
+// anything recreates an entry at path between the remove and the create, the
+// O_EXCL open fails (EEXIST) rather than writing through it, and the caller
+// treats the write failure as a pre-execution task failure.
 func writeSecure(path string, data []byte, perm os.FileMode) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove existing %q: %w", path, err)

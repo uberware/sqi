@@ -33,8 +33,8 @@ npm ci             # install dependencies exactly as locked (run once, and after
 ## Local development workflow
 
 The Vite dev server provides hot-module reload and proxies API traffic to a
-local `sqi-server`, so you edit UI code and see changes instantly while reading
-and writing real data.
+local `sqi-server`, so UI changes appear on save while reading and writing
+real data.
 
 A complete loop runs three processes. Run each in its own terminal from the
 repo root unless noted.
@@ -44,7 +44,7 @@ repo root unless noted.
 make run
 # or, after `make build`: ./bin/sqi-server serve
 
-# Terminal 2 — a worker, so submitted jobs actually run.
+# Terminal 2 — a worker, so submitted jobs run.
 # On a LAN it finds the server via mDNS; point it explicitly with the NATS URL
 # if discovery is off or the server is elsewhere.
 SQI_WORKER_NATS_URL=nats://127.0.0.1:4222 ./bin/sqi-worker start
@@ -58,8 +58,8 @@ Open the URL Vite prints (default `http://localhost:5173`). The dashboard should
 show live worker data; submitting a job from `/submit` runs it on the worker and
 the job list updates in real time over WebSocket.
 
-You do **not** need a worker just to develop most views — the server alone
-serves the job/worker lists and the dashboard. Add a worker when you want jobs
+Most views need no worker: the server alone serves the job and worker lists and
+the dashboard. Add a worker when you want jobs
 to progress through `running` → `succeeded` and to exercise the live log viewer.
 
 Quick checks while developing:
@@ -88,9 +88,9 @@ pass arguments through the npm scripts instead, e.g.
 
 ## Proxy configuration
 
-The dev server never talks to the server's origin directly — it proxies, which
-avoids CORS entirely and lets the same relative `/api/...` paths the production
-bundle uses work in development. The relevant block in `web/vite.config.ts`:
+The dev server proxies API traffic to the server instead of calling its origin,
+which avoids CORS and lets the relative `/api/...` paths the production bundle
+uses work in development. The relevant block in `web/vite.config.ts`:
 
 ```ts
 server: {
@@ -160,8 +160,9 @@ Router.
      entries in `src/components/layout/Sidebar.tsx` — add a `<NavLink>` so the
      active link highlights based on the URL.
    - **Admin / management views** (farms, queues, usage pools, storage, compute
-     locations, products, preset library, server log, servers) are **not** in the sidebar;
-     they live on the **Admin hub** (`/admin`, `src/pages/Admin.tsx`). Add an entry
+     locations, capacity groups, products, preset library, server log, servers,
+     users, API keys) are not in the sidebar; they live on the **Admin hub**
+     (`/admin`, `src/pages/Admin.tsx`). Add an entry
      to its `ADMIN_LINKS` registry (`label`, `description`, `to`) and the card grid
      renders it. The sidebar's only management entry is **Admin** itself; the server
      log is its own route, `/server-log`.
@@ -198,7 +199,7 @@ controls — `LINE_EDIT_LIST`, `SPIN_BOX_LIST`, `CHECK_BOX_LIST`, and the three
 a file dialog because the web UI has no file-picker widget, as with their
 scalar `CHOOSE_*` counterparts (plain text) — or, absent an explicit control,
 by a bare `LIST[STRING]` / `LIST[PATH]` / `LIST[INT]` / `LIST[FLOAT]` /
-`LIST[BOOL]` type. `LIST[LIST[INT]]` is deliberately excluded from that
+`LIST[BOOL]` type. `LIST[LIST[INT]]` is excluded from that
 type-based fallback: RFC 0007 gives it no
 control but `HIDDEN` and describes its use case as programmatic, so it falls
 through to a raw JSON text field instead of a doubly-nested row editor.
@@ -206,23 +207,20 @@ through to a raw JSON text field instead of a doubly-nested row editor.
 value doesn't parse as a JSON array (a malformed stored default, say), so a
 bad value never blocks the form from rendering.
 
-**The row editor's serialisation must match `internal/openjd/paramjson.go`'s
-canonical JSON form on *type*, not necessarily byte for byte.**
-`ListParamField` encodes with plain `JSON.stringify` — no inserted
-whitespace, each element written as its own JSON type (number, boolean, or
-string) — because the server decodes a submitted list value with
-`encoding/json` and checks each element by its JSON type against the
-parameter's declared element type: a number must arrive as a JSON number, not
-a string, and likewise for booleans. Byte equality is not required —
+The row editor's serialisation must match `internal/openjd/paramjson.go`'s
+canonical JSON form on element type. `ListParamField` encodes with plain
+`JSON.stringify` (no inserted whitespace, each element as its own JSON type:
+number, boolean, or string), because the server decodes a submitted list value
+with `encoding/json` and checks each element's JSON type against the
+parameter's declared element type: a number must arrive as a JSON number, not a
+string, and likewise for booleans. Byte equality is not required, since
 `BindJobParameters` (`internal/openjd/bind.go`) stores a submitted value
-verbatim and nothing compares it against the canonical default — but the two
-encoders agree on every byte form the editor can produce: `JSON.stringify`
-and `marshalCanonical` agree on separators, string escaping including
-`< > &`, and float formatting, and diverge only on two inputs neither side's
-editor emits (Go escapes U+2028/U+2029 and lone surrogates unconditionally),
-each harmless because both sides decode the other's output identically.
-Nothing mechanical keeps the two encoders in agreement: both sides' tests
-assert the same literal strings, with Go's `TestEncodeListDefault` table
+verbatim and nothing compares it against the canonical default. The two
+encoders agree on separators, string escaping (including `< > &`) and float
+formatting; they differ only on U+2028/U+2029 and lone surrogates, which Go
+escapes and the editor never emits, and each side decodes the other's output
+identically. Nothing mechanical keeps the two encoders in agreement: both
+sides' tests assert the same literal strings, with Go's `TestEncodeListDefault` table
 mirrored into the TypeScript suite for every element type the row editor
 renders (strings, ints, floats, bools, paths, and the empty list; the table's
 two `LIST[LIST[INT]]` rows are left out because that type falls to the
@@ -238,10 +236,10 @@ auth gating — there is no separate "is auth enabled?" flag on the client.
 `useAuthMe` query hook, resolving to one of three `status` values:
 
 - `'loading'` — the initial request hasn't resolved yet.
-- `'authed'` — `/auth/me` returned `200`. This covers both a real logged-in
-  user **and** the anonymous superuser principal `/auth/me` returns when the
-  server has `auth.enabled=false` (`kind: "anonymous"`) — which is what lets
-  the same client code serve both modes without a separate feature flag.
+- `'authed'` — `/auth/me` returned `200`. This covers both a logged-in user
+  and the anonymous superuser principal `/auth/me` returns when the server has
+  `auth.enabled=false` (`kind: "anonymous"`), so the same client code serves
+  both modes without a separate feature flag.
 - `'anon'` — `/auth/me` returned `401` (no/invalid/expired session), or any
   other request error; a network failure or 5xx is treated as `'anon'` too,
   so the app never gets stuck rendering the shell against an unconfirmed
@@ -250,21 +248,20 @@ auth gating — there is no separate "is auth enabled?" flag on the client.
 `App.tsx` reads `useAuth().status` and renders `<Login />` in place of the
 whole shell (sidebar, routes, WebSocket provider) whenever status is `'anon'`,
 and a loading placeholder for `'loading'`. There is no `/login` entry in
-`routes.tsx` — logging in is a full replacement of the app root, not a routed
-page, so it renders regardless of whatever URL the user was on.
+`routes.tsx`: the login screen replaces the app root rather than being a routed
+page, so it renders whatever URL the user was on.
 
 `src/pages/Login.tsx` submits `POST /auth/login` via the `useLogin` mutation
 and, on success, calls `refresh()` from `useAuth()` (which invalidates the
 `auth.me` query) to let `AuthProvider` re-resolve and flip the app back to the
 shell. A global handler in `src/api/queryClient.ts` also invalidates `auth.me`
-whenever *any* query gets a `401`, so an expired or revoked session anywhere
-in the app bounces the user back to the login screen on its own.
+whenever any query gets a `401`, so an expired or revoked session anywhere in
+the app returns the user to the login screen.
 
-**The web stores no token, anywhere.** There is no localStorage, sessionStorage,
-or in-memory token cache — the session is an `HttpOnly` cookie the browser
-attaches automatically, which JavaScript cannot read. This makes the session
-resistant to exfiltration via XSS (a malicious script running in the page
-still cannot read or copy the credential). Every request goes through `apiFetch` (`src/api/client.ts`),
+The web UI stores no token. There is no localStorage, sessionStorage, or
+in-memory token cache: the session is an `HttpOnly` cookie the browser attaches
+automatically and JavaScript cannot read, so a script injected into the page
+cannot read or copy the credential. Every request goes through `apiFetch` (`src/api/client.ts`),
 which sets `credentials: 'include'` so the cookie rides along on same-origin
 requests without any client-side bookkeeping.
 
@@ -274,7 +271,7 @@ requests without any client-side bookkeeping.
 
 The web UI mirrors the server's role→permission matrix
 (`docs/auth.md#roles--permissions`) so nav items, Admin-hub cards, and route
-access all agree with what the server would actually allow.
+access all agree with what the server allows.
 
 `can(principal, perm)` (`src/auth/policy.ts`) is the single source of truth
 on the client: a `GRANTS` map from role → the set of `Permission` strings it
@@ -287,7 +284,7 @@ not yet resolved).
 
 `<RequireRole permission="…">` (`src/components/RequireRole.tsx`) is a route
 guard: it renders `children` if `can(principal, permission)`, otherwise a
-friendly "Not authorized" page instead of a broken fetch. Wrap any
+"Not authorized" page instead of a failing fetch. Wrap any
 admin/operator-only route in `routes.tsx` with it (see the `infra.manage`-,
 `users.manage`-, and `jobs.write`-gated routes there) so deep-linking to a
 page a role can't use degrades cleanly.
@@ -298,8 +295,8 @@ entries carry an optional `permission`, and `visibleNavItems` drops any item
 `permission`, and the card grid is `ADMIN_LINKS.filter((link) =>
 can(principal, link.permission))`. A control that mutates state (a Delete
 button, a create form) should be hidden or disabled with the same `can()`
-check rather than relying on the route guard alone — the guard stops
-navigation, `can()` stops rendering the affordance in the first place.
+check as well as the route guard: the guard stops navigation, and `can()` stops
+the control from rendering.
 
 Prefer gating on a permission from `principal.permissions` (via `can()`) rather
 than on a role name. The server computes permissions from the policy matrix, so
@@ -367,7 +364,7 @@ Live updates flow over a single WebSocket managed by `src/ws/`. To react to push
 messages in a component:
 
 1. Confirm (or add) a typed payload in `src/ws/events.ts` with a matching type
-   guard (`isJobEvent`, `isTaskEvent`, `isWorkerEvent` are the existing ones).
+   guard (such as `isJobEvent`, `isTaskEvent`, `isWorkerEvent`).
 2. Subscribe with the `useWebSocket(subject, handler)` hook from
    `src/ws/context.tsx`. It subscribes on mount and unsubscribes automatically
    on unmount (or when `subject` changes), and stabilises the handler so inline
@@ -428,14 +425,14 @@ handling the edit and may already be stale, so `JobList` and `JobDetail`
 refetch on it rather than apply it. Handle it the same way in new components.
 
 `JobDetail` also surfaces *why* tasks failed: a job-level failure banner
-(built from the `JobDetail.failure_summary` field — omitted until at least one
+(built from the `JobDetail.failure_summary` field, which is omitted while no
 task has failed) above the task list, and a per-task reason string next to
 each failed row's status (`Task.failure_reason`). Neither needs a dedicated
 WebSocket message type — both are ordinary REST fields on the existing
 job/task responses, refreshed the same way the rest of the page is: `JobDetail`
-already invalidates the job-detail and task-list queries on `jobs` and
+invalidates the job-detail and task-list queries on `jobs` and
 `jobs/{jobId}/tasks` WebSocket events, so the banner and reason strings update
-live along with everything else. See
+live. See
 [`docs/observability.md`](observability.md#why-did-my-task-fail) for what the
 reason strings mean and where the underlying data comes from.
 
@@ -443,15 +440,15 @@ Each task row is also independently expandable to a full **attempt
 timeline**: a disclosure button toggles a detail row rendering every attempt
 (number, status, worker, exit code, the per-attempt message, and
 started→ended duration) via `GET /api/v1/tasks/{id}/attempts`. Unlike the
-failure banner and reason string above, this data is fetched lazily — the
-`useTaskAttempts(id, { enabled })` hook (`src/api/queries.ts`) only queries
-once a row is expanded, so collapsed rows cost nothing. The `jobs/{jobId}/tasks`
+failure banner and reason string above, this data is fetched lazily: the
+`useTaskAttempts(id)` hook (`src/api/queries.ts`) is mounted only in an
+expanded row, so collapsed rows issue no request. The `jobs/{jobId}/tasks`
 WebSocket handler invalidates `queryKeys.tasks.attempts(payload.task_id)` on
-every task event; TanStack Query only refetches an invalidated query while it
-has an active (i.e. expanded) observer, so an open timeline stays live and a
-collapsed one refetches on next expand. This lets an operator
-see the reason a specific attempt failed even for a task mid-retry, whose
-task-level `failure_reason` has already been cleared — see
+every task event; TanStack Query refetches an invalidated query only while it
+has an active (expanded) observer, so an open timeline stays live and a
+collapsed one refetches on next expand. An operator can see why a specific
+attempt failed even for a task mid-retry, whose task-level `failure_reason`
+has been cleared — see
 [Attempt history](architecture.md#5-status-ingestion) in the architecture doc.
 
 ---
@@ -461,7 +458,7 @@ task-level `failure_reason` has already been cleared — see
 - **Strict everywhere.** `tsconfig` enables `strict`, `noUncheckedIndexedAccess`,
   and `exactOptionalPropertyTypes`. Index access yields `T | undefined`; handle
   it rather than asserting. Optional properties are not implicitly `undefined`-
-  assignable — model truly-absent fields with `?`.
+  assignable; model absent fields with `?`.
 - **No `any`.** Parse unknown input (e.g. WebSocket payloads) as `unknown` and
   narrow with type guards, as `src/ws/events.ts` does.
 - **Path alias.** Import with `@/` (→ `src/`), not relative `../../` chains.

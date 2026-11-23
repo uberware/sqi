@@ -33,7 +33,7 @@ type workerHandler struct {
 	// revoker revokes a deleted worker's broker credential, through the same
 	// store-write-then-broker-disconnect path DELETE
 	// /api/v1/workers/{id}/credential uses. internal/api depends only on
-	// this interface — never on internal/bus or internal/server — the same
+	// this interface, never on internal/bus or internal/server: the same
 	// seam workerEnrollHandler uses for the same reason.
 	revoker WorkerRevoker
 	// waker wakes an enabled worker's parked lease requests. May be nil (no
@@ -375,8 +375,8 @@ func (h *workerHandler) setWorkerDisabled(w http.ResponseWriter, r *http.Request
 // reclaim is needed here.
 //
 // Revokes the worker's broker credential, if it has one, through the
-// injected [WorkerRevoker] — the same path DELETE
-// /api/v1/workers/{id}/credential uses — before deleting the worker row.
+// injected [WorkerRevoker] (the same path DELETE
+// /api/v1/workers/{id}/credential uses) before deleting the worker row.
 // Without this, decommissioning a machine from the farm would leave it able
 // to connect to the broker, lease work and execute job code: WorkersManage
 // (which this route requires) does not imply WorkersEnroll, so an operator
@@ -389,17 +389,17 @@ func (h *workerHandler) setWorkerDisabled(w http.ResponseWriter, r *http.Request
 // still holds a task (one leased to it after the offline transition reclaimed
 // the rest) passes it, has its credential revoked, and only then is refused by
 // the guarded delete's in-flight check, so revoking first can waste a
-// revocation on a delete that is then rejected. A revoke failure then means
-// nothing happened at all — worker row intact, a clean 500, safely
-// retryable. Deleting first would instead let a failure of the revoke's own
-// store write (not just a broker.Revoke failure — a documented, recoverable
-// degraded mode) leave the worker row gone, the credential never revoked,
-// and nothing left to reap it: the caller who holds WorkersManage without
-// WorkersEnroll has no other way to revoke it, and would be told 204 while
-// the machine kept live broker access permanently. A delete failure after a
-// successful revoke leaves access cut and the row present — the safe
-// direction — and a retried removeWorker re-invokes RevokeWorker, which is a
-// correct no-op the second time via ErrNotFound.
+// revocation on a delete that is then rejected. A revoke failure means
+// nothing happened: the worker row is intact and the 500 is retryable.
+// Deleting first would let a failure of the revoke's own store write (as
+// distinct from a broker.Revoke failure, a documented, recoverable degraded
+// mode) leave the worker row gone, the credential never revoked, and nothing
+// left to reap it: the caller who holds WorkersManage without WorkersEnroll
+// has no other way to revoke it, and would be told 204 while the machine kept
+// live broker access. A delete failure after a successful revoke leaves
+// access cut and the row present, which is the safe direction, and a retried
+// removeWorker re-invokes RevokeWorker, which is a no-op the second time via
+// ErrNotFound.
 //
 // The delete is [store.WorkerStore.DeleteWorkerIfRemovable], which applies
 // the same removability rule inside its own write, so a worker that came
@@ -431,8 +431,8 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 	// store.ErrNotFound covers both "never enrolled" (the normal shape with
 	// broker auth off) and "already revoked", neither of which is an error
 	// here. Any other error means the credential is not known to be
-	// revoked — see the doc comment above for why this must block the
-	// delete rather than merely being logged.
+	// revoked; see the doc comment above for why this must block the
+	// delete rather than only being logged.
 	if err := h.revoker.RevokeWorker(ctx, id); err != nil && !errors.Is(err, store.ErrNotFound) {
 		h.logger.ErrorContext(ctx, "workers: revoke credential before delete failed",
 			slog.String("id", id), slog.Any("error", err))

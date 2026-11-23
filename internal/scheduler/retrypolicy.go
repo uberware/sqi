@@ -29,7 +29,7 @@ func coalesceInt(def int, vals ...*int) int {
 // Job -> Queue -> Farm for each knob, falling back to the server default def.
 // Out-of-range values are clamped to sane bounds as a last-line defense (the
 // API layer rejects them at write time). Exported so the REST layer can
-// report the resolved policy (effective_retry) a job will actually run under.
+// report the resolved policy (effective_retry) a job runs under.
 func ResolveRetryPolicy(job store.Job, queue store.Queue, farm store.Farm, def RetryPolicy) RetryPolicy {
 	//nolint:gocritic,predeclared // max is a meaningful local variable name here
 	max := coalesceInt(def.MaxAttempts, job.MaxAttempts, queue.MaxAttempts, farm.MaxAttempts)

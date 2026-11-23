@@ -111,5 +111,5 @@ template:
               - "-take"
               - "{{Param.Take}}"
               # Left out when empty, so the scene's own setting applies. The
-              # test reads RawParam: under EXPR an empty PATH binds as '.'.
+              # condition reads RawParam: under EXPR an empty PATH binds as '.'.
               - "{{ ['-oimage', Param.OutputPath] if RawParam.OutputPath != '' else [] }}"

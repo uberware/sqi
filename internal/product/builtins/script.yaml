@@ -7,7 +7,7 @@ readme: |
 
   Runs one shell command on a worker, as a single task. The smallest useful
   product in sqi, and the quickest way to check that a queue and its workers are
-  actually working.
+  working.
 
   ## Parameters
 

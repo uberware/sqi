@@ -7,7 +7,7 @@ file. It gives the template a stable identity (`name`), human-readable metadata
 clients can list and submit jobs without ever handling a raw template file.
 
 Parameters, their `userInterface` hints (control, label, group), machine
-requirements, and step-level setup and teardown all live **inside** the OpenJD
+requirements, and step-level setup and teardown all live inside the OpenJD
 template. The product adds only the catalog metadata around it.
 
 ---
@@ -93,10 +93,10 @@ template:
 |---|---|---|
 | `name` | yes | Stable slug identity. Lowercase letters, digits, `_` and `-`, with at most one `/` namespace separator (e.g. `studio/maya-render`). |
 | `title` | yes | Human-readable display name. |
-| `description` | no | Short plain-text catalog blurb, max 500 runes (a Unicode character count, not a byte count). Shown in cards and in DCC submitter dropdowns, and matched by product search. **Plain text, not Markdown** — it reaches consumers that cannot render markup, such as the Blender addon's tooltip. |
-| `readme` | no | Long-form Markdown documentation, max 8000 runes. Rendered on the product's detail page in the web UI. **Not searched**, and not carried in the preset library index. |
+| `description` | no | Short plain-text catalog blurb, max 500 runes (a Unicode character count, not a byte count). Shown in cards and in DCC submitter dropdowns, and matched by product search. Plain text: it reaches consumers that cannot render Markdown, such as the Blender addon's tooltip. |
+| `readme` | no | Long-form Markdown documentation, max 8000 runes. Rendered on the product's detail page in the web UI. Not searched, and not carried in the preset library index. |
 | `category` | no | Free-form group label (e.g. `General`, `Rendering`, `Transcoding`, `Image Processing`). |
-| `version` | no | Semver string used for future update-detection. |
+| `version` | no | Semver string, stored as a label (see [Version and stable-name identity](#version-and-stable-name-identity)). |
 | `template` | yes | Inline OpenJD job template (`specificationVersion: jobtemplate-2023-09`). |
 
 The `name` slug must match `^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)?$`.
@@ -140,7 +140,7 @@ readme: |
 literal text `./README.md`.
 
 `description` is plain text and is what product search matches. `readme` is
-Markdown, rendered only on the detail page, and is **not** searched.
+Markdown, rendered only on the detail page, and is not searched.
 
 **Supported Markdown:** paragraphs, unordered and ordered lists, fenced code
 blocks, ATX headings (`#` renders as `<h3>`, nested under the page's existing
@@ -208,7 +208,7 @@ statement, as with `/bin/sh -c`:
 - a thrown exception, or a cmdlet error in the last statement, exits 1;
 - otherwise it exits 0.
 
-A native command writing to stderr is **not** a failure, even when the stderr
+A native command writing to stderr is not a failure, even when the stderr
 is redirected (`2>&1`, `2> log.txt`). Windows PowerShell 5.1 records each
 redirected stderr line as a `NativeCommandError` and clears `$?`; the wrapper
 ignores those, since tools such as ffmpeg write their progress there. As a
@@ -273,9 +273,8 @@ which a worker satisfies via `capability_tags: ["docker=true"]` in its
 configuration (see [worker-capabilities.md](worker-capabilities.md)). Runs
 `docker run --rm {{Param.Image}}`.
 
-**A note on the DCC reference presets and auto-detection.** The
-`presets/sqi/*.yaml` reference products (Maya, Nuke, Houdini, Blender,
-Cinema 4D, 3ds Max, After Effects, Mistika Boutique/VR/Workflows; see
+**DCC reference presets and auto-detection.** The DCC reference products in
+`presets/sqi/*.yaml` (see
 [docs/dcc-submitters.md](dcc-submitters.md#reference-presets)) gate the same
 way: a `hostRequirements.attributes` entry requiring `attr.worker.tag.<app>`
 with `anyOf: ["true"]`. `sqi-worker` detects a standard install of each of
@@ -630,7 +629,7 @@ count enforced together). Capacity lives in the operator-owned pool rather
 than in the product, so there is one seat count, and a raw submission cannot
 bypass it.
 
-> **Note.** A product references a pool *by name*, so an installed or
+> A product references a pool by name, so an installed or
 > duplicated product whose template names a pool that does not exist on this
 > server is treated as zero-capacity: its tasks stay `ready` until an admin
 > registers the pool.

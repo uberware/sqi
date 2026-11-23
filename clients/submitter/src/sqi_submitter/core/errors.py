@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""One error translation layer so Qt and bpy UIs share identical error text."""
+"""Translates sqi-sdk errors into the artist-facing text every UI shows."""
 
 from __future__ import annotations
 

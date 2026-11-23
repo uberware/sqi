@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// TestRun_ConsoleSIGTERMCancelsContext pins the console path to today's
-// serve/start behavior: SIGTERM cancels the context fn runs under.
+// TestRun_ConsoleSIGTERMCancelsContext pins the console path's serve/start
+// behavior: SIGTERM cancels the context fn runs under.
 func TestRun_ConsoleSIGTERMCancelsContext(t *testing.T) {
 	err := Run("x", new(string), func(ctx context.Context) error {
 		if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {

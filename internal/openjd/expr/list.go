@@ -16,7 +16,7 @@ import (
 // reached this node. With a target of list[T] every element is coerced to T;
 // without one the elements' own types are unified by section 1.2.6's rules and
 // then coerced to the result. This is one of the three places a target flows
-// INWARD (see evalNode).
+// inward (see evalNode).
 func evalListLit(n *ListLit, ec evalCtx, target Type, depth int) (Value, error) {
 	elemTarget := listElemTarget(target)
 	vals := make([]Value, 0, len(n.Elems))
@@ -70,10 +70,10 @@ func evalListLit(n *ListLit, ec evalCtx, target Type, depth int) (Value, error) 
 	}
 	out := make([]Value, len(vals))
 	for i, v := range vals {
-		// A range_expr element meeting a list[int] ELEMENT type expands here,
+		// A range_expr element meeting a list[int] element type expands here,
 		// and nothing charges for it: "[range_expr('1-10000000')]" against a
-		// list[list[int]] target would build 2768 MB before the memory limit
-		// caught it. See reserveRangeExprCoercion (rangeexpr.go).
+		// list[list[int]] target would build ten million values before the
+		// memory limit caught it. See reserveRangeExprCoercion (rangeexpr.go).
 		if err := reserveRangeExprCoercion(ec, v, elem); err != nil {
 			return Value{}, wrapAt(ec.src, n.Elems[i].Pos(), err)
 		}
@@ -85,7 +85,7 @@ func evalListLit(n *ListLit, ec evalCtx, target Type, depth int) (Value, error) 
 	}
 	// rule 3: every element is absorbed into the list being built -- sizeOf
 	// (meter.go) already counts a list's elements recursively. Release the
-	// EXACT pre-coercion values evalNode allocated (vals), not the coerced
+	// exact pre-coercion values evalNode allocated (vals), not the coerced
 	// out[]: a coercion that changed a value's size must not silently drift
 	// the live total.
 	for _, v := range vals {
@@ -202,7 +202,7 @@ func isPathStringPair(a, b Type) bool {
 // list, a string or a range_expr; a path is explicitly excluded by section
 // 1.3.8.
 //
-// An index out of bounds is an ERROR here, in deliberate contrast to a slice,
+// An index out of bounds is an error here, unlike a slice,
 // whose bounds are clamped (section 2.1.8).
 func evalIndex(n *Index, ec evalCtx, depth int) (Value, error) {
 	recv, err := evalNode(n.X, ec, TAny, depth)
@@ -226,41 +226,41 @@ func evalIndex(n *Index, ec evalCtx, depth int) (Value, error) {
 	// receiver type is known to be subscriptable -- mirroring
 	// applyBinary/applyUnary, which charge nothing for an "unsupported
 	// operand" rejection but charge rule 1 unconditionally past that point,
-	// including when an operand is unresolved and nothing actually runs.
+	// including when an operand is unresolved and nothing runs.
 	//
 	// That flat 1 is not the whole charge. __getitem__ is not one of rule 2's
 	// named iterating functions (shape.go's specNamedIteratingFunctions), but
-	// that list is not exhaustive -- slice.go says so in as many words,
+	// that list is not exhaustive -- slice.go says so,
 	// because string(list) and list(range_expr) are unnamed and charged. And
-	// a subscript touches exactly one element only for a LIST receiver: a
+	// a subscript touches exactly one element only for a list receiver: a
 	// string receiver runs []rune(recv.AsStr()), decoding every byte of the
-	// WHOLE string to find rune boundaries, and a range_expr receiver runs
-	// rangeInts, which fully EXPANDS the range -- neither has a cheaper path
+	// whole string to find rune boundaries, and a range_expr receiver runs
+	// rangeInts, which fully expands the range -- neither has a cheaper path
 	// in this package's representations, and neither depends on the index.
 	// At a flat 1, Param.S[0] on a 500,000-byte string would charge 1, and
 	// Param.R[0] on range_expr("1-1000000") would charge 1 while expanding a
-	// million integers, where the SLICE form of each identical expression
+	// million integers, where the slice form of each identical expression
 	// charges 1,954 and 1,000,001.
 	//
-	// So the charge is receiver-kind-dependent, exactly as slice.go's
-	// sliceValue already established for the same three receivers, and each
-	// branch charges BEFORE indexValue does the work it prices, so an
+	// So the charge is receiver-kind-dependent, as slice.go's sliceValue is
+	// for the same three receivers, and each
+	// branch charges before indexValue does the work it prices, so an
 	// exhausted budget stops that work rather than billing for it:
 	//
 	//   - list: nothing beyond rule 1. AsList returns the backing slice with
-	//     no copy (value.go), so a list subscript really does touch one
+	//     no copy (value.go), so a list subscript touches one
 	//     element and iterate nothing.
-	//   - string: rule 3 on the RECEIVER's bytes, ceil(len/256).
-	//   - range_expr: rule 2 on the RECEIVER's element count, from
+	//   - string: rule 3 on the receiver's bytes, ceil(len/256).
+	//   - range_expr: rule 2 on the receiver's element count, from
 	//     rangeExprCount -- arithmetic for a single sub-range, and for two or
 	//     more a bounded expansion rather than a free one (rangeexpr.go).
 	//
-	// See cost_eval_internal_test.go's PROBE comment.
+	// See cost_eval_internal_test.go.
 	if err := ec.m.charge(1); err != nil {
 		return Value{}, err
 	}
 	// Either operand missing means the result is typed but has no value. A
-	// bounds check is impossible and must NOT be attempted: whether the index
+	// bounds check is impossible and must not be attempted: whether the index
 	// is in range is not knowable until the value exists.
 	if recv.IsUnresolved() || idx.IsUnresolved() {
 		ec.m.release(recv) // rule 2: consumed determining the result is unresolved
@@ -316,26 +316,26 @@ func indexResultType(recv Type) (Type, error) {
 // lives. Both indexResultType (the type-level check) and indexValue (the
 // value-level fallback) report it, and the relationship between the two is
 // worth stating rather than leaving as two identical-looking literals: the
-// type check runs FIRST, on every path into a subscript, so indexValue's own
+// type check runs first, on every path into a subscript, so indexValue's own
 // default is unreachable — it exists because Go requires the function to
 // return something after the switch, not because a receiver can reach it.
 func errNotSubscriptable(t Type) error {
 	return fmt.Errorf("a %s cannot be subscripted", t)
 }
 
-// unionResultType answers a subscript's or a slice's result type for a UNION
+// unionResultType answers a subscript's or a slice's result type for a union
 // receiver, by mapping every member through fn and combining the answers.
 //
-// A union receiver is SOME ONE of its members at runtime, so the operation is
+// A union receiver is some one of its members at runtime, so the operation is
 // legal exactly when it is legal on every member, and its static result is the
 // type that holds all of the per-member results. This is the same rule the
-// operator table already applies to a union ARGUMENT (shape.go's
+// operator table already applies to a union argument (shape.go's
 // unionArgValueCost, which is why "Param.Range[:] + [1]" type-checks); a
 // subscript and a slice do not go through that table, so they need it here.
 //
-// Without this, three expressions that cannot fail at runtime would be FALSELY
-// REJECTED at type-check time. The first is self-inflicted: sliceResultType
-// deliberately types a range_expr slice as "range_expr | list[int]", and
+// Without this, three expressions that cannot fail at runtime would be falsely
+// rejected at type-check time. The first is self-inflicted: sliceResultType
+// types a range_expr slice as "range_expr | list[int]", and
 // subscripting that union — "Param.Range[:][0]", an int under every outcome —
 // would be reported as not subscriptable. The other two come from condResult
 // (eval.go), which types a conditional with an unknown condition as the union
@@ -366,7 +366,7 @@ func unionResultType(t Type, fn func(Type) (Type, error)) (Type, error) {
 // Section 1.2.6's own unification (unifyElemPair) is used where it applies, so
 // an int member and a float member give float rather than "float | int" — the
 // same rule that already decides a list literal's element type. It is skipped
-// when either side is ITSELF a union, because unifyElemPair reaches through a
+// when either side is itself a union, because unifyElemPair reaches through a
 // union with listElem and would collapse "list[int]" and
 // "range_expr | list[int]" to plain list[int], silently dropping the
 // range_expr possibility. In that case, and whenever the two are simply
@@ -382,10 +382,10 @@ func unifyResultPair(a, b Type) Type {
 }
 
 // chargeIndexReceiver charges the section 1.3.10 cost of the work indexValue is
-// about to do, which is NOT uniform across the three receiver kinds -- see
-// evalIndex's own comment for the ruling and the measurements behind it, and
+// about to do, which is not uniform across the three receiver kinds -- see
+// evalIndex's own comment for the ruling, and
 // slice.go's sliceValue for the identical receiver-kind split on the slice
-// side. It runs BEFORE indexValue, so an exhausted budget stops the decode or
+// side. It runs before indexValue, so an exhausted budget stops the decode or
 // the expansion rather than billing for it afterwards.
 //
 // A list receiver charges nothing here: rule 1, charged by evalIndex, is its

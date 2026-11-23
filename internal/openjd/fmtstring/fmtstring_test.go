@@ -221,10 +221,9 @@ func TestResolveMalformed(t *testing.T) {
 }
 
 // TestResolveMalformedPrecedence pins that the single-pass scanner reports the
-// FIRST malformed reference in the input, whichever kind it is. A bad
+// first malformed reference in the input, whichever kind it is. A bad
 // identifier followed by an unclosed reference must report the bad
-// identifier -- not scan past it into the later syntax error -- matching the
-// ordering this package had before parse and parseRaw shared one scanner.
+// identifier, not scan past it into the later syntax error.
 func TestResolveMalformedPrecedence(t *testing.T) {
 	t.Parallel()
 

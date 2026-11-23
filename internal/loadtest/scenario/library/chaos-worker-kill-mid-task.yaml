@@ -15,8 +15,8 @@ description: chaos - kill one of 2 real workers at 1m30s while it runs 180s proc
 #
 # Without the sweep the silent child outlives the grace in every run: it lives
 # for what is left of its 180 s task, at least 90 s after the kill. So a
-# regression fails no-orphans every run, and single-writer whenever a re-run
-# writes while the orphan still does.
+# worker that does not sweep fails no-orphans every run, and single-writer
+# whenever a re-run writes while the orphan still does.
 duration: 4m
 warmup: 10s
 drain_timeout: 6m

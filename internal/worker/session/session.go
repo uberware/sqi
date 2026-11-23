@@ -1332,7 +1332,7 @@ func startContainedAction(action *protocol.Action, workDir string, env []string,
 	// exec.Command, not exec.CommandContext (noctx): CommandContext kills only
 	// the direct process, with a fixed signal, bypassing the action's
 	// cancelation method; awaitAction stops the whole tree by that method.
-	cmd := exec.Command(action.Command, action.Args...) //nolint:gosec,noctx // command comes from the server-signed assignment; context handled by awaitAction
+	cmd := exec.Command(action.Command, action.Args...) //nolint:gosec,noctx // command comes from the server's assignment; context handled by awaitAction
 	cmd.Dir = workDir
 	proctree.Configure(cmd)
 	// This is job-supplied code (an OpenJD environment onEnter/onExit action)

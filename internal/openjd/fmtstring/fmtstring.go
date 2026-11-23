@@ -24,7 +24,7 @@ type ref struct {
 // any reference names a variable the scope does not provide.
 func Resolve(input string, scope Scope) (string, error) {
 	if !hasRef(input) {
-		// The whole input is literal, so it IS the answer; the general path
+		// The whole input is literal, so it is the answer; the general path
 		// below would copy it through a Builder to say the same thing.
 		return input, nil
 	}
@@ -93,8 +93,7 @@ func References(input string) ([]string, error) {
 // reference, validating each reference body as a dotted OpenJD identifier
 // inline as it is found. It returns a *MalformedError on the first malformed
 // reference -- whichever comes first in the input, whether that malformation
-// is a bad identifier or a syntax error such as an unclosed "{{" -- matching
-// the single-pass ordering this package has always had.
+// is a bad identifier or a syntax error such as an unclosed "{{".
 func parse(input string) (refs []ref, trailing string, err error) {
 	return scan(input, validName)
 }
@@ -113,16 +112,15 @@ func parseRaw(input string) (refs []ref, trailing string, err error) {
 // hasRef reports whether input can contain a reference at all, which is the
 // precondition for scan producing either a reference or an error.
 //
-// It is sound in both directions, and the proof is scan's own shape rather than
-// an assumption about the caller's data: scan's loop body -- every ref it
-// appends, and every one of its three *MalformedError returns -- sits behind
-// "strings.Index(rest, openDelim) >= 0". With no openDelim anywhere in input,
-// the very first Index answers -1 and scan returns (nil, input, nil), the same
-// answer for parse and parseRaw alike since validate is only ever consulted on
-// a reference body. So a string with no "{{" is provably reference-free AND
-// error-free, and the three entry points can say so without scanning.
+// It is sound in both directions because of scan's shape: scan's loop body
+// (every ref it appends, and each of its three *MalformedError returns) sits
+// behind "strings.Index(rest, openDelim) >= 0". With no openDelim in input,
+// the first Index answers -1 and scan returns (nil, input, nil), the same
+// answer for parse and parseRaw since validate is consulted only on a
+// reference body. So a string with no "{{" is reference-free and error-free,
+// and the three entry points can say so without scanning.
 //
-// The check belongs at the ENTRY POINTS, not at the top of scan: scan's own
+// The check belongs at the entry points, not at the top of scan: scan's own
 // first Index already performs this same search, so a guard there would buy
 // nothing. What it saves is what each caller does with the empty result --
 // Resolve's Builder and its copy of the whole string, References's seen map,

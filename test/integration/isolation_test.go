@@ -4,8 +4,8 @@
 
 package integration
 
-// isolation_test.go is the real-OS regression guard for run-as-user task
-// isolation (internal/worker/isolation, .../session, .../staging).
+// isolation_test.go tests run-as-user task isolation (internal/worker/isolation,
+// .../session, .../staging) on a real OS.
 //
 // # Why this file exists
 //

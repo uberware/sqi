@@ -26,7 +26,7 @@ func (*defaultProbe) RAMMb() int {
 
 // GPUInfo returns a zero GPUInfo on macOS. Detecting GPU details without
 // spawning an external process (e.g. system_profiler) requires CGo and IOKit,
-// which is deferred to a future phase.
+// which the worker does not use.
 func (*defaultProbe) GPUInfo() GPUInfo {
 	return GPUInfo{}
 }

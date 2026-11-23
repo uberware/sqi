@@ -2,15 +2,14 @@
 
 package sqlite_test
 
-// Regression test for migration 00012_relax_worker_fks.sql.
+// Tests migration 00012_relax_worker_fks.sql on a populated database.
 //
-// The table rebuild must succeed on a *populated* database, not just an empty
-// one. goose runs each migration in a transaction, where "PRAGMA foreign_keys"
+// The table rebuild must succeed on a database with rows, as well as on an
+// empty one. goose runs each migration in a transaction, where "PRAGMA foreign_keys"
 // is a no-op; the migration therefore relies on "PRAGMA defer_foreign_keys" so
 // that DROP TABLE tasks (an implicit row-delete) does not trip the foreign keys
-// that task_attempts and task_logs hold on tasks. This test reproduces a real
-// deployment: migrate to the pre-00012 schema, seed referencing rows, then
-// migrate the rest of the way.
+// that task_attempts and task_logs hold on tasks. The test migrates to the
+// pre-00012 schema, seeds referencing rows, then migrates the rest of the way.
 
 import (
 	"context"
@@ -76,8 +75,8 @@ func TestMigration00012_RelaxWorkerFKs_PopulatedDB(t *testing.T) {
 		}
 	}
 
-	// 3. Apply the remaining migrations (including 00012). This is the step that
-	//    failed before the defer_foreign_keys fix.
+	// 3. Apply the remaining migrations (including 00012). Without
+	//    defer_foreign_keys this step fails.
 	if err = goose.Up(db, "."); err != nil {
 		t.Fatalf("migrate up (00012 on populated DB): %v", err)
 	}
@@ -96,7 +95,7 @@ func TestMigration00012_RelaxWorkerFKs_PopulatedDB(t *testing.T) {
 		}
 	}
 
-	// 5. With the FK relaxed, the worker can now be hard-deleted even though
+	// 5. With the FK relaxed, the worker can be hard-deleted even though
 	//    task_attempts still references it by id.
 	if _, err = db.ExecContext(ctx, "DELETE FROM workers WHERE id = 'w1'"); err != nil {
 		t.Fatalf("delete worker after relax: %v", err)

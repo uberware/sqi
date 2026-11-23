@@ -224,7 +224,7 @@ func TestEnvScope_ResolvesParamAndWorkingDirectory(t *testing.T) {
 }
 
 func TestEnvScope_DoesNotResolveTaskParam(t *testing.T) {
-	// Environments are session-scoped, so Task.Param.* must NOT be available.
+	// Environments are session-scoped, so Task.Param.* must not be available.
 	scope := fmtres.EnvScope(map[string]string{"JobP": "jval"}, "/work/dir", "", false)
 
 	if _, ok := scope.Lookup("Task.Param.Frame"); ok {
@@ -236,7 +236,7 @@ func TestEnvScope_DoesNotResolveTaskParam(t *testing.T) {
 }
 
 func TestTaskScope_IsExtensibleMap(t *testing.T) {
-	// The returned scope must be a map that callers can extend with future keys
+	// The returned scope must be a map that callers can extend with more keys
 	// (e.g. Task.File.*) without a special API.
 	scope := fmtres.TaskScope(nil, nil, "/w", "", false)
 	scope["Task.File.script"] = "/w/script.sh"
@@ -454,12 +454,12 @@ func TestResolveVars_UnknownVariableErrorsNamingKeyAndRef(t *testing.T) {
 
 // ── SQI_CHUNK_BOUNDS end-to-end resolution ────────────────────────────────────
 
-// TestTaskScope_ResolvesChunkBoundsVars proves the SQI_CHUNK_BOUNDS derived
-// task-parameter keys ("<name>.Start" / "<name>.End", produced server-side by
-// openjd.DeriveChunkBounds and unit-tested there) resolve correctly through
-// the ordinary worker-side Task.Param.* scope and format-string substitution
-// — i.e. no worker-side change is required, matching the claim in
-// docs/openjd-extensions/sqi-chunk-bounds.md.
+// TestTaskScope_ResolvesChunkBoundsVars checks that the SQI_CHUNK_BOUNDS
+// derived task-parameter keys ("<name>.Start" / "<name>.End", produced
+// server-side by openjd.DeriveChunkBounds and unit-tested there) resolve
+// through the ordinary worker-side Task.Param.* scope and format-string
+// substitution, with no worker-specific handling, as
+// docs/openjd-extensions/sqi-chunk-bounds.md describes.
 func TestTaskScope_ResolvesChunkBoundsVars(t *testing.T) {
 	// Mirrors the task-params shape openjd.DeriveChunkBounds produces for a
 	// CHUNK[INT] parameter named "Frame": the combined range plus derived

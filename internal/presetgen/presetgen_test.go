@@ -157,7 +157,7 @@ func TestPublish(t *testing.T) {
 	mustMkdir(t, filepath.Join(out, "community"))
 	mustMkdir(t, filepath.Join(out, "sqi"))
 	mustWrite(t, filepath.Join(out, "community", "thing.yaml"), "x")
-	mustWrite(t, filepath.Join(out, "sqi", "gone.yaml"), "old") // stale, no longer a source preset
+	mustWrite(t, filepath.Join(out, "sqi", "gone.yaml"), "old") // stale: not a source preset
 	seed := `{"presets":[{"name":"community-thing","definition":"community/thing.yaml","sha256":"aa"},` +
 		`{"name":"gone","definition":"sqi/gone.yaml","sha256":"bb"}]}`
 	mustWrite(t, filepath.Join(out, "index.json"), seed)

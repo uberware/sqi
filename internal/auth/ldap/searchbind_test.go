@@ -63,11 +63,11 @@ func TestSearchBind_Success(t *testing.T) {
 	// Service account first, then a re-bind as the user. If the second bind is
 	// missing, any password would authenticate.
 	//
-	// Both the DN *and* the password are pinned. The DN alone proves only that
-	// a second bind happened; it is the password that authenticates, and a
+	// Both the DN and the password are pinned. The DN alone proves only that
+	// a second bind happened; the password is what authenticates, and a
 	// re-bind carrying the service account's password (or "", or a constant)
-	// would authenticate every user in the directory while leaving a DN-only
-	// assertion perfectly green.
+	// would authenticate every user in the directory while passing a DN-only
+	// assertion.
 	want := []bindKey{
 		{DN: "CN=svc,DC=example,DC=com", PW: "svcpass"},
 		{DN: "CN=Alice,OU=People,DC=example,DC=com", PW: "alice-secret"},
@@ -75,8 +75,8 @@ func TestSearchBind_Success(t *testing.T) {
 	if len(fc.binds) != 2 || fc.binds[0] != want[0] || fc.binds[1] != want[1] {
 		t.Errorf("binds: got %v, want %v", fc.binds, want)
 	}
-	// Stated separately from the slice compare so a regression names itself
-	// instead of printing two structs and leaving the reader to diff them.
+	// Checked separately from the slice compare so a failure names the wrong
+	// password instead of printing two structs to diff.
 	if len(fc.binds) == 2 {
 		switch pw := fc.binds[1].PW; pw {
 		case "alice-secret": // correct: the password the caller supplied
@@ -93,9 +93,9 @@ func TestSearchBind_Success(t *testing.T) {
 	}
 }
 
-// The nested lookup failing must degrade to the flat memberOf values rather
-// than fail the login — but only genuinely, so this asserts the fallback
-// values arrive rather than merely that no error surfaced.
+// The nested lookup failing must fall back to the flat memberOf values rather
+// than fail the login. This asserts the fallback values arrive, not only that
+// no error surfaced.
 func TestSearchBind_NestedGroupsFallsBackOnSearchError(t *testing.T) {
 	cfg := searchCfg()
 	cfg.NestedGroups = true
@@ -114,7 +114,7 @@ func TestSearchBind_NestedGroupsFallsBackOnSearchError(t *testing.T) {
 		t.Fatalf("expected the nested search to have been attempted, got %v", fc.searchFilters)
 	}
 	// The flat memberOf values from the user's entry, not an empty slice: an
-	// empty result would silently drop every role mapping.
+	// empty result would drop every role mapping.
 	want := []string{"CN=Admins,DC=example,DC=com", "CN=Artists,DC=example,DC=com"}
 	if len(id.Groups) != len(want) || id.Groups[0] != want[0] || id.Groups[1] != want[1] {
 		t.Errorf("Groups: got %v, want the flat memberOf values %v", id.Groups, want)
@@ -178,9 +178,8 @@ func TestSearchBind_NestedEmptyResultLogsWarning(t *testing.T) {
 	}
 }
 
-// A user genuinely in no groups must still end up with no groups: the
-// fallback is guarded on the flat list being non-empty precisely so it cannot
-// resurrect values that were never there.
+// A user in no groups must end up with no groups: the fallback is guarded on
+// the flat list being non-empty, so it cannot invent values.
 func TestSearchBind_NestedEmptyResultWithEmptyFlatStaysEmpty(t *testing.T) {
 	cfg := searchCfg()
 	cfg.NestedGroups = true
@@ -228,9 +227,9 @@ func TestSearchBind_EmptyPasswordNeverBinds(t *testing.T) {
 func TestSearchBind_WrongPassword(t *testing.T) {
 	fc := &fakeConn{
 		searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{aliceEntry()}},
-		// Keyed on the password too: the directory rejects THIS password for
+		// Keyed on the password too: the directory rejects this password for
 		// this DN. A verifier that re-bound with the service password would
-		// miss this entry entirely and be reported as a successful login.
+		// miss this entry and be reported as a successful login.
 		bindErr: map[bindKey]error{
 			{DN: "CN=Alice,OU=People,DC=example,DC=com", PW: "wrong"}: errors.New("invalid credentials"),
 		},
@@ -279,13 +278,13 @@ func TestSearchBind_DialFailure(t *testing.T) {
 	}
 }
 
-// The escaping unit test proves the helper works; this proves it is actually
-// wired into the filter that reaches the directory.
+// The escaping unit test covers the helper; this checks it is applied to the
+// filter that reaches the directory.
 func TestSearchBind_EscapesUsernameInFilter(t *testing.T) {
 	fc := &fakeConn{searchResult: &ldapv3.SearchResult{}}
 	v := newSearchBind(searchCfg(), dialTo(fc))
-	// The escaped filter matches nothing, which is the point: unescaped it
-	// would have matched every entry in the base DN.
+	// The escaped filter matches nothing; unescaped it would match every
+	// entry in the base DN.
 	if _, err := v.Verify(context.Background(), "*)(uid=*", "pw"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
@@ -349,8 +348,8 @@ func TestSearchBind_AnonymousSearchSkipsServiceBind(t *testing.T) {
 }
 
 // Anonymous search must not become a way to skip authentication: with no
-// service bind, the user re-bind is the ONLY bind, so its failure has to be
-// what fails the login.
+// service bind, the user re-bind is the only bind, so its failure must fail
+// the login.
 func TestSearchBind_AnonymousSearchStillRejectsBadPassword(t *testing.T) {
 	cfg := searchCfg()
 	cfg.BindDN = ""
@@ -380,8 +379,8 @@ func TestSearchBind_NestedExpansionRunsOnServiceConnection(t *testing.T) {
 		t.Fatalf("Verify: %v", err)
 	}
 	// The full interleaving: service bind, user search, nested search, and
-	// only then the user re-bind. The nested search sitting before the last
-	// bind is the whole point — after it, the connection is the user's.
+	// only then the user re-bind. The nested search must come before the
+	// last bind, after which the connection is the user's.
 	want := []string{
 		"bind:CN=svc,DC=example,DC=com",
 		"search:(sAMAccountName=alice)",
@@ -398,14 +397,14 @@ func TestSearchBind_NestedExpansionRunsOnServiceConnection(t *testing.T) {
 			t.Errorf("ops[%d]: got %q, want %q", i, fc.ops[i], want[i])
 		}
 	}
-	// The reordering must not have cost us the authenticating bind.
+	// The last bind is still the authenticating one.
 	if last := fc.binds[len(fc.binds)-1]; last.DN != "CN=Alice,OU=People,DC=example,DC=com" || last.PW != "alice-secret" {
 		t.Errorf("last bind: got %v, want the user's DN and password", last)
 	}
 }
 
-// Reordering the nested lookup ahead of the re-bind must not let a bad
-// password through: the bind still gates the result.
+// Running the nested lookup before the re-bind must not let a bad password
+// through: the bind still gates the result.
 func TestSearchBind_NestedGroupsWrongPasswordStillRejected(t *testing.T) {
 	cfg := searchCfg()
 	cfg.NestedGroups = true
@@ -423,8 +422,8 @@ func TestSearchBind_NestedGroupsWrongPasswordStillRejected(t *testing.T) {
 
 // LDAP attribute descriptions are case-insensitive (RFC 4512 §2.5) and a
 // directory may echo back any casing. Matched byte-for-byte, a "memberof"
-// reply yields zero groups — which is not an error anywhere, it just silently
-// drops every role mapping and demotes the user to DefaultRole.
+// reply yields zero groups with no error, dropping every role mapping and
+// demoting the user to DefaultRole.
 func TestSearchBind_MemberOfIsCaseInsensitive(t *testing.T) {
 	e := entry("CN=Alice,OU=People,DC=example,DC=com", map[string][]string{
 		"sAMAccountName": {"alice"},
@@ -440,16 +439,16 @@ func TestSearchBind_MemberOfIsCaseInsensitive(t *testing.T) {
 	if len(id.Groups) != 1 || id.Groups[0] != "CN=Admins,DC=example,DC=com" {
 		t.Fatalf("Groups: got %v, want the lowercase-attribute value to be found", id.Groups)
 	}
-	// The consequence the casing bug actually has: the admin mapping is lost
-	// and the user is silently demoted to DefaultRole.
+	// With case-sensitive matching the admin mapping would be lost and the
+	// user demoted to DefaultRole.
 	if role, ok := searchCfg().MapRole(id.Groups); !ok || role != "admin" {
 		t.Errorf("MapRole: got %q (ok=%v), want admin", role, ok)
 	}
 }
 
-// firstAttr shares the same case-insensitive lookup as the memberOf
-// resolution above it, rather than a byte-for-byte match — so a directory that echoes UsernameAttr or DisplayNameAttr back in a different
-// case still populates Identity.Username and Identity.DisplayName.
+// firstAttr uses the same case-insensitive lookup as the memberOf resolution,
+// so a directory that echoes UsernameAttr or DisplayNameAttr back in a
+// different case still populates Identity.Username and Identity.DisplayName.
 func TestSearchBind_UsernameAndDisplayNameAreCaseInsensitive(t *testing.T) {
 	e := entry("CN=Alice,OU=People,DC=example,DC=com", map[string][]string{
 		"samaccountname": {"alice"},
@@ -470,9 +469,9 @@ func TestSearchBind_UsernameAndDisplayNameAreCaseInsensitive(t *testing.T) {
 	}
 }
 
-// The nested fallback is silent by construction — it returns a valid login. A
-// persistently failing expansion would demote every admin who holds admin only
-// through a nested group, with no signal anywhere, so it must be logged.
+// The nested fallback returns a valid login, so nothing else reports it. A
+// persistently failing expansion demotes every admin who holds admin only
+// through a nested group, so it must be logged.
 func TestSearchBind_NestedFallbackLogsWarning(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := searchCfg()
@@ -501,9 +500,8 @@ func TestSearchBind_NestedFallbackLogsWarning(t *testing.T) {
 	}
 }
 
-// A nil Logger is the default and must stay safe: the package is constructed
-// without one today, and the fallback path is exactly where a nil deref would
-// turn a degraded login into a panic.
+// A nil Logger is optional and must stay safe: the fallback path is where a
+// nil dereference would turn a degraded login into a panic.
 func TestSearchBind_NilLoggerOnNestedFallbackIsSafe(t *testing.T) {
 	cfg := searchCfg()
 	cfg.NestedGroups = true
@@ -538,12 +536,12 @@ func TestSearchBind_NoNestedSearchWhenDisabled(t *testing.T) {
 // identifier: that the search asks for it, and that the reply is carried into
 // Identity.
 //
-// Asserting the REQUEST is the part worth having. entryUUID is an operational
-// attribute, so most directories omit it from a response unless it is named
-// explicitly. A fake returns whatever the test scripts, so dropping the name
-// from the request list passes every parse-only assertion and then, against a
-// real server, makes every login look like a brand-new person — provisioning
-// duplicate accounts with no error anywhere.
+// The request half matters most. entryUUID is an operational attribute, so
+// most directories omit it from a response unless it is named explicitly. A
+// fake returns whatever the test scripts, so dropping the name from the
+// request list passes every parse-only assertion and then, against a real
+// server, leaves every login without an identifier, and every login is
+// refused.
 func TestSearchBind_RequestsAndReadsUniqueIDAttr(t *testing.T) {
 	e := aliceEntry()
 	e.Attributes = append(e.Attributes, ldapv3.NewEntryAttribute("entryUUID", []string{"uuid-1234"}))
@@ -569,9 +567,9 @@ func TestSearchBind_RequestsAndReadsUniqueIDAttr(t *testing.T) {
 }
 
 // Active Directory returns objectGUID as a raw 16-byte octet string that is
-// not valid UTF-8. Stored as-is it would corrupt, so it is hex-encoded. This
-// encoding is permanent: changing it later orphans every account already
-// stamped with the old form.
+// not valid UTF-8. Stored as-is it would corrupt, so it is hex-encoded. The
+// encoding must not change: a different one orphans every account already
+// stamped.
 func TestSearchBind_HexEncodesBinaryUniqueID(t *testing.T) {
 	raw := []byte{
 		0x00, 0x01, 0x02, 0x03, 0xff, 0xfe, 0x80, 0x81,

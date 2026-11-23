@@ -25,13 +25,12 @@ const AuthContext = createContext<AuthContextValue | null>(null)
  * anywhere client-side: the session lives in an HttpOnly cookie the browser
  * attaches automatically, and identity is derived fresh from this endpoint.
  *
- * `status` is `'anon'` on a 401 (no/invalid session) and also, deliberately,
- * on any other error — a network failure or 5xx should not leave the app
- * stuck rendering the shell against an unconfirmed identity. When auth is
- * disabled server-side, `/auth/me` returns 200 with an anonymous principal
- * (`kind: 'anonymous'`), which resolves to `'authed'` here just like any
- * other principal — this is what makes the login page never appear in that
- * mode without the web needing a separate "is auth enabled?" flag.
+ * `status` is `'anon'` on a 401 (no/invalid session) and also on any other
+ * error: a network failure or 5xx must not leave the app rendering the shell
+ * against an unconfirmed identity. When auth is disabled server-side,
+ * `/auth/me` returns 200 with an anonymous principal (`kind: 'anonymous'`),
+ * which resolves to `'authed'` like any other principal, so the login page
+ * never appears in that mode and the web needs no "is auth enabled?" flag.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient()

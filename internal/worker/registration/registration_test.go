@@ -2,12 +2,11 @@
 
 package registration_test
 
-// Tests for registration.go, specifically the LastRegisteredAt behavior
-// introduced in the heartbeat tasks (30-33).
+// Tests for registration.go, including the LastRegisteredAt behavior the
+// heartbeat watchdog relies on.
 //
-// These tests start a lightweight embedded NATS server with JetStream enabled
-// so that Register can complete a real acked publish. This matches the pattern
-// used in internal/bus where nats-server/v2 is already a dep.
+// These tests start an embedded NATS server with JetStream enabled so that
+// Register can complete a real acked publish, as internal/bus does.
 //
 // Register publishes with a JetStream ack, so the SQI_WORKER stream must exist
 // before it can succeed: startTestNATS provisions it. Tests that exercise the
@@ -171,8 +170,8 @@ func newRegistrar(
 // stream captured.
 //
 // A core-NATS publish to a JetStream subject with no stream behind it is
-// silently discarded, which stranded workers permanently: the server never
-// learned of them and their heartbeats were NAKed forever.
+// discarded, which would strand the worker: the server would never learn of
+// it and would NAK its heartbeats.
 func TestRegister_NoStream_ReturnsError(t *testing.T) {
 	url := startTestNATSNoStream(t)
 	nc := connectNATS(t, url)
@@ -269,14 +268,14 @@ func TestRegister_StoresMessageInStream(t *testing.T) {
 }
 
 // TestRegister_AdvertisesConfiguredExprLimits pins the worker half of the
-// cross-binary EXPR limits gate: the caps a worker will ENFORCE
-// have to reach the server, or the server's dispatch gate has nothing to
-// compare against and silently falls back to assuming the defaults.
+// cross-binary EXPR limits gate: the caps a worker enforces have to reach the
+// server, or the server's dispatch gate has nothing to compare against and
+// falls back to assuming the defaults.
 //
-// The five values are deliberately distinct and none is a default: five
-// same-typed int64 fields copied across two struct boundaries (config ->
-// fmtres.ExprLimits -> protocol.ExprLimits) is exactly the shape where a
-// transposition compiles, runs, and advertises the wrong bound.
+// The five values are distinct and none is a default: five same-typed int64
+// fields are copied across two struct boundaries (config ->
+// fmtres.ExprLimits -> protocol.ExprLimits), where a transposition would
+// compile, run, and advertise the wrong bound.
 func TestRegister_AdvertisesConfiguredExprLimits(t *testing.T) {
 	url := startTestNATS(t)
 	nc := connectNATS(t, url)
@@ -316,7 +315,7 @@ func TestRegister_AdvertisesConfiguredExprLimits(t *testing.T) {
 }
 
 // TestRegister_UnsetExprLimitsAdvertiseTheDefaults pins that a Registrar built
-// with the zero value advertises the caps the worker would actually enforce.
+// with the zero value advertises the caps the worker would enforce.
 // Publishing zeroes would be read by the server as "not advertised".
 func TestRegister_UnsetExprLimitsAdvertiseTheDefaults(t *testing.T) {
 	url := startTestNATS(t)

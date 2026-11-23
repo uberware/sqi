@@ -14,9 +14,8 @@ import (
 // attr.worker.tag.<key> a shipped preset requires. OpenJD identifiers allow only
 // letters, digits and underscores and must not start with a digit, so a
 // conformant implementation rejects a template that names anything else. sqi's own
-// validator is more lenient and accepted 3dsmax and 3delight for a long time,
-// which is how those two tags shipped invalid; this is the check that would have
-// caught them.
+// validator is more lenient, so this test is what keeps a shipped preset from
+// requiring an invalid tag.
 func TestReferencePresets_RequireOnlyValidIdentifierTags(t *testing.T) {
 	valid := regexp.MustCompile("^[A-Za-z_][A-Za-z0-9_]*$")
 	// The key runs to the end of the name: whitespace, a quote or a colon ends

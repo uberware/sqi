@@ -88,7 +88,7 @@ func TestCoerceListDestinations(t *testing.T) {
 // contributes no destination, so a target composed only of such types cannot be
 // coerced to at all."
 //
-// The list[T1] row is the one the specification states as a MUST, and it says
+// The list[T1] row is the one the specification states as a must, and it says
 // why: the symmetric matching that binds type variables during signature
 // matching would accept such a target by binding T1 and then discarding the
 // binding. Satisfaction is directional and must not be used for that.
@@ -114,13 +114,13 @@ func TestCoerceRejectsUnusableDestinations(t *testing.T) {
 	}
 }
 
-// TestCoerceUnresolvedNarrowing pins the constraint a PLACEHOLDER carries away
+// TestCoerceUnresolvedNarrowing pins the constraint a placeholder carries away
 // from a coercion, which #175 restated: "conversion narrows to the union of
 // every destination with a type-level rule, rather than betting on any one of
 // them -- anything narrower would misdescribe some resolved value."
 //
 // The invariant behind it, stated by the RFC and worth keeping in mind when
-// reading these cases: the narrowed constraint always satisfies the target, AND
+// reading these cases: the narrowed constraint always satisfies the target, and
 // the concrete result's type always satisfies the narrowed constraint. Narrowing
 // unresolved[float] against "int | string" to unresolved[int] would break the
 // second half, because a 3.5 payload fails float->int and lands on string.

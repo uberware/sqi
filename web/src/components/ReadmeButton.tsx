@@ -14,8 +14,8 @@ interface ReadmeButtonProps {
    * control titled "No readme".
    *
    * The preset list passes true unconditionally: the remote library index
-   * deliberately carries no readme, so a list row cannot know. The detail page
-   * it links to then shows whatever is actually there.
+   * carries no readme, so a list row cannot know. The detail page it links to
+   * shows whatever is there.
    */
   hasReadme: boolean
   /**

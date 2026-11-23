@@ -231,12 +231,11 @@ func DefaultConfig() Config {
 		DiscoveryInstanceName: "sqi-server",
 		EnforceOpenJDLimits:   true,
 		OpenJDExprLimits:      openjd.DefaultExprLimits(),
-		// Taken from internal/config's constant rather than restated, so this
-		// default cannot drift from the one an operator's config file is
-		// validated against. This package may import internal/config (it
-		// already does, for the LDAP and OIDC blocks); internal/config may not
-		// import internal/openjd, which is why the four expr_* LIMITS are
-		// duplicated there and this is not.
+		// Taken from internal/config's constant so this default matches the
+		// one an operator's config file is validated against. internal/config
+		// may not import internal/openjd, so the four expr_* limits are
+		// duplicated there; this package imports internal/config, so the
+		// deadline is not.
 		OpenJDExprSubmissionDeadline: config.DefaultOpenJDExprSubmissionDeadline,
 		SeedDefaults:                 true,
 	}
@@ -333,9 +332,8 @@ func (s *Server) Metrics() *metrics.Metrics {
 // running with no REST API, UI or readiness endpoint. Split out of
 // [Server.start] to keep that function under the cyclop complexity threshold.
 func (s *Server) serveHTTP(ctx context.Context) error {
-	// Both TLS surfaces are warned about here, beside the listener they concern,
-	// rather than riding on broker startup where a reordering would silently
-	// take the HTTP warning with it.
+	// Both TLS surfaces are warned about here, beside the HTTP listener, so
+	// the HTTP warning does not depend on the order of broker startup.
 	warnTLSConfig(ctx, s.logger, s.cfg.HTTPTLS, s.cfg.NATS)
 
 	tlsOn := s.cfg.HTTPTLS.Enabled
@@ -750,9 +748,9 @@ func (s *Server) start(ctx context.Context) error {
 	// Register NATS as a readiness dependency so GET /readyz reflects its health.
 	s.health.Register("nats", health.CheckerFunc(broker.Check))
 
-	// Dial the broker with a typed client.  All server components
-	// (scheduler, worker-protocol handlers, etc.) will receive this client
-	// rather than importing the raw nats package directly.
+	// Dial the broker with a typed client. Server components (scheduler,
+	// worker-protocol handlers) receive this client rather than importing the
+	// nats package.
 	busClient, err := broker.NewClient()
 	if err != nil {
 		return fmt.Errorf("start bus client: %w", err)
@@ -1447,9 +1445,9 @@ func (s *Server) waitCheckpoint(ctx context.Context) {
 }
 
 // sessionSweepInterval is how often expired sessions are reaped. Sessions
-// expire on the order of days (config default: 168h), so the exact cadence
-// does not matter much — this only has to be short enough that the table
-// tracks the live session count rather than the all-time login count.
+// expire on the order of days (config default: 168h); the interval need only
+// be short enough that the table tracks the live session count rather than
+// the all-time login count.
 const sessionSweepInterval = time.Hour
 
 // sweepEvery runs sweep every [sessionSweepInterval] until ctx ends, and

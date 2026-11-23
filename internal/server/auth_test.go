@@ -27,10 +27,10 @@ func anonymousRequest() *http.Request {
 	return httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 }
 
-// TestSelectAuth_Disabled is the auth-off regression test: it must behave
+// TestSelectAuth_Disabled pins the auth-off path: it must behave
 // byte-for-byte as a server without auth. Even with bootstrap credentials
 // configured, auth disabled must select the anonymous superuser authenticator
-// and must NOT create any user or touch the store at all.
+// and must not create any user or touch the store.
 func TestSelectAuth_Disabled(t *testing.T) {
 	st := fake.New()
 	s := &Server{

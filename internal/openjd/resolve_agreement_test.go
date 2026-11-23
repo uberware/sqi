@@ -602,10 +602,9 @@ func TestRangeCheckerResolverAgreement_NonLoneRangeString(t *testing.T) {
 }
 
 // TestRangeCheckerResolverAgreement_EmbeddedRangeExprReorder pins the
-// embedded range_expr() case: a NON-lone whole-field RangeString whose
-// embedded reference itself evaluates to a genuine range_expr value.
-// resolveRangeExprField's own doc comment rules this is CORRECT, not a
-// defect: the reorder is deliberate and must stay pinned, not be "fixed".
+// embedded range_expr() case: a non-lone whole-field RangeString whose
+// embedded reference evaluates to a range_expr value. resolveRangeExprField's
+// doc comment explains why the reorder is intended; it must stay pinned.
 //
 // {{ range_expr("10-15:2,1-5") }},7 composes to the literal text
 // "1-5,10-14:2,7": Value.String() renders the embedded range_expr value in its
@@ -670,25 +669,22 @@ func TestRangeCheckerResolverAgreement_EmbeddedRangeExprReorder(t *testing.T) {
 //     list[int]/list[float]/list[string]/list[path]. Its LENGTH is what is
 //     wrong, and length is not a type.
 //
-// WHY NONE OF THE THREE IS "FIXED" HERE (deliberately, not an omission).
-// Every one of them is base-spec-equivalent: a template with the literal text
-// the expression computes fails the same way, with the same message. Measured
-// for shapes 2 and 3 -- base-spec range: "abc" is rejected at VALIDATE with
-// `range expression "abc": invalid integer "abc"`, and the EXPR form is
-// rejected at EXPANSION with the identical `invalid integer "abc"` inside a
-// SubmitValidationError. So the divergence is which LAYER reports and which
-// JSON pointer it carries, never whether a bad template is caught: no
-// malformed range reaches a task in any of the three.
+// Why the three are accepted: each is base-spec-equivalent, since a template
+// with the literal text the expression computes fails the same way with the
+// same message. For shapes 2 and 3, base-spec range: "abc" is rejected at
+// validation with `range expression "abc": invalid integer "abc"`, and the
+// EXPR form is rejected at expansion with the same `invalid integer "abc"`
+// inside a SubmitValidationError. The difference is which layer reports it
+// and which JSON pointer it carries; no malformed range reaches a task.
 //
-// Closing them properly means giving the checker something it does not have
-// and was deliberately not built with -- the evaluated VALUE (checkFormatString
-// discards it) -- and even then it would only work at phase 2, since at phase
-// 1 a symbol-dependent expression has no value to inspect. That is a design
-// change with a cost, not a patch: re-running validateRangeListValues on the
-// RESOLVED space alongside submit.go's validateParameterSpaceLimits would
-// close shapes 2 and 3 and the PATH-empty gap together, but it needs its own
-// gate -- validateParameterSpaceLimits sits behind Submitter.enforceLimits,
-// which is the wrong gate for a structural check.
+// Closing them would mean giving the checker the evaluated value, which
+// checkFormatString discards, and would work only at phase 2, since at phase
+// 1 a symbol-dependent expression has no value. Re-running
+// validateRangeListValues on the resolved space alongside submit.go's
+// validateParameterSpaceLimits would close shapes 2 and 3 and the PATH-empty
+// gap together, but needs its own gate: validateParameterSpaceLimits sits
+// behind Submitter.enforceLimits, which is the wrong gate for a structural
+// check.
 func TestRangeCheckerResolverAgreement_KnownNonLoneDivergences(t *testing.T) {
 	// INT entry "x{{ 2.5 }}": the "x" prefix makes this non-lone, so the
 	// embedded 2.5 is rendered with Value.String() ("2.5") and concatenated,

@@ -52,7 +52,8 @@ The `instance` field contains the request ID, which also appears in the
 ### Rate limiting
 
 `/api/v1` requests are rate-limited per client IP (default token bucket: 20
-requests per second sustained, burst of 40). Exceeding the limit returns a
+requests per second sustained, burst of 40), unless
+[`http.rate_limit.enabled`](configuration.md#httprate_limitenabled) is `false`. Exceeding the limit returns a
 `429 Too Many Requests` problem-details body and a delta-seconds
 `Retry-After` header indicating when the next request will be accepted:
 
@@ -712,7 +713,7 @@ curl -s -X DELETE "$BASE/workers/$WORKER_ID"
 
 What disabling a worker does:
 
-- **It is a flag, not a liveness.** Disabled is an operator's decision, kept
+- **It is a flag, separate from liveness.** Disabled is an operator's decision, kept
   apart from whether the worker is online or offline. The API reports a
   disabled worker's `status` as `disabled` whatever its liveness, and the
   `status` filter and the worker gauge count it as disabled only.
@@ -846,7 +847,7 @@ Upgrade: websocket
 
 ### Message envelope
 
-All frames — in both directions — are JSON objects with this shape:
+All frames, in both directions, are JSON objects with this shape:
 
 ```json
 {

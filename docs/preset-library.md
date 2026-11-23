@@ -523,9 +523,9 @@ worker's `PATH` for the job to run. The `aftereffects` detector also supplies an
 **After Effects failures.** `aerender` is reported to exit with status 0 when a render
 fails, so both After Effects presets declare
 [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): besides a non-zero exit, a task fails when any line of `aerender`'s output contains
-`aerender ERROR`, matched case-insensitively. That marker comes from user
-reports and has not been checked against a real failing render; a failure that
-neither exits non-zero nor prints the marker is still reported as a success.
+`aerender ERROR`, matched case-insensitively. The marker is taken from user
+reports and is unverified against a failing render; a failure that neither
+exits non-zero nor prints the marker is reported as a success.
 
 Each After Effects render node needs Adobe's render-only marker: an empty
 file named `ae_render_only_node.txt` in `C:\Users\Public\Documents\Adobe` on
@@ -752,8 +752,8 @@ These are not in the reference set.
   ffmpeg presets cover the same transcoding work.
 - **RV (`rvio`), DJV and REDline**: each is useful only where a studio
   already uses it.
-- **File transfer**: limiting and routing transfers are already
-  done by queues, usage pools and host requirements, and a transfer is one
+- **File transfer**: queues, usage pools and host requirements limit and
+  route transfers, and a transfer is one
   command that the built-in products run. See [Throttled file
   transfers](products.md#throttled-file-transfers).
 - **Per-worker maintenance actions** (run a command once on every matching

@@ -10,7 +10,7 @@ import "testing"
 func noFn(_ []Value) (Value, error) { return Value{}, nil }
 
 func TestMatchShapes_ExactBeatsCoercion(t *testing.T) {
-	// The float shape is listed FIRST so that a shape-by-shape search
+	// The float shape is listed first so that a shape-by-shape search
 	// stopping at the first admissible candidate would coerce the ints and
 	// pick it. Ranking every candidate by cost, and taking the cheapest, is
 	// what makes 1 + 1 stay an int instead.
@@ -212,7 +212,7 @@ func TestMatchShapes_UnionParameterMatchesAMember(t *testing.T) {
 
 // TestMatchShapes_UnionParameterWidensToAMember checks that a union
 // parameter accepts an argument that reaches one of its members by a
-// PROMOTABLE conversion — one of the spec's own named compatible pairs — the
+// promotable conversion — one of the spec's own named compatible pairs — the
 // same way a bare parameter of that member's type would.
 //
 // path is such a case: path -> string is the int -> float promotion's own
@@ -224,7 +224,7 @@ func TestMatchShapes_UnionParameterMatchesAMember(t *testing.T) {
 // bool has no promotable path to any of int, float or string. Its only route to string is section 1.2.3's
 // single-scalar catch-all (bool/int/float/path -> string, unconditionally),
 // and that catch-all is deliberately excluded from overload selection — see
-// promotable's doc comment in coerce.go. Asserting bool does NOT match here is
+// promotable's doc comment in coerce.go. Asserting bool does not match here is
 // what pins that exclusion at the point selection actually happens, rather
 // than only in promotable's own unit tests.
 func TestMatchShapes_UnionParameterWidensToAMember(t *testing.T) {
@@ -253,7 +253,7 @@ func TestMatchShapes_UnionParameterRejectsAMismatchedList(t *testing.T) {
 // TestMatchShapes_EmptyListArgumentMatchesAnyListParameter covers a seam
 // between argCost and promotable: promotable(list[nulltype], list[int]) is
 // true per section 1.2.3's empty-list rule, but an argCost whose list-descent
-// branch recursed into the element types BEFORE consulting promotable would
+// branch recursed into the element types before consulting promotable would
 // never see that rule, reject list[nulltype] outright, and so reject "[]"
 // against any list parameter.
 func TestMatchShapes_EmptyListArgumentMatchesAnyListParameter(t *testing.T) {
@@ -264,9 +264,9 @@ func TestMatchShapes_EmptyListArgumentMatchesAnyListParameter(t *testing.T) {
 }
 
 // TestMatchShapes_UnionArgumentRequiresEveryMemberAdmissible covers the
-// argument-side dual of the union-PARAMETER tests above: a union-typed
-// ARGUMENT is admissible only where every one of its members is, since the
-// union could BE any one of them at runtime. __pow__'s own declared return,
+// argument-side dual of the union-parameter tests above: a union-typed
+// argument is admissible only where every one of its members is, since the
+// union could be any one of them at runtime. __pow__'s own declared return,
 // int | float, is exactly this shape once it feeds into another operator.
 func TestMatchShapes_UnionArgumentRequiresEveryMemberAdmissible(t *testing.T) {
 	shapes := []Shape{{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: noFn}}
@@ -348,7 +348,7 @@ func TestOrderingAdmissibility(t *testing.T) {
 }
 
 // TestPromotableUnder_DefaultMatchesPromotable pins promoteDefault's reason
-// for existing as the promotion zero value: every OTHER operator in the
+// for existing as the promotion zero value: every other operator in the
 // language relies on it being byte-identical to the global promotable
 // predicate, and the shapeCost/argCost call chain threads a promotion through
 // every one of them. Rather than reasoning that the two call sites stay in
@@ -417,7 +417,7 @@ func TestArgCostList_EmptyListScoring(t *testing.T) {
 }
 
 // TestArgCostList_BoundVariableStillWidens pins that the free binding applies
-// only to an UNBOUND variable. A variable another argument already bound is
+// only to an unbound variable. A variable another argument already bound is
 // not being bound here, so the empty list is reaching a concrete type after
 // substitution and pays the widening.
 func TestArgCostList_BoundVariableStillWidens(t *testing.T) {

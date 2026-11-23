@@ -143,7 +143,7 @@ const (
 	// cost of one request proportionally. With the counters alone, a request
 	// can cost at least ~17 minutes of server CPU at the defaults and ~40
 	// hours with this and MaxExprTemplatePositions both at their ceilings.
-	// What actually stops a request is [ExprLimits.Deadline], whose 60s
+	// What stops a request is [ExprLimits.Deadline], whose 60s
 	// ceiling is far below either figure.
 	//
 	// Floor: 10x below the default, ~67x the 15 operations the most expensive
@@ -202,7 +202,7 @@ func DefaultExprLimits() ExprLimits {
 }
 
 // Normalized is the exported form of [ExprLimits.orDefaults]: the values a
-// walk actually enforces. internal/scheduler compares them against each
+// walk enforces. internal/scheduler compares them against each
 // worker's advertised EXPR caps before dispatching an EXPR job; comparing an
 // unset zero would report no shortfall in that dimension.
 func (l ExprLimits) Normalized() ExprLimits { return l.orDefaults() }

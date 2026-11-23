@@ -38,7 +38,7 @@ var applyCredential = isolation.Apply
 // processResult captures the complete outcome of an OS process execution
 // (PID, start time, end time, exit code).
 type processResult struct {
-	// ExitCode is the process exit code.  -1 if the process was killed by a
+	// ExitCode is the process exit code. -1 if the process was killed by a
 	// signal and the OS did not produce a meaningful exit code.
 	ExitCode int
 	// PID is the OS process ID, recorded after a successful Start.
@@ -49,8 +49,8 @@ type processResult struct {
 	// exited (cmd.Wait() returned).
 	EndedAt time.Time
 	// Err is a non-nil error only for unexpected failures (failed to start,
-	// unexpected wait error).  A non-zero exit code is not reflected in Err;
-	// it is captured in ExitCode.  Process termination due to a signal (when
+	// unexpected wait error). A non-zero exit code is not reflected in Err;
+	// it is captured in ExitCode. Process termination due to a signal (when
 	// TimedOut or Canceled is true) also does not set Err.
 	Err error
 	// TimedOut is true when the process was killed because the per-task
@@ -165,16 +165,16 @@ func (e *Executor) runTask(
 
 	// ── OpenJD path mapping file ────────────────────────────────────
 	// The pathmapping-1.0 path_mapping.json file is written once at session
-	// creation (session.Manager.Create) for the base path-map rules.  When
+	// creation (session.Manager.Create) for the base path-map rules. When
 	// staging is active and translation_file is enabled, buildEffectiveLookup
 	// rewrites the file with the combined (staging-prepended) rules above.
 
 	// ── Resolve OpenJD {{...}} format strings ──────────────────────────────────
 	// The session working directory (Session.WorkingDirectory) is known only at
 	// run time, so command/args, environment-variable values, and embedded
-	// file data are resolved here on the worker rather than server-side.  A bad
+	// file data are resolved here on the worker rather than server-side. A bad
 	// reference fails the task cleanly with a descriptive message naming the
-	// offending variable.  resolvedFiles are the step embedded files with their
+	// offending variable. resolvedFiles are the step embedded files with their
 	// data resolved against the task scope (which includes Task.File.*).
 	resolvedRun, resolvedEnvVars, resolvedFiles, err := resolveAssignment(msg, sess)
 	if err != nil {
@@ -218,12 +218,12 @@ func (e *Executor) runTask(
 
 	// ── Publish terminal status and update metrics ────────────────────────────
 	// Cases are ordered so that openjdFailed and the worker-shutdown paths take
-	// priority.  result.Err (unexpected start/wait failure) is checked after
+	// priority. result.Err (unexpected start/wait failure) is checked after
 	// Canceled and TimedOut because makeResult only sets Err for non-ExitError
 	// failures, which cannot co-occur with timeout or cancellation.
 	switch {
 	case openjdFailed:
-		// The task self-reported failure via openjd_fail.  The process was
+		// The task self-reported failure via openjd_fail. The process was
 		// terminated via taskCancel using the action's cancelation method
 		// (TERMINATE by default → immediate SIGKILL); treat the terminal
 		// state as "failed" with the process-supplied reason rather than
@@ -618,7 +618,7 @@ func (e *Executor) publishEnded(msg *protocol.AssignMsg, sessID, status string, 
 
 // failResolution publishes the terminal "failed" status for a task that could
 // not have its OpenJD format strings resolved, mirroring the other
-// pre-execution failure paths in runTask.  It sets *failed so the deferred
+// pre-execution failure paths in runTask. It sets *failed so the deferred
 // session cleanup honors keepFailedSessions, and records the failure metric.
 func (e *Executor) failResolution(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, failed *bool, err error) {
 	e.logger.ErrorContext(
@@ -633,7 +633,7 @@ func (e *Executor) failResolution(ctx context.Context, msg *protocol.AssignMsg, 
 // ── execProcess ──────────────────────────────────────────────────────────────
 
 // execProcess starts the OS process for msg.OnRun, reads its output, and
-// waits for it to exit (or timeout/cancel).  It returns only after the process
+// waits for it to exit (or timeout/cancel). It returns only after the process
 // has exited and its output has been read as procout.Output.Wait describes.
 //
 // lookup contains the resolved-mode path map parsed by the caller; it is
@@ -648,7 +648,7 @@ func (e *Executor) failResolution(ctx context.Context, msg *protocol.AssignMsg, 
 func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun, lookup *pathmap.Lookup, resolvedRun *protocol.Action, envVars map[string]string, handler OutputHandler) processResult {
 	// Apply path-delivery transformations: swap_in_place substitutes paths in
 	// the action, command_flags appends rendered flag strings, and environment
-	// sets the configured variable.  translation_file is written at session
+	// sets the configured variable. translation_file is written at session
 	// creation (and rewritten by buildEffectiveLookup when staging adds rules),
 	// not here.
 	action, envVars := applyDeliveries(msg.PathDeliveries, lookup, resolvedRun, envVars)
@@ -664,7 +664,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// fixed signal when ctx is canceled, bypassing the OpenJD
 	// Action.cancelation policy (TERMINATE vs NOTIFY_THEN_TERMINATE) that
 	// killAndWait applies.
-	cmd := exec.Command(action.Command, action.Args...) //nolint:gosec,noctx // command from server-signed assignment; context handled manually
+	cmd := exec.Command(action.Command, action.Args...) //nolint:gosec,noctx // command from the server's assignment; context handled manually
 	cmd.Dir = sess.WorkDir
 
 	// Start the task in its own process group so a timeout or cancel
@@ -703,7 +703,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	startedAt := time.Now()
 
 	// Publish "running" status before Start so the server records the attempt
-	// even if the command is not found or cannot be executed.  If Start fails
+	// even if the command is not found or cannot be executed. If Start fails
 	// the caller publishes a terminal "failed" immediately after.
 	// The status carries no progress: the process has emitted no output.
 	e.statusPub.Running(msg, sess.ID, startedAt)
@@ -825,7 +825,7 @@ func (e *Executor) waitForCompletion(
 }
 
 // waitWithTimeout blocks until the process exits, the per-task timeout
-// elapses, or ctx is canceled — whichever comes first.  cancelation is the
+// elapses, or ctx is canceled — whichever comes first. cancelation is the
 // OpenJD Action.cancelation method honored when the process must be forcibly
 // terminated (on timeout or cancellation).
 func (e *Executor) waitWithTimeout(
@@ -873,7 +873,7 @@ const defaultNotifyPeriod = 120 * time.Second
 // configured shutdown grace window is honored for every in-flight task.
 //
 // Telling worker shutdown from a per-task cancel relies on DrainAndShutdown
-// setting the shuttingDown flag before it cancels execCtx.  A concurrent
+// setting the shuttingDown flag before it cancels execCtx. A concurrent
 // external Cancel racing a shutdown is harmless: the server keeps the first
 // terminal status for a task and ignores later ones.
 func (e *Executor) killAndWait(
@@ -899,7 +899,7 @@ func (e *Executor) killAndWait(
 		gracePeriod = e.cfg.KillGracePeriod
 	default:
 		// Per-task action cancelation (per-task timeout, per-task server cancel,
-		// or openjd_fail): honor the OpenJD Action.cancelation method.  TERMINATE
+		// or openjd_fail): honor the OpenJD Action.cancelation method. TERMINATE
 		// (the spec default) kills immediately; NOTIFY_THEN_TERMINATE notifies
 		// first and waits the effective notify period.
 		notify, gracePeriod = proctree.Resolve(cancelation, defaultNotifyPeriod)
@@ -1008,7 +1008,7 @@ func makeResult(waitErr error, pid int, startedAt time.Time, timedOut, canceled 
 		// Non-zero exit code or signal termination.
 		exitCode = exitErr.ExitCode()
 		// exitErr.ExitCode() returns -1 when the process was killed by a
-		// signal.  That is expected when timedOut or canceled.
+		// signal. That is expected when timedOut or canceled.
 	default:
 		// Unexpected wait failure (e.g., process not found, OS error).
 		unexpectedErr = waitErr
@@ -1155,7 +1155,7 @@ func (e *Executor) preExecValidate(
 	// Files are written into the session working directory before OnRun so the
 	// task command can reference them by name (and by {{Task.File.<name>}}).
 	// Environment-level embedded files are materialized earlier, at
-	// environment-enter time (session.enterOne).  Data was resolved above against
+	// environment-enter time (session.enterOne). Data was resolved above against
 	// the task scope; the writer materializes the already-resolved copies.
 	if err := sess.WriteEmbeddedFiles(resolvedFiles); err != nil {
 		e.logger.ErrorContext(

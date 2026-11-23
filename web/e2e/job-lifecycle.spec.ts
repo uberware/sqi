@@ -10,10 +10,9 @@
 //     → Job list also reflects the completed status
 //     → Log viewer shows the echoed output
 //
-// The embedded server serves the SPA shell only at "/" (and under /ui/*), so
-// deep-link page loads to client routes like /submit would 404. We therefore
-// drive the app the way a real user does: load "/" once, then navigate purely
-// via in-app links (client-side routing) — never a full page load to a sub-route.
+// The test drives the app the way a user does: load "/" once, then navigate
+// through in-app links (client-side routing), never a full page load to a
+// sub-route.
 //
 // The stack's live base URL and seeded farm/queue IDs come from the JSON state
 // file written by global setup (read lazily, since Playwright imports spec files
@@ -62,8 +61,8 @@ test.describe('job lifecycle', () => {
     await queueSelect.selectOption(state.queueId)
 
     // Populate the OpenJD template via the "Load example" dropdown. This sets the
-    // controlled React state used for submission directly, which is far more
-    // robust across chromium/firefox/webkit than synthesising keystrokes into
+    // controlled React state used for submission directly, which behaves the
+    // same across chromium/firefox/webkit, unlike synthesised keystrokes in
     // CodeMirror's contenteditable surface.
     await page.getByRole('combobox', { name: /load example/i }).selectOption('shell')
 

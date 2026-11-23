@@ -169,17 +169,17 @@ func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task,
 
 	var lastReason string
 	for _, w := range workers {
-		// Both tests must run: the lease gate refuses to dispatch an EXPR job
-		// to a worker whose advertised EXPR caps are below this server's, so
-		// the sweep must apply the same test or the task would sit ready while
-		// reported schedulable.
+		// Both tests must run: the lease gate withholds a job from a worker
+		// that fails workerCompatBlock (EXPR caps below this server's, or a
+		// worker-enforced extension it does not advertise), so the sweep must
+		// apply the same test or the task would sit ready while reported
+		// schedulable.
 		//
-		// Ordinary eligibility is tested first. A worker that is ineligible for
-		// a plain reason (wrong queue, wrong compute location, a tag it does
-		// not carry) is ineligible for that reason, and that is the reason an
-		// operator can act on. Only a worker that would otherwise be eligible
-		// is reported as blocked by EXPR limits. exprcaps.go's reason names
-		// both config keys and both numbers.
+		// Ordinary eligibility is tested first, so a worker ineligible for a
+		// plain reason (wrong queue, wrong compute location, a missing tag)
+		// reports that reason. Only a worker that would otherwise be eligible
+		// is reported as blocked by the compatibility gate. exprcaps.go's
+		// reason names both config keys and both numbers.
 		reason, ok := WorkerEligibleWithReason(w, job, step, pools, activeCounts)
 		if !ok {
 			lastReason = reason

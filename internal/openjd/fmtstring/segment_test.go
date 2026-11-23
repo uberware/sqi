@@ -19,7 +19,7 @@ func TestSegments(t *testing.T) {
 			{Ref: "A", IsRef: true}, {Ref: "B", IsRef: true},
 		}},
 		{"empty input", "", nil},
-		// The body is NOT validated here: an expression is not a dotted
+		// The body is not validated here: an expression is not a dotted
 		// identifier, and judging it is the caller's job.
 		{"expression body passes through", "{{ Param.X * 2 }}", []Segment{
 			{Ref: "Param.X * 2", IsRef: true},

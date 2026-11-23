@@ -31,15 +31,14 @@ var (
 // codepoint-index conversion.
 //
 // Section 1.3.10 rule 3: every row in this file declares Cost{ArgBytes:
-// []int{0}} -- the RECEIVER's (arg0's) own byte length ONLY. None of the second
+// []int{0}} -- the receiver's (arg0's) own byte length only. None of the second
 // or third string arguments (a cutset, prefix, needle, "old" or "new") ever
-// contribute, confirmed by holding the receiver fixed and growing the other
-// argument from 10 to 300 bytes without moving the count
-// (cost_string_internal_test.go's
+// contribute: growing the other argument from 10 to 300 bytes does not move
+// the count (cost_string_internal_test.go's
 // TestOperationCount_StripCutsetDoesNotAffectCost,
 // TestOperationCount_AffixArgumentDoesNotAffectRemoveprefixCost,
 // TestOperationCount_NeedleLengthDoesNotAffectFindCost). startswith/endswith
-// charge the FULL receiver even though a real implementation only needs the
+// charge the full receiver even though a real implementation only needs the
 // prefix/suffix span -- the reference does, and rule 3's general clause does
 // not carve out an exception for a function whose real work is smaller than its
 // receiver.
@@ -51,14 +50,14 @@ var (
 // ~30000-byte result at an unchanged count
 // (TestOperationCount_ReplaceDoesNotChargeTheProducedResult). sqi follows the
 // reference here rather than diverging (unlike join and zfill, in
-// funcsstrsplit.go and funcsstrpad.go): rule 3 groups replace() in the SAME
+// funcsstrsplit.go and funcsstrpad.go): rule 3 groups replace() in the same
 // sentence as upper()/lower()/ strip(), which are all confirmed receiver-driven
 // (see funcsstrcase.go's own Cost comment), and the growth this exposes is
 // independently bounded by maxStringBytes (replaceAll's own checkRepeat call,
-// below) -- a SEPARATE limit (section 1.3.9) from the one this Cost declares
+// below) -- a separate limit (section 1.3.9) from the one this Cost declares
 // (section 1.3.10).
 var strFindFuncs = map[string][]Shape{
-	// The two-argument forms take a SET of runes, not a substring:
+	// The two-argument forms take a set of runes, not a substring:
 	// lstrip("xxayx", "xy") is "ayx", not "xayx". strings.Trim and its
 	// siblings already have exactly that cutset semantics, including the
 	// no-op on an empty cutset that RFC 0006 wants here.
@@ -87,7 +86,7 @@ var strFindFuncs = map[string][]Shape{
 		}},
 	},
 	// RFC 0006: "Remove prefix if present, otherwise return unchanged" — and
-	// an EMPTY prefix is not an error here, unlike the empty substring the
+	// an empty prefix is not an error here, unlike the empty substring the
 	// search functions reject. strings.TrimPrefix is already both.
 	"removeprefix": {
 		{Params: []Type{TString, TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
@@ -99,7 +98,7 @@ var strFindFuncs = map[string][]Shape{
 			return String(strings.TrimSuffix(args[0].AsStr(), args[1].AsStr())), nil
 		}},
 	},
-	// An empty prefix or suffix is NOT an error — startswith('abc', '') is
+	// An empty prefix or suffix is not an error — startswith('abc', '') is
 	// true. RFC 0006 states the non-empty requirement for count/find/rfind/
 	// index/rindex/replace/split/rsplit and for nothing else.
 	"startswith": {
@@ -142,7 +141,7 @@ var strFindFuncs = map[string][]Shape{
 			return Int(i), nil
 		}},
 	},
-	// index and rindex differ from find and rfind ONLY in what a miss does:
+	// index and rindex differ from find and rfind only in what a miss does:
 	// -1 there, an error here. RFC 0006 spells both out.
 	"index": {
 		{Params: []Type{TString, TString}, Ret: TInt, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
@@ -161,7 +160,7 @@ var strFindFuncs = map[string][]Shape{
 	},
 }
 
-// runeIndexOf returns the CODEPOINT index of sub within s, or -1 when absent.
+// runeIndexOf returns the codepoint index of sub within s, or -1 when absent.
 //
 // Codepoints, not bytes, so that find(), len() and s[i] all count the same
 // thing: len(string) is utf8.RuneCountInString (funcsconv.go) and a string
@@ -195,7 +194,7 @@ func foundIndex(s, sub string, last bool) (Value, error) {
 	return Int(i), nil
 }
 
-// replaceAll is strings.ReplaceAll with the growth bounded BEFORE anything is
+// replaceAll is strings.ReplaceAll with the growth bounded before anything is
 // allocated.
 //
 // The bound is only interesting when repl is longer than old, and it is

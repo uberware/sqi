@@ -19,10 +19,10 @@ const (
 
 // TaskLog is one chunk of output produced by a running task.
 //
-// Workers publish log chunks to task.logs.<workerID>.<taskID> as output is produced.
-// The server persists each chunk here with:
+// Workers publish log chunks to task.logs.<workerID>.<taskID> as output is
+// produced. The server persists each chunk here with:
 //   - A monotonic worker-side sequence number (SeqNum) per attempt, starting
-//     at 1 and incrementing by 1.  This allows the REST log-tail endpoint to
+//     at 1 and incrementing by 1. This allows the REST log-tail endpoint to
 //     return chunks in the order the worker produced them regardless of NATS
 //     delivery order.
 //   - A NATS stream sequence number (NATSSeq) used as the primary DB insertion
@@ -34,14 +34,14 @@ type TaskLog struct {
 	AttemptID string
 
 	// SeqNum is the worker-assigned monotonic sequence number for this chunk
-	// within the attempt.  Starts at 1; callers must not assume it is
-	// contiguous — gaps can appear if chunks are dropped or reordered.
+	// within the attempt. Starts at 1; callers must not assume it is
+	// contiguous: gaps can appear if chunks are dropped or reordered.
 	SeqNum int64
 
 	// NATSSeq is the JetStream message sequence number from the SQI_LOGS
-	// stream.  Used as a stable, dense offset cursor for the log-tail REST
-	// endpoint.  Stored as int64 to match SQLite's INTEGER affinity; NATS
-	// stream sequences are uint64 but will never approach int64 max in practice.
+	// stream, used as a stable, dense offset cursor for the log-tail REST
+	// endpoint. Stored as int64 to match SQLite's INTEGER affinity; NATS
+	// stream sequences are uint64 but do not approach the int64 maximum.
 	NATSSeq int64
 
 	// At is the worker's local timestamp when the chunk was captured.
@@ -67,11 +67,10 @@ type TaskLogStore interface {
 	CreateTaskLog(ctx context.Context, log TaskLog) (TaskLog, error)
 
 	// ListTaskLogs returns log chunks for a task attempt in NATSSeq ascending
-	// order.  Pass afterNATSSeq = 0 to start from the beginning; pass the
-	// NATSSeq of the last received chunk to page forward.  Limit controls the
+	// order. Pass afterNATSSeq = 0 to start from the beginning; pass the
+	// NATSSeq of the last received chunk to page forward. Limit controls the
 	// maximum number of chunks returned.
 	//
-	// This method is used by the REST log-tail endpoint and by the WebSocket
-	// log-streaming handler.
+	// The REST log-tail endpoint uses it.
 	ListTaskLogs(ctx context.Context, attemptID string, afterNATSSeq int64, limit int) ([]TaskLog, error)
 }

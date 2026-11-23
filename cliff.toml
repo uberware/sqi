@@ -53,15 +53,14 @@ trim = true
 footer = ""
 
 [git]
-# Only include commits reachable from the current tag (exclude merge commits
-# unless they carry a Conventional Commit message).
+# Parse Conventional Commits and drop commits that do not follow the format.
 conventional_commits = true
 filter_unconventional = true
 split_commits = false
 
 # Rewrite rules applied to commit messages before rendering.
 commit_preprocessors = [
-  # Strip leading/trailing whitespace.
+  # Strip trailing whitespace.
   { pattern = "\\s+$", replace = "" },
   # Expand GitHub issue/PR shorthand to full URLs.
   { pattern = "\\(#([0-9]+)\\)", replace = "([#${1}](https://github.com/uberware/sqi/issues/${1}))" },
@@ -70,8 +69,8 @@ commit_preprocessors = [
 # Map Conventional Commit types to CHANGELOG groups.
 commit_parsers = [
   { message = "^feat",     group = "Features"          },
-  # Historical typo'd/non-standard type prefixes remapped so they don't produce
-  # stray title-cased groups (e.g. "Fest"/"Ui") from old commits we can't rewrite.
+  # Non-standard type prefixes in existing commits, mapped so they do not
+  # produce stray title-cased groups (e.g. "Fest"/"Ui").
   { message = "^fest",     group = "Features"          },
   { message = "^ui",       group = "Features"          },
   { message = "^fix",      group = "Bug Fixes"         },
@@ -87,14 +86,13 @@ commit_parsers = [
   { message = "Merge branch",       skip = true        },
 ]
 
-# Protect against commits that don't match any parser (log a warning, don't fail).
+# Keep commits that match no parser instead of dropping them.
 filter_commits = false
 
 # Tags matching this pattern are treated as version boundaries.
 tag_pattern = "v[0-9].*"
 
-# Ignore pre-release tags when generating the "previous" range for a full CHANGELOG.
-# Set to false so alpha/beta releases appear in the changelog.
+# No tags are skipped, so pre-release (alpha/beta/rc) tags get sections too.
 skip_tags = ""
 
 # Sort order within each release section.

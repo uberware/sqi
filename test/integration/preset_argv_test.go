@@ -7,20 +7,19 @@ package integration
 // For every preset in presets/validation-tiers.yaml, for every case in its
 // fixture file, this expands and resolves the template through the real
 // production pipeline (internal/presettest) and compares the result to a
-// reviewed golden file.
+// golden file.
 //
-// WHAT A GREEN RUN HERE PROVES: the preset expands to exactly the command line
-// someone reviewed, and a change to expansion, resolution or the preset itself
-// shows up as a golden diff.
+// A pass shows that the preset expands to exactly the command line in its
+// golden, and a change to expansion, resolution or the preset itself shows up
+// as a golden diff.
 //
-// WHAT IT DOES NOT PROVE: that the command line is what the vendor's
-// application wants. That is documentation-derived per preset, and the caveat
-// field in the registry says so. Tier 3 (preset_exec_test.go) proves the path
-// runs; only Tier 2 proves the application is happy.
+// It does not show that the command line is what the vendor's application
+// wants. That is documentation-derived per preset, and the caveat field in the
+// registry says so. Tier 3 (preset_exec_test.go) shows the path runs; only
+// Tier 2 shows the application accepts it.
 //
-// NOT tagged `integration`, deliberately: the CI `test` job runs
-// `make test-cover`, which passes no -tags, so a tagged file would compile,
-// lint, and never execute.
+// Not tagged `integration`: the CI `test` job runs `make test-cover`, which
+// passes no -tags, so a tagged file would compile, lint, and never execute.
 
 import (
 	"flag"
@@ -34,8 +33,8 @@ import (
 // updateGoldens regenerates every golden this test compares.
 //
 // Run: go test ./test/integration/ -run TestPresetTier1Argv -preset-update
-// then READ THE DIFF. A regenerated golden is not a passing test; the review is
-// the test.
+// then read the diff: a regenerated golden passes by construction, so
+// reviewing the diff is the check.
 var updateGoldens = flag.Bool("preset-update", false, "rewrite preset argv goldens")
 
 const (

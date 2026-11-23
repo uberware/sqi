@@ -15,7 +15,7 @@ import (
 // inside the number is not removed, so "1 000" still fails to parse.
 //
 // White space is the Unicode White_Space property, which is exactly the set
-// unicode.IsSpace tests. It is NOT what the isspace() function tests: that one
+// unicode.IsSpace tests. It is not what the isspace() function tests: that one
 // is Python's str.isspace and also accepts U+001C–U+001F, which §7.5 names as
 // not white space here.
 //

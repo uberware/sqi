@@ -21,9 +21,10 @@ readme: |
   ## How work is divided
 
   Each task renders a contiguous chunk of the frame range, one frame per task
-  by default. The task passes its first and last frame to V-Ray as
-  `-frames=START-END`, so a larger chunk size renders several frames in one
-  V-Ray launch, with fewer scene loads and less parallelism. A stepped range
+  (`defaultTaskCount: 1`). The task passes its first and last frame to V-Ray
+  as `-frames=START-END`, so a copy of the preset with a larger
+  `defaultTaskCount` renders several frames in one V-Ray launch, with fewer
+  scene loads and less parallelism. A stepped range
   such as `1-100:2` always runs one task per frame, so V-Ray never renders a
   frame the range leaves out.
 

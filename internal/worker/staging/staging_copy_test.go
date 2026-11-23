@@ -113,15 +113,14 @@ func TestBuiltinCopy(t *testing.T) {
 	})
 }
 
-// TestCopyFile_RefusesSymlinkDest proves copyFile never writes THROUGH a
-// symlink planted at dest — the write half of the stage-out boundary that
-// sqi's own code path can close (an operator-configured sync_command remains
-// the operator's responsibility; see docs/worker-configuration.md). Per
-// copyFile's doc (mirroring isolation.WriteFileFchown), the planted symlink
-// entry is removed and a fresh regular file created in its place — root
-// writes the new bytes to a brand-new inode at dest, never through the
-// symlink to whatever it pointed at, so "elsewhere" must be completely
-// untouched and dest must end up an ordinary file, not a dangling symlink.
+// TestCopyFile_RefusesSymlinkDest proves copyFile never writes through a
+// symlink planted at dest: the write half of the stage-out boundary that
+// sqi's own code can enforce (an operator-configured sync_command is the
+// operator's responsibility; see docs/worker-configuration.md). As
+// copyFromFile's doc describes (mirroring isolation.WriteFileFchown), the
+// planted symlink entry is removed and a fresh regular file created in its
+// place, so "elsewhere" must be untouched and dest must end up an ordinary
+// file, not a dangling symlink.
 func TestCopyFile_RefusesSymlinkDest(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege or " +
@@ -163,20 +162,17 @@ func TestCopyFile_RefusesSymlinkDest(t *testing.T) {
 }
 
 // TestCopyFile_RefusesSourceWithExtraHardlink proves copyFile's own fd-based
-// re-check refuses a source with an extra hardlink ENTIRELY ON ITS OWN, with
-// no upstream guard (openStageOutSource) involved at all — which is what
-// matters because copyFile is the STAGE-IN path, where there is no os.Root
-// above it to enforce anything. O_NOFOLLOW closes the symlink half of the
-// TOCTOU (a symlink swapped in after an upstream Lstat cannot be traversed),
-// but a hardlink IS a regular file — O_NOFOLLOW opens it successfully — so
-// nothing before this test's fd-based in.Stat() call would have refused it. A
-// background child left running past its task's successful exit (nothing
-// kills the process group on success — see executor.runTask/killAndWait) can
-// link a second name onto a scratch entry's inode between any path-based
-// check and copyFile's open; calling copyFile directly here, without going
-// through StageOut/openStageOutSource first, simulates exactly that: the
-// source path already shares its inode with another entry by the time
-// copyFile ever sees it.
+// check refuses a source with an extra hardlink with no upstream guard
+// (openStageOutSource) involved: copyFile is the stage-in path, where there is
+// no os.Root above it. O_NOFOLLOW refuses a symlink swapped in after an
+// upstream Lstat, but a hardlink is a regular file that O_NOFOLLOW opens, so
+// only copyFile's check on the opened descriptor refuses it. A background
+// child left running past its task's successful exit (nothing kills the
+// process group on success; see executor.runTask/killAndWait) can link a
+// second name onto a scratch entry's inode between any path-based check and
+// copyFile's open. Calling copyFile directly, without StageOut and
+// openStageOutSource first, reproduces that: the source already shares its
+// inode with another entry when copyFile sees it.
 func TestCopyFile_RefusesSourceWithExtraHardlink(t *testing.T) {
 	dir := t.TempDir()
 	outside := filepath.Join(dir, "secret.txt")
@@ -184,7 +180,7 @@ func TestCopyFile_RefusesSourceWithExtraHardlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// src shares outside's inode — a hardlink is a regular file, so
+	// src shares outside's inode. A hardlink is a regular file, so
 	// O_NOFOLLOW alone would open it without complaint.
 	src := filepath.Join(dir, "render.exr")
 	if err := os.Link(outside, src); err != nil {

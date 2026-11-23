@@ -10,10 +10,10 @@ import (
 // ComputeLocation is a named, globally-registered compute location. Workers
 // declare their location at registration; jobs/steps target a location via the
 // native OpenJD attr.worker.computelocation host requirement. The registry is a
-// curated catalog used for surfacing and management — it does not gate
+// curated catalog used for surfacing and management; it does not gate
 // scheduling (the matcher keys on the raw string).
 //
-// Names are unique and matched by the scheduler EXACTLY (case-sensitive). A
+// Names are unique and matched by the scheduler exactly (case-sensitive). A
 // worker's reported compute_location must match a step's declared location
 // string exactly; use consistent casing when naming locations.
 type ComputeLocation struct {

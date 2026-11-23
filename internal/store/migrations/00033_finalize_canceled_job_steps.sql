@@ -2,12 +2,11 @@
 
 -- +goose Up
 
--- Finalizes the open steps of jobs that are already terminal. In v0.3.0 and
--- earlier a job cancel wrote its tasks and its job row but never its steps, so
--- every job canceled under those releases kept open steps, and a later
--- RetryJob revived its tasks to pending under a step nothing would release.
--- The rule is CancelJobExecution's (sqlCancelJobFinalizeSteps in
--- internal/store/sqlite/finalize.go): a pending step, or one with no tasks,
+-- Finalizes the open steps of jobs that are already terminal: a job canceled
+-- by a cancel that wrote its tasks and its job row but not its steps keeps
+-- open steps, and a later RetryJob would revive its tasks to pending under a
+-- step nothing releases. The rule is CancelJobExecution's
+-- (sqlCancelJobFinalizeSteps in internal/store/sqlstore/finalize.go): a pending step, or one with no tasks,
 -- is canceled; any other gets FinalizeStep's outcome. Steps of live jobs are
 -- left to the scheduler's start-up reconcile, and a step with a task still in
 -- flight is never touched. Pure data repair; a healthy database is unchanged.

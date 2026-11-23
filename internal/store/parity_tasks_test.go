@@ -285,7 +285,7 @@ func TestParity_LatestAttemptProgress(t *testing.T) {
 			storetest.Lease(t, st, leaseReq(d))
 
 			// E: a snapshot on an attempt whose task is requeued to ready and
-			// not yet leased again; the closed attempt's snapshot is stale.
+			// not leased again; the closed attempt's snapshot is stale.
 			eFirst := storetest.Running(t, st, leaseReq(e))
 			recordProgress(t, st, eFirst, 55, "stale", t0)
 			if _, _, ok, err := st.RecordTaskFailure(ctx, eFirst.ID, e.ID, nil, "", "boom", now); err != nil || !ok {

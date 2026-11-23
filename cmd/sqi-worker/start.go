@@ -59,9 +59,9 @@ The worker discovers and connects to a running sqi-server (via explicit NATS
 URL or mDNS auto-discovery), registers itself with its capability tags and
 compute location, and begins requesting task leases over NATS.
 
-The worker runs until it receives SIGINT or SIGTERM — or, when started by the
-Windows Service Control Manager, a service stop — at which point it performs a
-graceful shutdown: it stops accepting new task assignments and waits for
+The worker runs until it receives SIGINT or SIGTERM (or, when started by the
+Windows Service Control Manager, a service stop), then shuts down gracefully:
+it stops accepting new task assignments and waits for
 in-flight tasks to complete (up to the configured shutdown grace period), then
 force-terminates any remaining tasks and closes the NATS connection.
 

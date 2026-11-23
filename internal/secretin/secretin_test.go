@@ -9,15 +9,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// TestReadLine_PipedInputUnchanged proves the scripted/harness
-// provisioning path — stdin that is not an interactive console (a
-// strings.Reader here stands in for a redirected file or a piped process,
-// neither of which is an *os.File wrapping a real console) — reads exactly
-// as set-credential always has: the line up to '\n', trailing CR/LF
-// stripped, no attempt to suppress echo (there is no console to suppress it
-// on). This must keep working byte-for-byte on both platforms: Windows takes
-// this path whenever GetConsoleMode fails (secretin_windows.go), POSIX
-// takes it unconditionally (secretin_other.go).
+// TestReadLine_PipedInputUnchanged pins the scripted/harness provisioning
+// path, stdin that is not an interactive console (a strings.Reader here
+// stands in for a redirected file or a piped process, neither of which is an
+// *os.File wrapping a real console): it reads the line up to '\n' with
+// trailing CR/LF stripped and no attempt to suppress echo. Both platforms take
+// this path: Windows whenever GetConsoleMode fails (secretin_windows.go),
+// POSIX unconditionally (secretin_other.go).
 func TestReadLine_PipedInputUnchanged(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

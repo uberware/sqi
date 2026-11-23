@@ -348,10 +348,9 @@ describe('UserForm (edit)', () => {
       return call as [string, RequestInit]
     })
     const body = JSON.parse(String(patch[1].body ?? '{}')) as Record<string, unknown>
-    // The control is disabled, so the form has no role change to report. (A
-    // role equal to the stored one would actually be accepted by the server,
-    // which only rejects an actual change — omitting it is about reporting
-    // only what the form edited, not about dodging a 409.)
+    // The control is disabled, so the form has no role change to report. The
+    // server would accept a role equal to the stored one, since it rejects
+    // only a change; omitting it keeps the request to what the form edited.
     expect(body).not.toHaveProperty('role')
     expect(body).toHaveProperty('display_name')
   })

@@ -91,12 +91,11 @@ func preflight(t *testing.T, target, origin string) *http.Response {
 // ── CORS / wildcard-drop under auth ────────────────────────────────────────
 
 func TestRouter_AuthOn_DefaultOrigins_WildcardDroppedNotCredentialed(t *testing.T) {
-	// The crux of the wildcard problem: cfg.AuthEnabled=true with no
-	// CORSOrigins configured (the real-world default — http.cors_origins is
-	// empty unless an operator sets it) must never combine AllowCredentials
-	// with "*". We drop
-	// the wildcard rather than the reverse, so a foreign origin must receive
-	// NO Access-Control-Allow-Origin at all — not "*", and not echoed back.
+	// cfg.AuthEnabled=true with no CORSOrigins configured (the default:
+	// http.cors_origins is empty unless an operator sets it) must never
+	// combine AllowCredentials with "*". The wildcard is dropped rather than
+	// the credentials, so a foreign origin must receive no
+	// Access-Control-Allow-Origin at all: not "*", and not echoed back.
 	deps := Deps{Store: fake.New(), Auth: auth.Anonymous(), CookieName: "sqi_session"}
 	r := NewRouter(
 		Config{DisableRateLimit: true, AuthEnabled: true},
@@ -144,7 +143,7 @@ func TestRouter_AuthOn_ExplicitOrigin_AllowedWithCredentials(t *testing.T) {
 	}
 }
 
-// TestRouter_AuthOff_CORSAndWSUnchanged is the auth-off regression test: with
+// TestRouter_AuthOff_CORSAndWSUnchanged pins the auth-off configuration: with
 // AuthEnabled false (the default), CORS must be the wildcard, uncredentialed
 // configuration, and the /ws upgrade must accept any Origin
 // (InsecureSkipVerify, unaffected by wsOriginConfig).
@@ -228,10 +227,9 @@ func corsLogRecord(t *testing.T, cfg Config) slog.Record {
 	return found
 }
 
-// The default configuration — auth on, http.cors_origins unset — is a correct,
-// expected setup: the embedded UI is same-origin and works fine. Logging it at
-// ERROR told a first-time operator that something had failed when nothing had.
-// It must be informational, and must not read as a misconfiguration report.
+// The default configuration (auth on, http.cors_origins unset) is a correct
+// setup: the embedded UI is same-origin and works. It must be logged at info,
+// and must not read as a misconfiguration report.
 func TestRouter_AuthOn_DefaultOrigins_LogsInfoNotError(t *testing.T) {
 	rec := corsLogRecord(t, Config{AuthEnabled: true})
 
@@ -246,7 +244,7 @@ func TestRouter_AuthOn_DefaultOrigins_LogsInfoNotError(t *testing.T) {
 	}
 }
 
-// Explicitly configuring "*" alongside auth IS a misconfiguration: the operator
+// Explicitly configuring "*" alongside auth is a misconfiguration: the operator
 // asked for something browsers reject and that would let any origin ride the
 // session cookie. That one keeps a warning.
 func TestRouter_AuthOn_ExplicitWildcard_LogsWarn(t *testing.T) {
@@ -263,7 +261,7 @@ func TestRouter_AuthOn_ExplicitWildcard_LogsWarn(t *testing.T) {
 	}
 }
 
-// Auth off is the default wildcard configuration and is not noteworthy at all.
+// Auth off is the default wildcard configuration and logs nothing.
 func TestRouter_AuthOff_NoCORSLog(t *testing.T) {
 	if rec := corsLogRecord(t, Config{}); rec.Message != "" {
 		t.Errorf("unexpected cors: record with auth disabled: %q", rec.Message)

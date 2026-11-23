@@ -6,7 +6,7 @@ description: chaos - stall the server's database for 3m at 3m15s under steady lo
 # store is stalled the worker consumer applies almost nothing, so heartbeats
 # published early in the stall expire from the stream before the server reads
 # them. When the store answers again the consumer reads on from where the
-# stream now starts, and the first markers it reads come after heartbeats that
+# stream then starts, and the first markers it reads come after heartbeats that
 # never reached the store. The consumer sees the stream sequence skip past
 # them and holds the heartbeat sweep at the marker it read before the stall
 # until it has read a whole heartbeat_timeout of the stream past the skip, so

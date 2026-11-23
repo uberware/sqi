@@ -48,8 +48,7 @@ export default defineConfig({
         '**/*.d.ts',
         '**/._*',
       ],
-      // Measured 86.8% stmts / 91.5% lines on 2026-06-13; gates set ~5 points
-      // below for headroom.
+      // Kept about 5 points below the reported coverage, as headroom.
       thresholds: {
         lines: 85,
         functions: 82,

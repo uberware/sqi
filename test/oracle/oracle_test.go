@@ -6,12 +6,11 @@
 // OpenJD reference implementation.
 //
 // Build-tagged so it never runs in `make test`: it needs a Python interpreter
-// with a pinned third-party package, which is a development convenience and
-// must not become a condition for building or testing sqi. Run it with
-// `make test-expr-oracle`.
+// with a pinned third-party package, which must not become a condition for
+// building or testing sqi. Run it with `make test-expr-oracle`.
 //
-// See doc.go for what this proves, what it does not, and why a divergence is a
-// question rather than a verdict.
+// See doc.go for what this shows and why a divergence is a question rather
+// than a verdict.
 package oracle
 
 import (
@@ -108,16 +107,13 @@ func TestExprOracle_MatchesReferenceImplementation(t *testing.T) {
 
 		if agree(got, ref) {
 			if isBaselined {
-				// A baselined divergence that stopped diverging. Left as a
-				// failure rather than tolerated: the baseline is a list of
-				// open questions, and one answering itself is the event
-				// worth surfacing.
+				// A baselined divergence that no longer diverges fails, so
+				// its entry is removed from the baseline.
 				t.Errorf("corpus.txt:%d: %s\n  no longer diverges — remove it from baseline.txt\n  baselined reason: %s",
 					c.line, c.id, reason)
 			}
-			// Counts are compared ONLY here, on cases whose values already agree.
-			// Stacking a count divergence onto a value divergence would report one
-			// root cause twice and make both harder to read.
+			// Counts are compared only on cases whose values agree, so one
+			// cause is not reported as both a value and a count divergence.
 			compared++
 			if got.ops != ref.ops {
 				opsDiverged++
@@ -171,10 +167,9 @@ func TestExprOracle_MatchesReferenceImplementation(t *testing.T) {
 
 // agree reports whether the two sides produced the same outcome.
 //
-// Two failures agree without comparing messages: both implementations are
-// required to REFUSE the same expressions, but nothing requires them to phrase
-// the refusal alike, and asserting on wording would turn every upstream
-// message tweak into a failure here.
+// Two failures agree without comparing messages: both implementations must
+// refuse the same expressions, but nothing requires them to word the refusal
+// alike.
 func agree(got, ref caseResult) bool {
 	if got.ok != ref.ok {
 		return false
@@ -192,9 +187,9 @@ func (r caseResult) String() string {
 	return fmt.Sprintf("%s : %s", r.value, r.typ)
 }
 
-// evalGo evaluates one case with sqi's evaluator, mapping both failure modes —
-// an unparseable target type and a failed evaluation — onto the same error
-// outcome the Python driver reports, so one comparison rule covers both.
+// evalGo evaluates one case with sqi's evaluator. An unparseable target type
+// and a failed evaluation both map to the error outcome, as the Python driver
+// reports them.
 func evalGo(c exprCase) caseResult {
 	target, err := expr.ParseType(c.target)
 	if err != nil {
@@ -207,17 +202,17 @@ func evalGo(c exprCase) caseResult {
 	return caseResult{ok: true, value: v.String(), typ: v.Type.String(), ops: ops}
 }
 
-// assertPinnedVersion fails when the reference implementation that actually
-// answered is not the one the Makefile pins.
+// assertPinnedVersion fails when the reference implementation that answered
+// is not the one the Makefile pins.
 //
-// An existing .venv-oracle is not evidence of the pinned one: without this
-// check, raising OPENJD_MODEL_VERSION against a stale venv would grade sqi
-// against the old reference with nothing failing. The Makefile reinstalls on a
-// mismatch; this check keeps the guarantee for a hand-run `go test` too.
+// An existing .venv-oracle may hold another version: without this check,
+// raising OPENJD_MODEL_VERSION against a stale venv would grade sqi against
+// the old reference with nothing failing. The Makefile reinstalls on a
+// mismatch; this check covers a hand-run `go test` too.
 //
-// The expectation is supplied by the Makefile rather than duplicated here, so
-// there is one pin, not two. Unset means "no expectation" — a bare
-// `go test -tags oracle`, or a run against SQI_EXPR_ORACLE_PYTHON, still works.
+// The Makefile supplies the expectation, so the version is pinned in one
+// place. Unset means no expectation, so a bare `go test -tags oracle`, or a
+// run against SQI_EXPR_ORACLE_PYTHON, still works.
 func assertPinnedVersion(t *testing.T, version string) {
 	t.Helper()
 	want := os.Getenv("SQI_EXPR_ORACLE_EXPECT_VERSION")
@@ -225,18 +220,16 @@ func assertPinnedVersion(t *testing.T, version string) {
 		return
 	}
 	t.Fatalf("reference implementation is openjd-model %s, but the pin is %s: "+
-		"the venv predates the pin bump. Recreate it with "+
+		"the venv does not match the pin. Recreate it with "+
 		"`rm -rf .venv-oracle && make expr-oracle-venv`, or clear "+
 		"SQI_EXPR_ORACLE_EXPECT_VERSION to grade against whatever is installed.",
 		version, want)
 }
 
-// mustTarget parses c's target type for EvalForBalanceCheck, which needs a
-// expr.Type rather than the raw string evalGo works from. Called only on cases
-// where evalGo already succeeded, which means its own identical ParseType call
-// already succeeded too -- so a failure here would be a bug in this test file
-// itself, not a corpus-driven condition, hence Fatalf rather than a silently
-// skipped balance check.
+// mustTarget parses a case's target type for EvalForBalanceCheck, which needs
+// an expr.Type rather than the raw string evalGo works from. It is called only
+// on cases where evalGo, which makes the same ParseType call, succeeded, so a
+// failure is a bug in this file and is fatal.
 func mustTarget(t *testing.T, target string) expr.Type {
 	t.Helper()
 	ty, err := expr.ParseType(target)
@@ -314,8 +307,8 @@ func loadCorpus(t *testing.T, path string) []exprCase {
 		}
 		c := exprCase{id: caseID(target, src), target: target, src: src, line: lineNo}
 		if prev, dup := seen[c.id]; dup {
-			// A duplicate would be silently overwritten in the results map,
-			// quietly shrinking the corpus.
+			// A duplicate would overwrite its twin in the results map and
+			// shrink the corpus.
 			t.Fatalf("corpus.txt:%d: duplicate of line %d: %q", lineNo, prev, c.id)
 		}
 		seen[c.id] = lineNo
@@ -325,9 +318,8 @@ func loadCorpus(t *testing.T, path string) []exprCase {
 }
 
 // caseID is the stable identity of a case, used as the results-map key and as
-// the baseline entry. Line numbers are deliberately not used: they shift
-// whenever a case is inserted, which would silently re-point every baseline
-// entry at the wrong case.
+// the baseline entry. Line numbers are not used: they shift whenever a case is
+// inserted, which would point baseline entries at the wrong case.
 func caseID(target, src string) string { return target + " :: " + src }
 
 // loadBaseline reads the accepted-divergence file, mapping each case id to the
@@ -346,9 +338,7 @@ func loadBaseline(t *testing.T, path string) map[string]string {
 		case trimmed == "":
 			reason.Reset()
 		case strings.HasPrefix(trimmed, "#"):
-			// Comment lines immediately above an entry are its reason, so the
-			// justification travels with the entry instead of sitting in a
-			// separate document that drifts.
+			// Comment lines immediately above an entry are its reason.
 			if reason.Len() > 0 {
 				reason.WriteByte(' ')
 			}
@@ -367,15 +357,13 @@ func loadBaseline(t *testing.T, path string) map[string]string {
 // findPython locates an interpreter with the reference implementation
 // importable, skipping the test when there is none.
 //
-// A skip proves nothing — see doc.go. The Makefile target prints the same
-// warning, and CI asserts the test ran by name.
+// A skip checks nothing (see doc.go); CI asserts the test ran by name.
 func findPython(t *testing.T, root string) string {
 	t.Helper()
 
-	// An explicit override is authoritative. Falling back to the venv when it
-	// does not work would run the corpus against a DIFFERENT interpreter than
-	// the one named and report the result as though it were that one — which
-	// is the whole reason someone sets this variable.
+	// An explicit override is authoritative: an unusable one fails rather
+	// than falling back to the venv, which would grade against an
+	// interpreter other than the one named.
 	if override := os.Getenv("SQI_EXPR_ORACLE_PYTHON"); override != "" {
 		if err := canImportOracle(override); err != nil {
 			t.Fatalf("SQI_EXPR_ORACLE_PYTHON=%s is unusable: %v", override, err)

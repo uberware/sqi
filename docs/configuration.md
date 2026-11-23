@@ -3,7 +3,7 @@
 `sqi-server` is configured through four layers applied in order, with later
 layers overriding earlier ones:
 
-1. **Built-in defaults** — sensible values for local development.
+1. **Built-in defaults**, suited to local development.
 2. **Config file** — YAML or JSON. With no `--config`, six paths are tried in
    order and only the first that exists is read:
    `./config/sqi-server.yaml`, `./config/sqi-server.json`,
@@ -38,6 +38,14 @@ A commented example file is at
 It omits the `auth` block and `http.cors_origins`; both are documented below.
 
 Duration values use Go syntax: `30s`, `1m30s`, `500ms`, `2h`, etc.
+
+A setting whose table has a **Since** row first appears in that release; the
+others are available in every release. Compare it with `sqi-server version`
+before using the setting: v0.3.0 does not check for unknown keys and ignores a
+newer one without a warning. The embedded broker's keys moved under
+`nats.embedded` in v0.4.0: v0.3.0 reads `nats.addr`, `nats.data_dir` and
+`nats.max_store_mb`, and v0.4.0 rejects those names with an error naming the
+replacement.
 
 ---
 
@@ -96,6 +104,7 @@ http:
 | **Default** | `true` |
 | **Env var** | `SQI_HTTP_RATE_LIMIT_ENABLED` |
 | **CLI flag** | *(none — set via config file or env var)* |
+| **Since** | v0.4.0 |
 
 Apply the per-IP rate limit to API requests. With it on, a client that sends
 requests faster than the limit allows is answered with `429 Too Many Requests`.
@@ -160,6 +169,7 @@ sqi-server serve --http-cors-origins=https://ui.example.com
 | **Type** | `bool` |
 | **Default** | `false` |
 | **Env var** | `SQI_HTTP_TLS_ENABLED` |
+| **Since** | v0.4.0 |
 
 Terminate TLS in-process on the REST/WebSocket listener. The listener
 upgrades in place, so there is no plaintext port when this is on. A plaintext
@@ -187,6 +197,7 @@ http:
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_HTTP_TLS_CERT_FILE` |
+| **Since** | v0.4.0 |
 
 PEM certificate served on the HTTP listener: leaf first, then any
 intermediates. Generate a pair with `sqi-server tls init`.
@@ -206,6 +217,7 @@ serving plaintext.
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_HTTP_TLS_KEY_FILE` |
+| **Since** | v0.4.0 |
 
 PEM private key matching [`http.tls.cert_file`](#httptlscert_file). Should be
 mode `0600`; `sqi-server tls init` writes it that way.
@@ -252,6 +264,7 @@ or `SQI_NATS_TLS_*` variable fails startup with an error naming its
 | **Default** | `"embedded"` |
 | **Accepted** | `embedded`, `external` |
 | **Env var** | `SQI_NATS_MODE` |
+| **Since** | v0.4.0 |
 
 `embedded` runs the broker inside `sqi-server`. `external` connects to the
 broker listed in [`nats.external.urls`](#natsexternalurls). Changing the mode
@@ -272,6 +285,7 @@ nats:
 | **Type** | `bool` |
 | **Default** | `false` |
 | **Env var** | `SQI_NATS_AUTH_ENABLED` |
+| **Since** | v0.4.0 |
 
 Requires every worker to present a per-worker nkey credential. When `true`,
 the broker sends each connection to `sqi-server` through the NATS auth
@@ -306,6 +320,7 @@ nats:
 | **Default** | `1h` |
 | **Range** | `1m` – `24h` |
 | **Env var** | `SQI_NATS_AUTH_USER_TTL` |
+| **Since** | v0.4.0 |
 
 How long the authorization `sqi-server` issues a worker at connect stays
 valid. At expiry the broker disconnects the worker, which reconnects at once
@@ -336,6 +351,7 @@ nats:
 | **Default** | `1h` |
 | **Range** | `1m` – `24h` |
 | **Env var** | `SQI_NATS_AUTH_JOIN_TOKEN_TTL` |
+| **Since** | v0.4.0 |
 
 How long a newly issued worker join token remains valid. Below a minute an
 operator cannot realistically get the token onto a machine and boot it; the
@@ -362,10 +378,10 @@ nats:
 | **Type** | `bool` |
 | **Default** | `true` |
 | **Env var** | `SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE` |
+| **Since** | v0.4.0 |
 
-Consumes a join token on first successful enrollment. Leaving this `true` is
-strongly recommended; set it `false` only for image-baked fleets that enroll
-many identical machines from one token.
+Consumes a join token on first successful enrollment. Leave this `true`
+unless an image-baked fleet enrolls many identical machines from one token.
 
 ```yaml
 nats:
@@ -382,6 +398,7 @@ nats:
 | **Type** | `bool` |
 | **Default** | `true` |
 | **Env var** | `SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED` |
+| **Since** | v0.4.0 |
 
 Mounts `POST /api/v1/workers/enroll`. Meaningful only when
 `nats.auth.enabled` is `true`. Set `false` at a site that provisions every
@@ -402,6 +419,7 @@ nats:
 | **Type** | `string` |
 | **Default** | `"0.0.0.0:4222"` |
 | **Env var** | `SQI_NATS_EMBEDDED_ADDR` |
+| **Since** | v0.4.0 (renamed from `nats.addr`) |
 
 TCP address the embedded broker binds to. Defaults to all interfaces so that
 workers which discover the server over mDNS can connect to the broker at the
@@ -431,6 +449,7 @@ nats:
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EMBEDDED_ADVERTISE_URL` |
+| **Since** | v0.4.0 |
 
 The broker URL that mDNS discovery tells workers to use, in the `nats_url`
 record. Empty derives `nats://<host>.local:<port>` (`tls://` when
@@ -462,6 +481,7 @@ nats:
 | **Type** | `string` |
 | **Default** | `"data/nats"` |
 | **Env var** | `SQI_NATS_EMBEDDED_DATA_DIR` |
+| **Since** | v0.4.0 (renamed from `nats.data_dir`) |
 
 Directory used by JetStream for file-backed stream persistence. Created at
 startup if it does not exist. Relative paths are resolved from the working
@@ -487,6 +507,7 @@ nats:
 | **Type** | `int` (megabytes) |
 | **Default** | `1024` |
 | **Env var** | `SQI_NATS_EMBEDDED_MAX_STORE_MB` |
+| **Since** | v0.4.0 (renamed from `nats.max_store_mb`) |
 
 Maximum disk space JetStream may use, for sqi's account and for the broker as
 a whole. Messages leave sqi's streams by age (the log stream keeps chunks for
@@ -510,6 +531,7 @@ nats:
 | **Type** | `bool` |
 | **Default** | `false` |
 | **Env var** | `SQI_NATS_EMBEDDED_TLS_ENABLED` |
+| **Since** | v0.4.0 |
 
 Require TLS on every connection to the embedded broker.
 
@@ -543,6 +565,7 @@ nats:
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EMBEDDED_TLS_CERT_FILE` |
+| **Since** | v0.4.0 |
 
 PEM certificate the broker presents to connecting workers. May be the same
 file as [`http.tls.cert_file`](#httptlscert_file) or a different one: the two
@@ -560,6 +583,7 @@ Validated at startup on the same terms as `http.tls.cert_file`.
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EMBEDDED_TLS_KEY_FILE` |
+| **Since** | v0.4.0 |
 
 PEM private key matching [`nats.embedded.tls.cert_file`](#natsembeddedtlscert_file).
 
@@ -572,6 +596,7 @@ PEM private key matching [`nats.embedded.tls.cert_file`](#natsembeddedtlscert_fi
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE` |
+| **Since** | v0.4.0 |
 
 When set, every connecting worker must present a client certificate signed by
 this CA (mutual TLS). Issue per-worker certificates with
@@ -595,6 +620,7 @@ verified without a TLS handshake.
 | **Type** | `[]string` |
 | **Default** | `[]` |
 | **Env var** | `SQI_NATS_EXTERNAL_URLS` (comma-separated) |
+| **Since** | v0.4.0 |
 
 The broker's client URLs. Required in external mode. List every node of a
 cluster: `sqi-server` connects to one and moves to another when it is lost.
@@ -632,6 +658,7 @@ nats:
 | **Type** | `[]string` |
 | **Default** | `[]` (use `urls`) |
 | **Env var** | `SQI_NATS_EXTERNAL_ADVERTISE_URLS` (comma-separated) |
+| **Since** | v0.4.0 |
 
 The broker URLs mDNS discovery tells workers to use, when they must reach the
 cluster at different addresses than `sqi-server` does (a load balancer in
@@ -655,6 +682,7 @@ string.
 | **Type** | `string` |
 | **Default** | `"SQI"` |
 | **Env var** | `SQI_NATS_EXTERNAL_ACCOUNT` |
+| **Since** | v0.4.0 |
 
 The NATS account sqi's streams, consumers, guard bucket and workers live in.
 It must be dedicated to sqi: `sqi-server`'s data connection may publish and
@@ -676,6 +704,7 @@ Only one `sqi-server` can run on an account at a time; see
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EXTERNAL_NKEY_SEED_FILE` |
+| **Since** | v0.4.0 |
 
 The nkey seed `sqi-server`'s data connection authenticates with: the
 `sqi-data.nk` file `sqi-server nats external init` writes. Its public key must
@@ -696,6 +725,7 @@ startup.
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EXTERNAL_CREDS_FILE` |
+| **Since** | v0.4.0 |
 
 A NATS `.creds` file (user JWT plus seed) for the data connection, for a
 cluster that runs in NATS operator (JWT) mode, with broker authentication
@@ -713,6 +743,7 @@ exclusive with [`nats.external.nkey_seed_file`](#natsexternalnkey_seed_file).
 | **Default** | `1` |
 | **Accepted** | `1`, `3`, `5` |
 | **Env var** | `SQI_NATS_EXTERNAL_STREAM_REPLICAS` |
+| **Since** | v0.4.0 |
 
 How many copies the cluster keeps of each of sqi's streams and of the guard
 bucket. With `3`, a three-node cluster loses no message when one node is lost.
@@ -732,6 +763,7 @@ uses `1`.
 | **Type** | `duration` |
 | **Default** | `30s` |
 | **Env var** | `SQI_NATS_EXTERNAL_CONNECT_TIMEOUT` |
+| **Since** | v0.4.0 |
 
 How long startup may take to reach a broker, find JetStream on the account and
 provision the streams. After startup, reconnects are unbounded. Also bounds
@@ -746,6 +778,7 @@ the broker steps of `sqi-server restore`.
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EXTERNAL_TLS_CA_FILE` |
+| **Since** | v0.4.0 |
 
 PEM CA bundle that verifies the cluster's certificate, in place of the system
 roots. Empty, with `tls://` URLs, verifies against the system roots. Workers
@@ -758,6 +791,7 @@ need the same CA in their `nats.tls_ca_file`.
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EXTERNAL_TLS_CERT_FILE`, `SQI_NATS_EXTERNAL_TLS_KEY_FILE` |
+| **Since** | v0.4.0 |
 
 A client certificate and its key, for a cluster that requires mutual TLS. Set
 both or neither. A certificate expiring within 30 days logs a WARN at startup.
@@ -769,6 +803,7 @@ both or neither. A certificate expiring within 30 days logs a WARN at startup.
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EXTERNAL_TLS_SERVER_NAME` |
+| **Since** | v0.4.0 |
 
 The name the cluster's certificate is verified against, when it is not the
 host in the URL being dialed.
@@ -782,6 +817,7 @@ host in the URL being dialed.
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EXTERNAL_CALLOUT_NKEY_SEED_FILE` |
+| **Since** | v0.4.0 |
 
 The nkey seed of `sqi-server`'s auth-callout connection, a user in the `AUTH`
 account (`sqi-auth.nk` from `sqi-server nats external init`). Required in
@@ -794,6 +830,7 @@ external mode when [`nats.auth.enabled`](#natsauthenabled) is `true`.
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EXTERNAL_CALLOUT_ISSUER_SEED_FILE` |
+| **Since** | v0.4.0 |
 
 The account nkey seed (`SA…`) `sqi-server` signs its authorization answers
 with (`issuer.nk`). The cluster's `auth_callout` block names its public key as
@@ -807,6 +844,7 @@ user seed (`SU…`) here is the usual mistake, and the startup error says so.
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EXTERNAL_CALLOUT_SYSTEM_CREDS_FILE` |
+| **Since** | v0.4.0 |
 
 Optional. The nkey seed of a user in the cluster's system account
 (`sqi-sys.nk`). Despite the key's name it is a raw nkey seed, not a `.creds`
@@ -838,6 +876,7 @@ the database, the DSN, backups and the one-server rule are covered in
 | **Type** | `string` |
 | **Default** | `"sqlite"` |
 | **Env var** | `SQI_STORE_DRIVER` |
+| **Since** | v0.4.0 |
 
 Which store to use: `sqlite` (embedded, a single file) or `postgres` (an
 external PostgreSQL 16 or later). Any other value fails validation at
@@ -905,9 +944,9 @@ store:
 > resolve their database path the same way the server does. Highest
 > priority first: an explicit `--db` flag (`--from` for `store copy`); this
 > key (the root `-c/--config` file and
-> `SQI_STORE_SQLITE_PATH`); the legacy `SQI_SQLITE_PATH` environment
-> variable, which still works but prints a deprecation notice to stderr when
-> it is what decided the path; and finally the built-in `"sqi.db"` default.
+> `SQI_STORE_SQLITE_PATH`); the deprecated `SQI_SQLITE_PATH` environment
+> variable, which prints a deprecation notice to stderr when it decides the
+> path; and finally the built-in `"sqi.db"` default.
 > `migrate up` creates the database when it does not already exist. `backup`
 > and `worker` (`sqi-server worker token issue|enroll|revoke|list`; see
 > [`docs/operations.md`](operations.md#worker-broker-credentials)) never
@@ -953,6 +992,7 @@ store:
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_STORE_POSTGRES_DSN` |
+| **Since** | v0.4.0 |
 
 The PostgreSQL connection string. Required when `store.driver` is `postgres`
 (an empty one fails validation); unused otherwise. It may be a URL or a
@@ -997,6 +1037,7 @@ password too) and any `;` or `=` inside a query value (`%40`, `%23`, `%3B`,
 | **Type** | `int` |
 | **Default** | `16` |
 | **Env var** | `SQI_STORE_POSTGRES_MAX_CONNS` |
+| **Since** | v0.4.0 |
 
 The size of the server's write connection pool, from 2 to 1000; a value
 outside that range fails validation. One of these connections is held for the
@@ -1067,6 +1108,7 @@ log:
 | **Default** | `""` (log to stderr) |
 | **Env var** | `SQI_LOG_FILE` |
 | **CLI flag** | — |
+| **Since** | v0.4.0 |
 
 Path of a file to write log output to instead of stderr. The file is rotated by
 size (see `log.max_size_mb` and `log.max_backups`). Relative paths resolve
@@ -1097,6 +1139,7 @@ log:
 | **Default** | `100` |
 | **Env var** | `SQI_LOG_MAX_SIZE_MB` |
 | **CLI flag** | — |
+| **Since** | v0.4.0 |
 
 Size in megabytes at which `log.file` is rotated. Must be `> 0`. Has no effect
 while `log.file` is empty and the server is not running as a Windows service.
@@ -1116,6 +1159,7 @@ log:
 | **Default** | `5` |
 | **Env var** | `SQI_LOG_MAX_BACKUPS` |
 | **CLI flag** | — |
+| **Since** | v0.4.0 |
 
 How many rotated files (`<file>.1` through `<file>.N`) are kept. `0` keeps
 none: the file is discarded and started fresh when it reaches
@@ -1299,6 +1343,7 @@ for what the flag means, where it surfaces (task `unschedulable_reason`, job
 | **Type** | `duration` |
 | **Default** | `2m`, or `scheduler.heartbeat_timeout` when that is longer (only when this key is not set) |
 | **Env var** | `SQI_SCHEDULER_RECONCILE_GRACE` |
+| **Since** | v0.4.0 |
 
 How long a live worker may go without listing, in its heartbeats, an attempt
 the store says it holds before the heartbeat sweep reclaims that attempt: the
@@ -1322,8 +1367,7 @@ the worker published before the heartbeat that left it out, so a backlog of
 reports holds reconciliation back rather than reclaiming a finished task.
 Raise this value if `sqi_scheduler_tasks_reconciled_total` climbs while no
 worker was lost.
-A worker that does not report its attempts (v0.3.0 and earlier) is never
-reconciled. See [Reconciliation](operations.md#reconciliation).
+A worker whose heartbeats do not report its attempts is never reconciled. See [Reconciliation](operations.md#reconciliation).
 
 ```yaml
 scheduler:
@@ -1513,8 +1557,8 @@ expression budget
 ([`openjd.expr_template_positions`](#openjdexpr_template_positions), default
 10,000), which is a resource-exhaustion guard and stays on. That budget counts
 expression positions, so a many-step `EXPR` template is accepted only while
-its total positions stay under the limit. At about 70 positions per step (the
-shape the default was sized against) that is around 143 steps: a 300-step
+its total positions stay under the limit. At about 70 positions per step
+that is around 143 steps: a 300-step
 `EXPR` template with realistic content is rejected either way, while a
 300-step template whose steps carry almost no expressions passes. See
 [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md) for what the
@@ -1595,22 +1639,15 @@ when a template needs to build a large value.
 Operations do not all cost the same time. Specification section 1.3.10 rule 3
 (`third_party/openjd-specifications/wiki/2026-02-Expression-Language.md`)
 prices a string operation at the value's length divided by 256, so byte-heavy
-work is charged very little. Each of these expressions fits inside one
-position's default 10,000-operation budget:
-
-| Expression | Operations charged | CPU | per operation |
-|---|---|---|---|
-| `("x" * 900000).upper()` | 7,034 | ~6 ms | 0.9 µs |
-| `("x" * 900000).title()` | 7,034 | ~58 ms | 8.2 µs |
-| `re_findall("x", "x" * 900000)` | 3,519 | ~51 ms | 14.5 µs |
-| `max([len(re_findall("x", "x" * 900000)) for i in range(2)])` | 7,048 | ~103 ms | 14.6 µs |
-
-The cost per operation varies by about 17x, so no operation budget bounds
-time. A template of 10,000 positions of the last row (about 650 KB, inside the
-4 MiB request limit) costs about 17 minutes of server CPU with every default
-budget respected; at the two maxima the same construction costs about 40
-hours. Treat these as lower bounds on the worst case: a construction with a
-higher cost per operation would cost more.
+work is charged very little. `("x" * 900000).title()` fits inside one
+position's default 10,000-operation budget, and the CPU time behind one
+operation differs by more than an order of magnitude between functions
+(`upper()` against `re_findall()` on the same string, for example), so no
+operation budget bounds time. A template of 10,000 positions that each run a
+regular expression twice over a 900 KB string (about 650 KB of template, inside the
+4 MiB request limit) can cost more than 15 minutes of server CPU with every
+default budget respected, and more than a day at the two maxima. A
+construction with a higher cost per operation costs more.
 
 Raising these limits therefore lengthens the worst request the server can be
 asked to serve, roughly in proportion. The time is bounded by a separate key,
@@ -1624,9 +1661,10 @@ reachable without authentication, size request timeouts and front-end
 concurrency with that in mind.
 
 Raising these four keys without also raising the deadline turns legitimate
-acceptances into 503s. For a multi-layer VFX shot-render job (12 `let:`
+acceptances into 503s. A multi-layer VFX shot-render job (12 `let:`
 bindings per step, comprehensions over frame ranges,
-`RANGE_EXPR`/`LIST[STRING]`/`PATH` parameters), submission takes:
+`RANGE_EXPR`/`LIST[STRING]`/`PATH` parameters) takes about this long to
+submit:
 
 | Limits | Shape | Wall clock | Verdict |
 |---|---|---|---|
@@ -1703,8 +1741,7 @@ accepted job can still exhaust a worker that satisfies every row above.
 > row at submission, so the test is exact: a job flagged with this reason
 > declares `EXPR`.
 >
-> Job rows written by v0.2.0 or earlier record no list. For those the gate
-> falls back to scanning the raw template for the bytes `EXPR` and the bytes
+> For a job row that records no list, the gate falls back to scanning the raw template for the bytes `EXPR` and the bytes
 > `extensions`. A template that declares some other extension and also
 > mentions the string elsewhere (a comment, or an environment variable such
 > as `HOUDINI_EXPR_CACHE`) matches, and the job is withheld from every short
@@ -1878,26 +1915,26 @@ no preset library is configured). On every route the 4xx is a verdict on the
 template and the 503 is not.
 
 It exists because none of the four limits bounds time (caveat 2): a template
-within every default budget can cost about 17 minutes of server CPU without
-this deadline. It is the only bound that does not depend on that estimate.
+within every default budget can cost more than 15 minutes of server CPU
+without this deadline. It is the only bound on evaluation time.
 
 The floor is `1s` because below it a legitimate large template (a body near
 the 4 MiB request cap, on a busy host) could be refused. The ceiling is `60s`
-because a ceiling anywhere near the 17-minute worst case would bound nothing.
+because a ceiling anywhere near the worst case of more than 15 minutes would
+bound nothing.
 
 > The headroom against real work is about 6x. The largest template in
 > caveat 2's VFX example that the defaults accept (100 steps over 1,000
-> frames, 5,013 positions, 1.66M operations) takes 0.83 s against the 5s
-> default; on a host 2–3x slower it takes 1.7–2.5 s. Lowering this key
-> narrows that margin.
+> frames, 5,013 positions, 1.66M operations) takes about 0.83 s against the
+> 5s default, and 1.7–2.5 s on a host 2–3x slower. Lowering this key narrows
+> that margin.
 >
 > At the defaults, realistic `let:`-using templates hit the retained-bytes
 > budget at about 1.1 s, before this deadline. A template that does cheap,
 > byte-heavy work across many positions and discards each result never
 > approaches that budget, so this deadline is the only bound on it. At the
-> legal maximum limits the deadline binds for legitimate templates too, so
-> raising the four limits without raising this key converts legitimate
-> acceptances into 503s (caveat 2).
+> legal maximum limits the deadline binds for legitimate templates too
+> (caveat 2).
 
 It has no worker counterpart: the worker evaluates jobs this server has
 already accepted, not anonymous requests, so caveat 4 does not apply.
@@ -1994,6 +2031,7 @@ the group.
 | **Type** | `bool` |
 | **Default** | `false` |
 | **Env var** | `SQI_HA_ENABLED` |
+| **Since** | v0.4.0 |
 
 Lets this server join an HA group. It requires
 [`store.driver: postgres`](#storedriver) and
@@ -2019,6 +2057,7 @@ nats:
 | **Type** | duration |
 | **Default** | `15s` |
 | **Env var** | `SQI_HA_LEASE_TTL` |
+| **Since** | v0.4.0 |
 
 How long the leader's lease lasts without being renewed, and therefore how long
 a standby waits to take over after a crash. The renew period (`lease_ttl / 3`)
@@ -2044,6 +2083,7 @@ ha:
 | **Type** | `string` |
 | **Default** | `""` (the host name) |
 | **Env var** | `SQI_HA_INSTANCE_NAME` |
+| **Since** | v0.4.0 |
 
 The name this server is known by in logs, `/readyz` and the list of servers.
 When empty it is the host name, or `sqi-server` if the host name cannot be
@@ -2078,6 +2118,7 @@ through the API.
 | **Type** | map of provider name to provider |
 | **Default** | none |
 | **Env var** | none |
+| **Since** | v0.4.0 |
 
 Each provider has three keys:
 
@@ -2125,6 +2166,7 @@ is described in [The script provider](capacity.md#the-script-provider).
 | **Type** | `int` |
 | **Default** | `9` |
 | **Env var** | none |
+| **Since** | v0.4.0 |
 
 UDP port the wake-on-LAN provider sends magic packets to, from the server and
 through a relaying worker. Between `1` and `65535`.
@@ -2136,6 +2178,7 @@ through a relaying worker. Between `1` and `65535`.
 | **Type** | list of `ip:port` strings |
 | **Default** | `[]` |
 | **Env var** | none |
+| **Since** | v0.4.0 |
 
 Extra targets for machines the server's own broadcast does not reach, such as
 a router's directed broadcast address. Each entry is an IPv4 literal and a port
@@ -2411,9 +2454,7 @@ auth:
 is correct on both Active Directory (`objectGUID`) and RFC 4530 servers
 (`entryUUID`), and a default could pick the wrong one on a server exposing
 both. A config with `auth.ldap.enabled: true` and no `unique_id_attr` fails
-validation and the server does not boot. An LDAP account with an empty
-identifier must be recreated; see
-[Upgrading from an earlier sqi](auth.md#upgrading-from-an-earlier-sqi).
+validation and the server does not boot.
 
 See [`docs/auth.md`](auth.md#ldap--active-directory) for the model behind
 these keys: why LDAP attaches at login rather than per request, how
@@ -2582,12 +2623,12 @@ assume another account's identity); see
 for the full worker-side `isolation` config block, the environment allowlist,
 and the per-platform requirements.
 
-### Important: Worker upgrade required
+### Workers without isolation support
 
 `run_as_user` is enforced only by workers that support task isolation. A
-worker built without it (v0.2.0 and earlier) ignores the `isolation` field in
-its task assignments and runs job code as the worker daemon's own OS user,
-reporting success.
+worker without that support would ignore the `isolation` field in its task
+assignments and run job code as the worker daemon's own OS user, reporting
+success.
 
 The server prevents that: it discards registrations, heartbeats and status
 reports from any worker whose wire-protocol version differs from its own, and
@@ -2678,7 +2719,8 @@ for the keys themselves.
 ### Capability auto-detection (`capabilities.detect` / `capabilities.disable`)
 
 Controls the worker's software capability auto-detection. Built-in detectors
-for Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max, After Effects, FFmpeg,
+for Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max, After Effects,
+Unreal Engine, Katana, VRED, KeyShot, Silhouette, Fusion, Modo, FFmpeg,
 SGO Mistika (Boutique/Ultima, VR and Workflows), the standalone renderers
 (Arnold `kick`, V-Ray, `husk`, Redshift, RenderMan, 3Delight and Mantra) and
 `oiiotool` run automatically at startup and advertise a tag (e.g. `maya`, plus `maya_2025`) with value `"true"`, with no

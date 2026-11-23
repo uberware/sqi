@@ -4,15 +4,14 @@
 
 package integration
 
-// End-to-end coverage for the auto-retry / failure-limit feature: a
-// worker-reported "failed" task auto-re-queues (with backoff) until
-// max_attempts genuine failures, then goes terminal-failed; a job auto-parks
-// once its cumulative genuine failures reach failure_limit. Unit coverage for
-// the scheduler fork itself lives in internal/scheduler/failure_test.go
-// (TestHandleTaskFailed_RetriesUntilCeiling, TestHandleTaskFailed_
-// ParksJobAtFailureLimit); these tests drive the same behavior through the
-// real REST + NATS harness (server, scheduler, store, bus all wired up) the
-// way a real worker would.
+// End-to-end coverage for auto-retry and the failure limit: a worker-reported
+// "failed" task re-queues (with backoff) until max_attempts genuine failures,
+// then goes terminal-failed; a job parks once its cumulative genuine failures
+// reach failure_limit. Unit coverage is in internal/scheduler/failure_test.go
+// (TestHandleTaskFailed_RetriesUntilCeiling,
+// TestHandleTaskFailed_ParksJobAtFailureLimit); these tests drive the same
+// behavior through the REST + NATS harness (server, scheduler, store and bus
+// wired up) as a real worker would.
 
 import (
 	"net/http"
@@ -23,13 +22,12 @@ import (
 )
 
 // twoStepJobYAML is an OpenJD job with two independent steps (no
-// dependency between them), each with a single trivial task. Used by the
-// failure-limit park test: with a single worker and full-machine task cost
-// (no declared required_cores — see internal/scheduler/lease.go
-// fullMachineCost), a single lease request only ever leases one of the two
-// ready tasks, so the other stays "ready" (non-terminal) after the leased one
-// trips the failure limit. That keeps the job's step/job completion cascade
-// from finalizing the job out from under the park (see
+// dependency between them), each with one echo task. The failure-limit park
+// test uses it: with one worker and full-machine task cost (no declared
+// required_cores; see internal/scheduler/lease.go fullMachineCost), a lease
+// request leases only one of the two ready tasks, so the other stays "ready"
+// (non-terminal) after the leased one trips the failure limit. That keeps the
+// step/job completion cascade from finishing the job before the park (see
 // internal/scheduler/taskstatus.go checkStepCompletion/checkJobCompletion).
 const twoStepJobYAML = `specificationVersion: "jobtemplate-2023-09"
 name: Park Test Job
@@ -113,9 +111,9 @@ func getJobDetailPark(t *testing.T, ts *testServer, jobID string) jobDetailParkR
 // zero-second retry_delay whose task fails on its first attempt and
 // succeeds on the second, then asserts:
 //
-//  1. The retried assignment targets the SAME task with a NEW attempt ID
-//     (the task, not a fresh row, is re-leased — internal/store
-//     RequeueTaskForRetry).
+//  1. The retried assignment targets the same task with a new attempt ID
+//     (the task row is re-leased; see RequeueTaskForRetry in
+//     internal/store).
 //  2. The job reaches "completed".
 //  3. The task's failed_attempts == 1 (only the genuine first-attempt
 //     failure counts; the successful second attempt does not).
@@ -144,11 +142,10 @@ func TestAutoRetry_RetryThenSucceed(t *testing.T) {
 
 	// With retry_delay_seconds=0 the scheduler re-queues the task with an
 	// immediate RetryAfter and wakes parked lease waiters synchronously
-	// (scheduler/failure.go scheduleRetryWake), so the retried attempt should
-	// become leasable without any extra delay. pullAssignment's request
-	// timeout exceeds the server's long-poll hold, so it safely rides out the
-	// brief window between the "failed" publish and the scheduler processing
-	// it.
+	// (scheduler/failure.go scheduleRetryWake), so the retried attempt is
+	// leasable at once. pullAssignment's request timeout exceeds the server's
+	// long-poll hold, so it covers the gap between the "failed" publish and
+	// the scheduler processing it.
 	assign2 := worker.pullAssignment(15 * time.Second)
 	if assign2.TaskID != assign1.TaskID {
 		t.Fatalf("retry assignment task ID: got %q, want %q (same task, re-leased)", assign2.TaskID, assign1.TaskID)
@@ -197,17 +194,15 @@ func TestAutoRetry_ParksJobAtFailureLimit(t *testing.T) {
 	})
 	t.Logf("submitted park job %s", jobID)
 
-	// The worker's single lease request only ever leases one of the two
-	// ready tasks (full-machine cost, one worker) — fail whichever one the
-	// scheduler picked.
+	// The lease request gets one of the two ready tasks (full-machine cost,
+	// one worker); fail whichever the scheduler picked.
 	assign := worker.pullAssignment(15 * time.Second)
 	worker.publishStatus(assign, "running", nil)
 	failCode := 1
 	worker.publishStatus(assign, "failed", &failCode)
 
-	// Poll across every terminal-ish status so a design regression (e.g. the
-	// completion cascade overwriting the park) fails fast with a clear
-	// "got failed, want paused" message instead of timing out blind.
+	// Poll for every settled status, so a completion cascade that overwrote
+	// the park fails with "got failed, want paused" instead of a timeout.
 	finalStatus := pollJobStatus(t, ts, jobID, []string{"paused", "completed", "failed", "canceled"}, 20*time.Second)
 	if finalStatus != "paused" {
 		t.Fatalf("job final status: got %q, want %q", finalStatus, "paused")

@@ -110,7 +110,7 @@ def windowed_command(command: str) -> str:
     ``sqi-submit.exe`` is a console launcher: even started detached, the ``python.exe`` it
     runs gets a console window of its own, open for as long as the dialog is.
     ``sqi-submitw.exe`` runs ``pythonw.exe``, which has none. Anything else (a ``.cmd``
-    wrapper, an install from before ``sqi-submitw`` existed) is used as it is.
+    wrapper, or an install with no ``sqi-submitw.exe`` beside it) is used as it is.
     """
     folder, name = os.path.split(command)
     if name.lower() != "sqi-submit.exe":
@@ -314,7 +314,7 @@ def submit() -> bool:
                 return False
         data, reasons = read_scene()
     except Exception as exc:
-        # These call Editor APIs run only on Unreal 5.8, which may differ in other versions:
+        # These Editor APIs follow Unreal 5.8's documentation and may differ in other versions:
         # whatever they raise is shown to the artist, not left to reach the Editor's log.
         _show(f"sqi could not read the scene: {exc}", unreal.AppMsgType.OK)
         return False

@@ -27,7 +27,6 @@ WHERE id = ? AND status = ?`
 	// so a redelivered terminal report never rewrites an attempt the server
 	// already closed. An empty session or message leaves the stored value. Its
 	// binds are status, exit_code, ended_at, session_id, message, id.
-	// [sqlUpdateAttempt] is this statement with a RETURNING clause.
 	sqlCloseRunningAttempt = `
 UPDATE task_attempts
 SET    status = ?, exit_code = ?, ended_at = ?,
@@ -225,7 +224,7 @@ func applyCompletionTx(ctx context.Context, tx *dbTx, c store.AttemptCompletion,
 const (
 	// sqlSelectActiveJobTasks reads the tasks a job cancel is about to move out
 	// of assigned/running, with their worker still set: the UPDATE that follows
-	// clears it, and SQLite's RETURNING cannot report the pre-update value (I2).
+	// clears it, and RETURNING cannot report the pre-update value (I2).
 	sqlSelectActiveJobTasks = `SELECT ` + taskCols + ` FROM tasks WHERE job_id = ? AND status IN ('assigned', 'running')`
 
 	// sqlReleaseClosedJobClaims releases the claims of the job's attempts that

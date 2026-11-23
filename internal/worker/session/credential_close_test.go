@@ -15,14 +15,11 @@ import (
 )
 
 // countingCloser wraps closeCredentialFn to count how many times it is
-// invoked, without needing a distinct fake Credential TYPE — Credential is a
-// concrete struct from another package (its Close is a plain method, not an
-// interface), so this seam is the only place a test can observe every call
-// to it. On POSIX, Credential.Close is a no-op, which is exactly why a
+// invoked. Credential is a concrete struct from another package (its Close is
+// a plain method, not an interface), so this seam is the only place a test
+// can observe every call to it. On POSIX, Credential.Close is a no-op, so a
 // dropped call would otherwise be invisible there; on Windows it unloads a
-// mounted profile hive and closes a real token handle, so this seam is what
-// proves the close actually happens exactly once on the one platform where
-// Close does real work.
+// mounted profile hive and closes a token handle.
 type countingCloser struct {
 	mu    sync.Mutex
 	calls int
@@ -48,8 +45,8 @@ func (c *countingCloser) count() int {
 
 // TestCredentialClose_ClosedExactlyOnceOnNormalCleanup is the normal-path
 // guard: a session that resolves a credential and completes successfully
-// must have that credential closed exactly once — by Manager.Cleanup — never
-// zero times (a leak) and never more than once (a double-close).
+// must have that credential closed once, by Manager.Cleanup: never zero times
+// (a leak) and never more than once (a double-close).
 func TestCredentialClose_ClosedExactlyOnceOnNormalCleanup(t *testing.T) {
 	closer := &countingCloser{}
 	closer.install(t)
@@ -99,36 +96,28 @@ func TestCredentialClose_NeverCalledWhenCredentialNeverObtained(t *testing.T) {
 	}
 }
 
-// One of Manager.Create's own error paths (not just the normal Cleanup path)
-// is NOT tested in this file: a credential IS obtained (the account
-// resolves), but a later OnEnter action fails, so Create tears everything
-// down itself — including closing the credential — before returning the
-// error.
+// One of Manager.Create's error paths is not tested in this file: a
+// credential is obtained (the account resolves), but a later OnEnter action
+// fails, so Create tears everything down itself, closing the credential,
+// before returning the error.
 //
-// That path drives the REAL applyCredential (isolation.Apply), not a fake —
-// Manager.Create's onEnter launch does not replace it. Making the engineered
-// OnEnter failure ("sh -c exit 1") actually happen AS THE RESOLVED ACCOUNT,
-// rather than failing earlier with EPERM out of isolation.Apply itself,
-// requires a real setuid+setgroups transition to a different uid — which
-// requires real root. That is true on any POSIX OS, not just a sandboxed one:
-// exec.Cmd.SysProcAttr.Credential always calls setgroups(2), which requires
-// CAP_SETGID even to set a process's own CURRENT supplementary group list
-// unless the caller is already privileged — so such a test cannot pass
-// unprivileged, no matter how its temp directory is rooted. This file's
-// tests (TestCredentialClose_ClosedExactlyOnceOnNormalCleanup and
-// TestCredentialClose_NeverCalledWhenCredentialNeverObtained) avoid that
-// condition by installing a same-uid fake account, resolved but never
-// actually exec'd under a switched identity.
+// That path runs the real applyCredential (isolation.Apply): Manager.Create's
+// onEnter launch does not replace it. For the OnEnter failure ("sh -c exit 1")
+// to happen as the resolved account, rather than earlier with EPERM from
+// isolation.Apply, needs a setuid+setgroups transition to a different uid,
+// and so root, on any POSIX OS: exec.Cmd.SysProcAttr.Credential always calls
+// setgroups(2), which requires CAP_SETGID even to set a process's own current
+// supplementary group list. This file's tests
+// (TestCredentialClose_ClosedExactlyOnceOnNormalCleanup and
+// TestCredentialClose_NeverCalledWhenCredentialNeverObtained) avoid that by
+// installing a same-uid fake account that is resolved but never exec'd under
+// a switched identity.
 //
-// The real-root test lives at
-// TestIsolation_CredentialClosedOnEnterEnvironmentsFailure in
-// test/integration/isolation_test.go (build tag integration, run by
-// `make test-isolation` as real root against a real, genuinely different
-// unprivileged account). It cannot reach this package's private
-// closeCredentialFn counting seam from there, so it instead asserts the
-// externally observable consequence of the SAME teardown branch running:
-// Manager.Create's OnEnter-failure path calls closeCredential(cred) then
-// unconditionally os.RemoveAll(workDir) in that one branch (see
-// internal/worker/session/session.go), so a removed WorkDir after a
-// genuinely failing OnEnter proves that branch — and the credential close it
-// performs exactly once, never in a loop — ran to completion.
+// The root test is TestIsolation_CredentialClosedOnEnterEnvironmentsFailure
+// in test/integration/isolation_test.go (build tag integration, run by
+// `make test-isolation` as root against a different unprivileged account). It
+// cannot reach this package's closeCredentialFn seam, so it asserts what the
+// same teardown branch does visibly: Manager.Create's OnEnter-failure path
+// calls closeCredential(cred) and then os.RemoveAll(workDir) (see
+// session.go), so a removed WorkDir after a failing OnEnter shows that branch
+// ran to completion.

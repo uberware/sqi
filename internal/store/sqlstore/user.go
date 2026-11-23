@@ -38,8 +38,8 @@ FROM users ORDER BY lower(username), username`
 
 	// sqlUpdateUserHead is the write that plain and guarded updates share, so a
 	// future column lands in both or in neither; its placeholders are bound by
-	// updateUserArgs. auth_source and external_id are deliberately absent from
-	// the SET list: an account's credential backend and its provider-assigned
+	// updateUserArgs. auth_source and external_id are absent from the SET
+	// list: an account's credential backend and its provider-assigned
 	// identity are both fixed at creation.
 	sqlUpdateUserHead = `
 UPDATE users SET display_name = ?, role = ?, disabled = ?, updated_at = ?

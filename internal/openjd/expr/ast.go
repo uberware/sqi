@@ -142,7 +142,7 @@ type Binary struct {
 // the source, letting the evaluator blame the specific link in the chain that
 // failed rather than the chain's first operator.
 type Compare struct {
-	// Offset is the byte offset of the FIRST comparison operator in the
+	// Offset is the byte offset of the first comparison operator in the
 	// chain. It is what Pos() returns and is unrelated to which link, if any,
 	// fails during evaluation — see OpOffsets for that.
 	Offset    int
@@ -185,9 +185,9 @@ type Index struct {
 
 // Slice is a slice, "X[Start:Stop:Step]" (spec sections 1.3.8 and 2.1.8).
 //
-// An ABSENT component is nil, which is distinct from an explicit one: section
+// An absent component is nil, which is distinct from an explicit one: section
 // 1.3.8 defaults start to 0 or to the end and stop to the length or to
-// -length-1, depending on the SIGN OF THE STEP, so a zero value could not carry
+// -length-1, depending on the sign of the step, so a zero value could not carry
 // the distinction.
 type Slice struct {
 	// Offset is the byte offset of the "[".
@@ -221,7 +221,7 @@ type ListComp struct {
 // Access is a property access, "X.Attr" (spec section 1.3.3, where a property
 // p resolves to the function __property_p__).
 //
-// It is produced ONLY when the receiver is not a Name — "[1,2].len" or
+// It is produced only when the receiver is not a Name — "[1,2].len" or
 // "(x).y". A dotted name keeps all its segments inside one Name node, and
 // resolution splits it, so "Param.File.stem" produces no Access.
 type Access struct {
@@ -336,14 +336,14 @@ func (s *loopScope) binds(name string) bool {
 	return false
 }
 
-// walkCtx is what a node's POSITION in the tree says about it, as opposed to
+// walkCtx is what a node's position in the tree says about it, as opposed to
 // what the node itself says. Both facts here are invisible from the node alone
 // and are exactly what Expression.Names needs to answer the spec's
 // accessed_symbols question.
 type walkCtx struct {
 	// scope are the comprehension loop variables bound at this node. A
 	// comprehension's element expression and filter are inside its own loop
-	// variable's scope; its ITERABLE is not, because the iterable is evaluated
+	// variable's scope; its iterable is not, because the iterable is evaluated
 	// before the variable exists — which is why "[x for x in x]" references an
 	// external x.
 	scope *loopScope
@@ -380,7 +380,7 @@ type walkFrame struct {
 // the name set or panic. An explicit stack removes the failure mode.
 //
 // The stack is LIFO, so children are pushed in reverse to keep left-to-right
-// order. Nothing depends on that order today (Names sorts its result).
+// order. Nothing depends on that order (Names sorts its result).
 func walk(n Node, fn func(Node, walkCtx)) {
 	walkUntil(n, func(n Node, ctx walkCtx) bool {
 		fn(n, ctx)
@@ -388,13 +388,13 @@ func walk(n Node, fn func(Node, walkCtx)) {
 	})
 }
 
-// walkUntil is walk with EARLY TERMINATION: it stops the moment fn returns
+// walkUntil is walk with early termination: it stops the moment fn returns
 // true, and reports whether that happened. walk is the never-true case of it,
 // expressed that way so the two cannot drift on visit order or on the walkCtx a
 // position carries -- there is one traversal in this package, not two.
 //
-// It exists for a MEMBERSHIP question, which is what the template checker
-// actually asks of an expression ("does this call a host-only function?").
+// It exists for a membership question, which is what the template checker
+// asks of an expression ("does this call a host-only function?").
 // Answering it by collecting Expression.CalledFunctions()'s whole sorted,
 // de-duplicated set walks every node regardless, allocates a map and a slice,
 // and sorts -- once per expression, on the submission path. See CallsAny.
@@ -418,13 +418,13 @@ func walkUntil(n Node, fn func(Node, walkCtx) bool) bool {
 	return false
 }
 
-// pushChildren appends f's child frames to a walk stack in REVERSE source
+// pushChildren appends f's child frames to a walk stack in reverse source
 // order, so that popping them yields the leftmost child first. A nil child — an
 // absent slice component, which section 1.3.8 distinguishes from an explicit
 // zero — is skipped rather than pushed, since the caller's fn must never be
 // handed one.
 //
-// Each node kind names its own children, and the two whose children do NOT all
+// Each node kind names its own children, and the two whose children do not all
 // share the parent's context — ListComp and Call — say why inline. A child is
 // never itself a callee unless its parent is a Call, so the flag is dropped
 // here and re-set only on a Call's callee.
@@ -453,7 +453,7 @@ func pushChildren(stack []walkFrame, f walkFrame) []walkFrame {
 		return pushRev(stack, here, v.X, v.Start, v.Stop, v.Step)
 	case *ListComp:
 		// The loop variable is bound in the element expression and in the
-		// filter, and NOT in the iterable, which section 1.3.7 evaluates before
+		// filter, and not in the iterable, which section 1.3.7 evaluates before
 		// the variable exists. Pushed last-child-first: Cond, Iter, Elem.
 		inner := walkCtx{scope: &loopScope{name: v.Var, parent: f.ctx.scope}}
 		stack = pushRev(stack, inner, v.Cond)

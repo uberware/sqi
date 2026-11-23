@@ -331,7 +331,7 @@ func TestExpression_Names(t *testing.T) {
 		{"a method call on a loop variable is not a symbol", "[x.upper() for x in Param.Words]", []string{"Param.Words"}},
 		{"a loop variable in a filter is not a symbol", "[x for x in Param.A if x.n > 1]", []string{"Param.A"}},
 		{"a call inside a comprehension body loses only its own name", "[len(x) for x in Param.Items]", []string{"Param.Items"}},
-		// The iterable is evaluated BEFORE the loop variable exists, so a name
+		// The iterable is evaluated before the loop variable exists, so a name
 		// there is external even when it spells the loop variable.
 		{"the iterable is outside the binding", "[x for x in x]", []string{"x"}},
 		{"a different loop variable leaves the element external", "[x for y in Param.A]", []string{"Param.A", "x"}},
@@ -383,7 +383,7 @@ func TestCalledFunctions(t *testing.T) {
 		// receiver case above).
 		{"a parenthesized receiver's callee is an Access node", "(Param.A).upper()", []string{"upper"}},
 		// The three cases below pin the loop-variable exclusion, which is only
-		// meaningful for a SINGLE-SEGMENT callee. Removing the scope check in
+		// meaningful for a single-segment callee. Removing the scope check in
 		// CalledFunctions makes the first of them report {"x"} and fail; making
 		// it any broader (dropping the len(Parts) == 1 guard, or letting the
 		// binding outlive its comprehension) fails the second or the third.
@@ -539,12 +539,12 @@ func TestWalk_DescendsIntoCollectionNodes(t *testing.T) {
 // stack does not grow with the tree — rather than by walking a tree big enough
 // to overflow it.
 //
-// That choice is deliberate, and follows the same reasoning
-// TestListOperators_RepeatOverflow states for its own omitted case: the tree
-// that actually distinguishes the two implementations is 10,000,000 operators
-// deep, which costs 458 MB of heap and, under -race, 3.6 GB of resident memory.
-// A test that OOM-kills the suite on a regression is worse than one that fails.
-// Measured by hand instead: a recursive walk dies on 10,000,000 chained Binary
+// That follows the same reasoning TestListOperators_RepeatOverflow states for
+// its own omitted case: the tree that distinguishes the two implementations
+// is 10,000,000 operators deep, which costs hundreds of megabytes of heap and
+// several gigabytes of resident memory under -race, and a test that OOM-kills
+// the suite when the code breaks is worse than one that fails. A recursive
+// walk dies on 10,000,000 chained Binary
 // nodes with "fatal error: stack overflow" (the uncatchable runtime.throw,
 // exactly as maxParseDepth and maxEvalDepth exist to prevent); the iterative
 // one walks them in 0.72 s.
@@ -713,13 +713,13 @@ func TestParse_SubscriptErrors(t *testing.T) {
 //
 // This is not the usual "assert the error message" test. Without
 // maxParseDepth, each of these inputs — at a large enough depth — produces
-// "fatal error: stack overflow", which is a runtime.throw and NOT a panic:
+// "fatal error: stack overflow", which is a runtime.throw and not a panic:
 // recover() cannot catch it, no deferred function runs, and the whole process
-// exits. So a regression here does not fail this test, it takes the test binary
+// exits. So a broken guard does not fail this test, it takes the test binary
 // down with it, which is exactly the failure the guard prevents in sqi-server.
 //
 // The depths are kept just past the limit rather than near the depth that
-// actually overflows: the point is that the guard fires first, and a test that
+// overflows: the point is that the guard fires first, and a test that
 // had to build a 200,000-deep source to prove it would be measuring the stack
 // rather than the bound.
 func TestParse_NestingDepthIsBounded(t *testing.T) {

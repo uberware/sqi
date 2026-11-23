@@ -42,9 +42,8 @@ func TestValidateMetadata_Boundaries(t *testing.T) {
 }
 
 // The caps count runes, not bytes. A CJK description of exactly
-// MaxDescriptionLen characters is ~3x that many bytes and must still be
-// accepted -- otherwise a Japanese-language description is silently
-// third-class.
+// MaxDescriptionLen characters is about 3x that many bytes and must still be
+// accepted.
 func TestValidateMetadata_CountsRunesNotBytes(t *testing.T) {
 	t.Parallel()
 	desc := strings.Repeat("日", MaxDescriptionLen)
@@ -75,9 +74,8 @@ func TestValidateMetadata_ErrorNamesCapAndActual(t *testing.T) {
 	}
 }
 
-// The length cap applies to name, but the slug PATTERN stays on the definition
-// path only. A pattern-invalid name is
-// therefore not ValidateMetadata's business.
+// The length cap applies to name, but the slug pattern is checked on the
+// definition path only, so ValidateMetadata accepts a pattern-invalid name.
 func TestValidateMetadata_IgnoresSlugPattern(t *testing.T) {
 	t.Parallel()
 	if err := ValidateMetadata(store.Product{Name: "Not A Slug!!"}); err != nil {

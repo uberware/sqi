@@ -37,16 +37,16 @@ func validateName(name string) error {
 
 // ValidateOptions bounds one [ValidateTemplate] or [ParseDefinition] call.
 //
-// It exists because a product template is validated from places with very
-// different trust and configuration properties. POST /api/v1/products and
-// PUT /api/v1/products/{name} accept an ARBITRARY client-supplied body,
-// anonymously when auth is off (the default), and need both the operator's
-// configured EXPR limits and a wall-clock backstop. The preset routes
-// (GET /api/v1/presets/{name}, POST /api/v1/presets/{name}/install) validate a
-// sha256-pinned body from an operator-configured index -- not client-chosen
-// content, but still one anonymous, repeatable request per validation, so they
-// take both too. The built-in loader runs from package init, where no
-// configuration exists at all, and can take neither.
+// Product templates are validated by callers with different trust and
+// configuration. POST /api/v1/products and PUT /api/v1/products/{name} accept
+// an arbitrary client-supplied body, anonymously when auth is off (the
+// default), and need both the operator's configured EXPR limits and a
+// wall-clock deadline. The preset routes (GET /api/v1/presets/{name},
+// POST /api/v1/presets/{name}/install) validate a sha256-pinned body from an
+// operator-configured index. That content is not client-chosen, but each
+// validation is still one repeatable request, so they take both too. The
+// built-in loader runs from package init, where no configuration exists, and
+// takes neither.
 //
 // The zero value means limit enforcement off, default EXPR limits, no
 // deadline.
@@ -56,40 +56,33 @@ type ValidateOptions struct {
 	EnforceLimits bool
 
 	// ExprLimits is the operator's configured bound on what this template's
-	// EXPR expression walk may spend.
+	// EXPR expression walk may spend. The zero value means the defaults.
 	//
-	// The zero value means "use the defaults", which is what every caller with
-	// no operator configuration to offer gets. A caller that has operator
-	// configuration and leaves this zero validates product templates on the
-	// defaults even though the operator tightened the four knobs.
-	//
-	// EVERY ROUTE THAT REACHES THIS PACKAGE FROM AN HTTP REQUEST MUST SET IT --
-	// the product create/update route and the preset install route are behind
-	// the same permission (policy.ProductsManage), both end in a catalog
-	// write, and must behave the same. The limits question is not about who
-	// supplies the content: an operator who tightened a knob asked for it to
-	// be enforced wherever validation happens.
+	// Every route that reaches this package from an HTTP request must set it,
+	// or validation runs on the defaults even when the operator tightened the
+	// four limits. The product create/update route and the preset install
+	// route sit behind the same permission (policy.ProductsManage), both end
+	// in a catalog write, and must enforce the same limits whoever supplied
+	// the content.
 	ExprLimits openjd.ExprLimits
 
 	// Deadline, when non-zero, is an absolute wall-clock instant after which
 	// validation stops and [ValidateTemplate] returns an error wrapping
-	// [expr.ErrDeadlineExceeded] -- the wall-clock backstop.
+	// [expr.ErrDeadlineExceeded].
 	//
-	// PER REQUEST, never stored: it is computed from a configured duration at
-	// the top of one HTTP request. See [openjd.ExprLimits]' Deadline field for
-	// what storing one on a long-lived value does.
+	// It is set per request and never stored: it is computed from a
+	// configured duration at the start of one HTTP request. See the Deadline
+	// field of [openjd.ExprLimits] for what a deadline stored on a long-lived
+	// value does.
 	Deadline time.Time
 }
 
 // openjdOptions maps these options onto the [openjd.ValidateOptions] the
 // validator takes.
 //
-// A named method rather than an inline literal for the reason internal/server's
-// ExprLimitsFromConfig is a named function: a struct literal copying one
-// options type into another is the shape where a field can be dropped, renamed
-// or pointed at the wrong member and still compile, start and serve. Left
-// inline it would also be unreachable from a test asserting on the mapping
-// itself, field by field, rather than on one downstream consequence at a time.
+// It is a named method, like internal/server's ExprLimitsFromConfig, so a test
+// can assert on the mapping field by field: a struct literal copying one
+// options type into another can drop or misassign a field and still compile.
 func (o ValidateOptions) openjdOptions() openjd.ValidateOptions {
 	return openjd.ValidateOptions{
 		EnforceLimits: o.EnforceLimits,
@@ -103,12 +96,11 @@ func (o ValidateOptions) openjdOptions() openjd.ValidateOptions {
 // error carrying the OpenJD ValidationErrors when it is not, or an error
 // wrapping [expr.ErrDeadlineExceeded] when opts.Deadline passed mid-validation.
 //
-// Those last two are different claims and callers must keep them apart: the
-// ValidationErrors say the template is wrong, and a client that retries it will
-// get the same answer forever; a deadline says THIS SERVER gave up on a
-// template that might well validate on an idle machine. internal/api answers
-// 400 for the first and 503 for the second. Match the deadline structurally
-// with errors.Is(err, expr.ErrDeadlineExceeded), never by reading the message.
+// Callers must tell the last two apart. ValidationErrors mean the template is
+// wrong and a retry gets the same answer; a deadline means this server stopped
+// on a template that may validate on an idle machine. internal/api answers 400
+// for the first and 503 for the second. Match the deadline with
+// errors.Is(err, expr.ErrDeadlineExceeded), not by reading the message.
 func ValidateTemplate(rawTemplate string, format store.TemplateFormat, opts ValidateOptions) error {
 	pf := openjd.FormatYAML
 	if format == store.TemplateFormatJSON {
@@ -124,8 +116,8 @@ func ValidateTemplate(rawTemplate string, format store.TemplateFormat, opts Vali
 // validateParsed runs the validation tail shared by [ValidateTemplate] and its
 // tests.
 //
-// It is a seam because it is the cheapest way to assert on the tail alone,
-// with a template a test built rather than a string it had to serialize.
+// It is separate so a test can assert on the tail with a template it built,
+// without serializing it first.
 func validateParsed(tmpl *openjd.JobTemplate, o openjd.ValidateOptions) error {
 	errs, ferr := openjd.ValidateWithBudget(tmpl, o)
 	if ferr != nil {
@@ -155,16 +147,16 @@ type definitionFile struct {
 // template) into a store.Product. Source is left empty for the caller to set.
 // The inline template is re-serialized to YAML and validated under opts; a
 // malformed template is an error, and so is a breach of opts.Deadline (wrapping
-// [expr.ErrDeadlineExceeded] -- see [ValidateTemplate] for why the two must be
+// [expr.ErrDeadlineExceeded]; see [ValidateTemplate] for why the two must be
 // told apart).
 //
-// opts is a REQUIRED argument rather than an implicit default because the
-// callers differ in what they can and must supply, and an implicit default
-// would let the preset routes validate on openjd.DefaultExprLimits() while the
-// create/update route honors the operator's configuration:
+// opts is required rather than defaulted because callers differ in what they
+// can supply, and a default would let the preset routes validate on
+// openjd.DefaultExprLimits() while the create/update route honors the
+// operator's configuration:
 //
-//   - [LoadBuiltins], from package init, has no configuration to offer and
-//     passes only EnforceLimits. That one is a genuine exemption.
+//   - loadBuiltins, from package init, has no configuration to offer and
+//     passes only EnforceLimits.
 //   - internal/presetlib, reached from GET /api/v1/presets/{name} and
 //     POST /api/v1/presets/{name}/install, passes the operator's limits and a
 //     per-request deadline.

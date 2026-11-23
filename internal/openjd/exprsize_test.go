@@ -16,9 +16,8 @@ import (
 // guard: a flat left-associative chain, parsed in a loop rather than by
 // recursion.
 //
-// 400,000 bytes rather than the 4 MB of the original report, only so the
-// fixture stays cheap to build; the bound it trips is the same one, and with
-// the bound removed this body is still a ~40 MB parse.
+// 400,000 bytes is enough to trip the bound while keeping the fixture cheap
+// to build.
 func oversizedExprTemplate() string {
 	return `
 specificationVersion: jobtemplate-2023-09
@@ -37,7 +36,7 @@ steps:
 
 // TestValidateWithBudget_OversizedExpressionIsAValidationError is the
 // production-path half of expr's maxSourceBytes: the bound must fire where a
-// submission actually reaches it, not only in a direct expr.Parse call.
+// submission reaches it, not only in a direct expr.Parse call.
 //
 // THE CLASSIFICATION IS THE ASSERTION. "This expression is too long" is a
 // deterministic property of the body — the same template gets the same verdict
@@ -45,9 +44,8 @@ steps:
 // 422. It must NOT arrive as the wall-clock error, which
 // ValidateWithBudget returns separately and internal/api maps to 503: that
 // channel means "the server gave up", and a template that is invariably
-// invalid must never be reported through it. The deadline here is set
-// deliberately generously so that a breach would be a real finding rather than
-// an artifact of a slow machine.
+// invalid must never be reported through it. The deadline here is generous
+// so that a breach reflects the code rather than a slow machine.
 func TestValidateWithBudget_OversizedExpressionIsAValidationError(t *testing.T) {
 	tmpl, err := Parse([]byte(oversizedExprTemplate()), FormatYAML)
 	if err != nil {
@@ -79,13 +77,12 @@ func TestValidateWithBudget_OversizedExpressionIsAValidationError(t *testing.T) 
 		t.Fatalf("no size ValidationError among %d errors: %v", len(errs), errs)
 	}
 
-	// The message assertion above is what proves the bound FIRED — nothing
-	// else in either package words an error that way, and with the bound
-	// disabled this same template comes back rejected anyway, by maxEvalDepth,
-	// after a full 400 KB parse ("this expression is nested too deeply to
-	// evaluate", measured). This second assertion is the coarse backstop for a
-	// walk that runs away: it should take milliseconds, so the margin is three
-	// orders of magnitude and no realistic machine load reaches it.
+	// The message assertion above proves the bound fired: nothing else in
+	// either package words an error that way, and without the bound this
+	// template is still rejected, by maxEvalDepth, after a full parse ("this
+	// expression is nested too deeply to evaluate"). This second assertion is
+	// a coarse backstop for a walk that runs away: the rejection should take
+	// milliseconds, so the margin is three orders of magnitude.
 	if elapsed > 5*time.Second {
 		t.Errorf("rejecting an oversized expression took %v; the bound is probably "+
 			"no longer applying before the source is tokenized", elapsed)

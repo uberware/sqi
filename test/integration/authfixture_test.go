@@ -7,12 +7,10 @@ package integration
 // authfixture_test.go — the pieces ldap_test.go and oidc_test.go share.
 //
 // Both suites boot a container holding a real identity backend and an
-// sqi-server wired to it, and the code that does so lives here. Note that the
-// "the shared harness is untagged, this file is not" argument that justifies
-// keeping these variants
-// out of harness_test.go does NOT apply between the two suites: both are
-// //go:build integration in this same package, so a helper tagged the same way
-// is theirs to share.
+// sqi-server wired to it, and the code that does so lives here. It stays out
+// of harness_test.go because that harness is untagged and this code is not;
+// both suites are //go:build integration in this same package, so they share
+// a helper tagged the same way.
 
 import (
 	"context"
@@ -34,8 +32,8 @@ import (
 var (
 	dockerProbeOnce sync.Once
 	// dockerProbeSkip is empty when docker is usable and otherwise says why it
-	// is not. Probed once per test binary: `docker info` costs a few hundred
-	// milliseconds and the answer cannot change mid-run.
+	// is not. Probed once per test binary, since the answer cannot change
+	// mid-run.
 	dockerProbeSkip string
 )
 
@@ -63,8 +61,8 @@ func requireDocker(t *testing.T, what, envHint string) {
 
 // removeContainer force-removes a container, best effort. Containers are
 // started with --rm so an aborted run (SIGINT, panic) does not leak one; this
-// is the ordinary path, and it is deliberately not allowed to fail a test —
-// there is nothing useful a test can do about a teardown that did not take.
+// is the ordinary path. It never fails a test: a test can do nothing useful
+// about a teardown that did not take.
 func removeContainer(name string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

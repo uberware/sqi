@@ -1210,8 +1210,8 @@ func (n *recordingJobNotifier) NotifyJob(e ws.JobEvent) { n.events = append(n.ev
 // TestJobHandler_DeleteJob_NotifiesWithOwner pins the owner on a delete
 // event: the delete handler deletes the row before emitting the removal event,
 // so the event must carry Owner explicitly (from the job it already loaded).
-// The hub's ownerCache fallback would call GetJob on a row that no longer
-// exists and drop the envelope for every owner-scoped subscriber, including
+// The hub's ownerCache fallback would call GetJob on a row that has been
+// deleted and drop the envelope for every owner-scoped subscriber, including
 // the job's own owner.
 func TestJobHandler_DeleteJob_NotifiesWithOwner(t *testing.T) {
 	t.Parallel()

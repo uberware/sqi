@@ -10,8 +10,8 @@ import styles from './Login.module.css'
 /**
  * The message shown after a failed SSO round trip.
  *
- * Generic on purpose, and it must stay that way. The callback deliberately
- * redirects here with a bare `sso_error=1` and no reason: telling the browser
+ * It must stay generic. The callback redirects here with a bare
+ * `sso_error=1` and no reason: telling the browser
  * whether the failure was "no such user" or "no role mapping" would turn a
  * public, unauthenticated endpoint into an account-enumeration oracle. The
  * detail goes to the server log, where an operator can read it and a stranger
@@ -125,7 +125,7 @@ export default function Login() {
             </div>
             {ssoOptions.map((p) => (
               // An anchor, not a button with an onClick: the browser must
-              // actually navigate to the provider. A fetch would follow the
+              // navigate to the provider. A fetch would follow the
               // redirect in the background and land the HTML of a login page
               // in a response body.
               <a key={p.id} className={styles.ssoBtn} href={p.login_url}>

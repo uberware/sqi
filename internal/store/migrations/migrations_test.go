@@ -84,11 +84,10 @@ func TestMigration00024_ExternalIDRoundTrip(t *testing.T) {
 }
 
 // TestMigrations_00025_QueueRunAsUserDownUp pins that 00025_queue_run_as_user
-// applies cleanly, that its Down migration actually drops both new columns
-// (the tricky direction: SQLite's ALTER TABLE DROP COLUMN is refused when a
-// CHECK constraint references the column, which is exactly why this
-// migration deliberately carries none), and that re-applying Up restores
-// them.
+// applies cleanly, that its Down migration drops both new columns (SQLite's
+// ALTER TABLE DROP COLUMN is refused when a CHECK constraint references the
+// column, which is why this migration carries none), and that re-applying Up
+// restores them.
 func TestMigrations_00025_QueueRunAsUserDownUp(t *testing.T) {
 	dbPath := t.TempDir() + "/test.db"
 	db, err := sql.Open("sqlite", dbPath)
@@ -133,17 +132,15 @@ func TestMigrations_00025_QueueRunAsUserDownUp(t *testing.T) {
 }
 
 // TestMigrations_00026_WorkerExprLimitsDownUp pins 00026_worker_expr_limits in
-// its own right. Before this test the column was covered only INCIDENTALLY, by
-// TestMigrations_00025_QueueRunAsUserDownUp's DownTo(24) passing through it --
-// which asserts nothing about 00026 and would keep passing if 00026's Down
-// silently dropped the wrong thing.
+// its own right: TestMigrations_00025_QueueRunAsUserDownUp's DownTo(24) passes
+// through it but asserts nothing about 00026.
 //
 // Down is the direction worth pinning: SQLite refuses ALTER TABLE DROP COLUMN
-// on a column referenced by a CHECK constraint or an index, so a later revision
-// that adds either to expr_limits makes the Down un-runnable. The re-Up leg
-// then proves the column comes back with its NOT NULL DEFAULT '{}' intact,
-// which is what lets scanWorker read a pre-existing row as the zero struct
-// rather than failing on a NULL.
+// on a column referenced by a CHECK constraint or an index, so adding either to
+// expr_limits makes the Down un-runnable. The re-Up leg then proves the column
+// comes back with its NOT NULL DEFAULT '{}' intact, which is what lets
+// scanWorker read an existing row as the zero struct rather than failing on a
+// NULL.
 func TestMigrations_00026_WorkerExprLimitsDownUp(t *testing.T) {
 	dbPath := t.TempDir() + "/test.db"
 	db, err := sql.Open("sqlite", dbPath)
@@ -202,16 +199,16 @@ func TestMigrations_00026_WorkerExprLimitsDownUp(t *testing.T) {
 // directions, and pins the DEFAULT, which is the part of this migration that
 // carries the meaning.
 //
-// A row that predates the column must read back as ” -- "not recorded" -- and
-// NOT as '[]', which means "recorded, and declares nothing". The scheduler
-// falls back to its raw-template byte scan for the first and skips the scan
-// entirely for the second, so a default of '[]' would silently ungate every
-// EXPR job submitted before the upgrade. That is the whole reason the column is
-// TEXT with an empty-string default rather than a JSON list.
+// A row that predates the column must read back as ” ("not recorded") and not
+// as '[]', which means "recorded, and declares nothing". The scheduler falls
+// back to its raw-template byte scan for the first and skips the scan for the
+// second, so a default of '[]' would ungate every EXPR job submitted before
+// the migration ran. That is why the column is TEXT with an empty-string
+// default rather than a JSON list.
 //
 // Down is pinned for the same reason 00026's is: SQLite refuses ALTER TABLE
-// DROP COLUMN on a column referenced by a CHECK constraint or an index, so a
-// later revision that adds either makes the Down un-runnable.
+// DROP COLUMN on a column referenced by a CHECK constraint or an index, so
+// adding either makes the Down un-runnable.
 func TestMigrations_00027_JobDeclaredExtensionsDownUp(t *testing.T) {
 	dbPath := t.TempDir() + "/test.db"
 	db, err := sql.Open("sqlite", dbPath)
@@ -302,10 +299,10 @@ func TestMigrations_00032_TasksStepStatusIndexDownUp(t *testing.T) {
 // TestMigrations_00034_WorkerInstanceIDDownUp pins 00034 in both directions, and
 // pins the DEFAULT. A worker row that predates the column must read back empty
 // ("unknown"), never NULL (scanWorker reads it into a plain string) and never a
-// value: RegisterWorker reclaims a worker's tasks only when the STORED instance
+// value: RegisterWorker reclaims a worker's tasks only when the stored instance
 // ID is non-empty and differs from the incoming one, so the empty default is
-// what keeps the first registration after an upgrade from reclaiming the tasks
-// of a worker that never restarted.
+// what keeps the first registration after the migration from reclaiming the
+// tasks of a worker that never restarted.
 //
 // Down is pinned for the same reason 00026's is: SQLite refuses ALTER TABLE
 // DROP COLUMN on a column referenced by a CHECK constraint or an index.
@@ -439,7 +436,7 @@ func hasIndex(t *testing.T, db *sql.DB, table, index string) bool {
 
 // seedJobRowWithoutExtensions inserts the farm, queue and job a pre-migration
 // deployment would already hold, using raw SQL so no Go-side default can creep
-// in and mask what the schema actually stores.
+// in and mask what the schema stores.
 func seedJobRowWithoutExtensions(t *testing.T, db *sql.DB) {
 	t.Helper()
 	const ts = "2026-01-01T00:00:00Z"

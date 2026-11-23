@@ -18,16 +18,16 @@ type Expression struct {
 //
 // The grammar implemented here is EXPR's, not Python's. Anything outside it —
 // bitwise operators, dict and set literals, assignment, and the rest of
-// section 1.1's exclusion list — is rejected. That direction is deliberate: a
-// reader borrowed from a full Python parser would silently ACCEPT syntax this
+// section 1.1's exclusion list — is rejected. That is the safe direction: a
+// reader borrowed from a full Python parser would silently accept syntax this
 // package cannot evaluate, whereas anything unimplemented here fails to parse.
-// The FIRST thing it does is bound the source's length (limits.go's
+// The first thing it does is bound the source's length (limits.go's
 // maxSourceBytes). That check has to come before tokenize, not after it and
 // not inside the parser: every other bound this package and its callers have
 // — the section 1.3.9/1.3.10 budgets, the template-wide budget, the operator
-// limits, the wall-clock deadline — is metered during EVALUATION, so until
-// this check runs nothing at all is watching. See maxSourceBytes for what one
-// unbounded parse measured.
+// limits, the wall-clock deadline — is metered during evaluation, so until
+// this check runs nothing at all is watching. See maxSourceBytes for what an
+// unbounded parse costs.
 func Parse(src string) (*Expression, error) {
 	if err := checkSourceBytes(len(src)); err != nil {
 		return nil, wrapAt(src, 0, err)
@@ -56,7 +56,7 @@ func (e *Expression) Source() string { return e.src }
 // Root returns the tree's root node.
 func (e *Expression) Root() Node { return e.root }
 
-// Names returns every EXTERNAL dotted value reference the expression makes —
+// Names returns every external dotted value reference the expression makes —
 // for example {"Param.Frame", "Task.Param.Chunk"} — sorted and deduplicated.
 //
 // This is the spec's accessed_symbols set, which the Recommended Library
@@ -66,36 +66,35 @@ func (e *Expression) Root() Node { return e.root }
 // expression needs before evaluating it, for example to scope-check a
 // template's expressions without binding values.
 //
-// Two kinds of identifier are therefore NOT names, and are excluded rather than
+// Two kinds of identifier are therefore not names, and are excluded rather than
 // reported:
 //
-//   - A FUNCTION OR METHOD NAME. The spec keeps those in a separate
+//   - A function or method name. The spec keeps those in a separate
 //     called_functions set, so the trailing segment of a call's callee is
 //     dropped: "len(Param.Items)" collects {"Param.Items"} and
 //     "Param.Name.upper()" collects {"Param.Name"}, not {"len"} and
 //     {"Param.Name.upper"}. The spec's called_functions set is CalledFunctions
 //     below; it collects exactly the segment this one drops.
-//   - A COMPREHENSION LOOP VARIABLE, and anything rooted at one. Section
+//   - A comprehension loop variable, and anything rooted at one. Section
 //     1.3.7 binds it inside the comprehension, so it is not external:
 //     "[x for x in Param.Items]" collects {"Param.Items"} and
 //     "[x.stem for x in Param.Files]" collects {"Param.Files"}. The binding
-//     covers the element expression and the filter but NOT the iterable, which
+//     covers the element expression and the filter but not the iterable, which
 //     is evaluated before the variable exists — "[x for x in x]" does collect
 //     the iterable's own external {"x"}.
 //
 // Both exclusions matter to the only consumer this set has: a scope check of
 // the form "every name here must be in scope" would otherwise reject every
-// comprehension and every plain function call in the language. Every case
-// above was verified against the reference implementation, which answers
-// identically.
+// comprehension and every plain function call in the language. The reference
+// implementation answers every case above identically.
 //
-// It does NOT answer identically once the binding ends. A loop variable is
+// It does not answer identically once the binding ends. A loop variable is
 // bound to its own comprehension and no further, so a later mention is external
 // again: "[x for x in Param.A] + [x]" collects {"Param.A", "x"}, where the
 // reference collects {"Param.A"} alone, as if the name were removed from the
 // whole expression. The spec is on this side — section 1.3.7 binds the variable
 // inside the comprehension, and the Recommended Library Interface asks for the
-// EXTERNAL symbols — so the divergence is deliberate. It is also the safer
+// external symbols — so sqi keeps the divergence. It is also the safer
 // direction: a scope check sees the free "x" here and would miss it under the
 // reference's answer.
 //
@@ -103,7 +102,7 @@ func (e *Expression) Root() Node { return e.root }
 // whose receiver is not a bare name — "(Param.File).stem", where the
 // parentheses make the parser build an Access rather than one Name — collects
 // the receiver "Param.File" alone, where the reference collects
-// "Param.File.stem". A scope check sees a name that IS in scope either way.
+// "Param.File.stem". A scope check sees a name that is in scope either way.
 func (e *Expression) Names() []string {
 	seen := map[string]bool{}
 	var out []string
@@ -133,16 +132,16 @@ func (e *Expression) Names() []string {
 
 // CalledFunctions returns the external set of function and method names this
 // expression calls, sorted and de-duplicated. It is the counterpart to Names:
-// where Names collects the SYMBOL a callee's leading segments name, this
+// where Names collects the symbol a callee's leading segments name, this
 // collects the trailing segment that names the function or method itself
 // (section 1.3.3). "len(x)" yields "len"; "Param.Name.upper()" yields "upper";
 // "s.apply_path_mapping()" yields "apply_path_mapping".
 //
-// It is EXTERNAL in the same sense Names is, and for the same reason: a
+// It is external in the same sense Names is, and for the same reason: a
 // comprehension loop variable called directly is bound by section 1.3.7, not by
 // the function registry, so "[x() for x in Param.L]" yields the empty set
-// rather than {"x"}. The exclusion is deliberately NARROW — it applies only to
-// a SINGLE-SEGMENT callee, where the called name IS the bound identifier. In
+// rather than {"x"}. The exclusion is narrow — it applies only to
+// a single-segment callee, where the called name is the bound identifier. In
 // "[x.foo() for x in Param.L]" the called name is the method "foo", which the
 // loop variable x does not shadow, so "foo" is reported; and the binding ends
 // with its comprehension, so "[x for x in Param.L] + [x()]" reports {"x"}
@@ -188,8 +187,8 @@ func (e *Expression) CalledFunctions() []string {
 }
 
 // CallsAny reports whether the expression calls any of the named functions or
-// methods — the MEMBERSHIP question CalledFunctions is otherwise used to answer,
-// without building the answer.
+// methods — the membership question CalledFunctions is otherwise used to
+// answer, without building the answer.
 //
 // It applies exactly CalledFunctions's collection rule, node for node: the same
 // callee positions, the same trailing-segment rule for a dotted callee, the same
@@ -246,19 +245,19 @@ type parser struct {
 // enter accounts for one level of recursive descent and returns the matching
 // leave, so a production guards itself with a single deferred line.
 //
-// Every function that takes part in a recursion CYCLE must call it, not just
+// Every function that takes part in a recursion cycle must call it, not just
 // the outermost production. The cycles, enumerated from parser.go's call graph:
 //
 //   - Every path that re-enters the grammar from inside a construct — a
 //     parenthesis, a list element, a subscript, a slice component, a call
 //     argument — goes through parseExpr and so through parseConditional, which
 //     is guarded.
-//   - parseConditional recurses into ITSELF for the right-associative else
+//   - parseConditional recurses into itself for the right-associative else
 //     branch, without leaving the production.
 //   - parseNot and parseUnary each recurse into themselves (a stack of "not"
 //     keywords, or of unary minus signs) without passing through parseExpr at
 //     all. Both are guarded on the branch that recurses.
-//   - parsePower and parseUnary recurse into EACH OTHER: parsePower reads its
+//   - parsePower and parseUnary recurse into each other: parsePower reads its
 //     exponent with parseUnary (which is what makes "**" right-associative),
 //     and parseUnary falls through to parsePower whenever the next token is not
 //     a sign. Neither of the two guards above closes that loop — parseUnary's
@@ -268,7 +267,7 @@ type parser struct {
 //     not help either: its defer has already run by the time parsePower reads
 //     the "**".
 //   - parsePostfix is guarded as well, which closes no cycle of its own — its
-//     trailer group is a LOOP, and parseSubscript and parseCall both re-enter
+//     trailer group is a loop, and parseSubscript and parseCall both re-enter
 //     through parseExpr, already counted — but it is the natural place for the
 //     guard if that loop is ever turned into recursion, and one more counted
 //     frame per level costs nothing.
@@ -585,7 +584,7 @@ func (p *parser) parsePower() (Node, error) {
 // parsePostfix implements <PostfixExpr> ::= <PrimaryExpr> (<Subscript> |
 // <Call> | "." <Identifier>)*.
 //
-// It is a LOOP because the grammar's trailer group repeats: "x[0][1]" is a
+// It is a loop because the grammar's trailer group repeats: "x[0][1]" is a
 // subscript of a subscript. <Call> and the property trailer attach to the same
 // loop.
 func (p *parser) parsePostfix() (Node, error) {
@@ -651,7 +650,7 @@ func (p *parser) parseSubscript(x Node) (Node, error) {
 }
 
 // parseSliceRest reads a slice's remaining components, the first ":" already
-// consumed. An omitted component stays nil, which is NOT the same as a zero:
+// consumed. An omitted component stays nil, which is not the same as a zero:
 // its default depends on the sign of the step (spec section 1.3.8).
 func (p *parser) parseSliceRest(offset int, x, start Node) (Node, error) {
 	s := &Slice{Offset: offset, X: x, Start: start}
@@ -797,8 +796,8 @@ func (p *parser) parseListLiteral() (Node, error) {
 // the "for" keyword have been seen, through the closing bracket. Implements
 // <ListComp> (spec section 1.1.2) with the semantics of section 1.3.7.
 //
-// The ITERABLE and the FILTER are parsed with parseOr, not parseExpr,
-// deliberately. Section 1.1.2 writes both as <ConditionalExpr>, which is
+// The iterable and the filter are parsed with parseOr, not parseExpr.
+// Section 1.1.2 writes both as <ConditionalExpr>, which is
 // ambiguous against the optional ("if" <ConditionalExpr>) filter:
 // parseConditional consumes an "if" and then demands an "else", so "[x for x in
 // y if c]" would fail at the "]" looking for one. Python resolves the same
@@ -896,7 +895,7 @@ func (p *parser) parseIdentPrimary() (Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		// No keyword check here, deliberately: section 1.1.3 makes keywords
+		// No keyword check here: section 1.1.3 makes keywords
 		// contextual, so Param.if and Param.True are ordinary attributes.
 		name.Parts = append(name.Parts, attr.text)
 	}

@@ -3,25 +3,25 @@
 A **storage location** is a name for "the place your data lives." Jobs reference
 it by name; each worker fills in its own real path at run time.
 
-## Why this exists (start here if you have one machine)
+## Why this exists
 
-On a single computer, a path like `D:\projects\shot01` just works — every program
-sees the same drive. A render farm is different: it may have Linux machines,
-Windows machines, and maybe cloud workers, and **the same data sits at a different
-path on each** (`/mnt/nas/shot01`, `Z:\shot01`, `s3://studio/shot01`).
+On a single computer, a path like `D:\projects\shot01` means the same thing to
+every program. A render farm may have Linux machines, Windows machines and cloud
+workers, and the same data sits at a different path on each (`/mnt/nas/shot01`,
+`Z:\shot01`, `s3://studio/shot01`).
 
 Instead of hard-coding one of those paths into your job (which then only runs in
-one place), you give that storage a **name** and list where it lives on each kind
+one place), you give that storage a name and list where it lives on each kind
 of worker. Your job refers to the name; sqi substitutes the right real path for
 whichever worker picks up the task.
 
-### Simplest possible example
+### Minimal example
 
 Create one location:
 
 - **Name:** `projects`
 - **Roots:** `default → /mnt/studio/projects`
-- **Type:** `filesystem` (derived from the root — response-only, not supplied on create)
+- **Type:** `filesystem` (derived from the root; returned in responses, not supplied on create)
 
 In your job, reference a file inside it:
 
@@ -30,12 +30,11 @@ loc://projects/shot01/scene.hip
 ```
 
 On every worker, sqi rewrites that to `/mnt/studio/projects/shot01/scene.hip`.
-Add a second root later (e.g. `windows_workers → P:\projects`) and the same job
-starts working on Windows workers too — no job changes.
+Add a second root (e.g. `windows_workers → P:\projects`) and the same job
+runs on Windows workers too, with no job changes.
 
-> You do **not** need any storage locations to use sqi. If your jobs use plain
-> absolute paths that are valid on every worker, skip this feature entirely.
-> Storage locations are opt-in, and there is no default location.
+> Storage locations are optional. If your jobs use absolute paths that are
+> valid on every worker, you do not need any. There is no default location.
 
 ## Reference
 
@@ -50,7 +49,7 @@ values, task parameters, and embedded-file data.
 
 ### Roots and resolution
 
-`roots` maps a **compute-location name** (or the special key `default`) to a
+`roots` maps a compute-location name (or the special key `default`) to a
 concrete root path. At dispatch sqi resolves a reference for the worker that will
 run the task by:
 
@@ -58,40 +57,38 @@ run the task by:
 2. falling back to the `default` root; else
 3. failing the task.
 
-`default` is therefore the universal fallback.
+`default` is the fallback for every compute location.
 
 ### There is no per-farm or per-queue storage binding
 
-You do not bind storage locations to farms or queues. Storage locations are
-global, and the axis a job's storage actually varies along is **where the task
-runs** — its compute location — not which farm or queue it belongs to. The
-`roots` map already captures that: one location lists a root per compute
-location, and sqi picks the right one at dispatch. A farm/queue "storage
-binding" would only duplicate that mapping on the wrong axis, so sqi omits it.
+Storage locations are global and are not bound to farms or queues. A job's
+storage paths vary with where the task runs (its compute location), and the
+`roots` map covers that: one location lists a root per compute location, and
+sqi picks the right one at dispatch.
 
-If two groups of workers genuinely need different data, model them as two
-compute locations with different roots (or two named locations), not as a queue
+If two groups of workers need different data, model them as two compute
+locations with different roots (or two named locations), not as a queue
 setting.
 
 ### Translation mechanisms
 
-sqi applies two complementary mechanisms automatically:
+sqi applies two mechanisms:
 
-- **Resolved substitution** — `loc://` references are rewritten to concrete paths
+- **Resolved substitution:** `loc://` references are rewritten to concrete paths
   before the command is built, so applications need no path-mapping support.
-- **OpenJD `path_mapping.json`** — a standard OpenJD path-mapping file is written
-  into the session working directory for applications that consume it natively.
+- **OpenJD `path_mapping.json`:** a standard OpenJD path-mapping file is written
+  into the session working directory for applications that read it.
 
 ### Submit-time coverage validation
 
 When you submit a job, sqi checks every `loc://` reference:
 
 - The named location must exist.
-- A **step** that declares compute-location affinity `X` is accepted if the
-  location has a root for `X` **or** a `default` root.
-- A **step with no affinity** requires a `default` root (it can run anywhere).
-- A reference at **job scope** — in a job environment or a job-parameter
-  default — requires a `default` root, because job environments may run on
+- A step that declares compute-location affinity `X` is accepted if the
+  location has a root for `X` or a `default` root.
+- A step with no affinity requires a `default` root (it can run anywhere).
+- A reference at job scope (in a job environment or a job-parameter
+  default) requires a `default` root, because job environments may run on
   workers in any compute location.
 
 Submissions that fail these checks are rejected with a message naming the
@@ -114,22 +111,20 @@ location is `X`; a no-affinity step can run on any worker, which is why it needs
 
 ### Storage types
 
-`type` is a **read-only, derived** field computed from the location's roots:
+`type` is a read-only field derived from the location's roots:
 `filesystem` when all roots are filesystem paths (or there are no roots), `s3`
 when all roots are `s3://` URIs, and `mixed` when roots span both schemes.
-Supplying `type` on create or update returns HTTP 400 — set the roots and sqi
-infers the type automatically.
+Supplying `type` on create or update returns HTTP 400.
 
-A `mixed` location is the normal shape for a farm that uses on-prem NAS for
-some workers and `s3://` roots for cloud workers.
+A farm that uses on-prem NAS for some workers and `s3://` roots for cloud
+workers has `mixed` locations.
 
 ### What sqi does not do
 
-sqi does **not** replicate or synchronize data between locations. Ensure data is
+sqi does not replicate or synchronize data between locations. Ensure data is
 present in the target storage before jobs run.
 
-S3 I/O — copying files to and from object storage — is handled by the
-operator's sync tool (e.g. `aws s3 cp`, `rclone`, `mc`) through the
+Copying files to and from object storage is handled by the operator's sync tool (e.g. `aws s3 cp`, `rclone`, `mc`) through the
 [`stage_locally`](openjd-extensions/path-translation.md) delivery. sqi invokes
 the operator-configured `staging.sync_command`; it stores no S3 credentials or
 endpoint addresses.

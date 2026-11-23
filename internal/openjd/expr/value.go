@@ -13,11 +13,11 @@ import (
 //
 // Type is always meaningful. The payload fields are valid only for their
 // corresponding type code, and reading the wrong one panics. An unresolved value
-// — a placeholder whose type is known but whose value is not — carries NO
+// — a placeholder whose type is known but whose value is not — carries no
 // payload at all, which is the case the type-tag-separate-from-payload shape
 // exists to make possible.
 //
-// Because Type contains a slice, Value is NOT comparable: use Equal, not "==".
+// Because Type contains a slice, Value is not comparable: use Equal, not "==".
 type Value struct {
 	// Type is the value's type. Always set.
 	Type Type
@@ -31,7 +31,7 @@ type Value struct {
 	s string
 	l []Value
 
-	// fs is an OPTIONAL rendered form for a float, and the only value in this
+	// fs is an optional rendered form for a float, and the only value in this
 	// struct that is presentation rather than data.
 	//
 	// RFC 0006 requires round(3.5, 2) to produce a value that renders "3.50",
@@ -48,21 +48,21 @@ type Value struct {
 	// not 3.5).
 	//
 	// Three invariants make it mostly safe. Float() never sets it. Equal
-	// ignores it, so no comparison anywhere changes. And nothing ARITHMETIC
+	// ignores it, so no comparison anywhere changes. And nothing arithmetic
 	// propagates it: an operation on a float returns through
-	// Float()/floatValue() and therefore drops it, which IS section 1.3.4's
+	// Float()/floatValue() and therefore drops it, which is section 1.3.4's
 	// rule rather than a shortcut around it.
 	//
-	// The third invariant is NARROWER than it sounds: repr_py, repr_json and
+	// The third invariant is narrower than it sounds: repr_py, repr_json and
 	// repr_pwsh (funcsreprdata.go, funcsreprshell.go) each fall through a
 	// default case that renders int and float via Value.String() -- which reads
 	// fs first -- so all three leak the carry, e.g. repr_py(round(3.5, 2)) is
 	// "3.50", not the canonical "3.5" a fresh float64 would repr as. This is
-	// deliberate. Whether repr_* should show a value's carried text or
+	// intended. Whether repr_* should show a value's carried text or
 	// canonicalise it is underspecified: section 1.3.4 (the specification, not
 	// RFC 0006, which defines repr_* but says nothing about the carry)
 	// addresses substitution and arithmetic, not a function that emits another
-	// language's literal syntax. The carry is KEPT, in repr_* as everywhere
+	// language's literal syntax. The carry is kept, in repr_* as everywhere
 	// else. Section 1.3.4 exists so a submitted "3.500" survives to the command
 	// line, and canonicalising inside a rendering function would discard the
 	// very text it preserves; no output is malformed either way, since 3.500 is
@@ -76,7 +76,7 @@ type Value struct {
 	// It rides on the value so that every path operation after construction —
 	// properties, "/", "with_*" — reads the flavor from its receiver rather
 	// than from the evaluator. That is what confines Shape.FnCtx to the rows
-	// that genuinely have to choose one — path()'s, and nothing else.
+	// that have to choose one — path()'s, and nothing else.
 	//
 	// The zero value is PathPOSIX, which is also the evaluator's default, so a
 	// path Value built by a caller without setting it behaves as POSIX.
@@ -105,18 +105,19 @@ func floatRendered(f float64, s string) Value { return Value{Type: TFloat, f: f,
 // It exists for section 1.3.4: a FLOAT job parameter submitted as "3.500"
 // must keep that exact text rather than the canonical "3.5". sqi stores
 // submitted parameters as map[string]string, so the original text is
-// available verbatim wherever a concrete value is bound from it —
-// internal/openjd/exprcheck.go's concreteJobParamValue is that call site
-// today. See the fs field's comment for the invariants this carry keeps —
+// available verbatim wherever a concrete value is bound from it.
+// ValueFromText (paramtypes.go) is the call site, and internal/openjd's
+// concreteJobParamValue and the worker bind through it. See the fs field's
+// comment for the invariants this carry keeps —
 // including the repr_* exception to "no operation propagates it".
 //
-// CONTRACT the caller must uphold, unchecked at runtime: text must be a
+// Contract the caller must uphold, unchecked at runtime: text must be a
 // textual representation of f, e.g. the exact source strconv.ParseFloat(text,
-// 64) produced f from -- as concreteJobParamValue's call does, parsing raw
-// into f and then passing that SAME raw back as text. Nothing here verifies
+// 64) produced f from -- as ValueFromText's call does, parsing the trimmed
+// text into f and then passing that same text back. Nothing here verifies
 // this. A mismatched pair (say, FloatText(3.5, "9000")) builds a Value whose
-// NUMBER is 3.5 -- what Equal, arithmetic, and every other operation compare
-// and compute with -- but whose TEXT is "9000" -- what String() (and
+// number is 3.5 -- what Equal, arithmetic, and every other operation compare
+// and compute with -- but whose text is "9000" -- what String() (and
 // therefore repr_py/repr_json/repr_pwsh) reports. The two would silently
 // disagree for as long as the value's fs form is read instead of computed.
 func FloatText(f float64, text string) Value { return floatRendered(f, text) }
@@ -136,7 +137,7 @@ func pathOf(v Value) parsedPath { return parsePath(pathText(v), v.pf) }
 // List returns a list value with the given element type and elements.
 //
 // The element type is passed explicitly rather than inferred from vals because
-// an EMPTY list still has one: "[]" is list[nulltype] (section 1.2.6), and
+// an empty list still has one: "[]" is list[nulltype] (section 1.2.6), and
 // section 1.2.6's inference rules can also give a list an element type no
 // element has exactly — [1, 2.0] is list[float] after its elements are coerced.
 func List(elem Type, vals []Value) Value {
@@ -191,7 +192,7 @@ func (v Value) mustBe(c Code) {
 // Equal reports whether two values have the same type and the same payload.
 //
 // Value is not comparable with "==" because Type contains a slice, so this is the
-// only way to compare two values for identity. It is NOT the language's "=="
+// only way to compare two values for identity. It is not the language's "=="
 // operator: section 1.2.5 makes that cross-type, so 5 == 5.0 is true there while
 // Int(5).Equal(Float(5)) is false here.
 func (v Value) Equal(o Value) bool {
@@ -224,7 +225,7 @@ func (v Value) Equal(o Value) bool {
 	}
 	// A payload-carrying Code with no case above is a defect, not a value this
 	// function has ever seen: falling through to "equal types means equal
-	// values" would silently make two DIFFERENT payloads compare equal, in a
+	// values" would silently make two different payloads compare equal, in a
 	// function roughly 30 tests across this package depend on. Panic rather
 	// than guess; this can only fire when a new Code gains a payload field
 	// without a matching case here.
@@ -260,7 +261,7 @@ func (v Value) String() string {
 	case CodeList:
 		parts := make([]string, len(v.l))
 		for i, elem := range v.l {
-			// Section 1.2.1's string-like codes render QUOTED inside a list, so
+			// Section 1.2.1's string-like codes render quoted inside a list, so
 			// ["a", "b"] rather than [a, b]. A bare rendering would be
 			// ambiguous -- ['a, b'] and ['a', 'b'] would both print as [a, b]
 			// -- and would diverge from the reference on 31 corpus cases across
@@ -269,7 +270,7 @@ func (v Value) String() string {
 			// properties.
 			switch elem.Type.Code {
 			case CodeString, CodePath, CodeRangeExpr:
-				// jsonQuoteElement, NOT strconv.Quote: Go's quoting spells a
+				// jsonQuoteElement, not strconv.Quote: Go's quoting spells a
 				// control character "\x01" and has "\a"/"\v" forms JSON does
 				// not define, so it would produce output no JSON parser accepts
 				// -- which openjd-specifications#176 forbids outright -- and
@@ -285,7 +286,7 @@ func (v Value) String() string {
 	}
 	// A placeholder has no value to render, so name what is known instead:
 	// "<unresolved[int]>". Every other Code that reaches here (any, noreturn,
-	// the type variables) names a type no VALUE ever carries, so the same
+	// the type variables) names a type no value ever carries, so the same
 	// rendering is the right answer for those too.
 	return "<" + v.Type.String() + ">"
 }

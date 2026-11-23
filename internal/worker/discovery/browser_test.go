@@ -461,8 +461,8 @@ func TestResolve_ExplicitURLClaimsNothingAboutTLS(t *testing.T) {
 // mDNS advertises "<hostname>.local", which needs an mDNS NSS module to
 // resolve. macOS has one; a headless Linux worker generally does not. Without
 // this fallback such a worker discovers its server and then cannot dial it,
-// reporting "no servers available" — while the address it needed was in the
-// advertisement all along.
+// reporting "no servers available", although the advertisement carries the
+// address it needs.
 
 func TestResolveHost_KeepsAResolvableHostname(t *testing.T) {
 	orig := lookupHost

@@ -216,7 +216,7 @@ local function read_json_string(text, pos)
 end
 
 -- The sqi_submit_command string from the text of ~/.sqi/submitter.json, or nil when the key
--- is absent, is not at the top level, or is not a string. Scans the JSON just far enough to
+-- is absent, is not at the top level, or is not a string. Scans the JSON only far enough to
 -- tell a key from a string value; it is not a validator.
 function sqi_parse_settings(text)
     if type(text) ~= "string" then

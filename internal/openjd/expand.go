@@ -116,7 +116,7 @@ func expandParameterSpace(ps *StepParameterSpace, jobBudget *jobTaskBudget) ([]T
 // applies, even when EnforceLimits is false, because it guards against
 // unbounded materialization and an unbounded number of per-task DB inserts
 // reachable from POST /api/v1/jobs (e.g. two 1024-value parameters joined by a
-// Cartesian product already yield ~1M tasks). It is deliberately generous; tune
+// Cartesian product already yield ~1M tasks). It is generous; tune
 // it if legitimate jobs need larger steps.
 const maxTasksPerStep = 1_000_000
 
@@ -261,7 +261,7 @@ func expandTaskParam(tp TaskParamDefinition) ([]string, error) {
 // its task parameter.
 func expandChunkInt(tp TaskParamDefinition) ([]string, error) {
 	if tp.Chunks != nil && tp.Chunks.DefaultTaskCountExpr != nil {
-		// Only ResolveParameterSpaceParams turns this into a count; chunking
+		// Only parameter-space resolution turns this into a count; chunking
 		// without it would silently ignore the requested chunk size.
 		return nil, fmt.Errorf("chunks.defaultTaskCount %q was not resolved before expansion",
 			*tp.Chunks.DefaultTaskCountExpr)

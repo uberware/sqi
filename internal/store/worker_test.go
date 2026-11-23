@@ -82,30 +82,30 @@ func TestRegisterWorker_ReclaimsAfterARestart(t *testing.T) {
 			pool := seedPool(t, st, 1)
 			a := leaseClaiming(t, st, task.ID, true, pool)
 
-			// A legacy registration (no instance ID), then the first one with an
+			// A registration with no instance ID, then the first one with an
 			// ID: nothing proves a restart, so nothing is reclaimed.
 			if r := registerInstance(t, st, g.Farm.ID, ""); len(r) != 0 {
-				t.Fatalf("legacy register reclaimed %d", len(r))
+				t.Fatalf("ID-less register reclaimed %d", len(r))
 			}
 			if r := registerInstance(t, st, g.Farm.ID, "i1"); len(r) != 0 {
 				t.Fatalf("first instance register reclaimed %d, want 0 (stored ID was empty)", len(r))
 			}
-			// The upgrade from a build that sent no ID left the in-flight task,
-			// its attempt and its claim exactly as they were.
+			// Going from no ID to an ID left the in-flight task, its attempt
+			// and its claim exactly as they were.
 			if got := mustTask(t, st, task.ID); got.Status != store.TaskStatusRunning || got.AssignedWorkerID != fixtureWorkerID {
-				t.Fatalf("after the legacy-to-ID register: task = %q on %q, want running on %q", got.Status, got.AssignedWorkerID, fixtureWorkerID)
+				t.Fatalf("after the no-ID-to-ID register: task = %q on %q, want running on %q", got.Status, got.AssignedWorkerID, fixtureWorkerID)
 			}
 			if at := mustAttempt(t, st, a.ID); at.Status != store.AttemptStatusRunning {
-				t.Fatalf("after the legacy-to-ID register: attempt = %q, want running", at.Status)
+				t.Fatalf("after the no-ID-to-ID register: attempt = %q, want running", at.Status)
 			}
 			if n := activeClaims(t, st, pool.ID); n != 1 {
-				t.Fatalf("after the legacy-to-ID register: active claims = %d, want 1", n)
+				t.Fatalf("after the no-ID-to-ID register: active claims = %d, want 1", n)
 			}
 			// A reconnect re-register of the same process.
 			if r := registerInstance(t, st, g.Farm.ID, "i1"); len(r) != 0 {
 				t.Fatalf("same-instance register reclaimed %d", len(r))
 			}
-			// An old worker build without IDs: never reclaims, keeps the stored ID.
+			// A registration without an ID: never reclaims, keeps the stored ID.
 			if r := registerInstance(t, st, g.Farm.ID, ""); len(r) != 0 {
 				t.Fatalf("empty-instance register reclaimed %d", len(r))
 			}
@@ -231,7 +231,7 @@ func TestSetWorkerDisabled(t *testing.T) {
 // TestListWorkers_FiltersByEffectiveStatus pins that the status filter, which
 // the worker gauge and the API use, reads the effective status: a disabled
 // worker is listed only as disabled, whatever its liveness, so the three
-// buckets partition the workers exactly as when disabled was a status. It also
+// buckets partition the workers. It also
 // pins the two other readers that must not count a disabled worker as an
 // ordinary one: the idle count and offline retention.
 func TestListWorkers_FiltersByEffectiveStatus(t *testing.T) {

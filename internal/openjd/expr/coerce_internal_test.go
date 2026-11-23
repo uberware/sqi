@@ -34,11 +34,11 @@ func TestIncludes(t *testing.T) {
 	}
 }
 
-// TestCoercible covers the CALL-RESOLUTION predicate, not target-type coercion.
+// TestCoercible covers the call-resolution predicate, not target-type coercion.
 //
 // The distinction comes from openjd-specifications#175, and the table below
 // reads oddly without it: "int stays int when the target admits int" expects
-// FALSE, which is the right answer to "does a conversion apply" and the wrong
+// false, which is the right answer to "does a conversion apply" and the wrong
 // answer to "can an int reach this target" (it can -- by satisfying it, which
 // is TestCoerceDestinationOrder's first case). coercible() answers the former
 // for promotable()/shape.go, and RFC 0005 explicitly leaves that mechanism
@@ -103,10 +103,10 @@ func TestCoercible(t *testing.T) {
 		// nulltype union member, admits it.
 		{"nulltype reaches a target that names null via optional sugar", "nulltype", "string?", true},
 		{"nulltype reaches a union that names nulltype directly", "nulltype", "string | nulltype", true},
-		// Negative boundary: a union target that does NOT name null still
+		// Negative boundary: a union target that does not name null still
 		// rejects it, even though it is a multi-member union (not just the
 		// single-scalar case above) — proving the null rule looks at whether
-		// null is IN the target, not merely that the target is permissive.
+		// null is in the target, not merely that the target is permissive.
 		{"nulltype does not reach a union that does not name null", "nulltype", "int | float", false},
 
 		// Unresolved is transparent on both sides: the constraint is what matters.
@@ -114,7 +114,7 @@ func TestCoercible(t *testing.T) {
 		{"unresolved target uses its constraint", "int", "unresolved[float]", true},
 		{"unresolved on both sides", "unresolved[path]", "unresolved[string]", true},
 
-		// A union SOURCE is coercible only where every member is: it is some
+		// A union source is coercible only where every member is: it is some
 		// one of its members, decided at runtime, so a target that would
 		// reject any one of them cannot safely receive it.
 		{"every union member reaches the target", "int | float", "float", true},
@@ -149,7 +149,7 @@ func TestCoercible(t *testing.T) {
 // because coercible permits it.
 //
 // The single-scalar catch-all (bool/int/float/path -> string, string -> path,
-// and the rest) is deliberately EXCLUDED here even though coerce() honors it:
+// and the rest) is excluded here even though coerce() honors it:
 // that catch-all answers "what may this value become at an explicit target",
 // not "which overload should the language pick on the caller's behalf". Firing
 // it during overload selection would let every scalar pair reach a bare-string
@@ -184,7 +184,7 @@ func TestPromotable(t *testing.T) {
 		{"float to unresolved int is still lossy", "float", "unresolved[int]", false},
 
 		// A list conversion is only as lossless as its element
-		// conversion — coercible merely says the conversion is PERMITTED,
+		// conversion — coercible merely says the conversion is permitted,
 		// not that it cannot fail on some value.
 		{"list of float to list of int can fail elementwise", "list[float]", "list[int]", false},
 		{"list of int to list of float widens elementwise", "list[int]", "list[float]", true},
@@ -197,7 +197,7 @@ func TestPromotable(t *testing.T) {
 		{"nested list is lossy exactly when its element is", "list[list[float]]", "list[list[int]]", false},
 		{"nested list widens when its element does", "list[list[int]]", "list[list[float]]", true},
 
-		// A union SOURCE promotes only where every member does — same rule as
+		// A union source promotes only where every member does — same rule as
 		// coercible's union branch, but scored by promotable per member since
 		// this function answers the narrower, lossless question. int -> float
 		// is a named compatible pair, so union(int, float) -> float is
@@ -355,8 +355,8 @@ func TestCoerce_ListConversionPerformed(t *testing.T) {
 }
 
 func TestCoerce_RangeExprToListPerformed(t *testing.T) {
-	// The third list rule, range_expr -> list[int], has a scalar SOURCE and a
-	// list TARGET — the opposite shape from TestCoerce_ListConversionPerformed
+	// The third list rule, range_expr -> list[int], has a scalar source and a
+	// list target — the opposite shape from TestCoerce_ListConversionPerformed
 	// above. It must be caught by the dst-listness half of coerce's list
 	// check, not just the src-listness half that a list-typed source exercises.
 	if !coercible(TRangeExpr, ListOf(TInt)) {
@@ -441,7 +441,7 @@ func TestCoerce_ListErrors(t *testing.T) {
 // A disagreement is the specific failure the unresolved[T] machinery cannot
 // tolerate: coercible says an expression type-checks, evaluation then fails at
 // submission time on a value that was promised to fit. The exception is
-// deliberately narrow — a conversion that CAN fail on a particular value, like
+// narrow — a conversion that can fail on a particular value, like
 // string -> int on "abc", is legal for the type and wrong for that value.
 func TestCoercibleMatchesCoerce(t *testing.T) {
 	rng, err := RangeExpr("1-3")
@@ -465,7 +465,7 @@ func TestCoercibleMatchesCoerce(t *testing.T) {
 		"int", "float", "string", "bool", "path", "range_expr", "nulltype",
 		"list[int]", "list[float]", "list[string]", "list[list[int]]",
 		"int?", "list[int]?", "int | string", "any",
-		// A union MIXING a list type with a scalar one, which every name above
+		// A union mixing a list type with a scalar one, which every name above
 		// misses: each is either all-scalar or all-list, so nothing else
 		// exercises a scalar value against a list-shaped target, where a
 		// coerce() that took its list branch on the target alone would panic
@@ -473,8 +473,8 @@ func TestCoercibleMatchesCoerce(t *testing.T) {
 		// section 1.3.2's target for a template "args" item, so it is the shape
 		// a caller actually builds first.
 		"int | list[int]", "string? | list[string]",
-		// Two list types with DIFFERING element types, which listElem reports as
-		// not list-shaped at all: a list value that already IS one of the
+		// Two list types with differing element types, which listElem reports
+		// as not list-shaped at all: a list value that already is one of the
 		// union's own members must not be rejected by the target that names it.
 		"list[float] | list[int]",
 	}
@@ -486,7 +486,7 @@ func TestCoercibleMatchesCoerce(t *testing.T) {
 					t.Fatalf("ParseType(%q): %v", name, err)
 				}
 				// The invariant is stated against coercibleToTarget, the
-				// type-level twin of coerce(), which answers SATISFACTION and
+				// type-level twin of coerce(), which answers satisfaction and
 				// conversion (openjd-specifications#175) in one call. coercible()
 				// is not part of this invariant: it belongs to call-argument
 				// promotion, a separate mechanism #175 explicitly does not touch.
@@ -549,15 +549,15 @@ func resultTypeAdmitted(got Value, target Type) bool {
 // fail on a particular value: a narrowing scalar conversion, which is the only
 // legal reason coerce may refuse what coercible permitted.
 //
-// It dispatches on the SOURCE, exactly as coerce() itself does: a target
+// It dispatches on the source, exactly as coerce() itself does: a target
 // mixing a list type with a scalar one ("int | list[int]") reports a single
-// scalar target AND a list element type, so asking the scalar question first
+// scalar target and a list element type, so asking the scalar question first
 // would answer for a list value with the wrong rule — "is a list a string or a
 // float", trivially no — and shadow the list rule coerce actually applied.
 // fallibleDestination reports whether converting from a value of type from to
-// destination d can fail on the VALUE rather than on the types -- "3.75" to int,
-// "maybe" to bool. Everything reaches string, and every string reaches path, so
-// those two never fail.
+// destination d can fail on the value rather than on the types -- "3.75" to
+// int, "maybe" to bool. Everything reaches string, and every string reaches
+// path, so those two never fail.
 func fallibleDestination(from, d Code) bool {
 	switch d {
 	case CodeString:
@@ -575,7 +575,7 @@ func fallibleDestination(from, d Code) bool {
 func valueMayNotFit(v Value, target Type) bool {
 	if _, srcIsList := listElem(v.Type); !srcIsList {
 		// coerce() walks the destination table (openjd-specifications#175)
-		// and fails only when EVERY destination the target offers has failed,
+		// and fails only when every destination the target offers has failed,
 		// so the type-level predicate and the value-level one can disagree
 		// only when every offered destination is a fallible conversion. One
 		// infallible destination anywhere in the list (any value reaches
@@ -601,7 +601,7 @@ func valueMayNotFit(v Value, target Type) bool {
 	// case above already covers, so a list conversion fails on a value for
 	// exactly the reason a scalar one does -- and, per #175, over exactly the
 	// same set of destinations: every list destination the target offers, each
-	// judged by its ELEMENT type. One list destination whose elements convert
+	// judged by its element type. One list destination whose elements convert
 	// infallibly (list[string] takes anything) means coerce() had a way through.
 	elemFrom, srcOK := listParam(v.Type)
 	if !srcOK {
@@ -627,12 +627,12 @@ func valueMayNotFit(v Value, target Type) bool {
 	return offered > 0
 }
 
-// TestCoerceUnresolved_DirectUnionMember pins that a PLACEHOLDER whose
+// TestCoerceUnresolved_DirectUnionMember pins that a placeholder whose
 // constraint a union target already names coerces exactly as readily as a
-// CONCRETE value of that same type does.
+// concrete value of that same type does.
 //
-// A coerceUnresolved that consulted only coercible, which is deliberately
-// FALSE for a type a target already admits unchanged (see TestCoercible),
+// A coerceUnresolved that consulted only coercible, which is
+// false for a type a target already admits unchanged (see TestCoercible),
 // would make an unresolved placeholder strictly harder to coerce than a real
 // value, and a union with more than one scalar member would reject every
 // placeholder outright. That is not a corner: every job parameter is a
@@ -688,7 +688,7 @@ func TestCoerceUnresolved_DirectUnionMember(t *testing.T) {
 // TestCoerceUnresolved_MatchesConcreteValue is the invariant behind the test
 // above, stated directly: for every scalar type and the section 1.3.12 range
 // union, a placeholder and a concrete value of the same type must get the
-// SAME verdict. An asymmetry between them is the defect; this catches it by
+// same verdict. An asymmetry between them is the defect; this catches it by
 // any route, not only through coerceUnresolved.
 func TestCoerceUnresolved_MatchesConcreteValue(t *testing.T) {
 	target := UnionOf(TInt, TString, TRangeExpr, ListOf(TInt))

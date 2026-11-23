@@ -2,20 +2,18 @@
 
 package fmtres_test
 
-// Tests for assignmentbudget.go -- the worker's share of the template-wide
-// expression budget.
+// Tests for assignmentbudget.go, the worker's assignment-wide expression
+// budget.
 //
-// Two dimensions, asserted through SEPARATE tests exactly as
-// internal/openjd/exprcheck_budget_test.go's own note requires ("two
-// dimensions that share one test are one dimension"): removing either bound
-// in isolation must fail exactly one dimension's tests, not both.
+// The two dimensions are asserted through separate tests, as in
+// internal/openjd/exprcheck_budget_test.go: removing either bound alone must
+// fail only that dimension's tests.
 //
-// MUTATION-TESTING TRAP, carried forward from the server-side file's own
-// note: the correct way to mutation-test either bound is to comment out the
-// threshold check inside AssignmentBudget.ChargePositions/
-// ChargeRetainedBytes (assignmentbudget.go), not to raise
-// DefaultAssignmentPositions/defaultAssignmentRetainedBytes -- several tests
-// below size their own construction from those live constants.
+// To mutation-test either bound, comment out the threshold check inside
+// AssignmentBudget.ChargePositions/ChargeRetainedBytes (assignmentbudget.go)
+// rather than raising DefaultAssignmentPositions/
+// defaultAssignmentRetainedBytes: several tests below size their
+// construction from those constants.
 
 import (
 	"fmt"
@@ -28,30 +26,27 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// wantAssignmentMaxPositions is assignmentbudget.go's own cap, read from the
-// package rather than mirrored as a literal that could drift from it (it is
-// exported because internal/openjd's TestTemplateBudget_WorkerCapIsNotTighter
-// reads it to pin the server/worker relation).
+// wantAssignmentMaxPositions is assignmentbudget.go's cap, read from the
+// package rather than copied as a literal (it is exported because
+// internal/openjd's TestTemplateBudget_WorkerCapIsNotTighter reads it to pin
+// the server/worker relation).
 //
-// [fmtres.DefaultAssignmentPositions] is the DEFAULT for a configurable limit.
-// The tests in this file all construct their budget with ExprLimits{}, so they
-// exercise exactly that default; the configured value is exercised by
-// exprlimits_test.go instead.
+// [fmtres.DefaultAssignmentPositions] is the default for a configurable limit.
+// The tests in this file construct their budget with ExprLimits{}, so they
+// exercise that default; exprlimits_test.go exercises configured values.
 const wantAssignmentMaxPositions = fmtres.DefaultAssignmentPositions
 
 // ── AssignmentBudget: direct unit tests ─────────────────────────────────────
 
-// TestAssignmentBudget_PositionsDimension isolates the POSITIONS dimension at
-// the [fmtres.AssignmentBudget] level, with no phase-3 evaluation involved --
-// just the counter itself. Mutation target: commenting out the threshold
-// check inside ChargePositions must make this test start accepting.
+// TestAssignmentBudget_PositionsDimension isolates the positions dimension at
+// the [fmtres.AssignmentBudget] level, with no phase-3 evaluation involved.
+// Commenting out the threshold check inside ChargePositions makes it fail.
 func TestAssignmentBudget_PositionsDimension(t *testing.T) {
 	b := fmtres.NewAssignmentBudget(fmtres.ExprLimits{})
 
-	// Spend right up to the cap in two charges -- proves the counter is
-	// cumulative across CALLS, not merely a single-call check. Sized from the
-	// live constant so raising or lowering the cap cannot silently turn this
-	// into a test of nothing.
+	// Spend up to the cap in two charges, so the counter must be cumulative
+	// across calls. Sized from the constant so changing the cap keeps the
+	// test meaningful.
 	const first = wantAssignmentMaxPositions / 2
 	if err := b.ChargePositions(first, "first batch"); err != nil {
 		t.Fatalf("%d of %d must be accepted: %v", first, wantAssignmentMaxPositions, err)
@@ -73,11 +68,11 @@ func TestAssignmentBudget_PositionsDimension(t *testing.T) {
 		t.Errorf("error = %v, want it to name the charge that tripped it", err)
 	}
 
-	// Once tripped, the SAME error is returned on every further call --
-	// cheap no-ops, not a fresh evaluation of the threshold.
+	// Once tripped, every further call returns the same error without
+	// re-evaluating the threshold.
 	err2 := b.ChargePositions(1, "irrelevant")
 	if err2 == nil || err2.Error() != err.Error() {
-		t.Errorf("a spent budget must keep returning the SAME error; got %v then %v", err, err2)
+		t.Errorf("a spent budget must keep returning the same error; got %v then %v", err, err2)
 	}
 	if b.Err() == nil {
 		t.Error("Err() must report the tripped error once the budget is spent")
@@ -85,10 +80,9 @@ func TestAssignmentBudget_PositionsDimension(t *testing.T) {
 }
 
 // TestAssignmentBudget_RetainedBytesDimension is the RetainedBytes
-// counterpart, isolating that dimension the same way. Mutation target:
-// commenting out the threshold check inside ChargeRetainedBytes must make
-// this test start accepting, and must NOT affect
-// TestAssignmentBudget_PositionsDimension above.
+// counterpart, isolating that dimension the same way. Commenting out the
+// threshold check inside ChargeRetainedBytes makes it fail and leaves
+// TestAssignmentBudget_PositionsDimension passing.
 func TestAssignmentBudget_RetainedBytesDimension(t *testing.T) {
 	b := fmtres.NewAssignmentBudget(fmtres.ExprLimits{})
 
@@ -109,8 +103,8 @@ func TestAssignmentBudget_RetainedBytesDimension(t *testing.T) {
 		t.Errorf("the retained-bytes error must not also read like a positions error: %v", err)
 	}
 
-	// n <= 0 is a documented no-op, matching chargePositions' own contract --
-	// it must not itself trip or clear the budget.
+	// n <= 0 is a no-op, as for ChargePositions: it must not trip or clear
+	// the budget.
 	fresh := fmtres.NewAssignmentBudget(fmtres.ExprLimits{})
 	if err := fresh.ChargeRetainedBytes(0, "noop"); err != nil {
 		t.Errorf("a zero charge must be a no-op: %v", err)
@@ -120,13 +114,12 @@ func TestAssignmentBudget_RetainedBytesDimension(t *testing.T) {
 	}
 }
 
-// TestAssignmentBudget_FreshPerAssignment pins "one budget per assignment,
-// not a shared/leaked one" -- the same property
+// TestAssignmentBudget_FreshPerAssignment pins one budget per assignment,
+// not a shared one, the property
 // TestCheckTemplateExpressions_TemplateWideBudget_FreshPerCall pins
-// server-side. session.Manager.Create allocates a NEW AssignmentBudget every
-// call (session.go), so two independent sessions -- and therefore two
-// independent [fmtres.NewAssignmentBudget] calls -- each get their own full
-// allowance.
+// server-side. session.Manager.Create allocates a new AssignmentBudget on
+// every call (session.go), so two sessions, and therefore two
+// [fmtres.NewAssignmentBudget] calls, each get a full allowance.
 func TestAssignmentBudget_FreshPerAssignment(t *testing.T) {
 	for i := range 2 {
 		b := fmtres.NewAssignmentBudget(fmtres.ExprLimits{})
@@ -137,15 +130,11 @@ func TestAssignmentBudget_FreshPerAssignment(t *testing.T) {
 }
 
 // TestAssignmentBudget_ConcurrentCharges proves [fmtres.AssignmentBudget] is
-// safe under concurrent use -- see that type's own doc comment for why this
-// matters even though sessions are not reused across TASKS: a session's
-// own environment entry/exit and its task-table resolution can still race
-// each other charging the same object, and a plain unsynchronized counter
-// would corrupt updates under concurrent access (or fail -race even if this
-// particular run happened not to observably corrupt one). This asserts the
-// total is EXACT, not merely that nothing crashes: N goroutines each
-// charging 1 position must leave the counter at exactly N, and exactly one
-// of them must observe the charge that pushes the total over the cap.
+// safe under concurrent use. Sessions are not reused across tasks, but a
+// session's environment entry/exit and its task-table resolution can charge
+// the same object concurrently (see that type's doc comment), and an
+// unsynchronized counter would lose updates and fail under -race. N
+// goroutines each charging 1 position, below the cap, must all be accepted.
 func TestAssignmentBudget_ConcurrentCharges(t *testing.T) {
 	const goroutines = 200
 	b := fmtres.NewAssignmentBudget(fmtres.ExprLimits{})
@@ -169,21 +158,19 @@ func TestAssignmentBudget_ConcurrentCharges(t *testing.T) {
 			rejected++
 		}
 	}
-	// goroutines (200) is comfortably under MaxAssignmentPositions,
-	// so every charge must have been accepted, and NONE lost to a race --
-	// 200 successes is only possible if every one of the 200 concurrent
-	// += 1 updates was applied.
+	// goroutines (200) is well under the default positions cap, so every
+	// charge must be accepted.
 	if accepted != goroutines || rejected != 0 {
 		t.Fatalf("accepted=%d rejected=%d, want all %d accepted (a lost update under a race would "+
 			"under-count positions and hide a real over-cap assignment)", accepted, rejected, goroutines)
 	}
 }
 
-// ── AssignmentBudget wired through the phase-3 evaluators: cross-table proof ──
+// ── AssignmentBudget wired through the phase-3 evaluators: across tables ────
 
 // simpleTaskLetMsg returns an AssignMsg whose step-script let: block binds
-// exactly one name to a string of n bytes -- a minimal "one table" for the
-// cross-table tests below.
+// one name to a string of n bytes, a minimal table for the cross-table tests
+// below.
 func simpleTaskLetMsg(name string, n int) *protocol.AssignMsg {
 	return &protocol.AssignMsg{
 		EXPR:          true,
@@ -191,17 +178,15 @@ func simpleTaskLetMsg(name string, n int) *protocol.AssignMsg {
 	}
 }
 
-// TestAssignmentBudget_AcrossTables_RetainedBytes is the central proof for
-// the retained-bytes dimension: the per-table bound (LetRetainedBytes,
-// 10 MB) bounds ONE table; this asserts the assignment-wide bound sums across
-// SEVERAL tables the SAME assignment builds.
+// TestAssignmentBudget_AcrossTables_RetainedBytes covers the retained-bytes
+// dimension: the per-table bound (LetRetainedBytes, 10 MB) bounds one table,
+// and the assignment-wide bound sums across the tables one assignment builds.
 //
-// Three tables (mirroring a task table plus two environment tables one
-// session might enter), each retaining ~7,000,064 bytes -- individually
-// comfortably under LetRetainedBytes (10,000,000) -- but the third table's
-// own contribution pushes the ASSIGNMENT's cumulative total (21,000,192
-// bytes) over AssignmentRetainedBytes (20,000,000), even though every table,
-// considered alone, would pass the per-table check.
+// Three tables (a task table plus two environment tables), each retaining
+// ~7,000,064 bytes, under LetRetainedBytes (10,000,000); the third pushes the
+// assignment's cumulative total (21,000,192 bytes) over
+// AssignmentRetainedBytes (20,000,000), though each table alone passes the
+// per-table check.
 func TestAssignmentBudget_AcrossTables_RetainedBytes(t *testing.T) {
 	const bytesPerTable = 7_000_000 // + 64-byte header = 7,000,064 via expr.SizeOf
 	budget := fmtres.NewAssignmentBudget(fmtres.ExprLimits{})
@@ -228,9 +213,9 @@ func TestAssignmentBudget_AcrossTables_RetainedBytes(t *testing.T) {
 			"must be accepted: %v", bytesPerTable, 2*(bytesPerTable+64), 20_000_000, err)
 	}
 
-	// Table 3: a second environment's table -- this is the one that tips the
-	// ASSIGNMENT's cumulative total over the top, even though it is, on its
-	// own, exactly as compliant as tables 1 and 2 were.
+	// Table 3: a second environment's table, which takes the assignment's
+	// cumulative total over the limit though it is as compliant as tables 1
+	// and 2.
 	env3 := &protocol.AssignEnvironment{Name: "Env2", Let: []string{fmt.Sprintf(`c0 = "x" * %d`, bytesPerTable)}}
 	syms3, err := fmtres.EnvSymbols(&protocol.AssignMsg{}, env3, "/work", "", false, nil)
 	if err != nil {
@@ -239,7 +224,7 @@ func TestAssignmentBudget_AcrossTables_RetainedBytes(t *testing.T) {
 	err = fmtres.ApplyEnvLet(env3, syms3, nil, budget)
 	if err == nil {
 		t.Fatalf("table 3, individually compliant (~%d bytes, under the per-table limit's own "+
-			"10,000,000-byte per-table ceiling) but pushing the assignment's CUMULATIVE total to ~%d "+
+			"10,000,000-byte per-table ceiling) but pushing the assignment's cumulative total to ~%d "+
 			"bytes, must be rejected by the assignment-wide budget", bytesPerTable, 3*(bytesPerTable+64))
 	}
 	if !strings.Contains(err.Error(), "assignment-wide expression budget exceeded") ||
@@ -247,21 +232,19 @@ func TestAssignmentBudget_AcrossTables_RetainedBytes(t *testing.T) {
 		t.Errorf("error = %v, want it to name the assignment-wide retained-bytes budget", err)
 	}
 	if _, ok := syms3.Lookup("c0"); ok {
-		t.Error(`"c0" should NOT be bound -- the assignment-wide budget was already spent before it could be`)
+		t.Error(`"c0" should not be bound: the assignment-wide budget was spent before it`)
 	}
 }
 
 // TestAssignmentBudget_AcrossActions_Positions is the positions-dimension
-// counterpart: many resolutions, each individually trivial, across several
-// SIMULATED environments' worth of variable resolution, none of which any
-// PER-CALL limit (ExprLimits' OperationLimit/MemoryLimit) would catch --
-// each call resolves a handful of plain-literal values, well within those.
-// Only the assignment-wide budget sums the position COUNT across calls.
+// counterpart: many cheap resolutions, across several simulated
+// environments' worth of variables, that no per-call limit (ExprLimits'
+// OperationLimit/MemoryLimit) would catch. Only the assignment-wide budget
+// sums the position count across calls.
 //
-// The construction is sized from the live cap rather than hardcoded: 12 calls
-// of one twelfth of it, plus enough overshoot to guarantee the last call
-// trips, so that the largest any single call charges is nowhere close to the
-// cap on its own and only the assignment-wide sum catches it.
+// The construction is sized from the cap: 12 calls of one twelfth of it plus
+// enough overshoot that the last call trips, so no single call comes close to
+// the cap on its own.
 func TestAssignmentBudget_AcrossActions_Positions(t *testing.T) {
 	const calls = 12
 	const perCall = int(wantAssignmentMaxPositions/calls) + 50
@@ -297,9 +280,7 @@ func TestAssignmentBudget_AcrossActions_Positions(t *testing.T) {
 }
 
 // TestResolveActionExpr_ChargesOnePlusArgsPositions pins the exact charge
-// ResolveActionExpr makes per call: 1 (command) + len(args), so a caller
-// combining it with other calls against the same budget can reason about the
-// total precisely rather than by trial and error.
+// ResolveActionExpr makes per call: 1 (command) + len(args).
 func TestResolveActionExpr_ChargesOnePlusArgsPositions(t *testing.T) {
 	action := &protocol.Action{Command: "echo", Args: []string{"a", "b", "c"}}
 	budget := fmtres.NewAssignmentBudget(fmtres.ExprLimits{})
@@ -308,17 +289,16 @@ func TestResolveActionExpr_ChargesOnePlusArgsPositions(t *testing.T) {
 		t.Fatalf("ResolveActionExpr: %v", err)
 	}
 
-	// Spend the budget down to exactly one position short of the cap, then
-	// confirm the NEXT charge (from a second ResolveActionExpr call) is what
-	// trips it -- pinning that the first call's own charge was exactly
-	// 1 (command) + 3 (args) = 4, not some other count.
+	// Spend the budget up to the cap, then confirm the next charge (from a
+	// second ResolveActionExpr call) trips it, so the first call charged
+	// 1 (command) + 3 (args) = 4.
 	const wantFirstCallCharge = 4
 	remaining := wantAssignmentMaxPositions - wantFirstCallCharge
 	if err := budget.ChargePositions(remaining, "filler"); err != nil {
 		t.Fatalf("topping up to one-under-cap must succeed: %v", err)
 	}
 	if _, err := fmtres.ResolveActionExpr(&protocol.Action{Command: "x"}, nil, nil, budget); err == nil {
-		t.Fatalf("a budget sitting at exactly (cap - %d) must be tripped by ONE more command position "+
+		t.Fatalf("a budget sitting at exactly (cap - %d) must be tripped by one more command position "+
 			"if the first call's own charge was really %d, not some other number",
 			wantFirstCallCharge, wantFirstCallCharge)
 	}
@@ -326,8 +306,8 @@ func TestResolveActionExpr_ChargesOnePlusArgsPositions(t *testing.T) {
 
 // TestResolveEmbeddedFilesExpr_ChargesOnePerFile and
 // TestResolveVarsExpr_ChargesOnePerVar are the same pin for the other two
-// Resolve*Expr entry points, each charging exactly one position per entry
-// with NO fixed "+1" the way the command adds one to ResolveActionExpr.
+// Resolve*Expr entry points, each charging one position per entry with no
+// extra charge like ResolveActionExpr's command.
 func TestResolveEmbeddedFilesExpr_ChargesOnePerFile(t *testing.T) {
 	files := []protocol.EmbeddedFile{{Name: "a", Data: "1"}, {Name: "b", Data: "2"}}
 	budget := fmtres.NewAssignmentBudget(fmtres.ExprLimits{})
@@ -362,17 +342,15 @@ func TestResolveVarsExpr_ChargesOnePerVar(t *testing.T) {
 }
 
 // TestAssignmentBudget_NilIsAFreshDefaultLimitedLedger pins the contract
-// [budgetOrDefault] documents for a nil budget: the DEFAULT limits, on a
-// ledger that is FRESH for that one call.
+// [budgetOrDefault] documents for a nil budget: the default limits, on a
+// ledger that is fresh for that one call.
 //
-// The budget is a REQUIRED parameter at every phase-3 entry point, so
-// omitting it does not compile. nil is what this package's own tests pass when the
-// limits are not what they are testing, and roughly seventy call sites in this
-// package depend on it behaving exactly like an unspent default budget.
+// The budget is a required parameter at every phase-3 entry point. This
+// package's tests pass nil when the limits are not under test, and many call
+// sites here depend on it behaving like an unspent default budget.
 //
-// It is NOT subsumed by budgetguard_test.go's AST guard, which asserts the
-// opposite half: that no PRODUCTION caller passes nil. This one asserts nil
-// still works where it is legitimate.
+// budgetguard_test.go's AST guard asserts the other half: that no production
+// caller passes nil.
 func TestAssignmentBudget_NilIsAFreshDefaultLimitedLedger(t *testing.T) {
 	action := &protocol.Action{Command: "echo", Args: []string{"hello"}}
 	if _, err := fmtres.ResolveActionExpr(action, nil, nil, nil); err != nil {
@@ -385,10 +363,9 @@ func TestAssignmentBudget_NilIsAFreshDefaultLimitedLedger(t *testing.T) {
 		t.Fatalf("ResolveEmbeddedFilesExpr with a nil budget: %v", err)
 	}
 
-	// FRESH, not merely default-limited: two successive nil calls each
-	// spending the WHOLE default position allowance must both succeed. A nil
-	// that resolved to one shared package-level budget -- the obvious wrong
-	// implementation -- would fail the second.
+	// Fresh, not only default-limited: two successive nil calls each
+	// spending the whole default position allowance must both succeed. A nil
+	// that resolved to one shared package-level budget would fail the second.
 	vars := make(map[string]string, wantAssignmentMaxPositions)
 	for i := range wantAssignmentMaxPositions {
 		vars["V"+strconv.FormatInt(i, 10)] = "v"

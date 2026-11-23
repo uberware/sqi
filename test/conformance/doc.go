@@ -11,8 +11,8 @@
 //
 // # File layout
 //
-// Everything except suite_test.go is untagged, so the harness's own unit tests
-// run under `make test` and count toward coverage. Only suite_test.go — the
-// file that walks the real fixture tree — carries the `conformance` build tag,
-// because only it needs the submodule present.
+// Only suite_test.go and chunkingjobs_test.go, which read the real fixture
+// tree, carry the `conformance` build tag, because only they need the
+// submodule present. Everything else is untagged, so the harness's own unit
+// tests run under `make test` and count toward coverage.
 package conformance

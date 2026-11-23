@@ -452,7 +452,7 @@ func TestParseType_AcceptedFormsReparse(t *testing.T) {
 				// Not every string in this list is expected to be accepted by
 				// ParseType directly (the two regression srcs above are
 				// rejected, as TestParseType_Rejected asserts) — but every
-				// string that IS accepted must satisfy the reparse property
+				// string that is accepted must satisfy the reparse property
 				// below, so skip here and let TestParseType_Rejected own the
 				// rejection assertion.
 				return

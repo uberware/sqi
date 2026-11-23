@@ -16,7 +16,7 @@ import (
 // adminKeysFixture stands up a router with an admin caller (logged in) plus a
 // separate target user. These routes are driven through the real router rather
 // than the handler directly: the permission gate lives on the route group, so
-// calling the handler would skip the very check under test.
+// calling the handler would skip the check under test.
 type adminKeysFixture struct {
 	st     store.Store
 	srv    *httptest.Server
@@ -120,8 +120,8 @@ func TestAdminAPIKeys(t *testing.T) {
 	})
 
 	// RevokeAPIKey is owner-scoped, so a key id that belongs to someone else
-	// simply is not found for this user. That existing scoping IS the
-	// authorization check — there is no separate ownership branch to forget.
+	// is not found for this user. That scoping is the authorization check;
+	// there is no separate ownership branch to forget.
 	t.Run("a key belonging to a different user is 404", func(t *testing.T) {
 		f := newAdminKeysFixture(t, "admin")
 		bob := seedAuthUser(t, f.st, "bob", "bob-pw", "user")
@@ -133,8 +133,8 @@ func TestAdminAPIKeys(t *testing.T) {
 			t.Fatalf("status = %d, want 404", resp.StatusCode)
 		}
 
-		// And Bob's key must still be there — a cross-owner revoke that
-		// returned 404 but deleted anyway would be the worst outcome.
+		// Bob's key must still be there: a cross-owner revoke that returned
+		// 404 but deleted anyway would be the worst outcome.
 		remaining, err := f.st.ListAPIKeysForUser(t.Context(), bob.ID)
 		if err != nil {
 			t.Fatalf("ListAPIKeysForUser: %v", err)
@@ -162,8 +162,8 @@ func TestAdminAPIKeys(t *testing.T) {
 	})
 
 	// 200 [] for an unknown id would tell an admin "this account has no keys"
-	// when the real answer is "no such account" — the wrong reply to act on
-	// during a credential-revocation incident.
+	// when the answer is "no such account", the wrong reply to act on during
+	// a credential-revocation incident.
 	t.Run("an unknown user id is 404, not an empty list", func(t *testing.T) {
 		f := newAdminKeysFixture(t, "admin")
 

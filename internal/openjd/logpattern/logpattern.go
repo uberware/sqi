@@ -19,9 +19,9 @@ import (
 // RE2 matching is linear in the length of the line, but the constant is the
 // size of the compiled program: Go bounds nested repetition at 1000 but not
 // concatenation, so the 905-byte pattern strings.Repeat(".{0,999}", 113)+"x"
-// compiles to ~226,000 instructions and takes seconds to match one 4 KiB line. Realistic patterns
-// compile to 10 to 100 instructions; 2000 leaves room for a long alternation of
-// literals.
+// compiles to about 226,000 instructions, which makes matching each line slow.
+// Realistic patterns compile to 10 to 100 instructions; 2000 leaves room for a
+// long alternation of literals.
 const MaxProgramInsts = 2000
 
 // Limits on one pattern list, shared by every step-block extension that carries

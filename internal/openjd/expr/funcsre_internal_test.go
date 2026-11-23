@@ -12,9 +12,9 @@ import (
 // TestRegexFunctions covers RFC 0006's six regex functions. Every expected
 // value was produced by the reference implementation.
 //
-// The re_findall rows encode its most surprising rule: the result SHAPE
+// The re_findall rows encode its most surprising rule: the result shape
 // depends on the pattern's group count. Zero groups yields the full matches,
-// ONE group yields that group's captures instead of the full matches, and two
+// one group yields that group's captures instead of the full matches, and two
 // or more yields a list per match.
 func TestRegexFunctions(t *testing.T) {
 	tests := []struct {
@@ -42,15 +42,15 @@ func TestRegexFunctions(t *testing.T) {
 		// literal. Python's re.escape and the reference both escape it.
 		{"re_escape quotes the dash, which QuoteMeta misses", `re_escape('a-z')`, `a\-z`, "string"},
 		// The dash quoted above actually neutralizes the range when spliced
-		// back into a class: 'b' sits between 'a' and 'z' but must NOT
+		// back into a class: 'b' sits between 'a' and 'z' but must not
 		// match, since the class now holds the three literal characters
 		// 'a', '-' and 'z', not the range a-z.
 		{"escaped dash stops it from forming a range in a class", `re_search('b', '[' + re_escape('a-z') + ']')`, "null", "nulltype"},
 		{"re_split on a pattern", `re_split('a1b2c', '\d')`, `["a", "b", "c"]`, "list[string]"},
 		{"re_split with maxsplit", `re_split('a1b2c', '\d', 1)`, `["a", "b2c"]`, "list[string]"},
 		// RFC 0006: "at most maxsplit times", nothing defined below zero.
-		// Python's re.split returns the string UNSPLIT for a negative
-		// maxsplit, and that is the ruling here — deliberately DIFFERENT
+		// Python's re.split returns the string unsplit for a negative
+		// maxsplit, and that is the ruling here — different
 		// from split()/rsplit(), where negative means unlimited
 		// because that is str.split's own rule (see reSplit's doc).
 		{"negative maxsplit means no split at all", `re_split('a1b2c', '\d', -1)`, `["a1b2c"]`, "list[string]"},
@@ -106,7 +106,7 @@ func TestRegexFunctions_RejectPatterns(t *testing.T) {
 }
 
 // TestReSub_RejectsGroupReferences pins RFC 0006's rule that re_sub's
-// replacement is LITERAL text and every group-reference spelling is an error.
+// replacement is literal text and every group-reference spelling is an error.
 //
 // The raw-string prefix is deliberate: sqi's lexer preserves '\1' as two
 // characters, so a non-raw literal would still reach re_sub, but writing it raw
@@ -131,7 +131,7 @@ func TestReSub_RejectsGroupReferences(t *testing.T) {
 }
 
 // TestReSub_DollarIsLiteralOtherwise is the other half: Go's own
-// ReplaceAllString would expand "$name", so re_sub must use the LITERAL
+// ReplaceAllString would expand "$name", so re_sub must use the literal
 // variant. A dollar that is not a group reference has to survive.
 func TestReSub_DollarIsLiteralOtherwise(t *testing.T) {
 	v, err := Eval(`re_sub('a1b', '\d', '$')`, MapSymbols{}, TAny)
@@ -143,7 +143,7 @@ func TestReSub_DollarIsLiteralOtherwise(t *testing.T) {
 	}
 }
 
-// TestReSub_BoundsBeforeAllocating pins that reSub bounds its OUTPUT SIZE
+// TestReSub_BoundsBeforeAllocating pins that reSub bounds its output size
 // arithmetically before building the replaced string, not after.
 //
 // The exploit shape is a pattern that matches zero-width at every position
@@ -151,7 +151,7 @@ func TestReSub_DollarIsLiteralOtherwise(t *testing.T) {
 // product is many gigabytes, even though s and repl are each, individually,
 // unremarkable. Naively, re.ReplaceAllLiteralString would build that whole
 // product — here, roughly 200,001 matches times a 32KB repl, on the order of
-// 6GB — before any check on the RESULT could run. (s does not need to be at
+// 6GB — before any check on the result could run. (s does not need to be at
 // the full maxStringBytes for this: growing repl costs a check-after-allocate
 // implementation everything and reSub nothing, since reSub never touches
 // repl's bytes until after the arithmetic bound already passed — only its
@@ -161,11 +161,10 @@ func TestReSub_DollarIsLiteralOtherwise(t *testing.T) {
 // Asserting only that an error comes back is not enough: that would also
 // pass on check-after-allocate code, given a machine with room to actually
 // build several gigabytes. The timeout is what makes this test prove the
-// allocation never happens — correct code rejects this by pure arithmetic in
-// well under a second (measured: ~0.5s under -race); code that builds the
-// oversized string first blows past the deadline (measured: ~8s+ and still
-// climbing at this size, tens of seconds at maxStringBytes) even though the
-// final answer, if it ever arrived, would be the same error.
+// allocation never happens: correct code rejects this by pure arithmetic in
+// well under a second, even under -race, while code that builds the
+// oversized string first runs for several seconds and exceeds the deadline,
+// even though its final answer would be the same error.
 func TestReSub_BoundsBeforeAllocating(t *testing.T) {
 	s := strings.Repeat("a", 200_000)
 	repl := strings.Repeat("x", 32_768)

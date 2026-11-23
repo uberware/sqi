@@ -17,8 +17,8 @@ package scheduler
 //
 // A limit of 0 means unlimited for both queue and farm.
 //
-// Both checks are performed inside [Scheduler.tryAssign] before [pickWorker] so
-// that workers are not queried unnecessarily when policy would block assignment.
+// Both checks run in [Scheduler.leaseGatesPass], before the usage-pool and
+// eligibility checks.
 
 import (
 	"context"
@@ -29,16 +29,16 @@ import (
 )
 
 // errPolicyBlocked is returned by the policy gate when a queue or farm
-// concurrency limit prevents assignment. The task remains ready and will be
-// reconsidered on the next dispatch tick.
+// concurrency limit prevents assignment. The task remains ready and is
+// reconsidered on a later lease request.
 var errPolicyBlocked = errors.New("assignment blocked by concurrency policy")
 
 // policyGate checks per-queue and per-farm concurrency limits for the given
 // job. It returns [errPolicyBlocked] if either limit is exceeded, or nil if
 // the task is allowed to proceed to worker matching.
 //
-// queue is the job's queue; farm is the job's farm. Both must be pre-fetched
-// by the caller (tryAssign) to avoid duplicate DB round-trips.
+// queue is the job's queue; farm is the job's farm. The caller
+// ([Scheduler.leaseGatesPass]) has already read both.
 func policyGate(
 	ctx context.Context,
 	st store.Store,

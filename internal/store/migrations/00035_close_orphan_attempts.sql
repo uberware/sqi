@@ -2,11 +2,11 @@
 
 -- +goose Up
 
--- Closes attempts earlier releases left open: a running attempt whose task is
+-- Closes attempts left open on a database: a running attempt whose task is
 -- not in flight (an orphan on a finished task, or a task back in
--- ready/pending), and a running attempt that is not its task's latest (the
--- v0.3.0 reaper closed the newer attempt and left the older one open). 00031
--- released claims only and could not reach these. Each is closed as failed with
+-- ready/pending), and a running attempt that is not its task's latest (a
+-- reaper that closed the newer attempt left the older one open). 00031
+-- releases claims only and cannot reach these. Each is closed as failed with
 -- server time, then every active claim whose attempt is no longer running is
 -- released (00031's predicate). A healthy database is unchanged.
 UPDATE task_attempts

@@ -19,7 +19,7 @@ import (
 // a copy of themselves.
 var mistikaLayouts = []struct {
 	tag string
-	// installs are real paths the detector MUST match, one per platform.
+	// installs are real paths the detector must match, one per platform.
 	installs []string
 	// version is the version this detector should extract from a versioned
 	// install directory, and versioned is the path carrying it.
@@ -62,11 +62,10 @@ var mistikaLayouts = []struct {
 // matches the SGO install path (assertInstallsMatchGlobs says why it uses
 // path.Match).
 //
-// This is what catches the subtle failure: the .psx files spell the macOS
-// bundle directory "Contents/MACOS", which works for Smedge only because macOS
-// volumes are case-insensitive by default. filepath.Match is case-sensitive, so
-// copying that spelling would produce a detector that never fires on a real
-// install while looking perfectly correct.
+// The .psx files spell the macOS bundle directory "Contents/MACOS", which
+// works for Smedge only because macOS volumes are case-insensitive by default.
+// filepath.Match is case-sensitive, so copying that spelling would produce a
+// detector that never fires on a real install.
 func TestMistikaDetectors_MatchVendorInstallLayout(t *testing.T) {
 	for _, layout := range mistikaLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
@@ -75,7 +74,7 @@ func TestMistikaDetectors_MatchVendorInstallLayout(t *testing.T) {
 	}
 }
 
-// TestMistikaDetectors_NoBareExeProbe pins the deliberate omission. Mistika's
+// TestMistikaDetectors_NoBareExeProbe pins the missing exe check. Mistika's
 // binaries are `mistika`, `vr` and `workflows`; the presets invoke them by bare
 // name, so an `exe:` check is the obvious shortcut. It is wrong here: "vr" and
 // "workflows" are generic enough to exist on a machine with no Mistika, and a

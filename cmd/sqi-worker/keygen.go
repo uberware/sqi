@@ -29,20 +29,20 @@ from nats.credential_file (which defaults to <data-dir>/worker.nk), mode
 Configuration is loaded the same way "sqi-worker start" loads it: the root
 -c/--config file, SQI_WORKER_* environment variables, and built-in defaults.
 Run this on the worker host with its normal config so the worker ID and
-credential path match what that worker actually uses. --data-dir overrides
+credential path match what that worker uses. --data-dir overrides
 worker.data_dir explicitly, for a one-off run against a different directory.
 
-Refuses to overwrite an existing seed unless --force is given — generating a
+Refuses to overwrite an existing seed unless --force is given: generating a
 new keypair for a worker that is already enrolled invalidates its current
-credential; the broker will reject connections signed with the old key until
-the worker is re-enrolled with the new public key.
+credential, and the broker rejects the worker's connections until it is
+re-enrolled with the new public key.
 
 Prints the public key, whether the worker ID is an existing one loaded from
 the data directory or one newly generated there, and the exact
 "sqi-server worker enroll" command an operator must run on the server to
-authorize this worker. This is the manual enrollment path — a worker that
-can reach sqi-server's REST API can instead enroll itself automatically with
-a join token issued by "sqi-server worker token issue".`,
+authorize this worker. This is the manual enrollment path; a worker that
+can reach sqi-server's REST API can instead enroll itself with a join token
+issued by "sqi-server worker token issue".`,
 	RunE: runKeygen,
 }
 
@@ -127,12 +127,12 @@ func runKeygen(cmd *cobra.Command, _ []string) error {
 		" sqi-server needs no restart.")
 
 	if seedExisted {
-		// --force just overwrote a seed that may still be the credential the
+		// --force overwrote a seed that may still be the credential the
 		// server has enrolled. The new local key means nothing to the broker
-		// until the server side is updated too — and today the server still
-		// has the OLD public key on file, so it must be revoked before the
-		// enroll command above can succeed (worker_id stays unique among
-		// active credentials).
+		// until the server side is updated too, and the server still has the
+		// old public key on file, so it must be revoked before the enroll
+		// command above can succeed (worker_id stays unique among active
+		// credentials).
 		fmt.Fprintf(
 			os.Stderr,
 			"Warning: this replaced an existing seed. The previous credential for worker %s is likely still"+
@@ -148,17 +148,16 @@ func runKeygen(cmd *cobra.Command, _ []string) error {
 // path to use, applying --data-dir as an explicit override of the loaded
 // cfg.Worker.DataDir.
 //
-// When --data-dir is passed and src.CredentialFile is false — meaning
-// nats.credential_file was NOT explicitly set by the config file or
-// SQI_WORKER_NATS_CREDENTIAL_FILE, so cfg.NATS.CredentialFile is only
-// [workerconfig.Load]'s own config-derived fill-in — the seed path is
-// re-derived under the overridden directory too, so it still lands at
-// <data-dir>/worker.nk instead of the pre-override location. This is a
-// provenance check, not a value comparison: comparing seedPath against
-// DefaultCredentialFile(dataDir) would wrongly treat an explicitly
-// configured nats.credential_file that happens to equal that computed
-// default as "unset" and relocate it anyway. An explicitly configured
-// nats.credential_file is always left untouched.
+// When --data-dir is passed and src.CredentialFile is false (neither the
+// config file nor SQI_WORKER_NATS_CREDENTIAL_FILE set nats.credential_file,
+// so cfg.NATS.CredentialFile is only [workerconfig.Load]'s config-derived
+// fill-in), the seed path is re-derived under the overridden directory too,
+// so it lands at <data-dir>/worker.nk instead of the pre-override location.
+// This is a provenance check, not a value comparison: comparing seedPath
+// against DefaultCredentialFile(dataDir) would treat an explicitly
+// configured nats.credential_file that equals that computed default as
+// "unset" and relocate it. An explicitly configured nats.credential_file is
+// always left untouched.
 func resolveKeygenPaths(cmd *cobra.Command, cfg workerconfig.WorkerConfig, src workerconfig.Sources) (dataDir, seedPath string) {
 	dataDir = cfg.Worker.DataDir
 	seedPath = cfg.NATS.CredentialFile

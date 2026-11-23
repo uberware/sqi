@@ -1,13 +1,13 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
 -- Rename the license_pools / license_checkouts tables to usage_pools /
 -- usage_claims. The feature is a generic named concurrency limit; software
--- licenses are one use among others (product, version, show). No behavior
--- change. Data is preserved.
+-- licenses are one use among others (product, version, show). Data is
+-- preserved.
 --
--- The pools table is renamed in place. The claims table is recreated (rather
--- than renamed in place) so its foreign key explicitly targets usage_pools and
--- its constraint/index names follow the new naming — SQLite's rewriting of FK
--- references on a bare RENAME is version/PRAGMA dependent, so we copy.
+-- The pools table is renamed in place. The claims table is recreated and its
+-- rows copied, so its foreign key explicitly targets usage_pools and its
+-- constraint and index names follow the new naming: SQLite's rewriting of FK
+-- references on a bare RENAME depends on version and PRAGMA settings.
 
 -- +goose Up
 
@@ -34,8 +34,8 @@ CREATE INDEX usage_claims_pool_active ON usage_claims (pool_id, released_at);
 -- Rewrite the JSON stored in steps.host_requirements so that:
 --   "license_pools" key  →  "usage_pools"
 --   amount.worker.licensepool.  →  amount.worker.usagepool.
--- Without this, existing step rows would silently lose their pool
--- requirements because the Go code now reads the new key/prefix.
+-- The Go code reads only the new key and prefix, so a step row left
+-- unrewritten would lose its pool requirements.
 UPDATE steps
 SET host_requirements = replace(
       replace(host_requirements, '"license_pools"', '"usage_pools"'),

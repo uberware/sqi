@@ -8,7 +8,7 @@ import "strings"
 
 // Recognized OpenJD environment-mutation directive prefixes.  These are emitted
 // to stdout by environment onEnter/onExit actions to dynamically modify the
-// session environment for all SUBSEQUENT actions.
+// session environment for all subsequent actions.
 const (
 	prefixEnv         = "openjd_env:"
 	prefixRedactedEnv = "openjd_redacted_env:"
@@ -56,7 +56,7 @@ func IsRedactedEnvDirective(line string) bool {
 // environment variable name); callers should log and ignore such lines.
 //
 // Surrounding whitespace is trimmed. For set directives the payload is split on
-// the FIRST '=' so values may themselves contain '='. For unset the payload is
+// the first '=' so values may themselves contain '='. For unset the payload is
 // the bare variable name. Names must be non-empty, start with a non-digit, and
 // contain only ASCII letters, digits, and underscores (OpenJD's env-name rule).
 func ParseEnvDirective(line string) (EnvOp, bool) {

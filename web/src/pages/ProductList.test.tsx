@@ -169,9 +169,9 @@ describe('ProductList', () => {
     expect(screen.queryByRole('link', { name: 'b' })).not.toBeInTheDocument()
   })
 
-  // readme is deliberately NOT part of the search haystack. Keeping it out is
-  // what lets sqi skip a markdown stripper in both TypeScript and Python, and
-  // keeps the remote preset index unchanged.
+  // readme is not part of the search haystack: searching it would need a
+  // markdown stripper in both TypeScript and Python, and a readme field in the
+  // remote preset index.
   it('does not match a term that appears only in the readme', async () => {
     fetchMock.mockResolvedValueOnce(
       ok([makeProduct({ name: 'alpha', title: 'Alpha', description: '', readme: 'zzunique' })]),

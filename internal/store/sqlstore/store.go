@@ -4,8 +4,8 @@
 // database the store runs on. It writes each statement once, with "?"
 // placeholders, and runs it through a [Dialect] that rebinds the query,
 // converts time and bool arguments, and classifies driver errors. A database
-// package (internal/store/sqlite) opens the connection pools, supplies its
-// dialect, and builds the store with [New].
+// package (internal/store/sqlite, internal/store/postgres) opens the
+// connection pools, supplies its dialect, and builds the store with [New].
 //
 // Reads and writes run on separate pools: [New] takes a write pool and a read
 // pool, and every statement goes to one or the other by its text (see

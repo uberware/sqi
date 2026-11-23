@@ -116,7 +116,7 @@ steps:
 `
 
 // exprDeadlineResolveRangeExprTemplate is the resolver fixture that reaches
-// resolveTaskParamDefinition, and it deliberately has NO let: block.
+// resolveTaskParamDefinition, and it has no let: block.
 //
 // exprDeadlineResolveTemplate (above) gives its step a let: block, so the
 // walk trips inside stepLetSymbols and ResolveParameterSpaceParams' definition
@@ -225,7 +225,7 @@ func TestValidateWithBudget_DeadlineIsNotAValidationError(t *testing.T) {
 // deadline into a 422.
 //
 // It also asserts that the segment loop STOPPED, not merely that it stopped
-// reporting -- see exprDeadlineSegmentTemplate for how its second, deliberately
+// reporting -- see exprDeadlineSegmentTemplate for how its second,
 // unparseable reference makes the difference observable.
 func TestValidateWithBudget_DeadlineInEmbeddedSegmentIsNotAValidationError(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineSegmentTemplate), FormatYAML)
@@ -260,7 +260,7 @@ func TestValidateWithBudget_DeadlineInEmbeddedSegmentIsNotAValidationError(t *te
 // conversion site that appends and continues.
 //
 // checkLetBindings evaluates each binding in turn and, on failure, records an
-// error and moves to the next one — deliberately, so a single malformed line
+// error and moves to the next one — so a single malformed line
 // does not hide the rest of the block. For a deadline that behavior is exactly
 // wrong: the whole point of a backstop is to stop, and running the remaining
 // bindings past an expired deadline spends the time the deadline said had run
@@ -689,7 +689,7 @@ func TestExprLimits_DeadlineSurvivesNormalization(t *testing.T) {
 	}
 
 	// It must also survive the budget that carries it to every metered
-	// position, since that is where orDefaults is actually applied.
+	// position, since that is where orDefaults is applied.
 	if b := newTemplateBudget(ExprLimits{Deadline: want}); !b.limits.Deadline.Equal(want) {
 		t.Fatalf("Deadline on a fresh budget = %v, want %v", b.limits.Deadline, want)
 	}

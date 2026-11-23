@@ -3,16 +3,15 @@
 -- +goose Up
 
 -- worker_credentials binds a worker's self-chosen ID to an Ed25519 nkey
--- public key. worker_id is deliberately NOT a foreign key to workers(id): a
--- credential is issued before the worker has ever registered, and on
--- auth-off farms worker rows exist with no credential at all.
+-- public key. worker_id is not a foreign key to workers(id): a credential is
+-- issued before the worker has ever registered, and on auth-off farms worker
+-- rows exist with no credential at all.
 --
--- worker_id is uniqued by a PARTIAL index over active rows only (below), not
--- a column-level UNIQUE: a revoked row must not block the same worker ID
--- from enrolling again with a new key, or revocation would be a one-way
--- door and a worker with a lost or compromised seed could never recover its
--- identity. public_key stays globally UNIQUE — a key must never be reused,
--- even after the credential that held it is revoked.
+-- worker_id is made unique by a partial index over active rows only (below),
+-- not a column-level UNIQUE: a revoked row must not block the same worker ID
+-- from enrolling again with a new key, or a worker with a lost or compromised
+-- seed could never recover its identity. public_key is globally UNIQUE: a key
+-- is never reused, even after the credential that held it is revoked.
 CREATE TABLE worker_credentials (
     id           TEXT PRIMARY KEY,
     worker_id    TEXT NOT NULL,

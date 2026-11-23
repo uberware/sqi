@@ -8,10 +8,9 @@
 # guide is docs/operations.md, "Running more than one server (high
 # availability)".
 #
-# Images: no published release includes high availability yet, so `--build`
-# builds the sqi images from this checkout (run `make build` first for the full
-# web UI). Once a release includes it, pin its tag on the sqi services and drop
-# `--build`.
+# Images: `--build` builds the sqi images from this checkout (run `make build`
+# first for the full web UI). To run a published release instead, pin its tag
+# on the sqi services and drop `--build`.
 #
 # ── One-time setup ───────────────────────────────────────────────────────────
 #

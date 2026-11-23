@@ -368,7 +368,7 @@ func rangePositionsTemplateYAML(name string, numDefs, numValues int) string {
 // binds bindingCount names, each to a bytesEach-byte string -- the other
 // construction TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone uses. A
 // trivial one-entry parameterSpace is included so the resolver's stepLet
-// charge actually runs (ResolveParameterSpaceParams returns before charging
+// charge runs (ResolveParameterSpaceParams returns before charging
 // anything for a step with NO parameterSpace at all -- see that function's
 // own doc comment on the ps == nil early return).
 func letBytesTemplateYAML(name string, bindingCount, bytesEach int) string {
@@ -430,7 +430,7 @@ func TestSubmit_PhaseTwoBudget_ChecksAndResolverEachGetOwnAllowance(t *testing.T
 // ResolveParameterSpaceParams) merely because phase 1 already spent that
 // budget -- the property per-phase scoping exists to guarantee.
 //
-// The construction deliberately spends its near-cap position count on ARGS
+// The construction spends its near-cap position count on ARGS
 // entries, NOT range positions: an args entry is a CHECKER-ONLY position (the
 // resolver never touches Action.Args at all), so phase 2's own combined
 // spend here is checker-walk-only (~9,992) with ZERO resolver contribution

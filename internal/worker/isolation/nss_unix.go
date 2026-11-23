@@ -21,15 +21,14 @@ const nssCommandTimeout = 5 * time.Second
 
 // nssOutputCap bounds how much stdout runNSSCommand will buffer from
 // id(1)/getent(1). A well-behaved NSS backend answers in well under a
-// kilobyte; this exists only to stop a pathological or misbehaving backend
-// from growing the buffer without bound and exhausting worker memory.
+// kilobyte; the cap stops a misbehaving backend from growing the buffer
+// without bound and exhausting worker memory.
 const nssOutputCap = 4096
 
 // nssStderrCap bounds how much stderr runNSSCommand will capture from a
 // failing id(1)/getent(1) invocation, for inclusion in the returned error.
-// Same rationale as nssOutputCap: real tool error text is well under a
-// kilobyte, this only guards a pathological backend from buffering without
-// bound.
+// As with nssOutputCap, real tool error text is well under a kilobyte; the
+// cap stops a misbehaving backend from buffering without bound.
 const nssStderrCap = 4096
 
 // cmdRunner executes name with args and returns its captured stdout. It exists
@@ -41,8 +40,8 @@ type cmdRunner func(ctx context.Context, name string, args ...string) ([]byte, e
 // preference order, before ever falling back to a PATH search. Capable()
 // requires euid 0, so this always executes as root; resolving a bare "id" /
 // "getent" against the daemon's $PATH would let a trojan binary earlier on
-// that PATH answer for the real tool, and its stdout is exactly the data we
-// setuid(2)/setgid(2) to. Two paths per tool covers the common Linux split
+// that PATH answer for the real tool, and its stdout is the uid/gid data the
+// credential is built from. Two paths per tool cover the common Linux split
 // (Debian/Ubuntu's /usr/bin vs. older/other distros' /bin, sometimes a
 // symlink to the other) without hardcoding a single distro's layout.
 func nssToolCandidates(name string) []string {
@@ -59,13 +58,11 @@ func nssToolCandidates(name string) []string {
 // resolveToolPath returns the first candidate that exists as a regular file,
 // falling back to exec.LookPath(name) when none do (e.g. a nonstandard OS
 // layout), and finally to the bare name so exec fails with its usual
-// "executable file not found" error rather than this function manufacturing
-// a different one. Falling back to a $PATH search is logged at WARN, not
-// Debug: Capable() requires euid 0, so this runs as root, and silently
-// falling through to whichever "id"/"getent" resolves first on the root
-// daemon's $PATH re-opens exactly the trojan-binary exposure the absolute
-// candidate list exists to close — an operator needs to see that, not have
-// it buried at Debug.
+// "executable file not found" error. Falling back to a $PATH search is
+// logged at WARN, not Debug: Capable() requires euid 0, so this runs as root,
+// and using whichever "id"/"getent" resolves first on the root daemon's $PATH
+// is the trojan-binary exposure the absolute candidate list exists to avoid,
+// which an operator needs to see.
 func resolveToolPath(ctx context.Context, logger *slog.Logger, name string, candidates []string) string {
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
@@ -85,11 +82,11 @@ func resolveToolPath(ctx context.Context, logger *slog.Logger, name string, cand
 // WaitDelay. WaitDelay closes a gap plain context cancellation leaves open:
 // context.WithTimeout kills the process on schedule, but exec.Cmd.Output/Run
 // still waits on the stdout pipe until every holder of the write end closes
-// it — a grandchild that inherited the descriptor (common with a misbehaving
-// NSS backend spawning helpers) can wedge the call well past the 5s bound.
-// WaitDelay forces Wait to give up and close the pipes itself after that
-// long once the process has been signaled. Split out as its own function so
-// the timeout wiring is unit-testable without executing anything.
+// it, so a grandchild that inherited the descriptor (common with a
+// misbehaving NSS backend spawning helpers) can hold the call well past the
+// 5s bound. WaitDelay makes Wait give up and close the pipes itself that long
+// after the process has been signaled. It is a separate function so the
+// timeout wiring is unit-testable without executing anything.
 func newNSSCmd(ctx context.Context, logger *slog.Logger, name string, args ...string) *exec.Cmd {
 	path := resolveToolPath(ctx, logger, name, nssToolCandidates(name))
 	cmd := exec.CommandContext(ctx, path, args...)
@@ -98,9 +95,8 @@ func newNSSCmd(ctx context.Context, logger *slog.Logger, name string, args ...st
 }
 
 // capLimitedWriter is an io.Writer that errors instead of writing once limit
-// bytes have already been accepted, rather than silently truncating — a
-// truncated-but-still-parseable uid/gid line would be a worse failure mode
-// than a hard, visible error.
+// bytes have been accepted, rather than truncating: a truncated but still
+// parseable uid/gid line would be worse than a visible error.
 type capLimitedWriter struct {
 	buf   bytes.Buffer
 	limit int
@@ -116,18 +112,17 @@ func (w *capLimitedWriter) Write(p []byte) (int, error) {
 // runNSSCommand is the production cmdRunner, closed over a logger so it can
 // record which absolute path it resolved id(1)/getent(1) to (see
 // nssCommandRunner). args are passed to exec.Command as separate argv
-// elements — never through a shell — so a queue-supplied username can never
-// be interpreted as shell syntax. Callers are responsible for validating any
+// elements, never through a shell, so a queue-supplied username is never
+// interpreted as shell syntax. Callers are responsible for validating any
 // argument that came from queue configuration before it reaches here;
 // validateAccountArg is that gate.
 //
 // Stdout and stderr are each captured into their own capped buffer rather
 // than using cmd.Output(), which would only give an *exec.ExitError room for
 // stderr via its own field. Capturing stderr explicitly and folding it into
-// the returned error means a failing getent/id still tells an operator why —
-// os/exec's own ExitError.Stderr is never populated when Cmd.Stderr is set to
-// something other than nil, so leaving it nil (as a bare cmd.Run() would)
-// silently drops the tool's own error text from the log.
+// the returned error means a failing getent/id still tells an operator why;
+// a bare cmd.Run() with Cmd.Stderr nil would drop the tool's error text from
+// the log.
 func runNSSCommand(ctx context.Context, logger *slog.Logger, name string, args ...string) ([]byte, error) {
 	cmd := newNSSCmd(ctx, logger, name, args...)
 	logger.DebugContext(ctx, "isolation: resolved NSS-aware tool path",
@@ -161,8 +156,8 @@ func nssCommandRunner(logger *slog.Logger) cmdRunner {
 // parseGroupList parses the space-separated gid list id(1) prints for
 // `id -G <user>` (e.g. "1001 2001 2010\n"), including the single-gid case
 // ("1001\n") produced by an account with no supplementary groups. An
-// entirely empty result is a valid parse here — the "is this plausible"
-// judgement belongs to the caller (see groupsViaNSS), which knows whether
+// empty result is a valid parse here; whether it is plausible is for the
+// caller to judge (see groupsViaNSS), which knows whether
 // empty output is expected or a sign the tool misbehaved.
 func parseGroupList(out string) ([]uint32, error) {
 	fields := strings.Fields(out)
@@ -179,15 +174,13 @@ func parseGroupList(out string) ([]uint32, error) {
 
 // parseGetentPasswdHome extracts field 6 (the home directory) from a
 // `getent passwd <user>` line: name:passwd:uid:gid:gecos:home:shell. It
-// verifies field 0 actually names wantUser, closing the same NSS-aliasing
-// class parseGetentGroupGID guards against: a misbehaving or aliasing NSS
+// verifies field 0 names wantUser, the same NSS-aliasing check
+// parseGetentGroupGID makes: a misbehaving or aliasing NSS
 // backend answering a lookup for one name with an entry for another. The
 // comparison is case-insensitive (strings.EqualFold): AD and many LDAP
 // backends canonicalize the name they return, so `getent passwd RenderSvc`
-// can legitimately answer with "rendersvc:...". Byte-exact comparison would
-// refuse that as a name mismatch on an otherwise correctly configured
-// directory-backed farm — the exact deployment this NSS fallback exists to
-// serve.
+// can answer with "rendersvc:...", which a byte-exact comparison would refuse
+// as a name mismatch on a correctly configured directory-backed farm.
 func parseGetentPasswdHome(out, wantUser string) (string, bool) {
 	fields := getentFields(out)
 	if len(fields) < 6 || !strings.EqualFold(fields[0], wantUser) {
@@ -197,17 +190,16 @@ func parseGetentPasswdHome(out, wantUser string) (string, bool) {
 }
 
 // parseGetentGroupGID extracts field 3 (the gid) from a `getent group
-// <name>` line: name:passwd:gid:members. It verifies field 0 actually names
-// wantGroup — without this, a getent backend answering with an entry for a
+// <name>` line: name:passwd:gid:members. It verifies field 0 names
+// wantGroup; without this, a getent backend answering with an entry for a
 // different group than the one requested would hand back that group's gid,
 // which the caller would then treat as the requested group's identity
 // (including running the requested group's non-privileged membership/name
 // checks against the wrong group's data). The comparison is case-insensitive
 // (strings.EqualFold) for the same reason as parseGetentPasswdHome: AD/LDAP
 // backends are commonly case-insensitive and canonicalize the name on
-// return, so `getent group Renderers` can legitimately answer
-// "renderers:x:3000:" — byte-exact comparison would refuse a legitimate,
-// correctly-configured lookup as a name mismatch.
+// return, so `getent group Renderers` can answer "renderers:x:3000:", which
+// a byte-exact comparison would refuse as a name mismatch.
 func parseGetentGroupGID(out, wantGroup string) (uint32, bool) {
 	fields := getentFields(out)
 	if len(fields) < 3 || !strings.EqualFold(fields[0], wantGroup) {
@@ -222,7 +214,7 @@ func parseGetentGroupGID(out, wantGroup string) (uint32, bool) {
 
 // getentFields splits the first line of getent(1) output on ':'. Only the
 // first line is used: a name lookup returns at most one entry, and dropping
-// anything after a trailing newline keeps this robust to that terminator.
+// anything after a trailing newline handles that terminator.
 func getentFields(out string) []string {
 	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
 	return strings.Split(line, ":")

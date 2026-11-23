@@ -239,7 +239,7 @@ func TestConcurrentStress_SQLite(t *testing.T) {
 }
 
 // TestConcurrentStress_Postgres is the stress run on PostgreSQL, where writers
-// really are concurrent: the races SQLite's single writer hides are live here.
+// are concurrent: the races SQLite's single writer hides are live here.
 //
 // It skips under SQI_TEST_PG_FORCE_TX_RETRY=1: with every transaction
 // rehearsed once, the restart-reclaim liveness check can starve and hit its

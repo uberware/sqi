@@ -24,15 +24,15 @@ var setCredentialCmd = &cobra.Command{
 	Long: `Store the password sqi-worker uses to log on as a queue-configured
 run-as-user account.
 
-The secret is read from stdin, never from the command line — arguments are
-visible to every process on the host. It is encrypted with the machine DPAPI
+The secret is read from stdin, never from the command line, because arguments
+are visible to every process on the host. It is encrypted with the machine DPAPI
 key and written under the worker data directory with an ACL granting only
 SYSTEM and Administrators.
 
 Machine-scope encryption is what lets an elevated Administrator provision a
 credential that the LocalSystem worker service can read. It also means the
-file ACL is the real boundary: anything on this host that can READ the file
-can decrypt it.
+file ACL is the boundary: anything on this host that can read the file can
+decrypt it.
 
 Run from an elevated shell:
 

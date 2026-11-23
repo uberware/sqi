@@ -17,9 +17,9 @@ import badgeStyles from './UserList.module.css'
 export default function UserList() {
   const { data: users, isLoading, isError, error } = useListUsers()
   const { principal } = useAuth()
-  // Checked explicitly rather than inferred from reaching this page: today
-  // users.read and apikeys.admin are both admin-only, but the link should
-  // follow the permission it actually needs if those ever diverge.
+  // Checked explicitly rather than inferred from reaching this page: the link
+  // needs apikeys.admin, a separate permission from the page's users.read,
+  // even though both are admin-only.
   const mayManageKeys = can(principal, 'apikeys.admin')
   const deleteUser = useDeleteUser()
   const { showToast } = useToast()

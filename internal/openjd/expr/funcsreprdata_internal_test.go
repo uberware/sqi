@@ -51,9 +51,9 @@ func TestReprPy(t *testing.T) {
 // TestReprJSON pins Python's json.dumps defaults, which is what the reference
 // produces.
 //
-// Two rows encode why this does NOT share writeJSONValue (funcsconv.go, used by
+// Two rows encode why this does not share writeJSONValue (funcsconv.go, used by
 // string(list)): Go's encoding/json escapes "<", ">" and "&" as < and
-// friends, and does NOT escape non-ASCII. json.dumps does exactly the reverse,
+// friends, and does not escape non-ASCII. json.dumps does exactly the reverse,
 // and so does the reference.
 func TestReprJSON(t *testing.T) {
 	tests := []struct {
@@ -90,12 +90,12 @@ func TestReprJSON(t *testing.T) {
 	}
 }
 
-// TestReprData_RendersSpecificTypes pins the OUTPUT repr_py and repr_json
+// TestReprData_RendersSpecificTypes pins the output repr_py and repr_json
 // produce for null, path and range_expr — not which Shape row produces it.
 //
 // repr_py and repr_json each pair a type-variable catch-all with specific
 // nulltype, range_expr and path rows, which looks like a row-order hazard
-// (matchShapesExactFirst breaks an exact cost tie to the EARLIEST shape). It
+// (matchShapesExactFirst breaks an exact cost tie to the earliest shape). It
 // is not observable here: pyRepr and jsonRepr each switch on v.Type.Code
 // directly, so the catch-all's Fn renders CodeNull/CodePath/CodeRangeExpr
 // exactly the same way the dedicated rows do, and this test passes with the

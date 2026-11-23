@@ -508,8 +508,8 @@ func TestPresetFusion_ScriptDrivesFusion(t *testing.T) {
 // TestPresetFusion_EmitsStatus pins the one directive render.lua writes to
 // standard output: a status line naming the task's first and last frame, before
 // the Render call. There is no progress line, as Render with Wait blocks and
-// reports nothing between its start and end. Only the stub Fusion has been run;
-// no Fusion has.
+// reports nothing between its start and end. This runs against the stub Fusion
+// only, not a real Fusion.
 func TestPresetFusion_EmitsStatus(t *testing.T) {
 	lua := findLua(t)
 	snap, err := capturePreset(t, fusionSaverPreset, map[string]string{

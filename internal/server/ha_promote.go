@@ -123,8 +123,8 @@ func (s *Server) runScheduler(lctx context.Context) {
 const memberRetention = 24 * time.Hour
 
 // startLeaderSweeper runs the leader's housekeeping once, before it returns,
-// and then on the session sweeper's interval: expired sessions (with auth on) and member
-// rows unseen for [memberRetention]. A fenced session sweep means another
+// and then on the session sweeper's interval: expired sessions (with auth on)
+// and member rows unseen for [memberRetention]. A fenced session sweep means another
 // server leads.
 func (s *Server) startLeaderSweeper(lctx context.Context) {
 	sweep := func() {
@@ -247,8 +247,8 @@ func (s *Server) handOver(ctx context.Context) error {
 	return err
 }
 
-// markNotLeading reports this server no longer the leader: the role, which
-// closes the API and /leaderz, and the leader gauge.
+// markNotLeading marks this server as not the leader in the role, which
+// closes the API and /leaderz, and in the leader gauge.
 func (s *Server) markNotLeading() {
 	s.ha.role.demote()
 	s.metrics.HALeader.Set(0)

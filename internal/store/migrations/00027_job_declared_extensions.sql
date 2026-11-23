@@ -3,13 +3,11 @@
 --
 -- The scheduler must know whether a job uses the EXPR extension: it refuses to
 -- dispatch an EXPR job to a worker whose advertised expression caps are tighter
--- than this server's (see internal/scheduler/exprcaps.go). Without this column
--- it must scan the raw template for the bytes "EXPR" -- a heuristic wrong in
--- both directions, run once per candidate task per lease request.
--- internal/openjd has already parsed and validated the declaration at
--- submission time, so this column carries that exact answer to the lease path,
--- where reading it costs nothing: it rides along on the SELECT that already
--- fetches the job.
+-- than this server's (see internal/scheduler/exprcaps.go). internal/openjd
+-- parses and validates the declaration at submission, and this column carries
+-- that answer to the lease path on the SELECT that already fetches the job.
+-- A job without it is judged by scanning the raw template for the bytes
+-- "EXPR", a heuristic that can be wrong in both directions.
 --
 -- Stored as a JSON list of extension names, the same shape as steps.depends_on.
 --
@@ -21,22 +19,20 @@
 --   '[]' = recorded, and the template declares no extensions at all. The
 --          scheduler trusts it and does not scan.
 --
--- Defaulting to '[]' would be wrong: every pre-existing row would claim to
--- declare nothing, so an EXPR job already in the queue at upgrade time would
--- lose its worker-caps gate and dispatch to a worker that cannot run it -- the
--- failure the gate exists to prevent, visible only as tasks failing at
--- runtime.
+-- The default must not be '[]': every existing row would then claim to
+-- declare nothing, so an EXPR job already queued when the migration runs
+-- would lose its worker-caps gate and dispatch to a worker that cannot run it.
 --
--- NOT NULL DEFAULT '' matches the convention 00026 established for
+-- NOT NULL DEFAULT '' follows 00026's convention for
 -- workers.expr_limits: scanJob reads this column into a plain string, so a NULL
 -- would be a scan error rather than an empty value.
 --
 -- The Down migration's ALTER TABLE ... DROP COLUMN requires SQLite >= 3.35.0
--- (the same note 00002, 00008, 00013 and 00026 carry). Deliberately no CHECK
--- constraint and no index on the column: SQLite refuses DROP COLUMN on a column
--- either references, which would make the Down impossible without a full table
--- rebuild. An index would not help: the column is only ever read
--- alongside a row already being fetched by primary key.
+-- (the same note 00002, 00008, 00013 and 00026 carry). No CHECK constraint and
+-- no index on the column: SQLite refuses DROP COLUMN on a column either
+-- references, which would make the Down impossible without a full table
+-- rebuild. An index would not help: the column is only read alongside a row
+-- already being fetched by primary key.
 
 -- +goose Up
 ALTER TABLE jobs ADD COLUMN declared_extensions TEXT NOT NULL DEFAULT '';

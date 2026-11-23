@@ -12,7 +12,7 @@ import (
 // mismatch, a coercion failure, or the function's own Fn erroring out).
 //
 // evalProperty relies on the distinction: section 1.3.3 property syntax is
-// sugar for a call to __property_p__, so a genuine runtime error inside a
+// sugar for a call to __property_p__, so a runtime error inside a
 // registered property function must not be relabeled "unknown property" —
 // that would tell a user their correctly spelled property doesn't exist
 // instead of showing them the real failure. errors.Is against this sentinel
@@ -22,7 +22,7 @@ var errUnknownFunction = errors.New("unknown function")
 // evalCall evaluates a call or a method call (spec section 1.3.3).
 //
 // Uniform function call syntax makes "x.f(a)" equivalent to "f(x, a)", so both
-// forms end in callFunction with the receiver prepended. The two are NOT
+// forms end in callFunction with the receiver prepended. The two are not
 // interchangeable, though: section 1.2.4 suppresses coercion on a method
 // receiver, so which form was written has to reach callFunction.
 func evalCall(n *Call, ec evalCtx, depth int) (Value, error) {
@@ -49,13 +49,13 @@ func evalCall(n *Call, ec evalCtx, depth int) (Value, error) {
 		}
 		args = append(args, v)
 	}
-	// callShape (ops.go) coerces arguments IN PLACE on this same backing array
+	// callShape (ops.go) coerces arguments in place on this same backing array
 	// when the matched signature needs widening ("args[i] = converted"), and
 	// this args slice -- unlike applyBinary/applyUnary's own freshly built
-	// []Value{...} literals -- IS the caller's own backing array all the way
+	// []Value{...} literals -- is the caller's own backing array all the way
 	// down through callFunction. Capture the exact values evalNode allocated
-	// BEFORE that mutation can happen, so the release below always targets
-	// what was actually added to the live total.
+	// before that mutation can happen, so the release below always targets
+	// what was added to the live total.
 	orig := append([]Value(nil), args...)
 	out, err := callFunction(ec, name, args, methodStyle)
 	if err != nil {
@@ -91,15 +91,15 @@ func (n *Call) target(ec evalCtx, depth int) (name string, recv Value, methodSty
 	// Every other callee — a literal, a subscript, a conditional — is a value,
 	// and no value in this language is callable.
 	//
-	// The wording names no type at all, deliberately. A "%T" here would render
+	// The wording names no type at all. A "%T" here would render
 	// the Go type of the tree node ("a *expr.IntLit cannot be called"), which is
 	// an implementation detail of this package leaking into a diagnostic a
-	// TEMPLATE AUTHOR reads; every other message in this package names spec
+	// template author reads; every other message in this package names spec
 	// types instead ("a int cannot be subscripted", "unknown property %q on
 	// %s"). The callee's spec type is not available here either — it has not
-	// been evaluated, and evaluating it just to name it in an error would run a
+	// been evaluated, and evaluating it only to name it in an error would run a
 	// sub-expression for its side effects. So the message describes the
-	// POSITION, and the error's own offset points at the "(" that made it a
+	// position, and the error's own offset points at the "(" that made it a
 	// call. It matches nameTarget's "%s is not a function" above by design: the
 	// two are the same diagnosis for a named and an unnamed callee.
 	return "", Value{}, false, errorAt(ec.src, n.Offset, "this expression is not a function")
@@ -145,7 +145,7 @@ func (*Call) nameTarget(callee *Name, ec evalCtx) (name string, recv Value, meth
 // methodStyle carries section 1.2.4's restriction: when a function is called as
 // a method, implicit coercion does not apply to the receiver, so
 // "path('/x').startswith('/')" fails where "startswith(path('/x'), '/')"
-// succeeds. That is a property of the CALL SITE, not of the signature, which is
+// succeeds. That is a property of the call site, not of the signature, which is
 // why it cannot be expressed with Shape.Promote.
 //
 // ec is threaded through to callShape so that a shape's optional FnCtx (see
@@ -168,7 +168,7 @@ func callFunction(ec evalCtx, name string, args []Value, methodStyle bool) (Valu
 	for _, a := range args {
 		if a.IsUnresolved() {
 			// The call was dispatched even though nothing ran, so rule 1
-			// applies. Rules 2 and 3 do NOT: no list was iterated and no
+			// applies. Rules 2 and 3 do not: no list was iterated and no
 			// string was processed. See doc.go for the ruling.
 			if err := ec.m.charge(1); err != nil {
 				return Value{}, err

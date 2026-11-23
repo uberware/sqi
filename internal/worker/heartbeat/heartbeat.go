@@ -137,8 +137,8 @@ type Publisher struct {
 // New creates a Publisher. nc and registrar must be non-nil.
 //
 //   - workerID: the stable worker identity string published in each message.
-//   - maxConcurrentTasks: the worker's configured concurrency ceiling,
-//     included in each heartbeat for server-side capacity tracking.
+//   - maxConcurrentTasks: published as HeartbeatMsg.MaxConcurrentTasks; the
+//     worker passes its CPU count. The server does not read it.
 //   - interval: how often to publish; must be > 0.
 //   - state: provides live task counts and IDs; [NoopStateSource] reports
 //     none.

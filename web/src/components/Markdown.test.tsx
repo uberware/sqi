@@ -30,8 +30,8 @@ describe('Markdown', () => {
 
   // CommonMark lazy continuation: a plain text line right after a list item,
   // with no blank line between them, belongs to that item -- not a new
-  // paragraph. This is the shape every shipped preset readme uses (bullets
-  // wrapped across source lines).
+  // paragraph. Preset readmes use this shape (bullets wrapped across source
+  // lines).
   it('folds a wrapped bullet continuation into the same list item', () => {
     render(<Markdown source={'- one\ncontinued text'} />)
     const items = screen.getAllByRole('listitem')
@@ -125,8 +125,8 @@ describe('Markdown', () => {
     // reaches safeHref at all: the INLINE token regex's own href group
     // (`[^)\s]*`) excludes it, so a leading space or an embedded tab breaks
     // the link match structurally and the whole "[label](href)" construct
-    // degrades to literal text before safeHref ever runs. These two pin that
-    // -- the safety net two layers deep, not just at safeHref.
+    // degrades to literal text before safeHref runs. These two pin that
+    // second layer of protection in front of safeHref.
     it('degrades a leading-whitespace href to literal text, never a link', () => {
       const { container } = render(<Markdown source={'[x](  https://example.com)'} />)
       expect(screen.queryByRole('link')).not.toBeInTheDocument()
@@ -140,8 +140,8 @@ describe('Markdown', () => {
       expect(screen.queryByRole('link')).not.toBeInTheDocument()
     })
 
-    // A C0 control byte outside the \s class (U+0001 here) is NOT excluded
-    // by INLINE's href group, so unlike the two cases above it DOES reach
+    // A C0 control byte outside the \s class (U+0001 here) is not excluded
+    // by INLINE's href group, so unlike the two cases above it reaches
     // safeHref. This is the reachable version of the "checked string must
     // equal rendered string" property: safeHref strips it from the value
     // that reaches the DOM, and -- per the case-preservation guard above --
@@ -164,8 +164,8 @@ describe('Markdown', () => {
     })
 
     // Asserting only "no <img>" is not enough: the inline matcher sees the
-    // [alt](url) half of the image and would render a LINK to the
-    // beacon, which leaks the viewer's IP just as effectively on click.
+    // [alt](url) half of the image and would render a link to the
+    // beacon, which leaks the viewer's IP on click.
     it('renders images as literal text, never as an img or a link', () => {
       const { container } = render(<Markdown source={'![alt](https://evil.test/beacon.png)'} />)
       expect(container.querySelector('img')).toBeNull()
@@ -175,8 +175,8 @@ describe('Markdown', () => {
   })
 
   // A structural guarantee, not a style rule: because the renderer only ever
-  // returns React elements, a parser bug can produce wrong FORMATTING but never
-  // script execution.
+  // returns React elements, a parser defect can produce wrong formatting but
+  // never script execution.
   it('never uses dangerouslySetInnerHTML', async () => {
     const src = await import('./Markdown.tsx?raw')
     expect(src.default).not.toContain('dangerouslySetInnerHTML')

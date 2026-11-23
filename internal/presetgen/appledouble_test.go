@@ -19,11 +19,9 @@ import (
 // gets a com.apple.provenance xattr, and the xattr lands in the sidecar.
 //
 // The sidecar matches *.yaml, so without this filter Build reads it, fails to
-// parse it ("control characters are not allowed"), and returns a hard error --
-// meaning a release-time publish breaks on a developer machine for a reason
-// that has nothing to do with the presets. This is not hypothetical: it
-// happened in this repo and broke `make ci` for every package that globs the
-// presets directory.
+// parse it ("control characters are not allowed"), and returns a hard error,
+// which breaks a release-time publish, and `make ci` for every package that
+// globs the presets directory, for a reason unrelated to the presets.
 func TestBuild_IgnoresAppleDoubleSidecars(t *testing.T) {
 	dir := t.TempDir()
 
@@ -37,9 +35,8 @@ func TestBuild_IgnoresAppleDoubleSidecars(t *testing.T) {
 	}
 
 	// The sidecar. Real ones begin with the AppleDouble magic number and are
-	// full of NUL bytes, which is exactly what makes the YAML parser reject
-	// them -- so use bytes of that shape rather than something that might
-	// accidentally parse.
+	// full of NUL bytes, which is what makes the YAML parser reject them, so
+	// use bytes of that shape rather than something that might parse.
 	sidecar := append([]byte{0x00, 0x05, 0x16, 0x07}, make([]byte, 128)...)
 	if err := os.WriteFile(filepath.Join(dir, "._blender-batch-render.yaml"), sidecar, 0o600); err != nil {
 		t.Fatalf("write sidecar: %v", err)

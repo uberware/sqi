@@ -51,9 +51,9 @@ readme: |
   - On Linux, `sfxcmd` runs with `-nogui`, which the worker adds by itself
     whether it found `sfxcmd` on `PATH` or in the install. An `sfxcmd` entry
     in `worker.commands` replaces that, arguments included, so it must list
-    `-nogui` itself. Silhouette's bundled
-    `lib` folder must be on the worker's `LD_LIBRARY_PATH`, or `sfxcmd` stops
-    with a missing-library error. The preset does not set it.
+    `-nogui` itself. Silhouette's bundled `lib` folder must be on the
+    worker's `LD_LIBRARY_PATH`, or `sfxcmd` stops with a missing-library
+    error. The preset does not set it.
 
   ## What has not been verified
 
@@ -63,7 +63,7 @@ readme: |
     the `SQI_LOG_CHECKS` extension, because no line that `sfxcmd` prints on
     failure is documented. A task fails only if `sfxcmd` exits non-zero.
     `sfxcmd` is reported to exit 0 with no frames written on Linux, which
-    would show as a finished task. Check the output folder, not just the job
+    would show as a finished task. Check the output folder as well as the job
     status.
   - `sfxcmd`'s exit codes are not documented.
   - A negative first frame is passed as `-range -5-10`; whether `sfxcmd` reads

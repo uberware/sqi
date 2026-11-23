@@ -9,13 +9,13 @@ import (
 	ldapv3 "github.com/go-ldap/ldap/v3"
 )
 
-// bindKey identifies one bind attempt by BOTH the DN and the password.
+// bindKey identifies one bind attempt by both the DN and the password.
 //
 // Keying on the DN alone would make the password invisible to every
-// assertion: a verifier that re-bound the user with the *service account's*
-// password — authenticating everyone as long as the service credentials were
-// right — would still satisfy a DN-only fake. The credential is the one thing
-// a bind actually proves, so it belongs in the key.
+// assertion: a verifier that re-bound the user with the service account's
+// password, authenticating everyone while the service credentials are right,
+// would still satisfy a DN-only fake. The credential is what a bind proves,
+// so it belongs in the key.
 type bindKey struct {
 	DN string
 	PW string
@@ -28,36 +28,35 @@ type fakeConn struct {
 	// absent from the map binds successfully. Keying on the pair is what makes
 	// binding with the wrong password observable.
 	bindErr map[bindKey]error
-	// binds records every (DN, password) bound, in order — the assertion
-	// surface for "did it re-bind as the user, with the USER's password?".
+	// binds records every (DN, password) bound, in order, so a test can
+	// assert that the user was re-bound with the user's password.
 	binds []bindKey
 	// ops records binds and searches in one ordered log ("bind:<dn>",
-	// "search:<filter>"), so a test can assert not just that an operation
-	// happened but that it happened on the right side of a bind — which is
-	// what "the nested lookup runs on the service connection" means.
+	// "search:<filter>"), so a test can assert which side of a bind an
+	// operation ran on (the nested lookup must run on the service
+	// connection).
 	ops []string
 	// searchResult is returned by every Search call not overridden by
 	// searchResultAt.
 	searchResult *ldapv3.SearchResult
 	// searchResultAt overrides searchResult for specific 1-based Search call
-	// indexes. It exists so a test can let the user search hit while the
-	// nested-group expansion returns a successful but EMPTY result — the
-	// misscoped-base_dn case, which no error field can express because there
-	// is no error.
+	// indexes, so a test can let the user search hit while the nested-group
+	// expansion returns a successful but empty result: the misscoped-base_dn
+	// case, which returns no error for an error field to express.
 	searchResultAt map[int]*ldapv3.SearchResult
 	// searchErr, when set, is returned by Search calls from searchErrFrom on.
 	searchErr error
 	// searchErrFrom is the 1-based index of the first Search call searchErr
-	// applies to; 0 means every call. It exists so a test can fail only the
+	// applies to; 0 means every call. A test sets it to fail only the
 	// nested-group lookup while letting the user search succeed.
 	searchErrFrom int
 	// searchFilters records the filter of every Search call, so escaping can
-	// be asserted at the point it actually matters.
+	// be asserted on the filter the directory receives.
 	searchFilters []string
 	// searchAttrs records the requested attribute list of every Search call.
-	// entryUUID is an OPERATIONAL attribute that most directories omit unless
-	// it is named explicitly, so "did the request ask for it?" is a distinct
-	// question from "did the parse read it?" and needs its own surface.
+	// entryUUID is an operational attribute that most directories omit unless
+	// it is named explicitly, so whether the request asked for it is a
+	// separate assertion from whether the parse read it.
 	searchAttrs [][]string
 	closed      bool
 }
@@ -108,8 +107,7 @@ func dialFail() dialFunc {
 // Built through ldapv3.NewEntryAttribute so both Values and ByteValues are
 // populated, which is what go-ldap does when it decodes a real response.
 // Setting only Values would make every raw-value read return nothing here and
-// something on the wire — precisely the class of fake/real divergence this
-// package's tests are supposed to rule out.
+// something on the wire.
 func entry(dn string, attrs map[string][]string) *ldapv3.Entry {
 	e := &ldapv3.Entry{DN: dn}
 	for name, vals := range attrs {

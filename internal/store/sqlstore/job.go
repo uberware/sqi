@@ -180,7 +180,7 @@ WHERE id = ? AND status NOT IN ('completed','failed','canceled')`
 
 	// sqlResumeJob is the inverse of sqlParkJob: only a paused job is resumed.
 	// An auto-parked job (non-empty park_reason) also gets its failure counter
-	// reset — otherwise the very next genuine failure would re-park it — while
+	// reset (otherwise the next failure would re-park it), while
 	// a manual pause/resume keeps the accumulated count. A job still holding
 	// its cross-job dependencies resumes to blocked: its steps are held
 	// pending, and only the dependency sweep's release frees them.
@@ -194,10 +194,9 @@ WHERE id = ? AND status = 'paused'`
 
 // encodeDeclaredExtensions renders a job's declared-extension list for the
 // declared_extensions column, preserving the distinction the column exists for:
-// "" means not recorded (the schema default, and what every row written before
-// migration 00027 holds), while "[]" means recorded and declaring nothing. A
-// recorded nil slice is normalized to "[]" so the not-recorded sentinel has
-// exactly one spelling in the database.
+// "" means not recorded (the schema default), while "[]" means recorded and
+// declaring nothing. A recorded nil slice is normalized to "[]" so the
+// not-recorded sentinel has exactly one spelling in the database.
 func encodeDeclaredExtensions(job store.Job) (string, error) {
 	if !job.ExtensionsRecorded {
 		return "", nil
@@ -284,8 +283,7 @@ func scanJob(row scanner) (store.Job, error) {
 // casWriteTaskStatus in attemptclose.go).
 //
 // Each step and task row is stamped with its own, strictly later time from one
-// [rowClock] — see insertTasksTx for why sharing one timestamp across the batch
-// would be a behavior change, not an optimization.
+// [rowClock]; see insertTasksTx for why the rows must not share one timestamp.
 func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
 	return inTxValue(ctx, s, "create job submission", func(tx *dbTx) (store.JobSubmission, txOutcome, error) {
 		now := TimeText(time.Now().UTC())

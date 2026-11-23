@@ -403,7 +403,7 @@ func TestCheckFormatString_ArgItemShapes(t *testing.T) {
 		{"a list[list[string]] does not type-check", "{{ [['a'], ['b']] }}", true},
 
 		// The same three accepted shapes, but UNRESOLVED -- what phase 1
-		// actually produces, via a conditional whose condition (Param.Flag)
+		// produces, via a conditional whose condition (Param.Flag)
 		// has no concrete value. Each branch's own type is still a concrete
 		// member (string, nulltype, or list[string]); what makes the WHOLE
 		// expression's result type a union is that evaluation cannot pick
@@ -443,11 +443,11 @@ func TestCheckFormatString_ArgItemShapes(t *testing.T) {
 // or not -- scalarToInt has no case for a "{{ ... }}" string, so it errors
 // "timeout must be an integer" at PARSE time before ValidateWithOptions ever
 // runs. There is therefore no field on Action that can carry an unresolved
-// format-string body at this position today; checkActionExpressions'
+// format-string body at this position; checkActionExpressions'
 // strconv.Itoa(a.TimeoutSeconds) call is wired for the position but is
 // necessarily a no-op against a real template until that decoder changes
 // (see checkActionExpressions' doc comment). This test pins the contract that
-// call applies, independent of whether decodeAction can reach it yet.
+// call applies, independent of whether decodeAction can reach it.
 func TestCheckFormatString_TimeoutTarget(t *testing.T) {
 	tmpl := &JobTemplate{
 		Name:                 "T",
@@ -458,7 +458,7 @@ func TestCheckFormatString_TimeoutTarget(t *testing.T) {
 	if errs := checkFormatString(nil, "{{ [Param.S] }}", "/p", ScopeStepScript, syms, TargetInt); len(errs) == 0 {
 		t.Error("a list value was accepted against an int timeout target")
 	}
-	// What a real, already-decoded timeout looks like today: a plain decimal
+	// What a real, already-decoded timeout looks like: a plain decimal
 	// string with no "{{" reference. Must stay accepted.
 	if errs := checkFormatString(nil, "30", "/p", ScopeStepScript, syms, TargetInt); len(errs) != 0 {
 		t.Errorf("a plain decoded timeout value must not be rejected: %v", errs)

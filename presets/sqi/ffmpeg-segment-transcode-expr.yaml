@@ -26,7 +26,7 @@ readme: |
     slice(s) are never scheduled. Too large schedules an extra task past the
     real end of the source: `ffmpeg` transcodes silence or a frozen frame for
     that slice, wasting a task, and its slice file is still concatenated
-    into the join, then left on disk afterward (see Cleanup).
+    into the join and left on disk with the others.
   - **SegmentSeconds** - the length of each slice, and so the number of
     tasks.
   - **VideoCodec**, **Quality** (CRF, lower is better), **AudioCodec** -
@@ -44,17 +44,17 @@ readme: |
      on the worker. `ffmpeg -f concat -safe 0` reads that list and copies the
      streams into `OutputFile` with no re-encode.
 
-  Building the join step's file list is charged against this template's
-  `EXPR` evaluation budget at submission time, and that cost grows with the
-  number of slices. It comfortably fits jobs of up to about 400 slices; a
-  longer source needs a longer `SegmentSeconds` to stay under that, or use
-  the Bash or PowerShell variant instead, whose join step costs the same
-  regardless of slice count (it lists slices with a directory glob at run
-  time, not at submission time).
+  Building the join step's file list is charged at submission against the
+  server's `EXPR` operation limit (`openjd.expr_operation_limit`), and that
+  cost grows with the number of slices. At the default limit a job of up to
+  400 slices fits. A longer source needs a longer `SegmentSeconds`, or the
+  Bash or PowerShell variant, whose join step costs the same whatever the
+  slice count (it lists slices with a directory glob at run time, not at
+  submission).
 
   Unlike the Bash and PowerShell variants, this template does not remove the
-  per-slice files after a successful join - there is no shell step to do it
-  in. They are left beside `OutputFile` for you to delete.
+  per-slice files after a successful join, because it has no shell step to do
+  it in. They are left beside `OutputFile` for you to delete.
 
   ## Requirements
 

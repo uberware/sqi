@@ -2,7 +2,7 @@
 -- Queue-scoped OS identity for task isolation. NULL means no isolation, which
 -- is what every existing queue gets.
 --
--- Deliberately no CHECK constraint: SQLite refuses ALTER TABLE DROP COLUMN on a
+-- No CHECK constraint: SQLite refuses ALTER TABLE DROP COLUMN on a
 -- column referenced by one, which would make the Down migration impossible
 -- without a full table rebuild. The value is validated in Go, including the
 -- non-configurable privileged-account refusal list.

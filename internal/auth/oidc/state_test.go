@@ -72,8 +72,8 @@ func TestState_EmptyKeyIsRefused(t *testing.T) {
 		}
 	}
 
-	// What an attacker would actually send: a payload they sealed themselves
-	// under the empty key. Built by hand because SealState now refuses to.
+	// What an attacker would send: a payload they sealed themselves under
+	// the empty key. Built by hand because SealState refuses to.
 	raw, err := json.Marshal(fs)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -120,8 +120,8 @@ func TestOpenState_RejectsExpiredState(t *testing.T) {
 			got, err := OpenState(key, sealed)
 			switch {
 			case tt.wantErr:
-				// Deliberately the same bare sentinel as a forged cookie: an
-				// expired state must not be distinguishable from a fake one.
+				// The same bare sentinel as a forged cookie: an expired
+				// state must not be distinguishable from a fake one.
 				if !errors.Is(err, ErrStateInvalid) {
 					t.Fatalf("err = %v, want ErrStateInvalid", err)
 				}

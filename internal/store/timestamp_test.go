@@ -187,7 +187,7 @@ func TestSubSecond_StaleAssignment(t *testing.T) {
 }
 
 // TestListStaleWorkers_SkipsANeverHeartbeatedWorker checks that every backend
-// treats a worker with no recorded heartbeat as not stale, as SQLite's NULL
+// treats a worker with no recorded heartbeat as not stale, as SQL's NULL
 // comparison does. The scheduler stamps a heartbeat at registration, so this
 // state occurs only in tests.
 func TestListStaleWorkers_SkipsANeverHeartbeatedWorker(t *testing.T) {
@@ -214,8 +214,8 @@ func TestListStaleWorkers_SkipsANeverHeartbeatedWorker(t *testing.T) {
 }
 
 // TestSubSecond_NanosecondsRoundTrip pins that a stored time keeps every
-// digit: the fake keeps times exactly, so SQLite must keep all nine fractional
-// digits or the two backends disagree about equality.
+// digit: the fake keeps times exactly, so the SQL stores must keep all nine
+// fractional digits or the backends disagree about equality.
 func TestSubSecond_NanosecondsRoundTrip(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

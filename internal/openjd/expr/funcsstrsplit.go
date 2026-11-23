@@ -11,36 +11,30 @@ import (
 // split, rsplit and join.
 //
 // They are separated from the padding group (funcsstrpad.go) because they are
-// bounded by a different quantity — an ELEMENT count here, a BYTE count there —
+// bounded by a different quantity — an element count here, a byte count there —
 // and one file holding both limits would give a reader no marker for which
 // applies where.
 //
 // Section 1.3.10: split and rsplit declare Cost{ArgBytes: []int{0}} on every
-// row, ArgBytes on the MAIN string only — confirmed NOT to be
-// ArgElements/ResultElements despite producing a list: a 5-word and a 150-word
-// whitespace split measure what their BYTE lengths predict, not their word
-// counts (TestOperationCount_SplitDoesNotChargeByWordCount). This matches
+// row, ArgBytes on the main string only, not ArgElements/ResultElements
+// despite producing a list: a 5-word and a 150-word whitespace split cost what
+// their byte lengths predict, not their word counts
+// (TestOperationCount_SplitDoesNotChargeByWordCount). This matches
 // shape.go's specNamedIteratingFunctions, rule 2's own enumeration, which does
-// NOT name split — only specNamedStringFunctions (rule 3) does.
+// not name split — only specNamedStringFunctions (rule 3) does.
 //
-// join is named by BOTH rule 2 (iterates a list) and rule 3 (processes
-// strings), and probing the reference shows it implements only rule 2's charge.
-// Holding the element count fixed at 5 and growing each element from 1 byte to
-// 300 bytes leaves the reference's own count UNCHANGED (6 both times) — it
-// never scales with string content at all. Per the standing rule ("the
-// specification outranks the reference"), sqi declares Cost{ArgElements:
-// []int{0}, ResultBytes: true} on the list[string] and list[path] rows:
-// ArgElements for rule 2 (matching the reference), and ResultBytes — not a
+// join is named by both rule 2 (iterates a list) and rule 3 (processes
+// strings), so sqi declares Cost{ArgElements: []int{0}, ResultBytes: true} on
+// the list[string] and list[path] rows: ArgElements for rule 2, and
+// ResultBytes — not a
 // per-element ArgBytes sum, which the Cost mechanism cannot express
-// (chargeArgs's ArgBytes reads a single argument's OWN .s payload, ops.go, and
-// args[0] here is the LIST, not a string) — for rule 3, charging the PRODUCED
+// (chargeArgs's ArgBytes reads a single argument's own .s payload, ops.go, and
+// args[0] here is the list, not a string) — for rule 3, charging the produced
 // joined string's length. ResultBytes-over-ArgBytes is the same idiom this
 // package already uses wherever a function's byte-proportional work is best
-// measured by what it BUILDS: padString (funcsstrpad.go) shares it, and so do
+// measured by what it builds: padString (funcsstrpad.go) shares it, and so do
 // the "+"/"*" operators (ops.go). See
-// TestOperationCount_JoinChargesElementsAndBytesTogether for the discriminating
-// probe and cost_string_internal_test.go's PROBE comment for the full reference
-// transcript.
+// TestOperationCount_JoinChargesElementsAndBytesTogether.
 var strSplitFuncs = map[string][]Shape{
 	// The no-separator form splits on runs of whitespace with the ends
 	// stripped, which is why split('   ') is [] while split('', ',') is [""].
@@ -76,11 +70,11 @@ var strSplitFuncs = map[string][]Shape{
 	// The list[path] row uses pathText, the same accessor len()'s path row
 	// uses (funcsconv.go), so a path renders identically wherever it is read.
 	// No string coercion happens here: this is a declared row, and the string
-	// functions rely on coercion only for a SCALAR path reaching a string
+	// functions rely on coercion only for a scalar path reaching a string
 	// parameter.
 	"join": {
 		// No Cost here (rather than a copy of the list[string] row's): a
-		// list[nulltype] argument is empty BY TYPE, so its element count is
+		// list[nulltype] argument is empty by type, so its element count is
 		// always provably 0 and its (always "") result is always 0 bytes — the
 		// charge would evaluate to 0 either way. Declared as an explicit zero,
 		// same precedent as flatten's and any/all's list[nulltype] rows
@@ -113,10 +107,10 @@ func stringList(parts []string) (Value, error) {
 // splitSep splits s on a non-empty sep, from the left or (when fromRight) the
 // right, at most maxsplit times.
 //
-// A NEGATIVE maxsplit means unlimited, which is Python's rule and the only one
+// A negative maxsplit means unlimited, which is Python's rule and the only one
 // RFC 0006 leaves room for — it documents maxsplit as "at most maxsplit times"
 // and defines no behavior below zero. The reference implementation returns an
-// EMPTY LIST for maxsplit = -1, discarding the whole string; that is a defect.
+// empty list for maxsplit = -1, discarding the whole string; that is a defect.
 func splitSep(s, sep string, maxsplit int64, fromRight bool) (Value, error) {
 	if sep == "" {
 		return Value{}, errEmptySeparator
@@ -147,7 +141,7 @@ func splitSep(s, sep string, maxsplit int64, fromRight bool) (Value, error) {
 }
 
 // joinValues concatenates the rendered elements with sep between them, bounding
-// the total BEFORE building it.
+// the total before building it.
 //
 // The separator contribution goes through checkRepeat for the same reason
 // replaceAll's growth does: len(sep) * (n-1) is exactly the quantity being

@@ -227,12 +227,13 @@ func TestBindSubmitIdentitySelfOwnerSkipsLookup(t *testing.T) {
 
 // TestBindSubmitIdentityCanonicalizesOwnerCasing pins that a submit-as
 // override persists the stored user's canonical casing, not whatever casing
-// the client supplied, exactly like the self path does. An ownerLookup that
-// discarded the looked-up User and returned only nil/err would let a case
-// variant (e.g. "ALICE" for a user stored as "alice") through verbatim, which
-// internal/config/config.go's ValidateJobOwner doc says must not happen: Job.Owner is meant to be a trustworthy key for owner-scoped
-// visibility, and a case variant splits one user across two owner buckets —
-// hiding the job from its real owner on any owner-filtered listing.
+// the client supplied, as the self path does. An ownerLookup that discarded
+// the looked-up User and returned only nil/err would let a case variant (e.g.
+// "ALICE" for a user stored as "alice") through verbatim, which
+// internal/config/config.go's ValidateJobOwner doc says must not happen:
+// Job.Owner is meant to be a trustworthy key for owner-scoped visibility, and
+// a case variant splits one user across two owner buckets, hiding the job
+// from its real owner on any owner-filtered listing.
 func TestBindSubmitIdentityCanonicalizesOwnerCasing(t *testing.T) {
 	lookup := func(_ context.Context, username string) (string, error) {
 		if strings.EqualFold(username, "alice") {
@@ -254,7 +255,7 @@ func TestBindSubmitIdentityCanonicalizesOwnerCasing(t *testing.T) {
 }
 
 // TestSubmitJobOperatorSubmitAsCanonicalizesOwnerCasing drives the same
-// regression end-to-end through the real job-submission handler with owner
+// case end-to-end through the real job-submission handler with owner
 // validation enabled, proving the persisted Job.Owner is canonicalized rather
 // than the client-supplied casing.
 func TestSubmitJobOperatorSubmitAsCanonicalizesOwnerCasing(t *testing.T) {
@@ -302,12 +303,11 @@ func TestSubmitJobOperatorSubmitAsCanonicalizesOwnerCasing(t *testing.T) {
 	}
 }
 
-// The auth-off passthrough must be keyed on the principal actually being the
+// The auth-off passthrough must be keyed on the principal being the
 // anonymous/auth-off identity, never on an empty Username. An authenticated
-// (non-anonymous) principal with no Username is a latent possibility (a
-// future LDAP/OIDC authenticator, or auth.KindService) and must still be run
-// through the jobs.submit_as check rather than bypassing it through a
-// `p.Username == ""` test.
+// (non-anonymous) principal with no Username, such as an auth.KindService
+// one, must still go through the jobs.submit_as check rather than bypassing
+// it through a `p.Username == ""` test.
 func TestBindSubmitIdentityAuthenticatedEmptyUsernameStillEnforcesSubmitAs(t *testing.T) {
 	ctx := auth.NewContext(context.Background(), auth.Principal{
 		Kind: auth.KindUser, Roles: []string{"user"}, // no jobs.submit_as

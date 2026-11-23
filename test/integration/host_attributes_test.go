@@ -2,23 +2,22 @@
 
 package integration
 
-// host_attributes_test.go — proves the two reserved OpenJD host attributes whose
-// vocabulary differs from Go's actually schedule work, end to end, through a
-// real sqi-worker.
+// host_attributes_test.go — checks that the two reserved OpenJD host
+// attributes whose vocabulary differs from Go's schedule work, end to end,
+// through a real sqi-worker.
 //
-// Both can break in a way no unit test catches, because the unit tests set
-// store.Worker fields directly and so cannot see whether the value reaches
-// the store at all:
+// The unit tests set store.Worker fields directly and so cannot see whether
+// the value reaches the store at all. Each attribute fails differently:
 //
 //   - attr.worker.os.family: comparing a template's "macos" against a
 //     worker's runtime.GOOS "darwin" matches no Mac.
 //   - attr.worker.cpu.arch: with no case in the matcher or no field on the
 //     worker, it resolves to "" and matches nothing on any platform.
 //
-// A regression in either shows up here as a job that never leaves ready and
+// A failure in either shows up here as a job that never leaves ready and
 // times out, which is why these assert on completion rather than on a value.
 //
-// NOT tagged `integration`, for the reason worker_binary_test.go and
+// Not tagged `integration`, for the reason worker_binary_test.go and
 // preset_ffmpeg_test.go are not: the CI `test` job runs `make test-cover`,
 // which passes no `-tags`, so a file behind that tag compiles and lints but
 // never executes there.
@@ -32,8 +31,8 @@ import (
 )
 
 // jobStatusNow reads a job's status once. [pollJobStatus] cannot serve the
-// negative case below: it fails the test when its target never arrives, and
-// "never arrives" is exactly what that case asserts.
+// negative case below: it fails the test when its target never arrives, which
+// is what that case asserts.
 func jobStatusNow(t *testing.T, ts *testServer, jobID string) string {
 	t.Helper()
 	var resp jobResp
@@ -42,12 +41,12 @@ func jobStatusNow(t *testing.T, ts *testServer, jobID string) string {
 }
 
 // specHostAttributes returns the attr.worker.os.family and attr.worker.cpu.arch
-// values a template must use to select THIS host — the specification's tokens,
-// which differ from runtime.GOOS/GOARCH for exactly two values.
+// values a template must use to select this host: the specification's tokens,
+// which differ from runtime.GOOS/GOARCH for two values.
 //
 // Written as an explicit mapping rather than by calling the scheduler's own
 // osFamily/cpuArch: reusing the code under test would make this test agree with
-// a wrong implementation. If sqi's translation regresses, these literals stay
+// a wrong implementation. If sqi's translation breaks, these literals stay
 // right and the job stops scheduling.
 func specHostAttributes(t *testing.T) (osFamily, cpuArch string) {
 	t.Helper()
@@ -116,8 +115,7 @@ func runHostAttributeJob(t *testing.T, attribute, value string) {
 
 // TestHostAttribute_OSFamilyMatchesThisHost is the end-to-end guard for the
 // darwin/macos translation. On a Mac it exercises the translation; on Linux
-// and Windows it is a cheap regression check that the pass-through cases
-// still work.
+// and Windows it checks the pass-through cases.
 func TestHostAttribute_OSFamilyMatchesThisHost(t *testing.T) {
 	osFamily, _ := specHostAttributes(t)
 	runHostAttributeJob(t, "attr.worker.os.family", osFamily)
@@ -135,9 +133,9 @@ func TestHostAttribute_CPUArchMatchesThisHost(t *testing.T) {
 }
 
 // TestHostAttribute_CPUArchMismatchDoesNotSchedule is the negative half. Without
-// it the test above would pass against a matcher that accepted everything —
-// including the "unreported architecture matches anything" mistake, which would
-// send x86_64 work to an arm64 host.
+// it the test above would pass against a matcher that accepted everything,
+// including one that let an unreported architecture match anything and so
+// sent x86_64 work to an arm64 host.
 //
 // It asserts the job is still waiting rather than that it failed: an unmatched
 // requirement is not an error, it is a task no worker will take.
@@ -156,7 +154,7 @@ func TestHostAttribute_CPUArchMismatchDoesNotSchedule(t *testing.T) {
 		hostAttributeJobYAML("attr.worker.cpu.arch", other))
 
 	// Long enough that a worker which was going to take the job already would
-	// have — the positive cases above complete in a second or two.
+	// have: the positive cases above complete in a second or two.
 	time.Sleep(5 * time.Second)
 
 	status := jobStatusNow(t, ts, jobID)

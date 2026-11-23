@@ -52,7 +52,7 @@ type UsageClaim struct {
 	ID            string
 	PoolID        string
 	TaskAttemptID string
-	// DB column: checked_out_at (historic name; kept to avoid a column-rename migration).
+	// ClaimedAt is stored in the checked_out_at column.
 	ClaimedAt  time.Time
 	ReleasedAt *time.Time // nil = currently active
 }

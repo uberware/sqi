@@ -16,9 +16,8 @@ import (
 // ── Minimal OpenJD template used by all e2e tests ─────────────────────────────
 
 // minimalJobYAML is a single-step, single-task OpenJD job with no parameter
-// space and a trivial echo command.  The command is never actually executed —
-// the mock worker skips process execution and publishes status messages
-// directly — so the command just needs to be syntactically valid.
+// space and an echo command. The mock worker runs no process and publishes
+// status messages directly, so the command only has to be valid.
 const minimalJobYAML = `specificationVersion: "jobtemplate-2023-09"
 name: Integration Test Job
 
@@ -34,15 +33,14 @@ steps:
 
 // ── Shared HTTP client ────────────────────────────────────────────────────────
 
-// httpClient is used by all REST helpers.  The 10-second timeout prevents
-// tests from hanging indefinitely if the server is wedged.
+// httpClient is the REST helpers' default client. Its 10-second timeout stops
+// a test hanging on a wedged server.
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
 // ── Wire types for REST assertions ────────────────────────────────────────────
 
-// These mirror the internal api package's unexported response types so we can
-// decode REST responses without importing the api package (which would create
-// a cross-package dependency from test/ into internal/).
+// These mirror the api package's unexported response types, so REST responses
+// decode without test/ importing internal/api.
 
 type jobResp struct {
 	ID     string `json:"id"`
@@ -72,8 +70,8 @@ func apiURL(ts *testServer, path string) string {
 }
 
 // mustDoJSON performs an HTTP request and decodes the JSON response body into
-// dst.  It fails the test on any transport or status error outside the
-// expected status code set.
+// dst. It fails the test on a transport error, a status other than
+// expectStatus, or a body that does not decode.
 func mustDoJSON(t *testing.T, method, url string, body []byte, contentType string, expectStatus int, dst any) {
 	t.Helper()
 	mustDoJSONClient(t, httpClient, method, url, body, contentType, expectStatus, dst)
@@ -136,7 +134,7 @@ func submitJob(t *testing.T, ts *testServer, farmID, queueID string) string {
 }
 
 // pollJobStatus polls GET /api/v1/jobs/{id} until the job reaches one of the
-// target statuses or timeout elapses.  Returns the final status reached.
+// target statuses, and returns that status. It fails the test after timeout.
 func pollJobStatus(t *testing.T, ts *testServer, jobID string, targets []string, timeout time.Duration) string {
 	t.Helper()
 	targetSet := make(map[string]bool, len(targets))
@@ -160,8 +158,8 @@ func pollJobStatus(t *testing.T, ts *testServer, jobID string, targets []string,
 	return ""
 }
 
-// pollWorkerOnline polls GET /api/v1/workers until at least one online worker
-// is visible, or timeout elapses.
+// pollWorkerOnline polls GET /api/v1/workers until workerID is listed online,
+// failing the test after timeout.
 func pollWorkerOnline(t *testing.T, ts *testServer, workerID string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -184,7 +182,7 @@ func pollWorkerOnline(t *testing.T, ts *testServer, workerID string, timeout tim
 func seedFarmAndQueue(t *testing.T, ts *testServer) (farmID, queueID string) {
 	t.Helper()
 
-	// POST /api/v1/farms — ID is server-generated; only name is required.
+	// The server generates the ID; only name is required.
 	farmBody := []byte(`{"name":"Integration Farm"}`)
 	var farmResp struct {
 		ID string `json:"id"`
@@ -194,7 +192,6 @@ func seedFarmAndQueue(t *testing.T, ts *testServer) (farmID, queueID string) {
 		t.Fatal("seedFarmAndQueue: server returned empty farm ID")
 	}
 
-	// POST /api/v1/queues — farm_id references the farm we just created.
 	queueBody, err := json.Marshal(map[string]any{
 		"farm_id": farmResp.ID,
 		"name":    "Integration Queue",
@@ -214,9 +211,9 @@ func seedFarmAndQueue(t *testing.T, ts *testServer) (farmID, queueID string) {
 }
 
 // pollTaskLogs polls GET /api/v1/tasks/{id}/logs until the concatenated log
-// output contains wantSubstr, or timeout elapses.  This avoids a fixed sleep
-// between the job completing and the log-ingestion consumer persisting chunks
-// (the two events flow through different NATS consumers: SQI_TASK and SQI_LOGS).
+// output contains wantSubstr, failing the test after timeout. A job can
+// complete before its log chunks are stored, because status and logs go
+// through different consumers (SQI_TASK and SQI_LOGS).
 func pollTaskLogs(t *testing.T, ts *testServer, taskID, wantSubstr string, timeout time.Duration) string {
 	t.Helper()
 	var lastLogs string
@@ -260,8 +257,7 @@ func firstTaskID(t *testing.T, ts *testServer, jobID string) string {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-// TestEndToEnd is the primary integration test.  It exercises the complete
-// lifecycle of a job:
+// TestEndToEnd runs a job through its whole lifecycle:
 //
 //  1. Boot a full sqi-server (SQLite or PostgreSQL + embedded NATS + scheduler + HTTP).
 //  2. Seed a farm and queue via REST.
@@ -284,19 +280,15 @@ func TestEndToEnd(t *testing.T) {
 	natsURL := "nats://" + ts.NATSAddr
 	worker := newMockWorker(t, natsURL, workerID, farmID, queueID)
 
-	// Register the worker and start sending periodic heartbeats so the server's
-	// heartbeat sweep does not mark it offline during slower CI runs.
+	// Heartbeats keep the server's heartbeat sweep from marking the worker
+	// offline on a slow host.
 	worker.register()
 	worker.startHeartbeat(5 * time.Second)
 	pollWorkerOnline(t, ts, workerID, 10*time.Second)
 
-	// Submit the job; it should immediately enter pending/running state as
-	// tasks become ready and the scheduler finds the online worker.
 	jobID := submitJob(t, ts, farmID, queueID)
 	t.Logf("submitted job %s", jobID)
 
-	// Pull the task assignment — the scheduler should dispatch within a few
-	// hundred milliseconds given the 100 ms AssignInterval set in startServer.
 	assign := worker.pullAssignment(15 * time.Second)
 	t.Logf("pulled assignment: task=%s attempt=%s", assign.TaskID, assign.AttemptID)
 
@@ -304,29 +296,20 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("assignment job ID: got %q, want %q", assign.JobID, jobID)
 	}
 
-	// Publish "running" — lets the server record the actual start time and
-	// the web UI shows the task as active.
 	worker.publishStatus(assign, "running", nil)
 
-	// Publish a log chunk before the terminal status so it arrives first in
-	// the SQI_LOGS stream.
 	const logLine = "hello from sqi integration test\n"
 	worker.publishLogChunk(assign, 1, logLine)
 
-	// Publish "succeeded".
 	exitCode := 0
 	worker.publishStatus(assign, "succeeded", &exitCode)
 
-	// Poll until the job reaches "completed" (all tasks succeeded).
 	finalStatus := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, 20*time.Second)
 	if finalStatus != "completed" {
 		t.Errorf("job final status: got %q, want %q", finalStatus, "completed")
 	}
 
-	// Poll for log output using a retry loop rather than a fixed sleep.  The
-	// log chunk and the task-status "succeeded" message flow through separate
-	// NATS consumers (SQI_LOGS vs SQI_TASK), so the job may be marked completed
-	// before the log chunk is persisted.
+	// The job can complete before the log chunk is stored (see pollTaskLogs).
 	taskID := firstTaskID(t, ts, jobID)
 	pollTaskLogs(t, ts, taskID, "hello from sqi", 10*time.Second)
 }
@@ -344,7 +327,6 @@ func TestWorkerRegistration(t *testing.T) {
 
 	pollWorkerOnline(t, ts, workerID, 10*time.Second)
 
-	// Fetch the specific worker record and check key fields.
 	var detail struct {
 		ID     string `json:"id"`
 		FarmID string `json:"farm_id"`
@@ -368,8 +350,7 @@ func TestWorkerRegistration(t *testing.T) {
 }
 
 // TestJobSubmissionValidation verifies that submitting a malformed OpenJD
-// template (empty steps list) returns a 4xx error, not a 5xx, confirming
-// that validation fires before the job is persisted.
+// template (an empty steps list) returns a 4xx status, not a 5xx or a 201.
 func TestJobSubmissionValidation(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -391,8 +372,6 @@ steps: []
 	}
 	defer resp.Body.Close()
 
-	// The server must reject the job with a client-error (4xx) status code,
-	// not a server error (5xx).  A 201 would indicate validation was bypassed.
 	if resp.StatusCode < 400 || resp.StatusCode >= 500 {
 		t.Errorf("POST /api/v1/jobs with empty steps: got status %d, want 4xx", resp.StatusCode)
 	}

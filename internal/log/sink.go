@@ -26,8 +26,8 @@ type SinkRecord struct {
 // Sink receives every log record that passes the configured level, in addition
 // to the normal stderr output.
 //
-// IMPORTANT: a Sink implementation MUST NOT emit slog records itself (directly
-// or indirectly).  Doing so re-enters the fan-out handler and creates an
+// A Sink implementation must not emit slog records itself, directly or
+// indirectly.  Doing so re-enters the fan-out handler and creates an
 // infinite logging loop.  Sink errors must be dropped or written straight to a
 // raw io.Writer, never routed back through slog.
 type Sink interface {
@@ -75,7 +75,7 @@ func (h *fanoutHandler) WithAttrs(as []slog.Attr) slog.Handler {
 
 func (h *fanoutHandler) WithGroup(name string) slog.Handler {
 	// Groups are preserved for stderr output but not flattened into sink attrs;
-	// diagnostic records are flat key/value for the UI. This is intentional.
+	// diagnostic records are flat key/value for the UI.
 	return &fanoutHandler{base: h.base.WithGroup(name), sink: h.sink, attrs: h.attrs}
 }
 

@@ -17,8 +17,8 @@ import (
 // ErrNotElevated is returned by RequireElevated.
 var ErrNotElevated = errors.New("this command must be run from an elevated (Administrator) shell")
 
-// advapi32 LSA and logon calls have no wrappers in golang.org/x/sys/windows
-// v0.48.0; they are declared here the way internal/worker/isolation declares
+// advapi32 LSA and logon calls have no wrappers in golang.org/x/sys/windows;
+// they are declared here the way internal/worker/isolation declares
 // LogonUserW.
 var (
 	modAdvapi32               = windows.NewLazySystemDLL("advapi32.dll")

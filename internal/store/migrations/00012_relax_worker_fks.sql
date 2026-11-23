@@ -11,15 +11,15 @@
 -- stays nullable.
 --
 -- SQLite cannot drop a column constraint in place, so each table is rebuilt
--- (the canonical 12-step table-rebuild). The new DDL mirrors the cumulative
--- current schema: tasks includes required_cores (added in 00010).
+-- (the canonical 12-step table-rebuild). The new DDL is the schema at version
+-- 11: tasks includes required_cores (added in 00010).
 --
 -- This migration is marked "NO TRANSACTION" so it runs outside goose's wrapping
 -- transaction. That is required because "PRAGMA foreign_keys = OFF" is a no-op
 -- inside a transaction: on a populated database the implicit row-delete that
 -- "DROP TABLE tasks" performs would otherwise fire the foreign keys that
 -- task_attempts and task_logs hold on tasks (and task_logs on task_attempts) and
--- fail. With foreign keys genuinely disabled for the rebuild the drops succeed,
+-- fail. With foreign keys disabled for the rebuild the drops succeed,
 -- and re-enabling them at the end does not re-validate existing rows. The
 -- operations are deterministic; a failure would halt startup with the version
 -- unchanged.

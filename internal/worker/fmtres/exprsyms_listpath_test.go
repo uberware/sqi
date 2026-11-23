@@ -13,27 +13,23 @@ import (
 )
 
 // hostPath and hostPathList render a POSIX-written expectation in the flavor
-// THIS host produces, because these tests assert on concrete path values built
+// this host produces, because these tests assert on concrete path values built
 // at phase 3.
 //
 // internal/worker/fmtres fixes expr.PathFormat to PathNative (exprsyms.go's
-// pathFlavor), which is not an accident to be normalized away here:
-// Expression-Language section 1.2.1 says host contexts (SESSION and TASK
-// scopes) take the host operating system's path semantics, and phase 3 IS a
-// host context — it runs on the worker, against a real session directory.
-// Phase 2, at TEMPLATE scope, correctly keeps POSIX so a server-side template
+// pathFlavor): Expression-Language section 1.2.1 says host contexts (SESSION
+// and TASK scopes) take the host operating system's path semantics, and
+// phase 3 is a host context, running on the worker against a real session
+// directory. Phase 2, at TEMPLATE scope, uses POSIX so a server-side template
 // expands identically whatever submitted it.
 //
-// So on a Windows worker `/mnt/render/shot.ma` really does come back as
-// `\mnt\render\shot.ma`, and that is correct. Hardcoding the POSIX
-// spelling only ever passed because CI runs these on Linux. On POSIX both helpers are
-// the identity transform, so the assertions there are byte-for-byte what they
-// were before.
+// So on a Windows worker `/mnt/render/shot.ma` comes back as
+// `\mnt\render\shot.ma`. On POSIX both helpers are the identity transform.
 func hostPath(posix string) string { return filepath.FromSlash(posix) }
 
 // hostPathList renders the String() form of a list[path]: JSON-style quoting,
-// ", " separated — so a Windows separator appears escaped, exactly as the
-// value's own String() escapes it.
+// ", " separated, so a Windows separator appears escaped, as the value's
+// String() escapes it.
 func hostPathList(posix ...string) string {
 	quoted := make([]string, len(posix))
 	for i, p := range posix {
@@ -44,7 +40,7 @@ func hostPathList(posix ...string) string {
 
 // TestTaskSymbols_ListPathIsMapped pins RFC 0007's requirement that
 // Param.<name> for a LIST[PATH] returns "a list[path] type value with path
-// mapping applied". A mapping branch that matched only a SCALAR path would
+// mapping applied". A mapping branch that matched only a scalar path would
 // send a decoded LIST[PATH] down the unmapped branch.
 func TestTaskSymbols_ListPathIsMapped(t *testing.T) {
 	msg := &protocol.AssignMsg{
@@ -68,7 +64,7 @@ func TestTaskSymbols_ListPathIsMapped(t *testing.T) {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 
-	// The scalar case, unchanged — proves the fixture's rule actually matches.
+	// The scalar case confirms the fixture's rule matches.
 	scene, ok := syms.Lookup("Param.Scene")
 	if !ok {
 		t.Fatal("Param.Scene not bound")
@@ -90,7 +86,7 @@ func TestTaskSymbols_ListPathIsMapped(t *testing.T) {
 }
 
 // TestTaskSymbols_ListPathRawIsUnmapped is the other half of section 1.2.2:
-// RawParam carries the ORIGINAL unmapped value, as list[string].
+// RawParam carries the original unmapped value, as list[string].
 func TestTaskSymbols_ListPathRawIsUnmapped(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		JobName: "J", StepName: "S",

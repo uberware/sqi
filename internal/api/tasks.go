@@ -374,8 +374,8 @@ func (h *taskHandler) getTaskAttempts(w http.ResponseWriter, r *http.Request) {
 // failed, or canceled) and all available chunks have been delivered, or until
 // the client disconnects.
 //
-// The poll interval is 500 ms — coarse enough to avoid hammering SQLite but
-// fine enough that log output feels responsive in a terminal.
+// The poll interval is 500 ms: coarse enough to keep the store load low, fine
+// enough that log output feels responsive in a terminal.
 func (h *taskHandler) streamTaskLogs(w http.ResponseWriter, r *http.Request, taskID string, afterNATSSeq int64, limit int) {
 	ctx := r.Context()
 

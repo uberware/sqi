@@ -2,7 +2,7 @@
 
 //go:build presetlib
 
-// Package presetlib_test validates the PUBLISHED preset library against the
+// Package presetlib_test validates the published preset library against the
 // validator in this working tree.
 //
 // The copy published at uberware.github.io/sqi-presets is refreshed only on
@@ -14,14 +14,13 @@
 // parses, so the first signal is a user clicking a preset and getting an
 // error.
 //
-// This test runs the published bytes through the same
-// path the server uses -- presetlib.FetchDefinition, which pins the sha256 and
-// then calls product.ParseDefinition -- so a validator change that invalidates
-// published content fails here rather than in someone's browser.
+// This test runs the published bytes through the path the server uses
+// (presetlib.FetchDefinition, which pins the sha256 and then calls
+// product.ParseDefinition), so a validator change that invalidates published
+// content fails here rather than in a user's browser.
 //
-// Build tag `presetlib` keeps it out of `make ci`: it needs the network, and a
-// unit-test suite that reaches the internet is a flake generator. Run it with
-// `make test-preset-library`.
+// Build tag `presetlib` keeps it out of `make ci`, because it needs the
+// network. Run it with `make test-preset-library`.
 package presetlib_test
 
 import (
@@ -37,8 +36,8 @@ import (
 )
 
 // defaultIndexURL mirrors config.Defaults()' preset_library.url. Duplicated
-// rather than imported so this test validates what operators actually get by
-// default, and fails if that default is repointed.
+// rather than imported so this test validates what operators get by default,
+// and fails if that default is repointed.
 const defaultIndexURL = "https://uberware.github.io/sqi-presets/index.json"
 
 // indexURL is the library under test. SQI_TEST_PRESET_LIBRARY_URL points it at
@@ -51,8 +50,8 @@ func indexURL() string {
 }
 
 // unreachable reports whether err is a transport failure rather than a verdict
-// about the content. An offline runner must SKIP; invalid content must FAIL.
-// Collapsing the two would let a real breakage hide behind a network blip.
+// about the content. An offline runner skips; invalid content fails. Treating
+// the two alike would let a real breakage hide behind a network failure.
 func unreachable(err error) bool {
 	var dnsErr *net.DNSError
 	var opErr *net.OpError
@@ -61,7 +60,7 @@ func unreachable(err error) bool {
 
 // validateOptions mirrors what the preset routes pass in production: limits
 // enforced, EXPR budget left at its defaults (this test has no operator
-// configuration to offer), and a generous deadline since we are validating a
+// configuration to offer), and a generous deadline, since this validates a
 // whole library rather than serving one request.
 func validateOptions() product.ValidateOptions {
 	return product.ValidateOptions{EnforceLimits: true}

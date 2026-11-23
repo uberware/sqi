@@ -653,8 +653,8 @@ describe('JobList', () => {
     })
 
     it('bulk cancel button is disabled when no cancelable rows selected', async () => {
-      // Use a completed job with only succeeded tasks — neither cancelable nor retryable —
-      // so that selectableJobs is empty and the select-all checkbox is disabled.
+      // A completed job with only succeeded tasks is neither cancelable nor retryable,
+      // so selectableJobs is empty and the select-all checkbox is disabled.
       const job = makeJob({
         status: 'completed',
         name: 'Done',

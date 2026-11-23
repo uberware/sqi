@@ -11,13 +11,11 @@ import (
 	"github.com/uberware/sqi/internal/openjd/expr"
 )
 
-// TestDerivedPrefixes_MatchTheShippedLiterals is the safety net for making the
-// scope declaration the single source of truth. The base-spec path keeps
-// prefix-matching and keeps its error text; only the SOURCE of the prefixes
-// moves. If a derived list ever differs from the literal it replaced, a
-// template that validates today could start failing, so this pins all three
-// byte for byte INCLUDING ORDER -- validateFormatString joins them into the
-// "allowed: ..." message a user reads.
+// TestDerivedPrefixes_MatchTheShippedLiterals pins the base-spec prefix lists
+// derived from the scope declaration. If a derived list changed, a template
+// that validates could start failing, so this pins all three byte for byte,
+// including order: validateFormatString joins them into the "allowed: ..."
+// message a user reads.
 func TestDerivedPrefixes_MatchTheShippedLiterals(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -148,8 +148,7 @@ func TestBootstrapAdmin_NoLogWhenSkippedWithoutCreds(t *testing.T) {
 
 // TestBootstrapAdmin_PasswordNeverLogged captures all log output emitted by a
 // successful bootstrap and asserts the plaintext password appears nowhere in
-// it. This branch has already shipped one password-leak bug (a config field
-// leaked via YAML marshal); this test guards the bootstrap path specifically.
+// it.
 func TestBootstrapAdmin_PasswordNeverLogged(t *testing.T) {
 	ctx := context.Background()
 	const secret = "correct-horse-battery-staple-swordfish"

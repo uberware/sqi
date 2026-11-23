@@ -14,16 +14,15 @@ package scheduler
 //     the job has not hit its failure limit — the attempt is closed as failed
 //     (usage-pool claims are released inside RecordTaskFailure's transaction),
 //     and the task is re-queued to [store.TaskStatusReady] with a backoff
-//     RetryAfter. It does NOT go through handleTaskTerminal /
-//     checkStepCompletion, since the step is not actually done — it must stay
+//     RetryAfter. It does not go through handleTaskTerminal /
+//     checkStepCompletion, since the step is not done: the task must stay
 //     eligible for re-lease.
 //   - PARKED: the job's cumulative failure count reached its FailureLimit —
 //     the job is parked (paused) first, then the tripping task still goes
 //     terminal-failed so the step/job completion cascade runs and the job
 //     settles instead of hanging half-running.
 //   - EXHAUSTED: failed_attempts reached MaxAttempts with no failure limit in
-//     play — the task goes terminal-failed via the existing handleTaskTerminal
-//     path.
+//     play — the task goes terminal-failed via handleTaskTerminal.
 //   - SHUTDOWN: a report whose Message is protocol.MessageWorkerShutdown is a
 //     reclaim, not a failure (handleTaskShutdown).
 
@@ -75,13 +74,13 @@ func (s *Scheduler) handleTaskFailed(ctx context.Context, attempt store.TaskAtte
 
 	if !firstClose {
 		// The attempt was already terminal when this message arrived. That is
-		// either a crash-recovery redelivery — the counters committed but the
-		// requeue/park action below was lost — or a STALE report: the attempt
+		// either a crash-recovery redelivery (the counters committed but the
+		// requeue/park action below was lost) or a stale report: the attempt
 		// was closed by a user cancel (canceled) or superseded by a newer
 		// attempt (worker reclaim + re-lease). Acting on a stale report would
-		// resurrect a canceled/succeeded task or yank a re-leased assignment
-		// from its worker, so proceed only when the attempt was genuinely
-		// closed as failed AND is still the task's latest.
+		// resurrect a canceled/succeeded task or take a re-leased assignment
+		// from its worker, so proceed only when the attempt was closed as
+		// failed and is still the task's latest.
 		proceed, err := s.failureReportStillCurrent(ctx, m.TaskID, attempt.ID)
 		if err != nil {
 			return err
@@ -154,8 +153,7 @@ func (s *Scheduler) reclaimAttempt(ctx context.Context, attemptID, taskID string
 	return true, nil
 }
 
-// retryTaskAfterFailure re-queues the task with backoff. Split out of
-// handleTaskFailed to keep cyclomatic complexity in check.
+// retryTaskAfterFailure re-queues the task with backoff for handleTaskFailed.
 func (s *Scheduler) retryTaskAfterFailure(
 	ctx context.Context,
 	task store.Task,

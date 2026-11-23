@@ -13,28 +13,25 @@ import (
 )
 
 // noFollowFlag is OR'd into every os.OpenFile call in copyFile that must not
-// traverse a final-component symlink — see that function's doc.
+// traverse a final-component symlink; see that function's doc.
 //
-// copyFile is the STAGE-IN path only: stage-out goes through
-// openStageOutSource, which opens via os.Root and needs no such flag because
-// the kernel refuses the lookup outright. This constant still matters because
-// a stage-in source is a job-declared asset outside any root, so there is no
-// os.Root to open it through.
+// copyFile is used for stage-in only. Stage-out opens through an os.Root
+// (openStageOutSource) and needs no such flag. A stage-in source is a
+// job-declared asset outside any root, so there is no os.Root to open it
+// through.
 const noFollowFlag = syscall.O_NOFOLLOW
 
 // hasExtraHardlinks reports whether f's underlying inode has more than one
 // directory entry (link) pointing at it. A hardlink shares one inode with
 // whatever it is linked to, so a stage-out source with an extra hardlink
-// leaks its link partner identically to a symlink once copied — see
-// openStageOutSource's doc for the full threat model.
+// exposes its link partner once copied, as a symlink would (see
+// openStageOutSource's doc).
 //
-// It takes *os.File rather than os.FileInfo because that is the only shape
-// BOTH platforms can satisfy: Windows exposes no link count through
-// os.FileInfo at all (Sys() is *syscall.Win32FileAttributeData, and Go's
-// Windows fileStat carries no NumberOfLinks field), only through
-// GetFileInformationByHandle on an open handle. Taking a descriptor also
-// makes every call site inherently fd-based, which is the property that
-// closes the TOCTOU rather than merely narrowing it.
+// It takes *os.File rather than os.FileInfo because Windows exposes a link
+// count only through GetFileInformationByHandle on an open handle (Sys() is
+// *syscall.Win32FileAttributeData, and Go's Windows fileStat carries no
+// NumberOfLinks field). Taking a descriptor also means every call site checks
+// the inode it reads.
 func hasExtraHardlinks(f *os.File) (bool, error) {
 	info, err := f.Stat()
 	if err != nil {
@@ -48,7 +45,7 @@ func hasExtraHardlinks(f *os.File) (bool, error) {
 }
 
 // isAccessError reports whether err from an os.Root lookup is a permission or
-// I/O failure rather than a containment refusal — see
+// I/O failure rather than a containment refusal; see
 // classifyStageOutOpenError for why the two must not be worded alike. An
 // escape or a refused reparse point surfaces from os.Root as its own
 // "path escapes from parent" error (or ELOOP), never as one of these.

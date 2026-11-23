@@ -10,8 +10,7 @@ const (
 	// DefaultLimit is the page size used when the caller does not specify one.
 	DefaultLimit = 50
 	// MaxLimit is the maximum page size accepted from callers. Requests above
-	// this are clamped rather than rejected, matching the behavior of most
-	// REST pagination conventions.
+	// it are clamped rather than rejected.
 	MaxLimit = 1000
 )
 
@@ -19,7 +18,7 @@ const (
 // Zero values are treated as "use defaults"; call [Pagination.Validate] before
 // passing to a store method to ensure limits are applied.
 type Pagination struct {
-	// Limit is the maximum number of items to return. 0 means use
+	// Limit is the maximum number of items to return. 0 or less means use
 	// [DefaultLimit]. Values above [MaxLimit] are clamped to [MaxLimit].
 	Limit int
 	// Offset is the zero-based index of the first item to return.
@@ -27,9 +26,8 @@ type Pagination struct {
 }
 
 // Validate clamps Limit into the range [1, MaxLimit], applying [DefaultLimit]
-// when Limit is zero. Negative Offset is reset to zero. It returns an error
-// only for values that cannot be silently corrected (currently none — all
-// out-of-range values are clamped).
+// when Limit is zero or negative. Negative Offset is reset to zero. It always
+// returns nil: every out-of-range value is clamped.
 func (p *Pagination) Validate() error {
 	if p.Limit <= 0 {
 		p.Limit = DefaultLimit
@@ -43,8 +41,8 @@ func (p *Pagination) Validate() error {
 	return nil
 }
 
-// ErrInvalidPagination is returned when Pagination contains values that
-// cannot be corrected by clamping (reserved for future use).
+// ErrInvalidPagination is reserved for Pagination values that cannot be
+// corrected by clamping. No store method returns it.
 var ErrInvalidPagination = errors.New("store: invalid pagination parameters")
 
 // ── Sort direction ────────────────────────────────────────────────────────────

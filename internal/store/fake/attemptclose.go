@@ -52,7 +52,7 @@ func (s *Store) closeRunningAttemptLocked(c store.AttemptCompletion) {
 
 // CompleteTaskAttempt implements [store.TaskStore].
 //
-// The outcomes match the SQLite store's, which is the reference:
+// The outcomes match the SQL store's, which is the reference:
 //   - unknown task: [store.ErrNotFound], nothing written;
 //   - c.AttemptID is not the task's latest attempt (a newer lease superseded
 //     it): Rejected, the task and its failure reason are left alone, but the
@@ -118,7 +118,7 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 
 // CancelJobExecution implements [store.TaskStore].
 //
-// The outcomes match the SQLite store's, which is the reference: every
+// The outcomes match the SQL store's, which is the reference: every
 // non-terminal task of the job is canceled with its worker assignment cleared,
 // then every running attempt of the job's tasks (including one on a task that
 // was already terminal) is closed, then the claims of the job's closed attempts
@@ -154,7 +154,7 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 	return active, nil
 }
 
-// cancelJobRowLocked is SQLite's sqlCancelJobStatus inside the job cancel: the
+// cancelJobRowLocked is sqlstore's sqlCancelJobStatus inside the job cancel: the
 // job becomes canceled, stamped completed_at and updated_at now, unless it is
 // missing or already completed, failed or canceled, which it leaves exactly as
 // it is. Caller holds s.mu.
@@ -168,7 +168,7 @@ func (s *Store) cancelJobRowLocked(jobID string, now time.Time) {
 	s.jobs[jobID] = j
 }
 
-// cancelJobFinalizeStepsLocked is SQLite's sqlCancelJobFinalizeSteps: every
+// cancelJobFinalizeStepsLocked is sqlstore's sqlCancelJobFinalizeSteps: every
 // open step of the job becomes terminal. A pending step, or one with no tasks,
 // is canceled; any other open step gets FinalizeStep's outcome. A step with a
 // task still in flight is left alone. Caller holds s.mu.
@@ -192,7 +192,7 @@ func (s *Store) cancelJobFinalizeStepsLocked(jobID string, now time.Time) {
 
 // CancelTaskExecution implements [store.TaskStore].
 //
-// The outcomes match the SQLite store's: an unknown task is
+// The outcomes match the SQL store's: an unknown task is
 // [store.ErrNotFound]; a terminal task is returned unchanged with false and
 // nothing is written (its attempts and claims are left to whatever closed it);
 // otherwise the task is canceled with its worker assignment kept, then its
@@ -264,7 +264,7 @@ func (s *Store) closeAttemptsAndReleaseClaimsLocked(matches func(taskID string) 
 
 // OfflineStaleWorker implements [store.WorkerStore].
 //
-// The outcomes match the SQLite store's, which is the reference: the worker
+// The outcomes match the SQL store's, which is the reference: the worker
 // goes offline only while it is online, disabled or not, and its
 // heartbeat is strictly older than cutoff (a worker with no recorded heartbeat
 // is never stale, as SQL's NULL comparison has it, and an unknown worker is
@@ -328,7 +328,7 @@ func inFlightOn(workerID string) func(store.Task) bool {
 	return func(t store.Task) bool { return t.AssignedWorkerID == workerID && inFlightTask(t.Status) }
 }
 
-// reclaimWorkerTasksLocked is SQLite's reclaimWorkerTasksTx: the worker's
+// reclaimWorkerTasksLocked is sqlstore's reclaimWorkerTasksTx: the worker's
 // assigned and running tasks go back to ready, their attempts closed as failed
 // with message and their claims released. Caller holds s.mu and passes UTC.
 func (s *Store) reclaimWorkerTasksLocked(workerID, message string, now time.Time) []store.Task {

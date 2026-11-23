@@ -12,8 +12,8 @@
 // build overwrites it with the hashed production assets. See web/README.md and
 // docs/web-build.md for the build-and-embed flow.
 //
-// The embed declaration lives in this package — rather than in internal/ui —
-// because Go's embed directive can only reference files at or below the
+// The embed declaration lives in this package, not in internal/ui, because
+// Go's embed directive can only reference files at or below the
 // embedding source file's own directory. internal/ui consumes the [fs.FS]
 // returned by [Dist] to implement the HTTP serving and SPA-fallback logic.
 package web
@@ -26,12 +26,12 @@ import (
 
 // distFS holds the embedded web/dist bundle.
 //
-// The plain (non-"all:") form deliberately excludes files whose names begin with
-// "." or "_". That keeps OS sidecar junk (e.g. macOS "._index.html" resource
-// forks) and editor dotfiles out of the binary; the Vite build that populates
-// web/dist emits only normally-named files (index.html, assets/*), so nothing we
-// need is dropped. If a future bundler emits "_"-prefixed paths, switch this to
-// "all:dist" and add a build step that strips OS sidecars first.
+// The plain (non-"all:") form excludes files whose names begin with "." or
+// "_". That keeps OS sidecar files (e.g. macOS "._index.html" resource forks)
+// and editor dotfiles out of the binary; the Vite build that populates
+// web/dist emits only normally-named files (index.html, assets/*), so nothing
+// needed is dropped. A bundler that emits "_"-prefixed paths would need
+// "all:dist" plus a build step that strips OS sidecars first.
 //
 //go:embed dist
 var distFS embed.FS

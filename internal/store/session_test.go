@@ -42,8 +42,8 @@ func TestSessionStore_IssueVerifyRevoke(t *testing.T) {
 			}
 
 			// Exact-boundary: a lookup at precisely ExpiresAt must be
-			// treated as expired. Both backends use a strict comparison
-			// (sqlite `expires_at > ?`, fake `ExpiresAt.After(now)`), so
+			// treated as expired. Every backend uses a strict comparison
+			// (SQL `expires_at > ?`, fake `ExpiresAt.After(now)`), so
 			// equality means expired, not still-valid.
 			if _, err := st.GetSessionByTokenHash(ctx, sess.TokenHash, sess.ExpiresAt); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("session at exact ExpiresAt boundary should be ErrNotFound, got %v", err)
@@ -60,10 +60,11 @@ func TestSessionStore_IssueVerifyRevoke(t *testing.T) {
 }
 
 // TestSessionStore_CreateSession_OrphanUser verifies that creating a session
-// whose user_id references no user is rejected — SQLite via the `REFERENCES
-// users(id)` foreign key (PRAGMA foreign_keys=ON), the fake via an explicit
-// existence check. Both must surface store.ErrConflict (the FOREIGN KEY
-// violation is mapped to that sentinel by mapErr in sqlstore/scan.go).
+// whose user_id references no user is rejected: the SQL stores through the
+// `REFERENCES users(id)` foreign key (on SQLite with PRAGMA foreign_keys=ON),
+// the fake through an explicit existence check. Each must surface
+// store.ErrConflict (the FOREIGN KEY violation is mapped to that sentinel by
+// mapErr in sqlstore/scan.go).
 func TestSessionStore_CreateSession_OrphanUser(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -82,8 +83,9 @@ func TestSessionStore_CreateSession_OrphanUser(t *testing.T) {
 }
 
 // TestSessionStore_CreateSession_DuplicateTokenHash verifies that creating a
-// second session with an already-used token_hash is rejected — SQLite via
-// `token_hash TEXT NOT NULL UNIQUE`, the fake via an explicit check.
+// second session with an already-used token_hash is rejected: the SQL stores
+// through `token_hash TEXT NOT NULL UNIQUE`, the fake through an explicit
+// check.
 func TestSessionStore_CreateSession_DuplicateTokenHash(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -140,8 +142,8 @@ func TestSessionStore_DeleteExpired(t *testing.T) {
 	}
 }
 
-// TestSessionStore_CreateSession_DuplicateID pins the fake to SQLite's
-// `id TEXT PRIMARY KEY`: re-using a session ID is a conflict, not a silent
+// TestSessionStore_CreateSession_DuplicateID pins the fake to the SQL stores'
+// `id TEXT PRIMARY KEY`: re-using a session ID is a conflict, not an
 // overwrite of the existing session.
 func TestSessionStore_CreateSession_DuplicateID(t *testing.T) {
 	for name, st := range newStores(t) {
@@ -195,9 +197,9 @@ func TestSessionStore_GetSessionUserByTokenHash(t *testing.T) {
 				t.Fatalf("CreateSession: %v", err)
 			}
 
-			// Every user column must survive the join — the SQLite select
-			// lists them positionally, so a reordering would silently swap
-			// fields rather than fail.
+			// Every user column must survive the join: the SQL select lists
+			// them positionally, so a reordering would swap fields rather
+			// than fail.
 			got, err := st.GetSessionUserByTokenHash(ctx, hash, now)
 			if err != nil {
 				t.Fatalf("GetSessionUserByTokenHash: %v", err)

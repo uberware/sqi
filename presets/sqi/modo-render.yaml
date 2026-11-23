@@ -18,7 +18,7 @@ readme: |
   single-frame job before any longer one.
 
   Modo is discontinued. 17.1 was the last release (Foundry, November
-  2024), the self-service download has ended and downloads now go through a
+  2024), the self-service download has ended and downloads go through a
   Foundry support ticket. The end-of-life license is an RLM `uncounted
   hostid=ANY` key that Modo finds through the `foundry_LICENSE` environment
   variable. Set that variable in the worker's environment.

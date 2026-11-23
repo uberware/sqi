@@ -4,22 +4,20 @@
 
 package integration
 
-// TestRevocation_DisconnectsAndReclaims proves revocation end to end: DELETE
+// TestRevocation_DisconnectsAndReclaims tests revocation end to end: DELETE
 // /api/v1/workers/{id}/credential revokes in the store, then asks the broker
-// to disconnect the worker, which closes the revoked worker's live NATS
-// connection synchronously: inside the broker's Revoke call, which returns
-// only after its final pass has disconnected any connection left. The
-// worker's reconnect goes back through the auth callout, which refuses the
-// revoked key. The disconnected worker's in-flight task is then returned to
-// ready by the EXISTING heartbeat-sweep/reclaim path (internal/scheduler), not by
-// anything this test reimplements, and a second, unrevoked
-// worker is left completely unaffected and able to lease the reclaimed
-// task.
+// to disconnect the worker. The broker's Revoke call closes the revoked
+// worker's live NATS connection synchronously, returning only after its final
+// pass has disconnected any connection left. The worker's reconnect goes back
+// through the auth callout, which refuses the revoked key. The disconnected
+// worker's in-flight task is then returned to ready by the scheduler's
+// heartbeat-sweep reclaim path (internal/scheduler), and a second, unrevoked
+// worker is unaffected and leases the reclaimed task.
 //
-// This is deliberately distinct from "sqi-server worker revoke" (the CLI),
-// which writes the same store row from a separate process holding no broker
-// handle and only takes effect at the running server's next start — that
-// path is covered by cmd/sqi-server's own tests, not here.
+// This is distinct from "sqi-server worker revoke" (the CLI), which writes the
+// same store row from a separate process holding no broker handle and takes
+// effect at the running server's next start; cmd/sqi-server's tests cover that
+// path.
 
 import (
 	"context"
@@ -52,18 +50,16 @@ import (
 // enabled and a short heartbeat-sweep timing so a revoked worker's task is
 // reclaimed within seconds rather than this suite's default 30s. Auth
 // (session/API-key) is left off: DELETE /api/v1/workers/{id}/credential is
-// mounted unconditionally regardless of AuthEnabled (the anonymous
-// superuser principal is granted it, same as most permission-gated routes),
-// so nothing about the revocation path this test exercises needs a login
-// flow.
+// mounted whatever AuthEnabled says (the anonymous superuser principal is
+// granted it, as for most permission-gated routes), so the revocation path
+// needs no login.
 //
-// so is the caller's choice (from storeFor), not a generated store, so a
+// so is chosen by the caller (from storeFor) rather than generated, so a
 // caller can open its own handle on the same database and seed rows (e.g. an
-// enrolled worker credential) BEFORE calling this — see
-// seedWorkerCredential. On SQLite the store's write pool is a single
-// connection; seeding must complete and close its handle before this server
-// opens its own, not run concurrently with it. The same order is kept on
-// PostgreSQL, though a second handle would do no harm there.
+// enrolled worker credential) before calling this; see seedWorkerCredential.
+// On SQLite the store's write pool is a single connection, so seeding must
+// finish and close its handle before this server opens its own. The same
+// order is kept on PostgreSQL, though a second handle would do no harm there.
 func startBrokerAuthServer(t *testing.T, so backend.Options, mutate func(*server.Config)) *testServer {
 	t.Helper()
 
@@ -79,10 +75,10 @@ func startBrokerAuthServer(t *testing.T, so backend.Options, mutate func(*server
 			AssignInterval:  100 * time.Millisecond,
 			AssignBatchSize: 10,
 			AssignWorkers:   2,
-			// Short enough that the heartbeat-sweep reclaim this test
-			// verifies against completes in a few seconds, not this
-			// suite's usual 30s/15s (tuned for tests that never exercise
-			// offline detection at all).
+			// Short enough that the heartbeat-sweep reclaim these tests
+			// wait for completes in a few seconds, not this suite's usual
+			// 30s/15s (sized for tests that never exercise offline
+			// detection).
 			WorkerTimeout:          2 * time.Second,
 			HeartbeatSweepInterval: 300 * time.Millisecond,
 			// The server's default grace (~3 minutes, sized for a worker's
@@ -129,7 +125,7 @@ func startBrokerAuthServer(t *testing.T, so backend.Options, mutate func(*server
 	}
 
 	ts := &testServer{HTTPAddr: httpAddr, NATSAddr: natsAddr, Store: so, DBPath: so.SQLitePath, cancel: cancel, done: done}
-	// Derive the transport from the config this server was actually given, so
+	// Derive the transport from the config this server was given, so
 	// every shared helper (apiURL, seedFarmAndQueue, pollForOnlineWorker, the
 	// readiness probe below) speaks the right scheme with no TLS-specific
 	// variants. `sqi-server tls init` writes ca.crt beside the server cert,
@@ -150,9 +146,9 @@ func startBrokerAuthServer(t *testing.T, so backend.Options, mutate func(*server
 	if !waitForTCP(t, httpAddr, 10*time.Second) {
 		t.Fatalf("startBrokerAuthServer: HTTP server did not start listening on %s (NATS %s)", httpAddr, natsAddr)
 	}
-	// Readiness must be probed over whatever scheme this server is actually
-	// serving: an https:// listener answers a plaintext GET with a 400, which
-	// would look like "never became ready" forever. A TLS caller stamps
+	// Readiness must be probed over the scheme this server serves: an https://
+	// listener answers a plaintext GET with a 400, which would read as never
+	// becoming ready. A TLS caller stamps
 	// ts.Scheme/ts.Client before this runs (see startTLSServer in tls_test.go).
 	if !waitForReadyzClient(t, clientFor(ts), apiURL(ts, "/readyz"), 10*time.Second) {
 		t.Fatalf("startBrokerAuthServer: server did not become ready (HTTP %s, NATS %s)", httpAddr, natsAddr)
@@ -161,16 +157,14 @@ func startBrokerAuthServer(t *testing.T, so backend.Options, mutate func(*server
 }
 
 // seedWorkerCredential inserts an already-enrolled [store.WorkerCredential]
-// row directly into the database o names, mirroring what
-// "sqi-server worker enroll" (the offline CLI enrollment path) writes — a
-// direct store.CreateWorkerCredential call from a process holding no broker
-// handle, so (unlike POST /workers/enroll, see enrollWorker below) it makes
-// no broker call at all; the broker's auth callout reads the row from the
-// store when the worker connects. Used by
-// TestRevocation_DisconnectsAndReclaims, which wants both its workers
-// connectable from the moment the server boots and has no other reason to
-// exercise the REST enrollment surface. Must run before the server opens
-// its own connection to the same database — see startBrokerAuthServer.
+// row directly into the database o names, as "sqi-server worker enroll" (the
+// offline CLI enrollment path) does: a direct store.CreateWorkerCredential
+// call from a process holding no broker handle, making no broker call. The
+// broker's auth callout reads the row from the store when the worker
+// connects. Tests use it when they want workers connectable from the moment
+// the server boots and do not test the REST enrollment surface (see
+// enrollWorker for that). Must run before the server opens its own
+// connection to the same database; see startBrokerAuthServer.
 func seedWorkerCredential(t *testing.T, o backend.Options, workerID, publicKey string) {
 	t.Helper()
 	ctx := context.Background()
@@ -190,11 +184,10 @@ func seedWorkerCredential(t *testing.T, o backend.Options, workerID, publicKey s
 }
 
 // seedJoinToken inserts a join token row directly into the database o names
-// and returns the raw token, bypassing POST /workers/join-tokens
-// (which requires session auth this suite does not otherwise need — minting
-// is not what either enrollment or revocation testing is about here). Must
-// run before the server opens its own connection to the same database,
-// same rule as seedWorkerCredential.
+// and returns the raw token, bypassing POST /workers/join-tokens, which
+// requires session auth these tests do not otherwise need. Must run before
+// the server opens its own connection to the same database, as with
+// seedWorkerCredential.
 func seedJoinToken(t *testing.T, o backend.Options, name string) string {
 	t.Helper()
 	raw, hash, prefix, err := jointoken.Generate()
@@ -288,12 +281,12 @@ func pollTaskStatus(t *testing.T, ts *testServer, taskID string, targets []strin
 // by nats.go retrying (and getting the same auth error) for some time first,
 // mirroring internal/bus's own revocation tests.
 //
-// The per-worker inbox prefix is not optional decoration: an enrolled
-// worker is granted "_INBOX_<id>.>" and nothing wider, so a connection left
-// on nats.go's process-global "_INBOX" cannot even subscribe to its own
-// reply inbox — every JetStream publish then fails waiting for a PubAck it
-// is not allowed to hear. internal/worker/natsclient sets the same option
-// on every real worker connection.
+// The per-worker inbox prefix is required: an enrolled worker is granted
+// "_INBOX_<id>.>" and nothing wider, so a connection on nats.go's default
+// "_INBOX" cannot subscribe to its own reply inbox, and every JetStream
+// publish fails waiting for a PubAck it is not allowed to receive.
+// internal/worker/natsclient sets the same option on every real worker
+// connection.
 func newMockWorkerWithNkey(t *testing.T, natsURL, workerID, farmID, queueID string, seed []byte, pub string, extraOpts ...nats.Option) *mockWorker {
 	t.Helper()
 
@@ -396,15 +389,13 @@ func TestRevocation_DisconnectsAndReclaims(t *testing.T) {
 		t.Fatal("worker A's NATS connection was not closed by revocation")
 	}
 
-	// 2. A's task returns to ready via a legal store.ValidateTaskTransition
-	// arrow (running -> ready), applied by the EXISTING heartbeat-sweep and
-	// reclaim path once A's missed heartbeats exceed WorkerTimeout — not by
-	// anything this test or RevokeWorker itself does directly.
+	// 2. A's task returns to ready (running -> ready), moved by the
+	// heartbeat-sweep reclaim path once A's missed heartbeats exceed
+	// WorkerTimeout, not by this test or by RevokeWorker.
 	pollTaskStatus(t, ts, taskID, []string{"ready"}, 8*time.Second)
 
-	// 3. B is unaffected and can still lease — proven by actually leasing
-	// the reclaimed task, which simultaneously confirms the reclaim resulted
-	// in a real reassignment rather than a status stuck at "ready".
+	// 3. B is unaffected and can still lease: it leases the reclaimed task,
+	// which also confirms the reclaimed task can be assigned again.
 	assignB := workerB.pullAssignment(10 * time.Second)
 	if assignB.TaskID != taskID {
 		t.Fatalf("worker B's assignment: got task %q, want the reclaimed task %q", assignB.TaskID, taskID)
@@ -434,22 +425,21 @@ func pollWorkerOffline(t *testing.T, ts *testServer, workerID string, timeout ti
 	t.Fatalf("pollWorkerOffline: worker %s did not go offline within %s", workerID, timeout)
 }
 
-// TestWorkerDeletion_RevokesCredentialAndDisconnects proves the cascade DELETE
-// /api/v1/workers/{id} performs: removing a worker record
-// also revokes its broker credential, through the same synchronous
+// TestWorkerDeletion_RevokesCredentialAndDisconnects tests the cascade DELETE
+// /api/v1/workers/{id} performs: removing a worker record also revokes its
+// broker credential, through the same synchronous
 // store-write-then-broker-disconnect path DELETE /workers/{id}/credential uses.
-// Without it, a machine an operator has just decommissioned from the farm
-// keeps live broker access — able to connect, lease work and execute job
-// code — because WorkersManage (what deleting a worker requires) does not
-// imply WorkersEnroll (what revoking a credential directly requires).
+// Without it, a machine an operator has decommissioned would keep broker
+// access (able to connect, lease work and execute job code), because
+// WorkersManage (what deleting a worker requires) does not imply
+// WorkersEnroll (what revoking a credential directly requires).
 //
 // worker-a never heartbeats after registering, so the heartbeat sweep marks
-// it offline on its own — the ONLY status DELETE /workers/{id} accepts
-// without an extra disable step — while its NATS connection stays live
-// (nothing here closes it). The test then deletes the worker over REST and
-// asserts the still-open connection is closed by the same
-// Broker.Revoke call TestRevocation_DisconnectsAndReclaims already
-// proves is synchronous for the dedicated credential-revoke endpoint.
+// it offline, the only status DELETE /workers/{id} accepts without a disable
+// step, while its NATS connection stays open. The test then deletes the
+// worker over REST and asserts the open connection is closed by the same
+// Broker.Revoke call TestRevocation_DisconnectsAndReclaims tests for the
+// credential-revoke endpoint.
 func TestWorkerDeletion_RevokesCredentialAndDisconnects(t *testing.T) {
 	so := storeFor(t, t.TempDir()+"/sqi-broker-auth-delete.db")
 
@@ -467,11 +457,10 @@ func TestWorkerDeletion_RevokesCredentialAndDisconnects(t *testing.T) {
 	workerA := newMockWorkerWithNkey(t, natsURL, "worker-a", farmID, queueID, seedA, pubA,
 		nats.ClosedHandler(func(*nats.Conn) { close(closedA) }))
 	workerA.register()
-	// Deliberately no startHeartbeat: the worker must go offline in the
-	// store (the only status DELETE /workers/{id} accepts here) while its
-	// NATS connection stays open, so the disconnect this test asserts on
-	// can only be explained by the revoke-on-delete cascade, not by the
-	// worker's own connection dying of neglect.
+	// No startHeartbeat: the worker must go offline in the store (the only
+	// status DELETE /workers/{id} accepts here) while its NATS connection
+	// stays open, so the disconnect asserted below can only come from the
+	// revoke-on-delete cascade.
 	pollWorkerOffline(t, ts, "worker-a", 5*time.Second)
 
 	mustDoJSON(t, http.MethodDelete, apiURL(ts, "/api/v1/workers/worker-a"), nil, "", http.StatusNoContent, nil)
@@ -560,12 +549,11 @@ func TestRevocation_ParkedLeaseGetsNoWork(t *testing.T) {
 	}
 }
 
-// TestEnrollment_ConnectsToRunningBrokerWithoutRestart guards that
-// enrollment needs no broker call: the broker's auth callout reads the
-// credential from the store when the worker connects, so a worker enrolled
-// over POST /workers/enroll against a running server connects without a
-// restart or reload. This enrolls a worker over the real REST wire protocol
-// after the server is already up, with no restart in between, and asserts it
+// TestEnrollment_ConnectsToRunningBrokerWithoutRestart checks that enrollment
+// needs no broker call: the broker's auth callout reads the credential from
+// the store when the worker connects, so a worker enrolled over POST
+// /workers/enroll against a running server connects without a restart or
+// reload. It enrolls a worker over REST after the server is up and asserts it
 // connects and registers.
 func TestEnrollment_ConnectsToRunningBrokerWithoutRestart(t *testing.T) {
 	so := storeFor(t, t.TempDir()+"/sqi-broker-auth-enroll.db")
@@ -593,20 +581,19 @@ func TestEnrollment_ConnectsToRunningBrokerWithoutRestart(t *testing.T) {
 	workerC.register()
 	workerC.startHeartbeat(200 * time.Millisecond)
 
-	// pollWorkerOnline itself has no generous fixed sleep baked in beyond its
-	// own timeout — a rejected connection here would mean register()'s
-	// underlying nats.Connect (inside newMockWorkerWithNkey) already failed
-	// the test outright with "Authorization Violation", so reaching this
-	// point at all already proves the enrolled worker could connect.
+	// A rejected connection would already have failed the test in
+	// newMockWorkerWithNkey's nats.Connect with "Authorization Violation", so
+	// reaching this point shows the enrolled worker connected; this checks it
+	// also registered.
 	pollWorkerOnline(t, ts, "worker-c", 5*time.Second)
 }
 
-// ── The default-config regression ───────────────────────────────────────────
+// ── The default configuration ───────────────────────────────────────────────
 
 // listActiveWorkerCredentials opens a second, independent handle on the
 // database a running server was started against and calls
-// ListActiveWorkerCredentials. This is safe to run WHILE that server is
-// still up: on SQLite the store opens every database in WAL mode, which
+// ListActiveWorkerCredentials. This is safe while that server is running: on
+// SQLite the store opens every database in WAL mode, which
 // allows a reader to run alongside the server's own single-connection
 // writer, and on PostgreSQL a second handle takes no single-server lock
 // (openTestStore leaves ServerLock off). Its migration pass finds the schema
@@ -625,28 +612,23 @@ func listActiveWorkerCredentials(t *testing.T, o backend.Options) []store.Worker
 	return creds
 }
 
-// TestDefaultConfig_NoBrokerAuth is the regression guard for the default
-// path: a server and worker started with NO broker-auth configuration must
-// behave as if broker authentication did not exist. Every other test in this
-// file proves the capability works; this one proves it costs nothing when
-// unused.
+// TestDefaultConfig_NoBrokerAuth guards the default path: a server and worker
+// started with no broker-auth configuration must behave as if broker
+// authentication did not exist. The other tests in this file check the
+// feature works; this one checks it costs nothing when unused.
 //
-// If this test fails, the default path has regressed. Fix the cause — never
-// adjust the test to accommodate the regression. Every operator who has
-// never configured broker authentication runs this path.
+// A failure here means the default path is broken, which every operator who
+// has not configured broker authentication runs: fix the cause, not the test.
 //
-// This is one half of a two-part proof. The other half — that
-// internal/config's own zero-configuration default carries nats.auth.enabled
-// = false through to the value the server actually runs with — is pinned at
-// the unit level by TestServerConfig_DefaultsAreTheConfigDefaults and
-// TestServerConfig_CarriesTheBrokerAuthSettings in cmd/sqi-server, which
-// exercise the exact config.Config -> server.Config mapping function the
-// serve subcommand uses. This test starts from that conclusion (asserted
-// below as a guard, not re-derived) and proves the
-// RUNTIME behavior it implies: a real sqi-worker subprocess with no
+// TestServerConfig_DefaultsAreTheConfigDefaults and
+// TestServerConfig_CarriesTheBrokerAuthSettings in cmd/sqi-server check that
+// internal/config's zero-configuration default carries nats.auth.enabled =
+// false through the config.Config -> server.Config mapping the serve
+// subcommand uses. This test asserts that default as a guard and checks the
+// runtime behavior it implies: a real sqi-worker subprocess with no
 // credential file and no join token registers, is leased a task, runs it to
-// completion, and the worker-credential table -- which only broker auth
-// ever writes to -- stays empty throughout.
+// completion, and the worker-credential table, which only broker auth writes
+// to, stays empty.
 func TestDefaultConfig_NoBrokerAuth(t *testing.T) {
 	// Guard the claim the rest of this test depends on: an operator's own
 	// zero-configuration default leaves broker authentication off.
@@ -656,28 +638,24 @@ func TestDefaultConfig_NoBrokerAuth(t *testing.T) {
 	}
 
 	// startServer boots server.Config with every NATS.Auth field left at its
-	// zero value: the same "nobody has ever configured this" state an
-	// operator gets with no nats.auth section in their config file, no
-	// SQI_NATS_AUTH_* environment variable, and no --nats-auth-* flag --
-	// matching the config default asserted above.
+	// zero value: the state an operator gets with no nats.auth section in
+	// their config file, no SQI_NATS_AUTH_* environment variable and no
+	// --nats-auth-* flag, matching the config default asserted above.
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
 	// A real sqi-worker subprocess. startRealWorker sets no join-token,
-	// credential-file, or server-url environment variable at all -- a worker
-	// invocation with no broker-auth configuration -- and blocks until the
-	// worker is visible online, which is this test's proof
-	// of criterion 1: the worker registers with no credential.
+	// credential-file or server-url environment variable, and blocks until the
+	// worker is online: the worker registers with no credential.
 	startRealWorker(t, ts, farmID, queueID)
 
-	// Criterion 2: it is leased a task and runs it to completion.
+	// It is leased a task and runs it to completion.
 	jobID := submitJob(t, ts, farmID, queueID)
 	if got := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, 30*time.Second); got != "completed" {
 		t.Fatalf("job on the default no-broker-auth path ended %q, want completed", got)
 	}
 
-	// Criterion 3: nothing enrolled anything. Broker auth was never engaged
-	// on this path, so no row should ever have been written to the
+	// Nothing was enrolled: with broker auth off, no row is written to the
 	// worker-credential table.
 	if creds := listActiveWorkerCredentials(t, ts.Store); len(creds) != 0 {
 		t.Errorf("default path created %d worker credentials, want 0: %+v", len(creds), creds)

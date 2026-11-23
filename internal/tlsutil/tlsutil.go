@@ -4,14 +4,14 @@
 // that terminates or dials TLS: the API listener, the embedded broker, the
 // worker's broker client and the worker's enrollment client.
 //
-// It exists because those callers live on both sides of an import boundary.
-// internal/config pulls internal/auth/oidc, so the worker binary can never
-// import it, and internal/bus is forbidden from importing internal/config at
-// all. This package imports nothing internal, so all of them can reach it.
+// Those callers live on both sides of an import boundary: internal/config
+// pulls internal/auth/oidc, so the worker binary cannot import it, and
+// internal/bus must not import internal/config. This package imports nothing
+// internal, so all of them can reach it.
 //
-// It deliberately holds only LOADING. Validation of operator-supplied paths
-// stays in internal/config, which is the one place that knows config keys and
-// can name them in an error.
+// It holds only loading. Validation of operator-supplied paths stays in
+// internal/config, the one place that knows config keys and can name them in
+// an error.
 package tlsutil
 
 import (
@@ -24,7 +24,7 @@ import (
 
 // CertPool reads a PEM bundle into a certificate pool.
 //
-// Callers use this for the "empty means system roots, set means THAT CA only"
+// Callers use this for the "empty means system roots, set means that CA only"
 // rule: an empty path never reaches here, and a non-empty one produces a pool
 // that pins the acceptable issuer rather than widening it.
 func CertPool(caFile string) (*x509.CertPool, error) {

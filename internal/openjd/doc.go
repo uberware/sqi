@@ -34,8 +34,9 @@
 //
 // OpenJD format strings use double-braces to reference job or task parameters,
 // for example: "{{Param.FrameNumber}}" or "{{Task.Param.OutputFile}}".
-// This package records format strings verbatim; interpolation is performed
-// later by the worker when it executes the task.
+// Format strings in a step's parameter space and host requirements are
+// resolved at submission against the bound job parameters; the rest are
+// recorded verbatim and interpolated by the worker when it runs the task.
 //
 // # Path-mapping rules
 //

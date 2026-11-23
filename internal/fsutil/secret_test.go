@@ -17,11 +17,9 @@ import (
 // matters: whatever sqi writes as key material must not be readable by an
 // ordinary local account.
 //
-// It asserts through fsutil.IsRestricted rather than Mode().Perm() on purpose.
-// `perm == 0o600` is true on POSIX and UNSATISFIABLE on Windows — os.Chmod
-// there maps only to the read-only attribute and cannot deny read access to
-// anyone — and that mismatch is exactly how four packages shipped key material
-// with no confidentiality on Windows while their tests passed on Linux CI.
+// It asserts through fsutil.IsRestricted rather than Mode().Perm(): os.Chmod
+// on Windows maps only to the read-only attribute and cannot deny read access
+// to anyone, so `perm == 0o600` says nothing about protection there.
 func TestWriteSecret_IsRestricted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ca.key")
 	if err := fsutil.WriteSecret(path, []byte("PRIVATE KEY")); err != nil {
@@ -40,9 +38,9 @@ func TestWriteSecret_IsRestricted(t *testing.T) {
 		t.Fatalf("content = %q err=%v; restricting must not corrupt the write", got, err)
 	}
 
-	// On POSIX the mode is still the concrete guarantee, so keep asserting it
-	// directly — IsRestricted accepts anything with no group/other bits, which
-	// is deliberately weaker than what WriteSecret actually produces.
+	// On POSIX the mode is the concrete guarantee, so assert it directly:
+	// IsRestricted accepts anything with no group/other bits, which is weaker
+	// than what WriteSecret produces.
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -104,8 +102,8 @@ func TestWriteSecret_ReplacesAnExistingFile(t *testing.T) {
 }
 
 // TestMkdirSecret_IsRestricted covers the directory half. internal/brokerauth
-// creates its seed directory before writing into it, and on Windows the mode
-// argument to os.MkdirAll is discarded outright.
+// creates its seed directory before writing into it, and on Windows
+// os.MkdirAll ignores its mode argument.
 func TestMkdirSecret_IsRestricted(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "creds")
 	if err := fsutil.MkdirSecret(dir); err != nil {
@@ -120,9 +118,9 @@ func TestMkdirSecret_IsRestricted(t *testing.T) {
 		t.Error("MkdirSecret produced a directory readable beyond its owner")
 	}
 
-	// The intermediate parent is deliberately NOT restricted — a secret's
-	// confidentiality comes from its own ACL, and tightening a shared ancestor
-	// is the widening/narrowing anti-pattern this codebase avoids.
+	// The intermediate parent is not restricted: a secret's confidentiality
+	// comes from its own ACL, and tightening a shared ancestor is the
+	// widening/narrowing anti-pattern this codebase avoids.
 	if _, err := os.Stat(filepath.Dir(dir)); err != nil {
 		t.Errorf("intermediate parent was not created: %v", err)
 	}

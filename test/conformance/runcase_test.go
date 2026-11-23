@@ -93,11 +93,10 @@ func TestRunCase(t *testing.T) {
 
 // TestRunCase_BlanksReasonOnAPass pins the property several
 // TestConformance_*Fixtures doc comments in suite_test.go depend on:
-// Result.Reason is EMPTY once Passed is true, so a correctly-rejected
-// ".invalid" fixture carries no record of WHICH rule rejected it. That is why
-// those tests can assert only res.Passed, and why
-// TestConformance_LetBindingFixtures has to re-run the validation pipeline on
-// the side (letFixtureReason) to name a mechanism at all.
+// Result.Reason is empty once Passed is true, so a correctly rejected
+// ".invalid" fixture carries no record of which rule rejected it. Those tests
+// therefore assert only res.Passed, and TestConformance_LetBindingFixtures
+// re-runs the validation pipeline (letFixtureReason) to read the error.
 func TestRunCase_BlanksReasonOnAPass(t *testing.T) {
 	tc := conformance.ParseTestCase("base/job_templates/2.1--missing-name.invalid.yaml")
 	got := conformance.RunCase(tc, conformance.StateLive, []byte(invalidTemplate))
@@ -110,13 +109,11 @@ func TestRunCase_BlanksReasonOnAPass(t *testing.T) {
 	}
 }
 
-// TestRunCase_NotApplicableNeverPasses is the false-green guard. An ".invalid"
-// fixture for an unregistered extension is rejected by sqi because the
-// extension is unknown, NOT because sqi detected the fixture's actual defect.
-// Reporting that as a pass would make all 209 EXPR fixtures green before any
-// EXPR code exists, and keep them green through a broken implementation.
-//
-// DO NOT DELETE THIS TEST.
+// TestRunCase_NotApplicableNeverPasses guards against false passes. An
+// ".invalid" fixture for an unregistered extension is rejected by sqi because
+// the extension is unknown, not because sqi detected the fixture's defect.
+// Scoring that as a pass would report every such fixture as passing with no
+// implementation behind it.
 func TestRunCase_NotApplicableNeverPasses(t *testing.T) {
 	tc := conformance.ParseTestCase("EXPR/job_templates/2.10--bad-default.invalid.yaml")
 	got := conformance.RunCase(tc, conformance.StateNotApplicable, []byte(invalidTemplate))
@@ -130,24 +127,18 @@ func TestRunCase_NotApplicableNeverPasses(t *testing.T) {
 	}
 }
 
-// TestRunCase_EnvTemplatesNeverPass is the second instance of the same
-// false-green failure mode TestRunCase_NotApplicableNeverPasses guards above,
-// this time keyed on template kind rather than extension. sqi does not
-// implement standalone environment-2023-09 templates at all: every
-// env_templates fixture — including under "base", which is otherwise always
-// live — is rejected on "/specificationVersion: unsupported version", never
-// on the fixture's own encoded defect. A classifier that only looked at the
-// extension directory would call "base" always live, so every
-// "base/env_templates/*.invalid.yaml" fixture would score as a pass for the
-// wrong reason: 24 fixtures green with no support for the environment
-// document format.
+// TestRunCase_EnvTemplatesNeverPass guards against the false pass
+// TestRunCase_NotApplicableNeverPasses covers, keyed on template kind rather
+// than extension. sqi does not implement standalone environment-2023-09
+// templates: every env_templates fixture, including under "base", which is
+// otherwise always live, is rejected on "/specificationVersion: unsupported
+// version", never on the fixture's own defect. A classifier that looked only
+// at the extension directory would score each of the 24
+// "base/env_templates/*.invalid.yaml" fixtures as a pass.
 //
-// This test drives the real path production code takes — ExtensionFor +
-// KindFor feeding Classify — rather than passing StateNotApplicable directly,
-// so it catches a regression in the classification wiring itself, not just in
-// RunCase's handling of an already-correct state.
-//
-// DO NOT DELETE THIS TEST.
+// The test drives the path the suite takes (ExtensionFor + KindFor feeding
+// Classify) rather than passing StateNotApplicable directly, so it also
+// covers the classification wiring.
 func TestRunCase_EnvTemplatesNeverPass(t *testing.T) {
 	path := "base/env_templates/2.1--bad-default.invalid.yaml"
 	tc := conformance.ParseTestCase(path)

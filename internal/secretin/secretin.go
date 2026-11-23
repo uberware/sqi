@@ -11,10 +11,9 @@ import (
 	"strings"
 )
 
-// readLineEcho is the plain line read the secret prompt has always used —
-// no attempt to suppress terminal echo. It is the entire behavior on POSIX
-// (see secretin_other.go) and the fallback on Windows whenever stdin is not an
-// interactive console.
+// readLineEcho is a plain line read with no attempt to suppress terminal
+// echo. It is the whole behavior on POSIX (see secretin_other.go) and the
+// fallback on Windows whenever stdin is not an interactive console.
 func readLineEcho(r io.Reader) (string, error) {
 	line, err := bufio.NewReader(r).ReadString('\n')
 	if err != nil && line == "" {

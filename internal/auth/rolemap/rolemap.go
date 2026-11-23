@@ -31,7 +31,7 @@ const (
 
 // Map returns the role for groups, or defaultRole when nothing matches.
 //
-// Iteration is over mappings, not over groups: config order IS the precedence
+// Iteration is over mappings, not over groups: config order is the precedence
 // mechanism, so a user in both an admin group and an artist group gets whatever
 // the operator listed first. Iterating groups instead would make the result
 // depend on the order the provider happened to return them — non-deterministic

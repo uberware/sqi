@@ -20,7 +20,7 @@ createRoot(rootElement).render(
           query client) and outside ThemeProvider so the login page is
           themed too. WebSocketProvider is not here: App owns it, scoped to
           the authed shell branch, because a socket opened before the app
-          knows whether anyone is logged in would just be torn down and
+          knows whether anyone is logged in would be torn down and
           reopened once the login page hands off. When auth is
           disabled server-side, /auth/me resolves 'authed' with the
           anonymous principal immediately, so this costs nothing in that
