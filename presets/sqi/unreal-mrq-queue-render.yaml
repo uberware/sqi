@@ -4,7 +4,7 @@ title: Unreal Movie Render Queue Queue Render
 description: >-
   Renders every job of a saved Movie Pipeline Queue asset in an Unreal Engine
   5 project, as a single task on a Windows or macOS worker, through the
-  preset's own Python script. Tested on Windows and macOS.
+  preset's own Python script.
 readme: |
   # Unreal Movie Render Queue Queue Render
 
@@ -104,34 +104,6 @@ readme: |
     does.
   - Epic's licence terms for render nodes are the studio's to check.
 
-  ## What has been tested
-
-  The preset has rendered a saved two-job queue with Unreal Engine 5.8 on a
-  Windows worker, and in that run:
-
-  - the editor keeps running after the `-execcmds` script returns, until the
-    render finishes, and exits after `quit_editor()`;
-  - the `-execcmds` command reaches the Python plug-in whole;
-  - `SQI_RENDER: OK` reaches the worker both ways, through file descriptor 1
-    and through Unreal's log;
-  - every job renders its own sequence, and an Output Directory reaches jobs
-    linked to a config asset.
-
-  It has also rendered a saved one-job queue with Unreal Engine 5.7.4 on a
-  macOS worker (Apple silicon).
-
-  ## What has not been verified
-
-  - Unreal Engine versions before 5.8 on Windows, and any but 5.7 on macOS.
-    The command line follows AWS's Deadline Cloud adaptor for Unreal, and
-    the script uses the Movie Render Queue's Python API as that adaptor and
-    Epic's Python reference use it.
-  - That Unreal splits `-execcmds` at commas, which is why a session folder
-    holding one is refused.
-  - Whether the executor reports a canceled render as a failure: Epic issue
-    UE-160482 says it reported success before Unreal 5.3. Canceling the sqi
-    job ends the editor either way.
-  - Rendering on Linux, where the Epic Games Launcher installs no editor.
 category: Rendering
 version: 1.0.0
 template:

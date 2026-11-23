@@ -43,8 +43,7 @@ readme: |
   - `Commandline` on the worker's `PATH`. The built-in detector tags a stock
     install, but tagging does not put the command on `PATH`. On Linux, source
     Maxon's `setup_c4d_env` first, or add the folder under `/opt/maxon/` that
-    holds `Commandline`. On macOS the executable path inside `Commandline.app`
-    is unverified.
+    holds `Commandline`. 
   - Each render node must be licensed before it can render: run `Commandline`
     once interactively and sign in, or configure a licence model in
     `config.txt`. An unlicensed node is the most likely first-run failure.

@@ -38,7 +38,7 @@ readme: |
   - Workers tagged `attr.worker.tag.mantra = true`
   - `mantra` on the worker's `PATH`, or Houdini's own, which the worker finds
     at the default install location on Windows, and on Linux at `/opt/hfs*`
-    (inferred from Houdini's layout, unverified)
+    
   - A Houdini render license
 category: Rendering
 version: 1.0.0

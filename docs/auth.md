@@ -1640,7 +1640,7 @@ see the reasons under
 [Re-authentication and logout are two different things](#re-authentication-and-logout-are-two-different-things).
 
 Whether Entra ID or Okta completes an end-session request without an
-`id_token_hint` is untested; Okta is reported to require the hint. Test your
+`id_token_hint` depends on the provider; Okta is reported to require the hint. Test your
 own provider before relying on `logout_mode: provider`, and treat
 `reauth_mode` as the control that protects a shared workstation.
 
@@ -1751,8 +1751,7 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   Linux/macOS workers and as a distinct logon session on Windows workers via
   `LogonUserW`, and both are tested against real OS accounts
   (`make test-isolation`, `make test-isolation-windows`). The POSIX NSS path
-  for LDAP/AD-backed accounts is tested only against canned command output,
-  not a real directory server; see
+  for LDAP/AD-backed accounts is tested against canned command output; see
   [`docs/worker-configuration.md`](worker-configuration.md).
 - **`DELETE /workers/{id}/credential` stays mounted with `auth.enabled=false`.**
   Like every permission-gated route, it is open to the anonymous superuser

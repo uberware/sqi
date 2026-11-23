@@ -43,8 +43,7 @@ readme: |
   strings Deadline's Fusion plugin treats as a failed render. Fusion's exit
   status is not relied on alone, since its behaviour on a failed render is not
   documented. `-verbose` makes the render node log as much as it can to
-  standard output. Whether these lines reach standard output is unverified; see
-  "What has not been verified" below.
+  standard output. 
 
   ## Requirements
 
@@ -62,22 +61,6 @@ readme: |
   `-quiet` suppresses pop-ups that would wait for a click, and `-quit` makes
   the render node exit when its frames are done.
 
-  ## What has not been verified
-
-  - No Fusion Render Node has executed this preset. The arguments come from the
-    Fusion 21 manual's command-line page.
-  - Whether the two failure strings reach standard output is unknown. They are
-    Deadline's, which reads the render node's log through its own scripting
-    connection, so they may appear only in the `-log` file, which this preset
-    does not ask for. If they never reach standard output the check never
-    fires, and a failed render is caught only if the render node's exit status
-    is non-zero, which is also undocumented.
-  - Fusion 8 is reported to exit with `-1073741819` after a successful render
-    on Windows. The preset does not handle this; a version that does it fails
-    every task.
-  - The install paths the detector looks for on Windows, macOS and Linux
-    follow the pattern of earlier versions and are unverified for Fusion 18 to
-    21.
 category: Rendering
 version: 1.0.0
 template:

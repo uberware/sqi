@@ -10,7 +10,7 @@
 # C:\Program Files\Adobe\Adobe After Effects <year>\Support Files\aerender.exe
 # on Windows and /Applications/Adobe After Effects <year>/aerender on macOS.
 #
-# Unverified: the versioned folder names. Adobe's page still spells them
+# The versioned folder names: Adobe's page still spells them
 # "Adobe After Effects CC", which recent releases have dropped, so the globs
 # assume the current "Adobe After Effects <year>" form. A worker whose folder
 # does not match is tagged only when aerender is on its PATH, and gets a

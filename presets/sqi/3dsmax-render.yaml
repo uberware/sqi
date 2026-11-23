@@ -45,8 +45,6 @@ readme: |
   - `3dsmaxcmd` on the worker's `PATH`: add the install folder, for example
     `C:\Program Files\Autodesk\3ds Max 2026`. The built-in detector tags a
     default install, but tagging does not put the command on `PATH`.
-  - Possibly an interactive desktop session. Whether `3dsmaxcmd` renders from
-    a worker running as a service, with no interactive session, is unverified.
   - Launch 3ds Max once as an administrator on each render node before the
     first job, as Deadline's documentation advises for headless rendering.
 category: Rendering

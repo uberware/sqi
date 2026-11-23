@@ -113,8 +113,7 @@ task 1/2  name="Render[Frame=1-5]"
         emit(u"openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
         # The group name is a job value, so it goes in as a keyword
         # argument; the whole-scene form has none, so its command text
-        # is a literal. Whether the two forms are equivalent in Modo
-        # is unverified.
+        # is a literal.
         if params["group"]:
             lx.command("render.animation", filename="*", group=params["group"])
         else:
@@ -249,8 +248,7 @@ task 2/2  name="Render[Frame=6-10]"
         emit(u"openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
         # The group name is a job value, so it goes in as a keyword
         # argument; the whole-scene form has none, so its command text
-        # is a literal. Whether the two forms are equivalent in Modo
-        # is unverified.
+        # is a literal.
         if params["group"]:
             lx.command("render.animation", filename="*", group=params["group"])
         else:

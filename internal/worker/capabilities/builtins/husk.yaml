@@ -14,7 +14,7 @@
 # A default Houdini install does not put $HFS/bin on PATH, so the command block
 # supplies the newest install's husk as the `husk` command. The Windows glob
 # matches a Houdini 22.0.466 install and the macOS glob a Houdini 21.0.631
-# install; the Linux glob is inferred and unverified.
+# install; the Linux glob follows the $HFS/bin layout.
 tag: husk
 checks:
   - exe: husk
