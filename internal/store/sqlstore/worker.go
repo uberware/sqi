@@ -45,8 +45,8 @@ const (
 	// awake, and a re-registration never changes disabled, heartbeat_broker_at,
 	// capacity_group_id or ephemeral.
 	//
-	// started_at is set on insert and when the instance ID changes (a new
-	// process), and kept otherwise, as registered_at is not.
+	// started_at is set on insert and when a non-empty instance ID differs
+	// from the stored one (a new process), and kept otherwise.
 	//
 	// interfaces and cloud_instance_id are written from the registration, except
 	// that an empty report ('[]', '') keeps the stored value: a failed interface
@@ -117,8 +117,7 @@ RETURNING ` + workerCols
 	//
 	// started_at takes the process-start estimate when it is earlier than the
 	// stored value or the stored value is NULL, unless the heartbeat's stamp
-	// (the first estimate bind) is earlier than registration_broker_at; a NULL
-	// estimate keeps it. The stamp is bound three times (heartbeat_broker_at,
+	// is earlier than registration_broker_at; a NULL estimate keeps it. The stamp is bound three times (heartbeat_broker_at,
 	// the registration guard, the WHERE) and the estimate twice.
 	sqlUpdateWorkerHeartbeat = `
 UPDATE workers SET last_heartbeat_at = ?, updated_at = ?,

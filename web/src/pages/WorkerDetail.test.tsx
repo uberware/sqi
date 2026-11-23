@@ -702,7 +702,7 @@ describe('WorkerDetail', () => {
       )
     })
 
-    // A worker coming back online is a new process with a new started_at the
+    // A worker coming back online may be a new process, whose started_at the
     // event does not carry, so the page refetches rather than showing the
     // previous process's uptime until the next poll.
     it('refetches when the worker comes back online, so Uptime is the new process', async () => {

@@ -134,9 +134,9 @@ func TestRegisterWorker_ReclaimsAfterARestart(t *testing.T) {
 	}
 }
 
-// TestRegisterWorker_StartedAtMarksTheProcess pins StartedAt, the time the
-// worker's current process registered, which the GUI's Uptime counts from. A
-// first registration sets it, a new instance ID resets it, and a reconnect of
+// TestRegisterWorker_StartedAtMarksTheProcess pins the StartedAt a
+// registration records for the worker's current process, which the web UI's
+// Uptime counts from. A first registration sets it, a new instance ID resets it, and a reconnect of
 // the same process or a registration with no instance ID keeps it, while
 // RegisteredAt stays at the first registration throughout.
 func TestRegisterWorker_StartedAtMarksTheProcess(t *testing.T) {
