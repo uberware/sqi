@@ -52,6 +52,35 @@ func TestWaiterRegistry_NotifyOtherQueueDoesNotWake(t *testing.T) {
 	}
 }
 
+// TestWaiterRegistry_WaitSinceSeesAWakeBeforeThePark covers a wake that lands
+// after a request took its ticket but before it parked.
+func TestWaiterRegistry_WaitSinceSeesAWakeBeforeThePark(t *testing.T) {
+	tests := []struct {
+		name string
+		wake func(r *waiterRegistry)
+		want bool
+	}{
+		{"notify on the same queue", func(r *waiterRegistry) { r.notify("q1") }, true},
+		{"notifyAll", func(r *waiterRegistry) { r.notifyAll() }, true},
+		{"notify on another queue", func(r *waiterRegistry) { r.notify("q2") }, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newWaiterRegistry()
+			ticket := r.ticket("q1")
+			tt.wake(r)
+			start := time.Now()
+			got := r.waitSince(context.Background(), "q1", ticket, 100*time.Millisecond)
+			if got != tt.want {
+				t.Fatalf("waitSince = %v, want %v", got, tt.want)
+			}
+			if tt.want && time.Since(start) > 50*time.Millisecond {
+				t.Errorf("waitSince took %v, want an immediate return", time.Since(start))
+			}
+		})
+	}
+}
+
 func TestWaiterRegistry_NotifyAllWakesEveryQueue(t *testing.T) {
 	r := newWaiterRegistry()
 	q1 := make(chan bool, 1)

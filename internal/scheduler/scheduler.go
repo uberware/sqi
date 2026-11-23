@@ -2166,8 +2166,8 @@ func (s *Scheduler) WakeWorker(workerID string) {
 }
 
 // notifyQueueForJob wakes any parked lease waiters on the job's queue (and any
-// queue-unaffiliated workers). A missed wake is corrected when the worker's
-// outstanding lease request is re-issued after leaseHoldTimeout.
+// queue-unaffiliated workers). If the job cannot be read no wake is sent, and
+// parked requests lease its work when they re-ask after leaseHoldTimeout.
 func (s *Scheduler) notifyQueueForJob(ctx context.Context, jobID string) {
 	job, err := s.store.GetJob(ctx, jobID)
 	if err != nil {
