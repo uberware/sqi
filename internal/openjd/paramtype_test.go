@@ -5,10 +5,9 @@ package openjd
 import "testing"
 
 // TestParseJobParamType covers every spelling RFC 0007 declares equivalent,
-// plus the spellings it does NOT license. The RFC grants case-insensitivity
-// only: internal whitespace ("list [int]") and deeper nesting
-// ("list[list[list[int]]]") stay unknown types, because accepting more than
-// the spec authorizes is an acceptance change.
+// plus the spellings it does not license. The RFC grants case-insensitivity
+// only, so internal whitespace ("list [int]") and deeper nesting
+// ("list[list[list[int]]]") stay unknown types.
 func TestParseJobParamType(t *testing.T) {
 	tests := []struct {
 		raw  string
@@ -61,7 +60,7 @@ func TestParseJobParamType(t *testing.T) {
 }
 
 // TestParseTaskParamType pins that task types are case-insensitive too (RFC
-// 0007 covers job AND task type names) and that sqi's own CHUNK[INT] is
+// 0007 covers job and task type names) and that sqi's own CHUNK[INT] is
 // included, while the job-only list types are not: RFC 0007 adds no task
 // parameter types.
 func TestParseTaskParamType(t *testing.T) {

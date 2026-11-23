@@ -12,8 +12,8 @@ import (
 )
 
 // oversizedExprTemplate builds a template whose single expression is far past
-// expr's maxSourceBytes, in the shape that defeats that package's parse-DEPTH
-// guard: a flat left-associative chain, parsed in a loop rather than by
+// expr's maxSourceBytes, in a shape that package's parse-depth guard does not
+// stop: a flat left-associative chain, parsed in a loop rather than by
 // recursion.
 //
 // 400,000 bytes is enough to trip the bound while keeping the fixture cheap
@@ -35,17 +35,16 @@ steps:
 }
 
 // TestValidateWithBudget_OversizedExpressionIsAValidationError is the
-// production-path half of expr's maxSourceBytes: the bound must fire where a
+// production-path half of expr's maxSourceBytes: the bound fires where a
 // submission reaches it, not only in a direct expr.Parse call.
 //
-// THE CLASSIFICATION IS THE ASSERTION. "This expression is too long" is a
-// deterministic property of the body — the same template gets the same verdict
-// on every machine, at every load — so it is a ValidationError and becomes a
-// 422. It must NOT arrive as the wall-clock error, which
-// ValidateWithBudget returns separately and internal/api maps to 503: that
-// channel means "the server gave up", and a template that is invariably
-// invalid must never be reported through it. The deadline here is generous
-// so that a breach reflects the code rather than a slow machine.
+// The test asserts the classification. "This expression is too long" is a
+// deterministic property of the body, the same verdict on every machine and
+// at every load, so it is a ValidationError and becomes a 422. It must not
+// arrive as the wall-clock error, which ValidateWithBudget returns separately
+// and internal/api maps to 503: that error means the server gave up, and an
+// invalid template is never reported through it. The deadline here is
+// generous so that a breach reflects the code rather than a slow machine.
 func TestValidateWithBudget_OversizedExpressionIsAValidationError(t *testing.T) {
 	tmpl, err := Parse([]byte(oversizedExprTemplate()), FormatYAML)
 	if err != nil {
@@ -77,14 +76,14 @@ func TestValidateWithBudget_OversizedExpressionIsAValidationError(t *testing.T) 
 		t.Fatalf("no size ValidationError among %d errors: %v", len(errs), errs)
 	}
 
-	// The message assertion above proves the bound fired: nothing else in
+	// The message assertion above shows the bound fired: nothing else in
 	// either package words an error that way, and without the bound this
 	// template is still rejected, by maxEvalDepth, after a full parse ("this
 	// expression is nested too deeply to evaluate"). This second assertion is
-	// a coarse backstop for a walk that runs away: the rejection should take
-	// milliseconds, so the margin is three orders of magnitude.
+	// a coarse backstop for a runaway walk: the rejection takes milliseconds,
+	// far below the limit.
 	if elapsed > 5*time.Second {
 		t.Errorf("rejecting an oversized expression took %v; the bound is probably "+
-			"no longer applying before the source is tokenized", elapsed)
+			"not applied before the source is tokenized", elapsed)
 	}
 }

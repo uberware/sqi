@@ -76,7 +76,7 @@ func TestValidate_ControlsScopedToParameterType(t *testing.T) {
 		{"FLOAT", "SPIN_BOX", true},
 		{"FLOAT", "MULTILINE_EDIT", false},
 		// CHIP_INPUT appears nowhere in the spec, at any type. These rows
-		// guard against anyone re-adding it.
+		// keep it rejected.
 		{"STRING", "CHIP_INPUT", false},
 		{"PATH", "CHIP_INPUT", false},
 		{"INT", "CHIP_INPUT", false},

@@ -258,8 +258,7 @@ steps:
 // reserved-value half of the host-requirement split: validateReservedAmounts
 // and validateReservedAttributes are value-domain checks with no size or
 // count component (a template asking for vcpu: 0 is malformed, not
-// oversized), so they must run even when EnforceLimits is false. Before this
-// split they were only reachable through the gated validateHostRequirementLimits.
+// oversized), so they must run even when EnforceLimits is false.
 func TestValidate_ReservedCapabilityValueChecksSurviveDisabledLimits(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -267,7 +266,7 @@ func TestValidate_ReservedCapabilityValueChecksSurviveDisabledLimits(t *testing.
 		want string
 	}{
 		{
-			// min: 0 is VALID (see validateAmountBounds) — the structural check
+			// min: 0 is valid (see validateAmountBounds) — the structural check
 			// that must survive limits being disabled is the non-negative bound.
 			name: "amount with a negative min",
 			hr: `    hostRequirements:
@@ -315,8 +314,8 @@ steps:
 // TestValidate_ReservedCapabilityValueChecksNotDoubleReported is the
 // double-reporting guard: under EnforceLimits: true, a reserved amount below
 // its minimum and a reserved attribute with a disallowed value must each be
-// reported exactly once, at their specific pointer -- not twice from both
-// the always-run structural path and the gated limits path.
+// reported exactly once, at their specific pointer, rather than by both the
+// always-run structural path and the gated limits path.
 func TestValidate_ReservedCapabilityValueChecksNotDoubleReported(t *testing.T) {
 	yaml := `
 specificationVersion: jobtemplate-2023-09

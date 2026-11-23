@@ -24,13 +24,13 @@ import (
 // configuration (ExprLimits). These tests catch the two failure modes that
 // configuration introduces:
 //
-//  1. A DEFAULT that drifts from its established value, silently changing
-//     what a fresh install accepts.
-//  2. A knob that is READ but NOT USED -- parsed out of YAML, stored in a
-//     struct, and never consulted by the code that enforces the bound. That is
-//     invisible to any test that only checks the value round-trips, so every
-//     knob below is mutation-tested: set it to something other than the
-//     default, and observe the BOUND move.
+//  1. A default that drifts from its value, changing what a default install
+//     accepts.
+//  2. A knob that is read but not used: parsed out of YAML, stored in a
+//     struct, and never consulted by the code that enforces the bound. A test
+//     that only checks the value round-trips cannot see that, so every knob
+//     below is mutation-tested: set it to something other than the default
+//     and observe the bound move.
 
 // ── defaults ────────────────────────────────────────────────────────────────
 
@@ -293,8 +293,8 @@ func parsePresetTemplate(t *testing.T, path string) *JobTemplate {
 // ── mutation: each knob, observed separately ────────────────────────────────
 
 // argsTemplate builds a template whose only expression positions are /name,
-// the command, and n args entries -- so its total position cost is exactly
-// n+2. Every entry is trivial, so nothing but the POSITION dimension can trip.
+// the command, and n args entries, so its total position cost is exactly
+// n+2. Every entry is trivial, so only the position dimension can trip.
 func argsTemplate(n int) *JobTemplate {
 	return &JobTemplate{
 		Name:       "{{ 'T' }}",
@@ -364,7 +364,7 @@ func TestExprLimits_TemplatePositionsIsObserved(t *testing.T) {
 // accepted at exactly its retained size and rejected one byte below it.
 func TestExprLimits_TemplateRetainedBytesIsObserved(t *testing.T) {
 	// Three bindings of 900,000 bytes each (+64-byte header, expr.SizeOf) =
-	// 2,700,192 retained bytes -- the same shape
+	// 2,700,192 retained bytes, the same shape
 	// TestCheckTemplateExpressions_TemplateWideBudget_RetainedBytesDimension
 	// uses, sized to sit between the two limits below.
 	const bindings = 3
@@ -416,7 +416,7 @@ func TestExprLimits_TemplateRetainedBytesIsObserved(t *testing.T) {
 }
 
 // TestExprLimits_SubmissionMemoryBytesIsObserved is the per-evaluation memory
-// limit's mutation test. The construction allocates ~1.5 MB in one
+// limit's mutation test. The construction allocates about 1.5 MB in one
 // expression: the default (1 MB) rejects it, a raised limit accepts it, and a
 // lowered one still rejects it.
 func TestExprLimits_SubmissionMemoryBytesIsObserved(t *testing.T) {

@@ -87,7 +87,7 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 		DisplayName: id.DisplayName,
 	}, role, h.ldapCfg.RoleSource == ldap.RoleSourceDirectory)
 	if err != nil {
-		h.logPreC2Account(ctx, existing, id.Username, err)
+		h.logLDAPAccountWithoutExternalID(ctx, existing, id.Username, err)
 		writeProblem(w, r, http.StatusUnauthorized, invalidLoginDetail)
 		return
 	}
@@ -100,8 +100,8 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapCfg.RoleSource, h.oidcCfg.RoleSource))
 }
 
-// logPreC2Account explains the one login failure whose cause is invisible from
-// every other vantage point.
+// logLDAPAccountWithoutExternalID explains the one login failure whose cause
+// is invisible from every other vantage point.
 //
 // A legacy LDAP row carries an empty users.external_id. Accounts are matched
 // on the directory's stable identifier, so such a user's login goes: the
@@ -132,7 +132,7 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 // (id.Username from the verified identity, the name provisioning collided on)
 // recovers the row so the diagnostic also fires for the alias case
 // docs/auth.md covers. A failed re-read logs nothing.
-func (h *authHandler) logPreC2Account(ctx context.Context, existing *store.User, directoryUsername string, err error) {
+func (h *authHandler) logLDAPAccountWithoutExternalID(ctx context.Context, existing *store.User, directoryUsername string, err error) {
 	if !errors.Is(err, store.ErrConflict) {
 		return
 	}

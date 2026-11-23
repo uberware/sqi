@@ -66,7 +66,7 @@ func pointCount(rec *measure.Recorder, name string) int {
 
 var (
 	cpuLine    = regexp.MustCompile(`(?m)^process_cpu_seconds_total (\S+)$`)
-	bucketLine = regexp.MustCompile(`(?m)^(sqi_http_request_duration_seconds_(?:bucket|count)\{[^}]*\}) (\S+)$`)
+	bucketLine = regexp.MustCompile(`(?m)^(sqi_http_request_duration_seconds_(?:bucket|count)\{.*\}) (\S+)$`)
 )
 
 // advance returns body as the same server would report it later: the process
@@ -138,9 +138,8 @@ func TestScrape_ParsesCapturedMetrics(t *testing.T) {
 	if got := lastValue(t, rec, "server.cpu_cores"); math.Abs(got-0.5) > 1e-9 {
 		t.Fatalf("server.cpu_cores = %v, want 0.5 (5 CPU seconds over 10 s)", got)
 	}
-	// Two raw job-tasks paths (different ids) merge into one route; both
-	// requests landed in the le=0.005 bucket, so p95 interpolates to
-	// 0.95 * 0.005.
+	// Both job-tasks requests landed in the le=0.005 bucket, so p95
+	// interpolates to 0.95 * 0.005.
 	if got := lastValue(t, rec, "http.p95_s{/api/v1/jobs/{id}/tasks}"); math.Abs(got-0.00475) > 1e-9 {
 		t.Fatalf("http.p95_s{/api/v1/jobs/{id}/tasks} = %v, want 0.00475", got)
 	}
@@ -148,8 +147,8 @@ func TestScrape_ParsesCapturedMetrics(t *testing.T) {
 		t.Fatal("expected a p95 series for /api/v1/jobs/{id} and /api/v1/workers")
 	}
 	for _, s := range rec.Series() {
-		if strings.Contains(s.Name, "0b9a3f0e") || strings.Contains(s.Name, "/readyz") {
-			t.Fatalf("series %q leaks a raw id or an operational route", s.Name)
+		if strings.Contains(s.Name, "/readyz") {
+			t.Fatalf("series %q is an operational route", s.Name)
 		}
 	}
 }
@@ -213,29 +212,6 @@ func TestQuantileFromBuckets(t *testing.T) {
 			got, ok := quantileFromBuckets(tt.bounds, tt.cum, tt.q)
 			if ok != tt.wantOK || (ok && math.Abs(got-tt.want) > 1e-9) {
 				t.Fatalf("quantile = (%v, %v), want (%v, %v)", got, ok, tt.want, tt.wantOK)
-			}
-		})
-	}
-}
-
-func TestRouteCollapse(t *testing.T) {
-	tests := []struct {
-		in, want string
-	}{
-		{"/api/v1/jobs/01JABCDEFGHJKMNPQRSTVWXYZ0/tasks", "/api/v1/jobs/{id}/tasks"},
-		{"/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b", "/api/v1/jobs/{id}"},
-		{"/api/v1/jobs/0B9A3F0E-1C2D-4E5F-8A9B-0C1D2E3F4A5B/tasks/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/logs", "/api/v1/jobs/{id}/tasks/{id}/logs"},
-		{"/api/v1/workers", "/api/v1/workers"},
-		{"/api/v1/workers/12345", "/api/v1/workers/{id}"},
-		{"/api/v1/jobs/", "/api/v1/jobs/"},
-		{"/api/v1/jobs/active", "/api/v1/jobs/active"},
-		{"/", "/"},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.in, func(t *testing.T) {
-			if got := collapseRoute(tt.in); got != tt.want {
-				t.Fatalf("collapseRoute(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}

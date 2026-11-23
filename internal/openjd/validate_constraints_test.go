@@ -4,15 +4,15 @@ package openjd_test
 
 // Tests for constraint-definition syntax validation in validateJobParams.
 //
-// Fix 1: malformed constraint strings in parameterDefinitions must be rejected
-// at template-validation time (not silently ignored during binding).
+// Malformed constraint strings in parameterDefinitions must be rejected at
+// template-validation time, not ignored during binding.
 //
 // Covered here:
 //   - INT  minValue/maxValue/allowedValues must parse as int64
 //   - FLOAT minValue/maxValue/allowedValues must parse as float64 and be finite
 //   - INT / FLOAT min > max is rejected
 //   - STRING / PATH minLength > maxLength is rejected
-//   - Valid baseline cases still pass
+//   - Valid baseline cases pass
 
 import (
 	"strings"

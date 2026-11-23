@@ -252,15 +252,15 @@ func TestValidateUILabelRuneCounting(t *testing.T) {
 	}
 }
 
-// userInterface.control is OPTIONAL. The 2023-09 Template Schemas mark it
+// userInterface.control is optional. The 2023-09 Template Schemas mark it
 // "# @optional" on every parameter type's userInterface block, so a template
 // may supply only a label or groupLabel and leave the control to the
 // submitting application's judgement.
 //
-// sqi required it, rejecting conforming templates outright. Surfaced by the
-// official conformance suite fixtures 2.1--string-ui-label-without-control,
+// The conformance fixtures 2.1--string-ui-label-without-control,
 // 2.1--string-ui-grouplabel-without-control, 2.2--path-ui-label-without-control,
-// 2.3--int-ui-label-without-control, and 2.4--float-ui-label-without-control.
+// 2.3--int-ui-label-without-control, and 2.4--float-ui-label-without-control
+// cover it.
 func TestValidateUserInterface_ControlIsOptional(t *testing.T) {
 	uiTemplate := func(typ JobParamType, ui *ParameterUserInterface) *JobTemplate {
 		return &JobTemplate{
@@ -295,7 +295,7 @@ func TestValidateUserInterface_ControlIsOptional(t *testing.T) {
 		}
 	})
 
-	// Making control optional must not disable the checks that depend on it.
+	// An optional control must not disable the checks that depend on it.
 	t.Run("decimals without a control is still rejected", func(t *testing.T) {
 		errs := Validate(uiTemplate(JobParamTypeFloat, &ParameterUserInterface{Decimals: &decimals}))
 		if !strings.Contains(errs.Error(), "decimals") {

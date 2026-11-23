@@ -41,9 +41,10 @@ var privilegedGroupNames = map[string]bool{
 // form: strip a leading ".\" / "HOST\" / "DOMAIN\" qualifier (Windows
 // principals are commonly written that way: ".\Administrator",
 // "BUILTIN\Administrators", "NT AUTHORITY\SYSTEM"), strip a trailing
-// "@domain" UPN suffix (Microsoft documents UPN form for LogonUserW's user
-// name when lpszDomain is NULL, as logonUserOS passes it, so a queue may name
-// "Administrator@corp.example.com"), collapse runs of interior whitespace to a
+// "@domain" UPN suffix (a queue may name "Administrator@corp.example.com":
+// Microsoft documents UPN form for LogonUserW's user name with a NULL
+// domain; logonUserProvider.Resolve logs on with this normalized name, so
+// the suffix never reaches LogonUserW), collapse runs of interior whitespace to a
 // single space (so "NETWORK  SERVICE" and "NETWORK SERVICE" compare equal
 // without losing the space that "NETWORKSERVICE" would), and lowercase.
 //

@@ -499,7 +499,14 @@ jobs:
   cross-compile:
     name: Cross-compile (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
-    needs: test
+    needs: [changes, test]
+    # Runs when test was skipped (a pull request that changes only web/), with
+    # every step skipped, so the matrix still expands. A matrix job skipped as
+    # a whole reports one check under its unexpanded name, never the six
+    # names branch protection requires, and the pull request cannot merge.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    env:
+      BUILD: ${{ needs.test.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -508,14 +515,17 @@ jobs:
 
     steps:
       - name: Checkout
+        if: env.BUILD == 'true'
         uses: actions/checkout@v7
 
       - name: Set up Go
+        if: env.BUILD == 'true'
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
       - name: Compile
+        if: env.BUILD == 'true'
         run: |
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-server/...
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-worker/...
@@ -523,7 +533,7 @@ jobs:
       # See the job comment for why `go build` cannot replace this. amd64
       # only: GOARCH does not change what vet's type-checking sees.
       - name: Windows internal packages build + vet
-        if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
+        if: env.BUILD == 'true' && matrix.goos == 'windows' && matrix.goarch == 'amd64'
         run: |
           GOOS=windows GOARCH=amd64 go build ./internal/... ./cmd/...
           GOOS=windows GOARCH=amd64 go vet -tags winservice ./internal/worker/... ./internal/winsvc/... ./internal/configinit/... ./internal/secretin/... ./internal/log/... ./cmd/... ./test/winservice/...
@@ -532,7 +542,7 @@ jobs:
       # process reader) run in no pull-request test job, so vet type-checks
       # them here; the macOS runtime smoke job runs their tests on main.
       - name: macOS worker packages vet
-        if: matrix.goos == 'darwin' && matrix.goarch == 'arm64'
+        if: env.BUILD == 'true' && matrix.goos == 'darwin' && matrix.goarch == 'arm64'
         run: |
           GOOS=darwin GOARCH=arm64 go vet ./internal/worker/... ./cmd/...
 
@@ -1165,8 +1175,9 @@ jobs:
       # subtest failed, not that none was skipped, hence the separate
       # `/postgres` skip check.
       #
-      # The two TestPGRace_G7_ tests cover the same race at its two call
-      # sites.
+      # TestPGRace_DeleteJobHoldsOffALogThatRaced and
+      # TestPGRace_RetentionHoldsOffALogThatRaced cover the same race at its
+      # two call sites.
       #
       # The restore and store copy tests are listed because each skips without
       # PostgreSQL, so a run that never reached a server would pass them all.
@@ -1194,23 +1205,31 @@ jobs:
           fi
 
           packages_expected=(
-            TestPGRace_G1_AReportedTaskIsNeverReaped
-            TestPGRace_G2_PoolCapHoldsUnderConcurrentLeases
-            TestPGRace_G3_ReaperReturnsExactlyWhatItReset
-            TestPGRace_G4_CancelReportsALeaseThatRaced
-            TestPGRace_G5_RetryAndCancelSerialize
-            TestPGRace_G6_RetentionSparesAJobRetriedMeanwhile
-            TestPGRace_G7_DeleteJobHoldsOffALogThatRaced
-            TestPGRace_G7_RetentionHoldsOffALogThatRaced
-            TestPGRace_G8_NoDemotionUnderALease
-            TestPGRace_G9_OfflineReclaimsEveryTaskALeaseCommitted
-            TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin
-            TestPGRace_G11_LateReportCannotEndATaskReLeasedMeanwhile
-            TestPGRace_G12_ReaperAndCompletionDoNotDeadlock
+            TestPGRace_AReportedTaskIsNeverReaped
+            TestPGRace_PoolCapHoldsUnderConcurrentLeases
+            TestPGRace_ReaperReturnsExactlyWhatItReset
+            TestPGRace_CancelReportsALeaseThatRaced
+            TestPGRace_RetryAndCancelSerialize
+            TestPGRace_RetentionSparesAJobRetriedMeanwhile
+            TestPGRace_DeleteJobHoldsOffALogThatRaced
+            TestPGRace_RetentionHoldsOffALogThatRaced
+            TestPGRace_NoDemotionUnderALease
+            TestPGRace_OfflineReclaimsEveryTaskALeaseCommitted
+            TestPGRace_TwoAdminDeletionsLeaveOneAdmin
+            TestPGRace_LateReportCannotEndATaskReLeasedMeanwhile
+            TestPGRace_ReaperAndCompletionDoNotDeadlock
             TestPGRace_LeaseVersusBeginRetirement
             TestPGRace_LeaseVersusBeginRetirement/lease_first
             TestPGRace_LeaseVersusBeginRetirement/retirement_first
             TestPGRace_PutCapacityGroupStateForAGroupDeletedMeanwhile
+            TestPGRace_FinalizeJobReportsTheStatusUnderTheLock
+            TestPGRace_LeaseEnforcesTheCapUnderTheLock
+            TestPGRace_LeaseRefusesAJobMovedBeforeItsLock
+            TestPGRace_LeaseRefusesAWorkerDisabledBeforeItsLock
+            TestPGRace_LeaseRequiringOnlineRefusesAWorkerGoneBeforeItsLock
+            TestPGRace_RetentionLocksOneJobPerTransaction
+            TestPGRace_SubmissionDoesNotBlockLeasesOnItsQueue
+            TestPGRace_SubmissionDoesNotHoldItsUpstreamWhileInserting
             TestSchemaParity
             TestJobStore_CreateJobSubmission_RollsBackEntirely
             TestCreateJobSubmission_ConcurrentObserverSeesWholeJobs

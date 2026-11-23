@@ -4,10 +4,9 @@ package openjd
 
 import "testing"
 
-// TestBindJobParameters_BoolAndRangeExpr pins that a SUBMITTED value is checked
-// against its declared type for the RFC 0007 types too, not only
-// INT/FLOAT/STRING/PATH: otherwise a BOOL parameter would take "maybe" at
-// submission.
+// TestBindJobParameters_BoolAndRangeExpr pins that a submitted value is checked
+// against its declared type for the RFC 0007 types as well as
+// INT/FLOAT/STRING/PATH, so a BOOL parameter rejects "maybe" at submission.
 func TestBindJobParameters_BoolAndRangeExpr(t *testing.T) {
 	params := []JobParameter{
 		{Name: "Flag", Type: JobParamTypeBool},

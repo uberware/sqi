@@ -828,11 +828,11 @@ func newLDAPServerLogging(
 	return srv, &buf
 }
 
-// seedPreC2LDAPUser creates a legacy LDAP row: an LDAP account with no
-// external_id at all. seedLDAPUser cannot express it (it always stamps an
-// identifier) and UpdateUser cannot clear one, since external_id is immutable
-// through it, so the row is written directly.
-func seedPreC2LDAPUser(t *testing.T, st store.Store, username string) store.User {
+// seedLDAPUserWithoutExternalID creates a legacy LDAP row: an LDAP account
+// with no external_id at all. seedLDAPUser cannot express it (it always
+// stamps an identifier) and UpdateUser cannot clear one, since external_id is
+// immutable through it, so the row is written directly.
+func seedLDAPUserWithoutExternalID(t *testing.T, st store.Store, username string) store.User {
 	t.Helper()
 	u, err := st.CreateUser(t.Context(), store.User{
 		ID:           uuid.NewString(),
@@ -842,7 +842,7 @@ func seedPreC2LDAPUser(t *testing.T, st store.Store, username string) store.User
 		AuthSource:   store.AuthSourceLDAP,
 	})
 	if err != nil {
-		t.Fatalf("seedPreC2LDAPUser: %v", err)
+		t.Fatalf("seedLDAPUserWithoutExternalID: %v", err)
 	}
 	if u.ExternalID != "" {
 		t.Fatalf("fixture is not a legacy row: external_id = %q", u.ExternalID)
@@ -862,9 +862,9 @@ func seedPreC2LDAPUser(t *testing.T, st store.Store, username string) store.User
 // The failure must not be silent. This pins the diagnostic: the log must name
 // the cause and the remedy, because nothing else in the system distinguishes
 // this from a wrong password.
-func TestLogin_PreC2LDAPRowIsRefusedLoudly(t *testing.T) {
+func TestLogin_LDAPRowWithoutExternalIDIsRefusedLoudly(t *testing.T) {
 	st := fake.New()
-	seedPreC2LDAPUser(t, st, "alice")
+	seedLDAPUserWithoutExternalID(t, st, "alice")
 
 	v := &fakeVerifier{identity: aliceIdentity()}
 	srv, logs := newLDAPServerLogging(t, st, v, ldapCfg())
@@ -892,9 +892,9 @@ func TestLogin_PreC2LDAPRowIsRefusedLoudly(t *testing.T) {
 // with existing=nil, and the diagnostic must still fire: docs/auth.md names
 // the log as the only signal for this failure, with no exception for
 // aliases.
-func TestLogin_PreC2LDAPRowByAliasIsRefusedLoudly(t *testing.T) {
+func TestLogin_LDAPRowWithoutExternalIDByAliasIsRefusedLoudly(t *testing.T) {
 	st := fake.New()
-	seedPreC2LDAPUser(t, st, "alice") // directory spelling; the alias is never stored
+	seedLDAPUserWithoutExternalID(t, st, "alice") // directory spelling; the alias is never stored
 
 	v := &fakeVerifier{identity: aliceIdentity()} // Verify returns Username "alice"
 	srv, logs := newLDAPServerLogging(t, st, v, ldapCfg())
@@ -916,24 +916,24 @@ func TestLogin_PreC2LDAPRowByAliasIsRefusedLoudly(t *testing.T) {
 // The diagnostic is server-side only. The 401 an unauthenticated caller sees
 // must stay byte-identical to every other failure, or the legacy state becomes
 // an oracle telling an attacker which usernames exist in the directory.
-func TestLogin_PreC2LDAPRowResponseIsIndistinguishable(t *testing.T) {
+func TestLogin_LDAPRowWithoutExternalIDResponseIsIndistinguishable(t *testing.T) {
 	st := fake.New()
-	seedPreC2LDAPUser(t, st, "alice")
+	seedLDAPUserWithoutExternalID(t, st, "alice")
 	srv := newLDAPServer(t, st, &fakeVerifier{identity: aliceIdentity()}, ldapCfg())
 
-	preC2Code, preC2Body := postLogin(t, srv, "alice", "pw")
+	legacyCode, legacyBody := postLogin(t, srv, "alice", "pw")
 
 	// A username the directory rejects outright: the baseline 401.
 	baselineSrv := newLDAPServer(t, fake.New(),
 		&fakeVerifier{err: ldap.ErrInvalidCredentials}, ldapCfg())
 	baseCode, baseBody := postLogin(t, baselineSrv, "nosuchuser", "pw")
 
-	if preC2Code != baseCode {
-		t.Fatalf("status: legacy row got %d, plain rejection got %d", preC2Code, baseCode)
+	if legacyCode != baseCode {
+		t.Fatalf("status: legacy row got %d, plain rejection got %d", legacyCode, baseCode)
 	}
 	// "instance" is a per-request correlation id and differs by construction;
 	// every other field must match exactly.
-	if got, want := problemFields(t, preC2Body), problemFields(t, baseBody); got != want {
+	if got, want := problemFields(t, legacyBody), problemFields(t, baseBody); got != want {
 		t.Fatalf("the legacy-row refusal is distinguishable from a plain rejection, which "+
 			"makes login an enumeration oracle:\n legacy:   %s\n baseline: %s", got, want)
 	}
@@ -960,7 +960,7 @@ func problemFields(t *testing.T, body string) string {
 // directory identity colliding with a local account is a different problem
 // with a different fix (rename one of them), and telling the operator to
 // recreate the local account would be wrong advice.
-func TestLogin_LocalCollisionDoesNotClaimPreC2(t *testing.T) {
+func TestLogin_LocalCollisionIsNotReportedAsMissingExternalID(t *testing.T) {
 	st := fake.New()
 	hash, err := password.Hash("localpw")
 	if err != nil {
@@ -989,11 +989,11 @@ func TestLogin_LocalCollisionDoesNotClaimPreC2(t *testing.T) {
 // departed employee's directory name, so the directory issues a fresh
 // external_id under the same username. The existing row (the departed
 // user's, still valid) has AuthSource=ldap and a non-empty ExternalID, the
-// shape logPreC2Account's second check exists to exclude. Misreporting this as a
-// legacy row would tell the operator to delete and recreate the wrong account:
-// the departed user's still-live one, not the new hire's non-existent one.
-// The correct remedy is a rename, not a recreate.
-func TestLogin_RecycledUsernameDoesNotClaimPreC2(t *testing.T) {
+// shape logLDAPAccountWithoutExternalID's second check exists to exclude.
+// Misreporting this as a legacy row would tell the operator to delete and
+// recreate the wrong account: the departed user's still-live one, not the new
+// hire's non-existent one. The correct remedy is a rename, not a recreate.
+func TestLogin_RecycledUsernameIsNotReportedAsMissingExternalID(t *testing.T) {
 	st := fake.New()
 	seedLDAPUser(t, st, store.User{Username: "alice", Role: "admin"}) // stable external_id stamped
 

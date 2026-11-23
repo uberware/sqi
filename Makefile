@@ -667,14 +667,19 @@ release-snapshot: ## Build a local snapshot release (no publish, no git tag requ
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 
+DOCKER_BUILD_ARGS = \
+  --build-arg VERSION=$(VERSION) \
+  --build-arg COMMIT=$(COMMIT) \
+  --build-arg BUILD_DATE=$(BUILD_DATE) \
+  --build-arg GOVERSION=$(GO_VERSION)
+
 .PHONY: docker-build
 docker-build: ## Build the sqi-server Docker image
-	docker build \
-	  --build-arg VERSION=$(VERSION) \
-	  --build-arg COMMIT=$(COMMIT) \
-	  --build-arg BUILD_DATE=$(BUILD_DATE) \
-	  -t sqi-server:$(VERSION) \
-	  -f deploy/Dockerfile .
+	docker build $(DOCKER_BUILD_ARGS) -t sqi-server:$(VERSION) -f deploy/docker/Dockerfile .
+
+.PHONY: docker-build-worker
+docker-build-worker: ## Build the sqi-worker Docker image
+	docker build $(DOCKER_BUILD_ARGS) -t sqi-worker:$(VERSION) -f deploy/docker/worker/Dockerfile .
 
 .PHONY: docker-run
 docker-run: ## Run the sqi-server Docker image with default config

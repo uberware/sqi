@@ -22,8 +22,8 @@ import (
 
 func TestValidateWithOptions_EnforceLimitsTrue_SameAsValidate(t *testing.T) {
 	// Validate is documented as a thin wrapper around
-	// ValidateWithOptions{EnforceLimits:true}, so the two must produce the exact
-	// same errors — even on a limit-violating template. Deep-equal, not just len.
+	// ValidateWithOptions{EnforceLimits:true}, so the two must produce deeply
+	// equal errors, even on a limit-violating template.
 	cases := []struct {
 		name string
 		yaml string
@@ -152,11 +152,12 @@ name: NoSteps
 	}
 }
 
-// ── Validate backwards compatibility ─────────────────────────────────────────
+// ── Validate error counts ─────────────────────────────────────────────────────
 
-func TestValidate_UnchangedByRefactor(t *testing.T) {
-	// Validate must behave exactly as before — it is the thin wrapper that calls
-	// ValidateWithOptions(t, ValidateOptions{EnforceLimits: true}).
+func TestValidate_ErrorCounts(t *testing.T) {
+	// Validate is the thin wrapper that calls
+	// ValidateWithOptions(t, ValidateOptions{EnforceLimits: true}); these
+	// cases pin its error counts.
 	cases := []struct {
 		name     string
 		yaml     string
