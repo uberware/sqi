@@ -12,8 +12,9 @@
 //
 //  2. When the client sends a TypeSubscribe message the read loop calls
 //     [Hub.Subscribe].  The hub adds the client to the subject's fan-out set
-//     and, when SinceSeq > 0, replays buffered envelopes from the subject's
-//     ring buffer directly into the client's send channel before returning.
+//     replays the subject's ring buffer into the client's send channel
+//     before returning: every buffered envelope when SinceSeq is 0, otherwise
+//     those after SinceSeq.
 //
 //  3. When the scheduler processes a NATS message it calls one of the
 //     Notify* methods ([Notifier] implementation):
@@ -35,12 +36,13 @@
 //
 // # Subjects
 //
-// Four subscription subjects are supported:
+// Five subscription subjects are supported:
 //
 //	"jobs"              — aggregate job-summary events
 //	"jobs/{id}/tasks"   — per-job task-level updates
 //	"workers"           — worker status events
 //	"tasks/{id}/logs"   — live task log chunks
+//	"diagnostics"       — diagnostic log records from the server and workers
 
 package ws
 
@@ -147,7 +149,7 @@ type hubClient struct {
 	//
 	// It exists because registration and replay are two separate steps with a
 	// gap between them (see Subscribe). Once registered, the client receives
-	// live fan-out; anything published from that moment on must therefore NOT
+	// live fan-out; anything published from that moment on must therefore not
 	// also be replayed, or it arrives twice. The ceiling is the ring head at
 	// registration: at-or-below it predates the subscription and is legitimate
 	// catch-up, above it was already delivered live.
@@ -248,10 +250,9 @@ type Hub struct {
 
 	// ownerScoping reports whether any connected client can be owner-scoped,
 	// i.e. whether auth is enabled. It gates the always-buffer behavior on the
-	// job-summary paths — see NotifyJob. Kept as its own field rather than
-	// inferred from owners.lookup != nil so the two can be reasoned about
-	// separately: "clients may be scoped" and "ownership is resolvable" are
-	// different questions that happen to share an answer today.
+	// job-summary paths (see NotifyJob). It is its own field rather than
+	// inferred from owners.lookup != nil because "clients may be scoped" and
+	// "ownership is resolvable" are different questions.
 	ownerScoping bool
 }
 
@@ -261,14 +262,14 @@ type HubOptions struct {
 	// OwnerScoping enables per-client owner filtering of job-bearing
 	// envelopes. Set it when auth is enabled. It also makes the job-summary
 	// paths buffer unconditionally, so a client that subscribes moments after
-	// an event can still replay it — see NotifyJob for why that matters.
+	// an event can still replay it (see NotifyJob).
 	OwnerScoping bool
 
 	// JobOwner resolves a job id to its owner username. It returns a nil error
-	// with an empty owner for a job that genuinely has none (submitted before
-	// auth was enabled), and a non-nil error when the store could not answer;
-	// only the former is memoized. Required when OwnerScoping is set —
-	// without it, scoped clients receive no task events (fail closed).
+	// with an empty owner for a job that has none (submitted before auth was
+	// enabled), and a non-nil error when the store could not answer; only the
+	// former is memoized. Required when OwnerScoping is set: without it,
+	// scoped clients receive no task events (fail closed).
 	JobOwner func(jobID string) (string, error)
 }
 
@@ -355,7 +356,7 @@ func (h *Hub) Subscribe(clientID, subject string, sinceSeq uint64) error {
 	if _, already := h.subs[subject][clientID]; !already {
 		// First subscription to this subject. Freeze the replay ceiling at the
 		// ring's current head, in the same critical section that makes the
-		// client visible to fanout — otherwise an event published between the
+		// client visible to fanout; otherwise an event published between the
 		// two would slip in above the ceiling and be both delivered live and
 		// replayed.
 		c.replayCeil[subject] = ring.headSeq()
@@ -416,8 +417,8 @@ func (h *Hub) Unsubscribe(clientID, subject string) {
 	}
 	// Drop the frozen ceiling so a later re-subscribe takes a fresh one at the
 	// then-current ring head. Keeping the stale value would wrongly suppress
-	// replay of everything that arrived while the client was unsubscribed —
-	// which is exactly the catch-up replay exists for.
+	// replay of everything that arrived while the client was unsubscribed,
+	// which is the catch-up replay exists for.
 	if c, ok := h.clients[clientID]; ok {
 		delete(c.replayCeil, subject)
 	}
@@ -437,12 +438,11 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 	// Job-summary push (SubjectJobs) — ring it even when no clients are
 	// currently subscribed, so a scoped client that subscribes moments later
 	// can replay it via since_seq: 0 and have it filtered by Scope.allows,
-	// rather than have it silently never buffered. That only matters when the
-	// hub can have scoped clients at all (auth on): with auth off there is no
-	// such thing as a scoped client, so this must fall back to the
-	// hasSubscribers guard — otherwise the highest-frequency event in the
-	// system unconditionally marshals JSON and takes the ring mutex on every
-	// task transition even with nobody connected.
+	// rather than never buffering it. That matters only when the hub can have
+	// scoped clients (auth on). With auth off this falls back to the
+	// hasSubscribers guard, so the highest-frequency event in the system does
+	// not marshal JSON and take the ring mutex on every task transition with
+	// nobody connected.
 	if h.ownerScoping || h.hasSubscribers(SubjectJobs) {
 		env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
 			JobID:      e.JobID,
@@ -525,7 +525,7 @@ func (h *Hub) NotifyLog(e LogEvent) {
 // the ring buffer (like NotifyLog), even when no clients are currently
 // subscribed: a scoped client that subscribes moments later must be able to
 // replay it via since_seq: 0 and have it filtered by Scope.allows, rather than
-// have it silently never buffered. With auth off there are no scoped clients to
+// find it never buffered. With auth off there are no scoped clients to
 // replay for, so this falls back to the hasSubscribers guard to keep the
 // auth-off hot path cheap: zero marshal, zero ring-mutex acquisition, with
 // nobody connected.
@@ -584,11 +584,9 @@ func (h *Hub) NotifyDiag(e DiagEvent) {
 // resolveOwner returns owner when it is already known (non-empty), otherwise
 // falls back to the owner-cache lookup keyed by jobID.
 //
-// Shared by NotifyJob and NotifyTask so this fallback can't drift between two
-// copies again: most production NotifyJob call sites never populate
-// JobEvent.Owner (only the retry path does), and TaskEvent carries no owner
-// field at all, so both always need the cache — NotifyJob just also gets a
-// cheap shortcut when its caller happens to already have the owner in hand.
+// Shared by NotifyJob and NotifyTask: most NotifyJob call sites leave
+// JobEvent.Owner empty and TaskEvent carries no owner field, so both need the
+// cache. NotifyJob skips it when its caller already has the owner.
 func (h *Hub) resolveOwner(owner, jobID string) string {
 	if owner != "" {
 		return owner
@@ -607,9 +605,9 @@ func (h *Hub) hasSubscribers(subject string) bool {
 }
 
 // fanout assigns a hub-level seq to env, stores it in the subject's ring
-// buffer, and delivers a copy to each subscribed client.  Clients whose send
-// buffers are full receive a warning log entry; the message is dropped rather
-// than blocking fanout.
+// buffer, and delivers a copy to each subscribed client.  When a client's
+// send buffer is full the message is dropped for it, with a warning logged,
+// rather than blocking fanout.
 func (h *Hub) fanout(subject string, env Envelope) {
 	ring := h.getOrCreateRing(subject)
 	// add assigns env.Seq and stores the envelope; returns the assigned seq.

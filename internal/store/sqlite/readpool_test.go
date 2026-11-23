@@ -3,8 +3,8 @@
 package sqlite
 
 // White-box tests for the separate read connection pool. They live in package
-// sqlite (not sqlite_test) because the whole point is which *sql.DB a statement
-// lands on, and that is unexported.
+// sqlite (not sqlite_test) because they check which *sql.DB a statement lands
+// on, and that is unexported.
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 )
 
 // openFilePoolStore opens a file-backed store, which is the only kind that gets
-// a genuinely separate read pool. t.Cleanup closes it.
+// a separate read pool. t.Cleanup closes it.
 func openFilePoolStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(context.Background(), t.TempDir()+"/test.db", DefaultOptions())
@@ -96,8 +96,8 @@ func TestOpen_InMemoryStoreSharesOnePool(t *testing.T) {
 // several. All of them are held open at once so each must answer for itself.
 func TestReadPool_BusyTimeoutOnEveryConnection(t *testing.T) {
 	s := openFilePoolStore(t)
-	// Bounded so a regression that collapses the read pool back onto the
-	// single write connection fails here rather than deadlocking.
+	// Bounded so a read pool collapsed onto the single write connection fails
+	// here rather than deadlocking.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -223,8 +223,8 @@ func TestReadPool_ReadsProceedWhileWriteConnectionIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginTx: %v", err)
 	}
-	// Write inside the transaction so it holds the WAL writer lock too, not
-	// just the Go-side connection.
+	// Write inside the transaction so it holds the WAL writer lock as well as
+	// the Go-side connection.
 	if _, err := tx.ExecContext(ctx, `UPDATE farms SET description = 'held' WHERE id = ?`, "f1"); err != nil {
 		_ = tx.Rollback() //nolint:errcheck // test cleanup on an already-failing path
 		t.Fatalf("update inside tx: %v", err)
@@ -251,7 +251,7 @@ func TestReadPool_ReadsProceedWhileWriteConnectionIsHeld(t *testing.T) {
 // the one way it could pass vacuously — a write so quick the reads landed
 // after it — and fails asking for a bigger submission rather than passing.
 //
-// taskCount is deliberately modest. The whole mechanism is pinned
+// taskCount is modest. The mechanism is pinned
 // machine-independently by ReadsProceedWhileWriteConnectionIsHeld above; this
 // test's job is to show the same thing happens on the real submission path,
 // and a bigger job would only buy CI minutes under the race detector.
@@ -292,7 +292,7 @@ func TestReadPool_ReadsProceedDuringLargeJobSubmission(t *testing.T) {
 	}()
 
 	<-started
-	// Let the transaction actually open and start inserting.
+	// Let the transaction open and start inserting.
 	time.Sleep(20 * time.Millisecond)
 	readElapsed := readAll(t, s)
 

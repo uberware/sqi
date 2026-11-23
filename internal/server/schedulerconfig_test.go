@@ -17,7 +17,7 @@ import (
 // advertised EXPR caps against the limits a template was accepted under, so
 // it must be given the same limits the submitter is built with.
 //
-// The values below are deliberately non-default and distinct: this is four
+// The values below are non-default and distinct: this is four
 // int64 fields crossing a struct boundary, where a transposition compiles.
 func TestSchedulerConfig_CarriesTheSubmittersExprLimits(t *testing.T) {
 	want := openjd.ExprLimits{

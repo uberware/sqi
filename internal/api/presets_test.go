@@ -32,7 +32,7 @@ type fakeLib struct {
 	defErr     error
 	// lastOpts records the ValidateOptions of the most recent FetchDefinition
 	// call, so a test can assert the operator's EXPR limits and this request's
-	// deadline actually reach the validator rather than being dropped.
+	// deadline reach the validator rather than being dropped.
 	lastOpts product.ValidateOptions
 }
 
@@ -313,8 +313,8 @@ func TestPresets_GetPresetReturnsDetail(t *testing.T) {
 
 // TestPresets_GetPresetNamespacedName checks that a preset whose name contains
 // a '/' namespace separator (e.g. "testing/render-simulator") is resolvable when
-// the browser URL-encodes the slash as %2F in the path. Regression test: chi
-// does not decode path params, so the handler must unescape the name itself.
+// the browser URL-encodes the slash as %2F in the path. chi does not decode
+// path params, so the handler must unescape the name itself.
 func TestPresets_GetPresetNamespacedName(t *testing.T) {
 	entries := []presetlib.IndexEntry{
 		{Name: "testing/render-simulator", Title: "Render Simulator", Category: "Testing", Version: "1.0.0", Sha256: "abc123"},
@@ -510,7 +510,7 @@ func TestPresets_InstallConflict(t *testing.T) {
 	srv := newPresetTestServer(t, lib)
 	ctx := t.Context()
 
-	// Seed a CUSTOM product with the same name as the preset.
+	// Seed a custom product with the same name as the preset.
 	_, err := srv.st.CreateProduct(ctx, store.Product{
 		ID: "custom-1", Name: "maya-render", Title: "My Custom Maya",
 		Source:   store.SourceCustom,
@@ -599,9 +599,9 @@ func TestPresets_ValidationCarriesOperatorLimitsAndDeadline(t *testing.T) {
 // server gave up on a body that would validate on an idle machine, so it must
 // not be reported as an unprocessable definition.
 //
-// The fingerprint-mismatch tests above pin the other direction — a genuine
-// definition fault stays 422 — so the mapping cannot be satisfied by answering
-// 503 for everything.
+// The fingerprint-mismatch tests above pin the other direction (a definition
+// fault stays 422), so the mapping cannot be satisfied by answering 503 for
+// everything.
 func TestPresets_DeadlineIsA503NotA422(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
@@ -640,10 +640,10 @@ func TestPresets_DeadlineIsA503NotA422(t *testing.T) {
 //
 // They synthesize what the pipeline returns rather than driving a real
 // evaluation, which would need a fake preset library serving an expensive
-// EXPR definition. errors.Is is what the handler uses, so the
-// wrapping in defErr must actually satisfy it — if a future refactor stopped
-// wrapping the sentinel, both tests above would go on passing against a shape
-// production no longer produces.
+// EXPR definition. errors.Is is what the handler uses, so the wrapping in
+// defErr must satisfy it: if production stopped wrapping the sentinel, both
+// tests above would go on passing against a shape production does not
+// produce.
 func TestPresets_DeadlineErrorMatchesTheRealSentinel(t *testing.T) {
 	err := fmt.Errorf("presetlib: product: template validation: %w", expr.ErrDeadlineExceeded)
 	if !errors.Is(err, expr.ErrDeadlineExceeded) {

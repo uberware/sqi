@@ -25,7 +25,7 @@ func (s *Store) AppendAuditEntry(ctx context.Context, entry store.AuditEntry) er
 // ListAuditEntries returns all audit entries for the given entity,
 // ordered by CreatedAt ascending. Pass empty strings to list all entries.
 // A test oracle: nothing in production reads the audit log, so it is not part
-// of store.Store. Mirrors the SQLite method of the same name.
+// of store.Store. Mirrors the SQL store method of the same name.
 func (s *Store) ListAuditEntries(_ context.Context, entityType, entityID string) ([]store.AuditEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

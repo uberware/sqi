@@ -41,5 +41,5 @@ func serverConfigPaths(configPath, _ string) ([]winsvc.PathRef, error) {
 }
 
 // serverDrainTimeout is the server's graceful-shutdown bound. It is a
-// constant today, so the config file is not consulted.
+// constant, so the config file is not consulted.
 func serverDrainTimeout(string) (time.Duration, error) { return server.ShutdownTimeout, nil }

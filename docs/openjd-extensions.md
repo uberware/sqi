@@ -17,12 +17,12 @@ entry. `Origin` is:
 ## Vendor namespacing & promotion path
 
 sqi-defined (vendor) extensions must carry an `SQI_` prefix (e.g.
-`SQI_PATH_TRANSLATION`). This guarantees a vendor name can never collide with a
-future official OpenJD name. The rule is enforced by a registry invariant test
+`SQI_PATH_TRANSLATION`), so a vendor name never collides with an official
+OpenJD name. The rule is enforced by a registry invariant test
 (`TestRegistryVendorNamespacing`).
 
 If a vendor extension is contributed to and adopted by upstream OpenJD, it is
-**promoted**: the `SQI_` prefix is dropped, the entry's `Origin` flips to
+promoted: the `SQI_` prefix is dropped, the entry's `Origin` flips to
 `official`, and its contribution doc moves to reflect the official name.
 
 ## Authoring a new extension

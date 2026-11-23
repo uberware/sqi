@@ -5,10 +5,10 @@
 // otherwise enrolling with sqi-server over REST when a join token is
 // configured.
 //
-// Enrollment runs over REST rather than NATS on purpose: the broker's entire
-// job is to refuse unauthenticated connections, so it cannot also be the
-// channel a worker gets its first credential over. mDNS already advertises
-// the HTTP port, so zero-configuration discovery still works.
+// Enrollment runs over REST rather than NATS: the broker refuses
+// unauthenticated connections, so it cannot be the channel a worker gets its
+// first credential over. The enrollment URL is nats.server_url; it is not
+// derived from mDNS discovery.
 package enroll
 
 import (
@@ -30,15 +30,15 @@ import (
 )
 
 // ErrNoCredential is returned when no credential file exists and no join
-// token is configured to obtain one. It is not inherently fatal to a boot on
-// a farm that does not require worker authentication — see
-// [EnsureCredential]'s doc for how callers should treat it.
+// token is configured to obtain one. It is not fatal on a farm that does not
+// require worker authentication; see [EnsureCredential] for how callers treat
+// it.
 var ErrNoCredential = errors.New("worker: no credential and no join token")
 
 // Config holds everything EnsureCredential needs to load or obtain a
-// credential. It is passed by value, deliberately separate from the broader
-// worker configuration struct, so that a seed never has to travel through —
-// and risk being logged by — general-purpose configuration plumbing.
+// credential. It is passed by value and kept separate from the worker
+// configuration struct, so a seed never travels through, or is logged by,
+// general-purpose configuration plumbing.
 type Config struct {
 	// WorkerID is this worker's stable, server-correlated identity.
 	WorkerID string
@@ -62,7 +62,7 @@ type Config struct {
 	HTTPClient *http.Client
 
 	// TLSCAFile is the CA that verifies the server's certificate at
-	// ServerURL. Empty means the system roots; set means THAT CA only, so a
+	// ServerURL. Empty means the system roots; set means that CA only, so a
 	// farm CA pins the acceptable issuer rather than widening it.
 	TLSCAFile string
 
@@ -73,9 +73,9 @@ type Config struct {
 
 // httpClient returns the client used for the enrollment request.
 //
-// It exists because http.DefaultClient cannot trust a private farm CA, and
-// enrollment is the one REST call a worker makes BEFORE it has any credential
-// at all — so without this a farm with an HTTPS server could not bootstrap.
+// http.DefaultClient cannot trust a private farm CA, and enrollment is the
+// one REST call a worker makes before it has a credential, so this client is
+// what lets a worker bootstrap against an HTTPS server.
 func httpClient(cfg Config) (*http.Client, error) {
 	if cfg.HTTPClient != nil {
 		return cfg.HTTPClient, nil
@@ -108,19 +108,16 @@ type enrollRequest struct {
 // existing credential file if one is present, and otherwise enrolling with
 // sqi-server over REST using a configured join token.
 //
-// The order is deliberate: an existing seed is loaded first — an
-// already-enrolled worker must never re-enroll just because a join token is
-// still configured — and only when no seed exists does enrollment happen,
-// using whichever token is configured. When neither a seed nor a token is
-// available, EnsureCredential returns ErrNoCredential rather than silently
-// connecting with nothing: it is the caller's job to decide whether that is
-// fatal (a farm that requires authentication) or fine (an auth-off farm,
-// where the caller should proceed with no credential and let the broker
-// itself decide whether to accept the connection).
+// An existing seed is loaded first, so an enrolled worker never re-enrolls
+// because a join token is still configured; only when no seed exists does
+// enrollment happen. When neither a seed nor a token is available,
+// EnsureCredential returns ErrNoCredential, and the caller decides whether
+// that is fatal (a farm that requires authentication) or fine (an auth-off
+// farm, where the caller proceeds with no credential and the broker decides
+// whether to accept the connection).
 //
-// A credential is written to disk only after the server confirms enrollment
-// succeeded — a failed enrollment must never leave a seed behind that a
-// later boot would silently reuse.
+// A credential is written to disk only after the server confirms enrollment,
+// so a failed enrollment leaves no seed for a later boot to reuse.
 func EnsureCredential(ctx context.Context, cfg Config, logger *slog.Logger) (seed []byte, publicKey string, err error) {
 	seed, loadErr := brokerauth.LoadSeed(cfg.CredentialFile)
 	switch {
@@ -144,11 +141,10 @@ func EnsureCredential(ctx context.Context, cfg Config, logger *slog.Logger) (see
 	if token == "" {
 		return nil, "", ErrNoCredential
 	}
-	// ServerURL is never derived from mDNS discovery — enrollment needs an
-	// HTTP base URL, and mDNS discovery here only ever resolves a NATS URL
-	// (see internal/worker/discovery). Fail before any HTTP attempt so the
-	// operator sees a config key to fix rather than a raw
-	// "unsupported protocol scheme" error.
+	// ServerURL is not derived from mDNS discovery: enrollment needs an HTTP
+	// base URL, and discovery resolves only a NATS URL (see
+	// internal/worker/discovery). Failing before any HTTP attempt names the
+	// config key to fix instead of an "unsupported protocol scheme" error.
 	if cfg.ServerURL == "" {
 		return nil, "", errors.New(
 			"worker: enrollment requires nats.server_url (env SQI_WORKER_NATS_SERVER_URL) to be set; it is not derived from mDNS discovery",
@@ -210,9 +206,9 @@ func enrollWithServer(ctx context.Context, cfg Config, token, publicKey string) 
 		return err
 	}
 	if cfg.HTTPClient == nil {
-		// This client is ours and is used exactly once. Without this the
-		// worker keeps an idle TLS connection to the server open for the rest
-		// of its life, for a request it will never repeat.
+		// This client is used once; closing its idle connections keeps the
+		// worker from holding a TLS connection open for a request it will
+		// not repeat.
 		defer client.CloseIdleConnections()
 	}
 

@@ -16,8 +16,8 @@ import (
 //
 // A same-status write is a no-op (invariant I1), not a transition, so a
 // from-state equal to the target is skipped rather than listed as an arrow:
-// ParkJob's guard admits an already-paused job, and the table deliberately has
-// no paused → paused entry.
+// ParkJob's guard admits an already-paused job, and the table has no
+// paused → paused entry.
 //
 // FinalizeJob's SQL guard is "status NOT IN (terminal)", which also admits
 // blocked, and a blocked job can be finalized. Canceling each of its tasks one

@@ -140,7 +140,7 @@ describe('ProductDetail', () => {
     await userEvent.click(await screen.findByRole('button', { name: /duplicate to custom/i }))
     expect(screen.getByTestId('location')).toHaveTextContent('/products/new')
     // The built-in's title + template are carried as duplicate router state so the
-    // create form pre-fills (name is intentionally blank, forcing a fresh slug).
+    // create form pre-fills (name stays blank, so the copy needs a new slug).
     expect(screen.getByTestId('dup-title')).toHaveTextContent('My Render')
     expect(screen.getByTestId('dup-template')).toHaveTextContent('name: my-template')
   })

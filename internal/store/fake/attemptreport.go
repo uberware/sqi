@@ -10,14 +10,14 @@ import (
 )
 
 // liveAttemptLocked reports whether a report from attemptID may act on t, as
-// SQLite's liveAttemptTx does: the attempt is still running and is the task's
+// sqlstore's liveAttemptTx does: the attempt is still running and is the task's
 // latest, and the task is assigned or running. Caller holds s.mu.
 func (s *Store) liveAttemptLocked(attemptID string, t store.Task) bool {
 	return inFlightTask(t.Status) && s.isLatestAttemptLocked(t.ID, attemptID) &&
 		s.taskAttempts[attemptID].Status == store.AttemptStatusRunning
 }
 
-// StartTaskAttempt implements [store.TaskStore]; outcomes match SQLite's.
+// StartTaskAttempt implements [store.TaskStore]; outcomes match the SQL store's.
 func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, sessionID string, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -43,7 +43,7 @@ func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, session
 	return true, nil
 }
 
-// RecordAttemptProgress implements [store.TaskStore]; outcomes match SQLite's.
+// RecordAttemptProgress implements [store.TaskStore]; outcomes match the SQL store's.
 func (s *Store) RecordAttemptProgress(ctx context.Context, p store.AttemptProgress) (store.ProgressOutcome, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -70,7 +70,7 @@ func (s *Store) RecordAttemptProgress(ctx context.Context, p store.AttemptProgre
 	return store.ProgressRecorded, t.JobID, nil
 }
 
-// ReclaimTaskAttempt implements [store.TaskStore]; outcomes match SQLite's.
+// ReclaimTaskAttempt implements [store.TaskStore]; outcomes match the SQL store's.
 func (s *Store) ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

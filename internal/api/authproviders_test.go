@@ -6,7 +6,7 @@ package api
 //
 // Two properties matter here and nowhere else in this package:
 //
-//   - it answers WITHOUT a session cookie. The login page is unauthenticated by
+//   - it answers without a session cookie. The login page is unauthenticated by
 //     definition, so an authenticated discovery endpoint would be circular and
 //     the SSO button would never render;
 //   - it leaks nothing. It is reachable by anyone who can reach the server, so
@@ -76,7 +76,7 @@ func TestGetAuthProviders(t *testing.T) {
 			}
 			ts := newOIDCServer(t, fake.New(), p, cfg)
 
-			// Deliberately no session cookie and no Authorization header.
+			// No session cookie and no Authorization header.
 			req, err := http.NewRequestWithContext(
 				context.Background(), http.MethodGet, ts.srv.URL+"/api/v1/auth/providers", nil,
 			)
@@ -137,10 +137,10 @@ func TestGetAuthProviders(t *testing.T) {
 // TestGetAuthProviders_AuthEnabledFalse pins the auth-off deployment: no
 // session, no API key, and none of the auth wiring the cases above build. The
 // route is mounted unconditionally in router.go rather than gated on
-// cfg.AuthEnabled — "no SSO configured" is itself the answer the login page
-// needs even when auth is off entirely — so this must return the same
-// no-SSO shape the "sso off" case above does, and the auth-off path must stay
-// byte-for-byte unchanged, which this test is here to keep true.
+// cfg.AuthEnabled ("no SSO configured" is the answer the login page needs
+// even when auth is off), so this must return the same no-SSO shape the
+// "sso off" case above does, and the auth-off path must stay byte-for-byte
+// unchanged.
 func TestGetAuthProviders_AuthEnabledFalse(t *testing.T) {
 	r := NewRouter(
 		Config{DisableRateLimit: true, AuthEnabled: false},

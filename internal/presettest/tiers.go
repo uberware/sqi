@@ -49,10 +49,9 @@ type Tier1 struct {
 	// golden on disk.
 	Cases []string `yaml:"cases"`
 
-	// Caveat states what this Tier-1 claim does NOT prove, specifically. A
-	// Tier-1 golden proves the template expands to a reviewed command line; it
-	// does not prove the vendor's application accepts it. Empty is an error:
-	// the requirement is machine-enforced rather than remembered.
+	// Caveat states what this Tier-1 claim does not prove. A Tier-1 golden
+	// proves the template expands to a reviewed command line; it does not
+	// prove the vendor's application accepts it. Empty is an error.
 	Caveat string `yaml:"caveat"`
 }
 
@@ -62,9 +61,9 @@ type TierExec struct {
 	// "TestPresetTier3/maya-layer-render/default".
 	Case string `yaml:"case"`
 
-	// RequiredOn lists the GOOS values on which that case MUST actually run. If
-	// it skips on one of them, the registry verification fails. A target that
-	// can silently pass while running nothing is worse than no target.
+	// RequiredOn lists the GOOS values on which that case must run. If it
+	// skips on one of them, the registry verification fails, so a case cannot
+	// pass there while running nothing.
 	//
 	// It must name at least one platform; the loader rejects an empty list,
 	// because a claim required nowhere can never fail. A tier that cannot be run
@@ -72,7 +71,7 @@ type TierExec struct {
 	RequiredOn []string `yaml:"required_on"`
 
 	// RequiresApp names a vendor application (one of KnownApps) the case needs
-	// installed. It replaces RequiredOn for a case that CI cannot run on every
+	// installed. It replaces RequiredOn for a case CI cannot run on every
 	// host: the case skips when the application is absent, and that skip is a
 	// registry failure only when RequireAppsEnv lists the application. A run
 	// without it records the case as not proven rather than hiding the gap.
@@ -136,9 +135,8 @@ func ParseRegistry(data []byte) (Registry, error) {
 }
 
 // validateEntry checks one registry entry against the rules ParseRegistry
-// enforces. Split out of ParseRegistry solely to keep cyclomatic complexity
-// under the project's lint ceiling (cyclop); the checks, their order, and
-// every error string are unchanged from the inline version.
+// enforces. It is separate from ParseRegistry to keep cyclomatic complexity
+// under the lint ceiling (cyclop).
 func validateEntry(i int, e Entry, seen map[string]bool) error {
 	switch {
 	case e.Name == "":
@@ -168,8 +166,8 @@ func validateEntry(i int, e Entry, seen map[string]bool) error {
 }
 
 // validateTierExec checks one execution-tier block. A nil block is fine:
-// OMITTING the block is how this registry records a tier we cannot run, which is
-// why an empty RequiredOn is an error rather than a weaker claim.
+// omitting the block is how this registry records a tier that cannot be run,
+// which is why an empty RequiredOn is an error rather than a weaker claim.
 func validateTierExec(name, field string, t *TierExec) error {
 	if t == nil {
 		return nil
@@ -188,9 +186,9 @@ func validateTierExec(name, field string, t *TierExec) error {
 		}
 		return nil
 	}
-	// slices.Contains(nil, anything) is false on every GOOS that exists or ever
-	// will, so a block with no required platform can never fail the registry's
-	// skip check -- it would look verified forever while proving nothing.
+	// slices.Contains(nil, anything) is false on every GOOS, so a block with
+	// no required platform could never fail the registry's skip check and
+	// would look verified while proving nothing.
 	if len(t.RequiredOn) == 0 {
 		return fmt.Errorf(
 			"presettest: %s: %s block requires no platform, so its claim could never fail"+
@@ -222,9 +220,9 @@ var (
 
 // RecordOutcome reports that caseName executed (or skipped) in this run.
 //
-// Execution-tier tests call this as their first act, INCLUDING on the skip
-// path, because "a skipped test verifies nothing": the registry test needs to
-// tell "skipped here, legitimately" from "this claim is backed by nothing".
+// Execution-tier tests call this first, including on the skip path, because a
+// skipped test verifies nothing: the registry test needs to tell "skipped
+// here, legitimately" from "this claim is backed by nothing".
 func RecordOutcome(caseName string, skipped bool, reason string) {
 	outcomeMu.Lock()
 	defer outcomeMu.Unlock()

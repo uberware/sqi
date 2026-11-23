@@ -16,9 +16,9 @@ import (
 // ── openjd.expr_* : defaults ────────────────────────────────────────────────
 
 // TestDefaultConfig_ExprLimits pins that a fresh install carries exactly the
-// four default numbers internal/openjd defines. The cross-package half of this claim -- that
-// these equal internal/openjd's own DefaultExprLimits() -- is
-// TestExprLimits_ConfigMatchesOpenJD, in internal/server, because
+// four default numbers internal/openjd defines. That these equal
+// internal/openjd's own DefaultExprLimits() is checked by
+// TestExprLimits_ConfigMatchesOpenJD in internal/server, because
 // internal/config must not import internal/openjd.
 func TestDefaultConfig_ExprLimits(t *testing.T) {
 	cfg := config.DefaultConfig()
@@ -46,12 +46,10 @@ func TestDefaultConfig_ExprLimits(t *testing.T) {
 
 // TestValidate_ExprLimits walks every boundary of all four ranges.
 //
-// The BOUNDARY rows are the point: a test that only checks 1 and 10^9 passes
-// with an off-by-one in the comparison. Each knob therefore gets min-1, min,
-// max, max+1, plus zero and a negative -- zero especially, because the Go
-// zero value of an int64 field is the value a config file that omits the key
-// would leave behind if the defaults were ever dropped, and "0" must not
-// silently mean "unlimited".
+// The boundary rows catch an off-by-one in the comparison that a test of only
+// 1 and 10^9 would miss. Each knob gets min-1, min, max, max+1, plus zero and
+// a negative: zero is the value an omitted key would leave if the defaults
+// were dropped, and it must not mean "unlimited".
 func TestValidate_ExprLimits(t *testing.T) {
 	type knob struct {
 		field string
@@ -225,7 +223,7 @@ func TestLoad_ExprLimitsFromFile(t *testing.T) {
 }
 
 // TestLoad_ExprLimitsOmittedKeepsDefaults is the "a fresh install changes
-// nothing" assertion at the LOADER layer: a config file that mentions openjd
+// nothing" assertion at the loader layer: a config file that mentions openjd
 // but not the expr keys must leave all four at their defaults, not at zero.
 func TestLoad_ExprLimitsOmittedKeepsDefaults(t *testing.T) {
 	path := t.TempDir() + "/sqi.yaml"
@@ -257,26 +255,22 @@ func TestLoad_ExprLimitMalformedEnvIsAnError(t *testing.T) {
 // TestDefaultConfig_ExprSubmissionDeadline pins the shipped default of the
 // EXPR wall-clock backstop.
 //
-// It is deliberately NOT one of the four limits above, and the difference is
-// the whole point of the key: those four decide whether a template is VALID (a
-// 422 that no retry can fix), while this one decides only how long this server
-// is willing to work on one submission before giving up (a 503 that a retry
-// may well clear).
+// Unlike the four limits above, which decide whether a template is valid (a
+// 422 that no retry can fix), this one decides only how long this server
+// works on one submission before giving up (a 503 that a retry may clear).
 func TestDefaultConfig_ExprSubmissionDeadline(t *testing.T) {
 	if got, want := config.DefaultConfig().OpenJD.ExprSubmissionDeadline, 5*time.Second; got != want {
 		t.Errorf("openjd.expr_submission_deadline = %s, want %s", got, want)
 	}
 }
 
-// TestValidate_ExprSubmissionDeadline walks every boundary of the new key's
-// range, matching how the four int64 limits above are covered.
+// TestValidate_ExprSubmissionDeadline walks every boundary of the key's
+// range, as the four int64 limits above are covered.
 //
-// The floor exists so an operator cannot set a deadline so short that every
-// legitimate template fails; the ceiling exists because the key's whole purpose
-// is to bound a measured ~17-minute worst case, and a value near that bounds
-// nothing. Zero and negative are rejected rather than read as "no deadline":
-// the backstop is not optional, and an operator who wants a long one has the
-// ceiling to reach for.
+// The floor stops a deadline so short that every legitimate template fails;
+// the ceiling exists because the key bounds a worst case of more than 15
+// minutes, and a value near that bounds nothing. Zero and negative are
+// rejected rather than read as "no deadline": the backstop is not optional.
 func TestValidate_ExprSubmissionDeadline(t *testing.T) {
 	const (
 		field = "openjd.expr_submission_deadline"
@@ -377,7 +371,7 @@ func TestLoad_ExprSubmissionDeadlineFromFile(t *testing.T) {
 }
 
 // TestLoad_ExprSubmissionDeadlineOmittedKeepsDefault is the "a fresh install
-// changes nothing" assertion for the new key: a config file that mentions
+// changes nothing" assertion for this key: a config file that mentions
 // openjd but not this key must leave it at its default, not at zero — which
 // Validate rejects, so a dropped default would be a startup failure.
 func TestLoad_ExprSubmissionDeadlineOmittedKeepsDefault(t *testing.T) {
@@ -403,10 +397,9 @@ func TestLoad_ExprSubmissionDeadlineMalformedEnvIsAnError(t *testing.T) {
 
 // TestExampleConfig_ExprLimitsMatchDefaults keeps config/sqi-server.example.yaml
 // in step with the defaults. The example file is what an operator copies, so
-// a value in it that drifts from the shipped default silently changes the
-// behavior of anyone who starts from it -- and nothing else in this repo reads that file, so nothing
-// else would notice. Only the openjd block is asserted; the rest of the example
-// deliberately demonstrates non-default values.
+// a value in it that drifts from the shipped default changes the behavior of
+// anyone who starts from it. Only the openjd block is asserted here; the rest
+// of the example also shows non-default values.
 func TestExampleConfig_ExprLimitsMatchDefaults(t *testing.T) {
 	path := filepath.Join("..", "..", "config", "sqi-server.example.yaml")
 	cfg, err := config.Load(path, config.FlagOverrides{})

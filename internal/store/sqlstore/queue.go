@@ -163,11 +163,11 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 //
 // Wrapped in an explicit transaction (rather than the single QueryRowContext
 // every other Update* uses) because [store.ErrRunAsGroupWithoutUser] must be
-// checked against the RESOLVED run_as_user/run_as_group — i.e. after the
-// statement's own CASE WHEN preserve substitution — not the raw request
+// checked against the resolved run_as_user/run_as_group, after the
+// statement's own CASE WHEN preserve substitution, rather than the raw request
 // fields: a PUT that omits run_as_user/run_as_group cannot tell from the
 // request alone whether the preserved column will end up empty. RETURNING
-// gives us those resolved values from the very statement that would commit
+// yields those resolved values from the very statement that would commit
 // them, so the invalid-combo check and the write see identical data with no
 // separate read and therefore no read-then-write race. An invalid combo
 // rolls the transaction back so the update has no effect at all, rather than

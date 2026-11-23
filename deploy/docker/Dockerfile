@@ -25,7 +25,8 @@ ARG GOVERSION=unknown
 WORKDIR /src
 
 # Copy dependency manifests first so Docker can cache the download layer
-# separately from the source. Re-downloading only happens when go.mod changes.
+# separately from the source. Dependencies are downloaded again only when
+# go.mod or go.sum changes.
 COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 
@@ -47,8 +48,8 @@ RUN CGO_ENABLED=0 go build \
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 #
 # distroless/static-debian12 ships no shell, no package manager, and no OS
-# libraries — only the CA bundle and tzdata needed by Go binaries. This keeps
-# the attack surface minimal and the image small (~5 MB total).
+# libraries, only the CA bundle and tzdata needed by Go binaries. This keeps
+# the attack surface and the image small.
 #
 # The :nonroot variant sets USER 65532 (nonroot) by default, satisfying
 # pod-security-policy and most OPA/Kyverno rules that prohibit root containers.

@@ -8,11 +8,11 @@
 // are approximated:
 //
 //   - TERMINATE (the spec default): the caller calls Kill directly, which
-//     terminates the whole job object (TerminateJobObject) — the closest
-//     Windows equivalent of SIGKILL, and one that reaps every process in the
+//     terminates the whole job object (TerminateJobObject). That is the
+//     closest Windows equivalent of SIGKILL, and it reaps every process in the
 //     tree including a grandchild orphaned before the call (see Tree's doc
 //     for why "taskkill /F /T" cannot do that).
-//   - NOTIFY_THEN_TERMINATE: the caller calls Notify first.  There is no true
+//   - NOTIFY_THEN_TERMINATE: the caller calls Notify first. There is no true
 //     SIGTERM on Windows; Notify uses "taskkill /T /PID" (without /F) as a
 //     best-effort graceful request that lets GUI processes handle WM_CLOSE.
 //     A console process may not receive a graceful-shutdown notification

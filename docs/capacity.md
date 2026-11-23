@@ -166,7 +166,7 @@ million ready tasks costs the same as one with a single task.
 
 ### What demand counts
 
-Only work that a machine of the group could actually run is counted. For each
+Only work that a machine of the group could run is counted. For each
 step that has leasable ready tasks, sqi asks whether the group's machine (the
 profile of a sized group, or each offline member of a named group) could ever
 run it, ignoring everything that varies with load:

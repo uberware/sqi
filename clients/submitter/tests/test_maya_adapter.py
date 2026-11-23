@@ -20,9 +20,7 @@ def _install_fake_cmds(fake_host_module: Any, **overrides: Any) -> tuple[Any, li
     state.update(overrides)
     saved: list[bool] = []
 
-    def file(
-        *args: Any, **kw: Any
-    ) -> Any:  # shadows the builtin deliberately: mirrors maya.cmds.file
+    def file(*args: Any, **kw: Any) -> Any:  # shadows the builtin to mirror maya.cmds.file
         if kw.get("query") and kw.get("sceneName"):
             return state[("file", ("query", "sceneName"))]
         if kw.get("query") and kw.get("modified"):

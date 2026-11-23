@@ -111,9 +111,8 @@ GPU-capable on macOS or Windows.
 
 In addition to the hardware and OS tags above, `sqi-worker` runs a declarative
 detection engine (`internal/worker/capabilities`) that looks for installed
-applications (Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max, After Effects,
-Mistika Boutique/Ultima, VR and Workflows, ffmpeg, and the standalone
-renderers below) and advertises a tag with value `"true"` for each one found,
+applications (the DCC applications, ffmpeg, oiiotool and the standalone
+renderers in the table below) and advertises a tag with value `"true"` for each one found,
 with no per-worker configuration. That satisfies the `anyOf: ["true"]` gate the
 shipped reference presets declare, so a worker with a standard install matches
 those presets as is. Run `sqi-worker capabilities` to see what was found. See
@@ -287,7 +286,7 @@ config file (see
 [`docs/worker-configuration.md`](worker-configuration.md#capabilities--software-auto-detection)
 and
 [`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml)).
-They use the exact same schema as the built-ins
+They use the same schema as the built-ins
 ([`internal/worker/capabilities/detector.go`](https://github.com/uberware/sqi/blob/main/internal/worker/capabilities/detector.go)),
 so any built-in YAML under
 [`internal/worker/capabilities/builtins/`](https://github.com/uberware/sqi/tree/main/internal/worker/capabilities/builtins)

@@ -12,7 +12,7 @@ import (
 // Symbols resolves the dotted names an expression references — Param.Frame,
 // Task.Param.Chunk, Session.WorkingDirectory and the like.
 //
-// The package deliberately hardcodes no namespaces: the caller decides what is
+// The package hardcodes no namespaces: the caller decides what is
 // in scope, exactly as fmtstring.Scope does for base-spec format strings.
 type Symbols interface {
 	// Lookup returns the value bound to a fully qualified dotted name, and
@@ -35,18 +35,18 @@ func (m MapSymbols) Lookup(name string) (Value, bool) {
 // target. syms may be nil for an expression that references no symbols; pass
 // TAny as the target to accept the expression's natural result type.
 //
-// The target guides implicit coercion (section 1.3.1). It applies HERE, at the
+// The target guides implicit coercion (section 1.3.1). It applies here, at the
 // boundary, and inside operator dispatch when a shape is matched. It propagates
 // into a sub-expression from exactly four node kinds and no others — the
 // package doc's forwarding table is the single statement of which, and of why
 // each row is what it is; do not restate it here, and consult it rather than
 // this comment when the question is whether some position takes a target.
 // Section 1.3.1 leaves the question open, and the table's governing rule is
-// that a node forwards only when its result literally IS a sub-expression's
-// value: propagating a string target into "Param.Count + 1" would concatenate
-// its operands into "11" rather than adding them, and section 1.3.2's own
-// example of "Count: {{ len(myList) }}" yielding "Count: 5" describes
-// evaluating naturally and converting afterward.
+// that a node forwards only when its result is a sub-expression's value:
+// propagating a string target into "Param.Count + 1" would concatenate its
+// operands into "11" rather than adding them, and section 1.3.2's own example
+// of "Count: {{ len(myList) }}" yielding "Count: 5" describes evaluating
+// naturally and converting afterward.
 func (e *Expression) Eval(syms Symbols, target Type, opts ...Option) (Value, error) {
 	ec := newEvalCtx(e.src, syms, opts)
 	if ec.limitErr != nil {
@@ -68,20 +68,20 @@ func (e *Expression) Eval(syms Symbols, target Type, opts ...Option) (Value, err
 // evaluation finishes, and meters it exactly like any other construct: v is
 // what evalNode's own allocation point already added to the live total, so it
 // is released once coerce is done consuming it, and the coerced result is
-// allocated fresh -- checked against the memory bound at THAT point, not
+// allocated fresh -- checked against the memory bound at that point, not
 // left unchecked.
 //
 // This exists because section 1.2.3's range_expr -> list[int] conversion
 // (coerce.go's coerceByListDestination) can turn a small live range_expr into
-// an arbitrarily large list -- and this boundary coercion runs OUTSIDE
+// an arbitrarily large list -- and this boundary coercion runs outside
 // evalNode, after the single allocation point, so without this it would never
 // be checked against WithMemoryLimit at all, only against the fixed and much
 // larger maxElements floor (limits.go). See
 // TestMemoryLimit_CatchesTopLevelCoercion.
 func coerceTop(ec evalCtx, src string, root Node, v Value, target Type) (Value, error) {
-	// A range_expr meeting a list[int] TARGET expands, and nothing charges
-	// for it: the result's own alloc below would catch it only after 2768 MB
-	// had been built. See reserveRangeExprCoercion (rangeexpr.go).
+	// A range_expr meeting a list[int] target expands, and nothing charges
+	// for it: the result's own alloc below would catch it only after the
+	// whole list had been built. See reserveRangeExprCoercion (rangeexpr.go).
 	if err := reserveRangeExprCoercion(ec, v, target); err != nil {
 		return Value{}, wrapAt(src, root.Pos(), err)
 	}
@@ -117,11 +117,10 @@ func Eval(src string, syms Symbols, target Type, opts ...Option) (Value, error) 
 type PathFormat int
 
 const (
-	// PathPOSIX is Python's PurePosixPath. It is the DEFAULT, which differs
-	// from the specification's own default of host-native on purpose — the
-	// spec itself names POSIX as what TEMPLATE scope wants, "to ensure
-	// consistent behavior regardless of the submission machine's OS", and
-	// template parsing is exactly that scope.
+	// PathPOSIX is Python's PurePosixPath. It is the default, which differs
+	// from the specification's default of host-native: the spec names POSIX
+	// as what template scope wants, "to ensure consistent behavior regardless
+	// of the submission machine's OS", and template parsing is that scope.
 	PathPOSIX PathFormat = iota
 	// PathWindows is Python's PureWindowsPath.
 	PathWindows
@@ -155,24 +154,24 @@ func WithPathFormat(f PathFormat) Option {
 }
 
 // WithPathMapping supplies the session's path-mapping rules to apply_path_mapping.
-// Absent, apply_path_mapping passes its input through, NORMALIZED as a path value
-// in the evaluation's flavor — passthrough means "no rule rewrote it", not "the
-// text is returned verbatim", so '/a//b/' still comes back as the path "/a/b".
-// The worker's host-context evaluation (internal/worker/fmtres) supplies the
-// session's rules; no other production caller sets this.
+// Absent, apply_path_mapping passes its input through, normalized as a path
+// value in the evaluation's flavor — passthrough means "no rule rewrote it",
+// not "the text is returned verbatim", so '/a//b/' still comes back as the path
+// "/a/b". The worker's host-context evaluation (internal/worker/fmtres)
+// supplies the session's rules; no other production caller sets this.
 func WithPathMapping(rules []PathMapRule) Option {
 	return func(ec *evalCtx) { ec.pathMapping = rules }
 }
 
-// WithMemoryLimit bounds the LIVE memory, in bytes, of the values one
+// WithMemoryLimit bounds the live memory, in bytes, of the values one
 // evaluation holds at once (section 1.3.9). It defaults to 100,000,000.
 //
 // There is no unlimited mode: a non-positive limit is a caller error, reported
-// by Eval. A value that reads like "off" must not BE off in a package reachable
+// by Eval. A value that reads like "off" must not be off in a package reachable
 // from POST /api/v1/jobs. Tests wanting effectively-unbounded evaluation pass a
 // large number.
 //
-// Note that limits.go's fixed bounds sit UNDERNEATH this one and are not
+// limits.go's fixed bounds sit underneath this one and are not
 // configurable, so raising this limit does not raise what a single operation may
 // allocate: "'a' * 20000000" still fails on maxStringBytes with errTooLarge, not
 // on errMemoryLimit.
@@ -202,7 +201,7 @@ func WithOperationLimit(ops int64) Option {
 // ErrDeadlineExceeded reports that an evaluation stopped because its
 // wall-clock deadline passed.
 //
-// It is EXPORTED and distinct from every budget error on purpose. A budget
+// It is exported and distinct from every budget error. A budget
 // error means the template asked for more than it is allowed and is therefore
 // invalid; this means the server gave up, and the same template might well
 // succeed on an idle machine. Callers that turn errors into HTTP status codes
@@ -210,7 +209,7 @@ func WithOperationLimit(ops int64) Option {
 // message — see internal/api's submission handler, which maps this to 503 and
 // every budget error to 422.
 //
-// The wrapped message adds HOW FAR PAST the deadline the check landed and
+// The wrapped message adds how far past the deadline the check landed and
 // nothing else ("... exceeded by 1.2s"). It must add information rather than
 // restate this sentence: %w concatenates the two, and a 503 body shows the
 // result verbatim.
@@ -218,10 +217,10 @@ var ErrDeadlineExceeded = errors.New("expr: evaluation deadline exceeded")
 
 // WithDeadline sets an absolute wall-clock deadline for this evaluation.
 //
-// The zero time — the default — means no deadline, and costs nothing: the
+// The zero time, the default, means no deadline and costs nothing: the
 // meter short-circuits before reading any clock.
 //
-// It is deliberately ABSOLUTE rather than a duration, so one deadline can span
+// It is absolute rather than a duration, so one deadline can span
 // a whole request. An accepted template's expressions are walked twice (phase 1
 // in ValidateWithOptions, phase 2 in checkExpressionsAtSubmit) across many
 // evaluations, and a per-evaluation duration would let each one spend the full
@@ -239,11 +238,11 @@ func WithClock(now func() time.Time) Option {
 
 // evalCtx is the state one evaluation threads through every node.
 //
-// evalCtx flows by VALUE, so a counter stored as a plain field would be
+// evalCtx flows by value, so a counter stored as a plain field would be
 // incremented on a copy and discarded when the callee returned: the counter
 // would read near zero however much work an expression did, and every test
 // written against it would pass. The operation and memory counters therefore
-// live behind the POINTER field m, which is what makes them accumulate.
+// live behind the pointer field m, which is what makes them accumulate.
 type evalCtx struct {
 	src        string
 	syms       Symbols
@@ -252,12 +251,12 @@ type evalCtx struct {
 	// Nil (the default) makes apply_path_mapping pass its input through, still
 	// re-parsed as a path in pathFormat — see WithPathMapping.
 	pathMapping []PathMapRule
-	// m carries the section 1.3.9 and 1.3.10 budgets. It is a POINTER because
+	// m carries the section 1.3.9 and 1.3.10 budgets. It is a pointer because
 	// evalCtx is copied at every call boundary -- see meter's doc comment.
 	// newEvalCtx always sets it, so it is never nil during evaluation.
 	m *meter
 	// re caches the regular expressions this evaluation compiles, for the same
-	// reason and by the same mechanism as m: a POINTER, so a hit recorded deep
+	// reason and by the same mechanism as m: a pointer, so a hit recorded deep
 	// in a comprehension is visible to the next element. newEvalCtx always sets
 	// it; a hand-built context that leaves it nil compiles uncached rather than
 	// panicking. See reCache.
@@ -283,36 +282,35 @@ func newEvalCtx(src string, syms Symbols, opts []Option) evalCtx {
 // evalNode dispatches on node type, counting one level of evaluation recursion
 // against maxEvalDepth on the way in.
 //
-// The parser's own depth guard does NOT cover this. A left-deep tree costs the
+// The parser's own depth guard does not cover this. A left-deep tree costs the
 // parser no recursion at all — parseBinaryLevel and parseLogicalLevel build one
-// in a LOOP — so "true or true or true or …" and "1 + 1 + 1 + …" parse happily
+// in a loop — so "true or true or true or …" and "1 + 1 + 1 + …" parse happily
 // at any length and then overflow the Go stack here, in evalBinary's and
 // evalLogical's descent into their left operand. Without this guard both die
-// with "fatal error: stack overflow" between 500,000 and 600,000 operators,
+// with "fatal error: stack overflow" at a few hundred thousand operators,
 // which is a runtime.throw that recover() cannot catch, so it has to be turned
 // into a value before it happens. See maxEvalDepth.
 //
 // target is the type the surrounding context expects (section 1.3.1). It is
-// forwarded ONLY by the node kinds whose result IS a sub-expression's value —
+// forwarded only by the node kinds whose result is a sub-expression's value —
 // see the forwarding table in evalCond, evalLogical and evalListLit. Nodes that
-// COMPUTE a value pass TAny to their operands: propagating a string target into
+// compute a value pass TAny to their operands: propagating a string target into
 // "Param.Count + 1" would concatenate its operands into "11" rather than adding
 // them.
 //
-// Two conventions coexist for the depth ARGUMENT a descent passes to this
+// Two conventions coexist for the depth argument a descent passes to this
 // function. evalUnary, evalBinary, evalCompare, evalLogical, evalCond,
 // evalListLit, evalIndex and evalSlice pass depth straight through, so each
 // AST level costs exactly the one unit counted above. The Access arm below,
 // evalCall's receiver and argument descents (call.go), and every descent in
 // comp.go instead pass depth+1, so a chain of Access, Call or comprehension
-// nodes costs TWO units per level rather than one — an "Access chain" ~5,000
+// nodes costs two units per level rather than one — an "Access chain" ~5,000
 // deep reaches maxEvalDepth where a subscript chain needs ~10,000. The split
-// is not designed, and is left in place because the effect is strictly
-// CONSERVATIVE (it can only reject a legal-depth expression earlier, never let
-// one past the point where the Go stack would actually be at risk — see the
-// measurements above), and unifying it touches three files' worth of
-// recursion accounting for a property nothing currently depends on. Revisit
-// if the depth limit ever becomes configurable.
+// is not designed; it is harmless because the effect is conservative (it can
+// only reject a legal-depth expression earlier, never let one past the point
+// where the Go stack would be at risk), and unifying it touches three files'
+// worth of recursion accounting for a property nothing depends on. Revisit it
+// if the depth limit becomes configurable.
 func evalNode(n Node, ec evalCtx, target Type, depth int) (Value, error) {
 	if depth >= maxEvalDepth {
 		return Value{}, errorAt(ec.src, n.Pos(), "this expression is nested too deeply to evaluate")
@@ -321,9 +319,9 @@ func evalNode(n Node, ec evalCtx, target Type, depth int) (Value, error) {
 	if err != nil {
 		return Value{}, err
 	}
-	// Section 1.3.9: this is the ONE place a value enters the live set. Every
+	// Section 1.3.9: this is the one place a value enters the live set. Every
 	// construct below releases the children it consumed, so the running total
-	// is what is live AT THIS MOMENT rather than what has been allocated in
+	// is what is live at this moment rather than what has been allocated in
 	// total -- see the package's release discipline (meter.go).
 	if err := ec.m.alloc(v); err != nil {
 		return Value{}, err
@@ -376,7 +374,7 @@ func evalDispatch(n Node, ec evalCtx, target Type, depth int) (Value, error) {
 // that function under the repo's complexity cap.
 //
 // Unlike evalCall's own Access handling (call.go), which only ever sees an
-// Access as a METHOD CALL's receiver, this is the property-sugar path (section
+// Access as a method call's receiver, this is the property-sugar path (section
 // 1.3.3): X is produced by any general expression (Access is emitted only when
 // the receiver is not a plain dotted Name, see ast.go), so recv is always
 // allocated by evalNode below and must be released once evalProperty is done
@@ -454,17 +452,17 @@ func evalBinary(n *Binary, ec evalCtx, depth int) (Value, error) {
 		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
 	// rule 2: both operands, consumed by applyBinary. Safe to release the
-	// EXACT values evalNode allocated -- applyBinary/callShape pass a freshly
+	// exact values evalNode allocated -- applyBinary/callShape pass a freshly
 	// built []Value{l, r} literal down to callShape's coercion loop, so a
 	// widening coercion there mutates that temporary slice, never l or r
-	// themselves (contrast evalCall, where the slice IS the caller's own).
+	// themselves (contrast evalCall, where the slice is the caller's own).
 	ec.m.release(l)
 	ec.m.release(r)
 	return out, nil
 }
 
 // evalCompare evaluates a comparison chain (spec section 1.3.6). "1 < 2 < 3"
-// means "1 < 2 and 2 < 3" with each intermediate value evaluated EXACTLY ONCE,
+// means "1 < 2 and 2 < 3" with each intermediate value evaluated exactly once,
 // so the loop carries the previous operand's value forward rather than
 // re-evaluating its node. A false link stops the chain, leaving the remaining
 // operands unevaluated. An unknown link stops it the same way; the spec states
@@ -482,14 +480,14 @@ func evalCompare(n *Compare, ec evalCtx, depth int) (Value, error) {
 		}
 		out, err := applyBinary(ec, op, left, right)
 		if err != nil {
-			// n.OpOffsets[i] is THIS link's own operator, not the chain's
+			// n.OpOffsets[i] is this link's own operator, not the chain's
 			// first one (n.Offset) — a chain of three or more operators must
-			// blame whichever link actually failed.
+			// blame whichever link failed.
 			return Value{}, wrapAt(ec.src, n.OpOffsets[i], err)
 		}
 		// rule 2: left has just been compared and is never touched again --
 		// either it stops here for good, or (as "right") it is released below
-		// in its own turn once ITS comparison is done. Released unconditionally
+		// in its own turn once its comparison is done. Released unconditionally
 		// so every branch past this point inherits it.
 		ec.m.release(left)
 		// A link whose operands are not all known yields an unknown bool, so the
@@ -518,7 +516,7 @@ func evalCompare(n *Compare, ec evalCtx, depth int) (Value, error) {
 }
 
 // evalLogical implements "and" and "or" (spec section 2.1.6). They are
-// short-circuiting and VALUE-RETURNING: they return one of their operands, not
+// short-circuiting and value-returning: they return one of their operands, not
 // necessarily a bool. That is why they are not shapes in the operator table.
 //
 // When the left operand is not yet known, neither is which operand comes back,
@@ -550,7 +548,7 @@ func evalLogical(n *Logical, ec evalCtx, target Type, depth int) (Value, error) 
 	}
 	switch {
 	case n.Op == OpAnd && !truthy(left):
-		// pass-through: left is returned UNCHANGED. evalNode already allocated
+		// pass-through: left is returned unchanged. evalNode already allocated
 		// it when evaluating n.L; release it here so evalNode's own allocation
 		// on the way out of this Logical node does not double-count it.
 		ec.m.release(left)
@@ -568,7 +566,7 @@ func evalLogical(n *Logical, ec evalCtx, target Type, depth int) (Value, error) 
 	return right, nil
 }
 
-// truthy implements section 2.1.6's falsiness rule: ONLY null and false are
+// truthy implements section 2.1.6's falsiness rule: only null and false are
 // falsy. Unlike Python, 0, 0.0 and "" are all truthy, which is what makes
 // "Param.X or 'fallback'" a null-coalescing operator rather than an
 // empty-string test.
@@ -586,8 +584,7 @@ func truthy(v Value) bool {
 
 // evalCond implements "<then> if <cond> else <else>" (spec section 1.3.5). The
 // condition is evaluated first and must be a bool — there is no truthiness
-// here, in deliberate contrast to and/or — and only the chosen branch is
-// evaluated.
+// here, unlike and/or — and only the chosen branch is evaluated.
 //
 // When the condition is not yet known, the evaluator cannot tell which branch
 // will run, so both are evaluated and their types combined. See condResult.
@@ -618,7 +615,7 @@ func evalCond(n *Cond, ec evalCtx, target Type, depth int) (Value, error) {
 		if err != nil {
 			return Value{}, err
 		}
-		// pass-through: branch IS the returned value. evalNode already
+		// pass-through: branch is the returned value. evalNode already
 		// allocated it evaluating n.Then; release it here so evalNode's own
 		// allocation on the way out of this Cond node does not double-count it.
 		ec.m.release(branch)
@@ -656,8 +653,8 @@ func checkSkippedOperands(operands []Node, ec evalCtx, depth int) error {
 //
 // A branch that fails could never have produced a value at runtime either, so
 // its error is suppressed and the other branch's type stands alone. Only when
-// BOTH fail is there a real error, and then it names both — a reader cannot tell
-// which branch was meant.
+// both fail is there a real error, and then it names both — a reader cannot
+// tell which branch was meant.
 func condResult(n *Cond, ec evalCtx, target Type, depth int) (Value, error) {
 	thenVal, thenErr := evalNode(n.Then, ec, target, depth)
 	elseVal, elseErr := evalNode(n.Else, ec, target, depth)

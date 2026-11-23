@@ -223,7 +223,7 @@ func TestProducts_SubmitUnknownProductIs404(t *testing.T) {
 func TestProducts_UpdatePreservesSource(t *testing.T) {
 	srv := newProductRouter(fake.New())
 
-	// Create a custom product — source is stamped as "custom" by the catalog.
+	// Create a custom product; the catalog stamps its source as "custom".
 	createBody := jsonBody(t, map[string]any{
 		"name": "my-product", "title": "Original", "version": "1.0.0",
 		"template": validTemplate, "format": "yaml",
@@ -234,7 +234,7 @@ func TestProducts_UpdatePreservesSource(t *testing.T) {
 		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body)
 	}
 
-	// PUT with a changed title — source must not change.
+	// PUT with a changed title; source must not change.
 	putBody := jsonBody(t, map[string]any{
 		"title": "Updated", "version": "1.0.0",
 		"template": validTemplate, "format": "yaml",

@@ -30,7 +30,7 @@ const (
 )
 
 // servicePreshutdownInfo is SERVICE_PRESHUTDOWN_INFO, which
-// golang.org/x/sys/windows v0.48.0 does not declare (it does declare
+// golang.org/x/sys/windows does not declare (it does declare
 // SERVICE_CONFIG_PRESHUTDOWN_INFO).
 type servicePreshutdownInfo struct {
 	timeoutMillis uint32

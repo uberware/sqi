@@ -294,7 +294,7 @@ func JoinPath(root, relPath string) string {
 // ── S3 root classification ────────────────────────────────────────────────────
 
 // IsS3Root reports whether root is an S3 object-store root — i.e. it begins with
-// the lowercase "s3://" scheme. Uppercase "S3://" is intentionally NOT treated as
+// the lowercase "s3://" scheme. Uppercase "S3://" is not treated as
 // S3 (it is a filesystem path), matching JoinPath's forward-slash rule.
 func IsS3Root(root string) bool {
 	return strings.HasPrefix(root, "s3://")

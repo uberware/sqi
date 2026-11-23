@@ -16,14 +16,12 @@ import (
 // set-credential, service install --user). When stdin is a real, interactive
 // Windows console, the line is read with echo disabled so the secret never
 // lands in the console screen buffer (and, transitively, in a screen-scrape or
-// a terminal's scrollback). When stdin is not a console — redirected from a
-// file or a pipe, exactly how the test harness and scripted provisioning
-// invoke this command — GetConsoleMode fails and this falls through to the
-// same plain line read the command has always used, unchanged.
+// a terminal's scrollback). When stdin is not a console (redirected from a
+// file or a pipe, as the test harness and scripted provisioning invoke this
+// command), GetConsoleMode fails and this falls through to a plain line read.
 //
-// golang.org/x/term is not a dependency of this module and this is a narrow
-// enough need not to add one: golang.org/x/sys/windows (already a direct
-// dependency) exposes GetConsoleMode/SetConsoleMode directly.
+// golang.org/x/term is not a dependency of this module; golang.org/x/sys/windows
+// (a direct dependency) exposes GetConsoleMode/SetConsoleMode.
 func ReadLine(cmd *cobra.Command) (string, error) {
 	stdin := cmd.InOrStdin()
 	f, ok := stdin.(*os.File)
@@ -34,8 +32,7 @@ func ReadLine(cmd *cobra.Command) (string, error) {
 	handle := windows.Handle(f.Fd())
 	var mode uint32
 	if err := windows.GetConsoleMode(handle, &mode); err != nil {
-		// Not a console — a redirected file or pipe. Preserve the existing
-		// scripted/harness behavior exactly.
+		// Not a console: a redirected file or pipe. Read a plain line.
 		return readLineEcho(stdin)
 	}
 
@@ -53,8 +50,7 @@ func ReadLine(cmd *cobra.Command) (string, error) {
 	// echoed keystroke, so the next line printed (the "stored credential
 	// for ..." confirmation, or a shell prompt if this errors out) would
 	// otherwise run into the "Password for ...: " prompt. Print the newline
-	// explicitly to match what typing anything else at this prompt would
-	// have produced.
+	// explicitly, as an echoed Enter would.
 	fmt.Fprintln(cmd.OutOrStdout())
 	return secret, err
 }

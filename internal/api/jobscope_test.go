@@ -75,7 +75,7 @@ func TestScopeFilterNoPrincipalFailsClosed(t *testing.T) {
 }
 
 // listJobs must pin the owner filter for a scoped principal, overriding
-// whatever the client asked for rather than erroring — a scoped caller
+// whatever the client asked for rather than erroring: a scoped caller
 // pointing ?owner= at someone else gets their own jobs back.
 func TestListJobsScopedOverridesClientOwnerParam(t *testing.T) {
 	st := fake.New()
@@ -106,10 +106,10 @@ func TestListJobsScopedOverridesClientOwnerParam(t *testing.T) {
 }
 
 // TestListJobsNoPrincipalReturnsEmpty drives a real listJobs request with no
-// principal in the context end-to-end — the misordered-middleware threat
-// model scopeFilter's fail-closed return is meant to cover. Jobs with real,
-// non-empty owners are seeded first so that an unfiltered query would
-// obviously return them; the assertion is that it returns none.
+// principal in the context end-to-end: the misordered-middleware case
+// scopeFilter's fail-closed return covers. Jobs with non-empty owners are
+// seeded first so that an unfiltered query would return them; the assertion
+// is that it returns none.
 func TestListJobsNoPrincipalReturnsEmpty(t *testing.T) {
 	st := fake.New()
 	seedOwnedJob(t, st, "job-alice", "alice")
@@ -171,9 +171,8 @@ func TestListJobsUnscopedSeesAll(t *testing.T) {
 
 // seedOwnedJob inserts a minimal job owned by owner.
 //
-// NOTE the name: internal/api/jobs_test.go already defines
-// seedJob(t, *fake.Store, store.JobStatus) store.Job in this same package.
-// Reusing that name would not compile.
+// It is not named seedJob because internal/api/jobs_test.go defines
+// seedJob(t, *fake.Store, store.JobStatus) store.Job in this package.
 func seedOwnedJob(t *testing.T, st *fake.Store, id, owner string) {
 	t.Helper()
 	storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
@@ -290,14 +289,9 @@ func TestRequireJobAccessViaTask(t *testing.T) {
 	}
 }
 
-// A task route's /logs, /attempts, /retry, /cancel children must also
-// resolve via the task's parent job — not just the bare /tasks/{id} route —
-// since resolveJob matches on the "/tasks/{id}" segment appearing anywhere in
-// the accumulated pattern. Regression test for the bug where the check was a
-// HasPrefix("/tasks/") against RoutePattern(), which is always
-// "/api/v1/tasks/{id}/..." under the real router and therefore never
-// matched, silently routing every task-child request into the job branch
-// instead (GetJob(taskID) -> 404).
+// A task route's /logs, /attempts, /retry, /cancel children also resolve
+// ownership through the task's parent job, like the bare /tasks/{id} route,
+// rather than calling GetJob on the task id.
 func TestRequireJobAccessViaTaskChildRoute(t *testing.T) {
 	st := fake.New()
 	seedOwnedJobWithTask(t, st, "job-1", "bob", "task-1", store.JobStatusPending, store.TaskStatusReady)
@@ -317,14 +311,9 @@ func TestRequireJobAccessViaTaskChildRoute(t *testing.T) {
 }
 
 // /api/v1/jobs/{id}/tasks carries a job id in {id} despite the "tasks" in its
-// path. The middleware is chosen explicitly at mount time, so this pins that
-// the router mounts the job-id variant for it: the path shape is the one most
+// path, so it is resolved as a job route and never calls GetTask on a job id.
+// The middleware is chosen at mount time, and this path shape is the one most
 // likely to be mis-wired by hand.
-//
-// /api/v1/jobs/{id}/tasks has no "{id}" segment after "tasks", so it must be
-// resolved as a job route (the URL param is a job id), never mistaken for a
-// /tasks/{id} task route (which would wrongly call GetTask on a job id and
-// 404/misclassify ownership).
 func TestRequireJobAccessJobTasksRouteNotConfusedWithTaskRoute(t *testing.T) {
 	st := fake.New()
 	seedOwnedJob(t, st, "job-1", "alice")
@@ -344,13 +333,12 @@ func TestRequireJobAccessJobTasksRouteNotConfusedWithTaskRoute(t *testing.T) {
 
 	if rec.Code != http.StatusOK || !reached {
 		t.Errorf("status = %d, reached = %v; want 200/reached (job-1 is alice's own job, "+
-			"resolveJob must treat the {id} as a job id here, not attempt GetTask(job-1))", rec.Code, reached)
+			"the {id} must be treated as a job id here, not passed to GetTask)", rec.Code, reached)
 	}
 }
 
-// A missing job must 404, not 403 — leaking "this id exists but isn't yours"
-// vs "this id doesn't exist" is a distinction the caller is entitled to when
-// the id doesn't exist at all.
+// A missing job must 404, not 403: when the id does not exist at all, the
+// caller is entitled to be told so.
 func TestRequireJobAccessUnknownJob(t *testing.T) {
 	st := fake.New()
 	az := newAuthz(st, slog.New(slog.DiscardHandler))
@@ -370,12 +358,10 @@ func TestRequireJobAccessUnknownJob(t *testing.T) {
 
 // jobRequest builds a request carrying principal, with chi route context set
 // so RoutePattern() and URLParam("id") resolve the way the router supplies
-// them. pattern MUST be the full accumulated pattern chi.Walk/RoutePattern()
+// them. pattern is the full accumulated pattern chi.Walk/RoutePattern()
 // would report for the route (e.g. "/api/v1/tasks/{id}"), not a bare
-// "/tasks/{id}" — every route in this repo is mounted under
-// r.Route("/api/v1", …) (router.go), so RoutePattern() always carries that
-// prefix in production. A bare pattern here would let a HasPrefix-style bug
-// in resolveJob pass unnoticed (see TestRequireJobAccessViaTaskChildRoute).
+// "/tasks/{id}": every route is mounted under r.Route("/api/v1", …)
+// (router.go), so RoutePattern() always carries that prefix in production.
 func jobRequest(t *testing.T, pattern, id string, principal auth.Principal) *http.Request {
 	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)

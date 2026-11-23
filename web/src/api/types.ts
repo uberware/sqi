@@ -87,7 +87,7 @@ export interface Job {
   product_name?: string
   /** Version of that product. */
   product_version?: string
-  /** Seconds of work left; null when unknown. Present on job list items and job detail; absent from create and update responses. */
+  /** Seconds of work left; null when unknown. Present on job detail and on job list items requested with `include=timing`; absent from create and update responses. */
   remaining_seconds?: number | null
   /** Where `remaining_seconds` comes from; omitted when unknown. */
   remaining_basis?: RemainingBasis
@@ -303,7 +303,9 @@ export interface Worker {
    * Server-authoritative flag: true when the worker may be hard-deleted via
    * DELETE /workers/{id} — offline workers, disabled or not (a disabled worker
    * counts as offline once the heartbeat sweep finds it gone). Online workers,
-   * disabled or not, are never removable.
+   * disabled or not, are never removable. The flag cannot see tasks: a worker
+   * that still has a task assigned or running is refused with 409 even when it
+   * is true.
    */
   removable: boolean
   /**
@@ -806,7 +808,7 @@ export interface User {
   auth_source: AuthSource
   /**
    * Whether `PATCH /users/{id}` accepts a `role` change for this account.
-   * Computed by the server from both halves of its guard: `auth_source` AND
+   * Computed by the server from both halves of its guard: `auth_source` and
    * that source's own `role_source` setting (`auth.ldap.role_source` for
    * `ldap`, `auth.oidc.role_source` for `oidc`). Do not re-derive it from
    * `auth_source` alone: `role_source: local` leaves an LDAP or OIDC

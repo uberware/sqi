@@ -18,7 +18,7 @@ readme: |
   single-frame job before any longer one.
 
   Modo is also discontinued. 17.1 was the last release (Foundry, November
-  2024), the self-service download has ended and downloads now go through a
+  2024), the self-service download has ended and downloads go through a
   Foundry support ticket. The end-of-life license is an RLM `uncounted
   hostid=ANY` key that Modo finds through the `foundry_LICENSE` environment
   variable. Set that variable in the worker's environment.
@@ -64,9 +64,8 @@ readme: |
   The script turns on console logging, opens the scene, sets the render item's
   first and last frame to the task's chunk and its step to 1, and runs
   `render.animation` for the pass group, after an `openjd_status` naming the
-  frames. It then prints `SQI_RENDER: OK` and
-  quits Modo with `app.quit`. On any error it prints `SQI_RENDER: FAILED:` with
-  the reason and quits.
+  frames. It then prints `SQI_RENDER: OK` and quits Modo with `app.quit`. On
+  any error it prints `SQI_RENDER: FAILED:` with the reason and quits.
 
   Building `params.json` is metered against the worker's `EXPR` limits and
   grows with the frames in one task; the maximum of 1000 stays well inside the

@@ -37,14 +37,13 @@ var ErrStateInvalid = errors.New("oidc: state cookie invalid or expired")
 // than producing a signature that only looks like a defense.
 //
 // Only SealState returns it. OpenState answers ErrStateInvalid for the same
-// condition on purpose — see the comment there: every rejection on the verify
-// side must be indistinguishable.
+// condition (see the comment there): every rejection on the verify side must
+// be indistinguishable.
 var ErrNoSigningKey = errors.New("oidc: state signing key is empty")
 
-// StateTTL bounds a login attempt, and lives here — beside OpenState, which is
-// what actually enforces it — so there is exactly one of it. internal/api reads
-// it for the state cookie's MaxAge; a second copy there could drift and leave
-// the browser-side bound and the server-side bound disagreeing.
+// StateTTL bounds a login attempt. It lives beside OpenState, which enforces
+// it, and internal/api reads it for the state cookie's MaxAge, so the
+// browser-side and server-side bounds cannot disagree.
 //
 // Generous enough for a slow human at an MFA prompt, short enough that a stolen
 // cookie is near-worthless.
@@ -59,7 +58,7 @@ type FlowState struct {
 	// a captured cookie cannot extend its life without the key; OpenState
 	// rejects anything older than StateTTL. Without it the TTL would be only
 	// the browser's cookie expiry, which an attacker replaying a captured
-	// value simply ignores.
+	// value ignores.
 	IssuedAt int64 `json:"t"`
 }
 

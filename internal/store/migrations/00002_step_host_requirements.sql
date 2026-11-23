@@ -6,7 +6,7 @@
 -- Used by the scheduler's capability-matching logic.
 --
 -- compute_location: TEXT mirror of the "attr.worker.computelocation" attribute
--- requirement extracted during submission.  Stored redundantly so the scheduler
+-- requirement extracted during submission. Stored redundantly so the scheduler
 -- can pre-filter workers in SQL before applying in-memory matching, without
 -- parsing the full host_requirements JSON every time.
 

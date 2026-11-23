@@ -6,7 +6,7 @@ package scheduler
 // with monotonic sequence numbers per task attempt.
 //
 // Workers publish [protocol.LogChunkMsg] values to task.logs.<workerID>.<taskID> as their
-// task produces stdout/stderr output.  The server-side consumer here:
+// task produces stdout/stderr output. The server-side consumer here:
 //
 //  1. Decodes each [protocol.LogChunkMsg].
 //  2. Inserts a [store.TaskLog] row with:
@@ -51,12 +51,13 @@ func (s *Scheduler) startTaskLogsConsumer(ctx context.Context) error {
 // published by workers.
 //
 // [protocol.LogChunkMsg] carries no worker-identity field of its own, so the
-// subject is the ONLY identity available: it is resolved to an attempt, and
+// subject is the only identity available: it is resolved to an attempt, and
 // that attempt's recorded WorkerID and TaskID are both checked before a
 // chunk is persisted or fanned out — the worker check alone would let a
 // worker holding a live attempt of its own pair that attempt with a
 // different task in the payload and inject log content there. See the
-// auth-off note on [Scheduler.handleTaskStatusMessage]: it applies here too.
+// broker-authentication-off note on [Scheduler.handleTaskStatus]: it applies
+// here too.
 func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 	ctx := s.ctx
 
@@ -91,10 +92,10 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 	// Resolve the attempt this chunk claims to belong to so its recorded
 	// WorkerID and TaskID can be checked below. Both fields are immutable for
 	// the life of the attempt, so a cache hit is as good as a fresh store
-	// read; on a miss, fall back to the store exactly as before — including
-	// the transient-vs-permanent distinction below, since the store read
-	// also confirms the attempt still exists (a chunk for a vanished attempt
-	// must still be discarded, never assumed present).
+	// read. On a miss, read the store, with the transient-vs-permanent
+	// distinction below: the store read also confirms the attempt still
+	// exists (a chunk for a vanished attempt is discarded, never assumed
+	// present).
 	owner, ok := s.attemptCache.get(m.AttemptID)
 	if !ok {
 		attempt, err := s.store.GetTaskAttempt(ctx, m.AttemptID)
@@ -122,7 +123,7 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 	// The attempt is real, but is it for the task this chunk claims? Without
 	// this, a worker holding a live attempt of its own could pair that
 	// attempt's ID with a different task's ID in the payload — the worker-ID
-	// check below would pass (the attempt really is the subject worker's),
+	// check below would pass (the attempt is the subject worker's),
 	// but the log would land against a task that worker was never assigned.
 	if owner.taskID != m.TaskID {
 		s.logger.WarnContext(

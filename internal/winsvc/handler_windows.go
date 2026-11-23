@@ -20,7 +20,7 @@ const (
 	stopWaitHint = 30 * time.Second
 )
 
-// handler implements svc.Handler. Shutdown is deliberately not accepted:
+// handler implements svc.Handler. Shutdown is not accepted:
 // PreShutdown supersedes it and gets the timeout `service install` configures,
 // where Shutdown gets only a few seconds.
 type handler struct {
@@ -83,10 +83,10 @@ func (h *handler) Execute(args []string, r <-chan svc.ChangeRequest, s chan<- sv
 // just stopped. So a canceled error after a stop is nil. Everything else is
 // left alone: any other error after a stop still fails, such as a shutdown
 // timeout or context.DeadlineExceeded (and a context.Canceled with no stop
-// requested — fn canceled a ctx it derived — never reaches here). Note errors.Is also
-// matches any member of an errors.Join, so a joined error holding a Canceled
-// leg plus a genuine failure would be forgiven after a stop; none of today's
-// post-stop paths builds such a join.
+// requested, from fn canceling a ctx it derived, never reaches here).
+// errors.Is also matches any member of an errors.Join, so a joined error
+// holding a Canceled leg plus another failure would be forgiven after a stop;
+// no post-stop path builds such a join.
 func cleanStop(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return nil

@@ -327,7 +327,7 @@ func obscuredPasswordKey(dsn string) bool {
 //
 // A well-formed DSN has at most one "@", the one that ends the userinfo, so
 // more than one, or one with no userinfo to end, is ambiguous. That is
-// deliberately conservative: it also refuses an unescaped "@" in a password
+// conservative: it also refuses an unescaped "@" in a password
 // that did parse correctly (sqi:p@ss@db), and an "@" in a query value, where
 // the only cost is a less informative `config print`.
 func ambiguousAuthority(u *url.URL, dsn string) bool {

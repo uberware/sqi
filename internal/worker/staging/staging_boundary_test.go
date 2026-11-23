@@ -20,10 +20,10 @@ import (
 // its own scratch directory when its output is copied back to the real
 // path: a symlinked source, a source with an extra hardlink, and a source that resolves
 // outside scratch via a directory-symlink swap. An ordinary staged output
-// must still copy normally — see TestStager_StageOut_CopiesBack and
-// TestStager_RoundTripBuiltin elsewhere in this package for that regression
-// coverage; TestStager_StageOut_OrdinaryFileStillCopies below repeats the
-// minimal case here so this file documents the full boundary on its own.
+// still copies normally: TestStager_StageOut_CopiesBack and
+// TestStager_RoundTripBuiltin cover that, and
+// TestStager_StageOut_OrdinaryFileStillCopies below repeats the minimal case
+// so this file documents the full boundary on its own.
 
 // TestStager_StageOut_RefusesSymlinkSource proves a task that plants a
 // symlink at its declared output path (in place of a real output file)
@@ -71,22 +71,19 @@ func TestStager_StageOut_RefusesSymlinkSource(t *testing.T) {
 }
 
 // TestStager_StageOut_RefusesHardlinkedSource proves a hardlink planted
-// inside scratch (which passes an Lstat regular-file check — a hardlink IS a
-// regular file, sharing one inode with whatever it is linked to) is refused
-// too. fs.protected_hardlinks narrows who can CREATE such a hardlink but is a
-// host kernel setting sqi does not control, so this must be enforced
-// independently of it.
+// inside scratch (which passes an Lstat regular-file check, since a hardlink
+// is a regular file sharing one inode with whatever it is linked to) is
+// refused too. fs.protected_hardlinks narrows who can create such a hardlink
+// but is a host kernel setting sqi does not control, so the check does not
+// rely on it.
 //
-// THIS TEST IS POSIX-ONLY, and not because of the primitive. It carries no
-// runtime.GOOS guard of its own (NTFS hardlinks make os.Link portable, but
-// not this test): it skips on Windows inside fakeSync, whose fixture is a
-// POSIX "#!/bin/sh" script Windows cannot exec (see fakeSync's own doc in
-// staging_test.go). Do NOT "fix" it
-// by making fakeSync cross-platform for this test's sake: Windows coverage of
-// the same check already exists as
+// The test runs on POSIX only. It has no runtime.GOOS guard of its own (NTFS
+// hardlinks make os.Link portable): it skips on Windows inside fakeSync,
+// whose fixture is a POSIX "#!/bin/sh" script Windows cannot exec (see
+// fakeSync's doc in staging_test.go). Windows coverage of the same check is
 // TestStageOut_RefusesHardlinkedSourceOnWindows in staging_windows_test.go,
-// which drives openStageOutSource directly and needs no sync command at all,
-// and CI asserts that test passed BY NAME.
+// which drives openStageOutSource directly with no sync command and which CI
+// asserts by name.
 func TestStager_StageOut_RefusesHardlinkedSource(t *testing.T) {
 	scratch := t.TempDir()
 	s := staging.New(scratch, fakeSync(t), false, discard())
@@ -120,12 +117,12 @@ func TestStager_StageOut_RefusesHardlinkedSource(t *testing.T) {
 }
 
 // TestStager_StageOut_RefusesSourceOutsideScratch proves that even a
-// perfectly ordinary regular file with a link count of 1 is refused if its
-// real (symlink-resolved) location is outside scratchDir — the case where a
+// ordinary regular file with a link count of 1 is refused if its real
+// (symlink-resolved) location is outside scratchDir: the case where a
 // task deletes one of its own per-entry scratch subdirectories (which it
 // owns, per StageIn's ChownRecursive) and replaces it with a symlink to an
 // arbitrary directory. Every check but containment would pass here, since
-// the file itself is entirely ordinary.
+// the file itself is ordinary.
 func TestStager_StageOut_RefusesSourceOutsideScratch(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating a directory symlink on Windows requires SeCreateSymbolicLinkPrivilege " +
@@ -145,8 +142,8 @@ func TestStager_StageOut_RefusesSourceOutsideScratch(t *testing.T) {
 	outsideDir := t.TempDir()
 	writeFile(t, filepath.Join(outsideDir, "render.exr"), "root-only-contents")
 
-	// The task's per-index scratch subdirectory is now a symlink escaping
-	// scratch entirely; the file behind it is an ordinary regular file.
+	// The task's per-index scratch subdirectory is a symlink escaping
+	// scratch; the file behind it is an ordinary regular file.
 	if err := os.Symlink(outsideDir, filepath.Join(scratchDir, "0")); err != nil {
 		t.Fatal(err)
 	}

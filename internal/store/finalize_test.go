@@ -21,7 +21,7 @@ func TestFinalizeStep_Outcomes(t *testing.T) {
 		{"one canceled", []store.TaskStatus{store.TaskStatusSucceeded, store.TaskStatusCanceled}, store.StepStatusCanceled, true},
 		{"still running", []store.TaskStatus{store.TaskStatusSucceeded, store.TaskStatusRunning}, "", false},
 		{"retried pending", []store.TaskStatus{store.TaskStatusSucceeded, store.TaskStatusPending}, "", false},
-		{"zero tasks completes as today", nil, store.StepStatusCompleted, true},
+		{"zero tasks completes", nil, store.StepStatusCompleted, true},
 	}
 	for _, tc := range cases {
 		for name, st := range newStores(t) {
@@ -65,11 +65,10 @@ func TestFinalizeStep_AlreadyTerminal(t *testing.T) {
 }
 
 // TestFinalizeStep_MoreThanMaxLimitTasks pins that FinalizeStep reads every
-// task of the step, not one page. The decisive task is the LAST one, index
+// task of the step, not one page. The decisive task is the last one, index
 // MaxLimit, so it lies beyond the first page: an implementation that reads only
 // MaxLimit tasks sees all-succeeded and reports the wrong outcome. The
-// all-succeeded case is the plain regression guard and cannot tell a paged read
-// from a full one on its own.
+// all-succeeded case alone cannot tell a paged read from a full one.
 func TestFinalizeStep_MoreThanMaxLimitTasks(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -129,7 +128,7 @@ func TestFinalizeJob_Outcomes(t *testing.T) {
 		{"one failed", []store.StepStatus{store.StepStatusCompleted, store.StepStatusFailed}, store.JobStatusRunning, store.JobStatusFailed, true},
 		{"one canceled", []store.StepStatus{store.StepStatusCompleted, store.StepStatusCanceled}, store.JobStatusRunning, store.JobStatusCanceled, true},
 		{"step pending", []store.StepStatus{store.StepStatusCompleted, store.StepStatusPending}, store.JobStatusRunning, "", false},
-		{"paused job still finalizes, as today", []store.StepStatus{store.StepStatusCompleted}, store.JobStatusPaused, store.JobStatusCompleted, true},
+		{"paused job still finalizes", []store.StepStatus{store.StepStatusCompleted}, store.JobStatusPaused, store.JobStatusCompleted, true},
 		{"already terminal", []store.StepStatus{store.StepStatusCompleted}, store.JobStatusCompleted, store.JobStatusCompleted, false},
 	}
 	for _, tc := range cases {
@@ -192,14 +191,14 @@ func TestListStuckSteps(t *testing.T) {
 
 // TestListStuckSteps_OnlyStepsOfLiveJobs pins the job condition: a step that
 // looks stuck by its tasks alone is listed only when its job is not terminal.
-// A job cancel finalizes the job's steps in its own transaction, and
-// migration 00033 finalized the steps of jobs canceled by earlier releases, so
-// a terminal job carries an open step only in a database that has not been
-// through that repair. A completed or failed job can carry the same shape. None
-// of them has downstream work that needs its steps finalized, and the terminal
-// jobs are the migration's to repair, not this start-up pass's, which on a
-// healthy farm must stay one query and no writes. A running job and a paused
-// one are live and are listed.
+// A job cancel finalizes the job's steps in its own transaction, and migration
+// 00033 finalizes the open steps of terminal jobs, so a terminal job carries an
+// open step only in a database that has not been through that repair. A
+// completed or failed job can carry the same shape. None of them has
+// downstream work that needs its steps finalized, and the terminal jobs are
+// the migration's to repair, not this start-up pass's, which on a healthy farm
+// must stay one query and no writes. A running job and a paused one are live
+// and are listed.
 func TestListStuckSteps_OnlyStepsOfLiveJobs(t *testing.T) {
 	cases := []struct {
 		jobStatus store.JobStatus

@@ -13,10 +13,10 @@ import (
 // also what the reference implementation exposes as DEFAULT_MEMORY_LIMIT and
 // DEFAULT_OPERATION_LIMIT.
 //
-// They are DEFAULTS, applied when a caller passes no option, rather than an
+// They are defaults, applied when a caller passes no option, rather than an
 // opt-in: an opt-in limit would leave every caller that forgets the option with
-// unbounded evaluation. Every caller today passes options; the defaults are the
-// backstop for one that forgets.
+// unbounded evaluation. The defaults are the backstop for a caller that passes
+// no option.
 const (
 	defaultMemoryLimit    int64 = 100_000_000
 	defaultOperationLimit int64 = 10_000_000
@@ -29,9 +29,9 @@ const (
 // as closely as practical". 64 lands near the reference's own numbers, which is
 // what makes the figure in an error message plausible to a human reading it:
 // the reference peaks at 128 bytes for "1 + 2" (two live values) and at 100064
-// for "'a' * 100000". Nothing depends on matching it -- the oracle compares
-// operation counts, never memory, precisely because memory is implementation-
-// defined and a divergence there could only be suppressed, never adjudicated.
+// for "'a' * 100000". Nothing depends on matching it: the oracle compares
+// operation counts, never memory, because memory is implementation-defined and
+// a divergence there could only be suppressed, never adjudicated.
 const valueHeaderBytes int64 = 64
 
 // The two error classes section 1.3.11 enumerates by name.
@@ -40,12 +40,12 @@ var (
 	errOperationLimit = errors.New("operation limit exceeded")
 )
 
-// meter carries the section 1.3.9 and 1.3.10 budgets for ONE evaluation.
+// meter carries the section 1.3.9 and 1.3.10 budgets for one evaluation.
 //
-// It is held by POINTER on evalCtx because evalCtx flows by VALUE: 30 parameter
-// occurrences in this package take "ec evalCtx", and the only *evalCtx in it is
+// It is held by pointer on evalCtx because evalCtx flows by value: functions
+// throughout this package take "ec evalCtx", and the only *evalCtx in it is
 // Option's own signature and the two closures Option returns, which mutate the
-// context BEFORE evaluation begins and never during it. A counter stored as a
+// context before evaluation begins and never during it. A counter stored as a
 // plain evalCtx field would therefore be incremented on a copy and discarded
 // when the callee returned -- it would read near zero no matter how much work
 // an expression did, and every test written against it would pass. A shared
@@ -57,7 +57,7 @@ type meter struct {
 	ops      int64
 	opLimit  int64
 	// deadline, when non-zero, is an absolute time after which evaluation
-	// stops. It is a BACKSTOP, not a budget: it exists because section
+	// stops. It is a backstop, not a budget: it exists because section
 	// 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly
 	// free in operations and expensive in seconds. Nothing else in this
 	// package measures time.
@@ -74,7 +74,7 @@ func newMeter(memLimit, opLimit int64) *meter {
 
 // alloc records a newly created value and checks the memory bound.
 //
-// The check happens AFTER the addition, matching section 1.3.9's own step 6
+// The check happens after the addition, matching section 1.3.9's own step 6
 // ("Add size(result) to current memory; check if current memory exceeds limit")
 // and its list example ("the limit is checked as each element is added").
 func (m *meter) alloc(v Value) error {
@@ -103,7 +103,7 @@ func (m *meter) release(v Value) {
 //
 // Reading the clock on every charge would tax the hot path of every expression
 // for no benefit; 1024 charges is far below any budget worth interrupting and
-// far above the cost of a time.Now(). It counts charge CALLS, not the
+// far above the cost of a time.Now(). It counts charge calls, not the
 // operations those calls charge for -- see checkDeadline, where that
 // distinction is why the first charge is sampled too.
 const deadlineCheckInterval = 1024
@@ -111,8 +111,8 @@ const deadlineCheckInterval = 1024
 // charge adds n operations and checks the bound (section 1.3.10), plus the
 // wall-clock backstop when one is set.
 //
-// THE OPERATION CHECK RUNS FIRST, AND THE ORDER IS DELIBERATE. A charge that
-// breaches both bounds reports the OPERATION limit, because that verdict is
+// The operation check runs first. A charge that
+// breaches both bounds reports the operation limit, because that verdict is
 // deterministic -- the same template on the same input breaches it every time,
 // so it is a property of the template and callers may report it as one (422).
 // A deadline breach depends on how loaded the machine was and says only that
@@ -120,8 +120,8 @@ const deadlineCheckInterval = 1024
 // to the non-deterministic one is what keeps an invalid template from being
 // reported as a transient server condition on a busy host.
 //
-// The zero-deadline short-circuit is INLINE here rather than left to
-// checkDeadline, so the no-deadline path really does cost one comparison:
+// The zero-deadline short-circuit is inline here rather than left to
+// checkDeadline, so the no-deadline path costs one comparison:
 // checkDeadline holds an fmt.Errorf and an indirect call and does not inline,
 // so tail-calling it would make every charge in the package pay for a frame it
 // has no use for.
@@ -138,51 +138,51 @@ func (m *meter) charge(n int64) error {
 }
 
 // checkDeadline reports ErrDeadlineExceeded once the wall-clock backstop has
-// passed, SAMPLING the clock on the first charge and every
+// passed, sampling the clock on the first charge and every
 // deadlineCheckInterval charges thereafter.
 //
-// The sampling is deliberate: charge is the hottest function in the package,
+// The sampling exists because charge is the hottest function in the package,
 // and a time.Now() on every call taxes every expression whether or not it is
 // anywhere near a deadline. TestDeadline_ClockIsSampledNotReadOnEveryCharge
 // pins it, so a change to an unconditional read fails a test.
 //
-// The FIRST charge is checked as well as every interval thereafter, because
-// the interval on its own is blind to exactly the workload this backstop
-// exists for (measured). Section 1.3.10 prices 256 bytes at one operation, so
-// byte-heavy work is charged in a HANDFUL OF BULK CALLS rather than in many
-// small ones, and this counter counts CALLS. '("x" * 900000).title()' -- the
-// ~57 ms, ~7,000-operation case the backstop exists for -- makes fewer than
-// deadlineCheckInterval charge calls and so would never read the clock at
+// The first charge is checked as well as every interval thereafter, because
+// the interval on its own is blind to the workload this backstop exists for.
+// Section 1.3.10 prices 256 bytes at one operation, so byte-heavy work is
+// charged in a handful of bulk calls rather than in many small ones, and this
+// counter counts calls. '("x" * 900000).title()', a CPU-heavy expression that
+// costs about 7,000 operations, makes fewer than deadlineCheckInterval charge
+// calls and so would never read the clock at
 // all. Neither would "1 + 1", "len([1,2,3])" or a 50-element comprehension.
 //
-// Checking at sinceCheck == 1 makes an expired deadline stop the very NEXT
-// evaluation whatever its size. That is what makes this a bound on a REQUEST
+// Checking at sinceCheck == 1 makes an expired deadline stop the very next
+// evaluation whatever its size. That is what makes this a bound on a request
 // rather than on one large expression: a template is walked position by
-// position, each position a separate evaluation with a FRESH meter, so without
+// position, each position a separate evaluation with a fresh meter, so without
 // the first-charge check a template built entirely from small expressions could
 // run arbitrarily far past an expired deadline while every meter sat below the
 // interval forever.
 //
-// WHAT THE SAMPLING WINDOW COSTS. A sampled check cannot interrupt work already
+// What the sampling window costs. A sampled check cannot interrupt work already
 // in flight, and the unchecked window is not one bulk operation but up to
-// deadlineCheckInterval-1 = 1023 charge calls, EACH of which may itself be a
+// deadlineCheckInterval-1 = 1023 charge calls, each of which may itself be a
 // bulk operation. The guarantee is therefore "the deadline plus at most one
-// evaluation's remaining OPERATION budget" -- the call count cannot outrun that
+// evaluation's remaining operation budget" -- the call count cannot outrun that
 // budget in practice, because a charge that prices bulk work adds at least one
 // operation to it (a dispatched call is charged rule 1 by callShape before its
 // work begins). At the server's SubmissionOperations default that is <= 10,000
 // charges, and at MaxExprSubmissionOperations <= 100,000 (see
 // internal/openjd/exprlimits.go). meter.reserve narrows the worst of that
-// window: it is called with a count in hand immediately before every LARGE
+// window: it is called with a count in hand immediately before every large
 // materialization, and checks the deadline unconditionally there, so the
 // biggest single construction in the window never starts rather than being
 // caught after it finishes.
 //
-// PRECONDITION: A DEADLINE IS SET. charge is the only caller and short-circuits
-// on m.deadline.IsZero() itself -- deliberately, see its own doc comment on why
-// that test is inlined there rather than delegated here -- and reserve bypasses
+// Precondition: a deadline is set. charge is the only caller and short-circuits
+// on m.deadline.IsZero() itself (see its doc comment on why that test is
+// inlined there rather than delegated here), and reserve bypasses
 // this function entirely, calling deadlinePassed directly. This function has
-// no IsZero test of its own; a NEW caller adds the guard rather than assuming
+// no IsZero test of its own; a new caller adds the guard rather than assuming
 // it.
 func (m *meter) checkDeadline() error {
 	m.sinceCheck++
@@ -225,56 +225,53 @@ func (m *meter) chargeElements(n int) error { return m.charge(int64(n)) }
 // adds its length divided by 256, rounded up.
 func (m *meter) chargeBytes(s string) error { return m.charge(ceilDiv256(len(s))) }
 
-// reserve reports whether n MORE operations would breach the bound, WITHOUT
+// reserve reports whether n more operations would breach the bound, without
 // adding them to the running total.
 //
-// It exists because [meter.charge] is inherently a report AFTER the fact, and
-// for a BULK operation that is not a bound at all. The charge for a produced
+// It exists because [meter.charge] is inherently a report after the fact, and
+// for a bulk operation that is not a bound at all. The charge for a produced
 // collection (Cost.ResultElements, Cost.ResultBytes -- chargeResult in ops.go)
 // necessarily runs once the value exists, so "[0] * 10000000" under a
-// 10,000-operation limit would materialize ten million elements (1.1 GB, 108
-// ms measured) and only THEN report 10,000,001 operations against a limit of
-// 10,000 -- a thousandfold overshoot of the very number the error names. The
+// 10,000-operation limit would materialize ten million elements and only then
+// report 10,000,001 operations against a limit of 10,000, a thousandfold
+// overshoot of the number the error names. The
 // only thing that would stop it is limits.go's fixed maxElements floor,
 // three orders of magnitude higher.
 //
-// The distinction from charge is deliberate and is what keeps this invisible to
-// every SUCCESSFUL evaluation: reserve(n) fails exactly when a later charge(n)
+// The distinction from charge is what keeps this invisible to
+// every successful evaluation: reserve(n) fails exactly when a later charge(n)
 // would have failed, and adds nothing of its own, so an evaluation that
 // completes is charged precisely what it would be charged without it. The
 // differential oracle (test/oracle) checks that: its operation counts are
 // compared only on cases whose values agree, i.e. only on evaluations that
 // succeeded.
 //
-// Call it at a site that has an ARITHMETIC count in hand and has not yet
+// Call it at a site that has an arithmetic count in hand and has not yet
 // allocated -- the same discipline limits.go's checkElementCount already
 // follows, and usually the very next line after it. See repeatList (ops.go),
 // rangeList (funcslist.go), padWidth (funcsstrpad.go), and -- for the one
-// value whose count is NOT free to obtain -- reserveRangeExprExpansion
+// value whose count is not free to obtain -- reserveRangeExprExpansion
 // (rangeexpr.go), which every range_expr site goes through.
 //
-// "ARITHMETIC count" matters: elementCount does NOT answer arithmetically for
-// a range_expr. rangeExprCount is arithmetic only for a SINGLE sub-range, and
-// with two or more it expands the whole range to count it -- so a reservation
-// fed by it would materialize 687 MB in order to decide that 687 MB was
+// "Arithmetic count" matters: elementCount does not answer arithmetically for
+// a range_expr. rangeExprCount is arithmetic only for a single sub-range, and
+// with two or more it expands the whole range to count it, so a reservation
+// fed by it would materialize the range in order to decide it was
 // unaffordable, and on the success path expand twice. Use
 // rangeExprCountBounds (rangeexpr.go) for that value.
 //
-// IT ALSO CHECKS THE WALL-CLOCK DEADLINE, UNCONDITIONALLY -- no sampling, no
-// counter, just the zero-deadline short-circuit that costs an evaluation with
-// no deadline one comparison. That is affordable precisely because of what
-// this function is for: it is called only where a large materialization is
-// about to begin, with the count already in hand, and MEASURED it fires orders
-// of magnitude less often than charge does -- 2 calls against 100,003 charges
-// for '[x * 2 for x in range(100000)]', 1 against 4 for
-// '("x" * 900000).title()', 1 against 6 for
-// 'sorted([1] + range_expr("1-100000"))', and 0 for "1 + 1" or "len([1,2,3])".
-// Nothing measured reached double figures. Checking here converts "the largest
-// construction in the sampling window runs to completion and is caught on the
-// charge after it" into "it never starts", which is exactly the workload the
-// backstop exists for -- see checkDeadline for what the window still costs.
+// It also checks the wall-clock deadline, unconditionally: no sampling, no
+// counter, only the zero-deadline short-circuit that costs an evaluation with
+// no deadline one comparison. That is affordable because of what this
+// function is for: it is called only where a large materialization is about
+// to begin, with the count already in hand, so it runs orders of magnitude
+// less often than charge does (twice for '[x * 2 for x in range(100000)]',
+// against 100,003 charges, and not at all for "1 + 1"). Checking here converts
+// "the largest construction in the sampling window runs to completion and is
+// caught on the charge after it" into "it never starts", which is the workload
+// the backstop exists for -- see checkDeadline for what the window still costs.
 //
-// A CALLER THAT READS THIS ERROR AS A VERDICT ABOUT SIZE must separate the
+// A caller that reads this error as a verdict about size must separate the
 // two: reserveRangeExprExpansion (rangeexpr.go) treats a reserve failure as
 // "the count does not fit" and falls through to a cheaper probe, which for a
 // deadline error would be both wrong and, when the fallback reserves zero,
@@ -296,7 +293,7 @@ func (m *meter) reserve(n int64) error {
 func (m *meter) reserveElements(n int) error { return m.reserve(int64(n)) }
 
 // reserveBytes is [meter.reserve] for a rule-3 byte length that is known before
-// the string is built. It takes the LENGTH rather than the string itself --
+// the string is built. It takes the length rather than the string itself --
 // since the string does not exist yet.
 func (m *meter) reserveBytes(n int64) error {
 	if n <= 0 {
@@ -307,13 +304,13 @@ func (m *meter) reserveBytes(n int64) error {
 
 // unmeteredCtx returns an evalCtx whose meter can refuse nothing.
 //
-// It exists for exactly ONE caller -- paddedNumber (pathnumber.go), which
+// It exists for exactly one caller -- paddedNumber (pathnumber.go), which
 // renders with_number's zero padding through zfillString from outside any
 // evaluation's own budget, and whose width is already bounded to
 // maxNumberPadding (32) characters by the caller above it, so there is
 // nothing here for a budget to bound.
 //
-// Do not reach for it anywhere else. A zero-value evalCtx would carry a NIL
+// Do not reach for it anywhere else. A zero-value evalCtx would carry a nil
 // meter and panic on the first charge, which is why this returns a real one;
 // but a real evaluation path routed through this context is unbounded by
 // construction, which is what the meter exists to prevent.
@@ -323,12 +320,12 @@ func unmeteredCtx() evalCtx {
 
 // ceilDiv256 is rule 3's ceil(len / 256).
 //
-// Note that section 1.3.10's own worked example states ceil(100000/256) = 392
-// and a total of 393. That arithmetic is wrong: 256*390 = 99840 leaves 160, so
-// the value is 391 and the total 392. The RULE is right and the reference
-// implements it correctly (it reports 392); only the specification's addition
-// is off. Recorded here because a reader checking this function against the
-// spec would otherwise conclude it has an off-by-one.
+// Section 1.3.10's worked example states ceil(100000/256) = 392 and a total of
+// 393. That arithmetic is wrong: 256*390 = 99840 leaves 160, so the value is
+// 391 and the total 392. The rule is right and the reference implements it
+// correctly (it reports 392); only the specification's addition is off. A
+// reader checking this function against the spec should not conclude it has
+// an off-by-one.
 func ceilDiv256(n int) int64 {
 	if n <= 0 {
 		return 0
@@ -362,7 +359,7 @@ func sizeOf(v Value) int64 {
 // for holding v live -- the same figure [meter.alloc] adds to an evaluation's
 // memory budget.
 //
-// It exists for callers that RETAIN values across evaluations, which the
+// It exists for callers that retain values across evaluations, which the
 // per-Eval meter by construction cannot bound: each Eval starts with a fresh
 // budget, so a caller that keeps N results alive is exposed to N times the
 // per-Eval limit no matter how tight that limit is. internal/worker/fmtres'
@@ -382,9 +379,9 @@ func SizeOf(v Value) int64 { return sizeOf(v) }
 // ParsedExpression.evaluate_with_metrics. It exists for the differential oracle
 // (test/oracle), which cannot read a package-private counter.
 //
-// It reports operations only. Section 1.3.9's memory figure is deliberately not
-// exposed: value sizing is implementation-defined, so a differential comparison
-// of it could only be suppressed, never adjudicated.
+// It reports operations only. Section 1.3.9's memory figure is not exposed:
+// value sizing is implementation-defined, so a differential comparison of it
+// could only be suppressed, never adjudicated.
 func EvalWithMetrics(src string, syms Symbols, target Type, opts ...Option) (Value, int64, error) {
 	e, err := Parse(src)
 	if err != nil {
@@ -411,23 +408,21 @@ func EvalWithMetrics(src string, syms Symbols, target Type, opts ...Option) (Val
 //
 // It exists for the differential oracle, which asserts the identity over the
 // whole corpus rather than over hand-picked cases. That breadth is the point: a
-// release bug in one rarely-exercised function is exactly what a written-out
-// test set misses. It routes through coerceTop exactly like every other public
-// entry point, so the invariant covers the top-level coercion too -- without
-// that, this instrument would be structurally blind to a leak or a missing
-// bound check in exactly the region WithMemoryLimit most needs to reach (see
-// coerceTop's own doc comment).
+// release bug in one rarely-exercised function is what a written-out test set
+// misses. It routes through coerceTop like every other public entry point, so
+// the invariant covers the top-level coercion too; without that, it would be
+// blind to a leak or a missing bound check in the region WithMemoryLimit most
+// needs to reach (see coerceTop's own doc comment).
 //
-// WHAT THE CORPUS-WIDE SWEEP DOES NOT REACH: this function takes no Symbols and
-// passes MapSymbols(nil), and test/oracle/corpus.txt contains NO SYMBOL
-// REFERENCES AT ALL. So no corpus case ever produces an unresolved value, and
+// What the corpus-wide sweep does not reach: this function takes no Symbols and
+// passes MapSymbols(nil), and test/oracle/corpus.txt contains no symbol
+// references. So no corpus case produces an unresolved value, and
 // the sweep touches none of the roughly thirteen release sites on the
 // unresolved paths (evalIndex's and evalSlice's unresolved branches,
 // sliceComponent, condResult, applyBinary's and callFunction's
 // unresolved-operand returns, and their siblings) and no symbol-backed
-// receiver. That is a COVERAGE gap, not a known correctness one: 67
-// symbol-bearing and unresolved-path expressions probed by hand all balanced
-// exactly. Closing it needs a corpus that binds symbols.
+// receiver. That is a coverage gap, not a known correctness one. Closing it
+// needs a corpus that binds symbols.
 func EvalForBalanceCheck(src string, target Type) (live, resultSize int64, err error) {
 	e, perr := Parse(src)
 	if perr != nil {

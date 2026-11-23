@@ -4,7 +4,7 @@ package expr
 
 // tokenKind identifies one lexical token class.
 //
-// The set is deliberately narrow: it covers exactly the characters EXPR's
+// The set is narrow: it covers exactly the characters EXPR's
 // grammar uses (spec section 1.1) and nothing else. Every other character is
 // an "unexpected character" error, which is how syntax the evaluator cannot
 // handle — bitwise operators, dict and set literals, the walrus operator,

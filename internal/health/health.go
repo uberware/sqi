@@ -6,10 +6,10 @@
 //
 // A [Checker] represents one dependency that must be reachable for the server
 // to be considered ready. Components register themselves via [Registry.Register]
-// during startup; later tasks wire in real implementations:
+// during startup:
 //
-// - SQLite store checker
-// - NATS JetStream checker
+// - the state store, named by its driver (sqlite or postgres)
+// - NATS
 //
 // # Endpoints
 //

@@ -1,12 +1,11 @@
 # S3-compatible storage
 
-sqi is a **thin layer** with respect to S3. It stores no credentials, embeds no
-S3 client library, and never reads or writes object storage itself: staged S3
-transfers run through the operator's `staging.sync_command`. The worker's
-built-in staging copy, used when no `sync_command` is set, copies between
-filesystem paths only and cannot reach an `s3://` root. Object-store data
-reaches a worker through the same two paths already used for on-premises
-storage: **mounted** or **staged**.
+sqi stores no S3 credentials, embeds no S3 client library, and never reads or
+writes object storage itself: staged S3 transfers run through the operator's
+`staging.sync_command`. The worker's built-in staging copy, used when no
+`sync_command` is set, copies between filesystem paths only and cannot reach an
+`s3://` root. Object-store data reaches a worker in the same two ways as
+on-premises storage: mounted or staged.
 
 ## Mount vs stage: choose one per root
 
@@ -23,7 +22,7 @@ roots:
   onprem:      /nas/shows
 ```
 
-sqi sees an ordinary path. No `stage_locally`, no sync command, nothing extra.
+sqi sees an ordinary path and needs no `stage_locally` or sync command.
 
 ### Staged access (`stage_locally`)
 
@@ -32,10 +31,10 @@ Before each task the worker invokes the operator-configured `staging.sync_comman
 to copy inputs to worker-local scratch; after the task it copies outputs back.
 sqi passes three placeholders: `{src}` and `{dest}` for the source and destination
 paths, and `{object_type}` (expands to `FILE` or `DIRECTORY`). For an `s3://`
-storage root the concrete path is a literal `s3://bucket/key` URI — the sync tool
+storage root the concrete path is a literal `s3://bucket/key` URI; the sync tool
 receives, for example, `aws s3 cp s3://bucket/shows/scene.hip /scratch/attempt/0/scene.hip`.
-The sync tool therefore **must** accept `s3://` URI arguments natively (or be wrapped
-in a script that rewrites them — see the rclone and mc sections below).
+The sync tool must therefore accept `s3://` URI arguments (or be wrapped
+in a script that rewrites them; see the rclone and mc sections below).
 
 ```yaml
 name: shows
@@ -73,8 +72,8 @@ SQI_PATH_TRANSLATION:
 ## sqi stores no credentials or endpoint
 
 Endpoint addresses, AWS credentials, rclone remote configuration, and mc
-aliases all live **in the operator's per-worker environment** — not in sqi.
-Every sync tool reads them through its own standard mechanisms:
+aliases live in the operator's per-worker environment, not in sqi. Each sync
+tool reads them through its own standard mechanisms:
 
 | Tool | Where config lives |
 |---|---|
@@ -82,13 +81,15 @@ Every sync tool reads them through its own standard mechanisms:
 | rclone | `~/.config/rclone/rclone.conf` (named remotes) |
 | MinIO Client (`mc`) | `~/.mc/config.json` (named aliases) |
 
-sqi has no visibility into these settings and makes no attempt to validate them.
+sqi does not read or validate these settings.
 
 ---
 
 ## Per-provider `sync_command` recipes
 
-Set `staging.sync_command` in `sqi-worker.yaml`. Three placeholders are available:
+Set `staging.sync_command` in `sqi-worker.yaml`. The command is split on
+whitespace (no shell, no quoting), and three placeholders are replaced in each
+word:
 
 | Placeholder | Expands to |
 |---|---|
@@ -96,10 +97,10 @@ Set `staging.sync_command` in `sqi-worker.yaml`. Three placeholders are availabl
 | `{dest}` | Concrete destination path |
 | `{object_type}` | `FILE` or `DIRECTORY` (from the OpenJD PATH parameter's `objectType`) |
 
-**Important:** for an `s3://` storage root the concrete path is a literal
-`s3://bucket/key` URI. Only tools that accept `s3://` URI syntax natively work
-without a wrapper. `aws s3 cp` and `s5cmd` both do; rclone and mc do not — see
-their sections below.
+For an `s3://` storage root the concrete path is a literal
+`s3://bucket/key` URI. Only tools that accept `s3://` URI syntax work
+without a wrapper. `aws s3 cp` and `s5cmd` both do; rclone and mc do not (see
+their sections below).
 
 ### AWS S3
 
@@ -113,8 +114,8 @@ task role, etc.). For non-AWS providers see the MinIO, R2, and B2 sections
 
 ### s5cmd (fast alternative)
 
-[s5cmd](https://github.com/peak/s5cmd) is a high-performance S3 client that
-accepts `s3://bucket/key` natively:
+[s5cmd](https://github.com/peak/s5cmd) is an S3 client that accepts
+`s3://bucket/key`:
 
 ```yaml
 sync_command: "s5cmd cp {src} {dest}"
@@ -157,11 +158,11 @@ standard `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables).
 
 ### rclone (requires a wrapper)
 
-rclone uses `remote:bucket/path` syntax — it does **not** accept `s3://` URIs
-directly. `rclone copy {src} {dest}` does not work as a `sync_command` when the
+rclone uses `remote:bucket/path` syntax and does not accept `s3://` URIs.
+`rclone copy {src} {dest}` does not work as a `sync_command` when the
 storage root is `s3://`.
 
-If you prefer rclone, write a small wrapper script that rewrites the
+To use rclone, write a wrapper script that rewrites the
 `s3://bucket/key` path sqi passes into rclone's `remote:bucket/key` form, then
 point `sync_command` at that script:
 
@@ -184,11 +185,11 @@ sync_command: "/usr/local/bin/sqi-rclone-sync {src} {dest}"
 
 ### MinIO Client (`mc`) (requires a wrapper)
 
-mc uses `alias/bucket/object` syntax — it does **not** accept `s3://` URIs
-directly. `mc cp {src} {dest}` does not work as a `sync_command` when the
+mc uses `alias/bucket/object` syntax and does not accept `s3://` URIs.
+`mc cp {src} {dest}` does not work as a `sync_command` when the
 storage root is `s3://`.
 
-If you prefer mc, use the same wrapper pattern, rewriting
+To use mc, use the same wrapper pattern, rewriting
 `s3://bucket/key` → `MC_ALIAS/bucket/key`:
 
 ```sh
@@ -216,9 +217,9 @@ requires no wrapper.
 
 ## `s3://` path without staging fails at run time
 
-If a job resolves a `loc://` reference to an `s3://` path but does **not**
-enable `stage_locally`, the worker fails the task **pre-execution** (before the
-process is launched) with this message:
+If a job resolves a `loc://` reference to an `s3://` path but does not
+enable `stage_locally`, the worker fails the task before the process is
+launched, with this message:
 
 ```
 resolved path "s3://..." is an object-store URI but stage_locally is not enabled
@@ -226,7 +227,7 @@ for this job; enable the SQI_PATH_TRANSLATION stage_locally delivery or use a
 filesystem/mounted root
 ```
 
-There is no submit-time warning — the failure appears in the task's error
+There is no submit-time warning; the failure appears in the task's error
 details. Fix it by either:
 
 1. Adding `stage_locally` to the job's `SQI_PATH_TRANSLATION` deliveries, or
@@ -247,13 +248,13 @@ values:
 | `s3` | All roots are `s3://` URIs |
 | `mixed` | Roots span both schemes |
 
-A `mixed` location is the normal shape for a farm that uses on-prem NAS for
-some workers and S3 for cloud workers. sqi keys actual path-joining behavior off
-each individual root's scheme, not off the derived `type`.
+A farm that uses on-prem NAS for some workers and S3 for cloud workers has
+`mixed` locations. Path joining follows each root's own scheme, not the derived
+`type`.
 
 Each `s3://` root is validated as a well-formed `s3://bucket[/prefix]` URI on
 create and update. A value that starts with `s3:` but is missing the double
-slash (e.g. `s3:mybucket`) is rejected immediately.
+slash (e.g. `s3:mybucket`) is rejected.
 
 ---
 
@@ -262,15 +263,15 @@ slash (e.g. `s3:mybucket`) is rejected immediately.
 Cloud workers that have no network path to on-prem NAS and no FUSE mount should
 use `stage_locally`. The workflow is:
 
-1. Upload source assets to S3 before submitting the job (your pipeline's
-   responsibility — sqi does not replicate data).
+1. Upload source assets to S3 before submitting the job (sqi does not
+   replicate data).
 2. Register an `s3://` root for the cloud compute location.
 3. Enable `stage_locally` in the job's `SQI_PATH_TRANSLATION` block.
 4. Configure each cloud worker with `staging.scratch_dir` and
    `staging.sync_command`.
 
-Outputs are automatically copied back after each task by the same sync command
-(direction reversed: `dest` ← `src`).
+After each task the same sync command copies outputs back, with `{src}` the
+local scratch path and `{dest}` the `s3://` URI.
 
 See [`docs/openjd-extensions/path-translation.md`](openjd-extensions/path-translation.md)
 for the full `stage_locally` reference.

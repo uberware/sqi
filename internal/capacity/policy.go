@@ -216,7 +216,7 @@ type Mismatch struct {
 //
 //   - outside the scale-up cooldown, at most max(current, active + MaxStepUp):
 //     what was asked for is held, and new growth is paced by machines that
-//     actually registered, so a step-up whose machines never register costs
+//     registered, so a step-up whose machines never register costs
 //     one step and does not compound;
 //   - inside the cooldown, at most current.
 //

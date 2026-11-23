@@ -54,13 +54,13 @@ func TestCheckpoint_DoesNotBlockOnAReader(t *testing.T) {
 	if elapsed > time.Second {
 		t.Errorf("Checkpoint took %v with a reader holding a WAL snapshot; "+
 			"PASSIVE must not invoke the busy handler (busy_timeout is 5s, so this "+
-			"is almost certainly a regression to TRUNCATE)", elapsed)
+			"points to TRUNCATE mode)", elapsed)
 	}
 }
 
 // TestCheckpointTruncate_IsStillAvailableForShutdown pins that the truncating
-// form still exists and works, since shutdown genuinely does want a WAL
-// truncated to zero and can afford to wait for it.
+// form works: shutdown wants a WAL truncated to zero and can afford to wait for
+// it.
 func TestCheckpointTruncate_IsStillAvailableForShutdown(t *testing.T) {
 	ctx := context.Background()
 	st := openFilePoolStore(t)

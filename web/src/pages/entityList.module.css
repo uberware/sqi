@@ -2,8 +2,9 @@
 
 /*
  * Shared stylesheet for the admin entity list pages (farms, queues, storage
- * locations, compute locations, usage pools, products). Page-specific rules
- * live in each page's own module, which composes the classes it needs.
+ * locations, compute locations, usage pools, capacity groups, products,
+ * presets, users, API keys, servers). A page with rules of its own keeps them
+ * in its own module, which composes the classes it needs.
  */
 
 .page {

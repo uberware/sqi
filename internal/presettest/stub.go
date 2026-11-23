@@ -50,8 +50,8 @@ func StubInstallDir() (string, error) {
 
 // BuildStub compiles the stub binary once per process and returns its path.
 //
-// The directory is deliberately NOT a testing.TempDir: the build is cached
-// across every test in the run, so no single test may own it. Callers that want
+// The directory is not a testing.TempDir: the build is cached across every
+// test in the run, so no single test may own it. Callers that want
 // it removed should register [RemoveStub] in TestMain.
 func BuildStub(ctx context.Context) (string, error) {
 	stubOnce.Do(func() {
@@ -107,8 +107,8 @@ func InstallStub(dir string, names []string) error {
 // sorted. These are the names [InstallStub] must shadow for a Tier-3 run.
 //
 // A command that is a materialized embedded-file path ("<WORKDIR>/main.sh")
-// yields that file's basename, which cannot be shadowed on PATH — the caller
-// checks for that and asserts on the script's INNER invocations instead.
+// yields that file's basename, which cannot be shadowed on PATH; the caller
+// checks for that and asserts on the script's inner invocations instead.
 func CommandNames(s Snapshot) []string {
 	seen := map[string]bool{}
 	for _, step := range s.Steps {

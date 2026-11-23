@@ -4,21 +4,20 @@
 // grammar (2023-09 Template Schemas, section 3.4.1.1.1): the succinct
 // "1,3,7-10:2" form used for frame ranges.
 //
-// It is a leaf shared by two callers that DISAGREE about what to accept, which
+// It is a leaf shared by two callers that disagree about what to accept, which
 // is why Parse is spec-faithful and ParseWithPolicy exists:
 //
 //   - internal/openjd/expr (the EXPR extension) needs the spec's behavior, and
 //     uses Parse.
 //   - internal/openjd (task-parameter expansion) is stricter than the spec in
-//     two ways that predate this package: it rejects a range whose start
+//     two ways: it rejects a range whose start
 //     exceeds its end (the spec makes "1 - -1" the single value [1]) and it
 //     rejects a negative step (the spec's set formula defines one). It also
 //     orders values first-seen rather than increasing, which it does in its own
 //     expansion code rather than here.
 //
-// Those divergences are deliberate to preserve, NOT bugs to fix in passing:
-// changing them changes which job templates are accepted and the order in which
-// tasks are generated.
+// Keep those divergences: changing them changes which job templates are
+// accepted and the order in which tasks are generated.
 package intrange
 
 import (
@@ -60,12 +59,12 @@ func (r Range) String() string {
 
 // Count returns how many integers the range yields, computed arithmetically
 // without allocating — the allocation-free equivalent of len(r.Iterate()), with
-// one exception at the top of the scale: a count that SATURATES (below) is one
+// one exception at the top of the scale: a count that saturates (below) is one
 // Iterate declines to materialize at all, so it answers nil rather than that
 // many values.
 //
 // The specification's set is {x} union {x+mn : m in Z+, x+mn <= y if n > 0,
-// x+mn >= y if n < 0}, so the start is ALWAYS a member and the count is never
+// x+mn >= y if n < 0}, so the start is always a member and the count is never
 // zero. If the span, or the arithmetic needed to turn it into a count, would
 // overflow, Count saturates to math.MaxInt, which exceeds any caller's bound.
 func (r Range) Count() int {
@@ -74,7 +73,7 @@ func (r Range) Count() int {
 		step = 1
 	}
 	span := r.End - r.Start
-	// This overflow check MUST run before the sign-mismatch check below: when
+	// This overflow check must run before the sign-mismatch check below: when
 	// End-Start itself overflows, the wrapped span can carry a sign that
 	// disagrees with step's, which would make that check fire first and
 	// return 1 for a range far larger than any bound.
@@ -109,16 +108,15 @@ func (r Range) Count() int {
 
 // Iterate yields every integer in the range, in the order the step defines.
 //
-// A range whose [Range.Count] SATURATES to math.MaxInt cannot be materialized
+// A range whose [Range.Count] saturates to math.MaxInt cannot be materialized
 // on any machine, so Iterate returns nil for it rather than trying: the loops
 // below would otherwise append until the process ran out of memory. Both
-// callers in this repository bound Count() themselves before ever calling this
+// callers in this repository bound Count() themselves before calling this
 // (internal/openjd's sumRangeCounts and internal/openjd/expr's rangeInts), so
-// the early-out is unreachable through them — it exists so that a caller which
-// FORGETS that bound gets an empty result instead of an out-of-memory kill,
-// which is the only outcome the previous code could offer. It is a backstop,
-// not a substitute for the bound: a range of, say, ten billion values does not
-// saturate and is returned in full, one int per value.
+// the early-out is unreachable through them; it gives a caller that omits
+// that bound an empty result instead of an out-of-memory kill. It is a
+// backstop, not a substitute for the bound: a range of, say, ten billion values
+// does not saturate and is returned in full, one int per value.
 func (r Range) Iterate() []int {
 	step := r.Step
 	if step == 0 {
@@ -202,11 +200,10 @@ func parseElement(s string, p Policy) (Range, error) {
 	return Range{Start: start, End: end, Step: step}, nil
 }
 
-// parseStep reads an element's step suffix. The error strings matter:
-// they must match internal/openjd/range.go's current output verbatim, and
-// intrange_test.go's own TestParseWithPolicy_ReproducesOpenJDStrictness — not
-// any existing internal/openjd test, which never compares against a literal
-// string — is what pins them.
+// parseStep reads an element's step suffix. The error strings reach users
+// verbatim through internal/openjd/range.go; intrange_test.go's
+// TestParseWithPolicy_ReproducesOpenJDStrictness and internal/openjd's
+// TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged pin them.
 func parseStep(stepText string, p Policy) (int, error) {
 	if stepText == "" {
 		return 1, nil

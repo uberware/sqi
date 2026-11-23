@@ -32,13 +32,12 @@ func writeWorkerConfigFile(t *testing.T, dataDir string) string {
 //
 // runKeygen calls workerconfig.LoadWithSources, which applies SQI_WORKER_*
 // environment variables on top of the config file and, when --config is
-// empty, SEARCHES $HOME/.sqi/sqi-worker.yaml and /etc/sqi/sqi-worker.yaml.
-// A developer running a local worker is exactly who is likely to have
-// SQI_WORKER_NATS_CREDENTIAL_FILE exported or a real ~/.sqi/sqi-worker.yaml
-// in place — and if either names a real credential path, keygen writes
-// genuine Ed25519 key material there instead of under the test's
-// t.TempDir(), independent of what --data-dir says (an explicitly
-// configured nats.credential_file is deliberately left untouched by
+// empty, searches $HOME/.sqi/sqi-worker.yaml and /etc/sqi/sqi-worker.yaml.
+// A developer running a local worker may have SQI_WORKER_NATS_CREDENTIAL_FILE
+// exported or a real ~/.sqi/sqi-worker.yaml in place, and if either names a
+// real credential path, keygen writes genuine Ed25519 key material there
+// instead of under the test's t.TempDir(), whatever --data-dir says (an
+// explicitly configured nats.credential_file is left untouched by
 // --data-dir; see resolveKeygenPaths). t.Setenv to "" is treated as unset by
 // workerconfig's applyEnv (every branch is "if v := os.Getenv(key); v !=
 // \"\" { ... }"), so it neutralizes each variable for the duration of the
@@ -56,7 +55,7 @@ func hermeticKeygenEnv(t *testing.T) (configPath string) {
 	}
 	// Every keygen test in this file passes --config explicitly (this
 	// function's return value, or its own), so persistentFlags.ConfigFile
-	// always points at a real path while the test runs — but that path
+	// always points at a real path while the test runs, but that path
 	// lives under this test's t.TempDir() and is gone once it returns.
 	// Reset the package-level var so a later test that means to search the
 	// default paths (empty ConfigFile) does not inherit a now-deleted path.
@@ -70,13 +69,13 @@ func hermeticKeygenEnv(t *testing.T) (configPath string) {
 }
 
 // captureStderr redirects os.Stderr to a pipe for the duration of fn, then
-// returns everything written to it. keygen's overwrite warning is
-// deliberately written to stderr (see runKeygen), so asserting on it needs
-// this alongside captureStdout — both streams are written within the same
-// call and must be captured together, not sequentially.
+// returns everything written to it. keygen writes its overwrite warning to
+// stderr (see runKeygen), so asserting on it needs this alongside
+// captureStdout: both streams are written within the same call and must be
+// captured together, not sequentially.
 //
-// Must NOT be called from parallel sub-tests — the redirect is process-wide,
-// same caveat as captureStdout in main_test.go.
+// Must not be called from parallel sub-tests: the redirect is process-wide,
+// as with captureStdout in main_test.go.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stderr
@@ -201,8 +200,8 @@ func TestKeygenCmd_RefusesToOverwriteWithoutForce(t *testing.T) {
 	}
 
 	// The overwrite warning belongs where an operator who already passed
-	// --force will actually see it (stderr, on success) — not only in
-	// --help text or in the refusal message shown when --force is absent.
+	// --force will see it (stderr, on success), not only in --help text or
+	// in the refusal message shown when --force is absent.
 	workerID, err := workerconfig.LoadOrCreateWorkerID(dataDir)
 	if err != nil {
 		t.Fatalf("LoadOrCreateWorkerID: %v", err)

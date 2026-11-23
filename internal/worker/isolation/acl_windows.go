@@ -12,20 +12,18 @@ import (
 )
 
 // fileAllAccess is FILE_ALL_ACCESS (winnt.h): STANDARD_RIGHTS_REQUIRED |
-// SYNCHRONIZE | 0x1FF — the specific-rights spelling of full control on a
-// file or directory. golang.org/x/sys/windows v0.47.0 exports no constant for
-// it, hence the literal.
+// SYNCHRONIZE | 0x1FF, the specific-rights spelling of full control on a
+// file or directory. golang.org/x/sys/windows exports no constant for it,
+// hence the literal.
 //
-// Deliberately NOT windows.GENERIC_ALL. Windows canonicalizes an INHERITABLE
-// ACE that carries generic bits by splitting it into two: a non-inheritable
-// effective ACE holding the mapped specific rights, plus an inherit-only ACE
-// that keeps the generic bits for children to map on their own. The three
-// entries below would land on disk as SIX ACEs — the same trustees and the
-// same effective access, but an ACL no one reading it would recognize as the
-// three-entry one this package builds, and one whose "exactly these three
-// trustees" invariant can no longer be asserted by simple inspection.
-// Granting the already-mapped mask sidesteps the split entirely: one ACE per
-// trustee, effective and inheritable at once.
+// It is used instead of windows.GENERIC_ALL. Windows canonicalizes an
+// inheritable ACE that carries generic bits by splitting it into two: a
+// non-inheritable effective ACE holding the mapped specific rights, plus an
+// inherit-only ACE that keeps the generic bits for children to map. The three
+// entries below would land on disk as six ACEs with the same trustees and
+// effective access, and the "exactly these three trustees" invariant could
+// not be checked by inspection. Granting the already-mapped mask gives one
+// ACE per trustee, effective and inheritable at once.
 const fileAllAccess = windows.ACCESS_MASK(0x001F01FF)
 
 // explicitFullControl builds one inheritable full-control entry for sid.
@@ -64,23 +62,20 @@ func privilegedTrustees() ([]windows.EXPLICIT_ACCESS, error) {
 // adminOnlyDACL builds the DACL for everything the credential store creates
 // under the isolation directory (credstore_windows.go): both the directory
 // itself (secureDir) and the per-account secret file inside it
-// (writeSecured). SYSTEM and Administrators only, deliberately — no
-// CREATOR OWNER, no entry for whoever happens to be running set-credential.
+// (writeSecured). SYSTEM and Administrators only: no CREATOR OWNER, and no
+// entry for whoever is running set-credential.
 //
-// This is what makes the documented "run set-credential from an elevated
-// shell" requirement an ENFORCED control rather than a convention an
-// operator could ignore: the only sanctioned caller already carries an
-// elevated Administrator token, so SYSTEM+Administrators is sufficient for
-// the real flow and grants nothing extra. Adding CREATOR OWNER — even as an
-// inherit-only placeholder — would not stay a placeholder: NTFS
-// canonicalizes an inheritable "this folder, subfolders, and files"
-// CREATOR OWNER ACE applied to a container into a second, DIRECT ACE for
-// the directory's actual current owner, i.e. whoever's Put call is running
-// right now. That would let ANY account able to create the isolation
-// directory — elevated or not — complete the entire provisioning flow,
-// reopening the credential disclosure this ACL exists to prevent. Machine-scope DPAPI is decryptable by anything on the
-// host that can read the file, so this ACL, not the encryption, is the
-// actual security boundary for the stored password.
+// This enforces the documented "run set-credential from an elevated shell"
+// requirement: the only sanctioned caller carries an elevated Administrator
+// token, so SYSTEM+Administrators is enough for it and grants nothing extra.
+// A CREATOR OWNER entry, even inherit-only, does not stay a placeholder: NTFS
+// canonicalizes an inheritable "this folder, subfolders, and files" CREATOR
+// OWNER ACE applied to a container into a second, direct ACE for the
+// directory's current owner, the account running Put. Any account able to
+// create the isolation directory, elevated or not, could then complete the
+// whole provisioning flow and read stored credentials. Machine-scope DPAPI is
+// decryptable by anything on the host that can read the file, so this ACL,
+// not the encryption, is the security boundary for the stored password.
 func adminOnlyDACL() (*windows.ACL, error) {
 	entries, err := privilegedTrustees()
 	if err != nil {
@@ -96,14 +91,13 @@ func adminOnlyDACL() (*windows.ACL, error) {
 // openForACL opens path for a security-descriptor write WITHOUT following a
 // reparse point.
 //
-// FILE_FLAG_OPEN_REPARSE_POINT is the whole point of this helper and is the
-// Windows analog of workdir_unix.go's insistence on os.Lchown over
-// os.Chown. Path-based SetNamedSecurityInfo follows junctions and symlinks,
-// so a task that replaces an entry inside its own session directory with a
-// junction to, say, C:\Windows could have sqi hand its own account full
-// control of the target. On Windows this threat is WORSE than on POSIX:
-// creating a directory junction requires no privilege at all, unlike a
-// symlink (which needs SeCreateSymbolicLinkPrivilege or developer mode).
+// FILE_FLAG_OPEN_REPARSE_POINT is the Windows analog of workdir_unix.go's use
+// of os.Lchown over os.Chown. Path-based SetNamedSecurityInfo follows
+// junctions and symlinks, so a task that replaces an entry inside its own
+// session directory with a junction to, say, C:\Windows could have sqi hand
+// its own account full control of the target. Creating a directory junction
+// needs no privilege, unlike a symlink (which needs
+// SeCreateSymbolicLinkPrivilege or developer mode).
 //
 // FILE_FLAG_BACKUP_SEMANTICS is required to open a directory handle at all.
 func openForACL(path string) (windows.Handle, error) {
@@ -128,7 +122,7 @@ func openForACL(path string) (windows.Handle, error) {
 
 // applyProtectedDACL replaces h's DACL with acl and marks it PROTECTED, which
 // strips every inherited ACE. Without the protected flag the object would keep
-// whatever its parent grants — typically BUILTIN\Users — and the explicit
+// whatever its parent grants (typically BUILTIN\Users), and the explicit
 // entries would be an addition rather than the whole story.
 func applyProtectedDACL(h windows.Handle, acl *windows.ACL) error {
 	err := windows.SetSecurityInfo(
@@ -159,13 +153,11 @@ func lookupUserSID(user string) (*windows.SID, error) {
 // else. This is the Windows counterpart of the POSIX chown + chmod 0700 in
 // workdir_unix.go.
 //
-// It grants the target an ACE but deliberately does NOT make it the OWNER,
-// which is where this departs from the POSIX behavior on purpose. A Windows
-// owner implicitly holds WRITE_DAC, so transferring ownership would let a
-// task rewrite its own session ACL and re-open the directory to other
-// accounts — something POSIX's chown genuinely does allow (the owner can
-// chmod 0777). Matching POSIX exactly would mean adopting its weaker position
-// for no benefit, so this is intentionally tighter.
+// It grants the target an ACE but does not make it the owner, which is
+// stricter than POSIX. A Windows owner implicitly holds WRITE_DAC, so
+// transferring ownership would let a task rewrite its own session ACL and
+// reopen the directory to other accounts, as a POSIX owner can with
+// chmod 0777.
 func secureDACL(target *windows.SID) (*windows.ACL, error) {
 	entries, err := privilegedTrustees()
 	if err != nil {
@@ -180,21 +172,19 @@ func secureDACL(target *windows.SID) (*windows.ACL, error) {
 }
 
 // createExclusiveFile creates path for writing, failing if anything already
-// occupies that name (CREATE_NEW — the Win32 equivalent of O_CREAT|O_EXCL),
-// with extraAccess folded into the SAME CreateFile call as GENERIC_WRITE.
+// occupies that name (CREATE_NEW, the Win32 equivalent of O_CREAT|O_EXCL),
+// with extraAccess requested in the same CreateFile call as GENERIC_WRITE.
 //
-// This mirrors exactly what os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL,
-// perm) does on Windows under the hood (see syscall.Open in the standard
-// library's syscall_windows.go: GENERIC_WRITE access, FILE_SHARE_READ|
-// FILE_SHARE_WRITE sharing, CREATE_NEW disposition, FILE_FLAG_OPEN_REPARSE_POINT
-// so the create does not follow a reparse point already at path) — with one
-// addition: extraAccess is requested up front, on the create call itself.
-// Windows fixes a handle's access rights at the moment it is opened; there is
-// no way to widen them on an already-open handle. A caller that will need
-// WRITE_DAC on this handle later (WriteFileFchown, to apply an ACL before the
-// handle is closed) has to ask for it here, or it can never get it at all —
-// and asking via a SECOND, path-based open instead would reintroduce exactly
-// the swap-the-entry race this create-then-act shape exists to close.
+// This matches what os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+// perm) does on Windows (see syscall.Open in the standard library's
+// syscall_windows.go: GENERIC_WRITE access, FILE_SHARE_READ|FILE_SHARE_WRITE
+// sharing, CREATE_NEW disposition, FILE_FLAG_OPEN_REPARSE_POINT so the create
+// does not follow a reparse point already at path), plus extraAccess.
+// Windows fixes a handle's access rights when it is opened and cannot widen
+// them afterward, so a caller that needs WRITE_DAC on this handle later
+// (WriteFileFchown, to apply an ACL before the handle is closed) must ask
+// for it here. A second, path-based open would reopen the race in which the
+// entry is swapped between create and use.
 func createExclusiveFile(path string, perm os.FileMode, extraAccess uint32) (windows.Handle, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {

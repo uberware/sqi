@@ -11,15 +11,13 @@ import (
 )
 
 // The session cookie's Secure attribute is resolved by authHandler.secure from
-// the three-valued auth.session.cookie_secure setting. "auto" — the default —
-// reads r.TLS. That logic predates TLS support and was, until these tests,
-// pinned by nothing that ran against a real TLS listener: every existing
-// cookie test sets CookieSecure to "false" explicitly.
+// the three-valued auth.session.cookie_secure setting. "auto", the default,
+// reads r.TLS. These tests run it against a real TLS listener; the other
+// cookie tests set CookieSecure to "false" explicitly.
 //
-// Both directions matter. A Secure cookie issued over plaintext is silently
-// dropped by the browser and login simply stops working, with no error
-// anywhere — so "not Secure on plaintext" needs a test just as much as
-// "Secure under TLS" does.
+// Both directions matter. A Secure cookie issued over plaintext is dropped by
+// the browser and login stops working with no error anywhere, so "not Secure
+// on plaintext" needs a test as much as "Secure under TLS" does.
 
 // loginCookieUnder starts srvFn's server against a router configured with the
 // given cookie_secure mode, logs in, and returns the session cookie.

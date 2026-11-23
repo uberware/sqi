@@ -46,7 +46,7 @@ func streamDefs(replicas int) []jetstream.StreamConfig {
 			//
 			// Workers publish task-state transitions (running, succeeded, failed,
 			// canceled) to this stream keyed by job ID.  The server's status
-			// consumer reads and persists each update to SQLite.
+			// consumer reads and persists each update to the store.
 			// WorkQueuePolicy removes the message after the server acknowledges.
 			//
 			// The scheduler also publishes an empty ingest marker on
@@ -87,14 +87,14 @@ func streamDefs(replicas int) []jetstream.StreamConfig {
 			// Workers publish registration payloads on connect and reconnect,
 			// heartbeat pings on a configurable interval, and a departure message
 			// on graceful shutdown. The server's worker consumer processes each
-			// message to update the worker table in SQLite.
+			// message to update the worker table in the store.
 			// WorkQueuePolicy ensures no duplicate processing.
 			//
-			// MaxAge of 2 min: heartbeats older than that are stale by definition
-			// (the scheduler's heartbeat-timeout sweep fires at ~30 s intervals)
-			// and should be discarded rather than processed out of order.
-			// Deregister messages also expire quickly — they have no retry value
-			// once processed.
+			// MaxAge of 2 min: heartbeats older than that are stale (the
+			// scheduler's default heartbeat timeout is 30 s) and are discarded
+			// rather than processed out of order. Deregister messages expire
+			// as quickly. See [Client.ConsumeWorker] for how long a message
+			// outlives a store outage.
 			//
 			// The scheduler also publishes an empty ingest marker on
 			// sqi.marker.worker; see [Client.PublishIngestMarkers].

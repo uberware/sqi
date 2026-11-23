@@ -15,8 +15,7 @@ package scheduler
 // [Config.OnFenced]. From then on this scheduler acknowledges no message and
 // leases no task.
 //
-// Without HA no context carries an epoch, nothing is ever fenced, and none of
-// this changes anything.
+// Without HA no context carries an epoch and no write is fenced.
 
 import (
 	"context"

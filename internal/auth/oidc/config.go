@@ -53,10 +53,9 @@ type Config struct {
 	// ButtonLabel is the login page's SSO button text.
 	ButtonLabel string
 
-	// Logger receives the operational warnings this package cannot resolve on
-	// its own — currently only a failed discovery attempt, which would
-	// otherwise present to a user as an unexplained login failure. Optional:
-	// nil is safe and disables that logging.
+	// Logger receives the warnings for a failed discovery attempt, which a
+	// user otherwise sees only as an unexplained login failure, and for
+	// unreadable extra discovery claims. Optional: nil disables that logging.
 	Logger *slog.Logger
 }
 

@@ -19,7 +19,7 @@ import (
 
 const (
 	// fileAllAccess is FILE_ALL_ACCESS (winnt.h), full control spelled as
-	// specific rights; x/sys exports no constant for it. Deliberately not
+	// specific rights; x/sys exports no constant for it. It is not
 	// windows.GENERIC_ALL: Windows splits an inheritable ACE carrying generic
 	// bits into an effective ACE plus an inherit-only one, so the DACL on disk
 	// would not be the one written (internal/worker/isolation and

@@ -13,26 +13,25 @@ import (
 )
 
 // fileAllAccess is FILE_ALL_ACCESS (winnt.h): STANDARD_RIGHTS_REQUIRED |
-// SYNCHRONIZE | 0x1FF — the specific-rights spelling of full control.
+// SYNCHRONIZE | 0x1FF, the specific-rights spelling of full control.
 //
-// Deliberately NOT windows.GENERIC_ALL. Windows canonicalizes an INHERITABLE
-// ACE carrying generic bits by splitting it in two — a non-inheritable
-// effective ACE with the mapped specific rights, plus an inherit-only ACE
-// keeping the generic bits — so three entries would land on disk as six, with
-// the same effective access but an ACL no reader would recognize as the
-// three-trustee one this file builds. internal/worker/isolation's
-// acl_windows.go reaches the same conclusion for the same reason; the two
-// stay separate because they grant to DIFFERENT trustees (that package is
-// deliberately admin-only; this one must include the writing user), not
-// because either is unaware of the other.
+// It is not windows.GENERIC_ALL. Windows canonicalizes an inheritable ACE
+// carrying generic bits by splitting it in two (a non-inheritable effective
+// ACE with the mapped specific rights, plus an inherit-only ACE keeping the
+// generic bits), so three entries would land on disk as six, with the same
+// effective access but an ACL no reader would recognize as the three-trustee
+// one this file builds. internal/worker/isolation's acl_windows.go uses
+// specific rights for the same reason; the two stay separate because they
+// grant to different trustees (that package is admin-only; this one must
+// include the writing user).
 const fileAllAccess = windows.ACCESS_MASK(0x001F01FF)
 
 // secretDACL builds the protected DACL described in [WriteSecret]'s doc:
 // full control for the current process user, LocalSystem and
 // BUILTIN\Administrators, and nobody else.
 //
-// The current user is included — unlike internal/worker/isolation's
-// adminOnlyDACL — because this protects a key the CALLER writes and later
+// The current user is included, unlike in internal/worker/isolation's
+// adminOnlyDACL, because this protects a key the caller writes and later
 // reads back as itself: `sqi-server tls init` writes ca.key and the running
 // server reads it. Omitting the writer would lock a non-administrator service
 // account out of its own key, which POSIX 0600 does not do.
@@ -78,11 +77,11 @@ func explicitFullControl(sid *windows.SID) windows.EXPLICIT_ACCESS {
 	}
 }
 
-// applyProtectedDACL replaces h's DACL with acl and marks it PROTECTED, which
+// applyProtectedDACL replaces h's DACL with acl and marks it protected, which
 // strips every inherited ACE. Without the protected flag the object keeps
-// whatever its parent grants — typically BUILTIN\Users — and these entries
-// would be an addition rather than the whole story, leaving the key readable
-// by exactly the accounts this is meant to exclude.
+// whatever its parent grants (typically BUILTIN\Users) and these entries
+// would only add to it, leaving the key readable by the accounts this is
+// meant to exclude.
 func applyProtectedDACL(h windows.Handle, acl *windows.ACL) error {
 	err := windows.SetSecurityInfo(
 		h,
@@ -98,12 +97,12 @@ func applyProtectedDACL(h windows.Handle, acl *windows.ACL) error {
 
 // createSecret creates path with the restricted DACL already applied.
 //
-// WRITE_DAC and READ_CONTROL are requested on the CREATE call, not added
+// WRITE_DAC and READ_CONTROL are requested on the create call, not added
 // later: Windows fixes a handle's access rights at open time and nothing done
 // to an open handle can widen them, so a handle opened with GENERIC_WRITE
 // alone could never apply a DACL afterwards. Asking via a second, path-based
-// open instead would reintroduce a swap window — the same reasoning
-// internal/worker/isolation's createExclusiveFile records.
+// open instead would reintroduce a swap window (the same reasoning
+// internal/worker/isolation's createExclusiveFile records).
 //
 // FILE_FLAG_OPEN_REPARSE_POINT means an entry already at path is opened
 // itself rather than followed, so a planted symlink or junction cannot
@@ -141,7 +140,7 @@ func openSecret(path string, disposition uint32) (*os.File, error) {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(h), path)
-	// Apply BEFORE returning, so the caller's first write lands in a file that
+	// Apply before returning, so the caller's first write lands in a file that
 	// is already restricted rather than one still carrying inherited access.
 	if err := restrictSecret(f); err != nil {
 		f.Close()
@@ -152,11 +151,11 @@ func openSecret(path string, disposition uint32) (*os.File, error) {
 
 // restrictSecret applies the restricted DACL to an already-open file.
 //
-// The handle must have been opened with WRITE_DAC — see createSecret. A
+// The handle must have been opened with WRITE_DAC (see createSecret). A
 // caller that created its own descriptor with os.CreateTemp gets only
 // GENERIC_READ|GENERIC_WRITE and cannot use this; use createSecret, or accept
-// that the ACL must be set by path. internal/brokerauth takes the former
-// route.
+// that the ACL must be set by path. internal/brokerauth writes its temporary
+// seed file through WriteSecret, and so through createSecret.
 func restrictSecret(f *os.File) error {
 	acl, err := secretDACL()
 	if err != nil {
@@ -168,10 +167,10 @@ func restrictSecret(f *os.File) error {
 // mkdirSecret creates dir and applies the restricted DACL to it.
 //
 // The ACL is applied after creation rather than through a SECURITY_ATTRIBUTES
-// on CreateDirectory. The window is real but empty: a directory is created
-// with no contents, so there is nothing inside it to disclose until the
-// caller writes — and every write this package performs carries its own
-// per-file DACL regardless of what the directory grants.
+// on CreateDirectory. The window holds nothing: a directory is created with
+// no contents, so there is nothing inside it to disclose until the caller
+// writes, and every write this package performs carries its own per-file
+// DACL regardless of what the directory grants.
 func mkdirSecret(dir string) error {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return err
@@ -203,10 +202,10 @@ func mkdirSecret(dir string) error {
 // isRestricted reports whether path's DACL grants access to nobody beyond the
 // owner and the administrative principals.
 //
-// It inspects TRUSTEES rather than computing effective access: the question a
+// It inspects trustees rather than computing effective access: the question a
 // caller asks is "can an ordinary local account read this key", and a granting
 // ACE for any SID outside the sanctioned set is what would make that true. A
-// DACL that is not PROTECTED fails outright — inherited ACEs are exactly the
+// DACL that is not protected fails outright: inherited ACEs are the
 // permissive grants this exists to exclude, and an unprotected DACL means
 // whatever the parent grants applies whether or not it appears here.
 func isRestricted(path string) (bool, error) {
@@ -260,8 +259,8 @@ func isRestricted(path string) (bool, error) {
 
 // sanctionedSIDs is the set of trustees a restricted object may grant to: its
 // own owner, LocalSystem and BUILTIN\Administrators. The owner is included
-// rather than the CURRENT user so the check still answers correctly when it
-// runs as someone else — an administrator auditing a service account's key.
+// rather than the current user so the check answers correctly when it runs
+// as someone else, such as an administrator auditing a service account's key.
 func sanctionedSIDs(owner *windows.SID) (map[string]bool, error) {
 	allowed := map[string]bool{}
 	if owner != nil {

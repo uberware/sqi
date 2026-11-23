@@ -62,7 +62,7 @@ func TestLastAdminGuard(t *testing.T) {
 					got.DisplayName, got.Role, got.Disabled, "still admin")
 			}
 			// Directory sync keeps its authority: the unguarded UpdateUser may
-			// demote the last admin, and the write must actually land.
+			// demote the last admin, and the write must land.
 			if _, err := st.UpdateUser(ctx, demoted); err != nil {
 				t.Fatalf("plain UpdateUser demoting the last admin = %v, want nil (directory sync)", err)
 			}
@@ -81,7 +81,7 @@ func TestLastAdminGuard(t *testing.T) {
 	}
 }
 
-// TestLastAdminGuard_Edges pins the guard's boundaries: only an ENABLED admin
+// TestLastAdminGuard_Edges pins the guard's boundaries: only an enabled admin
 // counts, only a write that removes the sole one is refused, and a missing
 // user is NotFound rather than LastAdmin.
 func TestLastAdminGuard_Edges(t *testing.T) {

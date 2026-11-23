@@ -259,7 +259,7 @@ func TestValidate_PathParam_ObjectTypeAndDataFlow(t *testing.T) {
 // — was unreachable dead code. Ten conformance fixtures passed validation that
 // should have been rejected.
 //
-// This asserts the filters are actually decoded from the right place; without
+// This asserts the filters are decoded from the right place; without
 // it, a future refactor could quietly reinstate the silent drop.
 func TestParse_FileFiltersDecodedFromUserInterface(t *testing.T) {
 	tmpl := mustParse(t, `

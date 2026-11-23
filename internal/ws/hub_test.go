@@ -10,7 +10,7 @@ package ws
 //
 //   - Client registration and idempotent re-registration.
 //   - Subscribe validation (unknown subjects, unregistered clients).
-//   - Fan-out delivery to subscribed clients across all four subject types.
+//   - Fan-out delivery to subscribed clients.
 //   - Backpressure: events dropped silently when a client's send buffer is full.
 //   - Unsubscribe stops future deliveries.
 //   - Deregister removes the client from all subscriptions and closes its channel.
@@ -201,12 +201,10 @@ func TestHub_NotifyJob_CarriesChange(t *testing.T) {
 }
 
 // TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty pins the owner
-// fallback for job events: 7 of the 9 production NotifyJob call sites never
-// populate JobEvent.Owner (only internal/scheduler/retry.go does). Without a
-// fallback to the owner cache — the same fallback NotifyTask has — a scoped
-// client's own job-status events would be dropped by Scope.allows because
-// env.owner == "" matches no real username. The hub must resolve
-// ownership via the injected jobOwner lookup exactly as NotifyTask does.
+// fallback for job events: most NotifyJob call sites leave JobEvent.Owner
+// empty. Without a fallback to the owner cache (the same one NotifyTask uses)
+// a scoped client's own job-status events would be dropped by Scope.allows,
+// because env.owner == "" matches no real username.
 func TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty(t *testing.T) {
 	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{
 		OwnerScoping: true,
@@ -223,8 +221,8 @@ func TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	// JobEvent.Owner intentionally left empty: only the injected resolver
-	// knows job-1 belongs to alice, matching the real call sites.
+	// JobEvent.Owner left empty: only the injected resolver knows job-1
+	// belongs to alice, as at most real call sites.
 	h.NotifyJob(JobEvent{JobID: "job-1", Status: "running"})
 
 	env, ok := drainOrTimeout(ch, 200*time.Millisecond)
@@ -346,25 +344,23 @@ func TestHub_NotifyTask_TaskPushCarriesUnschedulableReason(t *testing.T) {
 }
 
 // NotifyTask's SubjectJobs push must be buffered in the ring even when nobody
-// is subscribed at emit time, matching NotifyJob's behavior — otherwise
-// SubjectJobs replay history is complete for job-status events but silently
+// is subscribed at emit time, matching NotifyJob's behavior; otherwise
+// SubjectJobs replay history would be complete for job-status events but
 // incomplete for task-summary events emitted while nobody was subscribed.
 //
-// This guarantee is specifically the auth-on one: it exists so a scoped
-// client that subscribes moments after the event can still replay it. With
-// auth off (no owner resolver) there is no such thing as a scoped client, and
-// the hub instead falls back to the hasSubscribers guard to keep the
-// zero-subscriber hot path cheap (see TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing).
-// So this test needs a hub WITH an owner resolver to exercise the guarantee
-// it names, unlike the plain newTestHub() used elsewhere in this file.
+// The guarantee holds with auth on, so a scoped client that subscribes
+// moments after the event can still replay it. With auth off (no owner
+// resolver) the hub falls back to the hasSubscribers guard to keep the
+// zero-subscriber hot path cheap (see
+// TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing), so this test needs a
+// hub with an owner resolver, unlike the plain newTestHub() used elsewhere.
 func TestHub_NotifyTask_JobsPushBuffersInRingWithoutSubscribers(t *testing.T) {
 	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{
 		OwnerScoping: true,
 		JobOwner:     func(string) (string, error) { return "owner", nil },
 	})
 
-	// Fire with NO active SubjectJobs subscribers — previously this was a
-	// no-op for the SubjectJobs push because of a hasSubscribers guard.
+	// Fire with no active SubjectJobs subscribers.
 	h.NotifyTask(TaskEvent{JobID: "job-no-sub", TaskID: "t1", Status: "running"})
 
 	// Late subscriber with since_seq=0 must receive the buffered push as replay.
@@ -447,7 +443,7 @@ done:
 	}
 }
 
-// NotifyJob (a genuine job-status change) must NOT carry a task_id, so list
+// NotifyJob (a job-status change) must not carry a task_id, so list
 // subscribers classify it as a job-status event rather than a task event.
 func TestHub_NotifyJob_JobsPushHasNoTaskID(t *testing.T) {
 	h := newTestHub()
@@ -495,7 +491,7 @@ func TestHub_NotifyLog_BuffersInRingWithoutSubscribers(t *testing.T) {
 	const taskID = "task-no-sub"
 	logSubject := fmt.Sprintf(SubjectTaskLogsFmt, taskID)
 
-	// Fire a log with NO active subscribers — previously this was a no-op.
+	// Fire a log with no active subscribers.
 	h.NotifyLog(LogEvent{TaskID: taskID, SeqNum: 1, Stream: "stdout", Data: "buffered\n"})
 
 	// Late subscriber with since_seq=0 must receive the buffered log as replay.
@@ -674,7 +670,7 @@ func TestHub_RingBuffer_ReplayAllWhenSinceSeqZero(t *testing.T) {
 	}
 	drainAll(trashCh)
 
-	// SinceSeq 0 replays ALL buffered messages (hub seqs start at 1, so every
+	// SinceSeq 0 replays all buffered messages (hub seqs start at 1, so every
 	// buffered entry satisfies seq > 0).
 	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
@@ -853,20 +849,16 @@ func TestHub_DiagnosticsIsValidSubject(t *testing.T) {
 // TestHub_Subscribe_NoDuplicateAcrossRegisterAndReplay pins the exactly-once
 // delivery boundary between live fan-out and ring replay.
 //
-// internal/api's handleSubscribe calls Subscribe TWICE by design: once with a
-// no-replay cursor to register the subscription, then — after the ack has been
-// written, so clients always see the ack before any replayed push — again with
-// the client's real since_seq to drain the ring. That split leaves a window in
+// internal/api's handleSubscribe calls Subscribe twice: once with a no-replay
+// cursor to register the subscription, then, after the ack has been written
+// so clients always see the ack before any replayed push, again with the
+// client's real since_seq to drain the ring. That split leaves a window in
 // which the client is already in h.subs (so fan-out delivers to it live) while
 // the replay has not yet run. An event published inside that window is both
-// delivered live AND appended to the ring, so the replay sends it a second
-// time.
-//
-// This is not a theoretical race. It reached production behind a default:
-// a client that omits the subscribe payload gets since_seq==0, which replays
-// the entire ring, so any event arriving during subscribe is duplicated. It
-// surfaced as a ~25% flake in the API-level owner-scoping test, where the
-// duplicate arrived where a pong was expected.
+// delivered live and appended to the ring, and without the replay ceiling the
+// replay would send it a second time. A client that omits the subscribe
+// payload gets since_seq==0, which replays the entire ring, so it meets this
+// window on every subscribe.
 func TestHub_Subscribe_NoDuplicateAcrossRegisterAndReplay(t *testing.T) {
 	h := newTestHub()
 	const id = "client-1"
@@ -908,12 +900,12 @@ func TestHub_Subscribe_NoDuplicateAcrossRegisterAndReplay(t *testing.T) {
 }
 
 // TestHub_Subscribe_ReplaysEventsPredatingSubscription is the other half of the
-// boundary: suppressing the duplicate above must not suppress genuine replay of
+// boundary: suppressing the duplicate above must not suppress replay of
 // events that were already buffered when the client subscribed.
 //
-// A first client has to be subscribed for the event to reach the ring at all —
-// NotifyJob short-circuits when the subject has no subscribers and owner
-// scoping is off — so the late joiner is what exercises replay.
+// A first client has to be subscribed for the event to reach the ring at all
+// (NotifyJob short-circuits when the subject has no subscribers and owner
+// scoping is off), so the late joiner is what exercises replay.
 func TestHub_Subscribe_ReplaysEventsPredatingSubscription(t *testing.T) {
 	h := newTestHub()
 	const noReplaySeq = ^uint64(0)

@@ -77,8 +77,8 @@ func TestAPIKeyStore_ExpiryAndScope(t *testing.T) {
 			}
 
 			// Exact-boundary: a lookup at precisely ExpiresAt must be
-			// treated as expired. Both backends use a strict comparison
-			// (sqlite `expires_at > ?`, fake `ExpiresAt.After(now)`), so
+			// treated as expired. Every backend uses a strict comparison
+			// (SQL `expires_at > ?`, fake `ExpiresAt.After(now)`), so
 			// equality means expired, not still-valid.
 			if _, _, err := st.GetAPIKeyUserByTokenHash(ctx, ka.TokenHash, exp); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("key at exact ExpiresAt boundary should be ErrNotFound, got %v", err)
@@ -106,8 +106,9 @@ func TestAPIKeyStore_ExpiryAndScope(t *testing.T) {
 }
 
 // TestAPIKeyStore_CreateAPIKey_DuplicateTokenHash verifies that creating a
-// second API key with an already-used token_hash is rejected — SQLite via
-// `token_hash TEXT NOT NULL UNIQUE`, the fake via an explicit check.
+// second API key with an already-used token_hash is rejected: the SQL stores
+// through `token_hash TEXT NOT NULL UNIQUE`, the fake through an explicit
+// check.
 func TestAPIKeyStore_CreateAPIKey_DuplicateTokenHash(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -156,10 +157,9 @@ func TestAPIKeyStore_TouchLastUsed(t *testing.T) {
 }
 
 // TestAPIKeyStore_GetAPIKeyUserByTokenHash covers the joined lookup used on
-// every Bearer-authenticated request. The SQLite implementation scans 18
-// columns positionally across two tables, so this asserts every field of both
-// records — a reordered column would otherwise swap values silently instead
-// of failing.
+// every Bearer-authenticated request. The SQL store scans the columns of two
+// tables positionally, so this asserts every field of both records: a
+// reordered column would otherwise swap values without failing.
 func TestAPIKeyStore_GetAPIKeyUserByTokenHash(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -167,7 +167,7 @@ func TestAPIKeyStore_GetAPIKeyUserByTokenHash(t *testing.T) {
 			seed := mkUser("operator")
 			// Use a non-default AuthSource: "" and the "local" default are
 			// indistinguishable in the failure case, so only a non-default
-			// value proves the joined lookup actually round-trips the column.
+			// value proves the joined lookup round-trips the column.
 			seed.AuthSource = store.AuthSourceLDAP
 			u, err := st.CreateUser(ctx, seed)
 			if err != nil {

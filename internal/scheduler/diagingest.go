@@ -3,8 +3,8 @@
 package scheduler
 
 // Diagnostic-log ingestion: decodes worker.diag.<id> core-NATS messages into
-// the server's in-memory diagnostic ring buffer.  No persistence, no ack — this
-// is best-effort recent-history telemetry.
+// the server's in-memory diagnostic ring buffer. No persistence and no ack:
+// this is best-effort recent-history telemetry.
 
 import (
 	"context"

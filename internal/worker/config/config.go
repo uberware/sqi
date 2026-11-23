@@ -39,8 +39,8 @@ import (
 // Zero values are not valid; use [Default] or [Load] to obtain a populated
 // instance.
 type WorkerConfig struct {
-	// NATS is the connection configuration for the remote NATS instance
-	// embedded in sqi-server.
+	// NATS is the connection configuration for the broker sqi-server uses:
+	// the one it embeds, or an operator-run external NATS server.
 	NATS NATSConfig `yaml:"nats"`
 
 	// Worker contains identity and runtime behavior settings.
@@ -205,7 +205,7 @@ type IsolationConfig struct {
 	// Env: SQI_WORKER_ISOLATION_PROVIDER
 	Provider string `yaml:"provider"`
 
-	// EnvPassthrough lists daemon environment variable NAME patterns inherited
+	// EnvPassthrough lists daemon environment variable name patterns inherited
 	// by isolated tasks, in addition to the minimal base. filepath.Match
 	// globs. Render farms depend on inherited licensing variables, so the
 	// allowlist is extensible.
@@ -508,9 +508,10 @@ type WorkerSettings struct {
 	FarmID string `yaml:"farm_id"`
 
 	// DataDir is the directory used to persist the worker ID file
-	// (worker.id), the worker's stable, server-correlated identity. It is
-	// never shared with session working directories (see SessionDir) and is
-	// never widened for run-as-user traversal: it stays private (0700).
+	// (worker.id), the worker's stable, server-correlated identity. Session
+	// working directories go under it only on a non-root POSIX worker, which
+	// cannot isolate (see SessionDir). It is never widened for run-as-user
+	// traversal: it stays private (0700).
 	// Env: SQI_WORKER_DATA_DIR
 	DataDir string `yaml:"data_dir"`
 
@@ -523,10 +524,10 @@ type WorkerSettings struct {
 	// cmd/sqi-worker's effectiveSessionRoot):
 	//   - running as root: /var/lib/sqi-worker-sessions, a sibling of, never
 	//     a descendant of, this package's own data_dir default (see
-	//     cmd/sqi-worker's defaultRootSessionDir doc for why the two must
-	//     not nest). Its ancestors, /var and /var/lib, are 0755 on every
-	//     common distribution, so nothing needs to be created or widened
-	//     for this.
+	//     cmd/sqi-worker's defaultSessionRoot doc for why the two must not
+	//     nest). Its ancestors, /var and /var/lib, are 0755 on every common
+	//     distribution, so nothing needs to be created or widened for this.
+	//   - on Windows: %ProgramData%\sqi\worker\sessions.
 	//   - otherwise: <DataDir>/sessions. Run-as-user isolation cannot
 	//     function without root regardless of directory permissions, so
 	//     nothing needs to be traversable by another identity.
@@ -541,7 +542,7 @@ type WorkerSettings struct {
 
 	// CapabilityTags is a list of arbitrary capability tags merged with
 	// auto-detected capabilities at registration time, e.g. ["maya_2025",
-	// "gpu", "highram"].
+	// "gpu", "highram"]. A bare tag means "true"; "key=value" sets a value.
 	// Env: SQI_WORKER_CAPABILITY_TAGS (comma-separated)
 	CapabilityTags []string `yaml:"capability_tags"`
 

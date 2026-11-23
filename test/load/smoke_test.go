@@ -173,7 +173,7 @@ func TestLoadSmoke(t *testing.T) {
 }
 
 // TestLoadSmoke_VerifierCanFail proves the verifier can fail a run that went
-// wrong: just before the invariants are checked, one task's ledger outcome is
+// wrong: before the invariants are checked, one task's ledger outcome is
 // made to disagree with what the server holds (the ledger says the task
 // failed; the server saw it succeed), standing in for a worker that tells the
 // ledger one thing and the server another. The outcomes invariant must fail

@@ -22,15 +22,14 @@ func WriteGolden(path, content string) error {
 // CompareGolden returns nil when the file at path equals got, and an error
 // describing the difference otherwise.
 //
-// A MISSING golden is an error, deliberately wrapping os.ErrNotExist. The
-// tempting alternative -- treat an absent file as "nothing to compare" and pass
-// -- turns a renamed preset, a typo'd case name or a lost testdata directory
-// into a green run, which is the one failure a snapshot suite must not have.
+// A missing golden is an error wrapping os.ErrNotExist. Treating an absent file
+// as "nothing to compare" would turn a renamed preset, a mistyped case name or
+// a lost testdata directory into a passing run.
 func CompareGolden(path, got string) error {
 	want, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("presettest: read golden %s (run with -preset-update to create it, "+
-			"then REVIEW it): %w", path, err)
+			"then review it): %w", path, err)
 	}
 	if got != string(want) {
 		return fmt.Errorf("presettest: %s does not match:\n--- got ---\n%s\n--- want ---\n%s",

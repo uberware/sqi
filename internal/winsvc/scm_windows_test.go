@@ -119,7 +119,7 @@ func (f *fakeService) Query() (svc.Status, error) {
 // so a bad configuration stops it moments later: a service that stops within
 // the settle window after Running is a failed start carrying its exit codes,
 // one still running when the window closes has started, and one that stops
-// before it ever runs fails as it always did. Every path is bounded.
+// before it ever runs fails. Every path is bounded.
 func TestAwaitStart(t *testing.T) {
 	const wait, settle = 5 * time.Second, time.Second
 	const failed = "stopped during startup (exit code 1066, service exit code 1)"
@@ -270,9 +270,9 @@ func TestRequireElevated_MatchesProcessToken(t *testing.T) {
 	}
 }
 
-// TestEnsureLogDir_GrantsAccountOnExistingProtectedDir pins plan
-// clarification 4: an earlier install creates the protected directory, and a
-// later --user install must add its account to it without widening it.
+// TestEnsureLogDir_GrantsAccountOnExistingProtectedDir pins that when an
+// earlier install has created the protected directory, a later --user
+// install adds its account to it without widening it.
 //
 // The earlier install runs as the test user, who stands in for the elevated
 // Administrator that really creates the directory: the grant reads the
@@ -520,7 +520,7 @@ func daclBytes(t *testing.T, dir string) string {
 	return fmt.Sprintf("protected=%v %x", protected, raw)
 }
 
-// --- DACL inspection helpers. SDDL is deliberately not used: it renders
+// --- DACL inspection helpers. SDDL is not used: it renders
 // well-known SIDs as aliases (the built-in Administrator account as LA), so a
 // substring search for a SID string fails on a runner whose account is RID 500.
 

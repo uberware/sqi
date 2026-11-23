@@ -86,7 +86,7 @@ func TestExecutor_firstS3Path(t *testing.T) {
 // ── Subprocess dispatcher ─────────────────────────────────────────────────────
 //
 // TestMain uses the test binary itself as the subprocess for process execution
-// tests.  When SQI_TEST_SUBPROCESS is set, TestMain acts as the child process
+// tests. When SQI_TEST_SUBPROCESS is set, TestMain acts as the child process
 // instead of running the test suite.
 
 func TestMain(m *testing.M) {
@@ -185,7 +185,7 @@ func TestMain(m *testing.M) {
 
 	case "catch_sigterm":
 		// Install the SIGTERM handler first, then print "ready" so the parent
-		// test knows it is safe to send Cancel.  On SIGTERM, print "sigterm"
+		// test knows it is safe to send Cancel. On SIGTERM, print "sigterm"
 		// and exit 0.
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, syscall.SIGTERM)
@@ -358,7 +358,7 @@ func (c *captureOutput) all() []capturedLine {
 }
 
 // newTestExecutor creates an Executor backed by a temp data dir and a stub
-// NATS.  The data dir is a test temp dir, removed when the test ends.
+// NATS. The data dir is a test temp dir, removed when the test ends.
 func newTestExecutor(t *testing.T, capture *captureOutput) (*executor.Executor, *stubNATS, string) {
 	t.Helper()
 	return newTestExecutorLimited(t, capture, fmtres.ExprLimits{})
@@ -808,9 +808,9 @@ func TestExecutor_DrainAndShutdown_allComplete(t *testing.T) {
 // period are counted as killed and publish "failed"/"worker_shutdown".
 //
 // Both tasks are dispatched and confirmed started before DrainAndShutdown is
-// called so that both are in the initial snapshot.  The "medium" task sleeps
+// called so that both are in the initial snapshot. The "medium" task sleeps
 // 300 ms — long enough to still be running when the drain starts, but short
-// enough to complete within the 2 s grace period.  The slow task sleeps 60 s
+// enough to complete within the 2 s grace period. The slow task sleeps 60 s
 // and is force-killed after the grace period.
 func TestExecutor_DrainAndShutdown_mixed(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -1162,8 +1162,8 @@ func TestExecutor_Cancel_sigkillEscalation(t *testing.T) {
 	exec, nc, _ := newTestExecutor(t, capture)
 
 	// "ignore_term" subprocess installs a SIGTERM handler, prints "ready",
-	// and then drains SIGTERM in a loop without exiting.  It exits only
-	// when SIGKILL is sent after the notify period.  With
+	// and then drains SIGTERM in a loop without exiting. It exits only
+	// when SIGKILL is sent after the notify period. With
 	// NOTIFY_THEN_TERMINATE the executor sends SIGTERM (drained), then
 	// escalates to SIGKILL after the notify period.
 	msg := makeAssign("ignore_term", nil)
@@ -1210,7 +1210,7 @@ func TestExecutor_Cancel_sigkillEscalation(t *testing.T) {
 }
 
 // waitForOutputLine polls capture until a stdout line equal to want appears or
-// the deadline elapses.  Used when the test needs to synchronize on subprocess
+// the deadline elapses. Used when the test needs to synchronize on subprocess
 // output before taking an action (e.g., waiting for "ready" so the subprocess
 // has installed its signal handler before Cancel is called).
 func waitForOutputLine(t *testing.T, capture *captureOutput, want string, timeout time.Duration) {
@@ -1229,7 +1229,7 @@ func waitForOutputLine(t *testing.T, capture *captureOutput, want string, timeou
 
 // TestExecutor_Cancel_sigtermDelivery verifies that under NOTIFY_THEN_TERMINATE
 // SIGTERM is delivered to the process before SIGKILL escalation, by dispatching a
-// subprocess that catches SIGTERM, prints "sigterm" on receipt, and exits 0.  The
+// subprocess that catches SIGTERM, prints "sigterm" on receipt, and exits 0. The
 // terminal status must be "canceled".
 func TestExecutor_Cancel_sigtermDelivery(t *testing.T) {
 	if runtime.GOOS == "windows" {

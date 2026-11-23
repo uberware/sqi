@@ -293,7 +293,7 @@ func TestControlResponder_OneRegistrationAtATime(t *testing.T) {
 }
 
 // A reregister that reaches the gate after stop, as one the controller
-// accepted just before the unsubscribe can, starts no registration.
+// accepted before the unsubscribe can, starts no registration.
 func TestReregisterGate_AfterStopStartsNothing(t *testing.T) {
 	var registrations atomic.Int64
 	g := reregisterGate{register: func(context.Context) error {

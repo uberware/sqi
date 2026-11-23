@@ -132,8 +132,8 @@ func connect(
 // returns the fatal rejection error once the refusals have lasted the grace.
 // A connection reset is retried the same way, since a refusal can arrive as
 // one (see [isConnReset]), but past the grace it is returned as a dial error,
-// since a reset does not prove a refusal. Any other failure, notably an unreachable server, is returned
-// at once.
+// since a reset does not prove a refusal. Any other failure, notably an
+// unreachable server, is returned at once.
 func dial(ctx context.Context, cfg workerconfig.NATSConfig, opts []nats.Option, lc *lifecycle) (*nats.Conn, error) {
 	backoff := exponentialBackoff(cfg.ReconnectWait)
 	var since time.Time

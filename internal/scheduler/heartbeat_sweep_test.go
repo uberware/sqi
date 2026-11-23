@@ -170,8 +170,8 @@ func TestReapStaleAssignedTasks_ReclaimsStuckTask(t *testing.T) {
 	}
 }
 
-// TestReapStaleAssignedTasks_NotifiesReclaimedTask pins what the reaper still
-// reports now that the store does the cleanup: one ready TaskEvent per task the
+// TestReapStaleAssignedTasks_NotifiesReclaimedTask pins what the reaper
+// reports when the store does the cleanup: one ready TaskEvent per task the
 // store says it reclaimed, and nothing for a task it left alone.
 func TestReapStaleAssignedTasks_NotifiesReclaimedTask(t *testing.T) {
 	st := newCheckedFake(t)
@@ -513,9 +513,8 @@ func TestSweepStaleWorkers_ListError_ReturnsQuietly(t *testing.T) {
 	s.sweepStaleWorkers(t.Context())
 }
 
-// TestSweepThenDemote_StalledJobReturnsToPending reproduces the reported issue:
-// a worker dies while running a job's only in-flight task, the sweep returns the
-// task to ready, and — with no worker left to pick it up — the job must not stay
+// TestSweepThenDemote_StalledJobReturnsToPending: a worker dies while running a job's only in-flight task, the sweep returns the
+// task to ready, and, with no worker left to pick it up, the job must not stay
 // marked 'running'. The heartbeat-sweep tick runs sweep then demote, so the job
 // is reconciled back to 'pending' and a JobEvent is emitted.
 func TestSweepThenDemote_StalledJobReturnsToPending(t *testing.T) {

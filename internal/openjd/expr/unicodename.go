@@ -27,15 +27,15 @@ var (
 // golang.org/x/text/unicode/runenames maps runes to names, so the reverse map
 // is built by inverting it: about 1.1 million lookups producing 34,823
 // entries and roughly 2 MB. That is done lazily, once per process, and only
-// by an expression that actually uses the escape — which no conformance
+// by an expression that uses the escape — which no conformance
 // fixture does. The alternative, a generated table, would be large and is not
 // warranted for an escape this rare.
 //
 // Runes with algorithmic rather than listed names come back from runenames as
 // placeholders such as "<CJK Ideograph>" and "<Hangul Syllable>", so they are
 // skipped when inverting. CJK ideographs are then resolved directly, since
-// their name is just the code point in hexadecimal. Hangul syllable names are
-// composed from jamo and are deliberately NOT supported: the escape reports an
+// their name is the code point in hexadecimal. Hangul syllable names are
+// composed from jamo and are not supported: the escape reports an
 // unknown name rather than resolving to something wrong.
 func unicodeByName(name string) (rune, bool) {
 	name = strings.ToUpper(strings.TrimSpace(name))
@@ -63,7 +63,7 @@ func buildRuneNames() {
 
 // cjkIdeographByName resolves the "CJK UNIFIED IDEOGRAPH-<hex>" name form. The
 // resulting code point is confirmed against runenames so a well-formed name
-// for a code point that is not actually an ideograph is still rejected.
+// for a code point that is not an ideograph is still rejected.
 func cjkIdeographByName(name string) (rune, bool) {
 	hex, ok := strings.CutPrefix(name, cjkIdeographPrefix)
 	if !ok {

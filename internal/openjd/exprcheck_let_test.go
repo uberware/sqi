@@ -122,9 +122,9 @@ const overBudgetLetBinding = "a = max([len(('y' * 900000).upper()) for i in rang
 
 // TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit pins that
 // checkLetBindings meters its Eval call at the submission limits, rather than
-// falling back to expr.Eval's much looser execution-time defaults. Without that,
-// an unmetered evaluation runs on the synchronous POST /api/v1/jobs path (an
-// unmetered checker walk has measured ~9 minutes of server CPU per request).
+// falling back to expr.Eval's much looser execution-time defaults. Without
+// that, a loosely metered evaluation runs on the synchronous
+// POST /api/v1/jobs path.
 //
 // It passes a NIL budget, which is [templateBudget.evalOptions]' documented
 // "use the package defaults" case -- the same numbers DefaultExprLimits carries,
@@ -933,26 +933,19 @@ steps:
 // guard in checkLetBindings: a let: block longer than maxLetBindings is
 // evaluated only up to the cap, never in full.
 //
-// Nothing else in the repo covers the guard. validateLetElementCounts REPORTS
-// an over-count, but reporting is not guarding: ValidateWithOptions does not
-// short-circuit on it, so without this guard sqi tells the caller the block
-// is invalid and then evaluates every binding anyway. let is the only
-// construct in this checker that RETAINS a value per binding
-// (syms[name] = v), so the per-evaluation memory limit -- which counts one
-// evaluation's live bytes and never sees the table it is handed -- bounds
-// each binding but not their sum. Measured
-// through the real Parse + ValidateWithOptions path with the guard removed:
-// 2,000 bindings of `a<i> = "x" * 900000`, a 57 KB template body, allocated
-// 1,725 MB in 335 ms and still returned the same 2 errors. At the 4 MiB
-// request-body cap (internal/api/jobs.go) that is ~190,000 bindings and an
-// out-of-memory kill.
+// validateLetElementCounts reports an over-count, but ValidateWithOptions
+// does not short-circuit on it, so without this guard every binding would
+// still be evaluated. let is the only construct in this checker that retains
+// a value per binding (syms[name] = v), so the per-evaluation memory limit,
+// which counts one evaluation's live bytes and never sees the table, bounds
+// each binding but not their sum. Without the guard, a few thousand bindings
+// of `a<i> = "x" * 900000` in a small template body allocate gigabytes.
 //
-// The assertions are on the PROPERTY -- how many bindings were evaluated --
-// not on wall clock, which flakes on shared CI. The symbol table is the direct
-// witness: checkLetBindings mutates it, one entry per SUCCESSFULLY evaluated
-// binding, so len(syms) is exactly the number of evaluations that happened.
-// The allocation ceiling below is corroborating evidence for the cost claim,
-// with an order of magnitude of slack over the ~43 MB the capped run needs.
+// The assertions are on how many bindings were evaluated, not on wall clock,
+// which is unreliable on shared CI. checkLetBindings adds one symbol-table
+// entry per successfully evaluated binding, so len(syms) is the number of
+// evaluations. The allocation ceiling below backs up the cost claim, with an
+// order of magnitude of slack over what the capped run needs.
 func TestCheckLetBindings_StopsAtMaxLetBindings(t *testing.T) {
 	const over = 400 // 8x the cap, so a missing guard is unmistakable
 	if over <= maxLetBindings {

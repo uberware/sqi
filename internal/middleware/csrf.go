@@ -6,11 +6,11 @@ package middleware
 //
 // # Why this exists
 //
-// Local accounts use an HttpOnly session cookie. Cookies are ambient credentials:
-// the browser attaches them automatically to any request to this origin,
-// including ones initiated by a malicious third-party page (a classic CSRF
-// attack). Requests authenticated some other way (no cookie present — e.g. a
-// future bearer-token client, or the pre-cookie login call itself) carry no
+// Browser logins use an HttpOnly session cookie. Cookies are ambient
+// credentials: the browser attaches them automatically to any request to this
+// origin, including ones initiated by a malicious third-party page (a classic
+// CSRF attack). Requests authenticated some other way (no cookie present, e.g.
+// a Bearer API key client, or the pre-cookie login call itself) carry no
 // ambient credential and are not in scope for this guard.
 //
 // # Policy
@@ -19,7 +19,7 @@ package middleware
 //     side effects per HTTP semantics.
 //   - A request without the session cookie passes through unchecked: it is not
 //     cookie-authenticated, so there is no ambient-credential vector to guard.
-//   - An unsafe-method request WITH the session cookie must carry an Origin
+//   - An unsafe-method request with the session cookie must carry an Origin
 //     (falling back to Referer's origin) that is either same-origin (matches
 //     r.Host) or explicitly allow-listed. Otherwise the request is rejected
 //     with 403.

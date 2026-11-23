@@ -52,17 +52,16 @@ connection string is store.postgres.dsn (SQI_STORE_POSTGRES_DSN), and the
 database itself must already exist. For SQLite the path is
 store.sqlite_path (SQI_STORE_SQLITE_PATH), falling back to the legacy
 SQI_SQLITE_PATH environment variable and then to "sqi.db" in the working
-directory — the same store the server uses, so running "migrate up" before
+directory: the same store the server uses, so running "migrate up" before
 "serve" is the standard deployment initialization step. Unlike backup and
-worker, migrate creates the SQLite file when it does not already exist — that
-is its job.`,
+worker, migrate creates the SQLite file when it does not exist.`,
 	// No RunE — bare "migrate" prints usage.
 }
 
 var migrateUpCmd = &cobra.Command{
 	Use:   "up",
 	Short: "Apply all pending migrations",
-	Long:  `Apply every migration that has not yet been run against the target database.`,
+	Long:  `Apply every migration the target database has not run.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		tgt, err := resolveStoreTarget(cmd, migrateDBPath, migrateDSN)
 		if err != nil {

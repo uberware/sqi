@@ -36,10 +36,10 @@ import (
 //
 // The end-to-end tests at the bottom of this file drive the real
 // openjd.Submitter through these same handlers with a deadline that expires.
-// The stub tests are the narrow unit-level guard on one link: given an error of that shape, which
-// status code does this handler produce. Keeping both is what localizes a
-// failure — both failing means the mapping broke, only the end-to-end failing
-// means the pipeline stopped producing the sentinel.
+// The stub tests are the narrow unit-level guard on one link: given an error
+// of that shape, which status code does this handler produce. Keeping both
+// localizes a failure: both failing means the mapping broke, only the
+// end-to-end failing means the pipeline stopped producing the sentinel.
 //
 // The stub is also the only way to inject error shapes the real pipeline
 // cannot be made to produce on demand, which is what the deadline-arithmetic
@@ -59,7 +59,7 @@ func (s *stubSubmitter) Submit(
 }
 
 // deadlineErr is what the submission pipeline returns when the wall-clock
-// backstop trips: the sentinel, wrapped for context, and deliberately NOT a
+// backstop trips: the sentinel, wrapped for context, and not a
 // *openjd.SubmitValidationError.
 func deadlineErr() error {
 	return fmt.Errorf("openjd: submit: validation: %w", expr.ErrDeadlineExceeded)
@@ -73,8 +73,8 @@ func deadlineErr() error {
 //
 // 422 tells a submitter their template is wrong and that retrying is
 // pointless. 503 tells them the server could not finish and that retrying may
-// work. A wall-clock verdict is non-deterministic — the same body would
-// validate on an idle machine — so returning the first would make acceptance
+// work. A wall-clock verdict is non-deterministic (the same body would
+// validate on an idle machine), so returning the first would make acceptance
 // depend on machine load, which no client can reason about.
 //
 // 500 is checked too, because that is what this endpoint returns for any error
@@ -105,7 +105,7 @@ func TestSubmitJob_DeadlineIsA503NotA422(t *testing.T) {
 // TestSubmitProductJob_DeadlineIsA503NotA422 pins the same contract on the
 // other submission route. It runs the identical pipeline with a template from
 // the catalog and client-supplied parameters, so a deadline is reachable there
-// for the same reasons — and would otherwise fall through to a 500.
+// for the same reasons, and would otherwise fall through to a 500.
 func TestSubmitProductJob_DeadlineIsA503NotA422(t *testing.T) {
 	st := fake.New()
 	if _, err := st.CreateProduct(t.Context(), store.Product{
@@ -163,8 +163,8 @@ func TestSubmitJob_ValidationErrorStaysA422(t *testing.T) {
 // The configured value is a duration; what the pipeline needs is an absolute
 // time. Computing that instant anywhere that runs once — on the Submitter
 // built at server boot, say — would give every submission the same deadline,
-// so every request arriving after that instant would fail forever and every
-// one before it would get a shrinking allowance. So the instant must be taken
+// so every request arriving after that instant would fail and every one
+// before it would get a shrinking allowance. So the instant must be taken
 // inside the handler, per call, and it must land in the future.
 func TestSubmitJob_DeadlineIsComputedPerRequest(t *testing.T) {
 	st := fake.New()
@@ -200,19 +200,19 @@ func TestSubmitJob_DeadlineIsComputedPerRequest(t *testing.T) {
 	}
 }
 
-// TestNewRouter_SubmissionDeadlineReachesBothHandlers covers the THIRD and last
+// TestNewRouter_SubmissionDeadlineReachesBothHandlers covers the third and last
 // hop that carries the operator's deadline to where it is spent:
 // api.Config -> the two submission handlers, inside [NewRouter].
 //
 // The tests above build handlers directly, so they would all still pass with
-// cfg.ExprSubmissionDeadline dropped from either constructor call in router.go
-// — the handlers would simply be built with a zero duration and every
-// submission would run unbounded. Nothing else in this repository looks at that
-// wiring, so this is the only place it can fail.
+// cfg.ExprSubmissionDeadline dropped from either constructor call in
+// router.go: the handlers would be built with a zero duration and every
+// submission would run unbounded. Nothing else in this repository looks at
+// that wiring, so this is the only place it can fail.
 //
 // Both routes are checked in one test because they are two independent call
-// sites of the same value, and the product route was added second: a fix that
-// wires one and forgets the other is the realistic mistake.
+// sites of the same value, and wiring one while forgetting the other is the
+// realistic mistake.
 func TestNewRouter_SubmissionDeadlineReachesBothHandlers(t *testing.T) {
 	const configured = 37 * time.Second // non-default; a stale default cannot pass
 
@@ -283,7 +283,7 @@ func TestNewRouter_SubmissionDeadlineReachesBothHandlers(t *testing.T) {
 // submission routes: POST /api/v1/products and PUT /api/v1/products/{name}.
 //
 // Unbounded, it would reach the full validator with no operator limits and no
-// time bound at all — anonymously, since auth is off by default. The mapping is
+// time bound at all, anonymously, since auth is off by default. The mapping is
 // asserted on the shared helper here, which keeps the unit-level guard on the
 // status choice alone; TestCreateProduct_RealValidationDeadlineIsA503NotA400
 // below drives the same mapping through the route with the real validator.
@@ -360,8 +360,9 @@ func TestProductTemplateValidation_OptionsCarryLimitsAndDeadline(t *testing.T) {
 //
 // Every other test here constructs the handler directly, so they would all
 // still pass with cfg.ExprLimits dropped from router.go — product template
-// validation would run on openjd's defaults. [productHandlerFor] exists to make that call site reachable;
-// NewRouter's single use of it is what this test stands in for.
+// validation would run on openjd's defaults. [productHandlerFor] exists to make
+// that call site reachable; NewRouter's single use of it is what this test
+// stands in for.
 func TestProductHandlerFor_CarriesTheConfiguredBounds(t *testing.T) {
 	const configured = 37 * time.Second // non-default, so a stale default cannot pass
 	want := openjd.ExprLimits{
@@ -388,8 +389,8 @@ func TestProductHandlerFor_CarriesTheConfiguredBounds(t *testing.T) {
 }
 
 // TestSubmitJob_NoConfiguredDeadlineMeansNoDeadline pins the zero value's
-// meaning at this layer. Handlers built without a duration — every test in this
-// package that does not care, and any embedder wiring the router directly —
+// meaning at this layer. Handlers built without a duration (every test in this
+// package that does not care, and any embedder wiring the router directly)
 // must pass the zero time, which the evaluator treats as "no deadline" and
 // which costs it nothing.
 func TestSubmitJob_NoConfiguredDeadlineMeansNoDeadline(t *testing.T) {
@@ -414,9 +415,9 @@ func TestSubmitJob_NoConfiguredDeadlineMeansNoDeadline(t *testing.T) {
 // ── end to end: a real pipeline, a real deadline, a real 503 ────────────────
 //
 // Everything above this line stops at one link of the chain. These tests drive
-// the whole chain from a request, joining the two halves of the proof — "the
-// pipeline returns the sentinel" (internal/openjd) and "this handler maps the
-// sentinel to 503" (above) — that would otherwise be joined only by a
+// the whole chain from a request, joining the two halves of the proof ("the
+// pipeline returns the sentinel" in internal/openjd and "this handler maps the
+// sentinel to 503" above) that would otherwise be joined only by a
 // hand-copied error string.
 
 // exprDeadlineE2ETemplate is a valid EXPR job template whose one expression is
@@ -425,8 +426,8 @@ func TestSubmitJob_NoConfiguredDeadlineMeansNoDeadline(t *testing.T) {
 // The call is required. A bare literal such as "{{ [1, 2, 3] }}" performs no
 // meter.charge at all, so the meter never samples the clock, the position
 // resolves however long ago the deadline passed, and a test built on one
-// submits successfully and proves nothing. len() charges, and the meter checks the
-// deadline on the very first charge (see expr/meter.go's checkDeadline).
+// submits successfully and proves nothing. len() charges, and the meter checks
+// the deadline on the first charge (see expr/meter.go's checkDeadline).
 //
 // Every test below pairs the expired-deadline run with a generous-deadline
 // control that must be accepted. That pairing is what makes the fixture's
@@ -454,38 +455,33 @@ steps:
 // It is a duration, not an instant, because that is all an operator configures:
 // the handlers turn it into an absolute time at the top of each request
 // (see TestSubmitJob_DeadlineIsComputedPerRequest), so a test cannot hand them
-// one already in the past. It cannot be zero or negative either — exprDeadlineAt
-// maps everything <= 0 to "no deadline at all", which would disable the very
+// one already in the past. It cannot be zero or negative either: exprDeadlineAt
+// maps everything <= 0 to "no deadline at all", which would disable the
 // mechanism under test.
 //
-// Because of this constant, the fixture above must do real, measurable work.
-// The YAML parse that runs before the first charge does not guarantee a
-// breach: that would assume the clock can observe a nanosecond. On Linux it
-// can; on Windows it cannot. Measured on a real Windows 11 host: 199,999 of
-// 200,000 back-to-back time.Since calls returned exactly zero, the smallest
-// observable non-zero interval was ~555µs, and a 500,000-iteration loop
-// measured as 0s. A template validating in microseconds completes inside a
-// single clock tick, so every read returns the instant the deadline was
-// computed from and t.After(deadline) is false.
+// Because of this constant, the fixture above must do real work. The YAML
+// parse that runs before the first charge does not guarantee a breach: that
+// would assume the clock can observe a nanosecond. On Linux it can; on
+// Windows the clock's resolution is coarse, so a template validating in
+// microseconds completes inside a single clock tick, every read returns the
+// instant the deadline was computed from, and t.After(deadline) is false.
 //
 // Hence the fixture's shape:
 //
 //   - The first argument is op-cheap and byte-heavy, the asymmetry the
-//     wall-clock backstop exists to catch (see ExprLimits.SubmissionOperations,
-//     which measures .title() at ~7,034 operations for ~57ms over 900 KB).
-//     400,000 characters spends a few thousand of the 10,000-operation budget
-//     while costing tens of milliseconds — two orders of magnitude above the
-//     tick, on any host.
+//     wall-clock backstop exists to catch (see ExprLimits.SubmissionOperations).
+//     400,000 characters spend a few thousand of the 10,000-operation budget
+//     while costing far more than one clock tick on any host.
 //   - The second argument exists so the walk has a second expression position.
 //     The meter reads the clock on a position's first charge and then only
 //     every deadlineCheckInterval (1024) charges, and a bulk operation like
-//     'x' * 400000 charges its whole cost in one call — so within a single
+//     'x' * 400000 charges its whole cost in one call, so within a single
 //     position the check can land only before the work. The submission routes
 //     walk the template twice (phase 1 then phase 2) and would breach on the
 //     second walk regardless, but POST /api/v1/products validates once. Its
 //     breach comes from position two's first charge seeing position one's
-//     elapsed time. Drop the second argument and that test alone stops
-//     testing anything.
+//     elapsed time. Without the second argument that test would not
+//     breach.
 const expiredDeadline = time.Nanosecond
 
 // generousDeadline is the control's configured duration: far more than the
@@ -506,14 +502,14 @@ func seedExprSubmitPrereqs(t *testing.T, st *fake.Store) {
 }
 
 // TestSubmitJob_RealSubmitterDeadlineIsA503NotA422 drives POST /api/v1/jobs
-// with the real [openjd.Submitter] and an EXPR template that really reaches the
+// with the real [openjd.Submitter] and an EXPR template that reaches the
 // meter.
 //
-// This is the assertion the stub cannot make. If the pipeline ever wrapped a
-// deadline breach in a *SubmitValidationError — the client-fault type — the
+// This is the assertion the stub cannot make. If the pipeline wrapped a
+// deadline breach in a *SubmitValidationError (the client-fault type), the
 // stub test and internal/openjd's would both keep passing and every deadline
-// would quietly become a 422, telling submitters their perfectly valid template
-// is wrong because the server happened to be busy.
+// would become a 422, telling submitters their valid template is wrong
+// because the server was busy.
 func TestSubmitJob_RealSubmitterDeadlineIsA503NotA422(t *testing.T) {
 	submit := func(t *testing.T, deadline time.Duration) *httptest.ResponseRecorder {
 		t.Helper()
@@ -601,8 +597,8 @@ func TestSubmitProductJob_RealSubmitterDeadlineIsA503NotA422(t *testing.T) {
 // TestCreateProduct_RealValidationDeadlineIsA503NotA400 covers the third route
 // that walks a client-supplied template, POST /api/v1/products.
 //
-// It does not go through a Submitter at all — [product.ValidateTemplate] runs
-// the walk directly — so its 503 branch is a third call site of the mapping,
+// It does not go through a Submitter at all ([product.ValidateTemplate] runs
+// the walk directly), so its 503 branch is a third call site of the mapping,
 // and its non-deadline answer is 400 rather than 422. The stub-level half is
 // TestProductTemplateValidation_DeadlineIsA503 above.
 func TestCreateProduct_RealValidationDeadlineIsA503NotA400(t *testing.T) {

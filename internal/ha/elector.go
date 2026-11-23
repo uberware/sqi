@@ -34,7 +34,7 @@ const campaignPoll = time.Second
 // Clock is the elector's time source. Its readings are only ever compared
 // with each other, never with another server's or the database's, so it
 // needs to run at the right rate but not to agree with anyone; the real
-// clock's readings carry a monotonic component for exactly that.
+// clock's readings carry a monotonic component for that.
 type Clock interface {
 	Now() time.Time
 	NewTimer(d time.Duration) Timer

@@ -8,10 +8,9 @@ package scheduler
 // Some extensions change what a task's success means and are therefore decided
 // on the worker (SQI_LOG_CHECKS fails a task on a log line or a missing success
 // line; the server never sees the process's output as a stream it could judge).
-// A worker built before the extension existed would run the task and report its
-// exit status alone, so a render that printed its failure and exited 0 would
-// succeed -- the very outcome the author declared the extension to prevent. The
-// worker therefore advertises the worker-enforced extensions it supports in its
+// A worker that does not enforce the extension would run the task and report
+// its exit status alone, so a render that printed its failure and exited 0
+// would succeed. The worker therefore advertises the worker-enforced extensions it supports in its
 // registration ([protocol.RegisterMsg.Extensions]), the server persists them
 // ([store.Worker.Extensions]), and the scheduler withholds a job declaring one
 // from a worker that does not list it.
@@ -20,9 +19,9 @@ package scheduler
 // unschedulable sweep is what the operator reads. A bound with no explanation
 // is a silent stall.
 //
-// A job row that records no declared-extension list (written before migration
-// 00027) is not gated: no such row can declare SQI_LOG_CHECKS, and unlike EXPR
-// there is nothing to fall back to.
+// A job row that records no declared-extension list (see
+// [store.Job.DeclaresExtension]) is not gated, and unlike EXPR there is no
+// byte-scan fallback.
 
 import (
 	"slices"

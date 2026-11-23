@@ -17,17 +17,16 @@ import (
 // openjd-specifications submodule, relative to this package directory.
 const SuiteRoot = "../../third_party/openjd-specifications/conformance-tests/2023-09"
 
-// baselinePath lists tests known to fail today. See DiffBaseline.
+// baselinePath lists tests known to fail. See DiffBaseline.
 const baselinePath = "baseline.txt"
 
 // minExpectedTests guards against a truncated or partially-checked-out
 // submodule. A run that quietly covers 3 files must not look like a pass.
 const minExpectedTests = 700
 
-// TestConformance_SuitePresent fails loudly when the submodule is missing or
-// empty. It never skips: several make targets (test-ldap, test-oidc,
-// test-isolation) exit 0 without their dependency, and a skip here would make
-// an unrun suite look like a passing one.
+// TestConformance_SuitePresent fails when the submodule is missing or empty.
+// It never skips, because a skip would make an unrun suite look like a
+// passing one.
 func TestConformance_SuitePresent(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(SuiteRoot, "base", "job_templates"))
 	if err != nil {
@@ -98,9 +97,8 @@ func TestConformance_Templates(t *testing.T) {
 		results = append(results, conformance.RunCase(tc, state, data))
 	}
 
-	// The baseline is loaded BEFORE the rollup is printed, because the rollup
-	// needs it: without it the summary cannot tell an adjudicated failure from
-	// a regression.
+	// The rollup needs the baseline to tell an adjudicated failure from a
+	// regression.
 	baseline, err := conformance.LoadBaseline(baselinePath)
 	if err != nil {
 		t.Fatalf("load baseline: %v", err)
@@ -129,14 +127,13 @@ func TestConformance_Templates(t *testing.T) {
 // same real parse-and-validate path TestConformance_Templates uses, and returns
 // the results keyed by fixture path.
 //
-// It exists because every TestConformance_*Fixtures test below needs
-// the same thing: a handful of named fixtures scored individually, so one
-// regressing cannot be hidden by another starting to pass for an unrelated
-// reason — the swap the aggregate score cannot see.
+// The TestConformance_*Fixtures tests below use it to score named fixtures
+// individually, so one fixture regressing cannot be hidden in the aggregate
+// score by another starting to pass.
 //
-// The StateLive assertion is there because conformance.Result.Passed is
-// always false for a StateNotApplicable fixture, so a misclassified entry would
-// fail every caller below with a confusing message instead of naming the cause.
+// It fails on a fixture that is not StateLive: conformance.Result.Passed is
+// always false for a StateNotApplicable fixture, so a misclassified entry
+// would otherwise fail its caller with a message that does not name the cause.
 func protectedFixtureResults(t *testing.T, protected map[string]string) map[string]conformance.Result {
 	t.Helper()
 
@@ -159,18 +156,17 @@ func protectedFixtureResults(t *testing.T, protected map[string]string) map[stri
 	return results
 }
 
-// TestConformance_ComprehensionAndCallFixtures asserts by NAME that ten .invalid
+// TestConformance_ComprehensionAndCallFixtures asserts by name that ten .invalid
 // fixtures about comprehensions and call syntax still pass.
 //
 // Each of them would also be rejected if comprehension syntax did not parse at
-// all, so each must be rejected for the reason its entry names. The aggregate
-// score cannot see a swap — ten regressing while ten others start passing
-// leaves it unchanged — so these are checked individually.
+// all, so each entry names the reason it should be rejected. Ten regressing
+// while ten others start passing would leave the aggregate score unchanged, so
+// these are checked individually.
 //
-// The four `let-comprehension-shadows` fixtures are rejected by section
-// 1.3.7's rule at the position that carries it (measured: `col 8: the loop
-// variable "x" shadows an existing binding`). The fifth is not; its entry
-// says so.
+// Four of the `let-comprehension-shadows` fixtures are rejected by section
+// 1.3.7's rule at the position that carries it (`col 8: the loop variable "x"
+// shadows an existing binding`). The fifth is not; its entry says why.
 func TestConformance_ComprehensionAndCallFixtures(t *testing.T) {
 	protected := map[string]string{
 		// Rejected by the comprehension shadowing check (section 1.3.7).
@@ -178,12 +174,11 @@ func TestConformance_ComprehensionAndCallFixtures(t *testing.T) {
 		"EXPR/job_templates/3.6--let-comprehension-shadows-env.invalid.yaml":        "shadowing check",
 		"EXPR/job_templates/3.6--let-comprehension-shadows-step-let.invalid.yaml":   "shadowing check",
 		"EXPR/job_templates/3.6--let-comprehension-shadows-script-let.invalid.yaml": "shadowing check",
-		// NOT the shadowing check: this one puts its `let:` on a `bash:`
+		// Not the shadowing check: this one puts its `let:` on a `bash:`
 		// SimpleAction, an unmodeled FEATURE_BUNDLE_1 element, so it is rejected
 		// on `/extensions/1: unsupported extension "FEATURE_BUNDLE_1"` and
-		// `/steps/0/script: required` before any expression is checked. It stays
-		// listed as a rejection floor, with its real reason stated so it is not
-		// miscredited to the shadowing check.
+		// `/steps/0/script: required` before any expression is checked. It is
+		// listed as a rejection floor.
 		"EXPR/job_templates/3.6--let-comprehension-shadows-simple-action.invalid.yaml": "unregistered FEATURE_BUNDLE_1 extension, not the shadowing check",
 		// Rejected by the parser or the lexer: unsupported comprehension forms.
 		"EXPR/job_templates/expr1.1--reject-dict-comp.invalid.yaml":       "lexer, no brace token",
@@ -209,17 +204,15 @@ func TestConformance_ComprehensionAndCallFixtures(t *testing.T) {
 	}
 }
 
-// TestConformance_ConversionAndMathFixtures asserts by NAME that sixteen .invalid
+// TestConformance_ConversionAndMathFixtures asserts by name that sixteen .invalid
 // fixtures for bool, int, float, range_expr, min and max still pass.
 //
 // If the function a fixture calls were not registered, the expression would
 // fail with "unknown function" and the template would be rejected for the
 // wrong reason. With the functions registered, each fixture must be rejected
-// by the function's own argument validation.
-//
-// The aggregate score cannot see the difference: sixteen regressing while
-// sixteen others start passing leaves it unchanged. Same reason
-// TestConformance_ComprehensionAndCallFixtures exists, at a larger scale.
+// by the function's own argument validation. As with
+// TestConformance_ComprehensionAndCallFixtures, the aggregate score cannot
+// see sixteen regressing while sixteen others start passing.
 func TestConformance_ConversionAndMathFixtures(t *testing.T) {
 	protected := map[string]string{
 		// bool(): rejects path and list outright, and rejects a string that is
@@ -262,17 +255,14 @@ func TestConformance_ConversionAndMathFixtures(t *testing.T) {
 	}
 }
 
-// TestConformance_StringFunctionFixtures asserts by NAME that seven .invalid
+// TestConformance_StringFunctionFixtures asserts by name that seven .invalid
 // fixtures for the string functions still pass.
 //
 // If the string function a fixture calls were not registered, the expression
 // would fail with "unknown function" and the template would be rejected for
 // the wrong reason. With all 31 string functions registered, each fixture
-// must be rejected by the function's own argument validation.
-//
-// The aggregate score cannot see the difference: seven regressing while seven
-// others start passing leaves it unchanged. Same reason
-// TestConformance_ConversionAndMathFixtures exists.
+// must be rejected by the function's own argument validation. The aggregate
+// score cannot see seven regressing while seven others start passing.
 func TestConformance_StringFunctionFixtures(t *testing.T) {
 	protected := map[string]string{
 		// The empty-substring rule: RFC 0006 states it for these five.
@@ -302,88 +292,69 @@ func TestConformance_StringFunctionFixtures(t *testing.T) {
 	}
 }
 
-// TestConformance_RegexFunctionFixtures asserts by NAME that sixteen .invalid
+// TestConformance_RegexFunctionFixtures asserts by name that sixteen .invalid
 // fixtures for the regex functions still pass.
 //
 // If the regex function a fixture calls were not registered, the expression
 // would fail with "unknown function" and the template would be rejected for
 // the wrong reason. With all six regex functions registered, each fixture
-// must be rejected for real.
+// must be rejected by the function itself.
 //
-// WHAT THIS TEST GUARANTEES, and what it does not: it asserts
-// res.Passed, i.e. that the fixture is STILL rejected overall. It cannot
-// assert WHICH mechanism rejected it, because conformance.Result blanks
-// Reason on a pass (runcase.go; pinned by runcase_test.go) — there is no
-// reason string available here to assert against for a passing .invalid
-// fixture. So for any entry where a
-// SECOND, independent mechanism also rejects the same input, deleting the
-// purpose-built check that entry names would NOT turn this test red.
+// The test asserts res.Passed, that the fixture is still rejected. It cannot
+// assert which mechanism rejected it, because conformance.Result blanks
+// Reason on a pass (runcase.go; pinned by runcase_test.go). Where a second,
+// independent mechanism also rejects the same input, deleting the check an
+// entry names does not fail this test.
 //
-// Nine of the sixteen have no such gap: \z (Go's regexp.Compile accepts \z on
-// its own — only our scanner's rejection catches it), all four empty-pattern
-// fixtures (Go's regexp.Compile("") succeeds), and all four re_sub
+// Nine of the sixteen have no second mechanism: \z (Go's regexp.Compile
+// accepts \z, so only the scanner rejects it), the four empty-pattern
+// fixtures (Go's regexp.Compile("") succeeds), and the four re_sub
 // group-reference fixtures (Go's ReplaceAllLiteralString never expands "$1"
-// or "\1", so nothing but rejectGroupReferences catches these). Deleting the check named in any of
-// those nine entries' "why" string DOES turn this test red, for the reason
-// the string states.
+// or "\1", so only rejectGroupReferences rejects them). Deleting the check
+// named in any of those nine entries fails this test.
 //
-// The other seven do not, for two different reasons:
+// The other seven are a rejection floor only:
 //   - re-backreference, re-lookahead, re-lookbehind, re-named-backref,
-//     re-split-invalid-pattern, re-split-maxsplit-invalid-pattern: Go's own
-//     regexp.Compile independently rejects all six constructs (measured:
-//     "invalid escape sequence", "invalid or unsupported Perl syntax",
-//     "invalid named capture", "missing closing ]" respectively). Deleting
-//     our purpose-built rejection for any of these six only degrades the
-//     diagnostic to Go's own wording, which this test does not notice, by
-//     design.
-//   - re-backslash-upper-Z is NOT a Go backstop and its "why" string says so:
-//     the fixture is byte-for-byte identical to re-backslash-lower-z
-//     (confirmed by diff and md5) and its
-//     content is r"llo\z", lowercase, so it is rejected by the SAME \z rule
-//     that protects the lower-z entry, not by any \Z-specific logic. Nothing
-//     in the vendored 2023-09 EXPR suite exercises \Z at all; our rejection
-//     of \Z is pinned only by TestTranslatePattern_Rejects's "upper Z
-//     anchor" case in repattern_internal_test.go.
-//
-// This is the scanner's real acceptance test for the nine fully-pinned
-// entries, and only a rejection floor for the other seven: those seven
-// confirm the template is still refused, without confirming refusal still
-// comes from the mechanism each entry names.
+//     re-split-invalid-pattern, re-split-maxsplit-invalid-pattern: Go's
+//     regexp.Compile also rejects all six constructs ("invalid escape
+//     sequence", "invalid or unsupported Perl syntax", "invalid named
+//     capture", "missing closing ]" respectively). Without sqi's own
+//     rejection the diagnostic falls back to Go's wording, which this test
+//     does not check.
+//   - re-backslash-upper-Z is byte-for-byte identical to re-backslash-lower-z:
+//     its content is r"llo\z", lowercase, so it is rejected by the same \z
+//     rule as the lower-z entry. Nothing in the vendored 2023-09 EXPR suite
+//     exercises \Z; sqi's rejection of \Z is pinned only by the "upper Z
+//     anchor" case of TestTranslatePattern_Rejects in
+//     internal/openjd/expr/repattern_internal_test.go.
 func TestConformance_RegexFunctionFixtures(t *testing.T) {
 	protected := map[string]string{
-		// Go's own regexp.Compile independently rejects all four of these —
-		// see the docstring above. The scanner refuses them FIRST only so the
-		// diagnostic names the construct the spec names, not because nothing
-		// else would catch them; deleting the scanner's own check here would
-		// NOT turn this test red.
+		// Go's regexp.Compile also rejects these four (see the doc comment
+		// above). The scanner rejects them first so the diagnostic names the
+		// construct the specification names.
 		"EXPR/job_templates/expr2.2.5--re-backreference.invalid.yaml": "backreferences are not supported",
 		"EXPR/job_templates/expr2.2.5--re-lookahead.invalid.yaml":     "lookahead is not supported",
 		"EXPR/job_templates/expr2.2.5--re-lookbehind.invalid.yaml":    "lookbehind is not supported",
 		"EXPR/job_templates/expr2.2.5--re-named-backref.invalid.yaml": "named backreferences are not supported",
-		// \z: Go accepts this anchor natively, so only OUR rejection catches
-		// it — this entry DOES pin the scanner.
+		// \z: Go accepts this anchor, so only the scanner rejects it.
 		"EXPR/job_templates/expr2.2.5--re-backslash-lower-z.invalid.yaml": `\z is not in the Python/Rust intersection`,
-		// NAMED upper-Z, but byte-for-byte identical to the fixture above:
-		// its content is r"llo\z", lowercase, so it tests \z, not \Z, and is
-		// rejected by the same \z rule. It does NOT pin \Z-specific
-		// rejection — see the docstring above.
-		"EXPR/job_templates/expr2.2.5--re-backslash-upper-Z.invalid.yaml": `fixture is a byte-for-byte duplicate of re-backslash-lower-z.invalid.yaml and tests \z, not \Z; rejected by the same \z rule, not by any \Z-specific logic`,
+		// Named upper-Z, but byte-for-byte identical to the fixture above, so
+		// it tests \z and is rejected by the same rule.
+		"EXPR/job_templates/expr2.2.5--re-backslash-upper-Z.invalid.yaml": `fixture is a byte-for-byte duplicate of re-backslash-lower-z.invalid.yaml and tests \z; rejected by the same \z rule`,
 		// The empty-pattern rule, stated once in RFC 0006 and tested four
-		// ways. Go's regexp.Compile("") succeeds, so all four DO pin our own
+		// ways. Go's regexp.Compile("") succeeds, so all four pin sqi's own
 		// check.
 		"EXPR/job_templates/expr2.2.5--re-search-empty-pattern.invalid.yaml":         "re_search rejects an empty pattern",
 		"EXPR/job_templates/expr2.2.5--re-split-empty-pattern.invalid.yaml":          "re_split rejects an empty pattern",
 		"EXPR/job_templates/expr2.2.5--re-split-maxsplit-empty-pattern.invalid.yaml": "re_split with maxsplit rejects an empty pattern",
 		"EXPR/job_templates/expr2.2.5--re-sub-empty-pattern.invalid.yaml":            "re_sub rejects an empty pattern",
 		// Patterns malformed in any dialect: Go's regexp.Compile rejects "["
-		// natively ("missing closing ]"), so these two do NOT pin our own
-		// scanner either.
+		// ("missing closing ]"), so these two do not pin the scanner.
 		"EXPR/job_templates/expr2.2.5--re-split-invalid-pattern.invalid.yaml":          "re_split rejects an unparseable pattern",
 		"EXPR/job_templates/expr2.2.5--re-split-maxsplit-invalid-pattern.invalid.yaml": "re_split with maxsplit rejects an unparseable pattern",
 		// re_sub's replacement is literal text; all four group-reference
 		// spellings are errors. Go's ReplaceAllLiteralString never expands
-		// "$1" or "\1", so nothing but our own rejectGroupReferences check
-		// catches these; all four DO pin it.
+		// "$1" or "\1", so only rejectGroupReferences rejects these.
 		"EXPR/job_templates/expr2.2.5--re-sub-group-ref.invalid.yaml":              `re_sub rejects \1`,
 		"EXPR/job_templates/expr2.2.5--re-sub-named-group-ref.invalid.yaml":        `re_sub rejects \g<1>`,
 		"EXPR/job_templates/expr2.2.5--re-sub-dollar-group-ref.invalid.yaml":       "re_sub rejects $1",
@@ -406,70 +377,56 @@ func TestConformance_RegexFunctionFixtures(t *testing.T) {
 	}
 }
 
-// TestConformance_PathFunctionFixtures asserts by NAME that four .invalid
+// TestConformance_PathFunctionFixtures asserts by name that four .invalid
 // fixtures that call path() still pass.
 //
 // If path() were not registered, the expression would fail with "unknown
 // function" and the template would be rejected for the wrong reason. With the
 // path constructor, the six path properties, the with-functions, relative_to
 // and with_number registered, each fixture must be rejected by argument
-// validation.
+// validation. The aggregate score cannot see four regressing while four
+// others start passing.
 //
-// The aggregate score cannot see the difference: four regressing while four
-// others start passing leaves it unchanged. Same reason
-// TestConformance_RegexFunctionFixtures exists.
-//
-// WHAT THIS TEST GUARANTEES, and what it does not: it asserts res.Passed,
-// i.e. that the fixture is STILL rejected overall; it cannot assert WHICH
-// mechanism rejected it, because conformance.Result blanks Reason on a pass
-// (runcase.go, pinned by runcase_test.go). So an entry pins a specific check
-// only where no second, independent mechanism rejects the same input. Unlike
-// TestConformance_RegexFunctionFixtures, ALL FOUR entries here were verified to
-// have no such second mechanism: each named check was weakened on its own,
-// this test was run, and it failed naming that one fixture and no other. What
-// differs between them is WHOSE code each one pins:
+// The test asserts res.Passed, that the fixture is still rejected; it cannot
+// assert which mechanism rejected it, because conformance.Result blanks
+// Reason on a pass (runcase.go, pinned by runcase_test.go). No second,
+// independent mechanism rejects any of these four inputs, so weakening the
+// check an entry names fails that entry alone. The entries pin different
+// code:
 //
 //   - relative-to-not-relative and with-number-padding-too-wide pin the path
-//     functions' own code. path("/a/b").relative_to(path("/a")) and
-//     path("/out/file_%09d.exr").with_number(1) both evaluate cleanly, so the
-//     only things rejecting these two fixtures' inputs are errNotRelative and
-//     errPaddingTooWide. Verified by returning args[0] instead of
-//     errNotRelative, and by clamping the width instead of returning
-//     errPaddingTooWide.
+//     functions. path("/a/b").relative_to(path("/a")) and
+//     path("/out/file_%09d.exr").with_number(1) both evaluate cleanly, so
+//     only errNotRelative and errPaddingTooWide reject these two fixtures'
+//     inputs.
 //
-//   - method-no-receiver-coercion does NOT pin the path functions. It pins
-//     section 1.2.4's receiver restriction (matchShapesExactFirst in
-//     shape.go, reached from callFunction's methodStyle flag). Measured: the
-//     same call written as a plain function,
-//     startswith(path("/foo/bar"), "/foo"), evaluates to true — path -> string
-//     coercion exists, and only the exact-first rule refuses it on a receiver.
-//     Verified by forcing methodStyle false at the call site. Registering
-//     path() is what makes this entry reachable, not what makes it pass.
+//   - method-no-receiver-coercion pins section 1.2.4's receiver restriction
+//     (matchShapesExactFirst in shape.go, reached from callFunction's
+//     methodStyle flag), not the path functions. The same call written as a
+//     plain function, startswith(path("/foo/bar"), "/foo"), evaluates to
+//     true: path -> string coercion exists, and only the exact-first rule
+//     refuses it on a receiver. Registering path() makes this entry
+//     reachable.
 //
-//   - bool-from-path does NOT pin the path functions either. It pins bool()'s
-//     path row ("Cannot convert path to bool"), and it is also asserted by
-//     TestConformance_ConversionAndMathFixtures with that row as its stated reason.
-//     It is covered twice on purpose. Verified by making that row return
-//     Bool(true).
+//   - bool-from-path pins bool()'s path row ("Cannot convert path to bool"),
+//     not the path functions. TestConformance_ConversionAndMathFixtures
+//     asserts it too.
 //
-// Note the floor all four share: deleting the path() registration outright
-// would restore an "unknown function" rejection and leave every one of them
-// passing. This is a rejection floor, not a pin on path() continuing to
-// exist.
+// If the path() registration were deleted, all four would still pass on an
+// "unknown function" rejection: the test does not pin path() existing.
 func TestConformance_PathFunctionFixtures(t *testing.T) {
 	protected := map[string]string{
-		// errNotRelative: the same call with a genuinely relative other path
-		// evaluates fine, so nothing else rejects this input.
+		// errNotRelative: the same call with a relative other path evaluates
+		// cleanly, so nothing else rejects this input.
 		"EXPR/job_templates/expr2.2.6--relative-to-not-relative.invalid.yaml": "relative_to rejects a path that is not relative to the other path",
 		// errPaddingTooWide: the same call with %09d instead of %099d
-		// evaluates fine, so nothing else rejects this one either.
+		// evaluates cleanly, so nothing else rejects this one either.
 		"EXPR/job_templates/expr2.3.2--with-number-padding-too-wide.invalid.yaml": "with_number rejects a padding width beyond the maximum",
 		// Rejected by section 1.2.4's receiver restriction, not by the path
-		// functions. See the docstring above.
+		// functions. See the doc comment above.
 		"EXPR/job_templates/expr1.2.4--method-no-receiver-coercion.invalid.yaml": "section 1.2.4 forbids coercing a path receiver to string for a string method",
 		// Rejected by bool()'s path row, not by the path functions, and also
-		// listed in TestConformance_ConversionAndMathFixtures. See the docstring
-		// above.
+		// listed in TestConformance_ConversionAndMathFixtures.
 		"EXPR/job_templates/expr2.2.1--bool-from-path.invalid.yaml": "bool() rejects a path",
 	}
 
@@ -489,71 +446,57 @@ func TestConformance_PathFunctionFixtures(t *testing.T) {
 	}
 }
 
-// TestConformance_ScopeModelFixtures asserts by NAME that 53 EXPR .invalid
+// TestConformance_ScopeModelFixtures asserts by name that 53 EXPR .invalid
 // fixtures rejected by the expression scope model or by job-parameter shape
 // validation still pass.
 //
 // These fixtures go through the real parse-and-validate path
-// (conformance.RunCase's machinery: openjd.Parse +
-// openjd.ValidateWithOptions), which reaches the scope model — a
-// declared-scope symbol table, host-context gating, format-string routing
-// through the real expression checker, and phase-2 re-checking with concrete
-// parameters.
+// (conformance.RunCase: openjd.Parse + openjd.ValidateWithOptions), which
+// reaches the scope model: a declared-scope symbol table, host-context
+// gating, format-string routing through the expression checker, and
+// re-checking at submission with concrete parameters. The aggregate score
+// cannot see one of these regressing while another starts passing.
 //
-// The aggregate score cannot see one of these 53 regressing while another
-// starts passing for an unrelated reason — same motivation as every other
-// named-fixture test in this file, at a larger scale.
-//
-// WHAT THIS TEST GUARANTEES, and what it does not: it asserts res.Passed,
-// i.e. that the fixture is STILL rejected overall (all 53 are ".invalid"). It
-// cannot assert WHICH mechanism rejects it, because conformance.Result blanks
-// Reason on a pass — there is no reason string available here to assert
-// against a passing .invalid fixture. This test does NOT attempt
-// TestConformance_PathFunctionFixtures' per-entry exclusivity proof (weakening
-// each named check in isolation and confirming only that one fixture fails);
-// at 53 entries that is not a minor per-entry verification. The "why" string
-// on each entry below names the rule the fixture's own filename and content
-// describe, not a proven-exclusive mechanism.
+// The test asserts res.Passed, that the fixture is still rejected; it cannot
+// assert which mechanism rejects it, because conformance.Result blanks
+// Reason on a pass. Unlike TestConformance_PathFunctionFixtures, no entry is
+// claimed to be the only mechanism that rejects its input: each entry names
+// the rule the fixture's filename and content describe.
 //
 // Two categories:
 //
-//   - 12 entries are the 7.3/7.3.1-numbered ones. ELEVEN of them are the
-//     scope model's own rules: a host-context-only function
-//     (apply_path_mapping) used outside @fmtstring[host] in the JOB NAME
-//     field, a submission-time reference (Job.Name, Step.Name, Session.*,
-//     Task.Param.*) used in a scope that does not carry it, a circular
-//     Job.Name self-reference in the name field, and a complex expression or
-//     Job.Name/Step.Name reference that requires the EXPR extension to be
-//     declared and appears without it. The TWELFTH,
-//     7.3--apply-path-mapping-in-timeout.invalid.yaml, is NOT: it is rejected
-//     by decodeAction's strict integer parse of "timeout" at parse time, and
-//     the scope model never sees it. Its entry below says so. Crediting it to
-//     the host-context gate would be wrong twice over — the gate does not fire,
-//     and the timeout position it would fire at is unreachable from any real
-//     template (exprcheck.go, above checkActionExpressions).
+//   - 12 entries are the 7.3/7.3.1-numbered ones. Eleven are the scope
+//     model's own rules: a host-context-only function (apply_path_mapping)
+//     used outside @fmtstring[host] in the job name field, a submission-time
+//     reference (Job.Name, Step.Name, Session.*, Task.Param.*) used in a
+//     scope that does not carry it, a circular Job.Name self-reference in the
+//     name field, and a complex expression or Job.Name/Step.Name reference
+//     that requires the EXPR extension and appears without it. The twelfth,
+//     7.3--apply-path-mapping-in-timeout.invalid.yaml, is rejected by
+//     decodeAction's strict integer parse of "timeout" at parse time, and the
+//     scope model never sees it; the timeout position the host-context gate
+//     would check is unreachable from any template (see the comment above
+//     checkActionExpressions in internal/openjd/exprcheck.go).
 //   - 40 entries (the 2.9-2.16-numbered ones) plus expr-extension-missing are
 //     section 2's job-parameter shape validation (BOOL/RANGE_EXPR default
 //     shape, LIST[*] length/item bounds/allowed-values/item-type) and the
 //     base "no EXPR extension declared" case, enforced by internal/openjd's
-//     schema validation. They are listed because scoring EXPR fixtures by
-//     anything other than the real validate path would regress every one of
-//     them without changing the aggregate score.
+//     schema validation. Scoring EXPR fixtures by anything other than the
+//     real validate path would regress every one of them without changing
+//     the aggregate score.
 func TestConformance_ScopeModelFixtures(t *testing.T) {
 	protected := map[string]string{
 		// --- Scope model: host-context gating and submission-time scope
 		// restrictions on Job.Name, Step.Name, Session.*, Task.Param.*, and the
 		// "requires the EXPR extension" gate. ---
 		"EXPR/job_templates/7.3--apply-path-mapping-in-job-name.invalid.yaml": "apply_path_mapping is host-context-only; the job name field is not a host context",
-		// NOT the scope model: this fixture is rejected by decodeAction
-		// (parse.go), which decodes "timeout" with a strict integer parse, so
-		// openjd.Parse fails with "timeout must be an integer" before the walk
-		// runs at all. checkActionExpressions DOES carry a timeout position at
-		// TargetInt, but it is wired-and-unreachable -- see the long PLAIN
-		// STATEMENT comment above checkActionExpressions in exprcheck.go. It is
-		// protected here so its passing state cannot flip unnoticed; the reason
-		// it passes is incidental to the scope model and is stated so it is not
-		// miscredited.
-		"EXPR/job_templates/7.3--apply-path-mapping-in-timeout.invalid.yaml":               "rejected at parse time: timeout must be an integer (decodeAction), NOT by the host-context gate",
+		// Not the scope model: decodeAction (parse.go) decodes "timeout" with a
+		// strict integer parse, so openjd.Parse fails with "timeout must be an
+		// integer" before the expression walk runs. checkActionExpressions
+		// carries a timeout position at TargetInt, but no template can reach
+		// it. The entry keeps this fixture's passing state from flipping
+		// unnoticed.
+		"EXPR/job_templates/7.3--apply-path-mapping-in-timeout.invalid.yaml":               "rejected at parse time: timeout must be an integer (decodeAction), not by the host-context gate",
 		"EXPR/job_templates/7.3--complex-expr-in-env-action-requires-expr.invalid.yaml":    "a complex expression in an environment script action requires the EXPR extension to be declared",
 		"EXPR/job_templates/7.3--complex-expr-in-env-variables-requires-expr.invalid.yaml": "a complex expression in environment variables requires the EXPR extension to be declared",
 		"EXPR/job_templates/7.3--session-in-host-requirements.invalid.yaml":                "Session.WorkingDirectory is not available in host requirements (submission-time scope)",
@@ -629,24 +572,18 @@ func TestConformance_ScopeModelFixtures(t *testing.T) {
 	}
 }
 
-// letFixtureReason re-derives, directly and WITHOUT going through
-// conformance.Result, the exact validation-error text conformance.RunCase
-// would compute for path, given the fixture's own raw bytes.
+// letFixtureReason returns the validation-error text conformance.RunCase
+// computes for the fixture at path, without going through conformance.Result.
 //
-// It exists because conformance.Result blanks Reason to "" the instant Passed
-// is true (see RunCase's own doc comment). For an .invalid fixture that is
-// correctly rejected, Passed IS true, so a result pulled from the results map
-// below can never expose WHICH rule rejected it. This function re-runs the
-// identical Parse + ValidateWithOptions pipeline on the side, purely to read
-// the error text back out before anything blanks it. It runs exactly what
-// production runs.
+// conformance.Result blanks Reason when Passed is true (see RunCase's doc
+// comment), so for a correctly rejected .invalid fixture the result cannot
+// show which rule rejected it. This function runs the same Parse +
+// ValidateWithOptions pipeline to read the error text.
 //
-// It requires the error set to contain EXACTLY one entry and returns that
-// entry's Error() string; a fixture whose real defect produces zero, or more
-// than one, simultaneous errors fails here instead of degrading to a
-// substring match against an ambiguous message. All eleven
-// TestConformance_LetBindingFixtures entries satisfy this, so every entry
-// gets an exact-match reason, not merely a "some error fired" check.
+// It requires exactly one validation error and returns its Error() string; a
+// fixture producing zero or several errors fails here rather than matching an
+// ambiguous message. All eleven TestConformance_LetBindingFixtures entries
+// produce exactly one.
 func letFixtureReason(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(SuiteRoot, path))
@@ -664,28 +601,19 @@ func letFixtureReason(t *testing.T, path string) string {
 	return errs[0].Error()
 }
 
-// TestConformance_LetBindingFixtures asserts by NAME that eleven EXPR
+// TestConformance_LetBindingFixtures asserts by name that eleven EXPR
 // .invalid fixtures about `let` bindings and loop-variable shadowing are still
 // rejected, and by the rule each one tests.
 //
 // TestConformance_ScopeModelFixtures asserts only res.Passed, which cannot
-// distinguish "rejected by the rule this fixture exists to test" from
-// "rejected by something else that also happens to be true" — the gap that
-// lets a fixture rejected by the YAML decoder be credited to the scope model.
-// This test goes further. For every entry — all eleven are .invalid — it also
-// calls letFixtureReason, which re-runs the Parse + ValidateWithOptions
-// pipeline conformance.RunCase uses, reads the raw error text back out, and
-// asserts it against the map's value with EXACT equality, not a substring
-// match. That second call is the only way this test can name the mechanism,
-// because conformance.Result blanks Reason to "" whenever Passed is true,
-// which is always the case for a correctly-rejected .invalid fixture.
-// res.Reason from the results map below is therefore never asserted for
-// content; only res.Passed is.
+// tell the rule a fixture tests from another rule that also rejects it. For
+// every entry this test also calls letFixtureReason and compares the error
+// text with the map's value exactly. res.Reason is blank for a passing
+// .invalid fixture, so only res.Passed is asserted from the results map.
 //
-// Each expected string was confirmed by running the fixture and reading the
-// resulting error, not inferred from the filename. A wording change to the
-// rule that rejects a fixture, or a change in WHICH rule rejects it, fails
-// this test by design.
+// Each expected string is the error the fixture produces. A wording change to
+// the rule that rejects a fixture, or a change in which rule rejects it,
+// fails this test.
 func TestConformance_LetBindingFixtures(t *testing.T) {
 	protected := map[string]string{
 		// --- `let` requires the EXPR extension to be declared. ---

@@ -31,8 +31,8 @@ func newSearchBind(cfg Config, dial dialFunc) *searchBindVerifier {
 // Verify implements Verifier.
 func (v *searchBindVerifier) Verify(ctx context.Context, username, pw string) (Identity, error) {
 	// An empty password must never reach the directory: LDAP treats a bind
-	// with an empty password as an *unauthenticated* bind and returns
-	// success, which would authenticate anyone who submits a blank password.
+	// with an empty password as an unauthenticated bind and returns success,
+	// which would authenticate anyone who submits a blank password.
 	if pw == "" {
 		return Identity{}, ErrInvalidCredentials
 	}
@@ -44,12 +44,11 @@ func (v *searchBindVerifier) Verify(ctx context.Context, username, pw string) (I
 	// Best-effort close of a directory connection.
 	defer func() { _ = c.Close() }()
 
-	// An empty BindDN means anonymous search, a real OpenLDAP deployment
-	// pattern where the directory is world-readable and no service account
-	// exists. Binding "" with "" is not that — go-ldap rejects it client-side
-	// before any network I/O, so every login would fail as ErrUnavailable and
-	// misreport a working config as a broken service account. Skipping the
-	// bind leaves the connection anonymous, which is what was asked for.
+	// An empty BindDN means anonymous search: an OpenLDAP deployment where
+	// the directory is world-readable and no service account exists. go-ldap
+	// rejects a bind of "" with "" client-side before any network I/O, so
+	// binding would fail every login as ErrUnavailable. Skipping the bind
+	// leaves the connection anonymous.
 	if v.cfg.BindDN != "" {
 		if err := c.Bind(v.cfg.BindDN, v.cfg.BindPassword); err != nil {
 			// The service account is ours, not the user's: a failure here is an
@@ -63,15 +62,15 @@ func (v *searchBindVerifier) Verify(ctx context.Context, username, pw string) (I
 		return Identity{}, err
 	}
 
-	// Groups are resolved BEFORE the user re-bind, while the connection still
-	// carries the service account's rights. The nested expansion is a search
-	// over group objects, which ordinary users frequently may not read; run
-	// after the re-bind it would fail on every login and degrade to flat
-	// memberOf permanently rather than exceptionally.
+	// Groups are resolved before the user re-bind, while the connection
+	// still carries the service account's rights. The nested expansion
+	// searches group objects, which ordinary users often may not read; run
+	// after the re-bind it would fail on every login and always fall back to
+	// flat memberOf.
 	//
-	// This does not weaken authentication: nothing here is returned to the
-	// caller unless the bind below succeeds, and that bind — the user's DN
-	// with the user's password — remains the sole gate.
+	// Nothing here is returned to the caller unless the bind below succeeds,
+	// and that bind (the user's DN with the user's password) is the sole
+	// gate.
 	groups := v.resolveGroups(ctx, c, e)
 
 	if err := c.Bind(e.DN, pw); err != nil {
@@ -95,12 +94,12 @@ func (v *searchBindVerifier) Verify(ctx context.Context, username, pw string) (I
 // membership when configured.
 //
 // A failed nested lookup falls back to the flat memberOf values already in
-// hand rather than failing the login: degraded group resolution beats locking
+// hand rather than failing the login, so a broken expansion does not lock
 // everyone out of a working directory. It is logged at WARN because the
-// degradation is otherwise invisible — a persistently failing expansion
-// quietly demotes every admin who holds admin only through a nested group.
-// ctx is carried solely so the warning below can be correlated with the login
-// it belongs to; the search itself is bounded by the connection's timeout.
+// fallback is otherwise invisible: a persistently failing expansion demotes
+// every admin who holds admin only through a nested group. ctx is used only
+// to correlate the warning with its login; the search itself is bounded by
+// the connection's timeout.
 func (v *searchBindVerifier) resolveGroups(ctx context.Context, c conn, e *ldapv3.Entry) []string {
 	groups := e.GetEqualFoldAttributeValues("memberOf")
 	if !v.cfg.NestedGroups {
@@ -111,14 +110,13 @@ func (v *searchBindVerifier) resolveGroups(ctx context.Context, c conn, e *ldapv
 		v.warnNestedFallback(ctx, e.DN, "error", err)
 		return groups
 	}
-	// A successful search that matched nothing is NOT evidence that the user
-	// has no groups — it is the signature of a misscoped search base. The
-	// expansion reuses BaseDN, which is the *user* search base; an operator
-	// who sets base_dn to "OU=Users,..." while groups live under "OU=Groups"
-	// gets a valid, successful, empty result on every login. Replacing a
-	// non-empty flat memberOf with that would map every user, admins
-	// included, onto default_role with no error anywhere. Keep what we hold
-	// and warn, exactly as the error path does.
+	// A successful search that matched nothing, for a user whose flat
+	// memberOf is not empty, points to a misscoped search base. The
+	// expansion reuses BaseDN, which is the user search base; with base_dn
+	// set to "OU=Users,..." while groups live under "OU=Groups", every login
+	// gets a successful, empty result. Replacing the flat memberOf with that
+	// would map every user, admins included, onto default_role with no
+	// error. Keep the flat values and warn, as the error path does.
 	if len(nested) == 0 && len(groups) > 0 {
 		v.warnNestedFallback(ctx, e.DN, "reason",
 			"nested search succeeded but matched no groups; check that auth.ldap.base_dn covers the group tree")
@@ -128,9 +126,9 @@ func (v *searchBindVerifier) resolveGroups(ctx context.Context, c conn, e *ldapv
 }
 
 // warnNestedFallback logs the one WARN that makes a degraded expansion
-// visible. Both fallback paths share it deliberately: an operator watching
-// for "nested group expansion failed" must see the misscoped-base_dn case
-// too, which is otherwise indistinguishable from a user with no groups.
+// visible. Both fallback paths share it, so an operator watching for "nested
+// group expansion failed" also sees the misscoped-base_dn case, which is
+// otherwise indistinguishable from a user with no groups.
 func (v *searchBindVerifier) warnNestedFallback(ctx context.Context, userDN, key string, val any) {
 	if v.cfg.Logger == nil {
 		return
@@ -149,11 +147,10 @@ func (v *searchBindVerifier) findUser(c conn, username string) (*ldapv3.Entry, e
 		searchTimeLimit(v.cfg.Timeout),
 		false,
 		filter,
-		// UniqueIDAttr is named explicitly and must stay that way: entryUUID
-		// is an operational attribute (RFC 4530), which directories omit from
-		// a response unless asked for by name. Dropping it here does not
-		// error — it makes every login present an empty identifier, which
-		// looks exactly like a first-ever login.
+		// UniqueIDAttr must be named explicitly: entryUUID is an operational
+		// attribute (RFC 4530), which directories omit from a response unless
+		// asked for by name. Dropping it here does not error; every login
+		// then carries an empty identifier and is refused.
 		[]string{v.cfg.UsernameAttr, v.cfg.DisplayNameAttr, v.cfg.UniqueIDAttr, "memberOf"},
 		nil,
 	)

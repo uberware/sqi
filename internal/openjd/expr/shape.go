@@ -23,16 +23,16 @@ type Shape struct {
 	// __pow__(int, int) -> float | int is one.
 	Ret Type
 	// RetOf, when set, computes the declared result from the match's variable
-	// bindings INSTEAD of substituting them into Ret.
+	// bindings instead of substituting them into Ret.
 	//
-	// It exists for a result type that is a UNIFICATION of the operands rather
+	// It exists for a result type that is a unification of the operands rather
 	// than a copy of one of them. List concatenation is the case: its two
 	// element variables are independent (they must be, or "[1] + [2.0]" would
 	// not match at all), so no substitution into Ret can say what section
-	// 2.1.3's "common type" of the two is — "[] + list[int]" reads the LEFT
+	// 2.1.3's "common type" of the two is — "[] + list[int]" reads the left
 	// variable and answers list[nulltype], and "list[int] + []" answers
 	// list[int], for the same concatenation. concatLists computes the real
-	// answer from the VALUES, which is no help on the path where there are no
+	// answer from the values, which is no help on the path where there are no
 	// values; this is that same computation over types.
 	RetOf func(b bindings) Type
 	// Fn computes the result. It is called only with arguments that matched
@@ -43,22 +43,22 @@ type Shape struct {
 	//
 	// The rule for which rows use it is not a tally, it is a question: does
 	// this row need something the evaluation holds that its arguments cannot
-	// give it? Two answers so far, and they are unrelated to each other.
+	// give it? There are two answers, unrelated to each other.
 	//
-	// The first is the path FLAVOR. All three of path()'s rows must choose one
+	// The first is the path flavor. All three of path()'s rows must choose one
 	// at construction time — path(string), path(list[string]) and
 	// path(list[nulltype]) — because constructing a path is the only operation
 	// that ever has to decide; every other path operation reads the flavor off
 	// its receiver.
 	//
-	// The second is the COMPILED-PATTERN CACHE (recache.go), which every
+	// The second is the compiled-pattern cache (recache.go), which every
 	// re_ row that compiles a pattern reaches through ec.re. That one is a
 	// speed property and nothing else: the cache changes no result, no error
 	// and no section 1.3.10 charge, since callShape applies every charge around
 	// the call before Fn or FnCtx runs.
 	//
-	// Adding a parameter to Fn instead would have changed every OTHER row,
-	// which needs neither; RetOf is the existing precedent for an optional
+	// Adding a parameter to Fn instead would change every other row, which
+	// needs neither; RetOf is the existing precedent for an optional
 	// alternative field.
 	//
 	// A Shape sets Fn or FnCtx, never both.
@@ -75,8 +75,8 @@ type Shape struct {
 
 // Cost declares a Shape's section 1.3.10 rule-2 and rule-3 charges.
 //
-// The single per-call operation of rule 1 is charged by callShape for EVERY
-// shape and is deliberately not declared here: making it declarative would let
+// The single per-call operation of rule 1 is charged by callShape for every
+// shape and is not declared here: making it declarative would let
 // a forgotten entry silently un-count a call, which is the one charge that can
 // never legitimately be zero.
 //
@@ -92,26 +92,26 @@ type Cost struct {
 	// function processes a string or path value, the length of the value
 	// divided by 256, rounded up, is added").
 	ArgBytes []int
-	// ResultElements charges the element count of the value PRODUCED. Rule 2
+	// ResultElements charges the element count of the value produced. Rule 2
 	// covers generators as well as consumers: range(1000) iterates a list it
 	// created rather than one it was given.
 	ResultElements bool
-	// ResultBytes charges the byte length of the value PRODUCED, for a function
+	// ResultBytes charges the byte length of the value produced, for a function
 	// whose work scales with what it built rather than with what it read.
 	ResultBytes bool
 }
 
 // specNamedIteratingFunctions returns section 1.3.10 rule 2's own list of
-// named REGISTRY functions -- deliberately not verbatim against the wiki's
-// token list, see the note on "contains()" below -- in the wiki's order
-// (2026-02 Expression-Language.md, section 1.3.10). It exists so the
-// per-group coverage tests assert against the SPEC TEXT rather than against a
-// hand-copied list that could silently drift from it.
+// named registry functions -- not verbatim against the wiki's token list, see
+// the note on "contains()" below -- in the wiki's order (2026-02
+// Expression-Language.md, section 1.3.10). It exists so the per-group coverage
+// tests assert against the spec text rather than against a hand-copied list
+// that could silently drift from it.
 //
 // Rule 2 also names three things that are not registry entries at all: list
 // concatenation ("+"), list repetition ("*"), and list/range equality
 // comparisons. Those are binaryShapes rows, not functionShapes ones, so this
-// function -- which names FUNCTIONS -- omits them; the operator charges are
+// function -- which names functions -- omits them; the operator charges are
 // declared on the rows that implement them.
 //
 // "contains()" is omitted here too, for the same reason as the three
@@ -136,9 +136,9 @@ func specNamedIteratingFunctions() []string {
 // functions, verbatim and in the wiki's order. See specNamedIteratingFunctions
 // on why this mirrors the spec text rather than a hand-copied list.
 //
-// "join" and "repr_sh" appear in BOTH this list and
+// "join" and "repr_sh" appear in both this list and
 // specNamedIteratingFunctions's: the spec names them under both rules because
-// each does work proportional to element count (rule 2) AND to the string
+// each does work proportional to element count (rule 2) and to the string
 // content it reads or writes (rule 3) -- a duplication in the return values
 // here, not a mistake.
 //
@@ -146,14 +146,14 @@ func specNamedIteratingFunctions() []string {
 // which registry entries those are, and names string concatenation ("+") and
 // string repetition ("*"), which -- like their list counterparts above -- are
 // binaryShapes rows rather than functionShapes entries. None of those four are
-// returned here for the same reason: this function names things the SPEC TEXT
+// returned here for the same reason: this function names things the spec text
 // itself names, and leaves resolving "regex functions" to the concrete
 // re_-prefixed registry entries, and the two operators to their own shape
 // rows, to the rows that declare Cost on them.
 //
 // Rule 3's own text names no dunder-style operator entry under a
 // function-looking name the way rule 2's "contains()" does -- "in"/"not in"
-// against a string ARE charged (OpIn/OpNotIn's TString,TString rows in
+// against a string are charged (OpIn/OpNotIn's TString,TString rows in
 // ops.go), but rule 3 never names them by any token, dunder or otherwise.
 func specNamedStringFunctions() []string {
 	return []string{
@@ -164,10 +164,10 @@ func specNamedStringFunctions() []string {
 
 // promotion selects the set of conversions a shape's parameters accept.
 //
-// It exists because admissibility is NOT uniform across operators. Section
+// It exists because admissibility is not uniform across operators. Section
 // 1.2.3's range_expr -> string coercion is real, and section 2.1.2 has an
 // explicit string + range_expr row that depends on it; but section 2.1.4
-// restricts ORDERING to int, float, string, path and bool, crossing type only
+// restricts ordering to int, float, string, path and bool, crossing type only
 // between int/float and string/path. With one global predicate, "r < 'a'" would
 // be accepted.
 type promotion int
@@ -179,9 +179,9 @@ const (
 	// promoteOrdering accepts only section 2.1.4's two named compatible pairs,
 	// int/float and string/path, plus the elementwise form of each for lists.
 	promoteOrdering
-	// promoteNoRangeText accepts every lossless conversion EXCEPT
+	// promoteNoRangeText accepts every lossless conversion except
 	// range_expr -> string, which section 1.2.3 defines but which the operator
-	// tables grant to ONE operator only. See the OpMul table's comment on why
+	// tables grant to one operator only. See the OpMul table's comment on why
 	// that is a reading of the spec rather than a restriction invented here.
 	promoteNoRangeText
 )
@@ -199,14 +199,14 @@ func promotableUnder(pr promotion, from, to Type) bool {
 	}
 	f, t := unwrapUnresolved(from), unwrapUnresolved(to)
 	// Section 2.1.4's compatible pairs, and only these. Both are pairs of
-	// SCALARS, which is all this function ever has to answer for: a list
+	// scalars, which is all this function ever has to answer for: a list
 	// argument against a list parameter never reaches here at all, because
 	// argCost intercepts that pair first and descends elementwise through
 	// argCostList. The elementwise form of these pairs — section 1.2.5's
 	// "[1] < [1.0]" — is therefore applied there, by typeVarCost's ordering
 	// unification, not here.
 	//
-	// A list argument reaching a SCALAR parameter is the only list-shaped call
+	// A list argument reaching a scalar parameter is the only list-shaped call
 	// this function sees, and promotable() above has already answered it false.
 	switch {
 	case f.Code == CodeInt && t.Code == CodeFloat:
@@ -224,7 +224,7 @@ const numTypeVars = int(CodeVarT3-CodeVarT) + 1
 
 // bindings records what each type variable in a signature bound to.
 //
-// It is a fixed-slot VALUE rather than a map, as a hot-path decision. Every
+// It is a fixed-slot value rather than a map, as a hot-path decision. Every
 // binary operator, unary operator, function call and property access funnels
 // through matchShapesExactFirst, which scores each candidate row against its
 // own fresh bindings — binaryShapes[OpAdd] alone has six rows, of which at most
@@ -236,13 +236,13 @@ const numTypeVars = int(CodeVarT3-CodeVarT) + 1
 // a struct assignment and the whole match runs in the caller's frame.
 //
 // The mutating half of the matcher therefore takes *bindings; everything that
-// only READS one (substitute, unresolvedResult, Shape.RetOf) still takes it by
+// only reads one (substitute, unresolvedResult, Shape.RetOf) still takes it by
 // value, which is also what makes the returned match impossible to alias — the
 // caller gets a copy, not a buffer the matcher may reuse.
 //
-// A FIFTH type-variable code means a fifth slot here. varIndex is the one place
+// A fifth type-variable code means a fifth slot here. varIndex is the one place
 // a Code becomes a slot and isTypeVar is defined in terms of it, so a code
-// without one is simply not a type variable: it stops binding, visibly, rather
+// without one is not a type variable: it stops binding, visibly, rather
 // than silently sharing another variable's slot.
 type bindings struct {
 	// set is a bit per slot, marking which variables are bound. A zero Type is
@@ -306,13 +306,13 @@ func matchShapes(shapes []Shape, args []Type) (Shape, bindings, bool) {
 // method-receiver restriction: when exactFirst is set, argument 0 must already
 // have its parameter's type rather than reaching it by coercion.
 //
-// The restriction belongs to the CALL SITE, not the signature — the same
+// The restriction belongs to the call site, not the signature — the same
 // function accepts a coerced first argument in function position and refuses one
 // in method position — which is why Shape.Promote cannot express it.
 //
-// Selection is by COST, not by position. Each argument scores costExact when it
+// Selection is by cost, not by position. Each argument scores costExact when it
 // already has the declared type, costWiden when it gets there by a conversion
-// that can never fail, and is INADMISSIBLE when the only route is a conversion
+// that can never fail, and is inadmissible when the only route is a conversion
 // that can fail on some value. A candidate with any inadmissible argument is not
 // a candidate at all; among the rest, the lowest total cost wins, and an exact
 // tie breaks to the earliest shape.
@@ -323,7 +323,7 @@ func matchShapes(shapes []Shape, args []Type) (Shape, bindings, bool) {
 // land on the (float, float) shape however the list is ordered — shape authors
 // never have to reason about position.
 //
-// A conversion that can fail is never chosen to SELECT an overload. Section
+// A conversion that can fail is never chosen to select an overload. Section
 // 1.2.3 does permit float -> int and string -> int, but only where a context
 // demanded that type and is prepared for the value not to fit. Letting the
 // matcher use them would make "1 + 2.5" pick (int, int) by discarding the .5,
@@ -341,7 +341,7 @@ func matchShapesExactFirst(shapes []Shape, args []Type, exactFirst bool) (Shape,
 		}
 		// A fresh zero value per candidate, in this frame: a losing candidate's
 		// bindings must not be visible to the next one, and bestBindings takes a
-		// COPY, so nothing the loop reuses can reach the caller.
+		// copy, so nothing the loop reuses can reach the caller.
 		var b bindings
 		cost, ok := shapeCostExactFirst(s, args, &b, exactFirst)
 		if !ok {
@@ -414,10 +414,10 @@ func argCost(param, arg Type, b *bindings, pr promotion) (int, bool) {
 	if param.Code == CodeUnion {
 		return unionArgCost(param, arg, b, pr)
 	}
-	// A union ARGUMENT is the dual case: it is SOME ONE of its members,
-	// decided at runtime, so it is admissible only where EVERY member would
-	// be — the caller must be prepared to pay for whichever member actually
-	// shows up, so the cost is the worst of them rather than the best.
+	// A union argument is the dual case: it is some one of its members,
+	// decided at runtime, so it is admissible only where every member would
+	// be: the caller must be prepared to pay for whichever member shows up, so
+	// the cost is the worst of them rather than the best.
 	if arg.Code == CodeUnion {
 		return unionArgValueCost(param, arg, b, pr)
 	}
@@ -436,32 +436,32 @@ func argCost(param, arg Type, b *bindings, pr promotion) (int, bool) {
 // A variable binds once: seeing it a second time requires the same type…
 // …with one exception, and it is the empty list literal's. Section 1.2.6 rule 6
 // makes list[nulltype] "implicitly convertible to list[T] for any T", so a
-// binding that came from an empty list names no type the caller actually chose
-// — it is a placeholder for whatever the OTHER occurrence turns out to be.
+// binding that came from an empty list names no type the caller chose
+// — it is a placeholder for whatever the other occurrence turns out to be.
 // Holding it fixed would make the shared-variable ordering shape
-// (list[T], list[T]) ORDER-DEPENDENT: "[1] < []" would match, because T is
+// (list[T], list[T]) order-dependent: "[1] < []" would match, because T is
 // already int when argCostList's own empty-list branch declines to rebind it,
 // while "[] < [1]" would not, because T would be pinned to nulltype first and
 // int would then mismatch.
-// Section 1.2.5 says the shorter list is less, so both are answerable, and the
-// reference implementation agrees ("[] < [1]" is true, "[1] < []" false).
+// Section 1.2.5 says the shorter list is less, so both are answerable: "[] <
+// [1]" is true and "[1] < []" false, as in the reference implementation.
 //
-// The exception has to be SYMMETRIC. One layer down, where the empty literal
+// The exception has to be symmetric. One layer down, where the empty literal
 // reaches this function as a plain argument rather than through argCostList's
 // own branch, "[[]] < [[1]]" binds T to list[nulltype] and then replaces it
 // with list[int], while "[[1]] < [[]]" binds T to list[int] and meets
 // list[nulltype] — the same pair and the same rule, so without the second
 // direction one of them would be an "unsupported operand types" error. The
-// reference returns false for it, queried directly.
+// reference returns false for it.
 //
-// There is a SECOND exception, and it belongs to ordering alone (pr,
+// There is a second exception, and it belongs to ordering alone (pr,
 // promoteOrdering): section 2.1.4's compatible pairs, applied elementwise. See
 // orderingUnified below for the adjudication; the mechanism is that the two
 // occurrences are unified rather than required equal, so the variable ends up
-// naming the type BOTH operands reach — list[float] for "[1] < [1.0]" — and
+// naming the type both operands reach — list[float] for "[1] < [1.0]" — and
 // callShape then coerces each operand to it before compareLists runs. Nothing
 // downstream has to learn about cross-type element comparison, because by the
-// time it runs there is no longer a cross-type pair.
+// time it runs the pair has the same type.
 func typeVarCost(code Code, arg Type, b *bindings, pr promotion) (int, bool) {
 	bound, ok := b.get(code)
 	if !ok {
@@ -471,9 +471,9 @@ func typeVarCost(code Code, arg Type, b *bindings, pr promotion) (int, bool) {
 	if bound.Equal(arg) {
 		return costExact, true
 	}
-	// The empty side may be EITHER of the two. When the BINDING is the empty
+	// The empty side may be either of the two. When the binding is the empty
 	// one it is replaced, so the variable ends up naming the type the caller
-	// actually chose. When the INCOMING ARGUMENT is the empty one the binding
+	// chose. When the incoming argument is the empty one the binding
 	// already names that type, so it stands and the argument is merely
 	// admitted: rebinding to it would throw the real element type away and pin
 	// the variable to nulltype, which is what the first branch exists to undo.
@@ -491,20 +491,20 @@ func typeVarCost(code Code, arg Type, b *bindings, pr promotion) (int, bool) {
 	return 0, false
 }
 
-// orderingUnified answers section 2.1.4's compatible pairs applied ELEMENTWISE,
+// orderingUnified answers section 2.1.4's compatible pairs applied elementwise,
 // for the shared element variable of the list ordering shape: given the type one
 // operand's elements have and the type the other's have, the type both reach, or
 // false when there is none.
 //
 // The adjudication. Section 1.2.5 defines list ordering as "elements are
 // compared pairwise from the start, and the first unequal pair determines the
-// result" — it constrains the two lists' LENGTHS and nothing about their
+// result" — it constrains the two lists' lengths and nothing about their
 // element types. Section 2.1.4 then says an ordering operator's operands "may
 // differ for compatible pairs (int/float and string/path)". Composing the two,
 // an elementwise comparison of an int against a float is an ordering comparison
 // of a compatible pair, which section 2.1.4 permits; so "[1] < [1.0]" is false,
 // not an error. One shared type variable across both parameters, which requires
-// EXACT equality by construction, would make it an error as an artifact of
+// exact equality by construction, would make it an error as an artifact of
 // implementation rather than a reading of the spec.
 //
 // unifyElemPair (list.go) is reused rather than restated because it already
@@ -535,7 +535,7 @@ func orderingUnified(pr promotion, bound, arg Type) (Type, bool) {
 // both sides until the bound side bottoms out at nulltype. Requiring arg to
 // have a list layer wherever bound has one is what keeps this from being a
 // license to rebind anything: "[[]] < [1]" leaves bound at list[nulltype] with
-// arg at int, which is NOT convertible and stays inadmissible — otherwise the
+// arg at int, which is not convertible and stays inadmissible — otherwise the
 // match would succeed and then fail in coerce(), turning a clean "unsupported
 // operand types" into a coercion error.
 func emptyListBinding(bound, arg Type) bool {
@@ -558,16 +558,16 @@ func argCostList(param, arg Type, b *bindings, pr promotion) (int, bool) {
 	// compatible with any list type — promotable's own list branch already
 	// says so — but descending elementwise below would instead ask whether
 	// nulltype itself reaches the element type, which it never does
-	// (isScalarCode excludes it deliberately: null coerces to nothing).
+	// (isScalarCode excludes it: null coerces to nothing).
 	// Without this, every list[T] parameter would reject "[]" outright.
 	if arg.Params[0].Code == CodeNull {
 		// list[nulltype] vs list[nulltype] is an exact match that argCost's own
 		// param.Equal(arg) would have caught had the list-descent above not
 		// intercepted the pair first — argCost never reaches its own
-		// param.Equal check for a list/list pair, because THIS function
+		// param.Equal check for a list/list pair, because this function
 		// decides list arguments unconditionally. Catching it here, before the
 		// type-variable carve-out below, is what makes the dedicated
-		// list[nulltype] row for min([])/max([]) actually win the tie against
+		// list[nulltype] row for min([])/max([]) win the tie against
 		// list[int]/list[float] (both of which only reach nulltype's argument
 		// by the costWiden fallthrough further down) rather than losing it to
 		// whichever concrete-element row happens to be registered first.
@@ -576,12 +576,12 @@ func argCostList(param, arg Type, b *bindings, pr promotion) (int, bool) {
 		}
 		// When the parameter's element is itself a type variable (the
 		// concatLists/repeatList shapes), it must still bind — otherwise
-		// callShape later substitutes the UNBOUND variable into the param
+		// callShape later substitutes the unbound variable into the param
 		// type and coerces the empty-list argument to a bogus "list[T]"
 		// value instead of leaving it list[nulltype], corrupting whatever
 		// the shape's Fn inspects. Binding to nulltype is exactly what a
 		// normal argCost(varT, nulltype, b) call would have done, and for
-		// an UNBOUND variable the cost matches too — see below. The
+		// an unbound variable the cost matches too — see below. The
 		// override is only for the other two paths this branch decides
 		// without ever calling argCost: a variable already bound by another
 		// occurrence is left alone here (the empty list is compatible with
@@ -592,10 +592,10 @@ func argCostList(param, arg Type, b *bindings, pr promotion) (int, bool) {
 			if _, bound := b.get(elem.Code); !bound {
 				b.bind(elem.Code, TNull)
 				// costExact, not costWiden, and the difference is only
-				// observable in METHOD position. matchShapesExactFirst
+				// observable in method position. matchShapesExactFirst
 				// implements section 1.2.4 by requiring argument 0 to score
 				// costExact, so a widening receiver is refused — and binding a
-				// variable that has no binding yet CONVERTS NOTHING. There is
+				// variable that has no binding yet converts nothing. There is
 				// no implicit coercion here for section 1.2.4 to suppress, so
 				// scoring it as one would make "[].len()" fail while "len([])"
 				// succeeds: one call, two syntaxes, two answers. The
@@ -603,7 +603,7 @@ func argCostList(param, arg Type, b *bindings, pr promotion) (int, bool) {
 				//
 				// The carve-out is exactly "the variable is unbound". A
 				// variable another argument already bound to a concrete type
-				// is NOT being bound here — the empty list is reaching that
+				// is not being bound here — the empty list is reaching that
 				// concrete type through section 1.2.6 rule 6, which is a real
 				// conversion — so that case falls through to costWiden below,
 				// as does a concrete element type.
@@ -615,9 +615,9 @@ func argCostList(param, arg Type, b *bindings, pr promotion) (int, bool) {
 	return argCost(param.Params[0], arg.Params[0], b, pr)
 }
 
-// unionArgValueCost scores a union-typed ARGUMENT against a (non-union)
-// parameter: the dual of unionArgCost just above, which scores a union
-// PARAMETER. Every member is scored, not just the cheapest, because the
+// unionArgValueCost scores a union-typed argument against a (non-union)
+// parameter: the dual of unionArgCost above, which scores a union
+// parameter. Every member is scored, not just the cheapest, because the
 // union's actual runtime value could be any one of them; the argument is
 // admissible only if all of them are, at the cost of the most expensive.
 //

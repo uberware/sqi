@@ -1,10 +1,9 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
 -- Drop the unused license_pools.product column.
 --
--- The product field was a free-text descriptive label that was never used for
--- scheduling or matching (pools are referenced by name via
--- "amount.worker.usagepool.<name>" (renamed in migration 00007)). It only added
--- an unexplained field to the create/edit UI, so it is removed.
+-- The column is a free-text label that nothing uses for scheduling or matching:
+-- pools are referenced by name, through "amount.worker.usagepool.<name>" (the
+-- name 00007 gives the prefix).
 
 -- +goose Up
 

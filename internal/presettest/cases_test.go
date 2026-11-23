@@ -79,10 +79,9 @@ func TestPresetTemplate_LoadsBothSources(t *testing.T) {
 // TestLoadCases_StubInner pins a fixture field that states what could
 // otherwise be inferred.
 //
-// Deriving the shape from filepath.IsAbs(command) would be wrong: it is FALSE
-// on Windows for "/bin/sh" because it carries no volume name -- so the
-// inference inverts on the one platform that makes it matter. A fixture
-// states it instead.
+// Deriving the shape from filepath.IsAbs(command) would be wrong on Windows,
+// where it is false for "/bin/sh" because the path carries no volume name. A
+// fixture states it instead.
 func TestLoadCases_StubInner(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cases.yaml")
@@ -116,9 +115,9 @@ func TestLoadCases_StubInner(t *testing.T) {
 	}
 }
 
-// TestLoadCases_ScriptBuiltinDeclaresStubInner is the regression guard for the
-// one shipped case that depends on this shape. `script` runs /bin/sh -c, which
-// the stub cannot shadow, so Tier 3 must intercept what the SHELL invokes.
+// TestLoadCases_ScriptBuiltinDeclaresStubInner guards a shipped case that
+// depends on this shape. `script` runs /bin/sh -c, which the stub cannot
+// shadow, so Tier 3 must intercept what the shell invokes.
 func TestLoadCases_ScriptBuiltinDeclaresStubInner(t *testing.T) {
 	root, err := presettest.RepoRoot()
 	if err != nil {

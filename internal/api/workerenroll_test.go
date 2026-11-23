@@ -433,7 +433,7 @@ func TestWorkerEnroll_TokenFailureModesAreIndistinguishable(t *testing.T) {
 // /workers/enroll and GET/DELETE /workers/{id} share the same two-segment
 // shape, so when enroll is not mounted, a request for it is routed as
 // /workers/{id} with id="enroll" and chi answers 405 (the path matches a
-// registered pattern, just not for POST), not 404. Walking the route table
+// registered pattern, but not for POST), not 404. Walking the route table
 // avoids that collision and asserts whether the route is registered.
 
 func TestWorkerEnroll_EndpointAbsentWhenEnrollmentEndpointDisabled(t *testing.T) {

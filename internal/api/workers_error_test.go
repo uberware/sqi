@@ -25,7 +25,7 @@ import (
 // ── workerErrStore: thin wrapper for worker store errors ──────────────────────
 
 // workerErrStore wraps a store.Store to inject errors into ListWorkers,
-// GetWorker, and DeleteWorkerIfRemovable. We use a separate type to avoid
+// GetWorker, and DeleteWorkerIfRemovable. It is a separate type to avoid
 // conflicts with storeErr's method set for other store methods.
 type workerErrStore struct {
 	store.Store
@@ -133,13 +133,13 @@ func TestGetWorker_StoreError(t *testing.T) {
 	})
 }
 
-// ── removeWorker: a delete failure AFTER a successful revoke ──────────────────
+// ── removeWorker: a delete failure after a successful revoke ──────────────────
 
 // TestRemoveWorker_DeleteFailsAfterSuccessfulRevoke proves the safe half of
 // removeWorker's revoke-then-delete ordering: when the credential revoke
 // succeeds but the subsequent store delete fails, the worker row survives
 // (the request answers 500, safe to retry) but its broker access is already
-// cut. newWorkerRouter wires the injected WorkerRevoker to the SAME
+// cut. newWorkerRouter wires the injected WorkerRevoker to the same
 // underlying fake store as the handler's own store.Store (storeRevoker
 // wraps whatever is passed in), so wrapping only DeleteWorkerIfRemovable with an
 // error here is enough to reach this case: RevokeWorkerCredential runs for real

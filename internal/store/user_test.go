@@ -81,8 +81,8 @@ func TestUserStore_CRUD(t *testing.T) {
 			if err != nil || upd.DisplayName != "Alice B" || upd.Role != "operator" || !upd.Disabled {
 				t.Fatalf("UpdateUser: %+v err=%v", upd, err)
 			}
-			// UpdateUser is scoped to display_name/role/disabled — guard
-			// against a future regression touching username or password.
+			// UpdateUser is scoped to display_name/role/disabled: it must not
+			// touch username or password.
 			if upd.Username != u.Username {
 				t.Fatalf("UpdateUser must not change Username: got %q, want %q", upd.Username, u.Username)
 			}
@@ -151,9 +151,9 @@ func TestUserStore_ListUsers(t *testing.T) {
 }
 
 // TestUserStore_DeleteCascadesSessions verifies that deleting a user removes
-// their sessions too — SQLite via the `ON DELETE CASCADE` foreign key
-// (requires PRAGMA foreign_keys=ON, set in sqlite.Open), the fake via its
-// manual mirror in DeleteUser.
+// their sessions too: the SQL stores through the `ON DELETE CASCADE` foreign
+// key (on SQLite with PRAGMA foreign_keys=ON), the fake through its manual
+// mirror in DeleteUser.
 func TestUserStore_DeleteCascadesSessions(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -183,10 +183,10 @@ func TestUserStore_DeleteCascadesSessions(t *testing.T) {
 }
 
 // TestUserStore_CreateUser_DuplicateID verifies that creating a user whose ID
-// collides with an existing user is rejected — SQLite via `id TEXT PRIMARY
-// KEY`, the fake via an explicit check. Without this check the fake would
-// silently overwrite the existing user's password hash and role instead of
-// returning store.ErrConflict like SQLite does.
+// collides with an existing user is rejected: the SQL stores through `id TEXT
+// PRIMARY KEY`, the fake through an explicit check. Without that check the
+// fake would overwrite the existing user's password hash and role instead of
+// returning store.ErrConflict as the SQL stores do.
 func TestUserStore_CreateUser_DuplicateID(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -215,8 +215,9 @@ func TestUserStore_CreateUser_DuplicateID(t *testing.T) {
 }
 
 // TestUserStore_CreateUser_AsciiFoldOnly verifies that username uniqueness
-// folds ASCII case only, matching SQLite's `COLLATE NOCASE` (which is
-// ASCII-only, unlike Go's Unicode-aware strings.EqualFold). "Δelta" and
+// folds ASCII case only, matching SQLite's `COLLATE NOCASE` and PostgreSQL's
+// lower() under COLLATE "C" (both ASCII-only, unlike Go's Unicode-aware
+// strings.EqualFold). "Δelta" and
 // "δelta" differ only by a non-ASCII Greek letter case, so both must be
 // accepted as distinct usernames.
 func TestUserStore_CreateUser_AsciiFoldOnly(t *testing.T) {
@@ -232,22 +233,22 @@ func TestUserStore_CreateUser_AsciiFoldOnly(t *testing.T) {
 			u2 := mkUser("user")
 			u2.Username = "δelta"
 			if _, err := st.CreateUser(ctx, u2); err != nil {
-				t.Fatalf("CreateUser(δelta) should succeed since SQLite COLLATE NOCASE is ASCII-only: %v", err)
+				t.Fatalf("CreateUser(δelta) should succeed since the username case fold is ASCII-only: %v", err)
 			}
 		})
 	}
 }
 
-// TestUserStore_AuthSource pins the auth_source column's semantics across
-// both implementations: it defaults to "local", round-trips an explicit
-// value, and is immutable through UpdateUser.
+// TestUserStore_AuthSource pins the auth_source column's semantics on every
+// backend: it defaults to "local", round-trips an explicit value, and is
+// immutable through UpdateUser.
 func TestUserStore_AuthSource(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 
-			// An unset AuthSource must land as "local" in BOTH stores.
-			// SQLite gets this from the column DEFAULT; the fake has to do it
+			// An unset AuthSource must land as "local" in every store. The
+			// SQL stores get this from the column DEFAULT; the fake does it
 			// explicitly, and without that the login path would branch
 			// differently under test than in production.
 			plain := mkUser("user")
@@ -276,7 +277,7 @@ func TestUserStore_AuthSource(t *testing.T) {
 			}
 
 			// UpdateUser must not move an account between backends: that
-			// would let a role/display-name edit silently convert a directory
+			// would let a role/display-name edit convert a directory
 			// account into a local one (or vice versa).
 			got.AuthSource = store.AuthSourceLocal
 			got.DisplayName = "Renamed"
@@ -306,7 +307,7 @@ func TestUserStore_AuthSource(t *testing.T) {
 }
 
 // TestUserStore_GetUserByExternalID pins the (auth_source, external_id)
-// lookup contract across both implementations: same external_id under
+// lookup contract on every backend: same external_id under
 // different auth sources resolves to different accounts, an unknown pairing
 // misses, and an empty external_id never matches a local account (local
 // accounts all carry "").
@@ -359,8 +360,8 @@ func TestUserStore_GetUserByExternalID(t *testing.T) {
 }
 
 // TestUserStore_ExternalIDIsImmutableAndUnique pins that UpdateUser never
-// writes external_id, and that the partial unique index (SQLite) / mirrored
-// check (fake) rejects a second account claiming the same (auth_source,
+// writes external_id, and that the partial unique index (SQL stores) or the
+// mirrored check (fake) rejects a second account claiming the same (auth_source,
 // external_id) pair.
 func TestUserStore_ExternalIDIsImmutableAndUnique(t *testing.T) {
 	for name, st := range newStores(t) {
@@ -467,7 +468,7 @@ func TestUserStore_SetUserPasswordAndEvictSessions(t *testing.T) {
 }
 
 // TestUserStore_SetUserDisplayName pins that the targeted update touches only
-// the display name — the whole point of it existing beside UpdateUser.
+// the display name, the reason it exists beside UpdateUser.
 func TestUserStore_SetUserDisplayName(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

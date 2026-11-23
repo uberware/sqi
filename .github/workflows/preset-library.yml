@@ -22,8 +22,8 @@ name: Preset library
 #   - on demand.
 on:
   schedule:
-    # 07:00 UTC daily. Drift here is never urgent-to-the-minute; it just must
-    # not wait for someone to click a preset.
+    # 07:00 UTC daily. Drift here is not urgent to the minute, but must not
+    # wait for someone to click a preset.
     - cron: "0 7 * * *"
   push:
     branches: [main]
@@ -70,10 +70,9 @@ jobs:
         run: make test-preset-library 2>&1 | tee /tmp/preset-library.log
 
       # The target exits 0 when the library is unreachable, because an offline
-      # runner is not evidence that the content is bad. That means a green step
-      # alone proves nothing -- assert the test actually ran and passed. A skip
-      # fails here: it means this check verified nothing, and the
-      # cause (network, or a repointed URL) needs a human.
+      # runner is not evidence that the content is bad, so a green step alone
+      # proves nothing: assert the test ran and passed. A skip fails here,
+      # because the cause (network, or a repointed URL) needs a human.
       - name: Assert the check actually ran
         run: |
           grep -q -- '--- PASS: TestPublishedPresets_ValidateAgainstThisTree' /tmp/preset-library.log

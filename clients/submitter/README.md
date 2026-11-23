@@ -29,8 +29,7 @@ For development (run from `clients/submitter/`):
 pip install -e ../python -e '.[dev]'   # local sqi-sdk + submitter with test & lint tools
 ```
 
-The same checks CI runs (split there across three jobs), as one local chain —
-every stage must pass before a PR:
+The checks CI runs (split there across three jobs), as one local chain:
 
 ```sh
 ruff format --check . && ruff check . && mypy && mypy --python-version=3.13 tests && pytest -q
@@ -38,9 +37,8 @@ ruff format --check . && ruff check . && mypy && mypy --python-version=3.13 test
 
 Run `mypy` bare, not `mypy src`: `pyproject.toml` lists `src` and the Cinema 4D
 plugin (`sqi_submit.pyp`, which `mypy src` skips because it is not a `.py`
-file). `mypy --python-version=3.13 tests` is not optional either: a bare `mypy`
-does not read the tests, so it alone misses type errors in test files that will
-still fail the PR.
+file). A bare `mypy` does not read the tests, so `mypy --python-version=3.13
+tests` checks them separately; CI runs both.
 
 ## Authentication
 
@@ -87,7 +85,7 @@ Use the `fake_host_module` fixture to inject mock DCC modules:
 ```python
 def test_with_maya(fake_host_module):
     maya_cmds = fake_host_module("maya.cmds")
-    # Your adapter code now sees maya.cmds in sys.modules
+    # maya.cmds resolves to the fake module from sys.modules
 ```
 
 ## Documentation

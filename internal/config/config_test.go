@@ -215,7 +215,7 @@ func TestLoad_EnforceLimitsFlagOverride(t *testing.T) {
 		t.Error("openjd.enforce_limits: --openjd-enforce-limits=false should win over env=true")
 	}
 
-	// A nil override must NOT clobber the env value.
+	// A nil override must not clobber the env value.
 	cfg, err = config.Load("", config.FlagOverrides{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -380,8 +380,8 @@ func TestValidate_FieldErrors(t *testing.T) {
 }
 
 // ── Load: empty FlagOverrides does not clobber env ───────────────────────────
-// Regression: flag defaults must not shadow env vars. Callers should only
-// populate FlagOverrides for flags the user explicitly set.
+// Flag defaults must not shadow env vars. Callers populate FlagOverrides only
+// for flags the user set.
 
 func TestLoad_EmptyFlagsDoNotClobberEnv(t *testing.T) {
 	t.Chdir(t.TempDir())
@@ -688,8 +688,7 @@ func TestDefaultConfig_ReconcileGraceIsTwoMinutes(t *testing.T) {
 //
 // default_max_attempts / retry_delay / default_failure_limit are the
 // server-level fallback tier of the layered retry policy (Server -> Farm ->
-// Queue -> Job). This task only adds the config plumbing; RetryPolicy itself
-// is introduced in a later task.
+// Queue -> Job).
 
 func TestDefaultConfig_RetryDefaults(t *testing.T) {
 	cfg := config.DefaultConfig()
@@ -1048,7 +1047,7 @@ func TestAuthConfigDefaults(t *testing.T) {
 	if c.Auth.LDAP.DisplayNameAttr != "displayName" {
 		t.Fatalf("ldap display_name_attr default = %q, want displayName", c.Auth.LDAP.DisplayNameAttr)
 	}
-	// unique_id_attr deliberately has no default: "objectGUID" and
+	// unique_id_attr has no default: "objectGUID" and
 	// "entryUUID" are each wrong on the other server family, and a default
 	// would let a deployment start with the wrong one rather than say so.
 	if c.Auth.LDAP.UniqueIDAttr != "" {
@@ -1870,8 +1869,8 @@ func TestValidate_AuthLDAP(t *testing.T) {
 		}, true},
 		// An empty attribute name is sent to the directory as "", which some
 		// servers reject outright. Both fields have defaults, so an empty one
-		// means the operator cleared it deliberately — fail at boot rather
-		// than on every login.
+		// means the operator cleared it: fail at boot rather than on every
+		// login.
 		{"empty username_attr", func(c *config.Config) {
 			l := validSearchLDAP()
 			l.UsernameAttr = ""
@@ -1899,9 +1898,7 @@ func TestValidate_AuthLDAP(t *testing.T) {
 			c.Auth.LDAP = l
 		}, true},
 		// unique_id_attr is the account-matching key. Unlike the other two it
-		// has no default to fall back on, so an unset value is the state an
-		// operator upgrading an existing LDAP configuration arrives in — and
-		// starting anyway would
+		// has no default to fall back on, and starting with it unset would
 		// mean every login presents an empty identifier.
 		{"empty unique_id_attr", func(c *config.Config) {
 			l := validSearchLDAP()
@@ -1955,10 +1952,8 @@ func validSearchLDAP() config.LDAPConfig {
 }
 
 // The unset-unique_id_attr error must name its own field and both correct
-// values. This is the one config error an operator upgrading an existing
-// LDAP configuration is guaranteed to hit, and a generic "invalid ldap config" would leave them
-// guessing between two attribute names, only one of which works on their
-// server.
+// values: a generic "invalid ldap config" would leave the operator guessing
+// between two attribute names, only one of which works on their server.
 func TestValidate_AuthLDAPUniqueIDAttrErrorIsActionable(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Auth.Enabled = true
@@ -2097,8 +2092,8 @@ func TestAuthOIDCEnvOverrides(t *testing.T) {
 }
 
 func TestAuthOIDCEnvOverrides_RoleMapHasNoEnvForm(t *testing.T) {
-	// role_map is file-only, exactly as auth.ldap.role_map is: a list of
-	// group->role pairs has no sane comma-separated env encoding. There is no
+	// role_map is file-only, as auth.ldap.role_map is: a list of
+	// group->role pairs has no comma-separated env encoding. There is no
 	// SQI_AUTH_OIDC_ROLE_MAP to set, so this test documents the absence by
 	// checking the default survives Load with every other oidc.* var set.
 	t.Setenv("SQI_AUTH_OIDC_ENABLED", "true")
@@ -2197,7 +2192,7 @@ auth:
 // TestLoad_AuthOIDCRoleMapExplicitEmptyClearsDefault guards the
 // pointer-nil-vs-empty discrimination mergeAuthOIDCFile shares with
 // mergeAuthLDAPFile: a "role_map: []" key present in the file must produce a
-// non-nil empty slice (a deliberate clear), not be indistinguishable from the
+// non-nil empty slice (an explicit clear), not be indistinguishable from the
 // key being absent (which leaves the untouched default, also empty here, but
 // via a different code path — nil vs an explicitly-set empty slice).
 func TestLoad_AuthOIDCRoleMapExplicitEmptyClearsDefault(t *testing.T) {

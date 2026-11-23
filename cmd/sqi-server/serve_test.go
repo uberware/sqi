@@ -38,20 +38,18 @@ func TestServerConfig_CarriesTheCapacityBlock(t *testing.T) {
 	}
 }
 
-// TestServerConfig_CarriesTheExprCostBounds covers the FIRST of the three hops
+// TestServerConfig_CarriesTheExprCostBounds covers the first of the three hops
 // that carry an operator's expression cost bounds from the config file to the
 // code that enforces them: config.Config -> server.Config, here in the CLI.
 //
-// It exists because nothing else can fail when this hop breaks. Range
-// validation still runs at startup, the docs still describe the keys, and every
-// test of the enforcing code builds its own value directly — so a dropped or
-// renamed line in this literal leaves a server that starts cleanly, reports the
-// operator's configuration on `sqi-server config print`, and enforces NOTHING.
-// The deadline is the acute case: it is the only bound on EXPR evaluation
-// wall-clock time, and every EXPR submission exercises it, so its absence
-// would surface as an outage rather than as a test failure.
+// Nothing else fails when this hop breaks. Range validation still runs at
+// startup and every test of the enforcing code builds its own value directly,
+// so a dropped or renamed line in this literal leaves a server that starts
+// cleanly, reports the operator's configuration on `sqi-server config print`,
+// and enforces none of it. The deadline is the only bound on EXPR evaluation
+// wall-clock time.
 func TestServerConfig_CarriesTheExprCostBounds(t *testing.T) {
-	// Deliberately distinct, non-default values: these are same-typed fields
+	// Distinct, non-default values: these are same-typed fields
 	// crossing a struct boundary, where a transposition compiles and starts.
 	cfg := config.DefaultConfig()
 	cfg.OpenJD.ExprSubmissionDeadline = 37 * time.Second
@@ -94,10 +92,8 @@ func TestServerConfig_DefaultsAreTheConfigDefaults(t *testing.T) {
 	}
 }
 
-// TestServerConfig_CarriesTheRestOfTheConfig guards the extraction itself: this
-// literal moved out of runServe to become testable, and every other field it
-// maps must still arrive. A spot check across the sections is enough — the
-// failure being guarded against is a botched move, not a per-field typo.
+// TestServerConfig_CarriesTheRestOfTheConfig spot-checks the other fields
+// serverConfig maps, one or more from each configuration section.
 func TestServerConfig_CarriesTheRestOfTheConfig(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.HTTP.Addr = ":9999"
@@ -151,17 +147,17 @@ func TestServerConfig_CarriesTheRestOfTheConfig(t *testing.T) {
 	}
 }
 
-// TestServerConfig_CarriesTheBrokerAuthSettings covers the FIRST of the three
+// TestServerConfig_CarriesTheBrokerAuthSettings covers the first of the three
 // hops (config.Config -> server.Config -> api.Deps -> a mounted route) that
 // carry the nats.auth.* settings to the REST worker-enrollment surface. The
 // other two hops are pinned in internal/server (natsAuthDeps and the
-// router-mount tests) — this one guards the CLI's own mapping, the same shape
+// router-mount tests); this one guards the CLI's own mapping, the same shape
 // as TestServerConfig_CarriesTheExprCostBounds above.
 //
-// It matters for the same reason: nothing else fails when this hop breaks.
-// Config validation still runs, "config print" still echoes the operator's
-// values, and the server still boots — with POST /api/v1/workers/enroll never
-// mounted and, if it were, join tokens minted with a zero TTL (born expired).
+// Nothing else fails when this hop breaks: config validation still runs,
+// "config print" still echoes the operator's values, and the server still
+// boots, with POST /api/v1/workers/enroll never mounted and, if it were, join
+// tokens minted with a zero TTL (born expired).
 func TestServerConfig_CarriesTheBrokerAuthSettings(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.NATS.Auth.Enabled = true

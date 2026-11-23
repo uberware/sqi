@@ -22,7 +22,7 @@ import (
 // wide. Every withheld symbol is also DECLARED somewhere else in the same
 // template (a sibling step, a sibling environment, or a different scope of
 // the same element) so a withhold failure is provably about SCOPE, not about
-// the symbol simply not existing anywhere in the document.
+// the symbol not existing anywhere in the document.
 
 // letScopeCase is one row of the table: a symbol reference tried verbatim as
 // a let binding's right-hand side, and whether that location's scope grants

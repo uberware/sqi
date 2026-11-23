@@ -202,7 +202,7 @@ def test_a_new_log_is_private(sqi_dir: Path) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
 def test_an_existing_open_log_is_made_private(sqi_dir: Path) -> None:
-    # The open's mode applies only on create: a log from an older version keeps its own.
+    # The open's mode applies only on create: a log that already exists keeps its own.
     log = sqi_dir / _failure.LOG_NAME
     log.write_text("old entry\n", encoding="utf-8")
     log.chmod(0o644)

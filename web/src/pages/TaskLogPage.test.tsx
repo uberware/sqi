@@ -86,7 +86,7 @@ describe('TaskLogPage', () => {
     mockTaskLogs([{ id: 'c1' }])
     renderAt()
 
-    // Header is just "Logs" (display font applies the invert-case styling),
+    // Header is "Logs" (display font applies the invert-case styling),
     // and does not embed the name.
     const heading = screen.getByRole('heading')
     expect(heading).toHaveTextContent(/^lOGS$/)

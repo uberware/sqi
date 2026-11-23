@@ -77,7 +77,7 @@
 }
 
 /*
- * An anchor styled as a secondary button. It is deliberately not `.submitBtn`:
+ * An anchor styled as a secondary button. It is not `.submitBtn`:
  * the accent fill belongs to the primary action, and SSO sits alongside the
  * password form rather than above it. `display: block` + `text-align: center`
  * because an anchor is inline by default and would otherwise not fill the card

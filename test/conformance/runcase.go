@@ -32,16 +32,16 @@ func (r Result) ID() string { return r.Case.Path }
 // RunCase parses and validates one template fixture and scores it against the
 // expectation encoded in its filename.
 //
-// A fixture whose name lacks ".invalid" must be ACCEPTED; one carrying it must
-// be REJECTED. Malformed YAML counts as a rejection — the spec's contract is
+// A fixture whose name lacks ".invalid" must be accepted; one carrying it must
+// be rejected. Malformed YAML counts as a rejection: the suite's contract is
 // accept-versus-reject, and it does not distinguish a parse failure from a
 // validation failure.
 //
-// Limits are enforced: the suite tests spec-defined limits, so the enforcing
-// path is the one under test.
+// Limits are enforced, because the suite tests the limits the specification
+// defines.
 //
-// When state is StateNotApplicable the fixture is not scored at all — Passed is
-// false regardless of outcome. See the StateNotApplicable doc comment.
+// When state is StateNotApplicable the fixture is not scored: Passed is false
+// regardless of outcome. See the StateNotApplicable doc comment.
 func RunCase(tc TestCase, state State, data []byte) Result {
 	res := Result{Case: tc, State: state}
 

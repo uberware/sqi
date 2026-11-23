@@ -87,12 +87,12 @@ func realDialer(cfg Config) (dialFunc, error) {
 		if err != nil {
 			return nil, err
 		}
-		// SetTimeout BEFORE StartTLS, not after. go-ldap arms a per-request
+		// SetTimeout must run before StartTLS. go-ldap arms a per-request
 		// timer only when its internal requestTimeout is already > 0 at send
 		// time, and SetTimeout is the only thing that sets it. Called after the
 		// StartTLS branch, the StartTLS extended request would go out with no
-		// timer at all and block forever against a server that completes the
-		// TCP handshake and then goes silent.
+		// timer and block forever against a server that completes the TCP
+		// handshake and then goes silent.
 		c.SetTimeout(cfg.Timeout)
 		if cfg.StartTLS {
 			if err := c.StartTLS(tlsCfg); err != nil {
@@ -108,15 +108,14 @@ func realDialer(cfg Config) (dialFunc, error) {
 // searchTimeLimit converts cfg.Timeout into the SearchRequest TimeLimit, which
 // the protocol carries as whole seconds.
 //
-// The naive int(d.Seconds()) truncates, and RFC 4511 §4.5.1.5 gives 0 the
-// meaning "no client-requested time limit" — so a configured timeout of, say,
-// 500ms would reach the server as *unlimited*, the exact opposite of what the
-// operator wrote. Config validation only requires timeout > 0, so sub-second
-// values are reachable. Anything positive therefore floors to 1 second, the
-// smallest limit the protocol can express. A non-positive duration keeps 0,
-// where "no limit" is the correct reading of an unset timeout.
+// int(d.Seconds()) truncates, and RFC 4511 §4.5.1.5 gives 0 the meaning "no
+// client-requested time limit", so a configured timeout of 500ms would reach
+// the server as unlimited. Config validation only requires timeout > 0, so
+// sub-second values are reachable, and anything positive floors to 1 second,
+// the smallest limit the protocol can express. A non-positive duration keeps
+// 0, "no limit", for an unset timeout.
 //
-// The client-side deadline set by conn.SetTimeout still enforces the exact
+// The client-side deadline set by conn.SetTimeout enforces the exact
 // configured duration; this only governs the limit the server is asked for.
 func searchTimeLimit(d time.Duration) int {
 	if d <= 0 {
@@ -130,15 +129,10 @@ func searchTimeLimit(d time.Duration) int {
 
 // firstAttr returns the first value of the named attribute, or "".
 //
-// Matching is case-insensitive for the same reason the memberOf lookups at
-// the group-resolution sites are (see e.GetEqualFoldAttributeValues there):
-// RFC 4512 §2.5 makes attribute descriptions case-insensitive, and a
-// directory is free to echo back a different case than what was requested.
-// UsernameAttr and DisplayNameAttr are lower stakes than memberOf —
-// UsernameAttr falls back to the typed username, and DisplayNameAttr is only
-// consumed at first provisioning — but there is no reason for this lookup to
-// use different case semantics than the group lookups, so it shares the same
-// go-ldap library method rather than a bespoke case-sensitive walk.
+// Matching is case-insensitive, through the same go-ldap method as the
+// memberOf lookups (e.GetEqualFoldAttributeValues): RFC 4512 §2.5 makes
+// attribute descriptions case-insensitive, and a directory may echo back a
+// different case than the one requested.
 func firstAttr(e *ldapv3.Entry, name string) string {
 	if name == "" {
 		return ""
@@ -155,12 +149,12 @@ func firstAttr(e *ldapv3.Entry, name string) string {
 //
 // Active Directory returns objectGUID as a 16-byte binary octet string, which
 // is not valid UTF-8 and cannot be stored as text as-is; OpenLDAP returns
-// entryUUID as an ASCII string. Hex is chosen over the Microsoft display form
-// because the only property that matters is stability, and this encoding is
-// permanent: changing it later orphans every account already stamped.
+// entryUUID as an ASCII string. Hex is used rather than the Microsoft display
+// form because only stability matters, and the encoding must not change: a
+// different one orphans every account already stamped.
 //
 // The raw accessor is used rather than firstAttr because go-ldap's Values
-// slice is a lossy view of a binary attribute — the string conversion of an
+// slice is a lossy view of a binary attribute: the string conversion of an
 // invalid UTF-8 octet string is not reversible, so two distinct GUIDs can
 // collapse onto the same replacement-character text.
 func uniqueID(e *ldapv3.Entry, name string) string {
@@ -171,17 +165,14 @@ func uniqueID(e *ldapv3.Entry, name string) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	// This branch is why AD's objectGUID encoding is stable rather than
-	// content-dependent: RFC 4122 fixes the variant field (byte 8) to the
-	// bit pattern 10xxxxxx, i.e. 0x80-0xBF, which is a bare UTF-8 continuation
-	// byte with no valid leading byte before it. utf8.Valid can therefore
-	// never return true for a 16-byte RFC 4122 UUID, so the hex branch below
-	// is the only one a real objectGUID ever takes. For an arbitrary
-	// operator-configured binary attribute that is not a UUID, the choice
-	// becomes genuinely content-dependent — but the mapping stays
-	// deterministic and injective either way, so correctness does not depend
-	// on this invariant, only the "always hex-encoded" framing in
-	// docs/auth.md does.
+	// An objectGUID always takes the hex branch: RFC 4122 fixes the variant
+	// field (byte 8) to the bit pattern 10xxxxxx, i.e. 0x80-0xBF, a bare
+	// UTF-8 continuation byte with no valid leading byte before it, so
+	// utf8.Valid is never true for a 16-byte RFC 4122 UUID. For an
+	// operator-configured binary attribute that is not a UUID the branch
+	// depends on content, but the mapping is deterministic and injective
+	// either way; only the "always hex-encoded" wording in docs/auth.md
+	// relies on the UUID case.
 	if utf8.Valid(raw) {
 		return string(raw)
 	}

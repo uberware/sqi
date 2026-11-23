@@ -12,15 +12,16 @@
 //
 // Integration tests live here rather than alongside a single package because
 // they exercise the interaction between server, bus, scheduler, store, and
-// API components simultaneously.  Unit tests for individual packages continue
-// to live next to the code they cover.
+// API components simultaneously.  Unit tests for individual packages live next
+// to the code they cover.
 //
 // # Build tag
 //
-// These tests are not tagged; they run with the normal `go test ./...` invocation.
-// They do allocate OS-level TCP ports and filesystem temp directories, so they
-// are skipped in environments where the NATS server cannot bind (detected via a
-// timeout on startup).
+// This file is untagged, so the untagged tests here run with `make test`;
+// files that need a built binary or an external service carry the
+// `integration` tag and run with `make test-integration`. The tests allocate
+// loopback TCP ports and temp directories, and a server that cannot bind or
+// become ready fails the test with its startup diagnostics.
 package integration
 
 import (
@@ -104,9 +105,9 @@ var (
 )
 
 // freePort asks the OS for an available TCP port on loopback and returns it.
-// The port is released immediately after being discovered, so there is a
-// tiny window where another process could claim it.  In practice this is
-// acceptable for integration tests on CI where ports are not heavily contested.
+// The port is released immediately after being discovered, so another process
+// could claim it before the caller binds it; launchServer waits for its ports
+// to be bindable before booting.
 //
 // It never returns the same port twice within a process. The kernel is free to
 // hand a just-released port out again, and two of a server's listeners (HTTP
@@ -333,10 +334,7 @@ func startServerWith(t *testing.T, mutate func(*server.Config)) *testServer {
 		},
 		// mDNS disabled: these tests reach the server by an explicit address, so
 		// advertising would add a real network side effect for no coverage.
-		//
-		// Not because multicast is unavailable: discovery_test.go proves an
-		// mDNS round trip on a real interface, and `make test-discovery` fails
-		// rather than skips when one is not possible.
+		// discovery_test.go covers an mDNS round trip on a real interface.
 		DiscoveryEnabled: false,
 	}
 	applyStore(&cfg, so)
@@ -417,10 +415,9 @@ func tryBootServer(t *testing.T, cfg server.Config, so backend.Options) (*testSe
 }
 
 // serverStartupTimeout bounds each wait for a booting test server (listening,
-// then /readyz). Startup runs migrations that fsync, and a single stalled flush
-// on a shared Windows CI runner has taken over 10s, failing the harness with no
-// fault in the server; a healthy boot is far under a second, so a generous bound
-// costs nothing.
+// then /readyz). Startup runs migrations that fsync, and one stalled flush on a
+// shared CI runner can take more than 10s; a healthy boot takes under a second,
+// so a generous bound costs nothing.
 const serverStartupTimeout = 60 * time.Second
 
 // launchServer is [tryBootServer] without the cleanup: the caller registers
@@ -479,9 +476,8 @@ func launchServer(t *testing.T, cfg server.Config, so backend.Options) (*testSer
 		return nil, err
 	}
 
-	// Poll /readyz (which gates on NATS and the store being healthy) rather than
-	// sleeping a fixed duration.  This ensures JetStream streams are fully
-	// provisioned before the test starts publishing.
+	// Poll /readyz, which gates on NATS and the store being healthy, so the
+	// JetStream streams are provisioned before the test starts publishing.
 	if !waitForReadyz(t, cfg.HTTPAddr, serverStartupTimeout) {
 		err := fmt.Errorf("server did not become ready (/readyz) within %s%s", serverStartupTimeout, startupDiagnostics(logs))
 		_ = ts.stop() //nolint:errcheck // not becoming ready is the error to report
@@ -566,8 +562,8 @@ func waitForServerTCP(done chan error, addr string, timeout time.Duration) error
 }
 
 // waitForReadyz polls GET /readyz until it returns 200 or timeout elapses.
-// This ensures both the store and the embedded NATS server (including JetStream
-// stream provisioning) are fully up before tests start.
+// A 200 means the store and the embedded NATS server, with its JetStream
+// streams, are up.
 func waitForReadyz(tb testing.TB, httpAddr string, timeout time.Duration) bool {
 	tb.Helper()
 	return waitForReadyzClient(tb, &http.Client{Timeout: 2 * time.Second}, "http://"+httpAddr+"/readyz", timeout)

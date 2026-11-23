@@ -116,14 +116,12 @@ func waitForNATS(ctx context.Context, ns *natsserver.Server, nl *natsLogger, tim
 // inProcessURL is the URL the server's own connections to the embedded broker
 // dial: none.
 //
-// It is deliberately empty even though nats.InProcessServer makes the URL
-// unused for transport, because nats.go still PARSES it — and
-// Server.ClientURL() returns a "tls://" scheme once TLS is enabled, which makes
-// the client negotiate TLS over what is only a net.Pipe inside this process.
-// That in turn would demand the server trust its own certificate, for a
-// connection that never touches a socket.
+// nats.InProcessServer makes the URL unused for transport, but nats.go still
+// parses it, and Server.ClientURL() returns a "tls://" scheme once TLS is
+// enabled, which would make the client negotiate TLS over a net.Pipe inside
+// this process and require the server to trust its own certificate.
 //
-// Passing no URL avoids all of it: nats-server clears info.TLSRequired for
+// With no URL, nats-server clears info.TLSRequired for
 // in-process connections (server/server.go:3296), so the connection is plain
 // and authentication still applies: an in-process client presents its nkey
 // and is checked like any other.

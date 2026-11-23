@@ -35,11 +35,10 @@ func TestValidateUserInterface(t *testing.T) {
 			},
 			wantPointer: "/parameterDefinitions/0/userInterface/control",
 		},
-		// NOTE: there is deliberately no "empty control" case here. This table
-		// once asserted that an absent control was an error, which codified a
-		// bug: the schema marks userInterface.control "@optional" on every
-		// parameter type. The spec-correct behavior is covered by
-		// TestValidateUserInterface_ControlIsOptional below.
+		// There is no "empty control" case: the schema marks
+		// userInterface.control "@optional" on every parameter type, so an
+		// absent control is valid. TestValidateUserInterface_ControlIsOptional
+		// below covers it.
 		{
 			name: "dropdown without allowedValues",
 			param: JobParameter{

@@ -2,13 +2,13 @@
 
 package integration
 
-// s3_staging_binary_test.go — hermetic end-to-end test of the stage_locally path
+// s3_staging_binary_test.go: hermetic end-to-end test of the stage_locally path
 // delivery against an S3-rooted storage location.
 //
-// This proves a real s3:// staging round-trip through the real sqi-server and
+// It runs an s3:// staging round trip through the real sqi-server and
 // sqi-worker binaries: a job references an s3:// storage root with the
-// stage_locally delivery; the worker stages the input DOWN from an object store
-// into worker-local scratch, runs the task, and stages the output back UP to the
+// stage_locally delivery; the worker stages the input down from an object store
+// into worker-local scratch, runs the task, and stages the output back up to the
 // object store. The object store is an in-process fake S3 (gofakes3) behind an
 // httptest.Server, and the operator sync command is a test-only s3sync helper
 // (minio-go) built from this repo. No Docker, no external MinIO, no env gating.
@@ -42,16 +42,16 @@ import (
 var (
 	s3SyncBinaryOnce sync.Once
 	s3SyncBinaryPath string
-	s3SyncBinaryDir  string // intentionally left for the OS temp reaper (not registered in TestMain cleanup)
+	s3SyncBinaryDir  string // left for the OS temp reaper (not removed by TestMain)
 	errS3SyncBinary  error
 )
 
 // buildS3SyncBinary compiles the test-only s3sync helper command into a temp
 // directory and returns the path to the executable. The build runs once per
-// test-binary invocation and the result is cached via sync.Once, mirroring
-// buildWorkerBinary. The temp directory outlives individual tests, so it uses
-// os.MkdirTemp (not t.TempDir); it is a package-scoped var but is intentionally
-// left for the OS temp reaper — the worker binary dir is the one TestMain owns.
+// test-binary invocation, cached via sync.Once like buildWorkerBinary. The temp
+// directory outlives individual tests, so it uses os.MkdirTemp (not
+// t.TempDir) and is left for the OS temp reaper; TestMain removes only the
+// worker binary's directory.
 func buildS3SyncBinary(tb testing.TB) string {
 	tb.Helper()
 
@@ -97,7 +97,7 @@ func buildS3SyncBinary(tb testing.TB) string {
 // ── Fake S3 + client helpers ──────────────────────────────────────────────────
 
 // startFakeS3 boots an in-process fake S3 (gofakes3) behind an httptest.Server
-// and returns the server. It is closed automatically via t.Cleanup.
+// and returns the server, closed by t.Cleanup.
 func startFakeS3(t *testing.T) *httptest.Server {
 	t.Helper()
 	backend := s3mem.New()
@@ -128,7 +128,7 @@ func newTestS3Client(t *testing.T, endpoint string) *minio.Client {
 }
 
 // setS3Env exports the AWS_* variables for the current test so the worker
-// subprocess — and the s3sync subprocess it spawns per staged file — inherit
+// subprocess, and the s3sync subprocess it spawns per staged file, inherit
 // them via os.Environ(). t.Setenv forbids t.Parallel(); these tests are serial.
 func setS3Env(t *testing.T, endpoint string) {
 	t.Helper()
@@ -189,8 +189,8 @@ steps:
 }
 
 // createS3StorageLocation creates a storage location whose default root is the
-// given s3://bucket URI. It sends NO `type` field (the server derives it from
-// the roots and rejects an explicit type).
+// given s3://bucket URI. It sends no `type` field: the server derives it from
+// the roots and rejects an explicit type.
 func createS3StorageLocation(t *testing.T, ts *testServer, name, bucket string) {
 	t.Helper()
 	body := fmt.Sprintf(`{"name":%q,"roots":{"default":"s3://%s"}}`, name, bucket)
@@ -220,9 +220,9 @@ func submitS3StagingJob(t *testing.T, ts *testServer, farmID, queueID, inLoc, ou
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-// TestS3Staging_RoundTrip proves a full s3:// staging round-trip: input staged
-// down from fake S3, task run, output staged back up. It asserts the output
-// object lands in the bucket carrying the input's content.
+// TestS3Staging_RoundTrip runs a full s3:// staging round trip: input staged
+// down from fake S3, task run, output staged back up. The output object must
+// land in the bucket carrying the input's content.
 func TestS3Staging_RoundTrip(t *testing.T) {
 	const bucket = "sqi-staging"
 
@@ -275,10 +275,9 @@ func TestS3Staging_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestS3Staging_UnconfiguredWorkerFails proves that an s3-rooted stage_locally
-// job fails when the worker has no sync_command configured — the worker rejects
-// the task pre-exec because it is not configured for staging. This path fails
-// before any S3 I/O.
+// TestS3Staging_UnconfiguredWorkerFails checks that an s3-rooted stage_locally
+// job fails when the worker has no sync_command configured: the worker rejects
+// the task before running it, with no S3 I/O.
 func TestS3Staging_UnconfiguredWorkerFails(t *testing.T) {
 	const bucket = "sqi-staging"
 
@@ -288,7 +287,7 @@ func TestS3Staging_UnconfiguredWorkerFails(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
-	// Staging config with a scratch dir but NO sync_command → not configured.
+	// Staging config with a scratch dir but no sync_command: not configured.
 	cfgPath := writeStagingWorkerConfig(t, "")
 	startRealWorkerWithOptions(t, ts, farmID, queueID, []string{"--config", cfgPath}, nil)
 
@@ -305,9 +304,9 @@ func TestS3Staging_UnconfiguredWorkerFails(t *testing.T) {
 	}
 }
 
-// TestS3Staging_BadObjectFails proves that an s3-rooted stage_locally job fails
+// TestS3Staging_BadObjectFails checks that an s3-rooted stage_locally job fails
 // when the IN object does not exist in the bucket: the s3sync copy-in fails
-// (NoSuchKey), stage-in errors, and the task fails pre-exec.
+// (NoSuchKey), stage-in errors, and the task fails before it runs.
 func TestS3Staging_BadObjectFails(t *testing.T) {
 	const bucket = "sqi-staging"
 
@@ -330,7 +329,7 @@ func TestS3Staging_BadObjectFails(t *testing.T) {
 
 	createS3StorageLocation(t, ts, "s3loc", bucket)
 
-	// IN object was never put into the bucket → copy-in fails with NoSuchKey.
+	// The IN object is not in the bucket, so copy-in fails with NoSuchKey.
 	jobID := submitS3StagingJob(t, ts, farmID, queueID,
 		"loc://s3loc/in/missing.txt", "loc://s3loc/out/scene.txt")
 	t.Logf("submitted bad-object s3 staging job %s", jobID)

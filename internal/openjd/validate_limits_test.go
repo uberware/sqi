@@ -468,16 +468,15 @@ func TestValidate_HugeRange_NoOOM(t *testing.T) {
 // ─── the parameter-space caps must gate the expression walk ─────────────────
 //
 // The expression walk (checkTemplateExpressions) is the more expensive of the
-// two walks the checker runs over a step's parameter space -- validated
-// directly: one step at exactly maxTaskParameterDefinitions x
-// 1024 entries of `{{ ("x" * 900000).upper() }}` costs ~97s of
-// CPU in this walk alone without the gate, unbounded by anything but the 4
-// MiB request body. These tests assert the PROPERTY the gate establishes --
-// the cap error is present and a walk-only error is absent -- rather than a
-// wall-clock threshold, which flakes on shared CI.
+// two walks the checker runs over a step's parameter space: one step at
+// maxTaskParameterDefinitions x 1024 entries of an expensive expression such
+// as `{{ ("x" * 900000).upper() }}` costs a long CPU run without the gate.
+// These tests assert what the gate establishes (the cap error is present and
+// a walk-only error is absent) rather than a wall-clock threshold, which is
+// unreliable on shared CI.
 
 // exprEnabledYAML is minimalValidYAML with the EXPR extension declared, so
-// checkTemplateExpressions actually walks the template instead of no-oping
+// checkTemplateExpressions walks the template instead of no-oping
 // (it returns nil immediately for a template that does not declare EXPR --
 // see its own doc comment in exprcheck.go).
 func exprEnabledYAML() string {

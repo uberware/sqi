@@ -3,7 +3,7 @@ import { createElement, type ReactElement, type ReactNode } from 'react'
 import styles from './Markdown.module.css'
 
 /** Schemes a link may use. Everything else renders as plain text — readmes are
- * user-authored (products.manage, and auth is OFF by default) and preset
+ * user-authored (products.manage, and auth is off by default) and preset
  * readmes come from a remote index, so this allowlist is the only control. */
 const SAFE_SCHEMES = ['http:', 'https:', 'mailto:']
 
@@ -84,8 +84,8 @@ function headingTag(hashes: number): 'h3' | 'h4' | 'h5' | 'h6' {
  *
  * Supported: paragraphs, unordered and ordered lists, fenced code blocks, ATX
  * headings, and the inline spans in INLINE. Images, tables, blockquotes,
- * reference links and raw HTML are NOT supported and degrade to literal text.
- * This renderer never sets raw HTML on the DOM, deliberately — see the test. */
+ * reference links and raw HTML are not supported and degrade to literal text.
+ * This renderer never sets raw HTML on the DOM (see the test). */
 export default function Markdown({ source }: { source: string }): ReactElement {
   const lines = source.split('\n')
   const blocks: ReactNode[] = []
@@ -163,9 +163,9 @@ export default function Markdown({ source }: { source: string }): ReactElement {
     }
     // Lazy continuation (CommonMark): a plain text line while a list is open
     // and no paragraph is in progress belongs to the item above it, not to a
-    // new paragraph. Without this, a bullet wrapped across source lines --
-    // which every shipped preset readme does -- silently splits into a
-    // one-item list plus an orphaned paragraph, and a wrapped ordered item
+    // new paragraph. Without this, a bullet wrapped across source lines (as
+    // the preset readmes wrap them) splits into a one-item list plus an
+    // orphaned paragraph, and a wrapped ordered item
     // splits its list too, so the next numbered line starts a fresh <ol> and
     // renders "1." again instead of continuing the count.
     if (list !== null && para.length === 0) {

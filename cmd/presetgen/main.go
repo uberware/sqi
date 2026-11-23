@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Command presetgen publishes the repo's authored presets (presets/sqi/*.yaml)
-// into a checkout of the preset-library repo: it writes the definition files
-// under a namespaced subdir and merges their entries into index.json, leaving
-// any foreign entries untouched. It is a release-time tool (see the
-// publish-presets job in .github/workflows/release.yml), not a shipped binary.
+// Command presetgen publishes the repo's authored presets (presets/sqi/*.yaml
+// by default, or the directory -presets names) into a checkout of the
+// preset-library repo: it writes the definition files under a namespaced
+// subdir and merges their entries into index.json, leaving any foreign entries
+// untouched. It is a release-time tool (see the publish-presets job in
+// .github/workflows/release.yml), not a shipped binary.
 //
 // Usage:
 //

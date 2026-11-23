@@ -247,7 +247,7 @@ func TestEvalIndex_Unresolved(t *testing.T) {
 // TestEvalIndexAndSlice_UnionReceiver pins the union arm of indexResultType and
 // sliceResultType.
 //
-// Without that arm every case here is a FALSE REJECTION: a type error reported
+// Without that arm every case here is a false rejection: a type error reported
 // for an expression that cannot fail at runtime, which for a template author
 // means a rejected job. The first case's union comes from sliceResultType,
 // which deliberately types a range_expr slice as "range_expr | list[int]". The
@@ -255,7 +255,7 @@ func TestEvalIndex_Unresolved(t *testing.T) {
 // condition as the union of both branches, per section 1.3.1.
 //
 // The expected types are asserted, not merely the absence of an error: the
-// point of the arm is that the result is USABLE downstream, which it is only if
+// point of the arm is that the result is usable downstream, which it is only if
 // it carries the type the runtime value will really have.
 func TestEvalIndexAndSlice_UnionReceiver(t *testing.T) {
 	syms := MapSymbols{
@@ -300,7 +300,7 @@ func TestEvalIndexAndSlice_UnionReceiver(t *testing.T) {
 }
 
 // TestEvalIndexAndSlice_UnionReceiverRejectsAnUnindexableMember checks the other
-// half of the union rule: legal on EVERY member, not on any one of them. A
+// half of the union rule: legal on every member, not on any one of them. A
 // union holding a path is not subscriptable, because the runtime value might be
 // the path.
 func TestEvalIndexAndSlice_UnionReceiverRejectsAnUnindexableMember(t *testing.T) {

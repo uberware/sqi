@@ -4,7 +4,7 @@ package api
 
 // Unit tests for farm REST handlers.
 //
-// Coverage targets (error paths not yet reached):
+// Coverage targets:
 //   POST   /api/v1/farms      — invalid JSON, missing name, conflict, store error
 //   GET    /api/v1/farms      — success
 //   GET    /api/v1/farms/{id} — not found
@@ -395,8 +395,7 @@ func TestDeleteFarm_StillInUse(t *testing.T) {
 
 // TestFarmRetryOverrides_Rejected asserts create/update validate the retry
 // override bounds at the API boundary (max_attempts >= 1, delay >= 0,
-// failure_limit >= 0) instead of storing values the scheduler would silently
-// clamp.
+// failure_limit >= 0) instead of storing values the scheduler would clamp.
 func TestFarmRetryOverrides_Rejected(t *testing.T) {
 	st := fake.New()
 	defer st.Close()

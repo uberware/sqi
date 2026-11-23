@@ -45,7 +45,7 @@ describe('CopyButton', () => {
     render(<CopyButton value="x" />)
     fireEvent.click(screen.getByRole('button'))
     expect(writeText).toHaveBeenCalled()
-    // The promise rejected, so there is no "Copied!" state.
+    // The promise rejected, so there is no "Copied" state.
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
   })
 })

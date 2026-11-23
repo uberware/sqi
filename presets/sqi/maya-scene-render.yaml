@@ -28,8 +28,9 @@ readme: |
   ## How work is divided
 
   The frame range expands into tasks through OpenJD task chunking, one frame per
-  task by default. Raise the chunk size to batch several frames into a single
-  Maya launch, which trades parallelism for fewer scene loads.
+  task (`defaultTaskCount: 1`). A copy of the preset with a larger
+  `defaultTaskCount` batches several frames into a single Maya launch, which
+  trades parallelism for fewer scene loads.
 
   The `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of
   its own slice, which is what lets the command pass `-s` and `-e` rather than a

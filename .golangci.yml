@@ -11,12 +11,11 @@ run:
   tests: true
   relative-path-mode: gomod
   modules-download-mode: readonly
-  # Without this the files under test/integration/ are behind the 'integration'
-  # build tag, so golangci-lint never compiles them and `make ci` reports clean
-  # on code it has not read. Setting it here rather than adding a second lint
-  # target keeps `make lint` the single entry point the Makefile and CI already
-  # call; the tag only widens what is compiled, it does not change any result
-  # for the untagged packages.
+  # golangci-lint compiles only the files these tags select, so without them
+  # test/integration/ (behind 'integration') and the other tagged suites would
+  # go unlinted while `make lint` reports clean. Setting them here keeps
+  # `make lint` the single lint entry point; the tags only widen what is
+  # compiled and change no result for the untagged packages.
   build-tags:
     - integration
     - conformance
@@ -80,7 +79,7 @@ linters:
     - musttag            # structs that require json/yaml tags have them
     - importas           # consistent import aliases across the codebase
 
-    # ── Complexity (permissive thresholds for early dev) ─────────────────────
+    # ── Complexity ───────────────────────────────────────────────────────────
     - cyclop             # cyclomatic complexity per function
     - nestif             # deeply nested if chains
 
@@ -94,7 +93,7 @@ linters:
     - usetesting         # prefer t.TempDir, t.Setenv, etc.
 
   settings:
-    # cyclop: generous threshold while the codebase is young; tighten later
+    # cyclop: maximum cyclomatic complexity per function
     cyclop:
       max-complexity: 15
 
@@ -119,7 +118,7 @@ linters:
       check-blank: true
       exclude-functions:
         # errors.AsType[E](err) returns (E, bool). The first result is the
-        # extracted error value, not a failure signal — the bool is. Discarding
+        # extracted error value, not a failure signal; the bool is. Discarding
         # it as `_, ok := errors.AsType[...](err)` is the idiomatic form when
         # only the match matters, but check-blank sees a blank-assigned error
         # and reports it. Exclude the function rather than turning check-blank
@@ -145,7 +144,7 @@ linters:
         - performance
         - style
       disabled-checks:
-        - hugeParam         # false-positive noise; we use pointers where it matters
+        - hugeParam         # false-positive noise; pointers are used where it matters
         - rangeValCopy      # same
 
     # godot: top-level comments only; don't enforce on inline //nolint etc.
@@ -194,13 +193,11 @@ linters:
           - funlen
           - gocritic
 
-      # staticcheck SA5011 false-positives in tests. The standard
+      # staticcheck SA5011 false positives in tests. The standard
       # `if ptr == nil { t.Fatal(...) }` guard followed by a deref is correct,
-      # but on the CI runner staticcheck intermittently loses the fact that
-      # t.Fatal terminates the test and reports a "possible nil pointer
-      # dereference". It is non-deterministic (different sites each run) and not
-      # reproducible locally, so suppress SA5011 in test files rather than
-      # whack-a-mole patching individual call sites.
+      # but staticcheck can intermittently lose the fact that t.Fatal
+      # terminates the test and report a "possible nil pointer dereference" at
+      # varying call sites, so SA5011 is suppressed in test files.
       - path: _test\.go
         text: "SA5011"
         linters:
@@ -220,7 +217,7 @@ linters:
         linters:
           - gocritic
 
-      # Suppress "weak crypto" in test helpers that deliberately use md5/sha1.
+      # Suppress "weak crypto" in test helpers that use md5/sha1.
       - path: _test\.go
         text: "weak cryptographic primitive"
         linters:

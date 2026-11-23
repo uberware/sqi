@@ -241,12 +241,11 @@ type NATSCalloutConfig struct {
 	SystemCredsFile string `yaml:"system_creds_file"`
 }
 
-// TLSConfig controls in-process TLS termination for a listener. Zero value
-// leaves TLS off, which is the default and must stay byte-for-byte
-// equivalent to how the listener behaved before TLS existed.
+// TLSConfig controls in-process TLS termination for a listener. The zero
+// value, the default, leaves TLS off and the listener serves plain HTTP.
 type TLSConfig struct {
 	// Enabled turns the listener into an HTTPS listener. There is no
-	// plaintext port when it is on: the listener upgrades in place.
+	// plaintext port when it is on: the same address serves HTTPS.
 	// Env: SQI_HTTP_TLS_ENABLED
 	Enabled bool `yaml:"enabled"`
 
@@ -259,10 +258,10 @@ type TLSConfig struct {
 	KeyFile string `yaml:"key_file"`
 }
 
-// NATSTLSConfig controls TLS on the embedded broker. It is deliberately
-// separate from the http.tls block: the two protect different surfaces and
-// an operator may legitimately use a publicly-issued certificate on the API
-// and a private farm CA on the broker.
+// NATSTLSConfig controls TLS on the embedded broker. It is separate from the
+// http.tls block because the two protect different surfaces: an operator may
+// use a publicly issued certificate on the API and a private farm CA on the
+// broker.
 type NATSTLSConfig struct {
 	// Enabled requires TLS on every broker connection.
 	// Env: SQI_NATS_EMBEDDED_TLS_ENABLED
@@ -277,10 +276,9 @@ type NATSTLSConfig struct {
 	KeyFile string `yaml:"key_file"`
 
 	// ClientCAFile, when set, requires every worker to present a client
-	// certificate signed by this CA. This is a TRANSPORT control layered on
-	// top of the per-worker nkey credential, not a replacement for it: the
-	// certificate gates who may open a connection, the nkey decides which
-	// worker you are.
+	// certificate signed by this CA. It is a transport control layered on
+	// the per-worker nkey credential: the certificate decides who may open a
+	// connection, the nkey decides which worker it is.
 	// Env: SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE
 	ClientCAFile string `yaml:"client_ca_file"`
 }
@@ -299,8 +297,8 @@ type NATSAuthConfig struct {
 	JoinTokenTTL time.Duration `yaml:"join_token_ttl"`
 
 	// JoinTokenSingleUse consumes a join token on first successful
-	// enrollment. Leaving it true is strongly recommended; false exists for
-	// image-baked fleets that enroll many identical machines from one token.
+	// enrollment. Leave it true unless image-baked fleets enroll many
+	// identical machines from one token.
 	// Env: SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE
 	JoinTokenSingleUse bool `yaml:"join_token_single_use"`
 
@@ -386,8 +384,8 @@ type PostgresStoreConfig struct {
 
 // MarshalYAML redacts the DSN's password so it never appears in YAML output
 // (e.g. `sqi-server config print`), as [LDAPConfig.MarshalYAML] does the bind
-// password. It does not affect unmarshaling or the loaded value. Round-tripping
-// a redacted dump is intentionally not supported — redaction wins.
+// password. It does not affect unmarshaling or the loaded value. A redacted
+// dump does not round-trip.
 func (p PostgresStoreConfig) MarshalYAML() (any, error) {
 	type plain PostgresStoreConfig
 	out := plain(p)
@@ -425,9 +423,8 @@ type LogConfig struct {
 	MaxBackups int `yaml:"max_backups"`
 }
 
-// SchedulerConfig controls the task assignment loop behavior.
-// These fields are defined now for completeness and config file documentation;
-// they are consumed by the scheduler component.
+// SchedulerConfig controls the scheduler: task assignment, worker liveness,
+// retention, retries and reconciliation.
 type SchedulerConfig struct {
 	// HeartbeatTimeout is the duration after which a worker that has not sent
 	// a heartbeat is declared offline and its in-flight tasks are reclaimed.
@@ -655,11 +652,9 @@ type AuthConfig struct {
 	// ValidateJobOwner rejects a submission whose Owner names no known user.
 	// Default true — it keeps Job.Owner a trustworthy key for owner-scoped
 	// visibility: the user role's job listings are filtered by owner, so a
-	// typo'd owner yields a job invisible to the person who actually owns it
-	// and missed by an admin filtering on them. It would likewise be the key
-	// for any future per-user concurrency cap. Disable it when owners come
-	// from a directory that has
-	// not yet provisioned local records.
+	// typo'd owner yields a job invisible to the person who owns it and
+	// missed by an admin filtering on them. Disable it when owners come from
+	// a directory that has no local records for them.
 	// Env: SQI_AUTH_VALIDATE_JOB_OWNER
 	ValidateJobOwner bool `yaml:"validate_job_owner"`
 
@@ -714,15 +709,14 @@ type BootstrapConfig struct {
 }
 
 // redactedPassword is the fixed placeholder emitted by [BootstrapConfig.MarshalYAML]
-// in place of a non-empty Password. It is a marker, not a valid credential —
-// unmarshaling it back would not reproduce the original password.
+// and the other MarshalYAML methods in place of a secret. It is a marker, not
+// a credential: unmarshaling it does not reproduce the original value.
 const redactedPassword = "<redacted>"
 
 // MarshalYAML redacts Password so it never appears in YAML output (e.g.
 // `sqi-server config print`, logs of a marshaled config). It does not affect
-// unmarshaling: loading a config file with a real `password:` value is
-// unaffected. Round-tripping a redacted dump is intentionally not supported —
-// redaction wins over round-tripping.
+// unmarshaling: a config file's real `password:` value loads as written. A
+// redacted dump does not round-trip.
 func (b BootstrapConfig) MarshalYAML() (any, error) {
 	type plain BootstrapConfig
 	out := plain(b)
@@ -838,9 +832,8 @@ type LDAPConfig struct {
 
 // MarshalYAML redacts BindPassword so it never appears in YAML output (e.g.
 // `sqi-server config print`, logs of a marshaled config). It does not affect
-// unmarshaling: loading a config file with a real `bind_password:` value is
-// unaffected. Round-tripping a redacted dump is intentionally not supported —
-// redaction wins over round-tripping.
+// unmarshaling: a config file's real `bind_password:` value loads as written.
+// A redacted dump does not round-trip.
 func (l LDAPConfig) MarshalYAML() (any, error) {
 	type plain LDAPConfig
 	out := plain(l)
@@ -863,12 +856,11 @@ type RoleMappingConfig struct {
 // session a local password login produces. Nothing downstream — RBAC, owner
 // binding, WebSocket scoping — is aware SSO exists.
 //
-// Deliberately a single provider block, not a list. Almost every
-// organization has one identity provider, and configuration shape is
-// uniquely expensive to revise because it lives in operators' files. If
-// multi-provider is ever needed, add an auth.oidc.providers list alongside
-// these fields and treat them as shorthand for a one-element list — do NOT
-// reshape these into a list, which would break every existing config.
+// It is a single provider block, not a list: most organizations have one
+// identity provider, and configuration shape is costly to change because it
+// lives in operators' files. Several providers would be an auth.oidc.providers
+// list alongside these fields, with these fields read as a one-element list;
+// reshaping these fields into a list would break every existing config.
 type OIDCConfig struct {
 	// Enabled turns on SSO. Requires auth.enabled.
 	// Env: SQI_AUTH_OIDC_ENABLED
@@ -896,9 +888,9 @@ type OIDCConfig struct {
 	// Env: SQI_AUTH_OIDC_REDIRECT_URL
 	RedirectURL string `yaml:"redirect_url"`
 
-	// Scopes requested at authorization. Must include "openid". Note that
-	// "groups" is NOT standard OIDC — whether group membership needs a
-	// scope, a provider-side mapper, or both varies by vendor.
+	// Scopes requested at authorization. Must include "openid". "groups" is
+	// not a standard OIDC scope: whether group membership needs a scope, a
+	// provider-side mapper, or both varies by vendor.
 	// Env: SQI_AUTH_OIDC_SCOPES (comma-separated)
 	Scopes []string `yaml:"scopes"`
 
@@ -920,7 +912,7 @@ type OIDCConfig struct {
 	// RoleSource decides who owns an OIDC user's role: "directory"
 	// (recomputed from claims on every login; the users API rejects role
 	// edits) or "local" (claims seed it at provisioning only). Separate
-	// from auth.ldap.role_source on purpose — an operator may trust one
+	// from auth.ldap.role_source because an operator may trust one
 	// provider's groups and not the other's.
 	// Env: SQI_AUTH_OIDC_ROLE_SOURCE
 	RoleSource string `yaml:"role_source"`
@@ -965,9 +957,8 @@ type OIDCConfig struct {
 }
 
 // MarshalYAML redacts ClientSecret so it never appears in YAML output (e.g.
-// `sqi-server config print`). Round-tripping a redacted dump is
-// intentionally not supported — redaction wins over round-tripping, as with
-// [LDAPConfig.MarshalYAML].
+// `sqi-server config print`). As with [LDAPConfig.MarshalYAML], a redacted
+// dump does not round-trip.
 func (o OIDCConfig) MarshalYAML() (any, error) {
 	type plain OIDCConfig
 	out := plain(o)
@@ -1001,45 +992,44 @@ type PresetLibraryConfig struct {
 // OpenJDConfig controls OpenJD submission and validation behavior.
 type OpenJDConfig struct {
 	// EnforceLimits gates quantitative limit validation (maximum name lengths,
-	// counts, reserved-name rules). Disable only when onboarding templates that
-	// predate the strict limits and cannot yet be updated.
+	// counts, reserved-name rules). Disable it only for templates that exceed
+	// these limits and cannot be changed.
 	// Env: SQI_OPENJD_ENFORCE_LIMITS
 	EnforceLimits bool `yaml:"enforce_limits"`
 
 	// ExprOperationLimit is how many OpenJD expression-language operations
-	// (specification section 1.3.10) ONE expression in a submitted template may
+	// (specification section 1.3.10) one expression in a submitted template may
 	// spend at validation time.
 	//
 	// Raising it lengthens the worst request this server can be asked to
-	// serve, roughly in proportion: nothing meters wall clock, and an
-	// operation's real cost varies by orders of magnitude between arithmetic
-	// and a regex over a large string.
+	// serve, roughly in proportion: an operation's real cost varies by orders
+	// of magnitude between arithmetic and a regex over a large string, and
+	// only ExprSubmissionDeadline bounds wall-clock time.
 	// Range: [MinOpenJDExprOperationLimit, MaxOpenJDExprOperationLimit].
 	// Env: SQI_OPENJD_EXPR_OPERATION_LIMIT
 	ExprOperationLimit int64 `yaml:"expr_operation_limit"`
 
-	// ExprMemoryLimit is how many live bytes (specification section 1.3.9) ONE
+	// ExprMemoryLimit is how many live bytes (specification section 1.3.9) one
 	// expression in a submitted template may hold at validation time.
 	//
-	// Raising it permits proportionally more memory per evaluation on an
-	// unauthenticated request path; the ceiling is one order of magnitude above
-	// the default for that reason. No fixed internal guard makes a larger value
-	// inert (measured). Treat the ceiling as a deliberate policy limit, not as
-	// a point beyond which the setting stops working.
+	// Raising it permits proportionally more memory per evaluation on a
+	// request path that may be unauthenticated, so the ceiling is one order
+	// of magnitude above the default. No other internal guard caps a larger
+	// value: the ceiling is a policy limit, not a point beyond which the
+	// setting stops having an effect.
 	// Range: [MinOpenJDExprMemoryLimit, MaxOpenJDExprMemoryLimit].
 	// Env: SQI_OPENJD_EXPR_MEMORY_LIMIT
 	ExprMemoryLimit int64 `yaml:"expr_memory_limit"`
 
-	// ExprTemplatePositions is how many expression positions ONE template may
-	// contain — cumulative across the whole validation pass, not per field.
+	// ExprTemplatePositions is how many expression positions one template may
+	// contain, counted across the whole validation pass rather than per field.
 	//
-	// This and ExprOperationLimit MULTIPLY: the cumulative operation ceiling
-	// for one request is their product, and raising both raises it twice over.
+	// This and ExprOperationLimit multiply: the cumulative operation ceiling
+	// for one request is their product.
 	//
-	// It also has a farm-wide consequence the server cannot check alone: a
-	// worker's own per-assignment position cap must not be lower, or a job
-	// this server ACCEPTS fails on every task at run time instead of failing
-	// the one request that could have reported it.
+	// A worker's per-assignment position cap must not be lower than this, or
+	// a job this server accepts fails on every task at run time. The
+	// scheduler withholds EXPR work from a worker whose caps are lower.
 	// Range: [MinOpenJDExprTemplatePositions, MaxOpenJDExprTemplatePositions].
 	// Env: SQI_OPENJD_EXPR_TEMPLATE_POSITIONS
 	ExprTemplatePositions int64 `yaml:"expr_template_positions"`
@@ -1047,30 +1037,27 @@ type OpenJDConfig struct {
 	// ExprTemplateRetainedBytes is how many bytes a template's `let:` bindings
 	// may cumulatively retain across one validation pass.
 	//
-	// Counted as cumulative ALLOCATION, not peak live retention: a template
+	// It counts cumulative allocation, not peak live retention: a template
 	// that never holds more than a few MB at once is still charged the sum of
-	// every block. Sizing a host's RAM against this number will over-provision.
+	// every block, so sizing a host's RAM against this number over-provisions.
 	// Range: [MinOpenJDExprTemplateRetainedBytes, MaxOpenJDExprTemplateRetainedBytes].
 	// Env: SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES
 	ExprTemplateRetainedBytes int64 `yaml:"expr_template_retained_bytes"`
 
-	// ExprSubmissionDeadline is how long this server will keep evaluating one
+	// ExprSubmissionDeadline is how long this server keeps evaluating one
 	// submission's expressions before giving up on it.
 	//
-	// IT IS NOT ONE OF THE FOUR ABOVE, and the difference is the reason it
-	// exists. Those four are DETERMINISTIC: a template that breaches one
-	// breaches it on every machine, every time, so the breach is a property of
-	// the template and the submitter is told their template is invalid (a 422
-	// no retry can fix). This one is WALL CLOCK, so the same body would be
-	// accepted on an idle host and rejected on a loaded one. A breach here
-	// therefore reports that this server gave up (a 503 a retry may clear),
-	// never that the template is wrong.
+	// The four limits above are deterministic: a template that breaches one
+	// breaches it on every machine, so the submitter is told the template is
+	// invalid (a 422). This one is wall-clock time, so the same body can be
+	// accepted on an idle host and rejected on a loaded one; a breach reports
+	// that this server gave up (a 503 a retry may clear), not that the
+	// template is wrong.
 	//
-	// It exists because none of the four bounds TIME. Specification section
-	// 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly
-	// free in operations and expensive in seconds; with every budget
-	// respected, one request can still cost at least ~17 minutes of server
-	// CPU at the defaults. The deadline is the only bound on time.
+	// It is the only bound on time. Specification section 1.3.10 prices 256
+	// bytes at one operation, so byte-heavy work is cheap in operations and
+	// expensive in seconds; with every other limit respected, one request can
+	// cost more than 15 minutes of server CPU at the defaults.
 	// Range: [MinOpenJDExprSubmissionDeadline, MaxOpenJDExprSubmissionDeadline].
 	// Env: SQI_OPENJD_EXPR_SUBMISSION_DEADLINE
 	ExprSubmissionDeadline time.Duration `yaml:"expr_submission_deadline"`
@@ -1085,10 +1072,10 @@ type OpenJDConfig struct {
 // internal/openjd pulls in internal/store). TestExprLimits_ConfigMatchesOpenJD
 // in internal/server, which may import both, fails if the two sides differ.
 //
-// The rationale for each number — which bounds are catastrophe bounds with a
-// ceiling no operator may raise past, which is a policy bound, and what the
-// floors were measured against — lives on internal/openjd's ExprLimits and its
-// Min/Max constants, next to the code the numbers govern.
+// The rationale for each number (which bounds are catastrophe bounds with a
+// ceiling no operator may raise past, which is a policy bound, and what each
+// floor is set against) is on internal/openjd's ExprLimits and its Min/Max
+// constants, next to the code the numbers govern.
 const (
 	DefaultOpenJDExprOperationLimit int64 = 10_000
 	MinOpenJDExprOperationLimit     int64 = 1_000
@@ -1111,37 +1098,32 @@ const (
 // [OpenJDConfig.ExprSubmissionDeadline], the wall-clock backstop for EXPR
 // evaluation.
 //
-// Unlike the four above, these are NOT duplicated from internal/openjd: the
-// deadline is a per-request absolute instant computed here from this duration,
-// so internal/openjd holds no constant to keep in step with. Nothing in this
-// package imports internal/openjd, and nothing needs to.
+// Unlike the four above, these are not duplicated from internal/openjd: the
+// deadline is a per-request instant computed from this duration, so
+// internal/openjd holds no constant to keep in step with.
 const (
-	// DefaultOpenJDExprSubmissionDeadline sits about three orders of
-	// magnitude below the ~17-minute worst case. The largest legitimate
-	// template accepted at the defaults spends about 0.83 s in the
-	// expression checker, roughly 6x headroom; raising the four EXPR limits
-	// without raising this deadline can turn legitimate submissions into
-	// 503s.
+	// DefaultOpenJDExprSubmissionDeadline is far below the worst case of more
+	// than 15 minutes. The largest legitimate template accepted at the
+	// defaults spends about 0.83 s in the expression checker, roughly 6x
+	// headroom; raising the four EXPR limits without raising this deadline
+	// can turn legitimate submissions into 503s.
 	DefaultOpenJDExprSubmissionDeadline = 5 * time.Second
 
 	// MinOpenJDExprSubmissionDeadline is the floor because below a second a
-	// legitimate large template -- a body near the 4 MiB request cap, on a
-	// busy or slow host -- could plausibly fail, and a backstop that rejects
-	// valid work is worse than the exposure it guards. It is the point past
-	// which this setting stops being a backstop and becomes a load-dependent
-	// admission policy.
+	// legitimate large template (a body near the 4 MiB request cap, on a busy
+	// or slow host) could fail, and a backstop that rejects valid work is
+	// worse than the exposure it guards. Below it the setting stops being a
+	// backstop and becomes a load-dependent admission policy.
 	MinOpenJDExprSubmissionDeadline = time.Second
 
-	// MaxOpenJDExprSubmissionDeadline is the ceiling because the key exists to
-	// bound that ~17-minute figure. A ceiling anywhere near it would bound
-	// nothing an operator could not already reach, and this repository's own
-	// history records that the worst case has been under-reported three
-	// separate times -- so the ceiling is set against what a submission should
-	// ever need, not against what has been measured to be possible.
+	// MaxOpenJDExprSubmissionDeadline is the ceiling because the key exists
+	// to bound the worst case, and a ceiling near it would bound nothing. It
+	// is set against what a submission should ever need, not against the
+	// worst case, whose true size is not known.
 	MaxOpenJDExprSubmissionDeadline = 60 * time.Second
 )
 
-// DefaultConfig returns a [Config] with sensible defaults suitable for local
+// DefaultConfig returns a [Config] with defaults suitable for local
 // development. Production deployments should override fields via a config file
 // or SQI_* environment variables.
 func DefaultConfig() Config {

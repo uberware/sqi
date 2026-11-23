@@ -32,8 +32,8 @@ cannot resolve a generic function's name, so the exclusion never matches and
 not checked`.
 
 CI pins v2.13.1 (`.github/workflows/ci.yml`) so a new golangci-lint release
-cannot change its result. 2.13.0 also lints this repo clean, so the local floor
-sits one patch below the pin. Raise both together.
+cannot change its result; the local floor sits one patch below the pin. Raise
+both together.
 
 ---
 
@@ -53,7 +53,7 @@ make build
 make run
 ```
 
-The server is now reachable at `http://localhost:8080`. Confirm it is healthy:
+The server listens on `http://localhost:8080`. Confirm it is healthy:
 
 ```sh
 curl -sf http://localhost:8080/healthz && echo OK
@@ -80,20 +80,20 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-cover` | Run tests and print coverage; fails below 70% (the `COVERAGE_MIN` default in the Makefile) |
 | `make test-cover-html` | Open an HTML coverage report in the browser |
 | `make test-integration` | Run integration tests (build tag `integration`) |
-| `make test-dcc` | Run the preset harness with Blender, Nuke and Houdini **required**, against the real applications (`DCC_APPS=blender,nuke,houdini` by default; narrow it to the ones you have, or add `unreal`, `renderman` or `3delight`). A missing application **fails** instead of skipping. See [Running the preset validation harness](#running-the-preset-validation-harness) |
-| `make test-ldap` | Run the LDAP tests against a real OpenLDAP directory in a container (needs Docker; **skips** without it) |
-| `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
-| `make test-postgres` | Run the PostgreSQL-backed tests against a throwaway PostgreSQL in a container (`PG_VERSION=16` or `18`, default 18; needs Docker; **skips** without it). See [Testing against PostgreSQL](#testing-against-postgresql) |
-| `make test-isolation` | Run run-as-user task-isolation tests as real root against real OS accounts in a container (needs Docker; **skips** without it) |
-| `make test-nats-cluster` | Run the external-broker tests against a real three-node NATS cluster in Docker (`NATS_IMAGE=…`, default the current pinned image; needs Docker; **skips** without it). See [Testing against a real NATS cluster](#testing-against-a-real-nats-cluster) |
+| `make test-dcc` | Run the preset harness with Blender, Nuke and Houdini required, against the real applications (`DCC_APPS=blender,nuke,houdini` by default; narrow it to the ones you have, or add `unreal`, `renderman` or `3delight`). A missing application fails instead of skipping. See [Running the preset validation harness](#running-the-preset-validation-harness) |
+| `make test-ldap` | Run the LDAP tests against a real OpenLDAP directory in a container (needs Docker; skips without it) |
+| `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; skips without it) |
+| `make test-postgres` | Run the PostgreSQL-backed tests against a throwaway PostgreSQL in a container (`PG_VERSION=16` or `18`, default 18; needs Docker; skips without it). See [Testing against PostgreSQL](#testing-against-postgresql) |
+| `make test-isolation` | Run run-as-user task-isolation tests as real root against real OS accounts in a container (needs Docker; skips without it) |
+| `make test-nats-cluster` | Run the external-broker tests against a real three-node NATS cluster in Docker (`NATS_IMAGE=…`, default the current pinned image; needs Docker; skips without it). See [Testing against a real NATS cluster](#testing-against-a-real-nats-cluster) |
 | `make test-ha` | Run the scheduler high-availability tests: real `sqi-server` binaries with `ha.enabled` on a PostgreSQL container and the three-node NATS cluster, a real worker, and the crash, freeze, stop, broker-loss and database-loss scenarios (needs Docker; skips without it, so check for ten `--- PASS: TestHA_` lines) |
-| `make test-isolation-windows` | Run the Windows run-as-user isolation tests against real local accounts, tier 1 as the elevated administrator and tier 2 as SYSTEM. Needs an **elevated** shell on a real Windows host (no container); exits 0 with a message when not elevated |
-| `make test-service-windows` | Drive `sqi-server` and `sqi-worker` through the real Windows service manager. It installs, starts, stops and deletes real `sqi-test-*` services and creates and deletes a throwaway `sqisvc-*` local account. Needs an **elevated** shell on a real Windows host (no container); exits 0 having done nothing when not elevated |
-| `make test-discovery` | Run the mDNS discovery tests over real multicast (no container; **fails rather than skips** when multicast is unavailable) |
+| `make test-isolation-windows` | Run the Windows run-as-user isolation tests against real local accounts, tier 1 as the elevated administrator and tier 2 as SYSTEM. Needs an elevated shell on a real Windows host (no container); exits 0 with a message when not elevated |
+| `make test-service-windows` | Drive `sqi-server` and `sqi-worker` through the real Windows service manager. It installs, starts, stops and deletes real `sqi-test-*` services and creates and deletes a throwaway `sqisvc-*` local account. Needs an elevated shell on a real Windows host (no container); exits 0 having done nothing when not elevated |
+| `make test-discovery` | Run the mDNS discovery tests over real multicast (no container; fails rather than skips when multicast is unavailable) |
 | `make test-conformance` | Run the official OpenJD conformance suite against the vendored `third_party/` fixtures (build tag `conformance`) |
-| `make test-expr-oracle` | Differential-test the EXPR evaluator against the OpenJD reference implementation (needs `python3`; **skips** without it) |
+| `make test-expr-oracle` | Differential-test the EXPR evaluator against the OpenJD reference implementation (needs `python3`; skips without it) |
 | `make test-preset-harness` | Run the whole preset validation harness (Tiers 1 to 3 and the registry check) in one `go test` process. See [Running the preset validation harness](#running-the-preset-validation-harness) |
-| `make test-preset-library` | Validate the published preset library against the validator in your tree (needs network; **skips** when the library is unreachable, **fails** when it is reachable but invalid) |
+| `make test-preset-library` | Validate the published preset library against the validator in your tree (needs network; skips when the library is unreachable, fails when it is reachable but invalid) |
 | `make expr-oracle-venv` | Create `.venv-oracle/` with the pinned reference implementation (`make test-expr-oracle` does this on demand) |
 | `make smoke` | End-to-end smoke test against the real binaries (REST + WebSocket) |
 | `make auth-demo` | Run the auth-surface demo against a live local farm (`KEEP=1` leaves it running) |
@@ -191,9 +191,9 @@ The other fuzz targets are `FuzzParseJSON` (`internal/openjd`),
 Two suites in `test/integration/` talk to a real external identity source
 rather than a fake: `ldap_test.go` (`make test-ldap`) and `oidc_test.go`
 (`make test-oidc`). Both are behind the `integration` build tag, both boot a
-throwaway container, and **both skip when Docker is unavailable**, so a green
-run proves nothing until you confirm it executed. Check for `--- PASS` lines,
-not just a zero exit code; `GOFLAGS=-count=1` stops Go replaying a cached
+throwaway container, and both skip when Docker is unavailable, so a green run
+proves nothing until you confirm it executed. Check for `--- PASS` lines as
+well as the exit code; `GOFLAGS=-count=1` stops Go replaying a cached
 result.
 
 Most LDAP tests drive a fake connection. That covers sqi's own logic but not
@@ -229,8 +229,8 @@ The fixture directory needs two properties:
 
 - **`memberOf` must be populated.** AD does this natively; OpenLDAP needs the
   `memberof` overlay, and the overlay's `olcMemberOfGroupOC` must match the
-  objectClass your groups actually use. Get it wrong and every user
-  authenticates successfully and silently lands on `default_role`.
+  objectClass your groups use. Otherwise every user authenticates and lands on
+  `default_role` without an error.
 - **The service account must be able to read other entries.** Template bind
   works without this (sqi binds *as* the user and reads that user's own entry),
   so a directory that fails only in search mode is the usual symptom.
@@ -243,8 +243,8 @@ cause instead of letting it surface later as wrong roles.
 The SSO unit tests drive a fake provider that signs real tokens, so
 token-validation mistakes surface. A fake cannot show what a real provider
 omits: Keycloak emits no group membership unless a protocol mapper is
-configured, and a token with no groups still validates, so every user silently
-lands on `default_role`. `make test-oidc` catches that class of bug.
+configured, and a token with no groups still validates, so every user lands on
+`default_role` without an error. `make test-oidc` covers that.
 
 ```sh
 make test-oidc
@@ -272,7 +272,7 @@ SQI_TEST_OIDC_ISSUER=https://keycloak.example.com/realms/farm make test-oidc
 
 That realm must already hold the fixture's client, users, groups, and the
 `groups` protocol mapper; see the seeding code in
-`test/integration/oidc_test.go` for exactly what. Any test that **mutates** the
+`test/integration/oidc_test.go` for exactly what. Any test that mutates the
 fixture through the admin API (the rename-at-the-provider case) skips under this
 variable rather than edit your realm, so an external issuer covers less than
 the container does.
@@ -298,8 +298,8 @@ starts, stops and removes real services with them:
 make test-service-windows
 ```
 
-It must run from an **elevated** shell on a real Windows host, and it is not
-sandboxed: it **really installs, starts, stops and deletes services** named
+It must run from an elevated shell on a real Windows host, and it is not
+sandboxed: it installs, starts, stops and deletes real services named
 `sqi-test-*`, and it creates and deletes a throwaway local account
 (`sqisvc-*`) and its profile. The profile outlives the run: Windows loads it to
 start the `--user` service and keeps it loaded until reboot (the User Profile
@@ -328,7 +328,7 @@ Thirteen `TestWinService_*` tests cover:
   (`InstallRefusesSquattedSqiDirWithConfigElsewhere`).
 
 Not elevated, it prints `winservice: not elevated — the service suite needs an
-elevated (Administrator) shell` and **exits 0 without doing anything**. A skip
+elevated (Administrator) shell` and exits 0 without doing anything. A skip
 verifies nothing, so confirm all thirteen `--- PASS: TestWinService_` lines (the
 target passes `-count=1`, so a cached result cannot stand in). CI runs it as the
 `winservice-integration` job on an elevated `windows-latest` runner, on one
@@ -520,14 +520,14 @@ separate jobs. The variables it uses can also be set by hand:
 |---|---|
 | `PG_PHASE` | Which pass to run: `all` (default), `packages`, `retry` or `integration`. |
 | `SQI_TEST_POSTGRES_DSN` | An existing server to test against instead of a container (a `postgres://` URL for a role that can create databases). Each test gets a fresh database, cloned from a migrated template and dropped when the test ends. |
-| `SQI_TEST_REQUIRE_POSTGRES=1` | A PostgreSQL test **fails** instead of skipping when no DSN is set. |
+| `SQI_TEST_REQUIRE_POSTGRES=1` | A PostgreSQL test fails instead of skipping when no DSN is set. |
 | `SQI_TEST_PG_FORCE_TX_RETRY=1` | Rehearse every transaction once (the second pass above). The forced-interleaving race tests skip under it. |
 | `SQI_TEST_STORE_DRIVER=postgres` | Run the `test/integration` harness's server on a fresh PostgreSQL database instead of SQLite; any value but `sqlite` or `postgres` fails. |
 | `SQI_TEST_POSTGRES_IMAGE` | Override the container image (CI passes the image it pulled). |
 
-**Without Docker the target prints `docker unavailable — skipping PostgreSQL
+Without Docker the target prints `docker unavailable — skipping PostgreSQL
 tests` and exits 0, and without `SQI_TEST_POSTGRES_DSN` every PostgreSQL test
-skips. A skip verifies nothing.** Confirm the run with `--- PASS` lines for
+skips. A skip verifies nothing. Confirm the run with `--- PASS` lines for
 `/postgres` subtests and the final `POSTGRES TESTS PASSED` line. CI's
 `postgres-integration` job runs each of the three passes as its own job, on
 PostgreSQL 18 for pull requests and on 16 and 18 for pushes to `main` and manual
@@ -575,7 +575,7 @@ waiting on a lock, then resumes `paused`, and reports both errors and whether
 `internal/store/sqlstore/pgrace_test.go`; CI asserts the
 `TestPGRace_G<n>_…` ones by name. To add one:
 
-1. Write the test first and run it against the code **without** the fix: it
+1. Write the test first and run it against the code without the fix: it
    must fail on every run, for the reason it names. Also assert on
    `p.matched()`, so the test checks that it parked at the statement it meant,
    not at another that contains the armed text.
@@ -589,7 +589,7 @@ rehearsal that is rolled back.
 
 `sqi-load` (`cmd/sqi-load`, `internal/loadtest`) is the load and soak harness:
 it drives a real `sqi-server` with simulated workers, job submissions and UI
-clients, and checks six correctness invariants. `make load-smoke` runs its
+clients, and checks seven correctness invariants. `make load-smoke` runs its
 one-minute `smoke` scenario as a Go test (build tag `load`, not part of
 `make test`; CI runs it as `load-smoke`), and `make load`, `make soak` and
 `make load-sweep` drive the CLI. Like the other real-server suites, a skipped
@@ -611,7 +611,7 @@ rule are in [Chaos testing](chaos-testing.md).
 
 ### Differential-testing EXPR against the reference implementation
 
-`make test-expr-oracle` evaluates a corpus of expressions with **both** sqi's Go
+`make test-expr-oracle` evaluates a corpus of expressions with both sqi's Go
 evaluator (`internal/openjd/expr`) and the implementation the EXPR spec names as
 its reference, then compares the results.
 
@@ -770,21 +770,28 @@ covered step by step in
 ```
 sqi/
 ├── cmd/
-│   ├── sqi-server/        Entry point, Cobra subcommands (serve, migrate, backup, restore, store, config, worker, tls, version; service on Windows)
-│   └── sqi-worker/        Worker entry point
+│   ├── sqi-server/        Entry point, Cobra subcommands (serve, migrate, backup, restore, store, config, worker, ha, tls, nats, version; service on Windows)
+│   ├── sqi-worker/        Worker entry point
+│   ├── sqi-load/          Load and soak harness (see docs/load-testing.md)
+│   └── presetgen/         Builds the preset-library index from presets/
 ├── internal/
 │   ├── api/               HTTP router, REST handlers, WebSocket upgrade, OpenAPI spec
 │   ├── auth/              Auth gate, accounts, sessions, API keys, RBAC policy, LDAP, OIDC
 │   ├── brokerauth/        NATS broker credential primitives shared by server and worker
 │   ├── bus/               Typed NATS JetStream client wrapper
+│   ├── capacity/          Capacity-group demand and sizing decisions (pure, no I/O)
 │   ├── certgen/           Farm CA, server and client certificate generation (sqi-server tls)
 │   ├── config/            Typed config struct, layered loader
+│   ├── configinit/        `config init` for both binaries: renders and writes a starter config
 │   ├── diag/              In-memory diagnostic-log ring buffer
 │   ├── discovery/         mDNS _sqi._tcp responder
 │   ├── envvar/            Typed environment-variable setters shared by server and worker
+│   ├── eta/               Remaining-work and ETA estimates for jobs and queues
 │   ├── fslock/            Exclusive OS file lock (the SQLite single-server lock)
 │   ├── fsutil/            Small shared filesystem helpers
+│   ├── ha/                Leader election among servers sharing a database
 │   ├── health/            /healthz and /readyz handlers
+│   ├── loadtest/          sqi-load internals: simulated workers, scenarios, invariants, reports
 │   ├── log/               slog setup and the fan-out handler
 │   ├── metrics/           Prometheus metric definitions
 │   ├── middleware/        HTTP middleware (auth, CSRF, rate limiting, logging, metrics, versioning)
@@ -794,15 +801,18 @@ sqi/
 │   ├── presetlib/         Client for a community preset library index
 │   ├── presettest/        Preset validation harness
 │   ├── product/           Products/presets, the catalog layer over OpenJD templates
+│   ├── redact/            Strips credentials from broker URLs before they are logged or shown
 │   ├── restore/           Puts a backup in place and fences the attempts it records as open
 │   ├── scheduler/         Lease handling, worker registry, status and log ingestion, periodic sweeps
 │   ├── secretin/          Reads one line of secret input from stdin
 │   ├── server/            Process boot, graceful shutdown orchestration
 │   ├── store/             Store interface; sqlstore (shared SQL implementation), sqlite and postgres (the two databases), backend (opens the configured one), fake; migrations (migrations/postgres for PostgreSQL)
+│   ├── testport/          Loopback ports tests can rebind after a restart
 │   ├── tlsutil/           TLS loading primitives shared by server and worker
 │   ├── ui/                Embeds web/dist; SPA fallback handler
 │   ├── version/           Build metadata (version, commit, date, Go version)
 │   ├── winsvc/            Runs sqi-server and sqi-worker as Windows services
+│   ├── wol/               Wake-on-LAN magic packets (stdlib only, used by server and worker)
 │   ├── worker/            sqi-worker binary internals (executor, lease, heartbeat, capabilities, …); only worker/protocol is shared with the server
 │   ├── ws/                WebSocket hub, subscription management, scheduler-driven fanout
 │   └── yamlstrict/        Strict config-file decoding (unknown keys named by dotted path), shared by server and worker
@@ -813,10 +823,10 @@ sqi/
 ├── third_party/           Vendored OpenJD specifications submodule (specs, RFCs, and conformance fixtures)
 ├── web/                   Frontend source; web/dist is embedded
 ├── config/                Example config files
-├── deploy/                Docker, Compose and systemd manifests
+├── deploy/                Docker and Compose files, systemd and launchd units, HA and capacity-provider examples
 ├── docs/                  Human-readable documentation
 ├── scripts/               Developer and CI scripts (smoke test, PostgreSQL and Windows test runners, oracle glue, signing hook)
-└── test/                  Integration, conformance, oracle, preset-library and Windows-service test suites
+└── test/                  Integration, conformance, oracle, load, chaos, preset-library and Windows-service test suites
 ```
 
 ### Key conventions
@@ -856,7 +866,7 @@ Regenerate with:
 
 ```sh
 make changelog                 # refresh, leaving pending commits under [Unreleased]
-make changelog VERSION=0.3.0   # roll pending commits into a dated 0.3.0 section
+make changelog VERSION=X.Y.Z   # roll pending commits into a dated X.Y.Z section
 ```
 
 Install git-cliff first (`brew install git-cliff`, or see
@@ -961,7 +971,7 @@ the [global lock order](architecture.md#lock-order) (see
 
 **A new table needs a migration, and every migration ships as a pair.** Add a
 numbered SQL file to `internal/store/migrations/` (the next number in the
-sequence, e.g. `00039_my_feature.sql`) **and** one with the same number to
+sequence, e.g. `00049_my_feature.sql`) and one with the same number to
 `internal/store/migrations/postgres/`, each with `+goose Up`/`+goose Down`
 sections following the pattern of the surrounding files. A new column or
 index on an existing table needs a pair too. `TestSchemaParity`
@@ -1015,8 +1025,7 @@ compiling. The fake has one file per aggregate, mirroring
 > on a task that has none yet, so a cascade-cancel's more specific reason
 > always wins regardless of ordering. `FailureReasonSummary(ctx, jobID)`
 > aggregates a job's failed tasks by reason (`FailedCount`, `DominantReason`,
-> `DistinctReasons`) for the job-detail failure banner. **The rule for new
-> code:** any new code path that drives a task to a terminal `failed` or
+> `DistinctReasons`) for the job-detail failure banner. Any new code path that drives a task to a terminal `failed` or
 > `canceled` stamps its reason inside the write that moves the task, and only
 > on a task with no reason when a more specific one may already be set. A
 > separate setter call after the status write is a second write that can land
@@ -1030,12 +1039,12 @@ compiling. The fake has one file per aggregate, mirroring
 
 ### Step 3b — Gate it with a permission (if the route is not public)
 
-A new permission must be added in **two** places:
+A new permission must be added in two places:
 
 1. **Server** — add the permission constant and its role grants to
    `internal/auth/policy/policy.go`, then mount the route behind the matching
    authorization middleware in `internal/api/router.go`.
-2. **Web** — add the same string to the `Permission` union **and** the
+2. **Web** — add the same string to the `Permission` union and the
    `PERMISSION_SET` literal in `web/src/auth/policy.ts`. The
    `Record<Permission, true>` type on `PERMISSION_SET` makes an omission a
    typecheck failure, and `web/src/auth/policy.test.ts` mirrors the server
@@ -1418,9 +1427,13 @@ type StateSource interface {
    ```go
    // cancel.TaskCanceler
    type TaskCanceler interface {
-       Cancel(taskID string) bool
+       Cancel(taskID, attemptID string) bool
    }
    ```
+
+   A non-empty `attemptID` limits the cancel to that attempt, and an empty
+   `taskID` with an attempt ID stops that attempt whatever its task;
+   `cancel.Applies` is the shared matching rule.
 
    To take part in the server's attempt reconciliation, also implement the
    optional `heartbeat.AttemptSource` (`ActiveAttemptIDs() []string`) and

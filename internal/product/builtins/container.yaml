@@ -22,12 +22,12 @@ readme: |
 
   ## Requirements
 
-  The step declares `attr.worker.tag.docker`, so it will only ever be scheduled
-  onto workers tagged as having Docker. A worker without that tag is not a
+  The step declares `attr.worker.tag.docker`, so it is scheduled only onto
+  workers tagged as having Docker. A worker without that tag is not a
   candidate, and a job whose queue has no such worker stays unscheduled rather
-  than failing — check the queue's unschedulable reason if a job sits idle.
+  than failing; check the queue's unschedulable reason if a job sits idle.
 
-  The image is run with **no arguments and no volumes**. Anything the container
+  The image is run with no arguments and no volumes. Anything the container
   needs from the host has to be baked into the image or fetched by its own
   entrypoint. Copy this product to a custom one if you need to mount storage or
   pass a command.

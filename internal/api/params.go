@@ -13,7 +13,7 @@ import (
 // preset names carry an optional '/' namespace (e.g. "testing/render-simulator")
 // that browsers send percent-encoded as %2F; chi does not decode path params,
 // so callers must unescape. An undecodable value falls back to the raw param
-// (it simply won't match any stored name).
+// (which then matches no stored name).
 func nameParam(r *http.Request) string {
 	raw := chi.URLParam(r, "name")
 	if decoded, err := url.PathUnescape(raw); err == nil {

@@ -44,10 +44,10 @@ type jetStreamTransport struct {
 }
 
 // asyncAckGiveUp is how long the client waits for a chunk's ack before it
-// forgets the chunk, so a lost ack holds nothing in it. The publisher's own wait decides a chunk's
-// outcome; this only has to outlast it, and the client starts the clock at
-// the send, while a send's last chunk is waited for only once the chunks
-// before it were acked.
+// forgets the chunk, so a lost ack holds nothing in it. The publisher's own
+// wait decides a chunk's outcome; this only has to outlast it, and the client
+// starts the clock at the send, while a send's last chunk is waited for only
+// once the chunks before it were acked.
 const asyncAckGiveUp = 2 * defaultWindow * defaultAckTimeout
 
 // NewJetStreamTransport returns a [Transport] that publishes on nc.

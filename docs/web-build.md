@@ -30,7 +30,7 @@ web/dist/
 The `<hash>` segments are content fingerprints — see
 [cache-busting](#cache-busting-in-production) below.
 
-You rarely run `npm run build` by hand. The `Makefile` does it for you:
+The `Makefile` runs it:
 
 - `make build-web` builds the bundle into `web/dist/`.
 - `make build-server` and `make build` depend on `build-web`, so the embedded
@@ -38,9 +38,9 @@ You rarely run `npm run build` by hand. The `Makefile` does it for you:
 
 `npm ci` (the slow, clean reinstall) is gated on a stamp file
 (`web/node_modules/.make-stamp`) keyed to `package.json` and `package-lock.json`,
-so it only re-runs when dependencies actually change. The build step itself
-(`npm run build` = `tsc -b && vite build`, the Vite portion ~0.5 s) runs every
-time, keeping the guarantee that `web/dist/` matches current source.
+so it re-runs only when dependencies change. The build step itself
+(`npm run build` = `tsc -b && vite build`) runs every time, so `web/dist/`
+always matches current source.
 
 ---
 
@@ -64,27 +64,27 @@ HTTP:
 - Any path with **no file extension** and no matching embedded file →
   `index.html` (SPA fallback). The front-end router is root-based, so
   client-side routes look like ordinary paths (`/`, `/jobs`, `/submit`,
-  `/workers/{id}`) and all resolve on the client. The legacy `/ui/*` prefix is
-  also honored for backward compatibility.
+  `/workers/{id}`) and all resolve on the client. Paths under `/ui/` are also
+  served the shell.
 - A path that **does** carry a file extension (e.g. `/assets/old.js`,
   `/favicon.ico`) with no matching embedded file → `404`, so a stale or mistyped
   asset URL is not masked by the HTML shell.
 
-Two embed details worth knowing:
+Two embed details:
 
-- **The directive lives in `web/embed.go`, not `internal/ui`**, because Go's
+- The directive lives in `web/embed.go`, not `internal/ui`, because Go's
   `//go:embed` can only reference files at or below the embedding file's own
   directory.
-- **The plain (non-`all:`) embed form excludes dot/underscore-prefixed names.**
-  This deliberately keeps OS sidecar junk (e.g. macOS `._index.html` resource
-  forks) and editor dotfiles out of the binary. The Vite build emits only
-  normally-named files, so nothing needed is dropped. If a future bundler emits
-  `_`-prefixed paths, switch to `//go:embed all:dist` and strip sidecars first.
+- The plain (non-`all:`) embed form excludes dot/underscore-prefixed names.
+  This keeps OS sidecar files (e.g. macOS `._index.html` resource forks) and
+  editor dotfiles out of the binary. The Vite build emits only normally-named
+  files, so nothing needed is dropped. A bundler that emits `_`-prefixed paths
+  would need `//go:embed all:dist`, with sidecars stripped first.
 
 `web/dist/index.html` is tracked in git (everything else under `dist/` is
 git-ignored) so `//go:embed dist` always has at least one file to embed and a
-clean checkout builds without running the web build first. A real `npm run
-build` overwrites that placeholder with the full app.
+clean checkout builds without running the web build first. `npm run build`
+overwrites that placeholder with the full app.
 
 ---
 
@@ -119,8 +119,8 @@ If a running `sqi-server` serves an old UI after you changed source:
    make build          # runs build-web (npm build) then the Go build
    ```
 
-   A bare `go build ./cmd/sqi-server` embeds whatever is *already* in
-   `web/dist/` — stale output if you skipped the web build.
+   A bare `go build ./cmd/sqi-server` embeds whatever is in `web/dist/`,
+   which is stale output if you skipped the web build.
 
 2. **Force a clean web build** if `dist/` might be out of date:
 
@@ -128,8 +128,8 @@ If a running `sqi-server` serves an old UI after you changed source:
    cd web && npm run build
    ```
 
-   Note `make clean` intentionally does **not** wipe `web/dist/` (the tracked
-   `index.html` must remain for the embed). Rebuild via `npm run build` rather
+   `make clean` does not remove `web/dist/` (the tracked `index.html` must
+   remain for the embed). Rebuild via `npm run build` rather
    than deleting the directory.
 
 3. **Rule out a dependency-stamp miss.** If you changed `package.json` /
@@ -147,7 +147,7 @@ If a running `sqi-server` serves an old UI after you changed source:
 5. **Check for embed exclusions.** If an expected asset 404s, verify its name is
    not dot/underscore-prefixed (those are excluded by the embed form, see above).
 
-A quick way to confirm what a binary actually embeds:
+To see which bundle a binary embeds:
 
 ```sh
 ./bin/sqi-server serve &

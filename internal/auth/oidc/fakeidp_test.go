@@ -5,13 +5,13 @@ package oidc
 // A minimal OpenID provider for tests: a discovery document, a JWKS, and a
 // token endpoint that mints a real RS256-signed ID token.
 //
-// Every knob breaks exactly ONE thing, so each rejection test isolates the
+// Every knob breaks exactly one thing, so each rejection test isolates the
 // single rule it is about. A fake that could only be broken in one lump would
-// pass even if the implementation checked just one of the five properties.
+// pass even if the implementation checked only one of the five properties.
 //
-// Its limit, which no amount of care removes: a fake returns whatever it is
-// told to return, so it cannot demonstrate what a REAL provider omits or
-// spells differently. That is what the Keycloak integration test is for.
+// A fake returns whatever it is told to return, so it cannot show what a
+// real provider omits or spells differently; the Keycloak integration test
+// covers that.
 
 import (
 	"crypto"
@@ -54,7 +54,7 @@ type fakeIDP struct {
 	discoveryDelay      time.Duration // stalls discovery, to expose serialization
 
 	// lastTokenForm records the last form posted to /token, so tests can
-	// assert PKCE parameters actually reach the provider.
+	// assert PKCE parameters reach the provider.
 	lastTokenForm url.Values
 
 	mu             sync.Mutex
@@ -120,10 +120,10 @@ func (f *fakeIDP) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	doc := map[string]any{
-		// Note: this is always the real issuer. go-oidc rejects a discovery
-		// document whose issuer disagrees with the URL it was fetched from, so
-		// the wrong-issuer knob applies to the ID token's "iss" claim instead
-		// — which is the check under test.
+		// Always the real issuer. go-oidc rejects a discovery document whose
+		// issuer disagrees with the URL it was fetched from, so the
+		// wrong-issuer knob applies to the ID token's "iss" claim, which is
+		// the check under test.
 		"issuer":                                f.srv.URL,
 		"authorization_endpoint":                f.srv.URL + "/authorize",
 		"token_endpoint":                        f.srv.URL + "/token",

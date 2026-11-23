@@ -32,8 +32,8 @@ const (
 	JobsReadAll Permission = "jobs.read.all"
 	// JobsSubmitAs grants setting Job.Owner to a user other than yourself.
 	// Modeled as a permission rather than an operator/admin role check so a
-	// proxy service (a pipeline gateway submitting for artists) can later hold
-	// it via a narrow role without also inheriting workers.manage.
+	// narrow role for a proxy service (a pipeline gateway submitting for
+	// artists) could hold it without also holding workers.manage.
 	JobsSubmitAs Permission = "jobs.submit_as"
 	// WorkersRead grants read access to workers.
 	WorkersRead Permission = "workers.read"
@@ -58,9 +58,9 @@ const (
 	// APIKeysAdmin grants access to manage all API keys.
 	APIKeysAdmin Permission = "apikeys.admin"
 	// IsolationManage grants setting a queue's run-as-user, i.e. choosing the OS
-	// identity that arbitrary job code executes under. Deliberately separate
-	// from InfraManage — which operator holds — because it is an escalation
-	// surface, not ordinary queue configuration.
+	// identity that arbitrary job code executes under. It is separate from
+	// InfraManage, which operator holds, because it is an escalation surface,
+	// not ordinary queue configuration.
 	IsolationManage Permission = "isolation.manage"
 	// WorkersEnroll grants issuing worker join tokens — that is, attaching
 	// arbitrary compute that receives and executes job code. It is kept
@@ -107,12 +107,10 @@ var All = []Permission{
 }
 
 // Roles returns a read-only snapshot of the role → permission grants matrix,
-// keyed by role name. It exists so tests (policy_test is an external test
-// package and cannot see the unexported grants var directly) can assert
-// against the real matrix instead of maintaining their own hand-copied
-// mirror of it — a mirror that, by construction, cannot notice when the real
-// matrix and the mirror drift apart. Each call returns a fresh deep copy, so
-// callers cannot mutate package state through it.
+// keyed by role name. It lets tests in the external policy_test package
+// assert against the real matrix rather than a hand-copied mirror, which
+// cannot notice when the two drift apart. Each call returns a fresh deep
+// copy, so callers cannot mutate package state through it.
 func Roles() map[string]map[Permission]bool {
 	out := make(map[string]map[Permission]bool, len(grants))
 	for role, perms := range grants {

@@ -14,8 +14,7 @@ import (
 
 // LoadBaseline reads a baseline file: one known-failing test ID per line.
 // Blank lines are ignored, and everything from a '#' to end of line is a
-// comment. A missing file yields an empty baseline, not an error — that is the
-// legitimate starting state before the first run.
+// comment. A missing file yields an empty baseline, not an error.
 func LoadBaseline(path string) (map[string]struct{}, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -45,24 +44,20 @@ func LoadBaseline(path string) (map[string]struct{}, error) {
 
 // DiffBaseline compares results against the baseline in three directions.
 //
-// regressions are live tests that failed but are not in the baseline — a real
-// break. stale are live tests that are in the baseline but passed — the
-// baseline needs updating. orphaned are baseline entries that match no live
-// result at all: either the fixture no longer exists in results (upstream
-// deleted or renamed it), or it exists but is no longer StateLive (for
-// example a fixture reclassified to StateNotApplicable, as base/env_templates
-// is by the kind-aware Classify). Without this check such an entry
-// is invisible forever — the regression/stale loop below only ever looks at
-// live results, so a line nothing live ever matches is never flagged by
-// either of the other two directions.
+// regressions are live tests that failed but are not in the baseline. stale
+// are live tests that are in the baseline but passed. orphaned are baseline
+// entries that match no live result: the fixture is missing from results
+// (upstream deleted or renamed it), or it is not StateLive (for example a
+// base/env_templates fixture, which Classify marks StateNotApplicable). The
+// regression and stale checks look only at live results, so without the
+// orphan check such an entry would never be flagged.
 //
-// Checking all three directions is what keeps the baseline from decaying into
-// a permanent ignore-list: a fixed test forces its entry to be removed, and a
-// dead entry is forced out too instead of rotting silently.
+// Checking all three directions keeps the baseline from becoming a permanent
+// ignore-list: an entry for a passing test or for no live test must be
+// removed.
 //
-// Not-applicable results are otherwise skipped entirely for regressions/stale;
-// they are neither pass nor fail. All three slices are sorted for stable
-// output.
+// Not-applicable results are neither pass nor fail and are skipped for
+// regressions and stale. All three slices are sorted for stable output.
 func DiffBaseline(results []Result, baseline map[string]struct{}) (regressions, stale, orphaned []string) {
 	live := make(map[string]struct{}, len(results))
 	for _, r := range results {

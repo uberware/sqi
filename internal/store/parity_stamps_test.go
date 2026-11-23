@@ -13,7 +13,7 @@ import (
 
 // TestParity_CreateStampsTimestamps checks that each Create stamps CreatedAt
 // and UpdatedAt with the store's own clock, ignoring what the caller passed,
-// as SQLite does.
+// as the SQL stores do.
 func TestParity_CreateStampsTimestamps(t *testing.T) {
 	// A time well before any real stamp: a Create that kept the caller's value
 	// would hand it straight back.

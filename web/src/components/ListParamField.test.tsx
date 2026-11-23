@@ -31,7 +31,7 @@ function param(over: Partial<ProductParameter>): ProductParameter {
  * value, and the component re-renders against that new value, exactly like
  * ProductParamField -> useState in the real form. A test that renders once
  * with a static value and a `vi.fn()` onChange cannot see a controlled-input
- * restore bug, because the input's `value` prop never actually changes. */
+ * restore defect, because the input's `value` prop never changes. */
 function ControlledListParamField({
   param: p,
   initialValue,
@@ -81,8 +81,8 @@ describe('ListParamField', () => {
     expect(screen.getByRole('button', { name: /add/i })).toBeInTheDocument()
   })
 
-  // The encoding must match internal/openjd/paramjson.go's TestEncodeListDefault
-  // table exactly: no spaces, elements as their JSON types.
+  // The encoding must match the TestEncodeListDefault table in
+  // internal/openjd/paramjson_test.go: no spaces, elements as their JSON types.
   it('encodes numbers as numbers, not strings', () => {
     const onChange = vi.fn()
     render(
@@ -183,8 +183,8 @@ describe('ListParamField', () => {
     // Number("1.") is 1, not NaN, so a naive Number.isNaN(n) test treats "1."
     // as already-parsed. Because the rendered `value` prop is String(1) ===
     // "1", React's controlled-input restore then snaps the DOM back to "1",
-    // eating the "." the user just typed -- asserting only the onChange
-    // argument on a single event cannot see this, since that requires a real
+    // dropping the "." the user typed. Asserting only the onChange argument on
+    // a single event cannot see this, since that requires a real
     // render -> onChange -> re-render cycle.
     render(<ControlledListParamField param={param({ type: 'LIST[FLOAT]' })} initialValue="[1]" />)
     const input = screen.getByLabelText('P item 1')
@@ -215,8 +215,8 @@ describe('ListParamField', () => {
   it('falls back to a raw text field when an element is not a scalar', () => {
     // A stored default can never contain a non-scalar element
     // (encodeListDefault rejects them), but a hand-edited or otherwise
-    // malformed value could. Laundering `null` through String() would
-    // silently rewrite it every time an unrelated row is edited.
+    // malformed value could. Passing `null` through String() would rewrite it
+    // every time an unrelated row is edited.
     render(<ListParamField param={param({})} id="id" value='["a",null]' onChange={vi.fn()} />)
     expect(screen.getByRole('textbox')).toHaveValue('["a",null]')
   })

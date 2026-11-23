@@ -3,7 +3,7 @@
 --
 -- Nullable policy columns on farms/queues/jobs mean "inherit from the next
 -- level up" (resolution: Job -> Queue -> Farm -> server default). The counters
--- (failed_attempts) track GENUINE ran-and-failed attempts only; lost/reclaimed
+-- (failed_attempts) track genuine ran-and-failed attempts only; lost/reclaimed
 -- work never touches them. retry_after gates a re-queued task until its backoff
 -- delay elapses. park_reason distinguishes an auto-parked job from a manual pause.
 

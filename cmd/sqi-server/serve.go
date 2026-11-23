@@ -34,10 +34,10 @@ var serveCmd = &cobra.Command{
 	Long: `Start the sqi-server, running the scheduler, REST API, WebSocket gateway,
 embedded NATS JetStream broker, and embedded web UI.
 
-The server runs until it receives SIGINT or SIGTERM — or, when started by the
-Windows Service Control Manager, a service stop — at which point it performs a
-graceful shutdown: draining in-flight NATS messages, waiting for active HTTP
-requests to complete, and flushing the state store.`,
+The server runs until it receives SIGINT or SIGTERM (or, when started by the
+Windows Service Control Manager, a service stop), then shuts down gracefully:
+it drains in-flight NATS messages, waits for active HTTP requests to complete,
+and flushes the state store.`,
 	RunE: runServe,
 }
 
@@ -206,14 +206,13 @@ func warnRateLimitOff(ctx context.Context, logger *slog.Logger, cfg config.Confi
 }
 
 // serverConfig maps the layered [config.Config] the CLI loaded onto the
-// [server.Config] the server actually runs with.
+// [server.Config] the server runs with.
 //
-// Split out of runServe so the mapping can be tested: runServe boots NATS,
-// SQLite and a listening socket and then blocks on signals, so nothing could
-// observe this literal in a test while it lived inside it. Every field here is
-// a hand-written assignment between two structs with matching field types,
-// which is exactly where a dropped or transposed line compiles and starts —
-// see TestServerConfig_CarriesTheExprCostBounds.
+// It is separate from runServe so the mapping can be tested: runServe boots
+// NATS, the store and a listening socket and then blocks on signals. Every
+// field here is a hand-written assignment between two structs with matching
+// field types, where a dropped or transposed line still compiles and starts
+// (see TestServerConfig_CarriesTheExprCostBounds).
 func serverConfig(cfg config.Config, schedCfg scheduler.Config) server.Config {
 	return server.Config{
 		HTTPAddr:                     cfg.HTTP.Addr,
@@ -245,8 +244,7 @@ func serverConfig(cfg config.Config, schedCfg scheduler.Config) server.Config {
 		Scheduler:                    schedCfg,
 		Capacity:                     cfg.Capacity,
 		HA:                           cfg.HA,
-		// Always seed. Replace with cfg.Store.SeedDefaults when
-		// internal/config grows a setting for it.
+		// Always seed: internal/config has no setting for it.
 		SeedDefaults: true,
 	}
 }

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package lease implements the worker side of the work-lease protocol: it keeps
-// exactly one outstanding lease request per queue and dispatches each assignment
-// the server returns. The server gates capacity, so the worker simply runs what
-// it is given. Replaces the JetStream pull loop.
+// one outstanding lease request per queue and dispatches each assignment the
+// server returns. The server gates capacity, so the worker runs what it is
+// given.
 package lease
 
 import (
@@ -140,18 +140,14 @@ func (l *Loop) runQueue(ctx context.Context, queueID string) {
 }
 
 // decodeAssignment unmarshals one assignment from a lease reply and verifies
-// its protocol version matches this worker's. encoding/json silently ignores
-// fields it does not recognize, so an unmarshal that merely "succeeds" is not
-// proof the sender and receiver agree on the message shape — a newer server
-// sending fields an older worker's protocol.AssignMsg has never heard of
-// would decode cleanly and just drop them, quietly running the task as if
-// those fields were absent. Rejecting on a version mismatch turns that into a
-// loud, diagnosable failure instead of a silently wrong command line.
+// its protocol version matches this worker's. encoding/json ignores fields it
+// does not recognize, so a newer server's fields would decode cleanly into an
+// older worker's protocol.AssignMsg and be dropped, running the task as if
+// they were absent. The version check turns that into an error.
 //
 // A version mismatch means a partially upgraded farm (this worker's build is
-// out of step with the server that leased it work), so the error is written
-// for the operator who will read it, not just the caller: it names both the
-// version the message carried and the version this worker expects.
+// out of step with the server that leased it work), so the error names both
+// the version the message carried and the version this worker expects.
 func decodeAssignment(raw json.RawMessage) (*protocol.AssignMsg, error) {
 	var m protocol.AssignMsg
 	if err := json.Unmarshal(raw, &m); err != nil {

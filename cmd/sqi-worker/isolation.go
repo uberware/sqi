@@ -16,34 +16,31 @@ import (
 )
 
 // effectiveSessionRoot resolves the directory under which session working
-// directories are created, kept deliberately separate from
-// cfg.Worker.DataDir: DataDir holds the worker's own state (the worker-id
-// file, its lock, the process-tree ledger) and must never be widened for
-// run-as-user traversal (see
-// workerconfig.LoadOrCreateWorkerID's doc), while session working
+// directories are created, kept separate from cfg.Worker.DataDir: DataDir
+// holds the worker's own state (the worker-id file, its lock, the
+// process-tree ledger) and must never be widened for run-as-user traversal
+// (see workerconfig.LoadOrCreateWorkerID's doc), while session working
 // directories are ephemeral scratch that, when isolation is in use, must be
 // traversable by whichever run-as-user identity a session resolves to.
 //
 // Also returns the mode session.Manager must create that root at, chosen by
-// WHICH branch resolved the path rather than a single value for all of them:
-//   - worker.session_dir, if set, always wins (operator override) — created
-//     0711 (traversable), since an explicit override is exactly how an
-//     operator opts a non-default location INTO run-as-user isolation.
-//   - Running as root, or running on Windows at all, defaults to
+// which branch resolved the path:
+//   - worker.session_dir, if set, always wins (operator override) and is
+//     created 0711 (traversable), since an explicit override is how an
+//     operator opts a non-default location into run-as-user isolation.
+//   - Running as root, or running on Windows, defaults to
 //     defaultSessionRoot() at 0711 (see that function's platform-specific
-//     doc). Windows is unconditional here — not gated on isRoot() — because
-//     executor.IsRunningAsRoot() is hardcoded false on Windows (that signal
-//     backs the unrelated POSIX "don't run as root" warning in
-//     executor.CheckRootUser and is deliberately not overloaded for this),
-//     so Windows isolation capability is a privilege check
+//     doc). Windows is not gated on isRoot(): executor.IsRunningAsRoot() is
+//     always false on Windows (that signal backs the unrelated POSIX "don't
+//     run as root" warning in executor.CheckRootUser and is not overloaded
+//     for this), Windows isolation capability is a privilege check
 //     (isolation.Provider.Capable), not a uid check, and the session root
 //     must not depend on a signal that never fires there.
-//   - Otherwise (POSIX, not root) falls back to a location under
-//     worker.data_dir, at 0750: real run-as-user isolation cannot
-//     function without root regardless of directory permissions (see
-//     isolation.unixProvider.Capable), so a fresh non-root deployment gains
-//     nothing from the wider 0711 and should not silently get `other +x` it
-//     will never use.
+//   - Otherwise (POSIX, not root) it falls back to a location under
+//     worker.data_dir, at 0750: run-as-user isolation cannot function without
+//     root whatever the directory permissions (see
+//     isolation.unixProvider.Capable), so a non-root deployment gains nothing
+//     from the wider 0711 and does not get an `other +x` it will never use.
 func effectiveSessionRoot(cfg workerconfig.WorkerSettings) (sessionRoot string, sessionRootMode os.FileMode) {
 	return effectiveSessionRootFor(cfg, executor.IsRunningAsRoot)
 }
@@ -62,23 +59,22 @@ func effectiveSessionRootFor(cfg workerconfig.WorkerSettings, isRoot func() bool
 }
 
 // validateIsolationAncestors enforces, at boot, that every ancestor of the
-// session root and of staging's effective scratch base is traversable —
-// refusing to start with an actionable error rather than silently chmod'ing
-// anything (see isolation.ValidateTraversable's doc for why: an
-// operator-chosen path may sit under a directory deliberately restricted,
-// /root above all, that must never be widened by sqi).
+// session root and of staging's effective scratch base is traversable,
+// refusing to start with an actionable error rather than chmod'ing anything
+// (see isolation.ValidateTraversable's doc for why: an operator-chosen path
+// may sit under an intentionally restricted directory, /root above all, that
+// sqi must never widen).
 //
-// Gated on isolation.required, NOT on provider.Capable(): Capable() reduces
-// to "is this worker root" on POSIX, and root and will-actually-isolate are
-// not the same predicate — a root worker that happens to never receive an
-// isolated assignment (isolation not configured on any queue it serves) has
-// no business being refused boot over a directory permission it will never
-// need. isolation.required is the one signal that means the operator
-// explicitly wants isolation and refusing to start over it is unambiguously
-// correct. When required is false, the IDENTICAL check (same actionable
-// message) instead runs per-assignment, the moment isolation actually
-// arrives — see session.Manager.Create and staging.Stager.StageIn — so that
-// case fails only the one task, not the whole worker.
+// Gated on isolation.required, not on provider.Capable(): Capable() reduces
+// to "is this worker root" on POSIX, and root is not the same as "will
+// isolate". A root worker that never receives an isolated assignment
+// (isolation not configured on any queue it serves) must not be refused
+// boot over a directory permission it will never need. isolation.required is
+// the one signal that the operator wants isolation, so refusing to start
+// over it is correct. When required is false, the same check (same
+// actionable message) runs per assignment, when isolation arrives (see
+// session.Manager.Create and staging.Stager.StageIn), so that case fails only
+// the one task, not the whole worker.
 func validateIsolationAncestors(required bool, sessionRoot, stagingScratchDir string) error {
 	if !required {
 		return nil
@@ -91,14 +87,14 @@ func validateIsolationAncestors(required bool, sessionRoot, stagingScratchDir st
 }
 
 // resolveIsolation builds the isolation provider, resolves the effective
-// session root (and the mode it must be created at), and — only when
-// isolation.required is set — validates its (and staging's scratch base's)
-// ancestors up front. This is the full boot-time isolation sequence,
-// extracted from runStart to keep that function's cyclomatic complexity
-// within the project limit. Returns the provider, sessionRoot, and
-// sessionRootMode ready to hand to session.NewManager, plus
-// isolationCapable — the same executor.IsRunningAsRoot() signal
-// effectiveSessionRoot's own root branch uses, threaded through to
+// session root (and the mode it must be created at), and, only when
+// isolation.required is set, validates its (and staging's scratch base's)
+// ancestors up front. This is the full boot-time isolation sequence, kept out
+// of runStart to hold that function's cyclomatic complexity within the
+// project limit. Returns the provider, sessionRoot, and sessionRootMode ready
+// to hand to session.NewManager, plus isolationCapable: the same
+// executor.IsRunningAsRoot() signal effectiveSessionRoot's own root branch
+// uses, threaded through to
 // executor.Config.StagingIsolationCapable so staging.Stager decides its
 // shared scratch-base ancestor mode once per worker instead of per
 // assignment (see staging.WithIsolationCapable's doc).
@@ -115,9 +111,9 @@ func resolveIsolation(cfg workerconfig.WorkerConfig, logger *slog.Logger) (provi
 }
 
 // buildIsolationProvider constructs the platform isolation.Provider and
-// enforces isolation.required at boot (see verifyIsolationCapability).
-// Extracted from runStart to keep that function's cyclomatic complexity
-// within the project limit.
+// enforces isolation.required at boot (see verifyIsolationCapability). Kept
+// out of runStart to hold that function's cyclomatic complexity within the
+// project limit.
 func buildIsolationProvider(cfg workerconfig.IsolationConfig, dataDir string, logger *slog.Logger) (isolation.Provider, error) {
 	provider, err := isolation.NewProvider(isolation.Config{
 		Logger:          logger,
@@ -134,14 +130,14 @@ func buildIsolationProvider(cfg workerconfig.IsolationConfig, dataDir string, lo
 }
 
 // verifyIsolationCapability enforces isolation.required at boot. Returning an
-// error here takes the worker down, which is correct: a worker that silently
-// ran unisolated would look healthy while providing none of the containment an
-// operator configured it for.
+// error here takes the worker down: a worker that ran unisolated would look
+// healthy while providing none of the containment an operator configured it
+// for.
 //
-// This is deliberately separate from a per-assignment credential-resolution
-// failure (handled in session.Manager.Create): that is "this queue's account
-// is bad", a per-assignment problem. This is "this worker is misconfigured", a
-// boot-time problem the worker cannot detect any other way — it learns
+// This is separate from a per-assignment credential-resolution failure
+// (handled in session.Manager.Create): that is "this queue's account is bad",
+// a per-assignment problem. This is "this worker is misconfigured", a
+// boot-time problem the worker cannot detect any other way: it learns
 // identities only from AssignMsg, so it cannot evaluate queue config at boot.
 func verifyIsolationCapability(cfg workerconfig.IsolationConfig, p isolation.Provider) error {
 	if !cfg.Required {

@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// TestStart_RecoversFromAPortTakenByAnotherProcess reproduces the CI failure:
-// the HTTP port drawn for the server is held by a foreign listener (another
+// TestStart_RecoversFromAPortTakenByAnotherProcess covers a drawn port that
+// is taken before the server binds it: the HTTP port drawn for the server is held by a foreign listener (another
 // test package's NATS node), so the server's bind fails while a TCP probe of
 // the port still succeeds.
 func TestStart_RecoversFromAPortTakenByAnotherProcess(t *testing.T) {

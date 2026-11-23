@@ -19,15 +19,14 @@ import (
 // CreateJobSubmission. It delegates it, so the store still behaves exactly
 // like the fake; the counters only observe.
 //
-// It is NOT a general write recorder. It embeds [fake.Store], so every other
-// method reaches the fake untouched and is invisible to `writes`: a regression
-// that persisted something through some other store method would leave the
-// counters unchanged and TestSubmit_PersistsInASingleCall green. The per-row
-// creators a non-atomic Submit would have used (one each for the job row, its
-// dependency edges, a step and a task) no longer exist on [store.Store] —
-// nothing in production called them — so a Submit cannot spread a submission
-// over several calls at all, and CreateJobSubmission is the only row-creating
-// call left to count, which makes `writes` and `submissions` move together.
+// It is not a general write recorder. It embeds [fake.Store], so every other
+// method reaches the fake untouched and is invisible to `writes`: a change
+// that persisted something through another store method would leave the
+// counters unchanged and TestSubmit_PersistsInASingleCall green. [store.Store]
+// has no per-row creators for the job row, its dependency edges, a step or a
+// task, so Submit cannot spread a submission over several calls, and
+// CreateJobSubmission is the only row-creating call to count, which makes
+// `writes` and `submissions` move together.
 // A separate job-status write is likewise not among them: [store.Store] has no
 // generic job-status writer, so a Submit holding one cannot call it at all.
 //
@@ -42,8 +41,8 @@ type submitSpy struct {
 	// have no store-wide listing, so this is the only handle on which job's
 	// steps to look for.
 	jobIDs []string
-	// writes is deliberately kept equal to submissions: CreateJobSubmission is
-	// the only row-creating call left, so it counts the same calls.
+	// writes equals submissions: CreateJobSubmission is the only
+	// row-creating call, so both count the same calls.
 	writes int
 	// submissions counts CreateJobSubmission calls specifically.
 	submissions int

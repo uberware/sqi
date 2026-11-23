@@ -299,7 +299,7 @@ describes the mechanism.
 
 The gauges are refreshed on the heartbeat-sweep tick, about every 15 seconds,
 on the leader only. A lag that keeps growing means the server cannot keep up
-with its streams: until it does, a worker that really died is marked offline
+with its streams: until it does, a worker that has died is marked offline
 late by about the lag, and its tasks wait that much longer to be reclaimed.
 
 Alert on `consumer="worker"` well below 120 s, a minute for instance.
@@ -517,7 +517,7 @@ they do not.
 | `sqi_capacity_boot_timeouts_total` | counter | `group` | Woken machines whose worker did not register within the group's `boot_timeout_seconds` and became `wake_failed`. |
 | `sqi_capacity_group_degraded` | gauge | `group` | `1` while the group is [degraded](capacity.md#degraded-groups) (a sized script group whose launch did not register), `0` otherwise. |
 
-Worth alerting on: a rising `sqi_capacity_boot_timeouts_total` (machines that
+Alert on a rising `sqi_capacity_boot_timeouts_total` (machines that
 do not wake: firmware, network card or a broken image), `sqi_capacity_group_degraded == 1`,
 and `sqi_capacity_actions_total` with `result` other than `ok` and
 `unsupported`. The group's `status.last_action` gives the latest message.

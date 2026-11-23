@@ -2,8 +2,9 @@
 
 /*
  * Shared stylesheet for the admin entity create/edit forms (farm, queue,
- * storage location, compute location, usage pool, product). Page-specific
- * rules live in each page's own module, which composes the classes it needs.
+ * storage location, compute location, usage pool, capacity group, product,
+ * user) and the account, API key and login forms. Page-specific rules live in
+ * each page's own module, which composes the classes it needs.
  */
 
 .page {

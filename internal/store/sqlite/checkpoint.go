@@ -13,19 +13,17 @@ import (
 // returns the number of WAL log pages and the number successfully
 // checkpointed, and is the mode the periodic checkpointer uses.
 //
-// IT MUST NOT BE TRUNCATE, and that is not a style preference. Reads run on
-// their own connection pool (see the Concurrency section of the package doc),
-// so a reader holding a WAL snapshot now blocks a truncating checkpoint —
-// which invokes SQLite's busy handler and waits out the ENTIRE busy_timeout
-// (5s) on the write connection before giving up, and still fails to truncate.
-// Measured under four concurrent readers: busy=1, 119,888 of 134,522 frames,
-// 5.019s. That would stall job submission, lease grants and every task-status
-// write for five seconds on a five-minute timer — the same write stall the
-// separate read pool exists to remove, reintroduced through the back door.
+// The periodic checkpoint must not be TRUNCATE. Reads run on their own
+// connection pool (see the Concurrency section of the package doc), so a
+// reader holding a WAL snapshot blocks a truncating checkpoint, which invokes
+// SQLite's busy handler and waits out the whole busy_timeout (5s) on the write
+// connection before giving up, still without truncating. That stalls job
+// submission, lease grants and every task-status write for five seconds on
+// each tick, the write stall the separate read pool exists to remove.
 //
 // PASSIVE never invokes the busy handler: it transfers what it can and returns.
-// A reader simply means fewer frames move this tick and the next one takes
-// them. Pinned by TestCheckpoint_DoesNotBlockOnAReader.
+// A reader means fewer frames move this tick and the next one takes them.
+// Pinned by TestCheckpoint_DoesNotBlockOnAReader.
 //
 // The checkpoint runs on the write pool, which is still a single connection,
 // so two checkpoints can never overlap.
@@ -36,17 +34,17 @@ func (s *Store) Checkpoint(ctx context.Context) (walPages, checkpointed int, err
 // CheckpointTruncate runs a WAL checkpoint in TRUNCATE mode, which additionally
 // truncates the WAL to zero bytes once every frame is transferred.
 //
-// It is for SHUTDOWN, where a WAL left at zero is worth waiting for and there
+// It is for shutdown, where a WAL left at zero is worth waiting for and there
 // is no next tick to finish the job. It can block for up to busy_timeout if a
-// reader still holds a snapshot, which is acceptable once — and only once — on
-// the way down. Do not call it on a timer; see [Store.Checkpoint].
+// reader still holds a snapshot, which is acceptable once on the way down. Do
+// not call it on a timer; see [Store.Checkpoint].
 func (s *Store) CheckpointTruncate(ctx context.Context) (walPages, checkpointed int, err error) {
 	return s.checkpoint(ctx, "TRUNCATE")
 }
 
 // checkpoint issues PRAGMA wal_checkpoint in the given mode. The busy flag is
-// deliberately not surfaced as an error — a checkpoint that could not move
-// every frame is not a failure.
+// not surfaced as an error: a checkpoint that could not move every frame is
+// not a failure.
 func (s *Store) checkpoint(ctx context.Context, mode string) (walPages, checkpointed int, err error) {
 	// mode is a package-internal literal, never caller-supplied.
 	row := s.db.QueryRowContext(ctx, "PRAGMA wal_checkpoint("+mode+")")
@@ -66,7 +64,7 @@ func (s *Store) checkpoint(ctx context.Context, mode string) (walPages, checkpoi
 // it before closing the store.
 //
 // Errors are logged but do not stop the loop; transient checkpoint failures
-// are not fatal. The caller does not need to wrap this in a goroutine — it
+// are not fatal. The caller does not need to wrap this in a goroutine; it
 // manages its own.
 func (s *Store) StartCheckpointer(ctx context.Context, interval time.Duration, logger *slog.Logger) <-chan struct{} {
 	done := make(chan struct{})

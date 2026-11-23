@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
 /* ── Auth-source badge ───────────────────────────────────────────────────────
-   Page-local rather than added to the shared entityList.module.css, which is
-   imported by eight list pages that have no use for it. Mirrors the source
-   badge in ProductList.module.css. */
+   Page-local rather than added to the shared entityList.module.css, whose
+   other list pages have no use for it. Mirrors the source badge in
+   ProductList.module.css. */
 
 .badge {
   display: inline-block;

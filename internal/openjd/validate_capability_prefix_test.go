@@ -219,10 +219,10 @@ func TestValidate_CapabilityNameVendorPrefix(t *testing.T) {
 
 // The spec reserves "worker", "job", "step", and "task" as the first identifier
 // after a capability namespace (§3.3.1.1) — a name under one of those scopes
-// must be a capability the spec actually defines. sqi accepted anything,
-// so "amount.worker.custom" passed. Surfaced by the conformance fixtures
+// must be a capability the spec defines, so "amount.worker.custom" is
+// rejected. The conformance fixtures
 // 3.3--reserved-scope-{worker,job,step,task}.invalid.yaml and
-// 3.3.2--both-anyof-allof.invalid.yaml (attr.worker.capabilities).
+// 3.3.2--both-anyof-allof.invalid.yaml (attr.worker.capabilities) cover it.
 //
 // sqi permits a small set of its own names under the reserved worker scope —
 // see sqiReservedScopeNames — because worker tags, usage pools, and compute

@@ -34,7 +34,7 @@ import (
 // this binary write directly to os.Stdout via fmt.Printf / fmt.Fprint rather
 // than through cmd.OutOrStdout().
 //
-// Must NOT be called from parallel sub-tests — the redirect is process-wide.
+// Must not be called from parallel sub-tests: the redirect is process-wide.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout
@@ -60,10 +60,10 @@ func captureStdout(t *testing.T, fn func()) string {
 // captureStderr redirects os.Stderr to a pipe for the duration of fn, then
 // returns everything written to it. Needed alongside captureStdout for
 // commands (backup's resolveDBPath deprecation notice, keygen's warnings)
-// that deliberately separate their stderr diagnostics from stdout output.
+// that write their diagnostics to stderr, apart from stdout output.
 //
-// Must NOT be called from parallel sub-tests — the redirect is process-wide,
-// same caveat as captureStdout.
+// Must not be called from parallel sub-tests: the redirect is process-wide,
+// as with captureStdout.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stderr

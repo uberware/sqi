@@ -112,9 +112,8 @@ func TestLease_AcceptsCurrentProtocolVersion(t *testing.T) {
 
 // TestLoop_SkipsWrongVersionAssignmentButDispatchesRest pins the batch
 // semantics: a wrong-version message is dropped, but sibling assignments in
-// the same reply still dispatch. A mixed-version batch cannot come from one
-// server, so this is a defense-in-depth choice, not a scenario expected in
-// practice.
+// the same reply still dispatch. One server does not send a mixed-version
+// batch; the per-assignment check is defense in depth.
 func TestLoop_SkipsWrongVersionAssignmentButDispatchesRest(t *testing.T) {
 	bad := protocol.AssignMsg{Version: "999", Type: protocol.TypeAssign, TaskID: "bad"}
 	good := protocol.AssignMsg{Version: protocol.ProtocolVersion, Type: protocol.TypeAssign, TaskID: "good"}

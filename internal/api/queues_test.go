@@ -275,9 +275,8 @@ func TestUpdateQueue_PersistsRetryPolicy(t *testing.T) {
 //
 // Setting a queue's OS identity is gated separately from ordinary queue
 // management (policy.InfraManage, which operator holds): it requires
-// policy.IsolationManage (admin only). The check is field-level — a request
-// that does not touch run_as_user/run_as_group must succeed for an operator
-// exactly as it does today.
+// policy.IsolationManage (admin only). The check is field-level: a request
+// that does not touch run_as_user/run_as_group must succeed for an operator.
 
 // withPrincipal attaches p to req's context, as the real auth middleware
 // would for an authenticated request.
@@ -392,7 +391,7 @@ func TestCreateQueue_RunAsUserAllowedForAdmin(t *testing.T) {
 
 // TestCreateQueue_RunAsUserAllowedWhenAuthDisabled documents the auth-off
 // path: the anonymous superuser principal (injected when auth is disabled)
-// holds every permission, so setting run_as_user must still succeed —
+// holds every permission, so setting run_as_user must still succeed:
 // auth-off behavior must stay byte-for-byte unchanged.
 func TestCreateQueue_RunAsUserAllowedWhenAuthDisabled(t *testing.T) {
 	st := fake.New()
@@ -420,8 +419,8 @@ func TestUpdateQueue_RunAsUserRequiresIsolationManage(t *testing.T) {
 	farm, q := seedFarmAndQueue(t, st)
 	r := newQueueRouter(st)
 
-	// An operator adding run_as_user to an EXISTING ordinary queue via PUT
-	// must be rejected — an update-only hole here would let InfraManage
+	// An operator adding run_as_user to an existing ordinary queue via PUT
+	// must be rejected: an update-only hole here would let InfraManage
 	// alone add isolation after the fact, defeating the create-side check.
 	req := newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
 		"farm_id":     farm.ID,
@@ -468,7 +467,7 @@ func TestUpdateQueue_WithoutRunAsUserAllowedForOperator(t *testing.T) {
 // seedFarmAndIsolatedQueue creates a farm and a queue whose run_as_user is
 // already set to "render-svc". seedFarmAndQueue's queue never has isolation
 // set, so it cannot exercise the omit-preserves / explicit-null-clears gate
-// on update — these tests need a queue that already carries an OS identity.
+// on update; these tests need a queue that already carries an OS identity.
 func seedFarmAndIsolatedQueue(t *testing.T, st *fake.Store) (store.Farm, store.Queue) {
 	t.Helper()
 	ctx := t.Context()
@@ -493,10 +492,9 @@ func seedFarmAndIsolatedQueue(t *testing.T, st *fake.Store) (store.Farm, store.Q
 	return f, created
 }
 
-// TestUpdateQueue_OmittingIsolationKeysPreservesRunAsUser is the regression
-// test for the critical bug: an operator PUT that never mentions
-// run_as_user/run_as_group must not clear a previously-set identity just
-// because those keys are absent from the body.
+// TestUpdateQueue_OmittingIsolationKeysPreservesRunAsUser pins that an
+// operator PUT that never mentions run_as_user/run_as_group does not clear a
+// previously set identity because those keys are absent from the body.
 func TestUpdateQueue_OmittingIsolationKeysPreservesRunAsUser(t *testing.T) {
 	st := fake.New()
 	defer st.Close()
@@ -529,7 +527,7 @@ func TestUpdateQueue_OmittingIsolationKeysPreservesRunAsUser(t *testing.T) {
 }
 
 // TestUpdateQueue_ExplicitNullRunAsUserRequiresIsolationManage asserts that
-// sending run_as_user explicitly as null (a deliberate clear) is gated the
+// sending run_as_user explicitly as null (an explicit clear) is gated the
 // same as setting it, and that a rejected request leaves the store untouched.
 func TestUpdateQueue_ExplicitNullRunAsUserRequiresIsolationManage(t *testing.T) {
 	st := fake.New()
@@ -560,7 +558,7 @@ func TestUpdateQueue_ExplicitNullRunAsUserRequiresIsolationManage(t *testing.T) 
 }
 
 // TestUpdateQueue_ExplicitNullRunAsUserAllowedForAdmin asserts that an admin
-// may deliberately clear run_as_user by sending it explicitly as null.
+// may clear run_as_user by sending it explicitly as null.
 func TestUpdateQueue_ExplicitNullRunAsUserAllowedForAdmin(t *testing.T) {
 	st := fake.New()
 	defer st.Close()
@@ -590,8 +588,8 @@ func TestUpdateQueue_ExplicitNullRunAsUserAllowedForAdmin(t *testing.T) {
 }
 
 // TestUpdateQueue_OmittedRunAsUserAllowedForAdminPreserved asserts that an
-// admin PUT that omits the isolation keys also preserves the stored value —
-// preservation is not operator-specific, it's key-presence-specific.
+// admin PUT that omits the isolation keys also preserves the stored value:
+// preservation depends on key presence, not on the caller's role.
 func TestUpdateQueue_OmittedRunAsUserAllowedForAdminPreserved(t *testing.T) {
 	st := fake.New()
 	defer st.Close()
@@ -650,10 +648,10 @@ func TestUpdateQueue_RunAsUserAllowedForAdmin(t *testing.T) {
 // TestCreateQueue_RunAsGroupWithoutRunAsUser_Rejected proves an admin (who
 // holds isolation.manage and would otherwise sail past
 // requireIsolationManage) still gets a 400 when run_as_group is set with no
-// run_as_user: that combination selects no OS identity at all — the
-// scheduler only gates isolation on RunAsUser (internal/scheduler/
-// assign.go) — so accepting it would silently give the operator no isolation
-// and no warning.
+// run_as_user: that combination selects no OS identity at all (the
+// scheduler only gates isolation on RunAsUser, internal/scheduler/
+// assign.go), so accepting it would give the operator no isolation and no
+// warning.
 func TestCreateQueue_RunAsGroupWithoutRunAsUser_Rejected(t *testing.T) {
 	st := fake.New()
 	defer st.Close()
@@ -728,7 +726,7 @@ func TestUpdateQueue_ClearingRunAsUserWhileGroupOmitted_Rejected(t *testing.T) {
 		t.Fatalf("setup: status = %d, want 200 — body: %s", rr.Code, rr.Body)
 	}
 
-	// Now clear run_as_user while omitting run_as_group (preserved).
+	// Clear run_as_user while omitting run_as_group (preserved).
 	req := withPrincipal(newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
 		"farm_id":     farm.ID,
 		"name":        q.Name,
@@ -898,7 +896,7 @@ func TestUpdateQueue_Conflict(t *testing.T) {
 	}
 	r := newQueueRouter(st)
 
-	// Try to rename q1 to q2's name — should conflict.
+	// Try to rename q1 to q2's name; should conflict.
 	req := newReq(t, http.MethodPut, "/api/v1/queues/"+q1.ID, jsonBody(t, map[string]any{
 		"farm_id": farm.ID,
 		"name":    q2.Name,

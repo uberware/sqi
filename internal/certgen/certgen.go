@@ -5,14 +5,13 @@
 // API listener and the embedded broker, and client certificates for the
 // optional worker mTLS path.
 //
-// It exists because SANs and extended key usage are exactly what
-// hand-rolled openssl invocations get wrong, and getting them wrong fails
-// at worker-connect time — far from the mistake — rather than at load.
+// It sets the SANs and extended key usage that hand-rolled openssl
+// invocations commonly get wrong, a mistake that otherwise surfaces only at
+// worker-connect time rather than at load.
 //
-// The same generator backs `sqi-server tls init` and the test suites, so
-// the code path under test is the code path that ships. Tests therefore
-// never need checked-in certificate fixtures, which expire and break CI on
-// a date nobody chose.
+// The same generator backs `sqi-server tls init`, `sqi-server tls issue` and
+// the test suites, so tests exercise the shipped code path and need no
+// checked-in certificate fixtures, which expire.
 package certgen
 
 import (
@@ -102,11 +101,9 @@ func NewCA(commonName string, validFor time.Duration) (*CA, error) {
 
 // LoadCA reconstructs a [CA] from PEM material previously written by
 // [WriteCA], so certificates can be issued from a farm CA that already exists.
-//
-// Without this, `tls init` is the only way to get a CA and it refuses to
-// overwrite one — which left no way at all to add a worker to an established
-// mTLS farm, or to rotate a server certificate, short of replacing the CA and
-// reissuing everything.
+// `tls issue` uses it to add a worker to an established mTLS farm or rotate a
+// server certificate without replacing the CA (`tls init` refuses to
+// overwrite one).
 func LoadCA(certPEM, keyPEM []byte) (*CA, error) {
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
@@ -131,7 +128,7 @@ func LoadCA(certPEM, keyPEM []byte) (*CA, error) {
 		return nil, err
 	}
 
-	// The pair must actually belong together: a mismatched key produces
+	// The pair must belong together: a mismatched key produces
 	// signatures nothing can verify.
 	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
 	if !ok {

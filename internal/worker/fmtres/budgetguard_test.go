@@ -2,21 +2,18 @@
 
 package fmtres_test
 
-// The guard that makes "a production path must never resolve phase-3
-// expressions on the built-in default limits" a TEST FAILURE rather than a
-// comment asking people to remember.
+// The guard that turns "a production path must never resolve phase-3
+// expressions on the built-in default limits" into a test failure.
 //
-// WHY IT EXISTS. With a variadic `budget ...*AssignmentBudget` tail, a caller
-// such as executor.resolveAssignmentExpr could build its symbol table with
-// the argument omitted -- it would compile, run, and meter every PATH
-// parameter's apply_path_mapping evaluation against the compiled-in defaults
-// on a host configured otherwise, with every other test in this package
-// green. The parameter is REQUIRED, which stops an accidental omission; this
-// test stops the remaining spelling, a deliberate `nil`.
+// The budget parameter is required, so a caller such as
+// executor.resolveAssignmentExpr cannot omit it; omitted, it would meter
+// every evaluation (including each PATH parameter's apply_path_mapping)
+// against the compiled-in defaults on a host configured otherwise. This test
+// catches the remaining spelling, a literal `nil`.
 //
 // It parses the worker's two phase-3 consumer packages rather than grepping,
 // so a call split across lines, renamed through an import alias, or nested
-// inside another expression is still seen for what it is.
+// inside another expression is still found.
 
 import (
 	"go/ast"
@@ -31,13 +28,12 @@ import (
 // parseProductionFiles parses every non-test Go file directly in dir.
 //
 // It walks the directory itself rather than calling parser.ParseDir (which Go
-// 1.25 deprecated) and skips two kinds of file: _test.go, because this
-// package's own tests pass nil deliberately, and AppleDouble sidecars
-// ("._foo.go"), which macOS creates on non-native volumes and which are not Go
-// source at all -- go/parser rejects them with "illegal character NUL", and the
-// whole guard would fail to run rather than fail to find anything.
-// test/conformance's own isFixtureFile carries the identical exclusion for the
-// identical reason.
+// 1.25 deprecated) and skips two kinds of file: _test.go, because tests may
+// pass nil, and AppleDouble sidecars ("._foo.go"), which macOS creates on
+// non-native volumes and which are not Go source: go/parser rejects them with
+// "illegal character NUL", which would stop the guard from running.
+// test/conformance's isFixtureFile has the same exclusion for the same
+// reason.
 func parseProductionFiles(t *testing.T, fset *token.FileSet, dir string) []*ast.File {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -63,12 +59,10 @@ func parseProductionFiles(t *testing.T, fset *token.FileSet, dir string) []*ast.
 	return files
 }
 
-// phase3EntryPoints are the exported functions whose LAST parameter is the
-// assignment's *AssignmentBudget. Keeping this list in one place is what makes
-// an eighth entry point's omission visible: add one without adding it here and
-// the guard silently stops covering it, which is why
-// TestPhase3EntryPoints_GuardListIsComplete below cross-checks it against the
-// package's own source.
+// phase3EntryPoints are the exported functions whose last parameter is the
+// assignment's *AssignmentBudget. An entry point missing from this list is not
+// covered by the guard, so TestPhase3EntryPoints_GuardListIsComplete below
+// cross-checks it against the package's source.
 var phase3EntryPoints = map[string]bool{
 	"TaskSymbols":              true,
 	"EnvSymbols":               true,
@@ -83,12 +77,11 @@ var phase3EntryPoints = map[string]bool{
 // non-test file in internal/worker/session or internal/worker/executor calls a
 // phase-3 entry point with a literal nil budget.
 //
-// nil is legitimate in THIS package's own tests (it means "the defaults, which
-// are not what this test is about"). It is never legitimate in production: the
-// operator's configured limits reach phase 3 only through the budget, so a nil
-// there is a host silently metering against numbers its operator did not
-// choose -- invisible at runtime, since nothing fails; the task runs under
-// the wrong bounds.
+// nil is allowed in this package's tests (it means "the defaults, which this
+// test is not about"). It is never allowed in production: the operator's
+// configured limits reach phase 3 only through the budget, so a nil there
+// meters against numbers the operator did not choose, and nothing fails at
+// runtime.
 func TestPhase3EntryPoints_ProductionCallersAlwaysPassABudget(t *testing.T) {
 	for _, dir := range []string{
 		filepath.Join("..", "session"),
@@ -133,9 +126,9 @@ func checkFileForNilBudget(t *testing.T, fset *token.FileSet, file *ast.File) {
 }
 
 // TestPhase3EntryPoints_GuardListIsComplete cross-checks phase3EntryPoints
-// against this package's own exported functions: any exported function whose
-// last parameter is a *AssignmentBudget must be in the list, or the guard above
-// silently stops covering an entry point somebody added later.
+// against this package's exported functions: any exported function whose last
+// parameter is a *AssignmentBudget must be in the list, or the guard above
+// does not cover it.
 func TestPhase3EntryPoints_GuardListIsComplete(t *testing.T) {
 	fset := token.NewFileSet()
 	found := map[string]bool{}

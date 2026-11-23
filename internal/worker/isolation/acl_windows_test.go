@@ -12,7 +12,7 @@ import (
 )
 
 // aceCount reports how many access-allowed entries acl carries.
-// golang.org/x/sys/windows v0.47.0 has no GetAclInformation wrapper, but it
+// golang.org/x/sys/windows has no GetAclInformation wrapper, but it
 // doesn't need one: windows.ACL already exports AceCount as a plain struct
 // field — the same field the module's own syscall_windows_test.go
 // (getEntriesFromACL/TestGetACEsFromACL) reads directly, with no

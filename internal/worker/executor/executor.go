@@ -12,7 +12,7 @@
 // # Interfaces
 //
 // Executor implements [lease.Dispatcher], so it can be wired directly into the
-// lease loop.  It also satisfies [heartbeat.StateSource] by exposing
+// lease loop. It also satisfies [heartbeat.StateSource] by exposing
 // [Executor.ActiveTaskCount], [Executor.ActiveTaskIDs], and
 // [Executor.LastAssignmentAt], and [heartbeat.AttemptSource] by exposing
 // [Executor.ActiveAttemptIDs].
@@ -32,7 +32,7 @@
 //
 // # Root-user check
 //
-// Call [CheckRootUser] before creating an Executor.  It returns an error if the
+// Call [CheckRootUser] before creating an Executor. It returns an error if the
 // worker process is running as root on Linux/macOS and [Config.AllowRoot] is
 // false (see docs/worker-configuration.md, "worker.allow_root").
 package executor
@@ -65,7 +65,7 @@ import (
 // simultaneously).
 type OutputHandler interface {
 	// HandleLine is called for each line read from the task process stdout or
-	// stderr.  stream is "stdout" or "stderr".  The line does not include a
+	// stderr. stream is "stdout" or "stderr". The line does not include a
 	// trailing newline.
 	HandleLine(ctx context.Context, taskID, attemptID, sessionID, stream, line string)
 }
@@ -91,7 +91,7 @@ type LogFlusher interface {
 //
 // The executor calls [RegisterTask] before starting each task process and
 // [Deregister] after the task completes, giving the handler a per-task cancel
-// function it can call when an OpenJD fail directive is seen.  After the process
+// function it can call when an OpenJD fail directive is seen. After the process
 // exits, the executor calls [TakeFailReason] to retrieve any stored failure
 // reason before publishing the terminal status message.
 //
@@ -100,18 +100,18 @@ type LogFlusher interface {
 // the worker-wide context.
 type TaskLifecycleHook interface {
 	// RegisterTask associates task metadata and a cancel function with
-	// attemptID.  The cancel function is called when an openjd_fail directive
+	// attemptID. The cancel function is called when an openjd_fail directive
 	// is seen; termination then honors the action's OpenJD cancelation method
 	// (TERMINATE by default → immediate SIGKILL; NOTIFY_THEN_TERMINATE →
 	// SIGTERM then SIGKILL after the notify period).
 	RegisterTask(attemptID, taskID, jobID, sessionID string, taskCancel context.CancelFunc)
 
-	// Deregister removes the per-task state for attemptID.  Safe to call
+	// Deregister removes the per-task state for attemptID. Safe to call
 	// multiple times.
 	Deregister(attemptID string)
 
 	// TakeFailReason returns the failure reason stored by an openjd_fail
-	// directive for attemptID and true if one is present.  Returns ("", false)
+	// directive for attemptID and true if one is present. Returns ("", false)
 	// if no openjd_fail was seen.
 	TakeFailReason(attemptID string) (string, bool)
 }
@@ -137,7 +137,7 @@ type DiscardOutput struct{}
 func (DiscardOutput) HandleLine(_ context.Context, _, _, _, _, _ string) {}
 
 // LogOutput is an [OutputHandler] that forwards each output line to the
-// structured logger at debug level.  This is the default handler used when
+// structured logger at debug level. This is the default handler used when
 // nil is passed to [New].
 type LogOutput struct {
 	Logger *slog.Logger
@@ -171,7 +171,7 @@ type Config struct {
 	KillGracePeriod time.Duration
 
 	// AllowRoot, when true, allows the worker to run as the root user on
-	// Linux/macOS.  [CheckRootUser] returns an error if this is false and the
+	// Linux/macOS. [CheckRootUser] returns an error if this is false and the
 	// process UID is 0.
 	AllowRoot bool
 
@@ -201,7 +201,7 @@ type Config struct {
 
 // ── Internal types ────────────────────────────────────────────────────────────
 
-// taskRun holds the in-memory runtime state of an executing task.  It is
+// taskRun holds the in-memory runtime state of an executing task. It is
 // stored in [Executor.activeTasks], keyed by attempt ID, from Dispatch until
 // the task goroutine exits, or until Dispatch fails to create its session.
 type taskRun struct {
@@ -233,8 +233,8 @@ type taskRun struct {
 // Executor starts and manages bare-metal OS processes for assigned tasks.
 //
 // Create an instance with [New] and wire it into the pull loop and heartbeat
-// publisher.  Call [CheckRootUser] before creating an Executor to verify the
-// process is not running as root.  The worker's cancel subscription
+// publisher. Call [CheckRootUser] before creating an Executor to verify the
+// process is not running as root. The worker's cancel subscription
 // (package cancel) delivers the server's cancels to [Executor.Cancel].
 type Executor struct {
 	statusPub     *status.Publisher
@@ -269,7 +269,7 @@ type Executor struct {
 	execCancel context.CancelFunc
 
 	// shuttingDown is set to true immediately before execCancel() is called in
-	// DrainAndShutdown.  runTask (in the result.Canceled branch) and
+	// DrainAndShutdown. runTask (in the result.Canceled branch) and
 	// publishSetupFailure check it to distinguish a force-shutdown stop
 	// (publish "failed"/"worker_shutdown") from a normal per-task server cancel
 	// (publish "canceled").
@@ -384,7 +384,7 @@ func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error 
 	run.sessionID = sess.ID
 	e.mu.Unlock()
 
-	// Launch the task goroutine.  ctx is used only for log call context; task
+	// Launch the task goroutine. ctx is used only for log call context; task
 	// execution is gated on runCtx.
 	go e.runTask(ctx, msg, sess, run, runCtx, runCancel)
 
@@ -548,7 +548,7 @@ func (e *Executor) lastProgress(attemptID string) *int {
 }
 
 // finishProgress flushes the output handler's pending progress snapshot for
-// attemptID, stops later ones, and returns the last progress seen.  Handlers
+// attemptID, stops later ones, and returns the last progress seen. Handlers
 // without FinishProgress fall back to [Executor.lastProgress].
 func (e *Executor) finishProgress(attemptID string) *int {
 	type progressFinisher interface {
@@ -609,11 +609,11 @@ func (e *Executor) Cancel(taskID, attemptID string) bool {
 // DrainAndShutdown implements the worker graceful-shutdown sequence.
 //
 // It first waits up to gracePeriod for all in-flight tasks to complete
-// naturally.  If tasks are still running when the grace period expires, it
+// naturally. If tasks are still running when the grace period expires, it
 // sets the shuttingDown flag (so goroutines publish "failed"/"worker_shutdown"
 // rather than "canceled") and cancels the shared execCtx, triggering
 // SIGTERM → SIGKILL escalation in each runTask goroutine and stopping each
-// environment still being entered by its action's cancelation method.  It then
+// environment still being entered by its action's cancelation method. It then
 // blocks until every run has published its terminal status and ended.
 //
 // A run counts from the moment Dispatch registers it, before its session is

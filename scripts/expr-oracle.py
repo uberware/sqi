@@ -7,10 +7,9 @@ compares sqi's Go expression evaluator (internal/openjd/expr) against the
 reference implementation the specification names in its Recommended Library
 Interface section: the `openjd.expr` namespace of the `openjd-model` package.
 
-Despite the namespace, that package is not a Python implementation — it is a
-thin re-export layer over a compiled Rust crate (`openjd-expr`, in
-OpenJobDescription/openjd-rs). There is no Python source to read, so this
-script treats it strictly as a black box: expressions in, values or errors out.
+That namespace re-exports a compiled Rust crate (`openjd-expr`, in
+OpenJobDescription/openjd-rs), so this script treats it as a black box:
+expressions in, values or errors out.
 
 Protocol, one JSON object per line in each direction so a whole corpus costs a
 single interpreter start rather than one per case:
@@ -20,18 +19,17 @@ single interpreter start rather than one per case:
             {"id": "...", "ok": false, "error": "Cannot coerce ..."}
 
 The first stdout line is a banner carrying the resolved package version, which
-the Go side records in its failure output — a divergence means nothing without
-knowing which build of the reference produced it.
+the Go side records in its failure output and checks against the pinned
+version.
 
 `value` is `str(ExprValue)`, the reference's own canonical rendering, compared
-against Go's `Value.String()`. The two agree on floats because Go's formatFloat
-reproduces Python's repr, so `1e10` renders "10000000000.0" on both sides and a
-regression there shows up here.
+against Go's `Value.String()`. Go's formatFloat reproduces Python's repr, so
+`1e10` renders "10000000000.0" on both sides.
 
-The reference is not the authority. It is Beta (0.x, breaking changes allowed
-in minor bumps) and the specification outranks it. A divergence is a question
-to investigate, not a verdict against sqi — see test/oracle/baseline.txt, which
-records the disagreements already adjudicated in sqi's favour.
+The reference is not the authority. It is on the 0.x line, where minor
+versions may make breaking changes, and the specification outranks it. A
+divergence is a question to investigate, not a verdict against sqi; see
+test/oracle/baseline.txt, which records the adjudicated disagreements.
 """
 
 import json
@@ -39,21 +37,15 @@ import sys
 
 
 def main() -> int:
-    # The protocol above is UTF-8 JSON, so say so rather than inheriting it.
+    # The protocol is UTF-8 JSON. Python uses the locale encoding for stdio,
+    # which on Windows is the ANSI code page (cp1252 on a US/Western install),
+    # and the Go side always writes UTF-8. Without this, a case containing a
+    # non-ASCII character is decoded as a different expression, and because
+    # its `id` is mangled the same way the Go side reports "the reference
+    # returned no result" for it.
     #
-    # Python picks the locale encoding for stdio, which is UTF-8 on Linux and
-    # macOS but the ANSI code page (cp1252 on a US/Western install) on Windows.
-    # The Go side always writes UTF-8, so without this every corpus case
-    # carrying a non-ASCII character is answered for a different expression:
-    # `len("héllo")` arrives as `len("hÃ©llo")` and the reference correctly
-    # returns 6 for it. That does not surface as a divergence, because the case
-    # `id` is the expression text and is mangled the same way -- so the Go
-    # side's lookup misses and reports "the reference returned no result",
-    # leaving those cases (24 of them) graded against nothing.
-    #
-    # Only stdin strictly needs it: emit() leaves json.dumps at its
-    # ensure_ascii default, so what goes out is already pure ASCII. stdout is
-    # reconfigured anyway so the two halves cannot drift apart later.
+    # Only stdin needs it, since emit() leaves json.dumps at its ensure_ascii
+    # default; stdout is set too so the two stay consistent.
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
 
@@ -87,66 +79,51 @@ def evaluate(case: dict, ExprType, PathFormat, parse_expression) -> dict:  # noq
     """Evaluate one case, reporting any failure as data rather than raising.
 
     A malformed target type is reported through the same `error` channel as a
-    failed evaluation on purpose: from the Go side both are "the reference
-    refused this case", and conflating them keeps one comparison rule instead
-    of two.
+    failed evaluation: to the Go side both mean the reference refused the
+    case.
     """
     result = {"id": case["id"]}
     try:
         target = ExprType(case["target"])
         parsed = parse_expression(case["src"])
-        # path_format is pinned, not defaulted, which makes this oracle
-        # host-independent.
-        #
-        # Left to itself the reference follows the specification's host-native
-        # default, so `path('/a/b/c')` renders "/a/b/c" on Linux and "\a\b\c"
-        # on Windows. sqi does not follow that default -- expr.WithPathFormat
-        # defaults to POSIX so a server-side template expands identically
-        # whatever submitted it -- so on a Windows host every one of the
-        # corpus's 132 path cases would diverge, all of them noise.
-        #
-        # POSIX here matches sqi's own default, which means this is a no-op on
-        # Linux and macOS (host-native already resolves to POSIX). What it buys
-        # is that a divergence means the same thing on every development host.
+        # path_format is pinned to POSIX so the oracle answers the same on
+        # every host. Unpinned, the reference follows the specification's
+        # host-native default, so `path('/a/b/c')` renders "/a/b/c" on Linux
+        # and "\a\b\c" on Windows. sqi's expr.WithPathFormat defaults to POSIX
+        # so a server-side template expands identically whatever submitted it;
+        # without the pin every path case would diverge on a Windows host. On
+        # Linux and macOS the pin changes nothing.
         outcome = parsed.evaluate_with_metrics(
             target_type=target, path_format=PathFormat.POSIX
         )
     except BaseException as exc:  # noqa: BLE001 - see comment below
         result["ok"] = False
-        # BaseException, not Exception.
+        # BaseException, not Exception: the reference is a Rust crate behind
+        # pyo3 and panics rather than raising on some inputs (zfill with a
+        # negative width, "capacity overflow"; ljust with a large width,
+        # "Formatting argument out of range"). pyo3 raises a panic as
+        # PanicException, which derives from BaseException, so a narrower
+        # except would let one case end the loop and drop every case after it.
         #
-        # The reference implementation is a compiled Rust crate behind pyo3, and
-        # it panics rather than raising on several inputs — zfill with a
-        # negative width ("capacity overflow") and ljust with a large width
-        # ("Formatting argument out of range") are both in the corpus. pyo3
-        # surfaces a panic as PanicException, which derives from BaseException,
-        # so a narrower except lets one bad case kill the interpreter loop and
-        # drop every case after it.
-        #
-        # Catching it turns a panic into an ordinary error line the Go side can
-        # compare and baseline.
-        # Only the first line: the reference appends a source-caret excerpt that
-        # says nothing Go's own message would say, and messages are never
-        # compared for equality anyway.
+        # Only the first line is kept: the reference appends a source-caret
+        # excerpt, and messages are never compared.
         result["error"] = str(exc).splitlines()[0]
         return result
     result["ok"] = True
     result["value"] = str(outcome.value)
     result["type"] = str(outcome.value.type)
-    # Section 1.3.10's operation count. Compared by the Go side only on cases
-    # whose values already agree, so a count divergence is never stacked on a
-    # value divergence that is already reported and already baselined.
+    # Section 1.3.10's operation count. The Go side compares it only on cases
+    # whose values agree.
     #
     # peak_memory is not reported: section 1.3.9 makes value sizing
-    # explicitly implementation-defined, so a memory divergence could only ever
-    # be suppressed, never adjudicated.
+    # implementation-defined, so a memory divergence could not be adjudicated.
     result["ops"] = outcome.operation_count
     return result
 
 
 def emit(obj: dict) -> None:
-    # Flushed per line so a crash mid-corpus still leaves every prior result on
-    # the Go side, which reports how far it got.
+    # Flushed per line so a crash mid-corpus still delivers every earlier
+    # result to the Go side.
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 

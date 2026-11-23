@@ -360,14 +360,11 @@ describe('Submit page', () => {
       const user = userEvent.setup()
       render(<Submit />, { wrapper: Wrapper })
 
-      // Wait for queues to load
       await waitFor(() => screen.getByRole('option', { name: 'Default' }))
 
-      // Fill in the template editor
       const editor = screen.getByTestId('template-editor')
       await user.type(editor, 'specificationVersion: "jobtemplate-2023-09"')
 
-      // Submit the form
       const submitBtn = screen.getByRole('button', { name: /submit job/i })
       await user.click(submitBtn)
 

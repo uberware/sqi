@@ -56,7 +56,7 @@ func TestRECache_ConstantPatternInAComprehensionCompilesOnce(t *testing.T) {
 	}
 }
 
-// TestRECache_AnInvalidPatternIsCompiledOnceToo pins that a pattern that FAILS
+// TestRECache_AnInvalidPatternIsCompiledOnceToo pins that a pattern that fails
 // is not re-translated and re-failed once per element either, and the error a later element sees must be the error the
 // first one saw.
 func TestRECache_AnInvalidPatternIsCompiledOnceToo(t *testing.T) {
@@ -70,7 +70,7 @@ func TestRECache_AnInvalidPatternIsCompiledOnceToo(t *testing.T) {
 		t.Fatalf("evaluating %q succeeded; want the lookahead rejection", src)
 	}
 	// The comprehension stops at the first failure, so one compile is all this
-	// can observe directly -- what it pins is that the failure was CACHED, so a
+	// can observe directly -- what it pins is that the failure was cached, so a
 	// second call with the same pattern does not translate it again.
 	if got := ec.re.compiles; got != 1 {
 		t.Fatalf("evaluating %q compiled %d times, want 1", src, got)
@@ -115,7 +115,7 @@ func TestRECache_StopsAtTheCap(t *testing.T) {
 // every function that compiles a pattern and for a valid and an invalid pattern
 // alike -- the same matches, and the same error text.
 //
-// It compares the SECOND call on a cached context (the hit) against a context
+// It compares the second call on a cached context (the hit) against a context
 // whose cache is nil (compilePattern every time), which is also the mutation
 // point: making compile bypass its map makes the two identical by construction
 // and this test vacuous, so read it alongside the two counting tests above.

@@ -102,7 +102,7 @@ func TestExprLimits_OrDefaults(t *testing.T) {
 	}
 }
 
-// ── floors, measured against this repo's own templates ──────────────────────
+// ── floors, checked against this repo's own templates ──────────────────────
 
 // TestExprLimits_FloorsAcceptReferencePresets checks the floors in
 // exprlimits.go against the reference presets in presets/sqi/ (the files

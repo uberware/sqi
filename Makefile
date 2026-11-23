@@ -34,19 +34,18 @@ BUILD_DIR           := ./bin
 # Every $(shell ...) below runs a POSIX one-liner, and make runs it through its
 # shell — cmd.exe on Windows, which understands none of them (no grep, no awk,
 # no /dev/null, and its internal DATE command prompts for a new system date).
-# With `:=` all of them would run at parse time, on *every* make invocation, so
-# `make test-isolation-windows` — the one target meant to be run from a Windows
-# shell, and one that references none of these — would print four unrelated
-# shell errors before doing anything. `=` defers each value until a recipe
-# actually references it, which keeps the errors on the targets that need a
-# POSIX shell.
+# With `:=` all of them would run at parse time, on every make invocation, so
+# `make test-isolation-windows` (meant to be run from a Windows shell, and
+# referencing none of these) would print four unrelated shell errors first.
+# `=` defers each value until a recipe references it, which keeps the errors
+# on the targets that need a POSIX shell.
 #
 # The `$(eval X := ...)` wrapper caches the result on first reference so each
-# command still runs at most once per make run, as with `:=`. That is not just
-# an optimization: without it BUILD_DATE would be re-evaluated per reference
-# and sqi-server and sqi-worker could be stamped with different timestamps.
+# command runs at most once per make run, as with `:=`. Without it BUILD_DATE
+# would be re-evaluated per reference and sqi-server and sqi-worker could be
+# stamped with different timestamps.
 #
-# Version embedding — use git tag if available, fall back to "dev"
+# Version embedding: the git tag if available, otherwise "dev".
 VERSION      = $(eval VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev"))$(VERSION)
 COMMIT       = $(eval COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown"))$(COMMIT)
 BUILD_DATE   = $(eval BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ))$(BUILD_DATE)
@@ -71,9 +70,9 @@ endif
 # Per-package timeout for `make test` and `make test-cover`. go test's default
 # is 10m, and ./test/integration/ runs every preset's Tier-3 case and the
 # real-ffmpeg Tier-2 cases untagged, under -race, in one package. On a Windows
-# host that package needs more than 20 minutes because each preset outcome case
-# waits out three retry attempts. The HA tests have since pushed it past 30
-# minutes there, so a Windows host gets an hour; override on the command line.
+# host that package takes more than 30 minutes (each preset outcome case waits
+# out three retry attempts), so a Windows host gets an hour; override on the
+# command line.
 ifeq ($(OS),Windows_NT)
 TEST_TIMEOUT ?= 60m
 else
@@ -87,8 +86,7 @@ PG_VERSION ?= 18
 PG_PHASE ?= all
 
 COVERAGE_OUT := coverage.out
-# Raise in 5-point increments as new test suites land.
-# 2026-06-13: measured 74.5% (race); gate set ~5 points below for headroom
+# Kept about 5 points below the coverage `make test-cover` reports, as headroom
 # against per-platform fluctuation.
 COVERAGE_MIN ?= 70
 
@@ -237,23 +235,17 @@ test-conformance: ## Run the official OpenJD conformance suite (needs the pinned
 
 # The OpenJD expression-language reference implementation, pinned. It ships as
 # the openjd.expr namespace of openjd-model, which is a thin re-export layer
-# over a compiled Rust crate rather than a Python implementation. Pinned
-# because it is Beta (0.x, breaking changes permitted in minor bumps), so an
-# unpinned upgrade could turn the differential test red without a single sqi
-# commit — and because a divergence report is meaningless without knowing
-# which build of the reference produced it.
+# over a compiled Rust crate. Pinned because it is Beta (0.x, breaking changes
+# permitted in minor bumps), so an unpinned upgrade could turn the differential
+# test red with no sqi change, and because a divergence report needs to name
+# the build of the reference that produced it.
 OPENJD_MODEL_VERSION ?= 0.14.0
 ORACLE_VENV := .venv-oracle
 
 # The interpreter inside that venv. `python3 -m venv` puts it in bin/ on POSIX
-# and in Scripts/ on Windows, so this path depends on the host, not on the
-# venv. A hardcoded bin/python3 makes every target here unrunnable on a Windows
-# development host: creation dies with `CreateProcess ... failed` before pip
-# runs, and the staleness check below tests a path that cannot exist there, so
-# it finds nothing to compare and reinstalls nothing. The suite then falls
-# through to test/oracle/oracle_test.go's own probe -- which knows both
-# layouts -- and talks to whatever that Scripts/ venv holds. Only
-# SQI_EXPR_ORACLE_EXPECT_VERSION would catch that, by failing the test.
+# and in Scripts/ on Windows, so this path depends on the host. A bin/python3
+# path on Windows would fail venv creation and make the staleness check below
+# test a path that cannot exist, so it would never reinstall.
 ifeq ($(OS),Windows_NT)
 ORACLE_PY := $(ORACLE_VENV)/Scripts/python.exe
 else
@@ -280,13 +272,12 @@ test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD ref
 	  $(MAKE) --no-print-directory expr-oracle-venv || \
 	    { echo "could not install the reference implementation — skipping the expression oracle"; exit 0; }; \
 	fi
-# An existing venv is not evidence of the right venv: the guard above only
-# creates one when it is missing, so without this check a raised
-# OPENJD_MODEL_VERSION would leave the suite grading against the previous
-# reference with nothing red to say so. Reinstall on mismatch, and let the test itself
-# assert the version it actually spoke to (SQI_EXPR_ORACLE_EXPECT_VERSION) so
-# the guarantee survives a hand-run `go test` too. Skipped entirely when
-# SQI_EXPR_ORACLE_PYTHON points the harness at an interpreter we do not own.
+# The guard above creates the venv only when it is missing, so without this
+# check a raised OPENJD_MODEL_VERSION would leave the suite grading against the
+# older reference with nothing red to say so. Reinstall on mismatch, and let
+# the test assert the version it spoke to (SQI_EXPR_ORACLE_EXPECT_VERSION) so
+# the check holds for a hand-run `go test` too. Skipped when
+# SQI_EXPR_ORACLE_PYTHON points the harness at an interpreter sqi does not own.
 	@if [ -x "$(ORACLE_PY)" ] && [ -z "$$SQI_EXPR_ORACLE_PYTHON" ]; then \
 	  have=$$($(ORACLE_PY) -c \
 	    'import importlib.metadata as m; print(m.version("openjd-model"))' 2>/dev/null); \
@@ -460,34 +451,25 @@ test-oidc: ## Run the SSO tests against a real Keycloak in a container (needs Do
 #
 # The image is built from a staged copy of the repo (rsync'd into a scratch
 # directory, filtered by test/integration/isolation/.dockerignore, then passed
-# to `docker build` as the context) rather than either (a) bind-mounting the
-# repo at `docker run` time, or (b) using the repo root directly as the build
-# context. (a) fails under Colima (common on macOS), which only virtiofs-shares
-# $HOME by default, so a repo living elsewhere (e.g. /Volumes/...) resolves to
-# an empty bind mount and `go test` fails with "go.mod file not found" before a
-# single test runs — `docker build`, by contrast, has no such dependency, since
-# the CLI reads its context from wherever it runs and streams it to the daemon
-# regardless of what the daemon's host shares. (b) doesn't work either: the
-# repo-root .dockerignore (shared with deploy/docker/Dockerfile's production
-# build) excludes test/ entirely, and this image needs test/integration/**; the
-# classic (non-BuildKit) builder this project's Docker install runs has no
-# per-Dockerfile ignore-file override to give this build its own rules on that
-# same context. A staged copy avoids both problems, provided the repo-root
-# .dockerignore is not itself staged into the copy: rsync -a copies dotfiles,
-# so a naive staged copy carries the repo-root .dockerignore along to
-# $ctx/.dockerignore, and Docker auto-discovers a context-root .dockerignore
-# the same way regardless of which Dockerfile is building it — re-excluding
-# test/ from the staged copy just as it would from the repo root. The recipe
-# below excludes every .dockerignore from the rsync and then places
-# test/integration/isolation/.dockerignore at the staged root explicitly, so
-# Docker's context-root ignore-file discovery sees only this image's exclusion
-# list (docker_build_staged, below).
+# to `docker build` as the context). Two alternatives do not work:
+#   - Bind-mounting the repo at `docker run` time: Colima (common on macOS)
+#     shares only $HOME by default, so a repo elsewhere (e.g. /Volumes/...)
+#     mounts empty and `go test` fails with "go.mod file not found".
+#     `docker build` streams its context from the CLI, so it is unaffected.
+#   - Using the repo root as the build context: the repo-root .dockerignore
+#     (shared with deploy/docker/Dockerfile's production build) excludes
+#     test/, which this image needs, and the classic (non-BuildKit) builder has
+#     no per-Dockerfile ignore-file override.
+# rsync -a copies dotfiles, and Docker reads a .dockerignore at the context
+# root whichever Dockerfile is building, so a plain copy would carry the
+# repo-root .dockerignore along and exclude test/ again. The recipe excludes
+# every .dockerignore from the rsync and then places this image's ignore file
+# at the staged root (docker_build_staged, below).
 #
-# --init runs a real init (tini) as container PID 1: without it, the `go
-# test` process itself is PID 1, which never reaps re-parented grandchildren
-# after a process-group kill — a container-hygiene artifact of the test
-# harness, not of isolation.Apply, but one that produces a false failure in
-# TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild without it.
+# --init runs a real init (tini) as container PID 1. Without it the `go test`
+# process is PID 1, which never reaps re-parented grandchildren after a
+# process-group kill, and
+# TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild fails falsely.
 #
 # --cap-add SYS_PTRACE gives root what it has on a real host: reading another
 # account's /proc/<pid>/environ needs CAP_SYS_PTRACE even for root, Docker's

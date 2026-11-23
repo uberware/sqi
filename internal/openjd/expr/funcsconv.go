@@ -16,7 +16,7 @@ import (
 // Every other group is its own table in its own file, merged by funcs.go's
 // mergeFuncs.
 var convFuncs = map[string][]Shape{
-	// Section 1.3.10 rule 3 names len() BY NAME as its one explicit exemption:
+	// Section 1.3.10 rule 3 names len() by name as its one explicit exemption:
 	// "Simple lookups like len() that do not process the string content do not
 	// add to the count." All four rows below therefore carry the zero Cost, as
 	// a decision rather than an omission. Confirmed against the reference:
@@ -41,18 +41,18 @@ var convFuncs = map[string][]Shape{
 		}},
 		// RFC 0006: "Number of values in range expression" — the expanded
 		// count, not the text length, so len(range_expr("1-10")) is 10.
-		// Computed ARITHMETICALLY -- rangeExprCount answers this without
+		// Computed arithmetically -- rangeExprCount answers this without
 		// materializing anything for the common single-sub-range case, and
 		// expanding to count would refuse a legitimate query:
 		// len(range_expr('1-20000000')) would fail the element bound for a
 		// number rangeExprCount produces in constant time.
 		//
-		// TWO OR MORE sub-ranges are the case rangeExprCount CANNOT answer
+		// Two or more sub-ranges are the case rangeExprCount cannot answer
 		// arithmetically, and len() is where that costs most, because rule 3
 		// exempts len() from charging at all:
-		// len(range_expr("1-5000000,6000000-9000000")) would answer after
-		// 645 ms and 687 MB while charging TWO operations, so no budget in
-		// the package could see it. FnCtx and reserveRangeExprExpansion
+		// len(range_expr("1-5000000,6000000-9000000")) would expand eight
+		// million values while charging two operations, so no budget in the
+		// package could see it. FnCtx and reserveRangeExprExpansion
 		// (rangeexpr.go) put an arithmetic refusal in front of that
 		// expansion. It reserves without charging, so len()'s exemption --
 		// and every operation count the oracle compares -- is untouched, but
@@ -70,7 +70,7 @@ var convFuncs = map[string][]Shape{
 		}},
 	},
 	// RFC 0006's bool(). The scalar rows are conversions; the path and list
-	// rows exist ONLY to carry the wording RFC 0006 demands, which is why they
+	// rows exist only to carry the wording RFC 0006 demands, which is why they
 	// return noreturn. Section 1.2.3 does not define a string -> bool coercion
 	// at all (scalarCoercible has no CodeBool arm), so the accepted spellings
 	// are this function's own behavior and not the coercion matrix's.
@@ -79,8 +79,8 @@ var convFuncs = map[string][]Shape{
 	// anywhere, and the string row's own work is not "roughly proportional to
 	// the string length" in rule 3's sense — boolFromString tests membership
 	// in a closed set of eight short literal spellings, not string-length-
-	// scaled processing. Probed: bool("true"), bool(True) and bool(1) all
-	// measure 1 against the reference (rule 1 only); the path and list rows
+	// scaled processing. bool("true"), bool(True) and bool(1) all cost 1
+	// (rule 1 only), as in the reference; the path and list rows
 	// always error before any processing happens.
 	"bool": {
 		{Params: []Type{TBool}, Ret: TBool, Fn: func(args []Value) (Value, error) {
@@ -107,9 +107,9 @@ var convFuncs = map[string][]Shape{
 			return Value{}, errors.New("Cannot convert list to bool")
 		}},
 	},
-	// RFC 0006 writes int and float with UNION parameters, and so does this
+	// RFC 0006 writes int and float with union parameters, and so does this
 	// table. matchShapesExactFirst refuses a conversion that can fail when
-	// SELECTING an overload — the rule that stops "1 + 2.5" matching (int, int)
+	// selecting an overload — the rule that stops "1 + 2.5" matching (int, int)
 	// by discarding the .5 — so a narrow int(value: int) row would report
 	// int(3.75) as "no signature accepts (float)" instead of the
 	// non-destructive-conversion error RFC 0006 wants. A union parameter is
@@ -119,14 +119,10 @@ var convFuncs = map[string][]Shape{
 	//
 	// int() and float() carry no Cost. Neither is named by rule 2 (there is no
 	// list here) or rule 3, and — unlike the string-processing functions rule
-	// 3 DOES name — a numeric parse is not charged by the reference in
-	// proportion to input length: isolating float()'s own contribution from
-	// float("1"+"2"*300) (a 301-byte string built by two already-charged
-	// operators) leaves exactly 1 operation for the conversion itself,
-	// matching float("1.5")'s 1. int() shares the same coerce() path and is
-	// assumed to match by the same reasoning (a 250+-digit string cannot stay
-	// a valid int64 to test directly; int("0"*250+"5") does, and isolates to
-	// the same flat 1).
+	// 3 does name — the reference does not charge a numeric parse in
+	// proportion to input length: float() of a 301-byte string costs 1 for
+	// the conversion itself, as float("1.5") does, and int() of a long
+	// zero-padded digit string likewise costs 1.
 	"int": {
 		{Params: []Type{UnionOf(TInt, TFloat, TString)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			return coerce(args[0], TInt)
@@ -152,13 +148,11 @@ var convFuncs = map[string][]Shape{
 	// the payload text for string, path and range_expr.
 	"string": {
 		// No Cost: rule 3's own text scopes to "the string or path value"
-		// PROCESSED, and Value.String() on a scalar does no work proportional
+		// processed, and Value.String() on a scalar does no work proportional
 		// to its length beyond formatting a fixed-size number or copying a
-		// string's bytes once. Discriminating probe: string("a"*1000) isolates
-		// to exactly 1 operation once the 1000-byte literal's own repetition
-		// charge (already declared) is subtracted — the same flat 1 as
-		// string("a"). string(path(...)) and string(range_expr(...)) isolate
-		// the same way.
+		// string's bytes once. The reference agrees: string() of a 1000-byte
+		// string costs the same flat 1 as string("a"), and so do
+		// string(path(...)) and string(range_expr(...)).
 		{
 			Params: []Type{UnionOf(TBool, TInt, TFloat, TString, TPath, TRangeExpr, TNull)},
 			Ret:    TString,
@@ -172,30 +166,29 @@ var convFuncs = map[string][]Shape{
 		},
 		// RFC 0006 calls this "the JSON string representation". This row and
 		// Value.String() are two renderings for two purposes, but they
-		// share ONE quoting rule: both send a list's string-like elements
+		// share one quoting rule: both send a list's string-like elements
 		// through jsonQuoteElement (encoding/json with SetEscapeHTML(false)).
 		//
 		// They share it because openjd-specifications#176 states that
 		// format-string interpolation "uses this same conversion" and that
 		// the result "must parse as JSON": Go's \x00 and \v forms are not
-		// JSON. The agreement holds BY CONSTRUCTION, and
+		// JSON. The agreement holds by construction, and
 		// TestValueString_ListQuotingIsJSONEverywhere pins the six cases
 		// (C0 controls, vertical tab, DEL, invalid UTF-8) where two quoting
-		// rules would differ. What still differs is the SEPARATOR in
+		// rules would differ. What still differs is the separator in
 		// internal/openjd's canonical storage form ("," there, ", " here) --
 		// see paramjson.go.
 		//
-		// Cost{ArgElements: {0}} — a DELIBERATE divergence from the reference,
-		// which measures a flat 1 for string([1,2,3]) AND for a 10-element
-		// list, never scaling. Rule 2's operative sentence is "When a function
-		// or the evaluator iterates through every element of a list, the
-		// number of elements is added" — the named function list after it is
-		// introduced with "such as", not "only", and writeJSONValue walks
-		// every element of args[0] to build the JSON text. The general
-		// rule's text is satisfied regardless of the enumeration, so per
-		// doc.go's standing ruling that the specification outranks the
-		// reference's own (Beta, known-defective) counting, this row charges.
-		// See TestOperationCount_StringOverListDivergesFromReference.
+		// Cost{ArgElements: {0}}. Rule 2's operative sentence is "When a
+		// function or the evaluator iterates through every element of a list,
+		// the number of elements is added" — the named function list after it
+		// is introduced with "such as", not "only", and writeJSONValue walks
+		// every element of args[0] to build the JSON text, so this row
+		// charges. The reference charges differently: one per element counted
+		// recursively, plus a unit for the result string. sqi charges the
+		// argument list's own length, not recursed, and nothing for the
+		// result; test/oracle/baseline-ops.txt adjudicates both halves. See
+		// TestOperationCount_StringOverListDivergesFromReference.
 		{Params: []Type{ListOf(varT)}, Ret: TString, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			s, err := jsonList(args[0])
 			if err != nil {
@@ -208,25 +201,24 @@ var convFuncs = map[string][]Shape{
 	// exactly the "built-in functions that iterate lists" rule 2's own general
 	// sentence describes (range() itself is named; list() is the same shape of
 	// operation over the same source type). Cost{ResultElements: true}: the
-	// charge scales with the PRODUCED list, not the range_expr's compact text
-	// representation. Confirmed: list(range_expr("1-100")) measures 102 on the
-	// reference — range_expr("1-100") alone is 1, so list()'s own share is
+	// charge scales with the produced list, not the range_expr's compact text
+	// representation. list(range_expr("1-100")) costs 102, as in the
+	// reference: range_expr("1-100") alone is 1, so list()'s own share is
 	// 101 = 1 (call) + 100 (the 100 produced elements).
 	//
-	// FnCtx, not Fn, and the expansion is RESERVED before rangeExprValues
+	// FnCtx, not Fn, and the expansion is reserved before rangeExprValues
 	// performs it: the ResultElements charge lands after the list exists,
 	// which would price list(range_expr("1-10000000")) at 10,000,002
-	// operations against a 10,000 limit only after allocating 1.6 GB (132 ms
-	// measured).
+	// operations against a 10,000 limit only after allocating ten million
+	// values.
 	//
-	// reserveRangeExprExpansion, NOT rangeExprCount: rangeExprCount expands
+	// reserveRangeExprExpansion, not rangeExprCount: rangeExprCount expands
 	// two or more sub-ranges to produce its answer, so the reservation itself
-	// would do the work it exists to avert (687 MB before refusing
-	// "1-5000000,6000000-9000000"), and on the success path rangeExprValues
-	// would expand a SECOND time (+73 MB and +38 ms per call, invisible to
-	// every operation count). The reservation is arithmetic; the exact
-	// charge still comes from Cost{ResultElements} on the list actually
-	// produced.
+	// would do the work it exists to avert (expanding
+	// "1-5000000,6000000-9000000" before refusing it), and on the success
+	// path rangeExprValues would expand a second time, invisible to every
+	// operation count. The reservation is arithmetic; the exact charge still
+	// comes from Cost{ResultElements} on the list produced.
 	"list": {
 		{Params: []Type{TRangeExpr}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
 			if err := reserveRangeExprExpansion(ec, args[0]); err != nil {
@@ -241,19 +233,18 @@ var convFuncs = map[string][]Shape{
 	},
 	"range_expr": {
 		// No Cost: parsing compact range text into ranges is not proportional
-		// to the EXPANDED count, matching len(range_expr(...))'s exemption
-		// above. Confirmed: range_expr("1-100") measures 1 on the reference
-		// regardless of the range spanning 100 values.
+		// to the expanded count, matching len(range_expr(...))'s exemption
+		// above. range_expr("1-100") costs 1, as in the reference, although
+		// the range spans 100 values.
 		{Params: []Type{TString}, Ret: TRangeExpr, Fn: func(args []Value) (Value, error) {
 			return RangeExpr(args[0].AsStr())
 		}},
-		// Cost{ArgElements: {0}}, unlike the string row just above: this row
-		// must scan every element of the INPUT list to sort, de-duplicate and
-		// find its ranges, so the work genuinely is proportional to the
-		// argument's length — a different question from the string row's
-		// (already-compact range text). Confirmed scaling against the
-		// reference: range_expr([1,2,3]) measures 4 (1 call + 3 elements) and
-		// the 10-element form measures 11 (1 call + 10).
+		// Cost{ArgElements: {0}}, unlike the string row above: this row
+		// must scan every element of the input list to sort, de-duplicate and
+		// find its ranges, so the work is proportional to the argument's
+		// length — a different question from the string row's (already-compact
+		// range text). As in the reference, range_expr([1,2,3]) costs 4 (1 call
+		// + 3 elements) and the 10-element form 11 (1 call + 10).
 		{Params: []Type{ListOf(TInt)}, Ret: TRangeExpr, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			elems := args[0].AsList()
 			if len(elems) == 0 {
@@ -269,7 +260,7 @@ var convFuncs = map[string][]Shape{
 	},
 	// fail() needs no special handling anywhere else. With a resolved argument
 	// it errors here; with an unresolved one callFunction returns a placeholder
-	// before Fn runs, because nothing has actually failed while the value is
+	// before Fn runs, because nothing has failed while the value is
 	// unknown. Its noreturn return type then collapses out of any union it
 	// lands in (collectUnionMembers, type.go), which is what makes
 	// "x if c else fail(...)" typed x rather than x?.

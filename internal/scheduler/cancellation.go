@@ -10,7 +10,7 @@ package scheduler
 //
 //  1. [store.TaskStore.CancelJobExecution] / [store.TaskStore.CancelTaskExecution]
 //     cancels the non-terminal tasks, closes their running attempts and
-//     releases those attempts' usage claims in ONE transaction (invariant I3),
+//     releases those attempts' usage claims in one transaction (invariant I3),
 //     and returns the tasks that were assigned or running together with the
 //     worker each held.
 //  2. A cancel signal is published to each of those workers, on its
@@ -140,7 +140,7 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 }
 
 // publishCancelSignals publishes a cancel naming each task in activeTasks
-// that has an assigned worker, to that worker.  NATS publish failures are
+// that has an assigned worker, to that worker. NATS publish failures are
 // non-fatal: a warning is logged and iteration continues so all other workers
 // still receive their signals.
 func (s *Scheduler) publishCancelSignals(ctx context.Context, activeTasks []store.Task, canceledAt time.Time) {

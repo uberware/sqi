@@ -11,7 +11,7 @@ import (
 
 // ClaimInvariantViolations returns the IDs of active usage claims that break
 // invariant I3: the attempt is missing or not running, or its task is
-// terminal. Mirrors the SQLite diagnostic of the same name, signature
+// terminal. Mirrors the SQL store diagnostic of the same name, signature
 // included, so a test can call it on either backend; the error is always nil.
 // Not part of store.Store.
 func (s *Store) ClaimInvariantViolations(_ context.Context) ([]string, error) {

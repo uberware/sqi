@@ -56,18 +56,13 @@ describe('server-supplied permissions are the only input', () => {
 })
 
 describe('permission union stays in lockstep with the server', () => {
-  // internal/auth/policy/policy.go's module doc declares a three-way lockstep:
-  // the Go Permission constants, this file's union, and docs/auth.md must all
-  // agree. A permission missing from the union causes no compile error (an
-  // unrelated permission set still typechecks) and no runtime effect until
-  // something gates on it. This list is a hand-mirrored copy of every
-  // `Permission = "..."` constant in policy.go — keep it in sync by hand
-  // whenever that file changes; a permission added to one side and not the
-  // other fails this test rather than working with no client-side gate (or, for a
-  // Permission-union addition specifically, PERMISSION_SET's
-  // Record<Permission, true> in policy.ts already forces the union and
-  // ALL_PERMISSIONS to agree with EACH OTHER at compile time — this test is
-  // what additionally pins that pair against the actual server list).
+  // internal/auth/policy/policy.go, policy.ts and docs/auth.md must agree on
+  // the permission names. A permission missing from the union causes no
+  // compile error and no runtime effect until something gates on it. This list
+  // is a hand-mirrored copy of every `Permission = "..."` constant in
+  // policy.go; keep it in sync when that file changes. PERMISSION_SET in
+  // policy.ts makes the union and ALL_PERMISSIONS agree at compile time; this
+  // test pins that pair against the server's list.
   const serverPermissions: Permission[] = [
     'jobs.read',
     'jobs.read.all',

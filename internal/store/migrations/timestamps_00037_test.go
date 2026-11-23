@@ -87,7 +87,7 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 	}
 
 	// Applying it again changes nothing: its down is a no-op and every row it
-	// recognized is now 30 characters, which it skips.
+	// recognized is 30 characters after the first run, which it skips.
 	keep := columnsAt(t, 36)
 	before := dumpTables(t, db, keep)
 	if err := goose.DownTo(db, ".", 36); err != nil {
@@ -107,7 +107,7 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 }
 
 // TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote covers re-running
-// 00037 over trimmed timestamps, the form releases before 00037 write, in a
+// 00037 over trimmed timestamps, the form a binary without 00037 writes, in a
 // database already at version 37 or later: rewound to 36 with goose's library
 // API and migrated up again, the rows come out normalized.
 func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
@@ -120,7 +120,7 @@ func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	db := openRaw(t, path)
-	// The trimmed form a release before 00037 writes.
+	// The trimmed form a binary without 00037 writes.
 	if _, err := db.ExecContext(t.Context(),
 		`UPDATE farms SET created_at = '2026-10-10T12:00:05.5Z' WHERE id = ?`, farm.ID); err != nil {
 		t.Fatalf("plant: %v", err)

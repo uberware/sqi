@@ -8,200 +8,36 @@ import (
 	"testing"
 )
 
-// PROBE: .venv-oracle/bin/python -c "..." against openjd-model 0.11.1. Pasted
-// verbatim as evidence: run something first, decide against the spec text
-// second.
+// TestOperationCount_StringFunctions pins section 1.3.10's charges for the
+// string library. A long string in a case below, written as 'a'*300, is
+// spliced into the source as a literal: evaluated by the expression language's
+// own "*" operator it would add that operator's charge (('a'*300).upper()
+// costs 6 that way, not 3). funcsstrsplit.go names the same trap for join().
 //
-// HOW TO REPRODUCE THESE NUMBERS. Wherever a row below is written with a
-// repetition shorthand such as 'a'*300 or 'xy'*150, the repetition was
-// performed in PYTHON and the resulting literal spliced into the expression
-// text. It was NOT evaluated by the expression language's own "*" operator:
-// doing that bakes "*"'s own rule-1 and rule-3 charge into the reading, and
-// the numbers then do not reproduce -- ('a'*300).upper() measures 6
-// in-expression, not the 3 transcribed here. funcsstrsplit.go names this trap
-// and avoids it for join().
-//
-// All 42 rows across funcsstrcase.go (11), funcsstrfind.go (16),
-// funcsstrsplit.go (9) and funcsstrpad.go (6) were probed; the 300/600-byte
-// inputs below are the ones that actually DISCRIMINATE (a sub-256-byte probe
-// cannot tell "charges nothing" from "charges nothing because the input was
-// small").
-//
-// Initial command (10-byte inputs, non-discriminating but confirms every
-// row costs SOMETHING beyond len()'s exemption):
-//
-//	2  'abc'.upper()
-//	2  'abc'.lower()
-//	2  'a,b,c'.split(',')
-//	ERR  ','.join(['a','b'])   -- WRONG receiver: openjd.expr's join is a LIST
-//	                              method (sep is the ARGUMENT), matching sqi's
-//	                              own Params order (list, sep). Re-run below.
-//	2  ' a '.strip()
-//	2  'abc'.replace('a','b')
-//	2  'abc'.startswith('a')
-//	2  'abc'.isalpha()
-//	2  'abc'.ljust(10)
-//	2  'abc'.find('b')
-//
-// Case transforms (upper/lower/capitalize/title) -- ArgBytes on the INPUT,
-// scaling 10/300/600 bytes to 2/3/4 (1 call + ceil(n/256)):
-//
-//	2  'a'*10 .upper()      3  'a'*300 .upper()      4  'a'*600 .upper()
-//	2  'a'*10 .lower()      3  'a'*300 .lower()       4  'a'*600 .lower()
-//	2  'a'*10 .capitalize() 3  'a'*300 .capitalize()  4  'a'*600 .capitalize()
-//	2  'a'*10 .title()      3  'a'*300 .title()       4  'a'*600 .title()
-//
-// The ArgBytes-vs-ResultBytes question (the same question as for "+", re-run
-// here because case mapping can GROW its output): 'İ' (U+0130, 2 UTF-8 bytes)
-// lowers to 'i' + a combining dot above (3 UTF-8 bytes), a per-rune growth
-// ratio no same-length probe can see. 100 copies is 200 INPUT bytes (ceil/256
-// = 1) but 300 OUTPUT bytes (ceil/256 = 2) -- the two hypotheses predict
-// different totals:
-//
-//	2  ('İ'*100).lower()   ArgBytes predicts 1+1=2 (MATCHES). ResultBytes
-//	                        would predict 1+2=3. ArgBytes wins for the case
-//	                        transforms -- the OPPOSITE of "+"'s ResultBytes
-//	                        answer, and the same as string "in"
-//	                        (the OpIn/OpNotIn ArgBytes rows).
-//
-// Classification predicates (isdigit/isalpha/isalnum/isspace/isupper/islower/
-// isascii) -- same ArgBytes-on-input formula, 10/300 bytes to 2/3, decided
-// explicitly: they SCAN THE WHOLE STRING (RFC 0006's
-// "all characters are X"), so rule 3's "and similar" covers them. They are NOT
-// len()-style lookups -- len() stays flat at 1 on the SAME 300-byte input,
-// pinned as the control:
-//
-//	2  ('1'*10).isdigit()   3  ('1'*300).isdigit()
-//	2  ('a'*10).isalpha()   3  ('a'*300).isalpha()
-//	2  ('a'*10).isalnum()   3  ('a'*300).isalnum()
-//	2  (' '*10).isspace()   3  (' '*300).isspace()
-//	2  ('A'*10).isupper()   3  ('A'*300).isupper()
-//	2  ('a'*10).islower()   3  ('a'*300).islower()
-//	2  ('a'*10).isascii()   3  ('a'*300).isascii()
-//	1  len('a'*300)         -- exempt, the control
-//
-// strip/lstrip/rstrip -- ArgBytes on the MAIN string (arg0) ONLY. The 2-arg
-// cutset form's SECOND argument does NOT add to the charge, no matter how
-// large: holding the 12-byte main string fixed and growing the cutset from
-// 10 to 300 bytes leaves the count at 2 both times:
-//
-//	2  ('x'+'a'*10+'x').strip()          3  ('x'+'a'*298+'x' -- 300B).strip()
-//	2  'xaaaaaaaaaax'.strip('x')          -- 12B main, 1B cutset
-//	3  ('x'+'a'*298+'x').strip('x')       -- 300B main, 1B cutset -- scales
-//	2  'xaaaaaaaaaax'.strip('xyxyxyxyxy') -- 12B main, 10B cutset: still 2
-//	2  'xaaaaaaaaaax'.strip('xy'*150)     -- 12B main, 300B cutset: STILL 2
-//
-// removeprefix/removesuffix, startswith/endswith -- ArgBytes on the MAIN
-// string ONLY, independent of the prefix/suffix argument's own length.
-// Discriminated by holding the TOTAL main-string length at 310 bytes while
-// swapping which side (the matched affix or the remainder) is long:
-//
-//	2  ('a'*10+'b'*10).removeprefix('a'*10)              -- 20B main
-//	3  ('a'*300+'b'*10).removeprefix('a'*300)             -- 310B main, 300B affix
-//	3  ('a'*10+'b'*300).removeprefix('a'*10)               -- 310B main,  10B affix
-//	   (if the reference charged the RESULT, these two would differ --
-//	    result lengths are 10B and 300B respectively; they do not: both 3)
-//	2  ('a'*10+'b'*10).startswith('a'*10)                 3  ('a'*300).startswith('a')
-//	3  ('a'*600).startswith('a')  -- 1B needle, still scales with the 600B main
-//
-// count/find/rfind/index/rindex -- ArgBytes on the MAIN (haystack) string
-// only; the needle's own length does not matter at all (a 300-byte, entirely
-// absent needle against a 2-byte haystack still measures 2):
-//
-//	2  ('a'*10+'b').find('b')       3  ('a'*300+'b').find('b')     4  ('a'*600+'b').find('b')
-//	   (rfind/index/rindex measure identically at each size)
-//	2  'ab'.count('c'*300)          2  'ab'.find('c'*300)   -- needle length: no effect
-//
-// replace -- ArgBytes on the MAIN string (arg0) ONLY, confirmed with a probe
-// designed to catch a huge PRODUCED string hiding behind a small charge: 100
-// 'a's replaced by a 300-byte "new" would
-// balloon the RESULT to ~30000 bytes, and the count does not move:
-//
-//	2  ('a'*10).replace('a','b')     3  ('a'*300).replace('a','b')    4  ('a'*600).replace('a','b')
-//	2  ('a'*100).replace('a','bb'*150)  -- new=300B, result~30000B: STILL 1+ceil(100/256)=2
-//	2  'ab'.replace('a','x'*300)        -- old=1B, new=300B, tiny result: still 2
-//
-// split/rsplit -- ArgBytes on the MAIN string ONLY, confirmed NOT to be
-// ArgElements/ResultElements despite producing a list (rule 2's own
-// enumeration in shape.go's specNamedIteratingFunctions does not name split,
-// matching this): a 5-word and a 150-word whitespace split measure the SAME
-// as their BYTE lengths predict, not their word counts:
-//
-//	2  ('a '*5).split()             3  ('a '*150).split()        -- NOT 1+5 / 1+150
-//	2  'a,a,a,a,a'.split(',')       3  (299-byte comma list).split(',')  4  (599-byte).split(',')
-//	   (rsplit identical at every size; the 3-arg maxsplit form too:)
-//	2  'a,a,a,a,a'.split(',', 2)    3  (299-byte comma list).split(',', 2)
-//
-// join -- named by BOTH rule 2 (iterates a list) and rule 3 (processes
-// strings). Isolating with a LITERAL list (not a repetition operator, whose
-// own ResultElements charge would contaminate the reading):
-//
-//	3   ['a','b'].join(',')                    -- 2 elements, 1-byte strings
-//	6   ['a','a','a','a','a'].join(',')        -- 5 elements, 1-byte strings
-//	6   (5 literal 300-byte elements).join(',') -- 5 elements, 300-byte strings:
-//	                                                SAME as the 1-byte-element
-//	                                                case above -- the
-//	                                                reference does NOT scale
-//	                                                with string content at all
-//	21  (20 literal 300-byte elements).join(',') -- 1 + 20 (ArgElements only)
-//	1   [].join(',')                            -- list[nulltype] row
-//
-// This is a genuine SPEC/REFERENCE divergence:
-// section 1.3.10 rule 3 names join() BY NAME as a function that "does work
-// roughly proportional to the string length", but the reference's own
-// operation count for join never moves when the strings it is joining grow
-// from 1 byte to 300 bytes at a fixed element count (6 both times, above).
-// The reference implements rule 2's charge for join and OMITS rule 3's.
-// Per the standing rule ("the specification outranks the reference"), sqi
-// implements BOTH: Cost{ArgElements: {0}, ResultBytes: true} on join's
-// list[string] and list[path] rows -- ResultBytes rather than a (structurally
-// unavailable) per-element ArgBytes sum, because the Cost mechanism's
-// ArgBytes reads a single argument's OWN byte payload (chargeArgs, ops.go),
-// and args[0] here is the LIST, whose own .s field is empty; ResultBytes on
-// the PRODUCED joined string is the same idiom this package already uses
-// wherever a function's byte-proportional work is best measured by what it
-// BUILDS rather than what it was HANDED (padString below; the "+" and "*"
-// operators, ops.go). See TestOperationCount_JoinChargesElementsAndBytesTogether.
-//
-// ljust/rjust/center -- ResultBytes (the PRODUCED, padded string), not
-// ArgBytes on the input. Discriminated by holding the input FIXED at 10 bytes
-// and growing the WIDTH: a pure-input charge would stay flat at 2 for every
-// row below; it does not:
-//
-//	2  ('a'*10).ljust(20)     3  ('a'*10).ljust(300)     4  ('a'*10).ljust(600)
-//	3  ('a'*300).ljust(310)   3  ('a'*300).ljust(5)  -- width<=len is a no-op,
-//	                             result=input=300B either way, not discriminating
-//	(rjust and center measure identically at every size above)
-//	ERR  ('a'*10).ljust(-5)  -- capacity overflow (72057594037927938 ops): the
-//	     reference's own known negative-width defect.
-//	     sqi's padWidth already treats width<=len as a no-op (funcsstrpad.go),
-//	     so a negative width never reaches padString/zfillString's growth path
-//	     at all -- there is nothing for Cost to charge beyond ResultBytes on
-//	     the (unchanged) input, and no divergence to adjudicate here.
-//
-// zfill -- the ONE row in this file where sqi's OWN design (ResultBytes,
-// matching its three siblings above, which share the SAME padWidth helper)
-// diverges from the reference's own measured count, which does NOT scale
-// with width at all -- it stays flat at the INPUT's own ArgBytes charge:
-//
-//	2  '5'.zfill(10)     2  '5'.zfill(300)     2  '5'.zfill(600)   2  '5'.zfill(1000)
-//	   (all four measure 2 = 1 + ceil(1/256); the WIDTH never appears)
-//	3  ('a'*300).zfill(310)   -- matches ArgBytes(input=300B), NOT
-//	                              ResultBytes(310B) -- both ceil to 2 here, so
-//	                              this row alone cannot tell the two apart
-//	3  ('a'*300).zfill(1)     -- width<cur, a no-op; input=output=300B, so
-//	                              ArgBytes and ResultBytes agree here too
-//
-// This is the same shape of defect as the reference's negative-width
-// failures for center/zfill (center('ab', -3) fails with a bogus
-// 72-quadrillion operation count, and zfill with a negative width panics
-// outright) but on the POSITIVE-width path instead: the reference's zfill
-// fails to charge the pad growth its own sibling ljust/rjust/center charge correctly,
-// even though zfillString (funcsstrpad.go) shares the exact same padWidth
-// mechanism and does the exact same proportional work. Per the standing rule,
-// sqi does not reproduce that omission: all three zfill rows (string/int,
-// int/int, float/int) charge Cost{ResultBytes: true}, identically to
-// ljust/rjust/center. See TestOperationCount_ZfillDivergesFromReferenceOnWidth.
+//   - Case transforms (upper/lower/capitalize/title) charge ArgBytes on the
+//     input: 10/300/600 bytes cost 2/3/4 (1 call + ceil(n/256)). Not
+//     ResultBytes: ('İ'*100).lower() reads 200 bytes, builds 300, and costs 2.
+//   - The classification predicates (isdigit, isalpha, isalnum, isspace,
+//     isupper, islower, isascii) scan the whole string (RFC 0006's "all
+//     characters are X"), so rule 3's "and similar" covers them; len() of the
+//     same 300-byte input stays at 1.
+//   - strip/lstrip/rstrip, removeprefix/removesuffix, startswith/endswith,
+//     count/find/rfind/index/rindex and replace charge ArgBytes on the main
+//     string only. The cutset, affix, needle and replacement never add to it,
+//     however long, and neither does the length of replace's result.
+//   - split/rsplit charge ArgBytes on the main string, not per produced
+//     element: rule 2's enumeration (shape.go's specNamedIteratingFunctions)
+//     does not name split.
+//   - join charges Cost{ArgElements: {0}, ResultBytes: true}: rule 2 for the
+//     list it iterates and rule 3 for the string it builds. ResultBytes
+//     because ArgBytes reads one argument's own payload (chargeArgs, ops.go)
+//     and args[0] is the list. See
+//     TestOperationCount_JoinChargesElementsAndBytesTogether.
+//   - ljust/rjust/center and all three zfill rows charge ResultBytes on the
+//     padded string: a 10-byte input costs 2/3/4 at widths 20/300/600. A
+//     width at or below the input's length, negative included, is a no-op
+//     (padWidth, funcsstrpad.go). See
+//     TestOperationCount_ZfillDivergesFromReferenceOnWidth.
 func TestOperationCount_StringFunctions(t *testing.T) {
 	a300 := strings.Repeat("a", 300)
 	tests := []struct {
@@ -211,15 +47,15 @@ func TestOperationCount_StringFunctions(t *testing.T) {
 		why  string
 	}{
 		// --- funcsstrcase.go: case transforms, ArgBytes{0} on the input ---
-		{"upper", fmt.Sprintf("'%s'.upper()", a300), 3, "rule 3 names upper() by name; ArgBytes on the input, confirmed scaling 10/300/600 -> 2/3/4"},
-		{"lower", fmt.Sprintf("'%s'.lower()", a300), 3, "rule 3 names lower() by name; ArgBytes on the input -- confirmed by the ArgBytes-vs-ResultBytes 'İ' probe above, unlike '+'"},
+		{"upper", fmt.Sprintf("'%s'.upper()", a300), 3, "rule 3 names upper() by name; ArgBytes on the input, scaling 10/300/600 -> 2/3/4"},
+		{"lower", fmt.Sprintf("'%s'.lower()", a300), 3, "rule 3 names lower() by name; ArgBytes on the input, unlike '+' (see the 'İ' case in this file's doc comment)"},
 		{"capitalize", fmt.Sprintf("'%s'.capitalize()", a300), 3, "not named by rule 3's own enumeration but does the same length-proportional work as upper/lower; 'and similar' covers it"},
 		{"title", fmt.Sprintf("'%s'.title()", a300), 3, "same as capitalize: 'and similar', ArgBytes on the input"},
 
 		// --- funcsstrcase.go: classification predicates ---
 		// These SCAN THE WHOLE STRING (RFC 0006's
 		// "all characters are X and string is non-empty"), so they are rule-3
-		// charges under "and similar", NOT len()-style exempt lookups. len()
+		// charges under "and similar", not len()-style exempt lookups. len()
 		// itself stays flat at 1 on the identical 300-byte input -- see
 		// TestOperationCount_ClassificationFunctionsAreNotLenExempt for the
 		// side-by-side control.
@@ -233,8 +69,8 @@ func TestOperationCount_StringFunctions(t *testing.T) {
 
 		// --- funcsstrfind.go: trim/affix/search/replace, ArgBytes{0} on the
 		// receiver only; the second (and third) string argument's own length
-		// never contributes, confirmed by the strip-cutset and
-		// removeprefix/removesuffix probes above. ---
+		// never contributes (see the strip-cutset and removeprefix/removesuffix
+		// tests below). ---
 		{"strip", fmt.Sprintf("'x%sx'.strip('x')", strings.Repeat("a", 298)), 3, "ArgBytes on the 300-byte main string; the cutset argument's length does not matter (see the dedicated cutset-independence test)"},
 		{"lstrip", fmt.Sprintf("'x%sx'.lstrip('x')", strings.Repeat("a", 298)), 3, "same as strip"},
 		{"rstrip", fmt.Sprintf("'x%sx'.rstrip('x')", strings.Repeat("a", 298)), 3, "same as strip"},
@@ -320,7 +156,7 @@ func TestOperationCount_ClassificationFunctionsAreNotLenExempt(t *testing.T) {
 
 // TestOperationCount_StripCutsetDoesNotAffectCost pins that strip/lstrip/
 // rstrip's second (cutset) argument never contributes to the charge, no
-// matter how large: only the RECEIVER's byte length (ArgBytes{0}) is
+// matter how large: only the receiver's byte length (ArgBytes{0}) is
 // declared, and chargeArgs only reads the indices a Cost actually names.
 func TestOperationCount_StripCutsetDoesNotAffectCost(t *testing.T) {
 	small := opsFor(t, "'xaaaaaaaaaax'.strip('xyxyxyxyxy')")
@@ -331,9 +167,9 @@ func TestOperationCount_StripCutsetDoesNotAffectCost(t *testing.T) {
 }
 
 // TestOperationCount_AffixArgumentDoesNotAffectRemoveprefixCost pins the same
-// independence for removeprefix/removesuffix: the charge tracks the MAIN
+// independence for removeprefix/removesuffix: the charge tracks the main
 // string's total length, not which side (the matched affix or the remaining
-// text) is long. If the reference charged the RESULT instead, these two would
+// text) is long. If the reference charged the result instead, these two would
 // differ (results are 10 and 300 bytes respectively); they do not.
 func TestOperationCount_AffixArgumentDoesNotAffectRemoveprefixCost(t *testing.T) {
 	longAffixShortRemainder := opsFor(t, fmt.Sprintf("'%s%s'.removeprefix('%s')",
@@ -361,14 +197,14 @@ func TestOperationCount_NeedleLengthDoesNotAffectFindCost(t *testing.T) {
 // TestOperationCount_ReplaceDoesNotChargeTheProducedResult pins a trap
 // directly: replace() can balloon a small input into a huge
 // result (old shorter than new, many occurrences), and the reference's own
-// count does not move when that happens -- it tracks the MAIN string's own
+// count does not move when that happens -- it tracks the main string's own
 // length, never the result actually built. sqi follows the reference here
 // (unlike join/zfill below): rule 3 groups replace() in the same sentence as
-// upper()/lower()/strip(), which are all input-driven (see the ArgBytes-vs-
-// ResultBytes 'İ' probe at the top of this file), and the worst-case growth
+// upper()/lower()/strip(), which are all input-driven (see the 'İ' case at
+// the top of this file), and the worst-case growth
 // this exposes is independently bounded by maxStringBytes (checkRepeat in
 // replaceAll, funcsstrfind.go) regardless of what the operation count says --
-// a SEPARATE limit (section 1.3.9) from this one (section 1.3.10).
+// a separate limit (section 1.3.9) from this one (section 1.3.10).
 func TestOperationCount_ReplaceDoesNotChargeTheProducedResult(t *testing.T) {
 	// 100 'a's, each replaced by a 300-byte string: the result is ~30000
 	// bytes, but the charge tracks only the 100-byte input.
@@ -380,7 +216,7 @@ func TestOperationCount_ReplaceDoesNotChargeTheProducedResult(t *testing.T) {
 
 // TestOperationCount_SplitDoesNotChargeByWordCount pins that split/rsplit are
 // ArgBytes-only, not ArgElements/ResultElements: a 5-word and a 150-word
-// whitespace split measure what their BYTE lengths predict, not their word
+// whitespace split measure what their byte lengths predict, not their word
 // counts (which would give 6 and 151 respectively under an ArgElements/
 // ResultElements reading).
 func TestOperationCount_SplitDoesNotChargeByWordCount(t *testing.T) {
@@ -395,19 +231,17 @@ func TestOperationCount_SplitDoesNotChargeByWordCount(t *testing.T) {
 }
 
 // TestOperationCount_JoinChargesElementsAndBytesTogether is join's own
-// dedicated test: it is named by BOTH rule 2 (iterates a list)
+// dedicated test: it is named by both rule 2 (iterates a list)
 // and rule 3 (processes strings), and is deliberately charged
-// Cost{ArgElements: {0}, ResultBytes: true} -- a divergence from the
-// reference's own measured count, which never moves with string content (see
-// the PROBE comment at the top of this file). Discriminated by holding the
-// element COUNT fixed and growing each element's byte length: an
-// ArgElements-only reading would predict the SAME total for both rows below;
+// Cost{ArgElements: {0}, ResultBytes: true}. Discriminated by holding the
+// element count fixed and growing each element's byte length: an
+// ArgElements-only reading would predict the same total for both rows below;
 // it does not, once sqi's own ResultBytes charge is added.
 func TestOperationCount_JoinChargesElementsAndBytesTogether(t *testing.T) {
 	small := opsFor(t, "join(['a','a','a','a','a'], ',')")
 	// 5 elements, each 300 bytes: produced string is 5*300 + 4*1(seps) =
-	// 1504 bytes, ceil(1504/256) = 6. ArgElements alone (matching the
-	// reference) would measure 6 for BOTH rows; sqi's ResultBytes addition is
+	// 1504 bytes, ceil(1504/256) = 6. ArgElements alone would give 6 for both
+	// rows; sqi's ResultBytes addition is
 	// what makes them differ.
 	elem := strings.Repeat("a", 300)
 	src := fmt.Sprintf("join(['%s','%s','%s','%s','%s'], ',')", elem, elem, elem, elem, elem)
@@ -436,7 +270,7 @@ func TestOperationCount_JoinListNullRowChargesNothing(t *testing.T) {
 
 // TestOperationCount_PaddingFunctionsChargeProducedBytes pins ljust/rjust/
 // center's ResultBytes over ArgBytes, discriminated by holding the 10-byte
-// input FIXED and growing only the requested width -- an ArgBytes(input)
+// input fixed and growing only the requested width -- an ArgBytes(input)
 // reading would stay flat at 2 for every row; it does not.
 func TestOperationCount_PaddingFunctionsChargeProducedBytes(t *testing.T) {
 	small := strings.Repeat("a", 10)
@@ -459,13 +293,11 @@ func TestOperationCount_PaddingFunctionsChargeProducedBytes(t *testing.T) {
 }
 
 // TestOperationCount_ZfillDivergesFromReferenceOnWidth is zfill's own
-// dedicated divergence test. The reference's own zfill measurement does not
-// scale with the requested width at all (see the PROBE comment); sqi charges
-// Cost{ResultBytes: true} on all three zfill rows regardless, matching its
-// three siblings (ljust/rjust/center, which share the same padWidth
-// mechanism, funcsstrpad.go) rather than reproducing an omission that would
-// make zfill the ONE padding function whose declared cost does not reflect
-// the padding it actually performs.
+// dedicated divergence test. The reference charges padding as two length
+// terms, the argument's and the added padding's; sqi charges
+// Cost{ResultBytes: true} on all three zfill rows, matching its three
+// siblings (ljust/rjust/center, which share the same padWidth mechanism,
+// funcsstrpad.go).
 func TestOperationCount_ZfillDivergesFromReferenceOnWidth(t *testing.T) {
 	small := opsFor(t, "'5'.zfill(10)")
 	big := opsFor(t, "'5'.zfill(600)")
@@ -488,7 +320,7 @@ func TestOperationCount_ZfillDivergesFromReferenceOnWidth(t *testing.T) {
 // TestOperationCount_UnresolvedStringArgumentChargesRuleOneOnly covers the
 // ruling "an unresolved operand charges rule 1 only -- no element or byte
 // charges, since no values were processed." callFunction (call.go)
-// short-circuits BEFORE callShape/chargeArgs ever runs when any argument is
+// short-circuits before callShape/chargeArgs ever runs when any argument is
 // unresolved, so this holds structurally for every row in this file; pinned
 // here for one of the string-function ArgBytes rows rather than assumed.
 func TestOperationCount_UnresolvedStringArgumentChargesRuleOneOnly(t *testing.T) {

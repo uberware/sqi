@@ -716,7 +716,7 @@ func TestResolveParameterSpaceParams_WholeFieldExpressionError(t *testing.T) {
 // survives to a worker. See TestResolveParameterSpaceParams_
 // RangeListEntryFloatIsRenormalizedByExpand, immediately below, which pins
 // what a caller reading the FULLY expanded parameter space (this function
-// PLUS expand.go's ExpandParameterSpace) actually receives, and records why
+// PLUS expand.go's ExpandParameterSpace) receives, and records why
 // the string form of a computed float does not matter for a FLOAT range
 // value reached through either the whole-field list form or this per-entry
 // form.
@@ -800,13 +800,13 @@ func TestResolveParameterSpaceParams_RangeListEntryExpressions(t *testing.T) {
 // TestResolveParameterSpaceParams_RangeListEntryFloatIsRenormalizedByExpand
 // pins what a worker receives for a computed FLOAT entry. The FLOAT case
 // above asserts resolve.go's own output ("5.0" for "{{ Param.Scale * 2 }}",
-// Scale=2.5) and stops there, which does NOT pin what a worker actually
+// Scale=2.5) and stops there, which does NOT pin what a worker
 // receives — expand.go's validateFloatList re-canonicalizes every FLOAT
 // RangeList entry with strconv.FormatFloat(f, 'g', -1, 64), which drops the
 // ".0" evalRangeExprField's/resolveFormatStringExpr's own rendering rule
 // adds. This test runs the SAME entry through the full pipeline
 // (ResolveParameterSpaceParams + ExpandParameterSpace) and pins the value
-// that actually reaches a task row: "5", not "5.0".
+// that reaches a task row: "5", not "5.0".
 //
 // So which of two competing string forms for a computed float is "correct"
 // does not matter for a FLOAT range value, in EITHER form (the whole-field
@@ -1231,7 +1231,7 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprMetered(t *testing.T) {
 // through the literal that follows the embedded value.
 //
 // All three cases share one shape: an embedded range_expr(...) call,
-// followed by a literal ",<n>" — deliberately non-lone (fmtstring.LoneRef
+// followed by a literal ",<n>" — non-lone (fmtstring.LoneRef
 // requires the ENTIRE field to be one reference; the trailing literal rules
 // that out), so all three exercise the resolveFormatStringExpr/
 // checkFormatString-agreement path, not evalRangeExprField's

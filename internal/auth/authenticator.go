@@ -9,9 +9,8 @@ import "net/http"
 // (REST middleware or WebSocket hook) responds 401 and does not proceed.
 //
 // The same interface serves both the REST middleware and the WebSocket
-// upgrade, since both receive the raw *http.Request. Supporting several
-// concurrent credential types later is simply another implementation that
-// tries each in turn.
+// upgrade, since both receive the raw *http.Request. Chain combines several
+// credential types by trying each in turn.
 type Authenticator interface {
 	Authenticate(r *http.Request) (Principal, error)
 }

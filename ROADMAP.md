@@ -1,6 +1,6 @@
 # `sqi` Roadmap and Technical Architecture
 
-> **Status:** v0.3.0 (Phase 3) released — opt-in authentication and multi-user support, including task isolation (run-as-user), plus the official OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets. **Phase 4** (production hardening) is in progress: the PostgreSQL state store, backup/restore, external and clustered NATS, scheduler high availability, capacity groups (the scaling signal, wake-on-LAN and the script provider), and a much larger set of reference presets and in-application submitters are implemented, not yet released. Details may change as development progresses.
+> **Status:** v0.4.0 (Phase 4, production hardening) released: the PostgreSQL state store, backup and restore, external and clustered NATS, scheduler high availability, capacity groups (the scaling signal, wake-on-LAN and the script provider), a larger set of reference presets and in-application submitters, and a beta install path for running the binaries as services. Native installer packages are planned for Phase 5. Details may change as development progresses.
 
 This document provides technical detail on `sqi`'s architecture, core concepts, and development roadmap. For the vision and feature overview, see [README.md](README.md).
 
@@ -85,8 +85,8 @@ Configuration cascades: farm defaults → queue overrides, with retry policy (ma
     at that moment), and replies.
  - *CPU capacity:* `amount.worker.vcpu` `min` is a consumable per-task
     reservation; omitting it reserves the whole machine (one task per worker).
-    The server tracks committed cores in the database; the ledger rebuilds
-    instantly on restart.
+    The server tracks committed cores in the database, so the ledger survives
+    a restart.
  - *Deferred:* worker drain/headroom signal, head-of-line reservation for
     large tasks, `amount.worker.vcpu.max`, memory/GPU dimensions.
 
@@ -97,7 +97,7 @@ Configuration cascades: farm defaults → queue overrides, with retry policy (ma
 `sqi` adopts the [Open Job Description](https://github.com/OpenJobDescription/openjd-specifications) (OpenJD) format as its native job execution format.
 
 **Benefits:**
-- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged, provided the template does not opt into an extension `sqi` has not implemented — those are rejected by design rather than accepted and misinterpreted (the official `EXPR` expression-language extension is implemented and supported) — and the remaining gaps against the official conformance suite are tracked in `test/conformance/baseline.txt` and measured in [`docs/openjd-conformance.md`](docs/openjd-conformance.md)
+- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged, provided the template does not declare an extension `sqi` does not implement (such templates are rejected rather than misinterpreted; the official `EXPR` extension is supported). The remaining gaps against the official conformance suite are listed in `test/conformance/baseline.txt` and reported in [`docs/openjd-conformance.md`](docs/openjd-conformance.md)
 - Standardized path mapping, parameter spaces, and execution semantics
 - Clear separation between job description and job authoring (the product system)
 
@@ -192,7 +192,7 @@ compatible — a product can declare all five):
 
 `sqi` does not manage storage replication or synchronization between locations. Studios are responsible for ensuring data is present in cloud storage before jobs run. `sqi` provides the path translation and staging hooks to integrate with whatever sync solution the studio uses (rclone, AWS DataSync, rsync, etc.).
 
-Making a studio's data available to cloud machines automatically, so that "add some cloud nodes" just works, is not part of capacity groups either; it is recorded as future work (see [Future: turnkey cloud burst](#future-turnkey-cloud-burst)).
+Making a studio's data available to cloud machines automatically, so that adding cloud nodes needs no data setup, is not part of capacity groups either; it is recorded as future work (see [Future: turnkey cloud burst](#future-turnkey-cloud-burst)).
 
 ---
 
@@ -248,7 +248,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - S3-compatible storage support (thin layer: derived type, root validation, path staging via operator sync tool)
 - DCC submitter framework — in-application submitters for Maya, Houdini, Nuke, and Blender (the `sqi-submitter` Python package), built on the Python client
 - Compute location registry and step-level affinity (native OpenJD `attr.worker.computelocation`)
-- Chunk bounds (`SQI_CHUNK_BOUNDS` vendor extension) — expose each task chunk's frame start/end to the command line, used by the Maya, Blender and Mistika reference presets
+- Chunk bounds (`SQI_CHUNK_BOUNDS` vendor extension) — expose each task chunk's frame start/end to the command line, used by reference presets such as Maya, Blender and Mistika
 - Auto-retry and failure limits — per-task retry policy (max attempts, retry delay) and a job-level failure ceiling that auto-parks a job, resolved over four tiers (server → farm → queue → job) with per-task attempt history
 - Cross-job dependencies — a submission may declare `depends_on` upstream jobs (same farm, across queues); dependents are held `blocked` until every upstream completes, then released (or canceled if an upstream fails)
 - Testing job presets — ready-to-run `test-render`/`test-steps` presets (bash and PowerShell) published to the preset library for smoke-testing a farm
@@ -263,7 +263,7 @@ authentication. See [docs/auth.md](docs/auth.md) for the model and setup.
 - Role-based access control (admin, operator, user, read-only)
 - Owner/submitter distinction in job model
 - OAuth2/OIDC support
-- **Task isolation (run-as-user)** — queue-scoped: tasks in an isolated queue
+- Task isolation (run-as-user), queue-scoped: tasks in an isolated queue
   execute as an operator-configured OS account instead of the worker's own, so
   a principal holding `jobs.write` cannot execute arbitrary code as the worker
   service account. Supported on POSIX and Windows — on Windows the
@@ -275,29 +275,28 @@ authentication. See [docs/auth.md](docs/auth.md) for the model and setup.
 
 ### Also in v0.3: OpenJD `EXPR` and expanded reference presets ✅ Released
 
-- **OpenJD `EXPR` extension** — the official expression-language extension is
-  fully implemented and supported: expression core, type system,
-  collections, comprehensions, the ~100-function standard library, path
-  mapping, template integration (scopes, `let` bindings, bounded evaluation
+- **OpenJD `EXPR` extension**: the official expression-language extension is
+  implemented and supported: expression core, type system, collections,
+  comprehensions, the RFC 0006 standard library, path mapping, template integration (scopes, `let` bindings, bounded evaluation
   with operator-configurable limits), RFC 0007 extended parameter types, and
   the web `*_LIST` widgets. EXPR templates are accepted, submitted, dispatched
   and executed, with host-context expressions resolved on the worker. See
   [`docs/openjd-extensions/expr.md`](docs/openjd-extensions/expr.md).
-- **ffmpeg reference presets** — transcode, sequence-encode, and
+- **ffmpeg reference presets**: transcode, sequence-encode, and
   segment-transcode (bash/PowerShell/EXPR) added to `presets/sqi/`; all but
   the transcode preset declare `extensions: [EXPR]`.
-- **Mistika reference presets** — Boutique, VR, and Workflows render presets
+- **Mistika reference presets**: Boutique, VR, and Workflows render presets
   added to `presets/sqi/`, each using the `SQI_CHUNK_BOUNDS` extension.
 
-### Phase 4: Production Hardening (v0.4 — beta)
+### Phase 4: Production Hardening (v0.4 — beta) ✅ Released
 
-- PostgreSQL state store option — **implemented, not yet released**: `store.driver: postgres` (PostgreSQL 16 or later), one `sqi-server` per database (or one high-availability group, below), a `pg_dump` backup and a Docker Compose example; an existing SQLite farm moves onto it with `sqi-server store copy`. See [Running on PostgreSQL](docs/operations.md#running-on-postgresql) and [Moving to PostgreSQL](docs/operations.md#moving-to-postgresql).
-- Backup, restore and upgrade — **implemented, not yet released**: `sqi-server backup` and `sqi-server restore` on SQLite and PostgreSQL, with restore handing back the tasks the backup recorded in flight; forward-only schema migrations (a binary older than the database refuses to start, and rollback is restoring the pre-upgrade backup); one server per database, enforced by a lock; and reconciliation of tasks a live worker stops reporting. See [Upgrade](docs/operations.md#upgrade), [Rollback](docs/operations.md#rollback) and [Restore](docs/operations.md#restore).
-- Scheduler HA — **implemented, not yet released**: `ha.enabled` runs several `sqi-server`s on one PostgreSQL database and one external NATS account, one leader and warm standbys, with a leader lease kept on the database's clock, every scheduler write fenced by the leader's epoch, and a deposed leader exiting with code 75 for its supervisor to restart as a standby; a standby takes over a crashed leader in about 20 s and a stopped one in about a second, with running tasks untouched. See [Running more than one server (high availability)](docs/operations.md#running-more-than-one-server-high-availability) and [`deploy/docker-compose.ha.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.ha.yml).
-- External and clustered NATS — **implemented, not yet released**: `nats.mode: external` runs the farm on a NATS server or cluster the operator runs, with configurable stream replicas, worker authentication through the NATS auth callout in both broker modes, one `sqi-server` (or one high-availability group) per broker account, and `sqi-server nats external init` to generate the cluster's accounts configuration. See [Running on an external NATS cluster](docs/operations.md#running-on-an-external-nats-cluster).
-- Capacity groups (elastic and power-managed workers) — **implemented, not yet released**: a capacity group is a named or sized set of machines that sqi publishes a scaling signal for, as `sqi_capacity_*` metrics and a status on the REST API (cores of ready work a group could run, the total machines it should have, and which idle machines are safe to give back). A group's provider decides who acts on it. With `external`, an AWS Auto Scaling group, a GCP managed instance group, an Azure scale set or KEDA acts on the signal. With `wake_on_lan`, sqi wakes switched-off on-premises machines with magic packets, sent through an awake worker on the machine's subnet when there is one, else from the server, and tells idle ones to sleep or shut down, which each worker must allow. With a script provider, sqi runs the operator's own program to wake, grow, retire and list a group's machines; a sized group that does not come up degrades and backs off, and instances that booted but never registered are retired. Example scripts for AWS, GCP, Azure and IPMI ship with it. Machines booted from an image join with a reusable group token; spot and preemptible workers hand their tasks back at once on a provider notice; cloud workers that left for good are removed and their credentials revoked. sqi wakes and stops machines through these providers and never launches a cloud instance itself; a script provider asks the operator's own tool to. See [Capacity groups](docs/capacity.md).
-- Installer packages (Linux, macOS, Windows) — **beta install path implemented, not yet released**: the release archives carry the systemd units, the launchd plist and example configs; `sqi-server config init` and `sqi-worker config init` write a starter config; and on Windows, `service install` creates `%ProgramData%\sqi` for administrators only, and refuses to install a service whose configuration, binary or log directory other users can change. Native packages (`.deb`/`.rpm`, a macOS `.pkg`, a Windows `.msi`) move to Phase 5. See [Running as a system service](docs/operations.md#running-as-a-system-service) and the [worker deployment guide](docs/worker-deployment.md).
-- Reference presets and submitters — **implemented, not yet released**: 45 presets covering DCC rendering, standalone renderers, transcoding and image processing; seven built-in products, including fan-out `command-sequence`/`python-sequence` and Windows `script-powershell`; in-application submitters for 14 applications; the `SQI_LOG_CHECKS` vendor extension for applications that exit 0 on failure; and a checked record of the validation tier each preset has reached. See [Preset Library](docs/preset-library.md).
+- PostgreSQL state store option: `store.driver: postgres` (PostgreSQL 16 or later), one `sqi-server` per database (or one high-availability group, below), a `pg_dump` backup and a Docker Compose example; an existing SQLite farm moves onto it with `sqi-server store copy`. See [Running on PostgreSQL](docs/operations.md#running-on-postgresql) and [Moving to PostgreSQL](docs/operations.md#moving-to-postgresql).
+- Backup, restore and upgrade: `sqi-server backup` and `sqi-server restore` on SQLite and PostgreSQL, with restore handing back the tasks the backup recorded in flight; forward-only schema migrations (a binary older than the database refuses to start, and rollback is restoring the pre-upgrade backup); one server per database, enforced by a lock; and reconciliation of tasks a live worker stops reporting. See [Upgrade](docs/operations.md#upgrade), [Rollback](docs/operations.md#rollback) and [Restore](docs/operations.md#restore).
+- Scheduler HA: `ha.enabled` runs several `sqi-server`s on one PostgreSQL database and one external NATS account, one leader and warm standbys, with a leader lease kept on the database's clock, every scheduler write fenced by the leader's epoch, and a deposed leader exiting with code 75 for its supervisor to restart as a standby; a standby takes over a crashed leader in about 20 s and a stopped one in about a second, with running tasks untouched. See [Running more than one server (high availability)](docs/operations.md#running-more-than-one-server-high-availability) and [`deploy/docker-compose.ha.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.ha.yml).
+- External and clustered NATS: `nats.mode: external` runs the farm on a NATS server or cluster the operator runs, with configurable stream replicas, worker authentication through the NATS auth callout in both broker modes, one `sqi-server` (or one high-availability group) per broker account, and `sqi-server nats external init` to generate the cluster's accounts configuration. See [Running on an external NATS cluster](docs/operations.md#running-on-an-external-nats-cluster).
+- Capacity groups (elastic and power-managed workers): a capacity group is a named or sized set of machines that sqi publishes a scaling signal for, as `sqi_capacity_*` metrics and a status on the REST API (cores of ready work a group could run, the total machines it should have, and which idle machines are safe to give back). A group's provider decides who acts on it. With `external`, an AWS Auto Scaling group, a GCP managed instance group, an Azure scale set or KEDA acts on the signal. With `wake_on_lan`, sqi wakes switched-off on-premises machines with magic packets, sent through an awake worker on the machine's subnet when there is one, else from the server, and tells idle ones to sleep or shut down, which each worker must allow. With a script provider, sqi runs the operator's own program to wake, grow, retire and list a group's machines; a sized group that does not come up degrades and backs off, and instances that booted but never registered are retired. Example scripts for AWS, GCP, Azure and IPMI ship with it. Machines booted from an image join with a reusable group token; spot and preemptible workers hand their tasks back at once on a provider notice; cloud workers that left for good are removed and their credentials revoked. sqi wakes and stops machines through these providers and never launches a cloud instance itself; a script provider asks the operator's own tool to. See [Capacity groups](docs/capacity.md).
+- Installer packages (Linux, macOS, Windows): a beta install path. The release archives carry the systemd units, the launchd plist and example configs; `sqi-server config init` and `sqi-worker config init` write a starter config; and on Windows, `service install` creates `%ProgramData%\sqi` for administrators only and refuses to install a service whose configuration, binary or log directory other users can change. Native packages (`.deb`/`.rpm`, a macOS `.pkg`, a Windows `.msi`) are planned for Phase 5. See [Running as a system service](docs/operations.md#running-as-a-system-service) and the [worker deployment guide](docs/worker-deployment.md).
+- Reference presets and submitters: 45 presets covering DCC rendering, standalone renderers, transcoding and image processing; seven built-in products, including fan-out `command-sequence`/`python-sequence` and Windows `script-powershell`; in-application submitters for 14 applications; the `SQI_LOG_CHECKS` vendor extension for applications that exit 0 on failure and `SQI_LOG_PROGRESS` for reading task progress from application output; and a checked record of the validation tier each preset has reached. See [Preset Library](docs/preset-library.md).
 
 ### Phase 5: LLM Plugin and Polish (v0.5 — RC)
 

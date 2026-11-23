@@ -16,24 +16,21 @@ import (
 // This file validates the job-parameter types RFC 0007 (the EXPR extension's
 // Extended Parameter Types) adds: BOOL, RANGE_EXPR, and the six LIST[*] types.
 //
-// It is separate from validate.go because that file is already ~2900 lines and
-// these validators share one responsibility. Every function here is reached
-// only from validateJobParams' type switch, and only for a template that
-// declares the EXPR extension -- the switch guards that, so nothing in this
-// file needs to re-check it.
+// Every function here is reached through validateEXPRParamType, called from
+// validateJobParams' type switch, which reports these types as unknown when
+// the template does not declare the EXPR extension; nothing after it needs to
+// re-check the declaration.
 
 // validateEXPRParamType dispatches to the right validator for a type RFC 0007
 // adds, or reports the type as unknown when the template does not declare the
 // EXPR extension.
 //
-// THE GATE HERE IS NOT REDUNDANT with the decoder's. Only an EXPR template
-// canonicalizes a spelling, but a base-spec template that writes the canonical
-// form verbatim -- "BOOL", "LIST[INT]" -- lands on these switch arms with
-// exprDeclared false, because the verbatim text is byte-identical to the
-// constant. Without this check such a template would be validated against
-// rules it never opted into. (The same shape of leak, in the parse-time list
-// default reader, is pinned by
-// TestListDefault_ListTypeWithoutEXPRStillRejected.)
+// This check is needed in addition to the decoder's. Only an EXPR template
+// canonicalizes a spelling, but a base-spec template that writes the
+// canonical form verbatim ("BOOL", "LIST[INT]") reaches these switch arms
+// with exprDeclared false. Without this check it would be validated against
+// rules it never opted into. TestListDefault_ListTypeWithoutEXPRStillRejected
+// covers the same case in the parse-time list default reader.
 func validateEXPRParamType(p JobParameter, ptr string, exprDeclared bool) ValidationErrors {
 	if !exprDeclared {
 		return ValidationErrors{{
@@ -56,14 +53,12 @@ func validateEXPRParamType(p JobParameter, ptr string, exprDeclared bool) Valida
 // accepted-values table: JSON/YAML boolean literals, integer or float 1/0, and
 // the case-insensitive strings true/yes/on/1 and false/no/off/0.
 //
-// The table is CLOSED. "y", "t" and "2" are not accepted: a template author who
-// means true already has four spellings, and a fifth guess is far more likely
-// to be a typo than an intent. 2.9--bool-param-{int,float,string}-invalid
-// exist to pin exactly that.
+// The table is closed: "y", "t" and "2" are rejected
+// (2.9--bool-param-{int,float,string}-invalid).
 //
 // The value arrives as text because [JobParameter.Default] is a *string for
-// every type -- a YAML `true` and a YAML `"true"` are indistinguishable here,
-// which is what the RFC's table wants anyway: both are true.
+// every type, so a YAML `true` and a YAML `"true"` are indistinguishable
+// here; the RFC's table treats both as true.
 func parseBoolParamValue(s string) (value, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "true", "yes", "on", "1", "1.0":
@@ -78,10 +73,8 @@ func parseBoolParamValue(s string) (value, ok bool) {
 func validateBoolParamConstraints(p JobParameter, ptr string) ValidationErrors {
 	var errs ValidationErrors
 
-	// RFC 0007 states the carve-out explicitly: BOOL does not support
-	// allowedValues, because restricting a two-valued type to one value
-	// constrains nothing. AllowedValuesSet rather than len() is what catches
-	// `allowedValues: []`, which decodes empty and would otherwise pass.
+	// RFC 0007: BOOL does not support allowedValues. AllowedValuesSet rather
+	// than len() catches `allowedValues: []`, which decodes empty.
 	if p.AllowedValuesSet {
 		errs = append(errs, ValidationError{
 			Pointer: ptr + "/allowedValues",
@@ -114,30 +107,25 @@ const defaultRangeExprMaxLength = 1024
 
 // validateRangeExprParamConstraints checks a RANGE_EXPR parameter.
 //
-// THE DEFAULT IS PARSED WITH THE SPEC'S POLICY, NOT internal/openjd's. That
-// choice has wide consequences, so the reasoning is written here:
+// The default is parsed with the specification's policy, not
+// internal/openjd's. internal/openjd parses literal base-spec <IntRangeExpr>
+// text more strictly than the specification (openjdRangePolicy sets
+// PositiveStepOnly and AscendingOnly, so "10-1:-1" and "-1--10:-1" are
+// rejected; see range.go and internal/openjd/intrange), and that strictness
+// must be kept. The conformance fixture 2.10--range-expr-param.yaml declares
+// both of those as RANGE_EXPR defaults.
 //
-// internal/openjd parses <IntRangeExpr> more strictly than the specification
-// on purpose -- openjdRangePolicy sets PositiveStepOnly and AscendingOnly, so
-// "10-1:-1" and "-1--10:-1" are rejected as literal base-spec range text (a
-// divergence preserved deliberately; see internal/openjd/intrange). The
-// conformance fixture 2.10--range-expr-param.yaml declares both of those as
-// RANGE_EXPR defaults, so under the strict policy that fixture could never
-// pass.
-//
-// The permissive policy is also the one the value meets downstream, which is
-// what makes this consistent rather than merely convenient: the LONE
-// whole-field form range: "{{Param.FrameRange}}" evaluates as a VALUE through
-// range_expr's own list[int] coercion and never re-enters <IntRangeExpr> text
-// at all (see resolve.go's evalRangeExprField), and expr.ValueFromText's
+// The permissive policy is also the one the value meets downstream: the lone
+// whole-field form range: "{{Param.FrameRange}}" evaluates as a value through
+// range_expr's list[int] coercion and never re-enters <IntRangeExpr> text
+// (see resolve.go's evalRangeExprField), and expr.ValueFromText's
 // CodeRangeExpr case calls the permissive expr.RangeExpr. Literal base-spec
-// range text -- including text assembled from an EMBEDDED reference (see
-// resolve.go's resolveRangeExprField) -- keeps the strict policy.
+// range text, including text assembled from an embedded reference (see
+// resolve.go's resolveRangeExprField), keeps the strict policy.
 //
-// minLength and maxLength bound the expression's STRING length, not its
-// expanded element count. A range expression is a compact notation precisely
-// so that "1-1000000" is nine characters; bounding the expansion here would
-// measure the wrong thing entirely, and expansion cost is bounded elsewhere.
+// minLength and maxLength bound the expression's string length, not its
+// expanded element count: "1-1000000" is nine characters. Expansion cost is
+// bounded elsewhere.
 func validateRangeExprParamConstraints(p JobParameter, ptr string) ValidationErrors {
 	errs := rejectFields(
 		ptr, "a RANGE_EXPR parameter",
@@ -162,7 +150,7 @@ func validateRangeExprParamConstraints(p JobParameter, ptr string) ValidationErr
 //
 // ptr is reported as-is, with no field segment of its own appended: its only
 // caller, checkRangeExprValue, is always invoked with the parameter's own
-// pointer, and the caller of THAT (validateRangeExprParamConstraints, for the
+// pointer, and its caller (validateRangeExprParamConstraints, for the
 // declared default) attaches "/default" afterward via prefixPointers.
 func validateRangeExprLength(def string, p JobParameter, ptr string) ValidationErrors {
 	var errs ValidationErrors
@@ -237,12 +225,12 @@ func validateListParamConstraints(p JobParameter, ptr string) ValidationErrors {
 }
 
 // validateListLength applies the list's own minLength/maxLength, which bound
-// the ELEMENT COUNT (RFC 0007) rather than any element's own length.
+// the element count (RFC 0007) rather than any element's own length.
 //
 // ptr is reported as-is, with no field segment of its own appended: its only
 // caller, checkListValue, is always invoked with the parameter's own pointer,
-// and the caller of THAT (validateListParamConstraints, for the declared
-// default) attaches "/default" afterward via prefixPointers.
+// and its caller (validateListParamConstraints, for the declared default)
+// attaches "/default" afterward via prefixPointers.
 func validateListLength(n int, p JobParameter, ptr string) ValidationErrors {
 	var errs ValidationErrors
 	if p.MinLength != nil && n < *p.MinLength {
@@ -313,23 +301,21 @@ func validateInnerList(v any, c *ItemConstraint, ptr string) ValidationErrors {
 }
 
 // validateElemType checks one element against the list's declared element
-// type, using the element's JSON TYPE rather than its text.
+// type, using the element's JSON type rather than its text.
 //
-// The distinction matters: 2.12--list-path-wrong-item-type.invalid
-// declares LIST[PATH] with default [123, 456], and a text-based check would
-// accept those -- every number renders as a perfectly good path string. RFC
-// 0007's schemas say <string> for LIST[STRING] and LIST[PATH] and <integer>
-// for LIST[INT], so the JSON type is what the spec constrains. A numeric
-// element may also be a string holding a number (an <intstring> for INT, a
-// <floatstring> for FLOAT, with white space around it allowed), since
-// Template Schemas §2.13, §2.14 and §2.16 accept either in a default and in a
-// value given when a Job is created.
+// RFC 0007's schemas say <string> for LIST[STRING] and LIST[PATH] and
+// <integer> for LIST[INT], so the JSON type is what the spec constrains; a
+// text check would accept the LIST[PATH] default [123, 456]
+// (2.12--list-path-wrong-item-type.invalid). A numeric element may also be a
+// string holding a number (an <intstring> for INT, a <floatstring> for FLOAT,
+// with white space around it allowed), since Template Schemas §2.13, §2.14
+// and §2.16 accept either in a default and in a value given when a Job is
+// created.
 //
-// BOOL is the deliberate exception. RFC 0007 gives a LIST[BOOL] item the same
-// accepted-values table as a BOOL parameter -- true, 1, 1.0, "yes", "on" --
-// so its check is by TEXT, through the same parseBoolParamValue the scalar
-// type uses. Keeping the two in one function would have meant one of them
-// being wrong.
+// BOOL is the exception. RFC 0007 gives a LIST[BOOL] item the same
+// accepted-values table as a BOOL parameter (true, 1, 1.0, "yes", "on"), so
+// it is checked by text, through the same parseBoolParamValue the scalar type
+// uses.
 func validateElemType(v any, elem JobParamType, ptr string) ValidationErrors {
 	bad := func(want string) ValidationErrors {
 		return ValidationErrors{{
@@ -486,10 +472,8 @@ func validateElemAgainstConstraint(
 func validateElemBounds(text string, c *ItemConstraint, ptr string) ValidationErrors {
 	f, err := expr.ParseFloatString(text)
 	if err != nil {
-		// Deliberately swallowed: validateElemType already rejected this
-		// element as not-a-number and reported it with this same pointer.
-		// Returning the parse error too would report one defect twice, in
-		// two different vocabularies.
+		// validateElemType already reported this element as not a number at
+		// the same pointer; returning the parse error would report it twice.
 		return nil //nolint:nilerr // the type error is reported by validateElemType
 	}
 
@@ -529,7 +513,7 @@ func validateItemConstraintLegality(
 	}
 
 	numeric := elem == JobParamTypeInt || elem == JobParamTypeFloat
-	// An inner LIST's minLength/maxLength bound its ELEMENT COUNT, which is
+	// An inner LIST's minLength/maxLength bound its element count, which is
 	// why LIST[INT] counts as "lengthy" here alongside the string-like types.
 	lengthy := elem == JobParamTypeString || elem == JobParamTypePath ||
 		elem == JobParamTypeListInt
@@ -577,13 +561,10 @@ func rejectFields(ptr, subject string, fields ...field) ValidationErrors {
 	return errs
 }
 
-// unknownJobTypeMessage names the types actually available in this template's
-// context.
-//
-// Listing EXPR's types to a base-spec author would send them to a type the
-// validator rejects on the next line, so the base-spec wording is kept exactly
-// as it was before RFC 0007 -- existing tests assert it, and a base-spec
-// template's diagnostics must not change at all.
+// unknownJobTypeMessage names the types available in this template's context.
+// A base-spec template is offered only the base-spec types, since listing
+// EXPR's types would point its author at types the validator then rejects.
+// Tests assert the base-spec wording.
 func unknownJobTypeMessage(t JobParamType, exprDeclared bool) string {
 	if exprDeclared {
 		return fmt.Sprintf("unknown type %q; must be INT, FLOAT, STRING, PATH, BOOL, "+

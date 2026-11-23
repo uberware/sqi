@@ -10,7 +10,7 @@
 # /Applications/Maxon Cinema 4D <year>/Commandline.app on macOS and
 # /opt/maxon/cinema4dr<ver>/bin/Commandline on Linux.
 #
-# There is deliberately no `exe: Commandline` check. The preset invokes the bare
+# There is no `exe: Commandline` check. The preset invokes the bare
 # `Commandline` command, but that name is generic enough that a PATH probe could
 # tag workers with no Cinema 4D installed, and a falsely tagged worker is handed
 # render work it cannot do. Tag a Cinema 4D installed elsewhere by hand with

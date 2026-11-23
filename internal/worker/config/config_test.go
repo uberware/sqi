@@ -42,9 +42,9 @@ func TestDefault_SanityValues(t *testing.T) {
 	}
 	// worker.session_dir must default to empty: the effective session root is
 	// resolved at worker startup (cmd/sqi-worker's effectiveSessionRoot), not
-	// baked into this package's Default() — an empty value here is what lets
-	// that resolution depend on the FINAL data_dir/root-ness once every config
-	// layer (file, env, flags) has been applied.
+	// baked into this package's Default(), so that resolution depends on the
+	// final data_dir and root-ness once every config layer (file, env, flags)
+	// has been applied.
 	if cfg.Worker.SessionDir != "" {
 		t.Errorf("worker.session_dir default should be empty, got %q", cfg.Worker.SessionDir)
 	}
@@ -363,13 +363,12 @@ func TestValidate_MultipleErrors(t *testing.T) {
 
 // ── Validate — isolation.required / worker.allow_root contradiction ──────────
 
-// TestValidate_IsolationRequiredWithoutAllowRootIsRejected is the guard for
-// the Minor fix: isolation.required demands the worker be able to assume
-// another OS identity, but on POSIX the only mechanism today (setuid/setgid)
-// requires the worker itself to run as root, and worker.allow_root=false
-// makes the worker refuse to even start as root. Configuring both together is
-// a contradiction that would otherwise surface only as a confusing
-// root-user-refusal error that never mentions isolation at all.
+// TestValidate_IsolationRequiredWithoutAllowRootIsRejected: isolation.required
+// demands the worker be able to assume another OS identity, but on POSIX the
+// only mechanism (setuid/setgid) requires the worker itself to run as root,
+// and worker.allow_root=false makes the worker refuse to start as root.
+// Configuring both is a contradiction that would otherwise surface only as a
+// root-user refusal that never mentions isolation.
 func TestValidate_IsolationRequiredWithoutAllowRootIsRejected(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contradiction is POSIX-specific: Windows isolation does not require the worker itself to run privileged")
@@ -411,13 +410,12 @@ func TestValidate_IsolationNotRequiredWithoutAllowRootIsFine(t *testing.T) {
 
 // ── Validate — env_passthrough glob syntax ────────────────────────────────────
 
-// TestValidate_MalformedEnvPassthroughGlobIsRejected is the guard for the
-// Minor fix: envutil.allowedName's `filepath.Match(...); err == nil && ok`
-// silently treats a malformed glob (e.g. an unterminated character class) as
-// "does not match" forever, rather than surfacing the operator's typo. That
-// swallowing happens deep in the hot path (every inherited env var, every
-// isolated task); the config-load-time check here is the only place an
-// operator would ever see the mistake.
+// TestValidate_MalformedEnvPassthroughGlobIsRejected: envutil.allowedName's
+// `filepath.Match(...); err == nil && ok` treats a malformed glob (e.g. an
+// unterminated character class) as "does not match", without reporting the
+// operator's typo. That happens in the hot path (every inherited env var,
+// every isolated task), so the config-load-time check is the only place an
+// operator sees the mistake.
 func TestValidate_MalformedEnvPassthroughGlobIsRejected(t *testing.T) {
 	cfg := Default()
 	cfg.NATS.URL = "nats://localhost:4222"
@@ -792,14 +790,14 @@ func TestNATSConfig_UseTLS(t *testing.T) {
 		{"auto infers from client cert", NATSConfig{TLSEnabled: TLSAuto, TLSCertFile: "/c.crt"}, false, true},
 		{"auto infers from insecure_skip_verify", NATSConfig{TLSEnabled: TLSAuto, InsecureSkipVerify: true}, false, true},
 
-		// The discovery signal is an inference input, and ONLY for auto.
+		// The discovery signal is an inference input, and only for auto.
 		{"auto infers from a TLS-advertising server", NATSConfig{TLSEnabled: TLSAuto}, true, true},
 		{"zero value infers from a TLS-advertising server", NATSConfig{}, true, true},
 
 		{"true forces on with nothing configured", NATSConfig{TLSEnabled: TLSOn}, false, true},
 		{"true ignores a non-advertising server", NATSConfig{TLSEnabled: TLSOn}, false, true},
 
-		// The state the old force-on-only boolean could not express.
+		// The state a force-on-only boolean could not express.
 		{"false forces off despite a ca file", NATSConfig{TLSEnabled: TLSOff, TLSCAFile: "/ca.crt"}, false, false},
 		{"false forces off despite discovery", NATSConfig{TLSEnabled: TLSOff}, true, false},
 	}
@@ -838,15 +836,15 @@ func TestValidate_NATSTLSMode(t *testing.T) {
 	}
 	if !found {
 		// An unrecognized value would otherwise fall into the auto default and
-		// silently mean something the operator did not write. ("yes" and "1"
-		// ARE recognized — see TestNormalizeTLSMode_AcceptsBoolSynonyms.)
+		// mean something the operator did not write. ("yes" and "1" are
+		// recognized; see TestNormalizeTLSMode_AcceptsBoolSynonyms.)
 		t.Error("nats.tls_enabled = \"maybe\" was accepted")
 	}
 }
 
 func TestNormalizeTLSMode_AcceptsBoolSynonyms(t *testing.T) {
-	// This key looked like a bool until recently, and SQI_WORKER_NATS_TLS_ENABLED=1
-	// is how people set boolean-looking env vars. YAML and env must agree.
+	// This key looks like a bool, and SQI_WORKER_NATS_TLS_ENABLED=1 is how
+	// people set boolean-looking env vars. YAML and env must agree.
 	for _, v := range []string{"1", "yes", "on", "TRUE", " true "} {
 		if mode, ok := normalizeTLSMode(v); !ok || mode != TLSOn {
 			t.Errorf("normalizeTLSMode(%q) = (%q, %v), want (%q, true)", v, mode, ok, TLSOn)

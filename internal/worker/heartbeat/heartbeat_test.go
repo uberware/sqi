@@ -242,8 +242,8 @@ func TestPublish_PublishErrorSkipsFlush(t *testing.T) {
 
 // TestPublish_SlowFlushLogsWarning verifies that when FlushTimeout returns an
 // error (timeout), publish returns without panicking and the error is handled.
-// (The actual log output is discarded; we verify the code path does not panic
-// or call anything unexpected after the flush error.)
+// The log output is discarded; the test checks that the code path does not
+// panic or call anything unexpected after the flush error.
 func TestPublish_SlowFlushLogsWarning(t *testing.T) {
 	nc := &stubConn{
 		publishFn:      func(_ string, _ []byte) error { return nil },
@@ -279,7 +279,7 @@ func TestWatchdog_SkipsReregisterWhenCallbackSucceeded(t *testing.T) {
 		},
 	}
 
-	// Registrar reports it registered AFTER the initial state was captured.
+	// Registrar reports it registered after the initial state was captured.
 	// We set lastRegisteredAt to a future time so it's always after the
 	// disconnect the watchdog will observe.
 	reg := &stubRegistrar{

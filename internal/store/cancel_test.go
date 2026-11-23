@@ -36,7 +36,7 @@ func TestCancelJobExecution(t *testing.T) {
 				}
 			}
 			// Job-level cancel clears the worker assignment of every task it
-			// cancels, as it always has.
+			// cancels.
 			if got := mustTask(t, st, g.Tasks["a"][0].ID); got.AssignedWorkerID != "" || got.AssignedAt != nil {
 				t.Fatalf("canceled task keeps assignment (%q, %v), want it cleared", got.AssignedWorkerID, got.AssignedAt)
 			}
@@ -93,8 +93,8 @@ func TestCancelJobExecution_ReasonIsOnlyStampedWhenEmpty(t *testing.T) {
 
 // TestCancelJobExecution_ClosesEveryRunningAttemptOfTheJob pins I3 job-wide: a
 // running attempt on a task that is already terminal (which nothing should
-// leave behind, but a crash can) is closed and its claim released too, on both
-// backends, while another job's attempts are left alone.
+// leave behind, but a crash can) is closed and its claim released too, on every
+// backend, while another job's attempts are left alone.
 func TestCancelJobExecution_ClosesEveryRunningAttemptOfTheJob(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -151,8 +151,8 @@ func TestCancelTaskExecution(t *testing.T) {
 			if got.Status != store.TaskStatusCanceled || got.FailureReason != store.FailureReasonCanceledByUser {
 				t.Fatalf("task = %+v, want canceled with the user reason", got)
 			}
-			// Single-task cancel leaves the assignment in place, as it always
-			// has, so a canceled task still shows the worker that ran it.
+			// Single-task cancel leaves the assignment in place, so a canceled
+			// task still shows the worker that ran it.
 			if got.AssignedWorkerID != fixtureWorkerID || got.AssignedAt == nil {
 				t.Fatalf("canceled task assignment = (%q, %v), want it kept", got.AssignedWorkerID, got.AssignedAt)
 			}

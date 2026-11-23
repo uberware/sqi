@@ -109,7 +109,7 @@ func discardLogger() *slog.Logger {
 // ── openjd_progress tests ─────────────────────────────────────────────────────
 
 // TestProgressDirectiveUpdatesState verifies that a valid openjd_progress line
-// updates the in-memory progress percentage and is NOT forwarded.
+// updates the in-memory progress percentage and is not forwarded.
 func TestProgressDirectiveUpdatesState(t *testing.T) {
 	i, downstream, _, ctx, _ := setup(t)
 	const attemptID = "attempt-1"
@@ -149,7 +149,7 @@ func TestProgressDirectiveBoundaryValues(t *testing.T) {
 }
 
 // TestProgressInvalidValueIgnored verifies that a malformed openjd_progress
-// line is silently dropped and NOT forwarded to downstream.
+// line is dropped and not forwarded to downstream.
 func TestProgressInvalidValueIgnored(t *testing.T) {
 	for _, line := range []string{
 		"openjd_progress: abc",
@@ -183,7 +183,7 @@ func TestProgressInvalidValueIgnored(t *testing.T) {
 
 // TestStatusDirectivePublishesNATS verifies that an openjd_status line
 // publishes an intermediate "running" status to the correct NATS subject and
-// is NOT forwarded to the downstream handler.
+// is not forwarded to the downstream handler.
 func TestStatusDirectivePublishesNATS(t *testing.T) {
 	i, downstream, nc, ctx, _ := setup(t)
 	const attemptID = "attempt-1"
@@ -516,7 +516,7 @@ func TestStdoutMessagesSample(t *testing.T) {
 // ── openjd_fail tests ─────────────────────────────────────────────────────────
 
 // TestFailDirectiveCancelsAndStoresReason verifies that an openjd_fail line
-// calls the cancel function, stores the failure reason, and is NOT forwarded.
+// calls the cancel function, stores the failure reason, and is not forwarded.
 func TestFailDirectiveCancelsAndStoresReason(t *testing.T) {
 	i, downstream, _, cancelCtx, _ := setup(t)
 	const attemptID = "attempt-1"

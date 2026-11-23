@@ -1,9 +1,7 @@
 # Web UI Accessibility Baseline
 
 This document states the accessibility baseline the `sqi-server` web UI commits
-to. It is intentionally modest — a floor, not a ceiling — so future contributors
-know the target and do not regress it. Anything below counts as a bug; going
-further is welcome.
+to. It is a minimum: falling below it is a bug, and going further is welcome.
 
 The audience is operators using a keyboard-and-screen-reader workflow or working
 in varied lighting on varied displays, not a formal WCAG 2.1 AA certification
@@ -23,7 +21,7 @@ text-alternative commitments below.
   buttons, the submit form, and the log-viewer controls — must be reachable with
   `Tab`/`Shift+Tab` and operable with `Enter`/`Space`.
 - Use real semantic elements: `<button>` for actions, `<a>`/`<NavLink>` for
-  navigation, native `<input>`/`<select>` for form controls. Do **not** attach
+  navigation, native `<input>`/`<select>` for form controls. Do not attach
   click handlers to bare `<div>`/`<span>`. Native elements are focusable and key-
   operable for free; a `<div onClick>` is neither.
 - Focus must be visible. Do not remove focus outlines without replacing them with
@@ -45,7 +43,7 @@ text-alternative commitments below.
   foreground/background pairings. When adding or changing a color, verify the
   resulting pairing meets the ratio above before committing — do not hand-pick
   ad-hoc colors in a component.
-- **Color is never the only signal.** Status is always carried by text as well as
+- Color is never the only signal. Status is always carried by text as well as
   hue (see commitment 3); a red/green distinction must remain intelligible to a
   user who cannot distinguish red from green.
 
@@ -56,9 +54,9 @@ text-alternative commitments below.
   inside the colored pill, so the meaning survives grayscale rendering and screen
   readers.
 - The WebSocket `ConnectionStatusBadge` (the colored connection dot) must carry a
-  text equivalent — a visible label and/or an accessible name (`aria-label` /
-  `title`) such as "Live updates: connected" — so its meaning is not purely the
-  dot color.
+  text equivalent (a visible label or an accessible name such as an
+  `aria-label` describing the WebSocket state), so its meaning is not carried by
+  the dot color alone.
 - Icon-only controls (e.g. a copy button rendered as just an icon) have an
   accessible name via `aria-label` or visually-hidden text. Purely decorative
   icons are hidden from assistive tech with `aria-hidden="true"`.
@@ -68,16 +66,15 @@ text-alternative commitments below.
 
 ---
 
-## What is explicitly out of scope for this baseline
+## What is out of scope for this baseline
 
-These are not regressions to file against; they are deliberately deferred:
+These are outside the baseline and are not filed as regressions:
 
 - Formal WCAG 2.1 AA conformance auditing and a published VPAT.
 - Full screen-reader walkthroughs of every view with assistive-tech matrices.
 - Reduced-motion, high-contrast-mode, and forced-colors theming.
 - Localisation / RTL layout.
-- Automated accessibility gating in CI (axe-core or similar). Encouraged later;
-  not required now.
+- Automated accessibility gating in CI (axe-core or similar).
 
 ---
 
@@ -103,11 +100,10 @@ conventions these checks fit into.
 ## Headings in rendered Markdown
 
 Product and preset readmes render through `src/components/Markdown.tsx`, which
-offsets heading levels rather than emitting them verbatim: `#` becomes `<h3>`,
-`##` becomes `<h4>`, and so on, clamped at `<h6>`. Both detail pages already
+offsets heading levels: `#` becomes `<h3>`,
+`##` becomes `<h4>`, and so on, clamped at `<h6>`. Both detail pages
 nest `<h2>` (the product or preset title) under `<h1>` (PageHeader), so an
 un-offset `#` would put a second `<h1>` mid-document and break the outline.
 
-Real headings are used rather than visually-styled paragraphs: a bold paragraph
-looks like a heading to sighted users and is invisible as structure to a screen
-reader.
+Use real headings, not bold paragraphs: a bold paragraph looks like a heading to
+sighted users and is invisible as structure to a screen reader.

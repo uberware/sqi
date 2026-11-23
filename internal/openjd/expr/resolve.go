@@ -25,7 +25,7 @@ type resolved struct {
 //
 // This exists because method and property syntax share the "." that separates a
 // dotted symbol name: "Param.Name.upper()" must find the symbol "Param.Name"
-// and the method "upper". The package deliberately hardcodes no namespaces —
+// and the method "upper". The package hardcodes no namespaces —
 // Symbols' own doc comment makes the caller authoritative about what is in
 // scope — so the split cannot be decided at parse time, and it cannot be
 // decided by pattern-matching "Param" or "Task" here either.
@@ -51,8 +51,8 @@ func resolveName(n *Name, syms Symbols) (resolved, bool) {
 // callFunction can fail three ways: the function is not registered at all, no
 // registered signature accepts the receiver, or the matched signature's own
 // Fn (or the coercion callShape applies before running it) errors out. Only
-// the first of those is "unknown property" — the other two are genuine
-// failures of a property that DOES exist, and reporting them as "unknown"
+// the first of those is "unknown property" — the other two are real
+// failures of a property that does exist, and reporting them as "unknown"
 // would send a user chasing a typo that isn't there. errUnknownFunction is
 // the sentinel that tells the three apart; anything else is wrapped with its
 // real cause preserved, matching evalCall's own wrapAt treatment of a
@@ -124,7 +124,7 @@ func internPropertyFuncNames() map[string]string {
 // The fallback is not dead weight: functionShapes is a package-level map that
 // tests add rows to after initialization (withTestFunction, call.go's tests),
 // so a name absent from the interned table must still resolve to exactly the
-// same key -- and a genuinely unregistered property must still reach
+// same key -- and an unregistered property must still reach
 // callFunction and come back as errUnknownFunction, which is what evalProperty
 // rewords into "unknown property".
 func propertyFuncName(attr string) string {

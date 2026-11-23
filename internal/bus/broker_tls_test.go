@@ -173,8 +173,7 @@ func TestBrokerTLS_MTLSLayersOnNkeyRatherThanReplacingIt(t *testing.T) {
 }
 
 func TestBrokerTLS_OffIsUnchanged(t *testing.T) {
-	// The zero-value TLS field is the default path: plaintext, exactly as it
-	// behaved before TLS existed.
+	// The zero-value TLS field is the default path: plaintext.
 	b := startBrokerTLS(t, BrokerTLSConfig{}, AuthConfig{})
 	nc, err := nats.Connect(b.ClientURL())
 	if err != nil {

@@ -180,7 +180,7 @@ steps:
 
 // TestJobTaskBudget_ChargeEqualsRowsProduced pins the invariant the two cap
 // tests above do not: that what the budget is CHARGED equals what expansion
-// actually produces.
+// produces.
 //
 // Both of those sit at cap+1 or pre-load the budget directly, so neither would
 // fail if a refactor charged one step twice (halving the real allowance) or
@@ -225,8 +225,8 @@ func TestJobTaskBudget_ChargeEqualsRowsProduced(t *testing.T) {
 // where the budget is created: Submit walks the steps itself, so a step
 // expanded twice would be charged twice.
 //
-// The budget is not observable after Submit returns -- it is a local, and
-// deliberately so, since it must be per-submission. What IS observable is the
+// The budget is not observable after Submit returns: it is a local, since it
+// must be per-submission. What is observable is the
 // rows it charged for, and a step expanded twice produces its tasks twice. Read
 // with the test above, which pins charge == rows inside one expansion, that
 // closes the loop.

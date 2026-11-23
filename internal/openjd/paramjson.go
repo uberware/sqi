@@ -9,30 +9,27 @@ import (
 	"strings"
 )
 
-// This file defines the ONE canonical text form of a LIST[*] parameter value.
+// This file defines the canonical text form of a LIST[*] parameter value.
 //
 // [JobParameter.Default] stays a *string for every type, and a list default is
-// stored as canonical JSON in it. The reason is the runtime stack below this
-// package: store.Job.Parameters and the worker protocol's
-// AssignMsg.JobParameters are both map[string]string with a JSON wire format,
-// so a typed model representation would have to serialize at every boundary
-// anyway. One representation, defined once, at the top.
+// stored as canonical JSON in it: store.Job.Parameters and the worker
+// protocol's AssignMsg.JobParameters are both map[string]string with a JSON
+// wire format, so a typed model representation would have to serialize at
+// every boundary anyway.
 //
-// THE STORED FORM IS NOT THE INTERPOLATED FORM, though the two are close. A
+// The stored form is not the interpolated form, though the two are close. A
 // list rendered into a command line goes through expr.Value.String(), which
 // follows openjd-specifications#176 (interpolation and string() use the same
 // conversion and the result must parse as JSON) by rendering elements with
-// encoding/json (with HTML escaping off, exactly as marshalCanonical below
-// uses it), so the ELEMENT QUOTING is the same rule on both sides.
+// encoding/json (with HTML escaping off, as marshalCanonical below uses it),
+// so element quoting is the same on both sides.
 //
-// What still differs is the SEPARATOR: canonical JSON writes ",", while
-// section 2.2.1's rendering writes ", ". A single-element list therefore
-// renders identically in both forms and a multi-element one does not.
-// Section 1.3.2 governs interpolation; this file governs storage. They remain
-// two renderings for two purposes and must not be assumed interchangeable --
-// TestListDefault_JSONVersusValueString pins both halves, the agreement and
-// the remaining difference, so each stays a documented fact rather than a
-// latent surprise.
+// The separator differs: canonical JSON writes ",", while section 2.2.1's
+// rendering writes ", ". A single-element list renders identically in both
+// forms and a multi-element one does not. Section 1.3.2 governs
+// interpolation; this file governs storage; the two are not interchangeable.
+// TestListDefault_JSONVersusValueString covers both the agreement and the
+// difference.
 
 // isListParamType reports whether t is one of RFC 0007's list types.
 func isListParamType(t JobParamType) bool {

@@ -36,7 +36,7 @@ func TestSizeOf(t *testing.T) {
 
 func TestCeilDiv256(t *testing.T) {
 	// The specification's own worked example: 'a' * 100000 charges
-	// ceil(100000/256) string-processing units. Note the spec's TEXT states
+	// ceil(100000/256) string-processing units. Note the spec's text states
 	// 392 and its total 393, but 256*390 = 99840 leaving 160, so the correct
 	// value is 391 -- a spec arithmetic error, not a rule error. The reference
 	// agrees with the rule (it reports 392 total = 1 call + 391).
@@ -70,7 +70,7 @@ func TestMeter_OperationLimit(t *testing.T) {
 // TestMeter_MemoryLimitIsExact pins alloc's bound check to "mem > memLimit"
 // with no slack in either direction -- a real budget, not an approximate one.
 // It catches a one-step weakening to "mem > memLimit+1", which lets an
-// allocation land exactly ONE byte over the limit without erroring; this
+// allocation land exactly one byte over the limit without erroring; this
 // test's second case exercises that directly.
 func TestMeter_MemoryLimitIsExact(t *testing.T) {
 	m := newMeter(valueHeaderBytes, defaultOperationLimit) // limit = 64
@@ -95,7 +95,7 @@ func TestMeter_MemoryLimitAndRelease(t *testing.T) {
 	if err := m.alloc(Int(3)); !errors.Is(err, errMemoryLimit) {
 		t.Fatalf("third alloc = %v; want errMemoryLimit", err)
 	}
-	// Releasing frees room again: the bound is on LIVE memory, not on
+	// Releasing frees room again: the bound is on live memory, not on
 	// cumulative allocation. This is the difference between section
 	// 1.3.9 and a fixed per-operation ceiling like maxStringBytes.
 	m.release(Int(1))
@@ -161,7 +161,7 @@ func TestWithLimits_Override(t *testing.T) {
 }
 
 func TestWithLimits_NonPositiveIsAnError(t *testing.T) {
-	// There is no unlimited mode. A value that reads like "off" must not BE
+	// There is no unlimited mode. A value that reads like "off" must not be
 	// off in a package reachable from POST /api/v1/jobs, so a non-positive
 	// limit is reported rather than silently meaning unbounded.
 	for _, tt := range []struct {
@@ -291,7 +291,7 @@ func TestOperationLimit_UnderTheLimitSucceeds(t *testing.T) {
 // TestOperationCount_EqualityFastPath covers ops.go's ==/!= fast path in
 // applyBinary directly, exercising the charge site the source-driven
 // TestOperationCount_RuleOne case above cannot reach on its own: the
-// UNRESOLVED-operand branch. That branch returns Unresolved(TBool) before
+// unresolved-operand branch. That branch returns Unresolved(TBool) before
 // matchShapes/callShape ever runs, exactly like the resolved comparison a few
 // lines below it, so it needs its own charge -- and this is the only way to
 // drive an unresolved operand into it, since there is no source-level way to
@@ -342,10 +342,10 @@ func balanceOf(t *testing.T, src string) (live, resultSize int64) {
 // TestMemory_ZeroBalance is the leak detector.
 //
 // After a top-level evaluation, the only value still live must be the result.
-// The identity catches drift in BOTH directions -- a missed release inflates it,
-// a double-release deflates it -- which is exactly what a release discipline in
-// a language with no destructors needs, and what no hand-picked set of
-// allocation assertions provides.
+// The identity catches drift in both directions -- a missed release inflates
+// it, a double-release deflates it -- which is exactly what a release
+// discipline in a language with no destructors needs, and what no hand-picked
+// set of allocation assertions provides.
 func TestMemory_ZeroBalance(t *testing.T) {
 	srcs := []string{
 		"1",
@@ -390,17 +390,17 @@ func TestMemoryLimit_IsReported(t *testing.T) {
 //
 // Each individual repetition stays under the per-operation ceiling; what breaks
 // the budget is holding many of them live at once. A fixed per-operation bound
-// cannot see this at all: under it alone, nested repetition grows ~91 MB per
-// level with no cumulative accounting.
+// cannot see this at all: under it alone, nested repetition grows by tens of
+// megabytes per level with no cumulative accounting.
 func TestMemoryLimit_CatchesCumulativeWorkThatTheFloorDoesNot(t *testing.T) {
 	// 200 strings of 100_000 bytes each is ~20 MB live, well under
-	// maxStringBytes (10 MB) for any SINGLE operation.
+	// maxStringBytes (10 MB) for any single operation.
 	const src = "['a' * 100000 for i in range(200)]"
 	if _, err := Eval(src, nil, TAny, WithMemoryLimit(5_000_000)); !errors.Is(err, errMemoryLimit) {
 		t.Fatalf("%s under a 5 MB budget = %v; want errMemoryLimit", src, err)
 	}
 	// The same expression succeeds under a budget that fits it, proving the
-	// failure above is the BUDGET and not the floor.
+	// failure above is the budget and not the floor.
 	if _, err := Eval(src, nil, TAny, WithMemoryLimit(100_000_000)); err != nil {
 		t.Fatalf("%s under a 100 MB budget: %v", src, err)
 	}
@@ -411,7 +411,7 @@ func TestMemoryLimit_CatchesCumulativeWorkThatTheFloorDoesNot(t *testing.T) {
 //
 // Section 1.2.3's range_expr -> list[int] conversion (coerce.go's coerceList)
 // runs in the top-level coercion that Expression.Eval/Eval/EvalWithMetrics
-// apply to the WHOLE expression's result, AFTER evalNode returns -- outside
+// apply to the whole expression's result, after evalNode returns -- outside
 // the single allocation point, and so outside WithMemoryLimit's reach unless
 // that boundary is metered too. 2,000,000 elements sits comfortably under the
 // fixed maxElements floor (10,000,000), so the floor cannot see this case
@@ -423,7 +423,7 @@ func TestMemoryLimit_CatchesTopLevelCoercion(t *testing.T) {
 		t.Fatalf("%s under a 10 MB budget = %v; want errMemoryLimit", src, err)
 	}
 	// The same expression succeeds under a budget that fits it, proving the
-	// failure above is the BUDGET and not the maxElements floor.
+	// failure above is the budget and not the maxElements floor.
 	if _, err := Eval(src, nil, ListOf(TInt), WithMemoryLimit(200_000_000)); err != nil {
 		t.Fatalf("%s under a 200 MB budget: %v", src, err)
 	}
@@ -431,8 +431,8 @@ func TestMemoryLimit_CatchesTopLevelCoercion(t *testing.T) {
 
 // TestOperationCount_UnresolvedOperandSites pins that when an operand is
 // unresolved, callFunction, applyBinary's general (matchShapes) branch, and
-// applyUnary all return before ever reaching callShape, so each needs its OWN
-// rule-1 charge -- and the assertion that matters is the EXACT count. A future
+// applyUnary all return before ever reaching callShape, so each needs its own
+// rule-1 charge -- and the assertion that matters is the exact count. A future
 // edit that charges twice (once here, once by mistakenly still calling into
 // callShape) or drops the charge entirely would both slip past a test that
 // only checked "> 0".

@@ -119,7 +119,7 @@ so the server can resolve storage paths and honour location affinity:
 
 ```yaml
 worker:
-  compute_location: "onprem"      # matches a storage-location root name
+  compute_location: "onprem"      # storage-location roots are keyed by this name
   capability_tags: ["maya_2025", "arnold_7"]
   # queue_ids: ["gpu-renders"]    # restrict to specific queues (optional)
 ```
@@ -143,19 +143,17 @@ available option.
 Broker authentication (`nats.auth.enabled` on the server) is opt-in and off
 by default; if the server you are joining does not have it enabled, skip
 this section and connect as shown above with no credential. If it does, the
-worker needs a credential before it can connect at all — see
+worker needs a credential before it can connect. See
 [`docs/auth.md`](auth.md#broker-authentication-transport) for the full model
-(what it protects, revocation, key rotation). This section walks the two
+(what it protects, revocation, key rotation). This section describes the two
 ways to obtain one.
 
-**Both paths need `nats.server_url` set on the worker to the server's HTTP
-base URL** (e.g. `http://sqi-server.example:8080`). Enrollment always runs
-over REST, never over NATS — the broker's whole job is to refuse
-unauthenticated connections, so it cannot also hand out the first
-credential. `nats.server_url` is **not** derived from mDNS discovery even
-when `discovery.enable_mdns` is on for locating the NATS broker itself; a
-worker with a join token configured and no `server_url` set fails fast,
-naming the field, rather than guessing a host.
+Both paths need `nats.server_url` set on the worker to the server's HTTP
+base URL (e.g. `http://sqi-server.example:8080`). Enrollment runs over REST,
+never over NATS, because the broker refuses unauthenticated connections.
+`nats.server_url` is not derived from mDNS discovery, even when
+`discovery.enable_mdns` locates the NATS broker; a worker with a join token
+configured and no `server_url` set fails at startup, naming the field.
 
 ### Path A — self-service enrollment with a join token
 
@@ -165,16 +163,15 @@ naming the field, rather than guessing a host.
    sqi-server worker token issue --ttl 1h
    ```
 
-   The raw token prints to stdout exactly once — capture it
-   (`TOKEN=$(sqi-server worker token issue)`) or store it securely; only its
+   The raw token prints to stdout once. Capture it
+   (`TOKEN=$(sqi-server worker token issue)`) or store it securely: only its
    hash is kept in the database and it cannot be displayed again. If
-   `auth.enabled` is also on, an operator can mint one over REST instead —
+   `auth.enabled` is also on, an operator can mint one over REST instead with
    `POST /api/v1/workers/join-tokens`, gated on the `workers.enroll`
-   permission — but the CLI command above always works, whether or not
-   `auth.enabled` is on.
+   permission. The CLI command works whether or not `auth.enabled` is on.
 
-2. Hand the token to the worker via a file (preferred — a token in the
-   config file itself is a secret at rest) and set the server URL:
+2. Hand the token to the worker in a file (a token in the config file itself
+   is a secret at rest) and set the server URL:
 
    ```yaml
    nats:
@@ -185,19 +182,17 @@ naming the field, rather than guessing a host.
 3. Start the worker normally. On first boot, finding no credential file at
    `nats.credential_file` (default `<worker.data_dir>/worker.nk`), it
    generates an nkey keypair locally and calls `POST /api/v1/workers/enroll`
-   with the token, its worker ID and its new **public** key — the private
-   seed never leaves the machine, and nothing from the server's response is
+   with the token, its worker ID and its new public key. The private seed
+   never leaves the machine, and nothing from the server's response is
    persisted. Only after the server confirms enrollment does the worker
-   write the seed it generated itself to `worker.nk` (mode `0600`) and
-   connect with it. The token is single-use by default, so a second worker
-   needs its own token.
+   write the seed to `worker.nk` (mode `0600`) and connect with it. The
+   token is single-use by default, so a second worker needs its own token.
 
 Every enrollment failure past this point (an expired, unknown or
 already-used token, or a worker ID already bound to a different key) is
-fatal and explicit: the worker logs the cause and exits rather than looping
-in the background with no visible reason. An unreachable *server* is different: that
-still falls back to the ordinary reconnect-with-backoff behavior once a
-credential exists. A broker that refuses the credential is retried for 2
+fatal: the worker logs the cause and exits. An unreachable server is
+different: once a credential exists, the worker reconnects with backoff as
+usual. A broker that refuses the credential is retried for 2
 minutes, with a WARN at each refusal, before the worker exits, so it rides out
 a `sqi-server` or database restart; see
 [How a connection is authorized](auth.md#how-a-connection-is-authorized).
@@ -217,7 +212,7 @@ a site that wants no self-service enrollment endpoint at all
    `keygen` loads the worker's own configuration the same way `sqi-worker
    start` does (the root `-c/--config` file, `SQI_WORKER_*` environment
    variables, and built-in defaults), so `--data-dir` here is an explicit
-   override of `worker.data_dir` — pass it when generating a keypair before
+   override of `worker.data_dir`: pass it when generating a keypair before
    the worker's own config is in place, or to target a different directory
    for a one-off run. With the worker's normal config already set up, a bare
    `sqi-worker keygen` resolves the same directory the worker itself uses.
@@ -233,27 +228,27 @@ a site that wants no self-service enrollment endpoint at all
    Once enrolled, the credential is accepted at this worker's next connect; sqi-server needs no restart.
    ```
 
-2. Copy that command to the server host (out of band — SSH, a console, a
+2. Copy that command to the server host out of band (SSH, a console, a
    provisioning script) and run it there:
 
    ```sh
    sqi-server worker enroll --worker-id 3f2a... --public-key UABC...XYZ
    ```
 
-3. Start the worker. It finds the seed already on disk, skips enrollment
-   entirely, and connects directly with the credential. A running server
+3. Start the worker. It finds the seed on disk, skips enrollment and
+   connects with the credential. A running server
    needs no restart: the broker asks `sqi-server` to authorize every
    connection, and `sqi-server` reads the credential from the database each
    time.
 
-No join token and no REST call are involved in this path at any point.
+This path uses no join token and no REST call.
 
 ### Revoking a worker's credential
 
 - **Immediately**, against a running server: `DELETE
   /api/v1/workers/{id}/credential`. This disconnects the worker inside the
-  call — its in-flight leases reclaim through the normal heartbeat-sweep
-  path. On an external NATS cluster that needs the server's
+  call; its in-flight leases are reclaimed by the heartbeat sweep. On an
+  external NATS cluster that needs the server's
   `nats.external.callout.system_creds_file`; without it the worker keeps its
   connection until its authorization expires, within `nats.auth.user_ttl`.
 - **Offline**, without a running server (or as part of a maintenance
@@ -266,22 +261,21 @@ grace.
 
 ### Rotating a compromised or lost key
 
-1. Revoke the current credential — `sqi-server worker revoke <worker-id>`,
+1. Revoke the current credential with `sqi-server worker revoke <worker-id>`,
    or the REST path above for an immediate disconnect.
 2. `sqi-worker keygen --force` on the worker host, with the worker's normal
    config in place (pass `--data-dir` to override `worker.data_dir`
-   explicitly for a one-off run against a different directory). This
+   for a one-off run against a different directory). This
    overwrites `worker.nk` with a new keypair and prints the new public key,
-   whether the worker ID is the existing one or newly generated — a freshly
-   generated one here is the signal that the resolved data directory does
-   not match the worker being rotated — and the `sqi-server worker enroll`
-   command for step 3. It must run *after* step 1, since the worker ID stays
+   the worker ID (a newly generated ID means the resolved data directory does
+   not match the worker being rotated) and the `sqi-server worker enroll`
+   command for step 3. It must run after step 1, since the worker ID stays
    bound to the old public key on the server until that credential is
    revoked.
 3. `sqi-server worker enroll --worker-id <worker-id> --public-key <new-key>`
    on the server host, using the key `keygen` printed.
-4. Restart the worker. It finds the new seed `keygen` already wrote and
-   connects directly, and the running server admits it. No server restart,
+4. Restart the worker. It finds the new seed `keygen` wrote and
+   connects, and the running server admits it. No server restart,
    join token or REST enrollment call is needed on this path.
 
 The worker ID can be reused once its old credential is revoked; the old
@@ -339,7 +333,7 @@ as `sqiworker`, restarts it after a failure, sends its output to journald and
 confines it with `NoNewPrivileges`, `PrivateTmp` and `ProtectSystem=strict`,
 leaving `/var/lib/sqi-worker` writable.
 
-> **Note:** If `ProtectSystem=strict` prevents the worker from executing render
+> If `ProtectSystem=strict` prevents the worker from executing render
 > tools, replace it with `ProtectSystem=full` or remove it. Render workers often
 > need read access to shared network mounts.
 
@@ -437,15 +431,15 @@ launchctl unload ~/Library/LaunchAgents/net.uberware.sqi-worker.plist
 ## Windows — Windows Service
 
 `sqi-worker` runs as a native Windows service. When the Service Control Manager
-(SCM) starts it, a service **Stop** — or a reboot — drains in-flight tasks
-exactly as Ctrl-C does in a console: the worker stops taking new assignments,
+(SCM) starts it, a service Stop or a reboot drains in-flight tasks
+as Ctrl-C does in a console: the worker stops taking new assignments,
 waits up to `worker.shutdown_grace_period` for running tasks, deregisters and
 exits. `sqi-worker service install` registers it. `sqi-server` has the same
 command group; see [its operations guide](operations.md#windows-service). The
 `service` command exists only in Windows builds.
 
-Every `service` subcommand, `status` included, must run from an **elevated**
-(Administrator) PowerShell. From any other shell it fails straight away with
+Every `service` subcommand, `status` included, must run from an elevated
+(Administrator) PowerShell. From any other shell it fails at once with
 `this command must be run from an elevated (Administrator) shell`. So does
 `config init` whenever it has to create or protect a directory, which includes
 the default location.
@@ -453,7 +447,7 @@ the default location.
 ### 1. Install the binary
 
 Copy `sqi-worker.exe` to a permanent location that only administrators can
-write, from an **elevated PowerShell**:
+write, from an elevated PowerShell:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path 'C:\Program Files\sqi' | Out-Null
@@ -472,7 +466,7 @@ by your own account, which the check refuses.
 
 ### 2. Create the configuration directory and file
 
-From an **elevated PowerShell**:
+From an elevated PowerShell:
 
 ```powershell
 & "C:\Program Files\sqi\sqi-worker.exe" config init --nats-url nats://sqi-server.example.com:4222
@@ -541,8 +535,8 @@ The paths in the file are single-quoted YAML, where a backslash is literal. In a
 double-quoted YAML string every backslash must be doubled
 (`"C:\\ProgramData\\sqi\\worker"`). A single one starts an escape sequence:
 either one YAML does not know, which is a parse error (`"C:\sqi\worker"` fails
-with `found unknown escape character`), or, worse, one it does, which loads
-silently as something else — `"D:\render\tmp"` becomes `D:`, a carriage return,
+with `found unknown escape character`), or one it does, which loads
+silently as something else: `"D:\render\tmp"` becomes `D:`, a carriage return,
 `ender`, a tab and `mp`.
 
 > `config print` is not a template for this file. It prints the values in
@@ -594,7 +588,7 @@ giving it a directory of its own.
 
 ### 3. Install and start the service
 
-From an **elevated** PowerShell:
+From an elevated PowerShell:
 
 ```powershell
 & "C:\Program Files\sqi\sqi-worker.exe" service install --start
@@ -608,8 +602,8 @@ installed service "sqi-worker"
 service "sqi-worker" is running (pid 4812)
 ```
 
-`service install` needs the configuration file to exist — a service cannot
-prompt for one — and bakes its absolute path into the service. The default
+`service install` needs the configuration file to exist, since a service
+cannot prompt for one, and stores its absolute path in the service. The default
 location is `C:\ProgramData\sqi\sqi-worker.yaml` (`%ProgramData%\sqi\sqi-worker.yaml`);
 pass `--config` (`-c`) for another. Before it changes anything it checks that
 the binary, the configuration and everything the configuration names are in
@@ -621,25 +615,25 @@ that:
 
 - runs `sqi-worker.exe start --config <absolute path of the config file>`, with
   the binary you ran the installer from. Root flags such as `--log-level` are
-  **not** stored in the service; set `log.level` and `log.format` in the config
+  not stored in the service; set `log.level` and `log.format` in the config
   file;
-- runs as **LocalSystem** unless you pass `--user` (see below);
+- runs as LocalSystem unless you pass `--user` (see below);
 - runs in the configuration file's directory, so a relative path in the
   configuration resolves beside it rather than in `C:\Windows\System32`;
 - starts automatically at boot as an *Automatic (Delayed Start)* service, after
   the other boot-time services. It does not wait for the server: a worker that
   cannot reach it at boot exits with a failure, and the recovery actions below
   try again;
-- is restarted by the SCM after a failure — after 5 s, 30 s, then 60 s for the
+- is restarted by the SCM after a failure, including when the worker stops
+  itself with an error rather than crashing: after 5 s, 30 s, then 60 s for the
   first, second and later failures, with the count reset after 24 hours without
-  one — including when the worker stops itself with an error rather than
-  crashing;
+  one;
 - is given 55 s at the default to drain when Windows shuts down:
   `worker.shutdown_grace_period` (30 s) for running tasks to finish, a third of
   that again (10 s) for any still running to close once asked to before they
   are killed, and 15 s for what follows: up to 2 s for each task's final
-  status to be sent, up to 10 s more for any the broker has not yet stored
-  (normally far less), and the deregistration and exit. This is the
+  status to be sent, up to 10 s more for any the broker has not yet stored,
+  and the deregistration and exit. This is the
   service's *PreShutdown* timeout (see [Managing the service](#managing-the-service)).
 
 The flags of `service install`:
@@ -652,17 +646,17 @@ The flags of `service install`:
 | `--user` | Account to run as: `DOMAIN\name`, `.\name`, a bare local name (treated as `.\name`) or a UPN. Default LocalSystem. You are prompted for the password. See [Choosing the account](#choosing-the-account). |
 | `--start` | Start the service after installing it, wait (up to 60 s) for it to run, then watch it for 3 s more (see below). |
 
-`service install` refuses a name that is already registered — straight after the
-elevation check, before any password prompt, permission change or other side
+`service install` refuses a name that is already registered, straight after the
+elevation check and before any password prompt, permission change or other side
 effect:
 
 ```text
 Error: service already exists: sqi-worker; remove it first with: sqi-worker service uninstall --name sqi-worker
 ```
 
-**`is running` means the service stayed up for 3 seconds.** The service reports
+`is running` means the service stayed up for 3 seconds. The service reports
 *Running* to the Service Control Manager as soon as its process is up, and the
-worker reads its configuration and opens its log *after* that. So `--start` (and
+worker reads its configuration and opens its log after that. So `--start` (and
 `service start`) keeps watching a service that has reported *Running* for 3 s
 more: a bad configuration stops it within that window, and the command reports
 a failed start (below). A failure that comes later than that, or in a restart
@@ -672,8 +666,8 @@ the recovery actions make, it does not see: that shows up only in
 and in that window `service status` can show `running` or `start pending` for the
 restarted process: check again after the restart delay before trusting it.
 
-If the service does not start — it stops before it runs or within those 3 s, or
-is still starting after 60 s — the command prints
+If the service does not start (it stops before it runs or within those 3 s, or
+is still starting after 60 s), the command prints
 `service "sqi-worker" did not start: …` (for a stop, with its exit codes) and the
 last 20 lines of the [default log file](#logs), and exits with an error. The
 service stays installed; fix the problem and run `service start`.
@@ -719,27 +713,27 @@ A path that does not exist yet is judged by its nearest existing ancestor,
 because whoever can create children there could create it first. Every
 directory above the path, up to the volume root, is judged too: one fails if
 someone else owns it or can delete or rename what it holds, because they could
-move the path aside and plant their own. Being able to *add* files to a parent
+move the path aside and plant their own. Being able to add files to a parent
 is fine, which is why a path under `C:\ProgramData` can pass. (A volume
 root's own DELETE right is ignored, since a root cannot be renamed.) A drive
 letter that is an alias, such as a global `subst` or a mapped network drive,
 counts as a volume root, so the directories above the real folder behind it
 are not judged: keep service files on local NTFS volumes.
 
-What this means in practice:
+In practice:
 
-- **Binary and configuration under a user profile fail.** `C:\Users\<name>\...`
+- A binary or configuration under a user profile fails. `C:\Users\<name>\...`
   is owned by that user, who can change everything in it. Put the binary in
   `C:\Program Files\sqi` (step 1) and the configuration in a directory
   `config init` creates.
-- **A `C:\ProgramData` folder you made by hand fails**, because every user can
+- A `C:\ProgramData` folder you made by hand fails, because every user can
   write to what they create there. Let `config init` make it, or move the
   folder aside (above) and run it again.
-- **Data on a mounted volume or under OneDrive fails**, as the path goes through
+- Data on a mounted volume or under OneDrive fails, as the path goes through
   a reparse point. Keep `worker.data_dir` and the other paths on an ordinary
   folder on a local drive.
-- **The `--user` account passes in its own directory**: `config init --user`
-  gives it exactly that (see [Choosing the account](#choosing-the-account)).
+- The `--user` account passes in its own directory, which `config init --user`
+  creates (see [Choosing the account](#choosing-the-account)).
 
 A refusal names the setting and the path, and says what to do. For a binary it
 prints the `New-Item` and `Copy-Item` commands from step 1 for your copy of the
@@ -750,7 +744,7 @@ nothing creates again: for that it says to fix the file's permissions or move it
 to an administrators-only folder. For anything else it asks you to make the path
 administrators-only or to point the setting at a path that is.
 
-**What the check does not cover.**
+What the check does not cover:
 
 - It judges a directory and everything above it, not what is already inside
   it. If a setting names a folder that existed before you set the service up,
@@ -774,12 +768,12 @@ leaves those entries; they let the account open nothing else there.
 
 ### Choosing the account
 
-The service runs as **LocalSystem** by default. LocalSystem reaches network
-shares as the *computer* account (`DOMAIN\HOSTNAME$`), not as a user — if your
+The service runs as LocalSystem by default. LocalSystem reaches network
+shares as the computer account (`DOMAIN\HOSTNAME$`), not as a user. If your
 jobs read scenes or write renders on SMB shares that only grant users access,
-run it as a user account. The account cannot read `C:\ProgramData\sqi`, which is
-administrators-only, and you should not open that directory to it, so it gets a
-directory of its own. Write the configuration for it, then install:
+run it as a user account. That account cannot read the administrators-only
+`C:\ProgramData\sqi`, and that directory should not be opened to it, so it gets
+a directory of its own. Write the configuration for it, then install:
 
 ```powershell
 & "C:\Program Files\sqi\sqi-worker.exe" config init --user STUDIO\render-svc `
@@ -826,7 +820,7 @@ or add `--start` when it needs nothing more.
 Anything else the worker writes needs Modify for the account too: a `log.file`
 belongs in the data directory (`C:\ProgramData\sqi-render\worker`) or another directory the
 account has Modify on, not in `C:\ProgramData\sqi-render` itself, where the
-account can only read — the path passes validation there, and the service then
+account can only read: the path passes validation there, and the service then
 fails to open the file at every start.
 
 The installer then, in this order:
@@ -839,35 +833,35 @@ The installer then, in this order:
    places only administrators (and this account, for its own files) can change
    (see [What `service install` checks](#what-service-install-checks));
 4. prints a warning about run-as-user privileges (below) and prompts for the
-   password — or reads it from piped standard input; an empty password is
+   password, or reads it from piped standard input; an empty password is
    refused;
-5. grants the account **Log on as a service** (`SeServiceLogonRight`);
+5. grants the account *Log on as a service* (`SeServiceLogonRight`);
 6. checks the password with a service-type logon;
 7. prepares the log directory's permissions (see [Logs](#logs)); and
 8. creates the service.
 
-The right is granted *before* the password is checked because the check needs
+The right is granted before the password is checked because the check needs
 it. A wrong password therefore stops the install at step 6 with the right
 still granted; nothing is rolled back. To take it back, remove the account
 under *Local Security Policy* (`secpol.msc`) → *Local Policies* → *User Rights
 Assignment* → *Log on as a service* (Windows Home has no `secpol.msc`).
 
 A domain Group Policy that defines "Log on as a service" overwrites local grants
-at its next refresh, after which the service fails to start with error **1069**.
+at its next refresh, after which the service fails to start with error 1069.
 The installer cannot fix that; add the account to the policy.
 
 **Run-as-user queues.** If the farm uses run-as-user queues
 ([task isolation](worker-configuration.md#windows)), the worker's own account
-needs `SeAssignPrimaryTokenPrivilege` — the installer prints a warning naming it
+needs `SeAssignPrimaryTokenPrivilege`. The installer prints a warning naming it
 whenever you pass `--user`, because the worker config cannot tell whether a
 queue will use isolation. The worker also checks for `SeIncreaseQuotaPrivilege`
 before it runs a task as another account, and loading that account's profile
-needs `SeBackupPrivilege` and `SeRestorePrivilege`. That is the least sqi itself
-asks of the account, not a promise that granting it is enough: Microsoft
+needs `SeBackupPrivilege` and `SeRestorePrivilege`. These are the minimum sqi
+asks of the account, and granting them may not be enough: Microsoft
 documents `LoadUserProfile` as callable only by an administrator or LocalSystem.
-**LocalSystem is the supported account for a worker that uses run-as-user
-isolation**; run it as a user account for the share access above when no queue
-uses run-as-user, and the warning does not apply.
+LocalSystem is the supported account for a worker that uses run-as-user
+isolation. When no queue uses run-as-user, a user account (for the share
+access above) is fine and the warning does not apply.
 
 ### Paths and drive letters
 
@@ -878,8 +872,8 @@ paths (`\\nas\shows\...`) in job parameters, or map them with
 ### Logs
 
 A service has no console, so it logs to a file. Unless `log.file` is set, that
-is `C:\ProgramData\sqi\logs\<service-name>\<service-name>.log` — `<service-name>` being the
-name the service was installed under (`sqi-worker\sqi-worker.log` by default) — rotated at
+is `C:\ProgramData\sqi\logs\<service-name>\<service-name>.log`, where `<service-name>` is the
+name the service was installed under (`sqi-worker\sqi-worker.log` by default), rotated at
 `log.max_size_mb` (default 100 MB), keeping `log.max_backups` (default 5) old
 files:
 
@@ -910,9 +904,9 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker\sqi-worker.log -Wait -Tail 50
   the starting service refuse one that is, or sits under, a junction or symbolic
   link (see the [known limitations](#security-notes-and-known-limitations)).
 - **Rotation** is by size: the file becomes `<file>.1`, `.1` becomes `.2`, and so
-  on up to `log.max_backups`, and the oldest is dropped. A rotation that fails
-  — most often because something such as `Get-Content -Wait`, an editor or a log
-  shipper holds the file open without allowing it to be renamed — is not an
+  on up to `log.max_backups`, and the oldest is dropped. A rotation that fails,
+  most often because something such as `Get-Content -Wait`, an editor or a log
+  shipper holds the file open without allowing it to be renamed, is not an
   error and loses no lines: the worker keeps appending to the current file and
   tries again after another `log.max_size_mb` of output, so the file can
   temporarily grow past its limit.
@@ -921,8 +915,8 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker\sqi-worker.log -Wait -Tail 50
   config) appends one line to `C:\ProgramData\sqi\logs\<service-name>\<service-name>.log`, such
   as `{"time":"…","level":"ERROR","msg":"service exited with error","error":"…"}`,
   and the service reports exit code `1066 (service-specific 1)`. When that file
-  cannot be written — say its directory is, or sits under, a junction, which the
-  service refuses, or the account may not write there — the line goes instead to `<service-name>.trace.log` in
+  cannot be written (its directory is, or sits under, a junction, which the
+  service refuses, or the account may not write there), the line goes instead to `<service-name>.trace.log` in
   the service's working directory (the configuration file's directory), with a
   `log_error` field saying why the default log could not take it; the file gets
   that directory's permissions. Both writes are best effort: if neither
@@ -932,7 +926,7 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker\sqi-worker.log -Wait -Tail 50
   logs to stderr.
 
 `service status` shows, and `service start` and `install --start` tail, the
-**default** log path. If you set `log.file`, read that file instead.
+default log path. If you set `log.file`, read that file instead.
 
 ### Managing the service
 
@@ -976,24 +970,23 @@ run, then watches it for 3 s more. `stop` and `uninstall` wait for the service
 to stop for up to its PreShutdown timeout plus 15 s, and never less than 60 s
 (70 s at the default grace period); after that they fail with
 `service sqi-worker still stop pending after …`, and the worker carries on
-draining — run `service status` until it shows `stopped`.
+draining. Run `service status` until it shows `stopped`.
 
 **The PreShutdown timeout is fixed at install time.** It is
 `worker.shutdown_grace_period`, plus a third of it for tasks still running at
-the end to close, plus 15 s — 55 s at the default (the server's is 45 s) —
-worked out once by
-`service install` from the configuration file *and* the `SQI_WORKER_*`
-variables set in the shell you install from, and registered with the service.
+the end to close, plus 15 s: 55 s at the default (the server's is 45 s).
+`service install` computes it once from the configuration file and the
+`SQI_WORKER_*` variables set in the shell you install from, and registers it
+with the service.
 Changing `worker.shutdown_grace_period` afterwards, in the file or in the machine
 environment, does not change it: run `service uninstall` and `service install`
-again. Note the running service sees the *machine* environment, not your shell's,
+again. The running service sees the machine environment, not your shell's,
 so a `SQI_WORKER_*` variable set only in your shell shapes the timeout but not
 the worker; put settings in the configuration file.
 
 ### Registering the service by hand
 
-`service install` is a convenience; a service registered any other way works
-too, for example:
+A service registered another way also works, for example:
 
 ```powershell
 New-Service -Name "sqi-worker" -DisplayName "sqi Worker Agent" -StartupType Automatic `
@@ -1042,20 +1035,20 @@ completes.
 
 | Symptom | Cause and fix |
 |---|---|
-| Error **1053**, "the service did not respond to the start or control request in a timely fashion" | The process never answered the SCM. Builds before native service support were plain console programs, so a service registered with `New-Service` timed out and stopped; upgrade `sqi-worker.exe`. On a current build, run it in a console (below) to see why it did not get that far. |
-| Error **1069**, "the service did not start due to a logon failure" | The account's password is wrong or has changed, or the account no longer holds "Log on as a service" (a domain policy can remove it). Add the account to the policy if one applies, then run `service uninstall` and `service install --user …` again, which prompts for the password and grants the right. |
-| The service stops straight after starting | `service status` shows `exit codes: 1066 (service-specific 1)`: the worker exited with an error. `service start` and `install --start` report a stop within 3 s of the service running as a failed start; a later one they miss, having printed `is running` (see above). Read the [log](#logs); the reason is the last `"service exited with error"` line — or, when the log directory could not be used, the line in `sqi-worker.trace.log` beside the configuration file. The SCM keeps restarting it (5 s, 30 s, then every 60 s) until the configuration is fixed. |
+| Error 1053, "the service did not respond to the start or control request in a timely fashion" | The process never answered the SCM. Run it in a console (below) to see why it did not get that far. |
+| Error 1069, "the service did not start due to a logon failure" | The account's password is wrong or has changed, or the account no longer holds "Log on as a service" (a domain policy can remove it). Add the account to the policy if one applies, then run `service uninstall` and `service install --user …` again, which prompts for the password and grants the right. |
+| The service stops straight after starting | `service status` shows `exit codes: 1066 (service-specific 1)`: the worker exited with an error. `service start` and `install --start` report a stop within 3 s of the service running as a failed start; a later one they miss, having printed `is running` (see above). Read the [log](#logs); the reason is the last `"service exited with error"` line or, when the log directory could not be used, the line in `sqi-worker.trace.log` beside the configuration file. The SCM keeps restarting it (5 s, 30 s, then every 60 s) until the configuration is fixed. |
 | `stopped` with `exit codes: 0` that you did not ask for | Unless someone else stopped it, the worker lost its NATS connection for good and shut itself down cleanly, which the SCM does not treat as a failure. See the [known limitations](#security-notes-and-known-limitations). |
 | `refusing to install sqi-worker: someone other than SYSTEM, Administrators, TrustedInstaller and the service's account can change what it would trust or run` | `service install` found a path that someone else could change. The lines after it name each path and the setting it came from. See [What `service install` checks](#what-service-install-checks): typically the binary is in a user profile (copy it to `C:\Program Files\sqi` from an elevated PowerShell) or the configuration is in a `C:\ProgramData` folder you made by hand (write it with `config init`). |
 | `cannot use configuration directory …` from `config init` | The directory exists and someone other than SYSTEM and Administrators can change it, or a directory above it. Run the `Rename-Item` command it prints, or pass `--config` for another directory. See [Why the directory is created for you](#why-the-directory-is-created-for-you). |
 | `service already exists: …` | The name is taken. `service uninstall --name <name>` first, or choose another `--name`. |
 | `must be run from an elevated (Administrator) shell` | Open PowerShell with *Run as administrator*. |
-| `service uninstall` succeeds but the service is still listed | It is *marked for deletion* until every handle to it closes — typically `services.msc` or another management tool. Close them. |
-| Jobs cannot find files | Mapped drive letters or share permissions — see *Choosing the account* and *Paths and drive letters*. |
+| `service uninstall` succeeds but the service is still listed | It is *marked for deletion* until every handle to it closes, typically `services.msc` or another management tool. Close them. |
+| Jobs cannot find files | Mapped drive letters or share permissions. See [Choosing the account](#choosing-the-account) and [Paths and drive letters](#paths-and-drive-letters). |
 
-**Running in a console to see startup errors.** Stop the service first — a
+**Running in a console to see startup errors.** Stop the service first (a
 console run uses the same `worker.data_dir`, so it would register as the same
-worker — then, from an elevated prompt:
+worker), then, from an elevated prompt:
 
 ```powershell
 sqi-worker.exe service stop
@@ -1065,25 +1058,22 @@ sqi-worker.exe start --config C:\ProgramData\sqi\sqi-worker.yaml
 
 Output goes to the console (unless `log.file` is set) and Ctrl-C drains and
 stops it. Run it from the configuration file's directory, as the `Set-Location`
-does: a service runs there, but a console run resolves relative paths — a
-relative `log.file`, say — against the *shell's* directory, which for an elevated
-prompt is `C:\Windows\System32`. It runs as *you*, not as the service account, so
+does: a service runs there, but a console run resolves relative paths, such as a
+relative `log.file`, against the shell's directory, which for an elevated
+prompt is `C:\Windows\System32`. It runs as you, not as the service account, so
 a problem specific to that account (permissions, profile, mapped drives) will not
 reproduce.
 
 ### Security notes and known limitations
 
-These describe what the Windows service support does today; none is hidden by
-the defaults.
-
-- **`service install`'s checks are narrow, and a squatted `C:\ProgramData\sqi`
-  is what they are for.** `config init` creating the directory, and
+- **`service install`'s checks are narrow, and target a squatted
+  `C:\ProgramData\sqi`.** `config init` creating the directory, and
   [What `service install` checks](#what-service-install-checks) refusing a
   configuration, binary or data path that anyone else could change, are the
-  mitigation; nothing stands in for them when you skip them. What they cannot
-  close is a race: a path is checked and then used by name, so a directory swapped
-  for a junction between the two — during the install, or while the service
-  runs — still redirects what the service reads or writes, and someone who
+  mitigation; nothing stands in for them when you skip them. They cannot
+  close a race: a path is checked and then used by name, so a directory swapped
+  for a junction between the two (during the install, or while the service
+  runs) still redirects what the service reads or writes, and someone who
   already owns a directory on the path can make that swap at will (which is why
   the check refuses an owner it does not trust). It also does not cover what that
   section lists as out of scope: file paths inside `store.postgres.dsn`,
@@ -1093,8 +1083,8 @@ the defaults.
   so a service registered by hand (which never ran `service install`) gets that
   and nothing more.
 - **Losing NATS for good does not restart the worker.** When the worker's NATS
-  connection is permanently lost — a finite `nats.max_reconnect_attempts` running
-  out, or the server revoking its credential — it shuts down cleanly and exits
+  connection is permanently lost (a finite `nats.max_reconnect_attempts` running
+  out, or the server revoking its credential), it shuts down cleanly and exits
   with code 0, as it does on the console and under systemd's
   `Restart=on-failure`. The SCM's recovery actions fire only on a failure, so the
   service stays stopped. Watch the worker's online state in the web UI, or
@@ -1141,9 +1131,9 @@ docker run -d \
 
 ## Multiple workers on one host
 
-A single worker already executes as many tasks concurrently as the host has CPU
-cores — the server gates capacity by CPU-core fit — so one worker per host is
-usually enough for throughput. Run *separate* worker processes only when you
+A single worker executes as many tasks concurrently as the host has CPU
+cores (the server gates capacity by CPU-core fit), so one worker per host is
+usually enough for throughput. Run separate worker processes only when you
 want distinct identities: independent heartbeats and registrations, different
 capability sets or compute locations, or separate queue assignments.
 
@@ -1151,9 +1141,9 @@ Each instance must have its own `worker.data_dir` (it holds the persistent
 `worker.id` UUID) and its own `metrics.addr` (the local health/metrics port),
 and should have a distinct `worker.name`. See
 [Running multiple workers on one host](worker-configuration.md#running-multiple-workers-on-one-host)
-for the full rationale.
+for the reasons.
 
-On Linux the idiomatic approach is a **systemd template unit**, where the
+On Linux, use a systemd template unit, where the
 instance identifier (`%i`) carries the per-instance metrics port. The release
 archive ships it as `deploy/systemd/sqi-worker@.service`; copy it to
 `/etc/systemd/system/sqi-worker@.service`, or create that file from:
@@ -1207,7 +1197,7 @@ capability tags, queues); the template's `Environment=` lines override only the
 three settings that must differ per instance. Manage each with the usual
 `systemctl status sqi-worker@9091` / `journalctl -u sqi-worker@9091`.
 
-> **macOS:** the same rule applies — give each launchd plist a unique `Label`,
+> **macOS:** give each launchd plist a unique `Label`,
 > `SQI_WORKER_DATA_DIR`, and `SQI_WORKER_METRICS_ADDR`.
 
 > **Windows:** install each instance as its own service with its own `--name`
@@ -1234,8 +1224,8 @@ three settings that must differ per instance. Manage each with the usual
 > `sqi-worker service status --name sqi-worker-2`. See
 > [Windows — Windows Service](#windows--windows-service).
 
-> **Docker:** containers are already filesystem-isolated, so run multiple
-> containers with distinct `--name` values and separate data volumes — see
+> **Docker:** containers are filesystem-isolated, so run multiple
+> containers with distinct `--name` values and separate data volumes. See
 > [`docs/worker-docker.md`](worker-docker.md).
 
 ---
@@ -1246,7 +1236,7 @@ After starting the worker, confirm it registered with the server:
 
 ```sh
 # Via REST API
-curl -s http://sqi-server:8080/api/v1/workers | jq '.[].name'
+curl -s http://sqi-server:8080/api/v1/workers | jq '.items[].name'
 
 # Via sqi-worker health probe (from the worker host)
 curl -sf http://127.0.0.1:9091/healthz && echo healthy
@@ -1260,27 +1250,27 @@ with their capability tags and live task counts.
 
 ## Rolling restarts
 
-`sqi-worker` handles `SIGTERM` gracefully: it stops accepting new assignments
+On `SIGTERM`, `sqi-worker` stops accepting new assignments
 and waits up to `worker.shutdown_grace_period` (default 30 s) for in-flight
-tasks to complete. systemd sends `SIGTERM` before `SIGKILL`, so the default
-`TimeoutStopSec=90s` in systemd is sufficient for most render workloads.
+tasks to complete. systemd sends `SIGTERM` before `SIGKILL`, and its default
+`TimeoutStopSec` of 90 s covers the default grace period.
 
 For long-running renders, increase `shutdown_grace_period` to match your
 longest expected task duration and set `TimeoutStopSec` in the unit file
 accordingly.
 
-On Windows a service **Stop** and a reboot start the same drain. The service's
+On Windows a service Stop and a reboot start the same drain. The service's
 PreShutdown timeout is fixed when `service install` runs, so after raising
-`shutdown_grace_period` run `service uninstall` and `service install` again — see
+`shutdown_grace_period` run `service uninstall` and `service install` again. See
 [Managing the service](#managing-the-service).
 
 ---
 
 ## See also
 
-- [`docs/worker-configuration.md`](worker-configuration.md) — Every configuration option.
-- [`docs/auth.md`](auth.md#broker-authentication-transport) — The broker authentication model in full: threat model, revocation, key rotation, and the auth-off asymmetry.
-- [`docs/worker-capabilities.md`](worker-capabilities.md) — Capability tag reference.
-- [`docs/worker-docker.md`](worker-docker.md) — Docker deployment details.
-- [`docs/observability.md`](observability.md) — In-UI diagnostic panels, REST/WS log API, and log forwarding to journald, Docker, Loki, and ELK.
-- [`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml) — Annotated example config.
+- [`docs/worker-configuration.md`](worker-configuration.md): every configuration option.
+- [`docs/auth.md`](auth.md#broker-authentication-transport): the broker authentication model (threat model, revocation, key rotation, and the auth-off asymmetry).
+- [`docs/worker-capabilities.md`](worker-capabilities.md): capability tag reference.
+- [`docs/worker-docker.md`](worker-docker.md): Docker deployment details.
+- [`docs/observability.md`](observability.md): in-UI diagnostic panels, REST/WS log API, and log forwarding to journald, Docker, Loki, and ELK.
+- [`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml): annotated example config.

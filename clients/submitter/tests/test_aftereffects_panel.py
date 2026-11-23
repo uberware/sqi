@@ -4,7 +4,7 @@
 ExtendScript cannot run in CI, so the only automated coverage is: a source scan that the
 panel stays ES3, the scene-reading arithmetic and launch strings run under Node (skipped
 without ``node``) with ``json2.js`` and stub globals, and the packaged-resource checks. The
-panel's UI, pre-check dialogs, preference reads, file writes and the actual launch need a
+panel's UI, pre-check dialogs, preference reads, file writes and the launch need a
 real After Effects: the AE manual checklist covers them.
 """
 
@@ -286,7 +286,7 @@ def test_jsx_pure_functions_under_node(harness: dict[str, Any]) -> None:
     assert r["wExeSlash"] == "C:/sqi/sqi-submitw.exe"
     assert r["wExeBare"] == "sqi-submitw.exe"
     assert r["wExeAsked"] == ["C:\\sqi\\sqi-submitw.exe"]
-    assert r["wExeMissing"] == "C:\\sqi\\sqi-submit.exe"  # an install from before it existed
+    assert r["wExeMissing"] == "C:\\sqi\\sqi-submit.exe"  # no sqi-submitw.exe beside it
     assert r["wExeCmd"] == "C:\\sqi\\sqi-submit.cmd"  # anything else is launched as it is
     assert r["wExeOther"] == "C:\\sqi\\my-sqi-submit.exe"
     assert r["wExeMac"] == "/Users/a/bin/sqi-submit"
@@ -365,7 +365,7 @@ def test_jsx_version_probe_under_node(harness: dict[str, Any]) -> None:
     steps = [(p["result"], p["calls"]) for p in r["probes"]]
     mac = '"/old/sqi-submit" --version'
     assert steps[0] == (False, [mac])  # too old: refused ...
-    assert steps[1] == (True, [mac])  # ... and not remembered, so a fix is picked up at once
+    assert steps[1] == (True, [mac])  # ... and not remembered, so the next call probes again
     assert steps[2] == (True, [])  # a success is remembered: no second call for the path
     assert steps[3] == (True, ['"/other/sqi-submit" --version'])  # remembered per path
     assert steps[4] == (False, ['"/boom/sqi-submit" --version'])  # a throwing run is a failure

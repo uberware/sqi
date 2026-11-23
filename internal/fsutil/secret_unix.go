@@ -12,25 +12,21 @@ import (
 // createSecret creates path at [SecretFileMode], truncating any existing file.
 //
 // The mode is passed to the open itself rather than chmod'd afterwards, so a
-// NEWLY CREATED file never exists at a wider mode with secret bytes already in
-// it. umask can only ever REMOVE bits from an open mode, never add them, so a
+// newly created file never exists at a wider mode with secret bytes already
+// in it. umask can only remove bits from an open mode, never add them, so a
 // permissive umask cannot widen this; a restrictive one that strips owner bits
-// would make the caller's own subsequent write fail loudly rather than
-// silently exposing anything.
+// makes the caller's own subsequent write fail rather than exposing anything.
 //
-// The restrictSecret call is NOT redundant with that mode, and leaving it out
-// was a real defect: open(2) applies its mode argument only when it CREATES
-// the file, so REPLACING an existing permissive key left the old mode in place
-// and wrote the new private key into it. `sqi-server tls issue` re-issues a
-// leaf over a previous one every time it runs, which is exactly that path.
-// Windows never had the bug, because its createSecret re-applies the DACL
-// unconditionally -- so the two platforms disagreed about what this function
-// promises, and the POSIX half quietly did not keep the guarantee
-// [WriteSecret]'s doc states.
+// The restrictSecret call is still needed: open(2) applies its mode argument
+// only when it creates the file, so replacing an existing permissive key
+// would keep the old mode and write the new private key into it.
+// `sqi-server tls issue` re-issues a leaf over a previous one, which takes
+// that path. Windows's createSecret re-applies the DACL unconditionally for
+// the same reason.
 //
-// The ordering guarantee survives: O_TRUNC empties the file as part of the
-// open, so at the moment of the fchmod a pre-existing permissive file holds no
-// bytes, and the caller's first write lands in a file already narrowed.
+// O_TRUNC empties the file as part of the open, so at the moment of the
+// fchmod a pre-existing permissive file holds no bytes, and the caller's first
+// write lands in a file already narrowed.
 func createSecret(path string) (*os.File, error) {
 	return openSecret(path, os.O_TRUNC)
 }
@@ -57,10 +53,10 @@ func openSecret(path string, flag int) (*os.File, error) {
 
 // restrictSecret narrows an already-open file to [SecretFileMode].
 //
-// Chmod on the DESCRIPTOR, not the path: the caller may hold a temporary file
+// Chmod on the descriptor, not the path: the caller may hold a temporary file
 // it is about to rename, and a path-based chmod would be a second lookup that
-// a concurrent swap could redirect — the same reasoning
-// internal/worker/staging applies to its stage-out source.
+// a concurrent swap could redirect (the same reasoning
+// internal/worker/staging applies to its stage-out source).
 func restrictSecret(f *os.File) error {
 	return f.Chmod(SecretFileMode.Perm())
 }
@@ -72,10 +68,8 @@ func mkdirSecret(dir string) error {
 
 // isRestricted reports whether path carries no group or other permission bits.
 //
-// It deliberately does NOT require the mode to equal 0600 exactly: 0400 (a key
-// an operator made read-only) and 0700 (a directory) are both restricted, and
-// an assertion that insisted on 0600 would fail on them for no security
-// reason.
+// It does not require the mode to equal 0600 exactly: 0400 (a key an
+// operator made read-only) and 0700 (a directory) are both restricted.
 func isRestricted(path string) (bool, error) {
 	info, err := os.Lstat(path)
 	if err != nil {

@@ -40,7 +40,7 @@ func TestCreateQueue_RunAsGroupWithoutRunAsUser_Rejected(t *testing.T) {
 // case the request body alone cannot reveal: a PUT that clears run_as_user
 // (explicit null) while omitting run_as_group entirely (preserved from the
 // existing non-empty value) must be rejected exactly like setting both
-// explicitly, because the RESOLVED state after the update would be
+// explicitly, because the resolved state after the update would be
 // group-without-user.
 func TestUpdateQueue_ClearingRunAsUserWhileGroupPreserved_Rejected(t *testing.T) {
 	s := New()

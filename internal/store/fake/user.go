@@ -12,11 +12,10 @@ import (
 )
 
 // asciiEqFold reports whether a and b are equal under ASCII-only
-// case-folding. This deliberately mirrors SQLite's `COLLATE NOCASE`, which
-// folds only ASCII letters ('A'-'Z') and leaves non-ASCII code points
-// (e.g. Greek "Δ"/"δ") untouched — unlike strings.EqualFold, which is
-// Unicode-aware and would incorrectly treat "Δelta" and "δelta" as the same
-// username.
+// case-folding. This mirrors SQLite's `COLLATE NOCASE`, which folds only
+// ASCII letters ('A'-'Z') and leaves non-ASCII code points (e.g. Greek
+// "Δ"/"δ") untouched; strings.EqualFold is Unicode-aware and would treat
+// "Δelta" and "δelta" as the same username.
 func asciiEqFold(a, b string) bool {
 	return asciiToLower(a) == asciiToLower(b)
 }
@@ -141,7 +140,7 @@ func (s *Store) lastLiveAdminLocked(id string) bool {
 	return true
 }
 
-// UpdateUser implements [store.UserStore]. It is deliberately unguarded; see
+// UpdateUser implements [store.UserStore]. It is unguarded; see
 // [Store.UpdateUserKeepingAdmin].
 func (s *Store) UpdateUser(ctx context.Context, u store.User) (store.User, error) {
 	s.mu.Lock()
@@ -179,7 +178,7 @@ func (s *Store) updateUserLocked(u store.User) (store.User, error) {
 	ex.DisplayName = u.DisplayName
 	ex.Role = u.Role
 	ex.Disabled = u.Disabled
-	// AuthSource and ExternalID are deliberately not taken from the argument:
+	// AuthSource and ExternalID are not taken from the argument:
 	// an account's credential backend and its provider-assigned identity are
 	// both fixed at creation, mirroring sqlUpdateUser's SET list.
 	ex.UpdatedAt = time.Now().UTC()

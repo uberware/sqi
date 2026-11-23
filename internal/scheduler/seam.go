@@ -5,12 +5,11 @@ package scheduler
 // seam.go — exported entry points that exist for out-of-package test harnesses.
 //
 // internal/presettest builds an argv snapshot for every shipped preset by
-// driving the REAL production path: submit the template, build the assignment,
+// driving the production path: submit the template, build the assignment,
 // resolve it as a worker would. Re-implementing any of those steps in a test
 // helper would produce goldens that agree with the helper rather than with the
-// server — the failure mode the EXPR differential oracle exists to prevent, one
-// layer down. So the harness calls production code, and this file is the only
-// concession made to let it: a thin delegation, no logic of its own.
+// server. So the harness calls production code, which this file exports as a
+// thin delegation with no logic of its own.
 
 import (
 	"context"

@@ -3,10 +3,11 @@
 package store_test
 
 // Parity test: ListJobs' Owner filter must compare case-insensitively on
-// every backend. SQLite does this via an explicit `COLLATE NOCASE` on the
-// comparison (the `owner` column itself carries no collation — see
-// internal/store/migrations/00001_placeholder.sql); the fake store mirrors
-// it with strings.EqualFold. See internal/api/jobscope.go's scopeFilter,
+// every backend. The SQL stores compare through the dialect's CIEqual
+// (`COLLATE NOCASE` on SQLite, lower() on PostgreSQL), since the `owner`
+// column carries no collation (see
+// internal/store/migrations/00001_placeholder.sql); the fake store uses
+// strings.EqualFold. See internal/api/jobscope.go's scopeFilter,
 // which pins ListJobsOptions.Owner to the caller's username: without this,
 // a stored owner of "Alice" would not match a scoped lookup for "alice".
 
@@ -50,11 +51,11 @@ func TestJobStore_ListJobs_OwnerCaseInsensitive(t *testing.T) {
 
 // TestJobStore_DeclaredExtensionsRoundTrip is the cross-backend parity for the
 // jobs.declared_extensions column (migration 00027). Three states must survive
-// a write/read cycle identically on SQLite and on the fake, because the
-// scheduler branches on all three: NOT RECORDED (a row written before the
-// column existed: fall back to the raw-template byte scan), RECORDED EMPTY
-// (the template declares no extensions: do not fall back), and RECORDED
-// NON-EMPTY (use the list).
+// a write/read cycle identically on every backend, because the scheduler
+// branches on all three: not recorded (a row written before the column
+// existed: fall back to the raw-template byte scan), recorded empty (the
+// template declares no extensions: do not fall back), and recorded non-empty
+// (use the list).
 //
 // The column's ” default keeps the first two distinct: otherwise every
 // pre-migration row would read as "declares nothing", and an EXPR job already

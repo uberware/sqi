@@ -149,10 +149,10 @@ func TestValidateBoolParamConstraints_RejectsScalarBounds(t *testing.T) {
 // TestValidateRangeExprParamConstraints_UsesTheSpecPolicy pins which
 // <IntRangeExpr> policy a RANGE_EXPR parameter's value is checked under.
 //
-// internal/openjd deliberately parses <IntRangeExpr> more strictly than the
-// spec: openjdRangePolicy sets PositiveStepOnly and AscendingOnly, rejecting
-// start > end and a negative step (both preserved on purpose). A RANGE_EXPR
-// PARAMETER must NOT use that policy. The
+// internal/openjd parses <IntRangeExpr> more strictly than the spec:
+// openjdRangePolicy sets PositiveStepOnly and AscendingOnly, rejecting
+// start > end and a negative step, and that must be kept. A RANGE_EXPR
+// parameter must not use that policy. The
 // conformance fixture 2.10--range-expr-param.yaml declares NegativeStep
 // "10-1:-1" and NegativeRangeNegativeStep "-1--10:-1"; under the strict policy
 // the fixture cannot pass.
@@ -219,12 +219,10 @@ func TestValidateRangeExprParamConstraints_UsesTheSpecPolicy(t *testing.T) {
 // yielding [1 2] and [1-2] respectively, for both the base-spec range path
 // and the expression language.
 //
-// RANGE_EXPR validation does NOT tighten it. The leniency is in the shared
+// RANGE_EXPR validation does not tighten it. The leniency is in the shared
 // leaf package, so rejecting "1,,2" for a RANGE_EXPR parameter while a task
-// parameter's range: "1,,2" keeps working would be incoherent, and tightening
-// BOTH would be an acceptance change to the base spec — templates accepted
-// today would start being rejected — which is not a change to make in
-// passing.
+// parameter's range: "1,,2" is accepted would be incoherent, and tightening
+// both would reject templates that are accepted now.
 func TestValidateRangeExprParamConstraints_EmptyElementsAreTolerated(t *testing.T) {
 	for _, d := range []string{"1,,2", "1-2:"} {
 		t.Run(d, func(t *testing.T) {

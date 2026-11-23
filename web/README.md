@@ -55,14 +55,14 @@ local `sqi-server`, so you develop against live data with no CORS setup.
 
 ```sh
 # Terminal 1 — from the repo root, start the server (and a worker if you want
-# jobs to actually run; see docs/web-development.md).
+# jobs to run; see docs/web-development.md).
 make run
 
 # Terminal 2 — from web/, start the Vite dev server.
 npm run dev
 ```
 
-Vite serves on `http://localhost:5173` and forwards `/api` (REST **and** the
+Vite serves on `http://localhost:5173` and forwards `/api` (REST and the
 `/api/v1/ws` WebSocket) to `http://localhost:8080`. Override the target by
 editing the `server.proxy` block in `vite.config.ts`.
 

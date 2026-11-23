@@ -11,7 +11,7 @@
 #   curl http://localhost:8080/api/v1/workers   # should list one online worker
 #   docker compose -f deploy/docker-compose.smoke.yml down -v
 #
-# Note: sqi-server uses a distroless runtime image (no shell/wget) so the
+# sqi-server uses a distroless runtime image (no shell/wget), so the
 # service does not declare a healthcheck here.  CI polls /readyz directly over
 # the mapped port instead.
 

@@ -69,8 +69,8 @@ func TestCapture_ExpandsAndResolvesEveryTask(t *testing.T) {
 }
 
 // TestCapture_ResolvesEmbeddedFileBodies covers the presets whose whole content
-// is a script: the argv is just the script path, so a snapshot that stopped at
-// argv would review nothing.
+// is a script: the argv is only the script path, so a snapshot that stopped at
+// argv would show nothing of the preset.
 func TestCapture_ResolvesEmbeddedFileBodies(t *testing.T) {
 	const tmpl = `
 specificationVersion: jobtemplate-2023-09
@@ -121,10 +121,9 @@ func contains(haystack, needle string) bool {
 }
 
 // TestCapture_RefusesTemplateWithEnvironments is the environments guard.
-// session.Manager.Create EXECUTES environment onEnter actions; a preset that
-// declares one would silently run a vendor command inside a unit test. No
-// shipped template declares environments today, so this must fail loudly the
-// day one does rather than be discovered by a process starting.
+// session.Manager.Create executes environment onEnter actions, so a preset
+// that declares one would run a vendor command inside a unit test. Capture
+// refuses such a template with an error instead.
 func TestCapture_RefusesTemplateWithEnvironments(t *testing.T) {
 	const tmpl = `
 specificationVersion: jobtemplate-2023-09

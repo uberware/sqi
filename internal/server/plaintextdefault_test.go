@@ -14,14 +14,10 @@ import (
 	"github.com/uberware/sqi/internal/config"
 )
 
-// TestDefaultConfig_ServesPlaintextUnchanged is the default-configuration
-// regression test for TLS support.
-//
-// The single-binary, SQLite, embedded-NATS, no-TLS deployment must keep
-// working exactly as it did in v0.3.0. Every other
-// test in this component adds a TLS path; this one proves the absence of one.
-// Each assertion states a property of the plaintext default that a future TLS
-// change would break loudly rather than quietly.
+// TestDefaultConfig_ServesPlaintextUnchanged pins the default configuration:
+// the single-binary, SQLite, embedded-NATS deployment serves without TLS.
+// The other TLS tests each add a TLS path; this one checks there is none.
+// Each assertion states a property of the plaintext default.
 func TestDefaultConfig_ServesPlaintextUnchanged(t *testing.T) {
 	// Derived from config.DefaultConfig() rather than hand-written, so a
 	// default that starts shipping TLS on would fail here instead of being
@@ -69,7 +65,7 @@ func TestDefaultConfig_ServesPlaintextUnchanged(t *testing.T) {
 	tlsClient := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
-			// InsecureSkipVerify is deliberate: the assertion is that no TLS
+			// InsecureSkipVerify because the assertion is that no TLS
 			// listener exists at all, so verification must not be what fails.
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
 		},
@@ -81,7 +77,7 @@ func TestDefaultConfig_ServesPlaintextUnchanged(t *testing.T) {
 
 	// 3. The http.Server carries no CERTIFICATE.
 	//
-	//    Deliberately not "TLSConfig == nil": net/http's HTTP/2 setup builds a
+	//    Not "TLSConfig == nil": net/http's HTTP/2 setup builds a
 	//    TLSConfig with NextProtos ["h2","http/1.1"] even for a plain
 	//    ListenAndServe, so a nil check would assert an implementation detail
 	//    of net/http rather than anything about sqi. What must hold is that no
@@ -98,17 +94,17 @@ func TestDefaultConfig_ServesPlaintextUnchanged(t *testing.T) {
 	}
 	nc.Close()
 
-	// 5. Session cookies: NOT asserted here.
+	// 5. Session cookies: not asserted here.
 	//
 	//    The default is cookie_secure "auto", which resolves from r.TLS, so on
 	//    this plaintext listener a cookie must not be Secure. Checking the
 	//    default string here would assert a constant, not a behavior;
 	//    TestSessionCookie_NotSecureOnPlaintext in internal/api drives an actual
-	//    login over an actual plaintext listener and inspects the real cookie.
+	//    login over a plaintext listener and inspects the real cookie.
 
 	// 6. The mDNS advertisement carries no TLS keys.
 	//
-	//    Asserted where the records are actually built, not here: this server
+	//    Asserted where the records are built, not here: this server
 	//    runs with DiscoveryEnabled=false (multicast is unavailable in most CI
 	//    environments), so a responder started here would never produce
 	//    records and any check would be vacuous.

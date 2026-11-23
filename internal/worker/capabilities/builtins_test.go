@@ -140,8 +140,7 @@ func TestBuiltinDetectors_CoverPresets(t *testing.T) {
 
 // TestBuiltinDetectors_FFmpeg pins the ffmpeg detector's shape. It is a PATH
 // tool on every platform, so unlike the DCC detectors it carries no
-// install-location glob and no registry probe -- if a later change adds one,
-// this test should be the thing that asks why.
+// install-location glob and no registry probe.
 func TestBuiltinDetectors_FFmpeg(t *testing.T) {
 	ds, err := BuiltinDetectors()
 	if err != nil {

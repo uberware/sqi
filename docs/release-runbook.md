@@ -188,11 +188,11 @@ image, plus the manifest tags).
 
 ## Step 6: Cut the real release
 
-Set the target version once and reuse it throughout this section (examples below
-use `0.3.0`):
+Set the target version once, without the leading `v`, and reuse it throughout
+the remaining steps:
 
 ```bash
-VERSION=0.3.0
+VERSION=X.Y.Z
 ```
 
 **Procedure:**
@@ -210,8 +210,8 @@ VERSION=0.3.0
    grep __version__ clients/submitter/src/sqi_submitter/_version.py
    ```
 
-2. Confirm the `main` branch is green in CI and all release-blocking tasks are
-   merged.
+2. Confirm the `main` branch is green in CI and every change meant for the
+   release is merged.
 
 3. Regenerate and commit the changelog so the tag includes a dated section.
    git-cliff generates `CHANGELOG.md` from the Conventional Commit history.
@@ -249,23 +249,14 @@ VERSION=0.3.0
 The presets authored in this repo are not part of the GitHub release or the
 PyPI packages:
 
-- the forty-five `presets/sqi/*.yaml` reference presets (Maya layer + scene, Nuke
-  write + script, Houdini ROP, Blender batch + view layer, Cinema 4D scene +
-  take, 3ds Max, After Effects render + queue render, Mistika Boutique + VR +
-  Workflows, Katana, Silhouette render +
-  render-all, Fusion render + Saver render, VRED render + viewpoint render, KeyShot render + studio
-  render, Modo render + pass group render, Unreal Movie Render Queue job +
-  queue + shot render; the standalone renderers Arnold
-  kick + kick tile, V-Ray, husk, Redshift, RenderMan, 3Delight and Mantra;
-  ffmpeg transcode, sequence-encode, and segment-transcode
-  bash/PowerShell/EXPR; hython script, usdrecord render and oiiotool process);
+- the forty-five `presets/sqi/*.yaml` reference presets;
 - the four `presets/testing/*.yaml` smoke-test presets (test-render and
   test-steps, each in bash + PowerShell).
 
 They are published to the separate `uberware/sqi-presets` repository that
 backs the default `preset_library.url` (see `docs/preset-library.md`). The
 `publish-presets` job in `.github/workflows/release.yml` does this
-**automatically**: after a successful release on a non-`-rc` tag, it runs
+automatically: after a successful release on a non-`-rc` tag, it runs
 `cmd/presetgen` twice against a checkout of the library repo, once for
 `presets/sqi` (the `sqi/` namespace) and once for `presets/testing` under the
 `testing/` subdirectory, to regenerate `index.json` and the definition files,

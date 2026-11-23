@@ -4,15 +4,13 @@ package envutil
 
 import "testing"
 
-// TestBaseEnv_WindowsEssentialsSurviveFiltering proves the minimal base
-// carries the variables a Windows process cannot function without. COMSPEC
-// and PATHEXT are the sharpest: without them nothing that resolves a command
-// through a shell works at all, which is most of what a render task does.
+// TestBaseEnv_WindowsEssentialsSurviveFiltering checks that the minimal base
+// carries the variables a Windows process needs. Without COMSPEC and PATHEXT
+// nothing that resolves a command through a shell works, which is most of
+// what a render task does.
 //
-// This lives in an internal (package envutil) test file, rather than
-// alongside the rest of the suite in envutil_test.go (package envutil_test),
-// because minimalBase is unexported and asserting on it directly requires
-// same-package access.
+// It is in package envutil, not envutil_test, because minimalBase is
+// unexported.
 func TestBaseEnv_WindowsEssentialsSurviveFiltering(t *testing.T) {
 	for _, name := range []string{
 		"COMSPEC", "PATHEXT", "WINDIR", "SYSTEMDRIVE", "PROGRAMDATA",
@@ -25,8 +23,8 @@ func TestBaseEnv_WindowsEssentialsSurviveFiltering(t *testing.T) {
 	}
 }
 
-// TestBaseEnv_SecretsAreStillFiltered guards the addition above from becoming
-// a hole: widening the base must not start admitting daemon credentials.
+// TestBaseEnv_SecretsAreStillFiltered checks that the minimal base admits no
+// daemon credentials.
 func TestBaseEnv_SecretsAreStillFiltered(t *testing.T) {
 	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "SQI_WORKER_TOKEN"} {
 		if minimalBase[name] {

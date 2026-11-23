@@ -108,7 +108,7 @@ export default function CodeEditor({
       view.destroy()
       viewRef.current = null
     }
-    // Intentionally excludes `value` and `ariaLabel`: value is synced below;
+    // Excludes `value` and `ariaLabel`: value is synced below;
     // ariaLabel is read dynamically via ref so we never need to recreate.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [language])

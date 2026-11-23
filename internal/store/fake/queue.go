@@ -108,10 +108,10 @@ func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue
 	queue.PreserveRunAsUser = false
 	queue.PreserveRunAsGroup = false
 
-	// Checked AFTER preserve substitution, on the resolved values, so a PUT
+	// Checked after preserve substitution, on the resolved values, so a PUT
 	// that clears run_as_user while a non-empty run_as_group is preserved (or
 	// vice versa) is rejected exactly like setting both explicitly — mirrors
-	// the SQLite implementation's RETURNING-then-rollback check. Rejected
+	// the SQL implementation's RETURNING-then-rollback check. Rejected
 	// before s.queues is mutated, so an invalid update has no effect.
 	if !store.RunAsComboValid(queue.RunAsUser, queue.RunAsGroup) {
 		return store.Queue{}, store.ErrRunAsGroupWithoutUser

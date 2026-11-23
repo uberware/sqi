@@ -5,8 +5,8 @@ package expr
 import "testing"
 
 // TestCoerceDestinationOrder pins RFC 0005's "Implicit Type Coercion" as
-// restated by openjd-specifications#175: coercion asks SATISFACTION first, and
-// only then converts toward the target's DESTINATIONS, in an order fixed by the
+// restated by openjd-specifications#175: coercion asks satisfaction first, and
+// only then converts toward the target's destinations, in an order fixed by the
 // result's type.
 //
 // Every "converts" case below has a target offering more than one candidate of

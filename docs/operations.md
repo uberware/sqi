@@ -319,7 +319,7 @@ file (the fallback is described under
 The server's logs can carry job and environment detail. Each sqi service on a
 host logs to a directory of its own under `C:\ProgramData\sqi\logs`, which only
 SYSTEM, Administrators and that service's account can open, so a service
-installed with `--user` — a worker on the same host, say — cannot read the
+installed with `--user` (a worker on the same host, say) cannot read the
 server's log. `service stop`, `start` and `uninstall` act on any service name
 you give `--name`, like `sc.exe`.
 
@@ -336,26 +336,21 @@ servers cannot share one database (see
 cannot share its ports either. A high-availability group is upgraded as
 [Upgrading a group](#upgrading-a-group) describes.
 
-Workers do not need to stop: they reconnect when the server is back. On a
-current worker, a task status it could not deliver while the server was down
-stays pending and is retried until the broker stores it, so the task does not
-run again. A status the worker drops (it crashed, or its shutdown's status
-flush ran out) is recovered by [reconciliation](#reconciliation), at the cost
-of running that task again. Workers from v0.3.0 and earlier send no attempt
-list and are never reconciled: a task whose report such a worker lost stays `running` until
-that worker goes offline.
+Workers do not need to stop: they reconnect when the server is back. A task
+status a worker could not deliver while the server was down stays pending and
+is retried until the broker stores it, so the task does not run again. A
+status the worker drops (it crashed, or its shutdown's status flush ran out)
+is recovered by [reconciliation](#reconciliation), at the cost of running that
+task again.
 
-Upgrade the server and its workers together. The server discards the
-messages of a worker whose wire protocol does not match its own, registration
-included, logging `scheduler: discarding worker message — wire protocol
-version mismatch`. A worker that relies on mDNS connects only to a server
+Upgrade the server first, then its workers. The wire protocol is version `8`.
+The server discards the messages of a worker whose wire protocol does not
+match its own, registration included, logging `scheduler: discarding worker
+message — wire protocol version mismatch`, and leases it nothing until the
+worker is upgraded. A worker that relies on mDNS connects only to a server
 that advertises its broker in a `nats_url` record, and skips an advertisement
 without one; a worker with an explicit `nats.url` does not use discovery, but
 is still subject to the protocol check.
-
-The wire protocol is version `6`. Upgrade the server first, then its workers;
-until a worker is upgraded the server discards its messages and leases it
-nothing.
 
 After any server start, worker-offline detection waits about 3 minutes (at
 the defaults) before acting, so a worker that died while the server was down
@@ -409,20 +404,16 @@ refuses to start on a malformed duration in the config file, such as
 while the old server still runs, instead of in step 4.
 
 Name the database with `--db` in step 2. The backup is taken by the binary
-you are upgrading from, and the `backup` of v0.3.0 and earlier reads only
-`--db`: it accepts `--config` but ignores it, and otherwise uses
-`$SQI_SQLITE_PATH` (which `sudo` drops) or `sqi.db` in the current directory.
-Without `--db`, in a directory with no database it creates an empty `sqi.db`
-and fails (`open source database: ... no such table: farms`); in a directory
-that holds some other sqi database, it backs that one up without complaint. So
-check the result: the backup should be close to the live file's size (`VACUUM
-INTO` compacts it, so it can be smaller), and any sqi database, even one with
-no jobs, is several hundred kilobytes.
-The new binary's `sqi-server migrate status --db <backup>` checks it without
-changing it: on SQLite, `migrate status` only reads the database. Do not run
-the *old* binary's `migrate status` on it: in v0.3.0 and earlier it opens the
-file read-write and rewrites it. On PostgreSQL the old binary already supports
-PostgreSQL, and its `backup` reads `--config` and `--dsn`, so
+you are upgrading from, and an older release's `backup` may read only `--db`,
+ignoring `--config` and otherwise using `$SQI_SQLITE_PATH` (which `sudo`
+drops) or `sqi.db` in the current directory, so without `--db` it can back up
+some other sqi database without complaint. Check the result: the backup
+should be close to the live file's size (`VACUUM INTO` compacts it, so it can
+be smaller), and any sqi database, even one with no jobs, is several hundred
+kilobytes. The new binary's `sqi-server migrate status --db <backup>` checks
+it without changing it: on SQLite, `migrate status` only reads the database.
+Run that check with the new binary, not the old one, which may open the file
+read-write. On PostgreSQL, `backup` reads `--config` and `--dsn`, so
 `sqi-server backup --config /etc/sqi/sqi-server.yaml --out
 /backups/sqi/pre-upgrade-<time>.dump` works.
 
@@ -538,18 +529,18 @@ binary: nats-server does not promise that an older release reads the file
 store a newer one wrote. `restore` moves `nats.embedded.data_dir` aside, so
 the older server starts with an empty one.
 
-### Rolling back to v0.3.0 or earlier
+### Rolling back to a release without `restore`
 
-v0.3.0 and earlier have neither the `restore` command nor the schema version
-check: they start on a newer database without complaint and run against a
-schema they do not know. They support only SQLite and only the embedded
+A release without the `restore` command also lacks the schema version check:
+it starts on a newer database without complaint and runs against a schema it
+does not know. Such a release supports only SQLite and only the embedded
 broker, so put the pre-upgrade backup in place by hand, with the server
 stopped. This procedure is not executed by a test.
 
-Their configuration file is the one they had: v0.3.0 reads the embedded
-broker's `addr`, `data_dir`, `max_store_mb` and `tls` directly under `nats`
-and ignores `nats.embedded`, so put back the file you upgraded from, or the
-older release silently runs on its defaults.
+Put back the configuration file you upgraded from as well. Such a release
+reads the embedded broker's `addr`, `data_dir`, `max_store_mb` and `tls`
+directly under `nats` and ignores `nats.embedded`, so with the newer file it
+runs on its defaults without a warning.
 
 ```sh
 sudo systemctl stop sqi-server
@@ -566,10 +557,10 @@ sudo install -m 0755 /usr/local/bin/sqi-server.old /usr/local/bin/sqi-server
 
 Then stop every worker before you start the old server. Without `restore`
 nothing closes the attempts the backup recorded as open (tasks assigned or
-running), and v0.3.0 has no [reconciliation](#reconciliation): a task whose
-worker stays online stays `running`. With the workers stopped, start the server and wait until the web
-UI or `GET /api/v1/workers` shows them offline (about
-`scheduler.heartbeat_timeout`, 30 s by default); taking them offline returns
+running), and such a release has no [reconciliation](#reconciliation): a task
+whose worker stays online stays `running`. With the workers stopped, start the
+server and wait until the web UI or `GET /api/v1/workers` shows them offline
+(about `scheduler.heartbeat_timeout`, 30 s by default); taking them offline returns
 their tasks to `ready`. Then start the workers again.
 
 ---
@@ -605,8 +596,8 @@ The store is chosen as described under
 `--db` a SQLite file, and otherwise the configured driver decides. For SQLite
 the path then resolves through the same config layer the server uses (the root
 `-c/--config` file and `SQI_STORE_SQLITE_PATH`, i.e. `store.sqlite_path`),
-falling back to the legacy `SQI_SQLITE_PATH` environment variable and then to
-`sqi.db` in the working directory.
+falling back to the deprecated `SQI_SQLITE_PATH` environment variable and then
+to `sqi.db` in the working directory.
 
 The file given to `--out` must not exist: use a timestamped name, as above.
 The backup holds password, API-key and session-token hashes, so the command
@@ -672,7 +663,7 @@ sqi-server backup \
   && find /backups/sqi -name "*.db" -mtime +30 -delete
 ```
 
-This keeps 30 days of daily backups and rotates older files automatically.
+This keeps 30 days of daily backups and deletes older ones.
 
 ### What a backup leaves out
 
@@ -772,7 +763,7 @@ access granted to its account
 `restore` prints what it did:
 
 ```
-restored a schema-39 backup; schema is now 39
+restored a schema-48 backup; schema is now 48
 previous database file moved to /var/lib/sqi-server/sqi.db.pre-restore-20261013T143216Z
 fenced 1 attempt(s): their tasks are ready again
 NATS data directory moved to /var/lib/sqi-server/nats.pre-restore-20261013T143216Z
@@ -820,7 +811,7 @@ sudo systemctl start sqi-server
 ```
 
 ```
-restored a schema-39 backup; schema is now 39
+restored a schema-48 backup; schema is now 48
 fenced 0 attempt(s): their tasks are ready again
 NATS data directory moved to /var/lib/sqi-server/nats.pre-restore-20261013T143307Z
 ```
@@ -886,7 +877,7 @@ sudo systemctl start sqi-server
 ```
 
 ```
-restored a schema-39 backup; schema is now 39
+restored a schema-48 backup; schema is now 48
 previous database file moved to /var/lib/sqi-server/sqi.db.pre-restore-20261013T143216Z
 fenced 1 attempt(s): their tasks are ready again
 purged sqi's JetStream state on the external broker: its streams are empty and the server's durable consumers deleted
@@ -1126,9 +1117,8 @@ and no task reclaimed means workers are missing cancels.
   broken and logs a Warn, `scheduler: worker heartbeat lists more attempts
   than a worker can hold`. The worker stays online, but its tasks are not
   reconciled until it sends a shorter list.
-- **Workers from v0.3.0 and earlier are never reconciled.** They send no
-  attempt list, and are covered only by the offline sweep and by `restore`'s
-  fence. A current worker holding nothing sends an empty list, which counts.
+- **A worker holding nothing sends an empty list**, which counts as a
+  heartbeat that lists none of its attempts.
 
 Executed by `TestRestore_MixedAgeNATSDir` (a database restored by hand beside a
 newer NATS directory is recovered by reconciliation, and a replayed older one
@@ -1352,10 +1342,9 @@ docker compose -f deploy/docker-compose.postgres.yml up -d --build
 The password is required. It sets the database role's password and reaches
 the server as `PGPASSWORD`, so the DSN in the file carries none. The server
 creates the schema on first start. `--build` builds the images from your
-checkout, because no published release includes PostgreSQL support (the
-latest is `v0.3.0`); a release that includes it can be pinned by tag in the
-file instead. The file's header has the commands to back the database up
-from inside its container and to restore it with `sqi-server restore` (see
+checkout; to run a published release instead, pin its tag on the two sqi
+services in the file and drop `--build`. The file's header has the commands
+to back the database up from inside its container and to restore it with `sqi-server restore` (see
 [Restoring in Docker Compose](#restoring-in-docker-compose)). The rest of this
 section covers an external PostgreSQL server you run yourself.
 
@@ -1493,12 +1482,18 @@ PostgreSQL.
 
    ```
    audit_log              0 rows
+   broker_state           1 rows
    compute_locations      0 rows
    farms                  1 rows
+   capacity_groups        0 rows
+   capacity_group_state   0 rows
    products               0 rows
    queues                 1 rows
    jobs                   1 rows
    job_dependencies       0 rows
+   server_epoch           1 rows
+   server_lease           1 rows
+   server_members         0 rows
    steps                  1 rows
    storage_locations      0 rows
    tasks                  8 rows
@@ -1512,7 +1507,7 @@ PostgreSQL.
    worker_credentials     0 rows
    worker_join_tokens     0 rows
    workers                1 rows
-   copied and verified 30 rows in 145ms; set store.driver: postgres and start the server
+   copied and verified 33 rows in 145ms; set store.driver: postgres and start the server
    ```
 
 5. Start the server. `/readyz` now reports the store's check as `postgres`.
@@ -1901,7 +1896,7 @@ touched by a failover: the workers keep running them, and their reports wait
 in the broker until the new leader reads them.
 
 High availability is off by default. A server with no `ha` block, or with
-`ha.enabled: false`, runs exactly as a single server does.
+`ha.enabled: false`, runs as a single server does.
 
 ### Prerequisites
 
@@ -1935,7 +1930,7 @@ High availability is off by default. A server with no `ha` block, or with
   `openjd.expr_submission_deadline`, say), and replaying those repeats the
   most expensive requests. Retrying a connection that could not be made is
   safe; retrying any other failure is safe only for `GET` and `HEAD`. The
-  reference HAProxy configuration does exactly that.
+  reference HAProxy configuration does that.
 
 `deploy/docker-compose.ha.yml` is a complete example: PostgreSQL, a
 three-node NATS cluster, two servers, HAProxy
@@ -2161,7 +2156,7 @@ whether or not the user-facing `auth.enabled` is on.
 > do (see [`store.driver`](configuration.md#storedriver): `--dsn` or
 > `store.driver: postgres` selects PostgreSQL). For SQLite the path is an
 > explicit `--db`, then `store.sqlite_path` (the root
-> `-c/--config` file and `SQI_STORE_SQLITE_PATH`), then the legacy
+> `-c/--config` file and `SQI_STORE_SQLITE_PATH`), then the deprecated
 > `SQI_SQLITE_PATH` environment variable, then `sqi.db`. Unlike `migrate`,
 > they never create or migrate the database: pointing one at a path with no
 > database there is an error naming the resolved path. Run `sqi-server migrate up` against the target database
@@ -2339,13 +2334,17 @@ described in [Writing to a file](#writing-to-a-file).
 |---|---|---|---|
 | `sqi_http_requests_total` | counter | `method`, `path`, `status_code` | HTTP requests by method, path, and status |
 | `sqi_http_request_duration_seconds` | histogram | `method`, `path` | HTTP request latency |
-| `sqi_scheduler_queue_depth` | gauge | `queue` | Leasable ready tasks waiting for assignment, by queue ID (excludes tasks in retry backoff and tasks under paused/parked jobs); falls back to `0` when a queue drains |
+| `sqi_scheduler_queue_depth` | gauge | `queue` | Leasable ready tasks waiting for assignment, by queue ID (excludes tasks in retry backoff, tasks on a paused queue and tasks under a paused, parked or terminal job); falls back to `0` when a queue drains |
 | `sqi_scheduler_tasks_total` | counter | `queue`, `status` | Tasks processed by final status |
 | `sqi_scheduler_assignment_duration_seconds` | histogram | `result` | Wall-clock time for a single task-assignment attempt, by `result` (`assigned`, `deferred`, `error`) — not queue residency |
 | `sqi_scheduler_idle_workers` | gauge | `farm` | Workers online but not assigned a task |
 | `sqi_capacity_demand_cores` | gauge | `group` | Cores of ready work a [capacity group](capacity.md) could run that no idle worker absorbed; one series per enabled group |
 | `sqi_capacity_desired_machines` | gauge | `group` | Total machines a capacity group should have, counting those it has |
 | `sqi_capacity_members` | gauge | `group`, `state` | A capacity group's members, `state` `online` or `offline` |
+| `sqi_capacity_machines` | gauge | `group`, `power_state` | An acting capacity group's members by power state (`awake`, `waking`, `retiring`, `asleep`, `wake_failed`) |
+| `sqi_capacity_actions_total` | counter | `group`, `action`, `result` | Capacity provider actions, by action and result (see [capacity metrics](capacity.md)) |
+| `sqi_capacity_boot_timeouts_total` | counter | `group` | Woken machines that did not register within their group's boot timeout |
+| `sqi_capacity_group_degraded` | gauge | `group` | `1` while an acting capacity group is degraded, `0` otherwise |
 | `sqi_workers_total` | gauge | `status` | Registered workers by status |
 | `sqi_nats_published_total` | counter | `subject` | NATS messages published by subject |
 | `sqi_nats_consumed_total` | counter | `subject` | NATS messages consumed by subject |
@@ -2483,8 +2482,7 @@ each fault on a default configuration (`scheduler.heartbeat_timeout` 30 s,
 `scheduler.reconcile_grace` 2 minutes), on Linux with SQLite, Linux with
 PostgreSQL 18 and Windows with SQLite, and for the disk faults on Linux in a
 container with size-limited volumes. It describes the scenarios' results, not
-a guarantee, and leaves out what they do not cover. A defect is named by its
-row in [Known server defects](load-testing.md#known-server-defects).
+a guarantee, and leaves out what they do not cover.
 
 ### A database that stops answering
 
@@ -2615,12 +2613,11 @@ the volume the two real workers keep their session directories on, for 60
 seconds, in a container with a 64 MB volume.
 
 - With no free space or inodes at task setup, every attempt that fails in the
-  window names "no space left on device", at most 12 fail, and both workers
-  run tasks to success after the space returns. The check has no minimum; its
-  summary records how many attempts failed in each fault window.
+  window names "no space left on device", and both workers run tasks to
+  success after the space returns.
 - With 1 MiB left while each task writes 8 MiB, the render fails partway with
-  the process's non-zero exit, about 6 to 9 attempts in the window, under the
-  bound of 16. Both workers succeed work after the space returns.
+  the process's non-zero exit. Both workers run tasks to success after the
+  space returns.
 - No completed work is redone in either scenario.
 
 ### Revoking a worker's credential
@@ -2713,5 +2710,11 @@ is not a working config file until they are put back.
 
 ```sh
 sqi-server version
-# sqi-server v0.3.0 (commit abc1234, built 2026-07-09, go1.26.3)
+```
+
+```text
+sqi-server v0.4.0
+  commit:  abc1234
+  built:   2026-11-24T12:00:00Z
+  go:      go1.26.3
 ```

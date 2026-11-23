@@ -1,18 +1,17 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # Cross-Platform Validation Guide
 
-This guide is the manual procedure for confirming `sqi` works on **Linux, macOS,
-and Windows**. It covers what CI cannot fully prove on its own:
+This guide is the manual procedure for confirming `sqi` works on Linux, macOS,
+and Windows. It covers what CI does not prove on its own:
 
-- **Cross-platform runtime:** the cross-compiled binaries actually *start and
-  register*, not just compile.
+- **Cross-platform runtime:** the cross-compiled binaries start and register on
+  each platform, beyond compiling.
 - **Cross-browser web UI:** the embedded UI works in Chromium, Firefox, and
   WebKit.
 
-CI on the default Linux runner already exercises the unit suites, the Docker
-smoke test, and (where wired) the Playwright suite. The steps below are what you
-run on a **Linux VM** and a **Windows VM** (and natively on this Mac) to cover
-all three platforms.
+CI on the default Linux runner runs the unit suites, the smoke test and the
+Playwright suite. The steps below are what you run on a Linux VM, a Windows VM
+and a Mac to cover all three platforms.
 
 There are three independent checks, in increasing order of coverage:
 
@@ -22,8 +21,8 @@ There are three independent checks, in increasing order of coverage:
 | B. Playwright E2E | the embedded browser UI submits a job and shows it run live | ~3 min |
 | C. Manual UI walk-through | a human confirms the UI in each browser | ~5 min |
 
-Run **A** on every platform. Run **B** on every platform you can install browsers
-on. **C** is the cross-browser sign-off.
+Run A on every platform. Run B on every platform you can install browsers on.
+C is the cross-browser sign-off.
 
 ---
 
@@ -36,9 +35,9 @@ a POSIX shell for the smoke script.
 | --- | --- | --- |
 | **Linux** | `go`, `node`, `npm`, `make`, `curl`, `jq` (or `python3`) | native `bash` |
 | **macOS** | same (`brew install go node jq`) | native `bash`/`zsh` |
-| **Windows** | `go`, `node`, `npm`; `make` optional | **Git Bash** or **WSL2** (the smoke script is bash; `make` may be absent — see §1.3) |
+| **Windows** | `go`, `node`, `npm`; `make` optional | Git Bash or WSL2 (the smoke script is bash; `make` may be absent; see §A.2) |
 
-> **Spinning up VMs on this Mac:** UTM (Apple Silicon) or VirtualBox/VMware
+> **Running VMs on a Mac:** UTM (Apple Silicon) or VirtualBox/VMware
 > (Intel) both work. Use an `arm64` Linux/Windows image on Apple Silicon and an
 > `amd64` image on Intel so you exercise the architecture your Mac builds for.
 > Share the repo into the VM (shared folder or `git clone`) and run the steps
@@ -48,13 +47,14 @@ a POSIX shell for the smoke script.
 
 ## A. Binary runtime smoke (run on all three platforms)
 
-This is the fastest, highest-signal check. It builds the binaries, boots a
-server + worker, submits an `echo` job, and asserts the output is retrievable
-over **both REST and WebSocket**.
+This is the fastest check. It builds the binaries, boots a server + worker,
+submits an `echo` job, and asserts the output is retrievable over both REST and
+WebSocket.
 
-That whole flow runs **three times**, back to back: once on the default path
-(broker auth off, no TLS), once with broker authentication on and the worker
-enrolling via a join token, and once with TLS on end to end (HTTPS REST, `wss://`
+That flow runs three times, back to back: once on the default path (broker auth
+off, no TLS, plus a SQLite backup and restore round trip), once with broker
+authentication on, the worker enrolling via a join token and then having its
+credential revoked, and once with TLS on end to end (HTTPS REST, `wss://`
 gateway, TLS broker) against certificates from `sqi-server tls init`. The plain
 run always goes first, so a failure before the `MODE 2/3` banner means the
 default path failed, the most serious of the three.
@@ -73,7 +73,8 @@ make smoke
 ```
 
 `make smoke` builds `bin/sqi-server` + `bin/sqi-worker` and runs
-`scripts/smoke.sh` against them. Expected tail:
+`scripts/smoke.sh` against them. Expected tail (with the PostgreSQL mode, the
+last block is `mode=postgres` and the final line reads `IN ALL FOUR MODES`):
 
 ```
 [smoke] SMOKE TEST PASSED (mode=tls)
@@ -85,7 +86,7 @@ make smoke
 [smoke] ==================================================================
 ```
 
-Each mode prints its own `SMOKE TEST PASSED (mode=…)` block — `noauth`,
+Each mode prints its own `SMOKE TEST PASSED (mode=…)` block: `noauth`,
 `brokerauth`, then `tls`. Only the final `IN ALL THREE MODES` line means the
 whole run passed.
 
@@ -96,17 +97,18 @@ rather than on the job completing.
 Exit code `0` = pass. On failure the script prints the server log tail and exits
 non-zero.
 
-The WebSocket leg needs a `websockets`-capable Python. The script auto-selects,
-in order: `$SQI_SMOKE_PYTHON` → `clients/python/.venv/bin/python` → system
-`python3`. To guarantee it, create the client venv first:
+The WebSocket leg needs a `websockets`-capable Python. The script selects, in
+order: `$SQI_SMOKE_PYTHON` → `clients/python/.venv/bin/python` → system
+`python3`. To make sure one is found, create the client venv first:
 
 ```sh
 make py-install            # creates clients/python/.venv with websockets
 make smoke
 ```
 
-If no `websockets`-capable interpreter is found, the WS assertion logs a SKIP
-(REST stays a hard pass) — so on a bare VM, install the venv to exercise WS.
+If no `websockets`-capable interpreter is found, the WS assertion is reported as
+`SKIPPED` and the REST assertion still has to pass, so on a bare VM install the
+venv to exercise WS.
 
 ### A.2 Windows
 
@@ -124,36 +126,35 @@ SQI_SERVER_BIN=bin/sqi-server.exe SQI_WORKER_BIN=bin/sqi-worker.exe \
   bash scripts/smoke.sh
 ```
 
-> **Windows note:** this exercises the worker's Windows process-termination path
-> (`taskkill`/`TerminateProcess`) when the job's `echo` process is reaped — the
-> code path that only has unit coverage elsewhere. A clean
-> `[smoke] SMOKE TEST PASSED IN ALL THREE MODES` confirms it works end to end on
-> Windows.
+> **Windows:** this exercises the worker's Windows process-termination path
+> when the job's `echo` process is reaped, which has no other end-to-end
+> coverage.
 >
-> The TLS mode additionally exercises Windows' TLS stack: curl on Windows links
-> **Schannel**, which insists on checking certificate revocation, and the CA
-> `sqi-server tls init` mints publishes no CRL or OCSP endpoint. The script
-> detects a Schannel-backed curl and adds `--ssl-revoke-best-effort` itself, so
-> nothing extra is needed here — but if you verify a TLS server by hand, see the
-> Windows note under [TLS → Verifying](tls.md#verifying).
+> The TLS mode also exercises Windows' TLS stack: curl on Windows links
+> Schannel, which checks certificate revocation, and the CA
+> `sqi-server tls init` creates publishes no CRL or OCSP endpoint. The script
+> detects a Schannel-backed curl and adds `--ssl-revoke-best-effort` itself; if
+> you verify a TLS server by hand, see the Windows note under
+> [TLS → Verifying](tls.md#verifying).
 
 ### A.3 What "pass" means
 
-Each of the three modes asserts all of the following, so a full pass means every
-one of them held on the default path, with broker auth on, and with TLS on:
+Each mode asserts all of the following, so a full pass means each held on the
+default path, with broker auth on, and with TLS on:
 
 - `GET /readyz` returned ready (the store, `sqlite` or `postgres`, and NATS
   up).
 - The worker appears online in `GET /api/v1/workers`.
 - The job reached `completed`.
-- The sentinel string is present in `GET /api/v1/tasks/{id}/logs` (REST) **and**
+- The sentinel string is present in `GET /api/v1/tasks/{id}/logs` (REST) and
   arrived live over `/api/v1/ws` (WebSocket).
+- The EXPR job's worker-resolved text is in its task logs.
 
 ---
 
 ## B. Playwright E2E (cross-browser UI, run per platform)
 
-This drives the **real embedded production UI** (the React bundle compiled into
+This drives the embedded production UI (the React bundle compiled into
 `sqi-server`) in Chromium, Firefox, and WebKit. It boots its own server + worker,
 seeds a farm/queue, submits a job through the `/submit` form, watches the job
 list row go to `Completed` live over WebSocket, and asserts the log output is
@@ -186,9 +187,9 @@ ephemeral loopback port, and tears it down afterward.
 ### B.2 Windows — external-server mode (recommended)
 
 The Playwright global setup tears the stack down with a POSIX process-group kill,
-which **does not work on Windows**. On Windows, start the stack yourself and
-point Playwright at it via `SQI_BASE_URL`; in that mode global setup *attaches*
-to your running server (and seeds a farm/queue only if none exist) and does not
+which does not work on Windows. On Windows, start the stack yourself and point
+Playwright at it via `SQI_BASE_URL`; in that mode global setup attaches to your
+running server (and seeds a farm/queue only if none exist) and does not
 manage process lifecycle.
 
 ```sh
@@ -196,7 +197,7 @@ manage process lifecycle.
 bin/sqi-server.exe serve
 
 # terminal 2: start a worker (auto-discovers the server via mDNS, or set SQI_WORKER_NATS_URL)
-bin/sqi-worker.exe start   # no allow-root needed on Windows — the root check is POSIX-only
+bin/sqi-worker.exe start   # no allow-root needed on Windows; the root check is POSIX-only
 
 # terminal 3: run Playwright against the running server
 cd web
@@ -205,10 +206,10 @@ npx playwright install
 SQI_BASE_URL=http://localhost:8080 npx playwright test
 ```
 
-> Chromium and Firefox install cleanly on Windows. WebKit on Windows via
-> Playwright is supported but heavier; if it is problematic in your VM, run
-> `--project=chromium --project=firefox` on Windows and rely on the Mac for the
-> WebKit engine (all three pass on macOS).
+> Chromium and Firefox install on Windows without extra steps. Playwright's
+> WebKit on Windows is heavier; if it fails in your VM, run
+> `--project=chromium --project=firefox` on Windows and cover WebKit on the
+> Mac.
 
 ### B.3 Linux browser dependencies
 
@@ -223,8 +224,8 @@ npx playwright install-deps
 
 ## C. Manual cross-browser walk-through (sign-off)
 
-For the human cross-browser sign-off, in **each** of
-Chrome/Edge, Firefox, and Safari (Safari on macOS only):
+For the cross-browser sign-off, in each of Chrome/Edge, Firefox, and Safari
+(Safari on macOS only):
 
 1. Start the stack: `make run-server` (terminal 1) and
    `./bin/sqi-worker start` (terminal 2, after `make build-worker`). Open `http://localhost:8080/`.
@@ -236,8 +237,8 @@ Chrome/Edge, Firefox, and Safari (Safari on macOS only):
    without a manual refresh.
 5. **Log viewer**: open the task's logs; the echoed output is visible, ANSI
    colors render, and copy-to-clipboard works.
-6. Open the browser dev console and confirm **no uncaught errors** during the
-   run (WebSocket reconnect, `ansi-to-html`, and the Clipboard API are the
+6. Open the browser dev console and confirm there are no uncaught errors during
+   the run (WebSocket reconnect, `ansi-to-html`, and the Clipboard API are the
    browser-variance hotspots).
 
 ---
@@ -248,18 +249,17 @@ Chrome/Edge, Firefox, and Safari (Safari on macOS only):
   any extensionless non-asset path (`/jobs`, `/submit`, `/workers/{id}`, …), so
   loading or refreshing a sub-route URL directly hydrates the app instead of
   returning a 404. Asset-looking misses (a path with a file extension, e.g. a
-  stale `/assets/old.js`) still 404. In a binary built before 2026-06-13, deep
-  links may 404 — always start at `/` there.
+  stale `/assets/old.js`) return 404.
 - **Windows process teardown.** Playwright self-boot teardown uses a negative-PID
   signal (POSIX only). Use external-server mode (`SQI_BASE_URL`) on Windows
   (§B.2).
 - **macOS AppleDouble files.** On non-APFS volumes macOS writes `._*` sidecars;
-  the tooling already filters them (Playwright `testIgnore`, Vitest exclude, the
-  embed filter). Harmless on Linux/Windows.
+  the tooling filters them (Playwright `testIgnore`, Vitest exclude, the embed
+  filter). Harmless on Linux/Windows.
 - **Running as root/Administrator.** The worker refuses to run as root on
   Linux/macOS unless `worker.allow_root: true` is set in the worker config or
-  `SQI_WORKER_ALLOW_ROOT=true` is exported. There is no `--allow-root` flag —
-  relevant when validating in a container or as root in a VM.
+  `SQI_WORKER_ALLOW_ROOT=true` is exported; there is no `--allow-root` flag.
+  This matters when validating in a container or as root in a VM.
 
 ---
 
@@ -273,5 +273,5 @@ For each platform you validate, record:
 | Linux (arm64 or amd64) | | | | |
 | Windows (amd64) | | chromium/firefox | | |
 
-A platform is "validated" when **A passes** and **B passes for at least one
-engine** (plus the manual **C** sign-off for the cross-browser claim).
+A platform is validated when A passes and B passes for at least one engine,
+plus the manual C sign-off for the cross-browser claim.

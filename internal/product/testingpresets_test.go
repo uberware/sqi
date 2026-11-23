@@ -14,9 +14,9 @@ import (
 
 // The test-job presets (presets/testing/) are authored in this repo and
 // published to the preset library under the "testing" namespace. This test
-// pins them to the real schema. It is intentionally separate from
-// TestDCCReferencePresets, which enforces render-only rules (Rendering
-// category, TASK_CHUNKING) that do not apply to test jobs.
+// pins them to the real schema. It is separate from TestSQIReferencePresets,
+// whose per-preset expectations (category, chunking) do not apply to test
+// jobs.
 func TestTestingPresets(t *testing.T) {
 	sharedParams := []string{
 		"FrameRange", "SleepSeconds", "EmitProgress",
@@ -66,10 +66,9 @@ func TestTestingPresets(t *testing.T) {
 			}
 
 			// Every task's onRun action must carry the per-task timeout
-			// guardrail (the preset descriptions promise a 120 s cap that
-			// Hang Frames exercise). A wrong or misspelled OpenJD key
-			// (e.g. timeoutSeconds instead of timeout) parses to 0 and
-			// silently drops the guardrail, so assert the parsed value.
+			// guardrail (the 120 s cap that Hang Frames exercise). A
+			// misspelled OpenJD key (e.g. timeoutSeconds instead of timeout)
+			// parses to 0 and drops the guardrail, so assert the parsed value.
 			pf := openjd.FormatYAML
 			tmpl, err := openjd.Parse([]byte(p.Template), pf)
 			if err != nil {

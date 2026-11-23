@@ -6,7 +6,9 @@
 //
 // Credential backends (sessions, API keys) live in the session and apikey
 // subpackages and implement this same interface; Chain composes them. LDAP and
-// OIDC are planned and will slot in the same way.
+// OIDC (the ldap and oidc subpackages) are login-time verifiers, not
+// Authenticators: a successful login mints the same session a local password
+// login does.
 package auth
 
 import "context"

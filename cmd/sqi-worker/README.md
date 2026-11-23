@@ -154,7 +154,7 @@ curl -s http://localhost:8080/api/v1/workers | jq '.[].name'
 | `sqi-worker service install\|uninstall\|start\|stop\|status` | Windows only: install, uninstall, start, stop and inspect the Windows service (elevated shell) — see [`docs/worker-deployment.md`](../../docs/worker-deployment.md#windows--windows-service) |
 | `sqi-worker version` | Print version, commit, build date, and Go version |
 
-Three flags are available on **every** subcommand: `--config`/`-c` (config file
+Three flags are available on every subcommand: `--config`/`-c` (config file
 path), `--log-level`, and `--log-format`. `--dry-run` and
 `--nats-insecure-skip-verify` belong to `start` only.
 

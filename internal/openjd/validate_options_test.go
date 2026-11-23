@@ -64,7 +64,7 @@ steps:
 	}
 }
 
-// TestValidateWithOptions_EnforceLimitsToggle proves the gate actually changes
+// TestValidateWithOptions_EnforceLimitsToggle proves the gate changes
 // behavior: a limit-violating template fails the limit check only when
 // EnforceLimits is true; the limit error must not appear when it is false.
 func TestValidateWithOptions_EnforceLimitsToggle(t *testing.T) {

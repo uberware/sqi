@@ -79,11 +79,11 @@ func TestParseTestCase(t *testing.T) {
 // TestIsFixtureFile guards the fixture walker against non-fixture files that
 // happen to share the .yaml suffix.
 //
-// The motivating case is real: on a macOS checkout backed by exFAT or a network
-// share, the OS writes AppleDouble sidecars named "._<original>" beside every
-// file. Those end in ".yaml", so a suffix-only filter collects them as fixtures,
-// they fail to parse, and the run reports spurious regressions that exist
-// nowhere in the suite. No legitimate fixture name begins with a dot.
+// On a macOS checkout backed by exFAT or a network share, the OS writes
+// AppleDouble sidecars named "._<original>" beside every file. Those end in
+// ".yaml", so a suffix-only filter would collect them as fixtures, they would
+// fail to parse, and the run would report regressions that are not in the
+// suite. No fixture name begins with a dot.
 func TestIsFixtureFile(t *testing.T) {
 	tests := []struct {
 		name string

@@ -292,7 +292,7 @@ func structKeys(t reflect.Type) (keys []string, anyKey bool) {
 }
 
 // Unmarshalers returns every type reachable from t, through struct fields,
-// pointers, slices, arrays and map values, that implements yaml.Unmarshaler,
+// pointers, slices, arrays and map keys and values, that implements yaml.Unmarshaler,
 // each once, in the order first reached. A test of a config type calls it so a
 // new custom UnmarshalYAML cannot silently bypass the strict decode: each one
 // found must be reviewed (a mapping must go through [DecodeNode]) and listed.

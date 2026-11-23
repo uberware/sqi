@@ -29,13 +29,13 @@ var workerFlags struct {
 
 // workerCmd groups worker broker-credential and enrollment subcommands.
 //
-// These commands open the state store (SQLite or PostgreSQL) directly,
-// exactly like backup and migrate, and never start an HTTP server or NATS
-// broker. That is deliberate: broker authentication (nats.auth.enabled) is
-// independent of the user-facing auth.enabled gate, and the REST enrollment
-// endpoints only exist when auth.enabled is on (otherwise there would be no
-// RBAC in front of them). This CLI is what makes credential minting available
-// regardless — an operator with a shell on the server host is already trusted.
+// These commands open the state store (SQLite or PostgreSQL) directly, like
+// backup and migrate, and never start an HTTP server or NATS broker. Broker
+// authentication (nats.auth.enabled) is independent of the user-facing
+// auth.enabled gate, and the REST enrollment endpoints exist only when
+// auth.enabled is on (otherwise there would be no RBAC in front of them), so
+// this CLI is what makes credential minting available either way: an operator
+// with a shell on the server host is already trusted.
 var workerCmd = &cobra.Command{
 	Use:   "worker",
 	Short: "Manage worker broker credentials and enrollment",
@@ -52,8 +52,8 @@ root -c/--config file and SQI_STORE_DRIVER) decides. For PostgreSQL the
 connection string is store.postgres.dsn (SQI_STORE_POSTGRES_DSN). For SQLite
 the path is store.sqlite_path (SQI_STORE_SQLITE_PATH), falling back to the
 legacy SQI_SQLITE_PATH environment variable and then to "sqi.db". The
-database must already exist and carry the schema — these subcommands never
-create or migrate one; run "sqi-server migrate up" first.
+database must already exist and carry the schema: these subcommands never
+create or migrate one, so run "sqi-server migrate up" first.
 
 Subcommands:
   token issue   Issue a one-time join token for self-service enrollment.
@@ -81,7 +81,7 @@ var workerTokenIssueCmd = &cobra.Command{
 broker credential (POST /api/v1/workers/enroll).
 
 The raw token is printed to stdout exactly once, immediately after creation.
-Only its SHA-256 hash is stored in the database — the raw value cannot be
+Only its SHA-256 hash is stored in the database, so the raw value cannot be
 recovered or displayed again. If it is lost before the worker uses it, issue
 a new one; the old one still works until it expires or is used.`,
 	RunE: runWorkerTokenIssue,
@@ -161,11 +161,11 @@ func init() {
 	workerCmd.AddCommand(workerTokenCmd, workerEnrollCmd, workerRevokeCmd, workerListCmd)
 }
 
-// openWorkerStore resolves the store (see [resolveStoreTarget]) — a SQLite
-// file or a PostgreSQL database — and opens it without applying migrations.
-// These commands write rows into an existing schema; they never create or
-// migrate the database — a worker subcommand pointed at the wrong file or
-// database must fail with an actionable error, not conjure an empty one. Run
+// openWorkerStore resolves the store (a SQLite file or a PostgreSQL database;
+// see [resolveStoreTarget]) and opens it without applying migrations. These
+// commands write rows into an existing schema and never create or migrate the
+// database: a worker subcommand pointed at the wrong file or database must
+// fail with an actionable error, not create an empty one. Run
 // "sqi-server migrate up" first against a fresh database.
 func openWorkerStore(ctx context.Context, cmd *cobra.Command) (backend.Backend, error) {
 	tgt, err := resolveStoreTarget(cmd, workerFlags.DBPath, workerFlags.DSN)
@@ -221,7 +221,7 @@ func runWorkerEnroll(cmd *cobra.Command, _ []string) error {
 	}
 	// The recorded worker ID is what this credential's broker grants are
 	// built from (brokerauth.WorkerPermissions), and those grants are NATS
-	// subject PATTERNS — so "*" would record a credential allowed to publish
+	// subject patterns, so "*" would record a credential allowed to publish
 	// concrete subjects belonging to any worker on the farm, and ">" would
 	// put a malformed subject into the broker's key set. MarkFlagRequired
 	// does not cover this: --worker-id "" counts as supplied.
@@ -279,8 +279,8 @@ func runWorkerRevoke(cmd *cobra.Command, args []string) error {
 		if errors.Is(err, store.ErrNotFound) {
 			// RevokeWorkerCredential's SQL matches only an active credential
 			// (revoked_at IS NULL), so this same error covers "never
-			// enrolled" and "already revoked" — say so rather than claiming
-			// the worker does not exist, which may be false.
+			// enrolled" and "already revoked". Say so rather than claim the
+			// worker does not exist, which may be false.
 			return fmt.Errorf(
 				"no active credential for worker %q — it may never have been enrolled, or its credential may already be revoked",
 				workerID,

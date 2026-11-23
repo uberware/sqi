@@ -9,22 +9,15 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// Metadata length limits, in RUNES rather than bytes: 500 bytes of CJK is ~166
-// characters, and a Japanese-language description must not be silently
-// third-class.
+// Metadata length limits, counted in runes rather than bytes so that text in a
+// multi-byte script gets the same room as ASCII (500 bytes of CJK is about 166
+// characters).
 //
-// The two interesting caps differ in kind. MaxDescriptionLen is a design
-// constraint -- description is rendered into an unclamped picker card and a
-// native Blender EnumProperty tooltip, and 500 is 1.5x the longest shipped
-// description (329). It REJECTS 940-, 629- and 617-rune descriptions, which
-// is the test a cap should pass; a 1000 cap would permit all three.
-// MaxReadmeLen is only an abuse guard -- readme is detail-page-only, so nothing
-// downstream breaks; it should not be a novel.
-//
-// The rest have far more headroom than the shipped presets need (their maxima
-// are name 35, title 37, category 11). They exist because capping description
-// while leaving its neighbors unbounded would be incoherent once the helper
-// exists.
+// MaxDescriptionLen is a design limit: the description is rendered into an
+// unclamped picker card and a native Blender EnumProperty tooltip.
+// MaxReadmeLen is an abuse guard; the readme appears only on the detail page.
+// The other limits leave ample room for any real product and keep every
+// metadata field bounded.
 const (
 	MaxNameLen        = 128
 	MaxTitleLen       = 200
@@ -45,14 +38,12 @@ func checkLen(field, value string, maxRunes int) error {
 
 // ValidateMetadata enforces the length limits on a product's metadata fields.
 //
-// It is exported and deliberately called from BOTH doors into product data --
-// ParseDefinition and the REST create/update handler. Those are separate entry
-// points to the same data, and the comment on ValidateOptions records the same
-// trap for the EXPR limits: two doors that must behave alike can drift apart.
+// Both entry points into product data call it, ParseDefinition and the REST
+// create/update handler, so the two enforce the same limits.
 //
-// It checks LENGTH only. The slug pattern stays in validateName on the
-// definition path, because applying it to the REST route would tighten
-// acceptance and strand products already stored under a pattern-invalid name.
+// It checks length only. The slug pattern is checked by validateName on the
+// definition path alone, because applying it to the REST route would reject
+// products already stored under a name that does not match it.
 func ValidateMetadata(p store.Product) error {
 	checks := []struct {
 		field string

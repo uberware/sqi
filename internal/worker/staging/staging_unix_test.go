@@ -12,19 +12,17 @@ import (
 )
 
 // These two tests are the POSIX counterpart of the branch-precision tests in
-// staging_windows_test.go, and they exist for exactly the same reason.
+// staging_windows_test.go.
 //
-// openStageOutSource refuses a symlink in two unrelated places: the ADVISORY
+// openStageOutSource refuses a symlink in two places: the advisory
 // root.Lstat, when the symlink is at rel's final component, and the
 // kernel-enforced root.OpenFile, when the lookup leaves the root. Both
-// operator-facing messages contain the word "symlink" — they have to, since
-// both really are about one — so the package's existing
-// strings.Contains(err, "symlink") assertions (staging_boundary_test.go, in
-// the external test package, where these unexported sentinels are not
-// visible) cannot tell which branch answered. Deleting the advisory block
-// would leave them green, because a symlink pointing OUT of scratch then
-// gets refused by the open instead, with a message that also says
-// "symlink". Asserting on the sentinel is what makes each branch tested.
+// operator-facing messages contain the word "symlink", so the
+// strings.Contains(err, "symlink") assertions in staging_boundary_test.go (the
+// external test package, where these unexported sentinels are not visible)
+// cannot tell which branch answered: without the advisory block a symlink
+// pointing out of scratch is refused by the open, with a message that also
+// says "symlink". Asserting on the sentinel tests each branch.
 
 // TestStageOut_SymlinkSourceRefusedByAdvisoryLstat pins the advisory branch:
 // root.Lstat does not follow the final component, so it sees the symlink

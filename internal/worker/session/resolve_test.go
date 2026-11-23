@@ -55,7 +55,7 @@ func TestEnterEnvironment_ResolvesParamInOnEnter(t *testing.T) {
 }
 
 // TestEnterEnvironment_ResolvesVariableValue verifies that an environment
-// variable VALUE containing {{Param.X}} is resolved before it is placed into
+// variable value containing {{Param.X}} is resolved before it is placed into
 // the onEnter action's process environment.
 func TestEnterEnvironment_ResolvesVariableValue(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -164,7 +164,7 @@ func TestEnterEnvironment_TaskParamInOnEnterFails(t *testing.T) {
 }
 
 // TestEnterEnvironment_TaskParamInVariableFails verifies that an environment
-// variable VALUE referencing Task.Param.* fails the environment cleanly.
+// variable value referencing Task.Param.* fails the environment cleanly.
 func TestEnterEnvironment_TaskParamInVariableFails(t *testing.T) {
 	dataDir := t.TempDir()
 	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
@@ -394,7 +394,7 @@ func TestExitEnvironment_ResolvesParamInOnExit(t *testing.T) {
 
 // TestExitEnvironment_TaskParamInOnExitContinuesTeardown verifies that a
 // {{Task.Param.*}} reference in an onExit command — which cannot resolve in the
-// environment-action scope — does NOT abort teardown of remaining environments.
+// environment-action scope — does not abort teardown of remaining environments.
 // ExitEnvironments must log/record the resolution error and continue, consistent
 // with its "continue on error" semantics.
 func TestExitEnvironment_TaskParamInOnExitContinuesTeardown(t *testing.T) {
@@ -405,7 +405,7 @@ func TestExitEnvironment_TaskParamInOnExitContinuesTeardown(t *testing.T) {
 	dataDir := t.TempDir()
 	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
-	// Entered in order: good, bad.  ExitEnvironments runs in reverse: bad
+	// Entered in order: good, bad. ExitEnvironments runs in reverse: bad
 	// (fails to resolve), good (must still run and write the sentinel file).
 	msg := &protocol.AssignMsg{
 		JobID: "j",

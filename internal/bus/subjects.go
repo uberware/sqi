@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package bus provides the embedded NATS JetStream message broker and the
-// subject/stream definitions used for sqi-server's internal messaging.
+// Package bus provides sqi-server's NATS JetStream broker, embedded or
+// external, and the subject and stream definitions sqi's messaging uses.
 //
 // # Subject naming
 //
@@ -20,14 +20,14 @@
 //	sqi.marker.task             — server → server: ingest marker in SQI_TASK
 //
 // Every worker → server subject carries the publishing worker's ID directly
-// after its class prefix, and so does the one server → worker subject,
-// task.cancel.<worker>, so that a worker may subscribe to its own cancels and
-// no other worker's. That placement is what makes the broker's per-worker
-// publish permissions expressible: NATS permissions are static per credential
-// and JetStream does not stamp publisher identity onto a message, so a scheme
-// keyed only by job, task and queue would offer no way to say "only this
-// worker's own traffic" — and no way for the server to learn who published a
-// message it received. [ParseWorkerSubject] recovers the identity on the
+// after its class prefix, and so do the server → worker subjects,
+// task.cancel.<worker> and worker.control.<worker>, so that a worker may
+// subscribe to its own and no other worker's. That placement makes the
+// broker's per-worker publish permissions expressible: NATS permissions are
+// static per credential and JetStream does not stamp publisher identity onto a
+// message, so a scheme keyed only by job, task and queue would offer no way to
+// say "only this worker's own traffic", and no way for the server to learn who
+// published a message it received. [ParseWorkerSubject] recovers the identity on the
 // receiving side.
 //
 // The marker subjects carry no worker and belong to the server alone: workers
@@ -35,7 +35,7 @@
 // [ParseWorkerSubject].
 //
 // The remaining tokens (<queue>, <job>, <task>) are the opaque string
-// identifiers of the corresponding entity in the SQLite store. Callers build
+// identifiers of the corresponding entity in the store. Callers build
 // full subject strings using the helper functions below rather than
 // constructing them by hand.
 package bus
@@ -56,8 +56,7 @@ const (
 	// Full subject: SubjectTaskCancelPrefix + "." + workerID.
 	// The server publishes to the subject of the worker holding the task; the
 	// worker subscribes to it once, before it asks for work, and interrupts
-	// the run the message names. This is the one subject class that travels
-	// server → worker.
+	// the run the message names.
 	SubjectTaskCancelPrefix = "task.cancel"
 
 	// SubjectWorkerHeartbeatPrefix is the prefix for worker liveness pings.
@@ -104,7 +103,7 @@ const (
 	// WildcardQueueToken is the lease-subject queue token a queue-unaffiliated
 	// worker (empty QueueIDs — "serve any queue") uses in place of a real queue
 	// ID, so it requests on a valid subject (work.lease.<worker>._any) that the
-	// server's work.lease.> subscription actually receives. An empty token would
+	// server's work.lease.> subscription receives. An empty token would
 	// produce an unroutable subject. The token is reserved (underscore prefix)
 	// so it cannot collide with a real UUID queue ID; the server selects tasks
 	// farm-wide and gates by worker eligibility, so the token's only role is

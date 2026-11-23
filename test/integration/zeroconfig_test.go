@@ -6,7 +6,7 @@ package integration
 
 // The zero-config farm: a server started with no config file and a worker
 // started with no nats.url must find each other and run a task, whatever the
-// broker configuration underneath them. This test pins that.
+// broker configuration underneath them.
 //
 // The mDNS part binds the test broker to every interface (the advertisement
 // carries the machine's hostname, so a loopback-bound broker is unreachable at
@@ -80,8 +80,8 @@ func TestZeroConfigFarm(t *testing.T) {
 			noForeignServerOrFail(t)
 			mdnsOK = true
 		})
-		// Under `make test-discovery` the mDNS half is the point; a preflight
-		// that ended any other way must not let the parent pass without it.
+		// Under `make test-discovery` the mDNS part is required; a preflight
+		// that did not pass must not let the parent pass without it.
 		if !mdnsOK {
 			t.Fatal("SQI_TEST_REQUIRE_MULTICAST is set but the mDNS preflight did not pass")
 		}

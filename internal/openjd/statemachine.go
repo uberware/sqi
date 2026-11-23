@@ -23,8 +23,8 @@ var ErrInvalidTransition = errors.New("openjd: invalid state transition")
 
 // ── Step state machine ────────────────────────────────────────────────────────
 
-// validStepTransitions is the step lifecycle sqi actually implements. It is a
-// TEST-TIME SPECIFICATION: no runtime path consults it.
+// validStepTransitions is the step lifecycle sqi implements. It is a
+// test-time specification: no runtime path consults it.
 // Every step write is a named store operation guarded in its own SQL
 // (invariant I1), and TestStepOperations_FromStatesAreLegal (in this package's
 // statemachine_test.go) asserts each operation's from-states are legal here.
@@ -37,11 +37,9 @@ var ErrInvalidTransition = errors.New("openjd: invalid state transition")
 //	failed   → pending    RetryTasks
 //	canceled → pending    RetryTasks
 //
-// There is no running status: nothing writes StepStatusRunning, which
-// survives in the enum and wire types only. Making it real is a separate,
-// user-visible feature, not a correctness fix. The running row stays, because
-// old databases and test fixtures hold running steps that FinalizeStep must be
-// able to finish.
+// Nothing writes StepStatusRunning; it exists in the enum and wire types
+// only. The running row stays because a database or test fixture may hold
+// running steps that FinalizeStep must be able to finish.
 //
 // Completed is terminal: it has no outgoing transition, and RetryTasks never
 // reopens a completed step.

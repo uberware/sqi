@@ -39,17 +39,17 @@ type PathMapRule struct {
 // dst is the flavor a POSIX or WINDOWS rule's destination and transferred
 // remainder are rebuilt in (applyFileRule) — the evaluation's pathFormat, which
 // is the worker's native flavor in the host context apply_path_mapping runs in.
-// It is NOT a guarantee about this function's whole result: a URI rule
+// It is not a guarantee about this function's whole result: a URI rule
 // (applyURIRule) and the no-match passthrough both return raw text, unparsed
 // and unnormalized, so "s3://b/x" under a URI rule to "E:\dst" comes back
 // containing a forward slash. What makes "the result is a path in dst" true is
-// the WRAPPER, pathMappingFuncs' apply_path_mapping, which re-parses whatever
+// the wrapper, pathMappingFuncs' apply_path_mapping, which re-parses whatever
 // this returns with boundedPath(…, ec.pathFormat). Callers wanting a path value
 // must do the same rather than assume it.
 //
 // This is the OpenJD path-mapping algorithm (wiki How-Jobs-Are-Run §Path
-// Mapping): rules are tried in order of DECREASING SourcePath length, and the
-// FIRST match wins and stops the scan. It is deliberately NOT the substring
+// Mapping): rules are tried in order of decreasing SourcePath length, and the
+// first match wins and stops the scan. It is not the substring
 // semantics of internal/worker/pathmap.Apply, which serves a different job
 // (swapping paths into command strings) and which this leaf cannot import.
 func mapPath(s string, rules []PathMapRule, dst PathFormat) string {
@@ -81,17 +81,17 @@ func applyRule(s string, r PathMapRule, dst PathFormat) (string, bool) {
 // boundaries and, on a match, joins s's remainder components onto the
 // destination in the dst flavor.
 //
-// The matching itself is relativeParts (funcspath.go), the SAME function
+// The matching itself is relativeParts (funcspath.go), the same function
 // is_relative_to/relative_to use to answer the identical question ("are
 // other's parts a full prefix of p's, and what remains?"), rather than a
 // second hand-written prefix loop beside it. The only thing this caller
 // varies is the comparator: relativeParts takes an eq function, and this
 // passes strings.EqualFold for a WINDOWS source (the Windows parser already
 // accepts both separators, so separator-insensitivity falls out of
-// parsePath itself) and byteEqual otherwise. This is deliberately distinct
-// from the byte-exact, case-SENSITIVE path equality
-// (==) that relativeParts' OTHER two callers always use: source MATCHING and
-// path EQUALITY are different operations, and eq is the one place that
+// parsePath itself) and byteEqual otherwise. This differs from the
+// byte-exact, case-sensitive path equality (==) that relativeParts' other two
+// callers always use: source matching and
+// path equality are different operations, and eq is the one place that
 // difference is expressed — relativeParts' other rules (the anchorless-other
 // guard, the length check, the boundary trimming) are shared unchanged.
 func applyFileRule(s string, r PathMapRule, dst PathFormat) (string, bool) {
@@ -139,29 +139,26 @@ func applyURIRule(s string, r PathMapRule) (string, bool) {
 // apply_path_mapping, co-located with the engine it wraps and kept separate
 // from pathFuncs (see funcs.go's mergeFuncs).
 //
-// There is NO leaf-level host-context gate: the function is always resolvable
+// There is no leaf-level host-context gate: the function is always resolvable
 // and, with no rules, passes through. Host-context availability (the function is
 // valid only in @fmtstring[host] scopes) is enforced by internal/openjd's
 // template checker, the only layer with a scope model, which uses
 // Expression.CallsAny and Expression.CalledFunctions to spot the call.
 //
-// COST: apply_path_mapping walks the rule list and matches/rewrites its
+// Cost: apply_path_mapping walks the rule list and matches/rewrites its
 // argument against each source path, which is rule 3's "processes a string or
 // path value" applied to that argument — so Cost{ArgBytes: {0}} on its one row,
-// charging the INPUT text being mapped, consistent with every other row in this
+// charging the input text being mapped, consistent with every other row in this
 // package that processes a single string/path argument (funcspath.go's
 // ArgBytes-on-input rows).
 //
-// This charge has NO ORACLE COVERAGE and cannot get any: scripts/expr-oracle.py
-// invokes the reference with only `src` and `target_type` (see its own doc),
-// with no channel for session path-mapping rules — evaluate_with_metrics's own
-// keyword arguments (values, profile, target_type, path_format, memory_limit,
-// operation_limit; confirmed via inspect.signature against openjd-model 0.11.1)
-// carry no host_context parameter either, so apply_path_mapping is not even
-// RESOLVABLE through the oracle's entry point (it raises "Unknown function:
-// 'apply_path_mapping'"). This charge is pinned by unit test alone
-// (cost_misc_internal_test.go's TestOperationCount_ApplyPathMapping), not
-// cross-checked against any external ground truth.
+// This charge has no oracle coverage: scripts/expr-oracle.py invokes the
+// reference with only `src` and `target_type` (see its own doc), and the
+// reference's evaluate_with_metrics takes no host context, so there is no
+// channel for session path-mapping rules and apply_path_mapping is not
+// resolvable through the oracle's entry point (it raises "Unknown function:
+// 'apply_path_mapping'"). The charge is pinned by unit test alone
+// (cost_misc_internal_test.go's TestOperationCount_ApplyPathMapping).
 var pathMappingFuncs = map[string][]Shape{
 	"apply_path_mapping": {
 		{Params: []Type{TString}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {

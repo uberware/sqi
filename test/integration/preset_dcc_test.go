@@ -6,9 +6,8 @@ package integration
 // presets through a real sqi-server and a real sqi-worker against the real
 // applications, then asserts on the files they render.
 //
-// The argv goldens (Tier 1) prove a preset expands to the command line that was
-// reviewed, and the recording stub (Tier 3) proves sqi delivers that command
-// line. Neither can show that the vendor application accepts it. These cases
+// The argv goldens (Tier 1) pin the command line a preset expands to, and the
+// recording stub (Tier 3) shows sqi delivers that command line. Neither can show that the vendor application accepts it. These cases
 // do: whether Blender pads the "####" in -o and appends its own
 // extension, whether Nuke reads "-F 1-1" as the single frame 1, whether a view
 // layer name containing quotes survives to Blender, and whether the hython
@@ -20,8 +19,8 @@ package integration
 // Not tagged `integration`, like preset_ffmpeg_test.go, so the CI `test` job
 // compiles, lints and runs it.
 //
-// They skip when the application is absent, which means a local pass proves
-// nothing on its own. The registry (presets/validation-tiers.yaml) records each
+// They skip when the application is absent, so a local pass proves nothing on
+// its own. The registry (presets/validation-tiers.yaml) records each
 // case with requires_app, and SQI_TEST_REQUIRE_APPS=blender,nuke,houdini (what
 // `make test-dcc` sets) turns a skip into a failure. Look for the
 // "--- PASS: TestPresetDCC" lines.
@@ -198,8 +197,8 @@ func assertTaskCount(t *testing.T, ts *testServer, jobID string, want int) {
 }
 
 // assertExactFiles fails unless dir holds exactly the named files, each
-// non-empty. "Exactly" is the point: a stepped range that rendered an extra
-// frame, or a Write node that should not have run, shows up as a stray file.
+// non-empty, so a stepped range that rendered an extra frame, or a Write node
+// that should not have run, shows up as a stray file.
 func assertExactFiles(t *testing.T, dir string, want []string) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -280,7 +279,7 @@ func exrRenderedLayers(t *testing.T, path string) []string {
 }
 
 // TestPresetDCC_Blender_BatchRender runs blender-batch-render under a real
-// Blender. It answers what the argv goldens could not: "####" in -o is padded to
+// Blender. It checks what the argv goldens cannot: "####" in -o is padded to
 // the frame number, Blender appends the format's extension itself, a path with
 // no "#" still gets the frame number, and a stepped range renders exactly its
 // frames.
@@ -328,10 +327,10 @@ func TestPresetDCC_Blender_BatchRender(t *testing.T) {
 var blenderVersionLine = regexp.MustCompile(`(?m)^Blender (\d+)\.(\d+)\.\d+`)
 
 // requireBlenderProgressVersion skips unless exe is Blender 5.2 or later. The
-// presets' SQI_LOG_PROGRESS patterns were written against Blender 5.2.2's
-// output; Blender 4.x prints its render lines in another layout ("Fra:1
-// Mem:9.24M ..." with no "Rendering frame N" line), which the patterns do not
-// match, so on 4.x the bar moves only as tasks finish.
+// presets' SQI_LOG_PROGRESS patterns match Blender 5.2's output; Blender 4.x
+// prints its render lines in another layout ("Fra:1 Mem:9.24M ..." with no
+// "Rendering frame N" line), which the patterns do not match, so on 4.x the bar
+// moves only as tasks finish.
 func requireBlenderProgressVersion(t *testing.T, exe string) {
 	t.Helper()
 	m := blenderVersionLine.FindStringSubmatch(runDCC(t, exe, "--version"))
@@ -344,7 +343,7 @@ func requireBlenderProgressVersion(t *testing.T, exe string) {
 		t.Fatalf("unreadable Blender version %s.%s", m[1], m[2])
 	}
 	if major < 5 || (major == 5 && minor < 2) {
-		t.Skipf("%s is Blender %s.%s; the progress patterns are confirmed against Blender 5.2 only", exe, m[1], m[2])
+		t.Skipf("%s is Blender %s.%s; the progress patterns need Blender 5.2 or later", exe, m[1], m[2])
 	}
 }
 
@@ -418,7 +417,7 @@ func runDCCJobExpectingFailure(t *testing.T, ts *testServer, farmID, queueID, pr
 }
 
 // TestPresetDCC_Blender_ViewLayerRender runs blender-view-layer-render under a
-// real Blender. It answers what the argv goldens could not: -S selects the scene
+// real Blender. It checks what the argv goldens cannot: -S selects the scene
 // the one-line Python expression then reads, the layer name reaches Blender as
 // a single argument even with quotes in it, `use` makes -a render only that
 // layer, and a layer the scene lacks stops Blender with a non-zero status

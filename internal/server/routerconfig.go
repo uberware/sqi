@@ -9,13 +9,11 @@ import (
 // routerConfig maps this server's [Config] onto the HTTP-layer [api.Config]
 // that [api.NewRouter] is built with.
 //
-// It is a function rather than an inline literal in start for the reason
-// ExprLimitsFromConfig is: a struct literal assigning one config's fields into
-// another's is the shape where an assignment can be dropped, renamed, or
-// pointed at the wrong field and still compile, start, and serve. Left inline
-// it could only be reached by booting a whole server (NATS, SQLite, a
-// listening socket), so in practice nothing tested it at all —
-// TestRouterConfig_CarriesTheSubmissionDeadline does now.
+// It is a function rather than an inline literal in start, as
+// ExprLimitsFromConfig is, so a test can check it without booting a server
+// (NATS, SQLite, a listening socket): a struct literal copying one config's
+// fields into another's can drop or misassign a field and still compile,
+// start and serve. TestRouterConfig_CarriesTheSubmissionDeadline covers it.
 func routerConfig(cfg Config) api.Config {
 	return api.Config{
 		CORSOrigins:            cfg.CORSOrigins,
@@ -35,15 +33,11 @@ func routerConfig(cfg Config) api.Config {
 // several steps in start (wireAuthDeps, the preset library, diagnostics) and
 // a returned value here would either overwrite those or need its own merge.
 //
-// Split out for the same reason routerConfig is (see its doc comment): a
-// struct-field assignment inline in start can only be reached by booting a
-// whole server, so nothing would catch a dropped or transposed line.
-//
-// Nothing else fails when this hop breaks: the server still boots, `config
-// print` still echoes the operator's values, and the route simply never
-// mounts — a deployed server would run with all four at their zero value
-// regardless of nats.auth.* configuration, the enrollment endpoint never
-// mounted and a minted token carrying a zero TTL.
+// It is split out so a test can check it, for the reason routerConfig is.
+// Nothing else fails when a line here is dropped: the server boots, `config
+// print` echoes the operator's values, and the handlers see the zero value
+// whatever nats.auth.* says, so the enrollment endpoint is not mounted and a
+// minted token carries a zero TTL.
 func natsAuthDeps(cfg Config, deps *api.Deps) {
 	deps.NATSAuthEnabled = cfg.NATS.Auth.Enabled
 	deps.NATSAuthEnrollmentEndpointEnabled = cfg.NATS.Auth.EnrollmentEndpointEnabled

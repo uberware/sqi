@@ -238,8 +238,8 @@ func TestRetryTask_GetTaskError(t *testing.T) {
 	}
 }
 
-// TestRetryTask_BlockedDownstreamReconcilesToFailed verifies that retrying ONLY
-// a downstream task (t2/s2) when the upstream (t1/s1) remains failed does NOT
+// TestRetryTask_BlockedDownstreamReconcilesToFailed verifies that retrying only
+// a downstream task (t2/s2) when the upstream (t1/s1) remains failed does not
 // strand the job in pending. CancelDependents must re-cancel t2 (whose step
 // is still blocked on the failed s1), and checkJobCompletion must finalize the
 // job back to failed.
@@ -253,7 +253,7 @@ func TestRetryTask_BlockedDownstreamReconcilesToFailed(t *testing.T) {
 
 	sched, _ := newTestSchedulerWithNotifier(t, st)
 
-	// Retry ONLY the downstream task — the upstream t1/s1 remains failed.
+	// Retry only the downstream task — the upstream t1/s1 remains failed.
 	if err := sched.RetryTask(ctx, "t2"); err != nil {
 		t.Fatalf("RetryTask(t2): %v", err)
 	}
@@ -267,7 +267,7 @@ func TestRetryTask_BlockedDownstreamReconcilesToFailed(t *testing.T) {
 		t.Errorf("t2 = %v, want canceled (re-canceled by CancelDependents)", t2.Status)
 	}
 
-	// The job must be finalized to failed, NOT stranded in pending.
+	// The job must be finalized to failed, not stranded in pending.
 	job, err := st.GetJob(ctx, "j1")
 	if err != nil {
 		t.Fatalf("GetJob(j1): %v", err)

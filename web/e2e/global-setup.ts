@@ -2,7 +2,7 @@
 
 // Playwright global setup for the sqi web E2E suite.
 //
-// Boots the REAL embedded production stack the same way scripts/smoke.sh does:
+// Boots the real embedded production stack the same way scripts/smoke.sh does:
 // a temp SQLite DB + temp embedded-NATS JetStream dir, ephemeral loopback ports,
 // mDNS discovery disabled. It then seeds a farm + queue over REST, boots a
 // worker bound to that farm/queue, waits for the worker to report online, and

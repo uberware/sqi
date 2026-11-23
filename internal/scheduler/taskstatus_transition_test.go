@@ -2,15 +2,15 @@
 
 package scheduler
 
-// The task status consumer must ACK a message whose transition the store
+// The task status consumer must ack a message whose transition the store
 // rejects, never Nak it.
 //
 // The store enforces the task state machine, so a stale or out-of-order
-// worker message can now legitimately fail. task.status is a JetStream subject
-// (at-least-once), and handleTaskStatusMessage Naks on error — so treating an
-// invalid transition as retryable would redeliver the same doomed message
-// forever. Redelivery cannot fix a transition that is illegal, exactly as it
-// cannot fix a malformed payload.
+// worker message can fail. task.status is a JetStream subject
+// (at-least-once), and handleTaskStatusMessage Naks on error, so treating an
+// invalid transition as retryable would redeliver the same message forever.
+// Redelivery cannot fix an illegal transition, as it cannot fix a malformed
+// payload.
 
 import (
 	"testing"

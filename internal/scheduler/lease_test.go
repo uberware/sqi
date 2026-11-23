@@ -88,9 +88,8 @@ func (s *readBeforeCommitStore) ListReadyTasks(ctx context.Context, farmID strin
 
 // TestHandleLeaseRequest_WakeBetweenSelectionAndParkIsNotLost covers a
 // submission whose wake fires after a lease request's selection found no work
-// but before the request parked: the request must not sleep through it for the
-// whole hold (H13f23, where a simulated worker sat idle for the full 30 s hold
-// beside a ready task).
+// but before the request parked: the request must lease the task then, not
+// leave the worker idle for the whole hold beside a ready task.
 func TestHandleLeaseRequest_WakeBetweenSelectionAndParkIsNotLost(t *testing.T) {
 	for _, queue := range []string{"q1", bus.WildcardQueueToken} {
 		t.Run(queue, func(t *testing.T) {

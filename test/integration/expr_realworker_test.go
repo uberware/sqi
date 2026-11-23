@@ -8,8 +8,8 @@ package integration
 //
 // Most EXPR tests run in-process against the packages directly. This one runs
 // one job through a real sqi-server and a real sqi-worker subprocess,
-// asserting on the VALUE an expression resolved to rather than merely on the
-// job succeeding.
+// asserting on the value an expression resolved to as well as on the job
+// succeeding.
 
 import (
 	"fmt"
@@ -20,16 +20,16 @@ import (
 )
 
 // exprWorkerJobYAML is an EXPR job whose onRun args cannot be resolved before
-// the worker runs them, so a passing assertion is proof that phase-3 evaluation
+// the worker runs them, so a passing assertion shows that host-side evaluation
 // happened in the worker process against the assignment the server sent.
 //
-// Each of the three args is chosen for a different reason:
+// Each of the three args covers something different:
 //
 //   - "expr-phase3" is a plain literal, present so a log match cannot come from
 //     an unrelated line.
 //
 //   - "{{ upper(Param.Shot) + '.' + zfill(Task.Param.Frame * 3, 4) }}" resolves
-//     to "SQ010.0021". Task.Param.Frame is the one symbol the SERVER cannot
+//     to "SQ010.0021". Task.Param.Frame is the one symbol the server cannot
 //     substitute: the assignment carries the task's parameter values and types
 //     (protocol.AssignMsg.Parameters/ParameterTypes) and the raw, unresolved
 //     action, and internal/worker/fmtres builds the concrete symbol table from
@@ -38,10 +38,10 @@ import (
 //     lookup.
 //
 //   - "{{ ['workdir-absolute', string(is_absolute(Session.WorkingDirectory))] }}"
-//     is a LONE reference producing a list[string], which section 1.3.2's
-//     list-item rule flattens into TWO command-line arguments — behavior that
-//     exists only in the worker's renderer (internal/worker/fmtres's
-//     TargetArgItem), since a type check discards the value. Session.WorkingDirectory
+//     is a lone reference producing a list[string], which section 1.3.2's
+//     list-item rule flattens into two command-line arguments. Only the
+//     worker's renderer (internal/worker/fmtres's TargetArgItem) does this,
+//     since a type check discards the value. Session.WorkingDirectory
 //     is a host fact that does not exist at submission time in any form, and
 //     is_absolute() forces it through the path engine on the worker's own
 //     native flavor. echo joins the two flattened args with a space, so the
@@ -76,14 +76,13 @@ steps:
 `
 
 // exprWorkerWantOutput is the exact text the resolved command line must echo.
-// Asserting on the RESOLVED VALUE — not on the job reaching "completed" — is
-// what makes this test meaningful: a template whose expressions were somehow
-// dropped, or resolved to the wrong thing, would still complete.
+// The test asserts on the resolved value because a template whose expressions
+// were dropped, or resolved to the wrong thing, would still complete.
 const exprWorkerWantOutput = "expr-phase3 SQ010.0021 workdir-absolute true"
 
 // TestEXPRJobEndToEnd submits an extensions: [EXPR] job to a real sqi-server,
 // lets a real sqi-worker subprocess execute it, and asserts the worker resolved
-// the step's expressions at phase 3 to the expected concrete text.
+// the step's expressions on the host to the expected concrete text.
 func TestEXPRJobEndToEnd(t *testing.T) {
 	ts := startServer(t)
 

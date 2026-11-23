@@ -16,19 +16,18 @@ var (
 	// are errors; ".png" and "" are not.
 	errInvalidSuffix = errors.New("an extension must be empty or a dot followed by one or more non-separator characters")
 	// errNotRelative backs relative_to. is_relative_to answers false for the
-	// same condition rather than failing — the specification defines the pair
-	// that way on purpose.
+	// same condition rather than failing, as the specification defines the
+	// pair.
 	errNotRelative = errors.New("the path is not relative to the other path")
 	// errInvalidName backs with_name (and, through withName, with_stem and
 	// with_suffix) on a replacement that is empty, exactly ".", or contains a
 	// separator. Accepting a separator would fabricate a path component
-	// that did not exist in the input; the reference (measured at
-	// openjd-model 0.11.1) rejects all three.
+	// that did not exist in the input; the reference rejects all three.
 	errInvalidName = errors.New("a replacement name must be non-empty, must not be \".\", and must not contain a separator")
 	// errEmptyStemHasSuffix backs with_stem specifically: CPython's own
 	// with_stem forbids an empty replacement stem when the receiver's
 	// existing suffix is non-empty (there would be nothing left to name the
-	// file besides the suffix). A receiver with NO suffix does not hit this
+	// file besides the suffix). A receiver with no suffix does not hit this
 	// at all — with_stem("") on such a receiver is exactly with_name(""),
 	// which fails errInvalidName instead, for the ordinary "empty name"
 	// reason.
@@ -41,51 +40,45 @@ var (
 // rules (threaded through evalCtx by WithPathMapping) that this group's
 // functions never touch.
 //
-// COST: rule 3 covers "a string or path value", and a path IS one, so every row
-// below that PROCESSES its receiver's (or its string argument's) text declares
-// an ArgBytes charge — confirmed scaling in the reference at 11/299/599-byte
-// path text (2/3/4, matching path()'s own ArgBytes-on-input formula reused
-// throughout this file: 1 call + ceil(bytes/256)). See
-// cost_misc_internal_test.go's PROBE for the full set of transcribed
-// measurements this comment summarizes.
+// Cost: rule 3 covers "a string or path value", and a path is one, so every row
+// below that processes its receiver's (or its string argument's) text declares
+// an ArgBytes charge, 1 call + ceil(bytes/256), as the reference does. See
+// cost_misc_internal_test.go for the per-row counts.
 var pathFuncs = map[string][]Shape{
 	// path()'s three rows are the only ones in the whole registry that use
 	// FnCtx rather than Fn — see Shape.FnCtx's doc comment for why: they are
-	// exactly the rows that have to CHOOSE a flavor, because constructing a
+	// exactly the rows that have to choose a flavor, because constructing a
 	// path is the only operation that ever does. Every other path operation
 	// reads the flavor off its receiver.
 	//
-	// The TString row charges ArgBytes on the INPUT text, not the normalized
-	// output — confirmed with a probe built to discriminate the two: a
-	// 302-byte input full of redundant separators that normalizes down to a
-	// 2-byte output ("/a") still measures 3 (matching the 302-byte input's
-	// own ceil(302/256)=2), not 2 (which a result-based charge would give).
+	// The TString row charges ArgBytes on the input text, not the normalized
+	// output: a 302-byte input full of redundant separators that normalizes
+	// down to the 2-byte output "/a" costs 3 (1 call + ceil(302/256)), as in
+	// the reference, not the 2 a result-based charge would give.
 	//
 	// The ListOf(TString) row instead declares ResultBytes: true, not
 	// ArgElements: there is no single input "text" to read (a list's own .s
 	// field is empty, the same structural gap join() has), and the reference's
-	// own count tracks the JOINED text's length, not the element count —
-	// confirmed flat at 2 for 1, 4 and 20-element literal lists whose joined
-	// text stays under 256 bytes, then 3 once one element pushes the joined
-	// text past it. This mirrors path(list)'s own construction
-	// (pathFromParts(...).String()), the same "charge what was BUILT, not what
+	// count tracks the joined text's length, not the element count: 2 for any
+	// list whose joined text stays under 256 bytes, 3 once it passes that.
+	// This mirrors path(list)'s own construction
+	// (pathFromParts(...).String()), the same "charge what was built, not what
 	// was handed in" idiom join() and the padding functions (funcsstrpad.go)
 	// use.
 	//
 	// The ListOf(TNull) row (the empty-list literal, "path([])") is Cost{}:
 	// it always produces the empty path, so a ResultBytes charge would be
-	// zero regardless (ceilDiv256 of an empty string is 0) — declared
-	// explicitly rather than left to that coincidence, and this row has no
-	// reference reading available at all: the reference errors on
-	// "path([])" outright ("No matching signature for path(list[nulltype])"),
-	// a registration difference, not a Cost question.
+	// zero regardless (ceilDiv256 of an empty string is 0), declared
+	// explicitly rather than left to that coincidence. The reference has no
+	// count to compare: it rejects "path([])" ("No matching signature for
+	// path(list[nulltype])"), a registration difference, not a Cost question.
 	"path": {
 		{Params: []Type{TString}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
 			return boundedPath(args[0].AsStr(), ec.pathFormat)
 		}},
 		// The list row is what makes the specification's stated roundtrip
 		// path(p.parts) == p work: parts puts the root first, and
-		// pathFromParts reconstructs it into the SAME parsedPath shape
+		// pathFromParts reconstructs it into the same parsedPath shape
 		// parsePath itself produces, so String() — the one formula that
 		// already knows how a root joins its components — renders it.
 		{Params: []Type{ListOf(TString)}, Ret: TPath, Cost: Cost{ResultBytes: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
@@ -105,14 +98,12 @@ var pathFuncs = map[string][]Shape{
 			return String(asPosix(pathOf(args[0]))), nil
 		}},
 	},
-	// is_absolute is Cost{}: it looks only at the receiver's ROOT, matching
+	// is_absolute is Cost{}: it looks only at the receiver's root, matching
 	// rule 3's own len()-style exemption ("simple lookups ... that do not
-	// process the string content"). Confirmed flat at 1 in the reference once
-	// path()'s own construction charge is subtracted out (path(11-byte
-	// text).is_absolute() measures 3 = 2 [path()] + 1 [is_absolute's own
-	// share]; path(299-byte text).is_absolute() measures 4 = 3 + 1 — the
-	// SAME 1 both times, unlike as_posix and the six properties below, which
-	// grow with the receiver).
+	// process the string content"). The reference charges it a flat 1 once
+	// path()'s construction charge is subtracted, whatever the receiver's
+	// length, unlike as_posix and the six properties below, which grow with
+	// the receiver.
 	"is_absolute": {
 		{Params: []Type{TPath}, Ret: TBool, Fn: func(args []Value) (Value, error) {
 			return Bool(pathOf(args[0]).isAbsolute()), nil
@@ -121,18 +112,16 @@ var pathFuncs = map[string][]Shape{
 	// The six properties. Section 1.3.3 makes p.x sugar for __property_x__,
 	// and resolve.go's evalProperty calls exactly that name with
 	// methodStyle = true — so registering these here is what makes
-	// section 1.2.4's receiver-coercion restriction apply to them: a STRING
-	// receiver does not coerce to TPath, and 'a/b.txt'.stem is an error by
-	// design, not an oversight.
+	// section 1.2.4's receiver-coercion restriction apply to them: a string
+	// receiver does not coerce to TPath, and 'a/b.txt'.stem is an error.
 	//
 	// All six declare Cost{ArgBytes: {0}} on the receiver: RFC 0006's own
-	// worked example (path('/a/b/c.exr').stem measures 4 — 1 call + 1 byte
-	// unit for path(), 1 call + 1 byte unit for .stem) generalizes to every
-	// property here, confirmed scaling identically (11/299 bytes -> the
-	// property's own share is 2/3 each time) whether the property returns a
-	// string (name/stem/suffix), a path (parent) or a list (suffixes/parts)
-	// — the charge tracks what the property READS off the receiver, not what
-	// shape it returns.
+	// worked example (path('/a/b/c.exr').stem costs 4: 1 call + 1 byte unit
+	// for path(), 1 call + 1 byte unit for .stem) generalizes to every
+	// property here, and the reference scales the same way whether the
+	// property returns a string (name/stem/suffix), a path (parent) or a list
+	// (suffixes/parts): the charge tracks what the property reads off the
+	// receiver, not what shape it returns.
 	"__property_name__": {
 		{Params: []Type{TPath}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return String(pathOf(args[0]).name()), nil
@@ -173,12 +162,10 @@ var pathFuncs = map[string][]Shape{
 	// doc comment for the shared rule with_stem and with_suffix also run
 	// their replacement text through, rather than each checking separately.
 	//
-	// ArgBytes on the RECEIVER ONLY (index 0) — confirmed with a probe built
-	// to discriminate: a short receiver with a 300-byte replacement name
-	// measures the SAME as a short receiver with a 1-byte replacement, but a
-	// 299-byte receiver with a 1-byte replacement scales. The replacement's
-	// own length never contributes, the same pattern as strip()'s cutset
-	// and removeprefix()'s affix arguments.
+	// ArgBytes on the receiver only (index 0), as in the reference: a
+	// 300-byte replacement name costs the same as a 1-byte one, while a
+	// 299-byte receiver scales. The replacement's length never contributes, the
+	// same pattern as strip()'s cutset and removeprefix()'s affix arguments.
 	"with_name": {
 		{Params: []Type{TPath, TString}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return withName(pathOf(args[0]), args[1].AsStr())
@@ -186,16 +173,16 @@ var pathFuncs = map[string][]Shape{
 	},
 	// with_stem keeps the receiver's existing suffix and swaps only the
 	// stem, porting CPython pathlib's own with_stem algorithm exactly: when
-	// the receiver's suffix is EMPTY this is just with_name(stem); when it
+	// the receiver's suffix is empty this is with_name(stem); when it
 	// is not, an empty replacement stem is rejected outright
 	// (errEmptyStemHasSuffix — there would be nothing left to name the file
 	// besides the suffix) rather than silently producing a bare-suffix name;
-	// otherwise the replacement is stem+suffix, run through the SAME
+	// otherwise the replacement is stem+suffix, run through the same
 	// withName with_name uses, so a value with_name would reject (a
 	// separator, ".") is rejected here too rather than independently
 	// re-derived.
 	//
-	// ArgBytes on the receiver only, same as with_name — confirmed identically.
+	// ArgBytes on the receiver only, same as with_name.
 	"with_stem": {
 		{Params: []Type{TPath, TString}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			p := pathOf(args[0])
@@ -214,12 +201,11 @@ var pathFuncs = map[string][]Shape{
 	// must start with a dot, be more than the bare dot alone, and contain no
 	// separator, or it is errInvalidSuffix.
 	//
-	// That FORMAT check runs before anything else — including the
-	// receiver's own empty-name check — deliberately:
-	// path('/').with_suffix('png') is "invalid suffix", not "empty name",
-	// per the reference at openjd-model 0.11.1, even though '/' has no
-	// final component either. Python 3.14 checks empty-name first; the
-	// reference does not (measured) — do not reorder these to match Python.
+	// That format check runs before anything else, including the
+	// receiver's own empty-name check: path('/').with_suffix('png') is
+	// "invalid suffix", not "empty name", as in the reference, even though
+	// '/' has no final component either. Python 3.14 checks empty-name
+	// first; the reference does not. Do not reorder these to match Python.
 	//
 	// ArgBytes on the receiver only, same as with_name.
 	"with_suffix": {
@@ -236,15 +222,14 @@ var pathFuncs = map[string][]Shape{
 	// with_number's path row splits the receiver's name through withNumber —
 	// pathnumber.go's own file, since the frame-number grammar it implements
 	// is independent of everything else here — and then rebuilds the path
-	// through the SAME withName the other with_* rows use, so a receiver
+	// through the same withName the other with_* rows use, so a receiver
 	// with no final component (p.name() == "") fails with the ordinary
 	// errEmptyName rather than a second empty-name check grown here; the
 	// string row calls withNumber directly with no path involved at all.
 	//
-	// Both rows declare ArgBytes: {0} — on the PATH receiver for the first
-	// row, on the plain STRING argument for the second (there is no path
-	// involved on that row at all) — each confirmed scaling with that row's
-	// own index-0 argument.
+	// Both rows declare ArgBytes: {0}: on the path receiver for the first
+	// row, on the plain string argument for the second (there is no path
+	// involved on that row at all).
 	"with_number": {
 		{Params: []Type{TPath, TInt}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			p := pathOf(args[0])
@@ -262,35 +247,30 @@ var pathFuncs = map[string][]Shape{
 			return String(result), nil
 		}},
 	},
-	// is_relative_to and relative_to both PROCESS TWO path values —
+	// is_relative_to and relative_to both process two path values —
 	// relativeParts (below) walks both p.parts() and other.parts() to find
 	// the common prefix — so both declare Cost{ArgBytes: {0, 1}}, charging
-	// EACH operand's own bytes.
+	// each operand's own bytes.
 	//
-	// This is a DELIBERATE OVERCOUNT relative to the reference, not a match:
-	// the reference's own formula is neither "receiver only" nor "sum of both",
-	// but max(ceil(len(p)/256), ceil(len(other)/256)) — isolated with three
-	// probes that a simpler formula cannot all explain at once (a
-	// receiver=2B/other=2B pair measuring 2, a receiver=299B/other=2B pair AND
-	// its reverse (2B/299B) both measuring 3, and a receiver=10B/other=249B
-	// pair — both individually under the 256-byte ceiling alone — measuring 2,
-	// not the 3 a combined-then-ceiled sum would give). The Cost mechanism has
-	// no "max of two ceils" primitive — chargeArgs (ops.go) ceils and sums each
+	// This overcounts relative to the reference: the reference's formula is
+	// neither "receiver only" nor "sum of both", but max(ceil(len(p)/256),
+	// ceil(len(other)/256)). The Cost mechanism has no "max of two ceils"
+	// primitive — chargeArgs (ops.go) ceils and sums each
 	// declared index independently — so declaring both indices instead
-	// OVER-counts by (at most) the smaller operand's own ceil, typically 1 op.
+	// over-counts by (at most) the smaller operand's own ceil, typically 1 op.
 	// Given the mechanism cannot express the reference's exact formula, the
 	// conservative direction is the safe one: both is_relative_to and
-	// relative_to genuinely read every byte relativeParts touches on BOTH
+	// relative_to read every byte relativeParts touches on both
 	// operands, so undercounting by charging only one (which a receiver-only or
-	// other-only reading would do whenever the UNCHARGED side is the long one)
+	// other-only reading would do whenever the uncharged side is the long one)
 	// would leave real, template-author-controlled work unmetered — the exact
 	// gap section 1.3.10 exists to close. A small constant overcount does not.
 	//
-	// relative_to's own constructed result gets NO additional ResultBytes
-	// charge: confirmed identical to is_relative_to's (bool-returning, so
-	// definitionally cannot carry one) at every probed size, so relative_to's
-	// own path construction contributes nothing beyond the shared ArgBytes
-	// charge above.
+	// relative_to's constructed result gets no additional ResultBytes
+	// charge: the reference charges it the same as is_relative_to (which
+	// returns a bool and so cannot carry one), so relative_to's path
+	// construction contributes nothing beyond the shared ArgBytes charge
+	// above.
 	"is_relative_to": {
 		{Params: []Type{TPath, TPath}, Ret: TBool, Cost: Cost{ArgBytes: []int{0, 1}}, Fn: func(args []Value) (Value, error) {
 			_, ok := relativeParts(pathOf(args[0]), pathOf(args[1]), byteEqual)
@@ -311,31 +291,31 @@ var pathFuncs = map[string][]Shape{
 
 // asPosix renders p with its separators written as "/".
 //
-// It is FLAVOR-AWARE: it replaces THE FLAVOR'S OWN canonical separator, reusing
+// It is flavor-aware: it replaces the flavor's own canonical separator, reusing
 // pathval.go's single per-flavor definition rather than hard-coding a third
 // render-side encoding of it beside String()'s. Under POSIX that separator
-// already IS "/", so this is the identity; under Windows it is "\", so this is
+// already is "/", so this is the identity; under Windows it is "\", so this is
 // the "\" -> "/" rewrite the RFC's table row describes; on a URI it is the
 // identity under every flavor, because a URI's body is "/"-separated already
 // and everything else in it is opaque object-key text.
 //
-// Rewriting EVERY backslash unconditionally would contradict this package's
+// Rewriting every backslash unconditionally would contradict this package's
 // own parsing. A backslash is an ordinary POSIX filename character and
 // parsePath treats it as one, so path('/a/\b/c') has parts ["/", "a", `\b`,
 // "c"] and name "c" — while an as_posix() of "/a/b/c" has different parts and
 // a different name. One value cannot be both. The same rewrite would turn the
 // S3 key "a\b" into the different key "a/b", contradicting the "a URI
-// NORMALIZES NOTHING" rule stated in splitURI and in doc.go.
+// normalizes nothing" rule stated in splitURI and in doc.go.
 //
 // CPython settles the direction: PurePath.as_posix() is
 // str(self).replace(self.parser.sep, '/'), the flavor's separator, so
-// PurePosixPath('/a\\b/c').as_posix() is "/a\b/c" (measured). RFC 0006 line 857
+// PurePosixPath('/a\\b/c').as_posix() is "/a\b/c". RFC 0006 line 857
 // names as_posix among the functions that "match Python's pathlib API" — the
-// same clause test/oracle/baseline.txt already cites to rule against the
-// reference for stem/suffix — and the RFC table's "return string with forward
+// same clause test/oracle/baseline.txt cites to rule against the reference for
+// stem/suffix — and the RFC table's "return string with forward
 // slashes" summarizes the Windows case, the only one in which a separator has
-// to change at all. The reference implementation rewrites every backslash
-// (measured at openjd-model 0.11.1), so this is a baselined divergence; the
+// to change at all. The reference implementation rewrites every backslash, so
+// this is a baselined divergence; the
 // reference's own parts for that path keep the backslash as an ordinary
 // component, so the contradiction above is present in the reference too.
 func asPosix(p parsedPath) string {
@@ -360,18 +340,18 @@ func boundedPath(text string, f PathFormat) (Value, error) {
 //
 // It reuses parsedPath.String() rather than re-deriving "how does a root join
 // its components" as its own string formula. String() answers that for every
-// root shape — including a bare Windows drive with NO separator ("C:"), which
+// root shape — including a bare Windows drive with no separator ("C:"), which
 // it renders by never inserting a separator between root and components, only
 // between components. A separate formula (concatenate if the root already
 // ends in a separator, otherwise insert one) would join root "C:" with
-// component "a" as "C:\a" (drive-rooted, WRONG) instead of "C:a"
+// component "a" as "C:\a" (drive-rooted, wrong) instead of "C:a"
 // (drive-relative, matching the reference and RFC 0006's own
 // path(p.parts) == p guarantee).
 //
 // The list is not guaranteed to have come from parts(): "path(['a', 'b'])"
-// has no root at all, so the first element must be CLASSIFIED, not assumed.
-// It is classified by parsing it ALONE under the same flavor: a token that
-// parses to a non-empty root with NO leftover components — parsePath
+// has no root at all, so the first element must be classified, not assumed.
+// It is classified by parsing it alone under the same flavor: a token that
+// parses to a non-empty root with no leftover components — parsePath
 // consumed the whole token as an anchor and nothing else — is a root.
 // Anything else, including a token that parses to component(s) of its own
 // (a plain relative element like "a", or an empty token), is treated as an
@@ -394,7 +374,7 @@ func pathFromParts(parts []string, f PathFormat) parsedPath {
 // receiver must have a final component (errEmptyName), and name must be a
 // legal replacement (errInvalidName, via isValidReplacementName). with_stem
 // and with_suffix funnel their own computed replacement text through this
-// SAME function rather than re-checking validity themselves, so the three
+// same function rather than re-checking validity themselves, so the three
 // with_* functions can never validate a replacement two different ways.
 func withName(p parsedPath, name string) (Value, error) {
 	if p.name() == "" {
@@ -408,26 +388,26 @@ func withName(p parsedPath, name string) (Value, error) {
 }
 
 // isValidReplacementName reports whether name is legal as with_name's argument.
-// This is CPython pathlib's own rule, reproduced exactly by the openjd-model
-// reference (measured): empty, exactly ".", or containing a separator are
-// invalid. ".." is explicitly NOT invalid — only exact equality to "." is
-// checked, not "starts with a dot run" — and neither is a drive-looking string
-// like "C:" under POSIX, where ':' is not a separator at all.
+// This is CPython pathlib's rule, which the reference implementation also
+// follows: empty, exactly ".", or containing a separator are invalid. ".." is
+// explicitly not invalid — only exact equality to "." is checked, not "starts
+// with a dot run" — and neither is a drive-looking string like "C:" under
+// POSIX, where ':' is not a separator at all.
 func isValidReplacementName(name string, p parsedPath) bool {
 	return name != "" && name != "." && !strings.ContainsAny(name, pathSeparators(p))
 }
 
 // pathSeparators reports which characters separate components for p's
-// shape, deferring to pathval.go's pathSeparatorChars — the SAME definition
+// shape, deferring to pathval.go's pathSeparatorChars — the same definition
 // parsePath's POSIX branch and parseWindows themselves split on — rather
 // than a second hand-written set here.
 //
 // A URI's body is always "/"-only regardless of flavor — splitURI hard-codes
 // "/" for its own component split and never calls pathSeparatorChars at all, so
-// this checks p.isURI itself before consulting it. Measured against the
-// reference: it is POSIX-only for these functions and accepts a backslash
-// outright, including on a drive-looking receiver like "C:/a/b" — POSIX parsing
-// never treats ':' specially, so the drive does not switch the flavor.
+// this checks p.isURI itself before consulting it. The reference is
+// POSIX-only for these functions and accepts a backslash outright, including on
+// a drive-looking receiver like "C:/a/b" — POSIX parsing never treats ':'
+// specially, so the drive does not switch the flavor.
 func pathSeparators(p parsedPath) string {
 	if p.isURI {
 		return "/"
@@ -447,15 +427,14 @@ func byteEqual(a, b string) bool { return a == b }
 // ("are other's parts a full prefix of p's, and what remains?") for a
 // WINDOWS-flavored path-mapping rule, where component comparison must be
 // case-insensitive rather than the byte-exact equality relative_to/
-// is_relative_to use. eq is the ONE place that distinction is made; every
+// is_relative_to use. eq is the one place that distinction is made; every
 // other rule below (the anchorless-other guard, the length check, the
 // separator-run trimming) is unaffected by it and applies identically to
-// both callers. is_relative_to and relative_to pass byte-exact equality, so
-// their own behavior is unchanged by this parameter's existence.
+// both callers. is_relative_to and relative_to pass byte-exact equality.
 //
 // Both compare parts() element-wise rather than reasoning about root/comps
 // separately, which is what makes a URI fall out for free: its
-// scheme+authority is just the first element of parts(), so a prefix match
+// scheme+authority is the first element of parts(), so a prefix match
 // over parts is already a prefix match over the full URI without any
 // URI-specific code here.
 //
@@ -466,17 +445,17 @@ func relativeParts(p, other parsedPath, eq func(a, b string) bool) (remaining []
 	// belongs to the boundary and to neither side, which is section 2.1.5's own
 	// rule for "/" ("a trailing slash on the left operand is consumed by the
 	// join") applied to the operand these two functions call a base. Both
-	// halves are the SAME rule and both reuse pathval.go's pair rather than
+	// halves are the same rule and both reuse pathval.go's pair rather than
 	// re-deriving anything here: trimTrailingEmptyComps on the base is what
 	// makes the operator-written prefix "s3://renders/" match the objects under
 	// it, as RFC 0006's "For URIs, checks prefix match on the full URI"
 	// requires; trimLeadingEmptyComps on the remainder is what keeps the result
-	// RELATIVE (see that function's doc comment).
+	// relative (see that function's doc comment).
 	//
 	// Only a URI ever carries an empty component to trim — both filesystem
 	// parsers drop them — so for POSIX and Windows both calls are no-ops.
 	pp, op := p.parts(), trimTrailingEmptyComps(other.parts())
-	// An ANCHORLESS other is the one case a prefix test over parts() gets
+	// An anchorless other is the one case a prefix test over parts() gets
 	// wrong on its own. path(".") has no parts at all, so its (empty) part
 	// list is trivially a prefix of every path's — including an absolute
 	// one's, which would make path("/a/b").is_relative_to(path(".")) true and
@@ -485,10 +464,10 @@ func relativeParts(p, other parsedPath, eq func(a, b string) bool) (remaining []
 	// "other == self or other in self.parents" and an absolute path's parents
 	// run down to "/" and never reach "."; the reference implementation agrees,
 	// and the specification names PurePath.is_relative_to() as the rule. When
-	// other DOES have parts, its first one is its anchor and the prefix test
+	// other does have parts, its first one is its anchor and the prefix test
 	// already compares the anchors, so this guard is needed only for the empty
 	// case — and it must not reject it outright, since two anchorless paths
-	// really are comparable ("a/b" IS relative to ".").
+	// really are comparable ("a/b" is relative to ".").
 	if other.root == "" && p.root != "" {
 		return nil, false
 	}

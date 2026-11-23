@@ -37,8 +37,8 @@ func TestApplyTLS_AutoEnablesOnAdvertisedBroker(t *testing.T) {
 	if !strings.Contains(logs, "enabling TLS") {
 		t.Errorf("no log explained the switch:\n%s", logs)
 	}
-	// With no CA the system roots are used, which cannot verify a farm CA.
-	// Saying so up front beats an unexplained verification failure.
+	// With no CA the system roots are used, which cannot verify a farm CA,
+	// so a warning says so before the verification failure.
 	if !strings.Contains(logs, "nats.tls_ca_file") {
 		t.Errorf("no log warned about the missing CA:\n%s", logs)
 	}

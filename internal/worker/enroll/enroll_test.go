@@ -23,12 +23,11 @@ import (
 // assertSecretRestricted asserts that path holds key material only its owner
 // can read.
 //
-// The POSIX mode is still asserted where it means something. On Windows it
-// does not: os.Chmod maps only to the read-only ATTRIBUTE and cannot deny read
-// access to anyone, so `perm == 0o600` is unsatisfiable there however well the
-// credential is protected — fsutil.IsRestricted inspects the real DACL
-// instead. See fsutil.WriteSecret for why every key-material writer in this
-// repo had to move off a bare POSIX mode.
+// The POSIX mode is asserted on POSIX. On Windows os.Chmod maps only to the
+// read-only attribute and cannot deny read access to anyone, so
+// `perm == 0o600` is unsatisfiable there; fsutil.IsRestricted inspects the
+// DACL instead. See fsutil.WriteSecret for why key-material writers do not
+// rely on a bare POSIX mode.
 func assertSecretRestricted(t *testing.T, path string) {
 	t.Helper()
 	if runtime.GOOS != "windows" {

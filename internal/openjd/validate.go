@@ -758,7 +758,7 @@ func hostRequirementPositions(hr HostRequirements, base string, out []fmtPositio
 // specification has reserved specific values of the first <Identifier> after
 // 'amount.' for use in this and future revisions. The reserved values are:
 // 'worker', 'job', 'step', and 'task'". A name under one of these scopes must
-// be one the spec (or, see sqiReservedScopeNames, sqi itself) actually defines.
+// be one the spec (or, see sqiReservedScopeNames, sqi itself) defines.
 // Read-only after initialization.
 var reservedCapabilityScopes = map[string]bool{
 	"worker": true, "job": true, "step": true, "task": true,
@@ -892,54 +892,35 @@ const (
 	// hostRequirements amounts/attributes, let bindings, fileFilters, ...) but
 	// states none for <JobTemplate>.steps (§1.1, item 8). RFC 0004 raises
 	// parameterDefinitions' own cap to 200 and says nothing about steps
-	// either. The number is a sqi product decision:
+	// either. The number is a sqi product decision: a render/compositing
+	// job's steps are pipeline phases (render, denoise, composite passes,
+	// review, deliver, cleanup), not one step per unit of work, because the
+	// parameter space provides per-item parallelism. 100 is generous; raise it
+	// if legitimate jobs need more.
 	//
-	//   - A render/compositing job's steps are pipeline phases (render,
-	//     denoise, a handful of composite passes, review, deliver, cleanup),
-	//     not one step per unit of work; per-item parallelism is what the
-	//     parameter space is for (up to maxTaskParameterDefinitions x
-	//     maxTaskParamValues combinations, up to maxTasksPerStep tasks per
-	//     step). A pipeline of dozens of distinct phases is unusual.
-	//   - The largest step count among this repository's presets, tests,
-	//     conformance fixtures and samples is 12, in the vendored OpenJD sample
-	//     third_party/openjd-specifications/samples/v2023-09/job_templates/
-	//     task-parameter-definition-showcase.yaml.
-	//   - 100 is well over an order of magnitude above that, so it is unlikely
-	//     to be the first limit a legitimate template hits, while still being an
-	//     enforceable bound. Like [maxTasksPerStep] (expand.go), it is generous;
-	//     raise it if legitimate jobs need more.
-	//
-	// What this does not bound: [ValidateWithOptions] runs
+	// It does not bound phase 1's cost: [ValidateWithOptions] runs
 	// checkTemplateExpressions (the EXPR expression walk) before
-	// validateLimits, so by the time this check runs, phase 1's walk over
-	// every step's positions has completed. This cap does not reduce phase 1's
-	// cost; parameterSpaceOverCaps is the pre-walk guard that bounds phase 1,
-	// and it does not consider step count.
+	// validateLimits. parameterSpaceOverCaps is the pre-walk guard for phase 1,
+	// and it does not consider step count. It does bound everything after:
+	// prepareTemplate (submit.go) returns on the first validation error,
+	// before phase 2 (checkExpressionsAtSubmit), parameter-space resolution
+	// and any per-task database insert.
 	//
-	// What this does bound: prepareTemplate (submit.go) returns on the first
-	// validation error, before phase 2 (checkExpressionsAtSubmit, re-walking
-	// every position with concrete parameters), before parameter-space
-	// resolution, and before any per-task database insert. An over-cap
-	// template is rejected here without reaching any of those.
-	//
-	// Gated by EnforceLimits, like the other bare structural-count caps in
-	// this block (maxJobParameterDefinitions, maxTaskParameterDefinitions,
+	// Gated by EnforceLimits, like the other structural-count caps in this
+	// block (maxJobParameterDefinitions, maxTaskParameterDefinitions,
 	// maxTaskParamValues): it is a policy cap, not a catastrophe bound.
-	// [maxTasksPerStep] and [maxRangeValues] are catastrophe bounds and stay
-	// always-on; they are set at limits no legitimate template approaches (10M
-	// range values, 1M tasks in one step), so EnforceLimits: false, which lets
-	// legacy templates that violate policy still run, never has to trade
-	// accepting an old template against keeping the server up. maxSteps is set
-	// within range of a real legacy pipeline, so making it always-on could break
-	// the templates EnforceLimits: false exists to keep working.
+	// [maxTasksPerStep] and [maxRangeValues] are catastrophe bounds and always
+	// apply; they are set where no legitimate template reaches them (1M tasks
+	// in one step, 10M range values), so EnforceLimits: false, which lets
+	// templates that exceed policy still run, never has to choose between
+	// accepting a template and keeping the server up. maxSteps is within reach
+	// of a real pipeline, so making it always-on could break the templates
+	// EnforceLimits: false exists to keep working.
 	//
-	// This cap does not bound a job's total task count. maxSteps x
-	// maxTasksPerStep = 100 x 1,000,000 = 10^8 task rows from one submission at
-	// the default (EnforceLimits: true), and with EnforceLimits: false the step
-	// count is unbounded too. That is a catastrophe-class exposure, so its bound
-	// is always-on: [maxTasksPerJob] (expand.go), a generous bound on total
-	// tasks per job, summed across steps and charged during expansion, where the
-	// resolved per-step counts are known.
+	// It does not bound a job's total task count: maxSteps x maxTasksPerStep =
+	// 10^8 task rows, and with EnforceLimits: false the step count is
+	// unbounded. [maxTasksPerJob] (expand.go) is the always-on bound on total
+	// tasks per job, summed across steps during expansion.
 	maxSteps = 100
 
 	// maxJobParameterDefinitions caps parameterDefinitions. The spec range is
@@ -1941,10 +1922,10 @@ func requireNonEmptyIfSet(set bool, n int, ptr, noun string) ValidationErrors {
 // every control character, and the relaxed one (allowLineBreaks true), which
 // permits LF, CR and TAB and rejects the rest.
 //
-// The two variants carry different messages, which is why they share one
-// function: [validateArgStringChars] and [validateDescriptionText] both use the
-// relaxed scan, so the EXPR specification's amendment to <ArgString> is encoded
-// in one place.
+// The two variants carry different messages. [validateArgStringChars] and
+// [validateDescriptionText] both use the relaxed scan, so the EXPR
+// specification's amendment to <ArgString> and §7.2's description rule are
+// encoded in one place.
 //
 // The Cc category covers both C0 (U+0000-U+001F, U+007F) and C1
 // (U+0080-U+009F), so either variant catches the whole range the spec excludes.
@@ -1990,12 +1971,10 @@ func validateNoControlChars(v, ptr string) ValidationErrors {
 // support multi-line expressions in YAML literal block scalars"
 // (wiki/2026-02-Expression-Language.md, "When EXPR is enabled", item 3).
 //
-// The amendment applies to the whole value, not just the inside of a {{ }}.
-// Splitting the argument with fmtstring.Segments and exempting only the
-// expression bodies would be wrong: the conformance fixtures this relaxation
-// exists for (expr1.1--arithmetic-expr and its nine siblings) are multi-line
-// Python scripts with single-line {{ }} expressions embedded, so every newline
-// in them is in literal text.
+// The amendment applies to the whole value, not only the inside of a {{ }}:
+// the conformance fixtures expr1.1--arithmetic-expr and its siblings are
+// multi-line Python scripts with single-line {{ }} expressions embedded, so
+// their newlines are in literal text.
 //
 // Every other Cc character stays rejected, and <CommandString>, a separate
 // type in the same schema (Template Schemas §5.1 and §5.2), is not amended,
@@ -2594,14 +2573,11 @@ func validateAction(a Action, ptr string, scope Scope, names refNames, exprDecla
 			Message: "required; must be at least 1 character",
 		}}
 	}
-	// A command or argument carrying a tab or line break cannot survive the
-	// round trip to an OS process argv intact. The EXPR extension relaxes that
-	// for multi-line expressions -- an expression body is evaluated away before
-	// argv is built -- but not for the literal text around them, which is why
-	// the EXPR arm splits the string rather than skipping the check.
-	// The command keeps the base-spec rule unconditionally: EXPR amends
-	// <ArgString>, not <CommandString>, and the two are separate types with
-	// separate rules (Template Schemas §5.1, §5.2).
+	// The base spec forbids control characters in a command or argument. Under
+	// EXPR an argument may contain CR, LF and TAB anywhere in its value (see
+	// validateArgStringChars). The command keeps the base-spec rule
+	// unconditionally: EXPR amends <ArgString>, not <CommandString>, and the
+	// two are separate types with separate rules (Template Schemas §5.1, §5.2).
 	errs := validateNoControlChars(a.Command, ptr+"/command")
 	checkArg := validateNoControlChars
 	if exprDeclared {
@@ -3093,14 +3069,11 @@ func validateTaskParam(tp TaskParamDefinition, base string, seen map[string]stru
 // RangeExpr (the whole-field alternative form) is checked too, but not here:
 // [validateTaskParamRangeAndChunks], this function's caller, covers it on the
 // base-spec path, and [checkParameterSpaceExpressions] (exprcheck.go) covers
-// it on the EXPR path. The EXPR side targets section 1.3.12's real per-type
-// target (rangeExprFieldType/rangeExprElemType) rather than this function's
-// fixed string check,
-// because under EXPR a RangeExpr may be a list- or range_expr-valued
-// expression rather than a plain string -- the
-// expr1.3.11--*-range-expression.yaml fixtures legitimately evaluate to
-// list[float]/list[path]/list[string]. See those two sites for the full
-// reasoning.
+// it on the EXPR path. The EXPR side targets section 1.3.12's per-type
+// target (rangeExprFieldType/rangeExprElemType) because under EXPR a
+// RangeExpr may evaluate to a list or range_expr rather than a string (the
+// expr1.3.11--*-range-expression.yaml fixtures evaluate to
+// list[float]/list[path]/list[string]).
 func validateRangeListValues(tp TaskParamDefinition, base string, exprDeclared bool, params map[string]bool) ValidationErrors {
 	var errs ValidationErrors
 	for i, v := range tp.RangeList {
@@ -3153,16 +3126,12 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string, exprDe
 
 	// RangeExpr (the whole-field alternative to RangeList) is also a
 	// format-string position: without this check a base-spec template with
-	// range: "{{Session.WorkingDirectory}}" would validate with zero errors
-	// and resolve to nothing at run time, the same hole RangeList's own check
-	// closes. validateFormatString is prefix-only and type-blind (it has no
-	// concept of a target type to get wrong), so this costs nothing and is
-	// safe for the common case too: sqi's own preset templates all use
-	// RangeExpr for a single job-parameter reference
-	// ("{{Param.Frames}}"/"{{Param.FrameRange}}"), in scope at ScopeJob.
-	// (checkParameterSpaceExpressions in exprcheck.go covers the EXPR-declared
-	// counterpart with section 1.3.12's per-type target -- see its doc
-	// comment.)
+	// range: "{{Session.WorkingDirectory}}" would validate and resolve to
+	// nothing at run time. validateFormatString checks only reference
+	// prefixes, not types, so the common case, a single job-parameter
+	// reference such as "{{Param.Frames}}" (in scope at ScopeJob), passes.
+	// checkParameterSpaceExpressions (exprcheck.go) covers the EXPR-declared
+	// counterpart with section 1.3.12's per-type target.
 	if tp.RangeExpr != nil && !exprDeclared {
 		errs = append(errs, validateFormatString(*tp.RangeExpr, base+"/range", ScopeJob, refNames{params: params})...)
 	}

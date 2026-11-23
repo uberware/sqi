@@ -5,8 +5,7 @@
 // [protocol.DiagLogMsg] on the core-NATS subject worker.diag.<workerID>.
 //
 // All publishing is best-effort: marshal or publish errors are dropped.  The
-// sink performs NO slog calls — doing so would re-enter the fan-out handler and
-// loop.
+// sink makes no slog calls: one would re-enter the fan-out handler and loop.
 package diaglog
 
 import (

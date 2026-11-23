@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Command s3sync is a TEST-ONLY sync helper for the S3 staging integration test.
+// Command s3sync is a test-only sync helper for the S3 staging integration test.
 // It copies a single object between the local filesystem and an S3-compatible
 // endpoint, in whichever direction the src/dest imply:
 //
@@ -9,9 +9,9 @@
 // Exactly one of src/dest is an s3://bucket/key URI; the other is a local path.
 // Endpoint and credentials come from the environment (AWS_ENDPOINT_URL,
 // AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION), mirroring how an operator
-// configures a real aws/mc/rclone sync command. This helper is never built into
-// sqi's shipped binaries — it exists only so the integration test can run a real
-// S3 round-trip against an in-process fake S3 with no external tools.
+// configures a real aws/mc/rclone sync command. It is not part of sqi's shipped
+// binaries; it lets the integration test run a real S3 round-trip against an
+// in-process fake S3 with no external tools.
 package main
 
 import (

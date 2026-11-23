@@ -317,7 +317,7 @@ func TestWriteProblem_ShapeAndRequestID(t *testing.T) {
 }
 
 func TestRateLimit_DefaultsAppliedWhenZero(t *testing.T) {
-	// Zero config should use defaults (20 rps, burst 40) — just ensure it doesn't panic.
+	// Zero config should use defaults (20 rps, burst 40); this checks it does not panic.
 	h := middleware.RateLimit(middleware.RateLimitConfig{}, discardLogger())(okHandler)
 	req := newReq(http.MethodGet, "/api")
 	req.RemoteAddr = "192.168.1.1:8080"

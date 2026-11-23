@@ -505,7 +505,7 @@ func TestDispatcher_TimeoutRacingCancel(t *testing.T) {
 	}
 }
 
-// timeoutRacingCancel cancels a task just as its one-second timeout fires:
+// timeoutRacingCancel cancels a task as its one-second timeout fires:
 // whichever wins, the task ends exactly once.
 func timeoutRacingCancel(t *testing.T) {
 	d, conn, l := newTestDispatcher(t, simworker.TaskPlan{Duration: time.Minute, Outcome: simworker.OutcomeHang})

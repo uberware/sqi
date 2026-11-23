@@ -19,7 +19,7 @@ import (
 
 // FlagOverrides carries values from CLI flags that take highest precedence
 // during config loading. Only non-empty / non-zero values override the lower
-// layers, so callers can safely pass flag values that were not set without
+// layers, so callers can pass flag values that were not set without
 // clobbering config-file or environment values.
 type FlagOverrides struct {
 	// LogLevel overrides Log.Level when non-empty. Bound to --log-level.
@@ -92,13 +92,11 @@ func Load(filePath string, flags FlagOverrides) (Config, error) {
 // environment layer explicitly decided the value — as opposed to it being
 // the built-in default that nothing overrode.
 //
-// Comparing a resolved value against [DefaultConfig]'s is not a sound way to
-// answer this: an operator's config file (or the shipped
-// config/sqi-server.example.yaml) can restate a default value's exact text
-// while editing other keys, in which case value comparison cannot tell
-// "explicitly configured to the default" apart from "never touched, so it
-// is still the default". Sources is built from the file/env layers
-// themselves, before any default-fill happens, so it is not fooled by that.
+// Comparing a resolved value against [DefaultConfig]'s cannot answer this: a
+// config file (or the shipped config/sqi-server.example.yaml) can restate a
+// default value, and value comparison cannot tell "set to the default" from
+// "never set". Sources is built from the file and environment layers
+// themselves, before defaults are filled in.
 type Sources struct {
 	// StoreSQLitePath is true when store.sqlite_path was set by the config
 	// file or by SQI_STORE_SQLITE_PATH.
@@ -232,8 +230,8 @@ type fileNATS struct {
 }
 
 // fileConfig is the partial YAML/JSON shape used when unmarshaling a config
-// file. Every field uses a pointer so we can distinguish "not set" from a
-// zero value, applying only the fields that are present in the file.
+// file. Every field is a pointer so "not set" is distinct from a zero value
+// and only the fields present in the file are applied.
 type fileConfig struct {
 	HTTP *struct {
 		Addr        *string   `yaml:"addr"`
@@ -463,7 +461,7 @@ func mergeHTTPFile(cfg *Config, fc fileConfig) {
 
 // mergeHTTPTLSFile overlays the http.tls sub-fields from fc onto cfg. Split
 // out of [mergeHTTPFile] to keep its cyclomatic complexity under the lint
-// threshold, following the mergeNATSAuthFile precedent.
+// threshold.
 func mergeHTTPTLSFile(cfg *Config, t *struct {
 	Enabled  *bool   `yaml:"enabled"`
 	CertFile *string `yaml:"cert_file"`
@@ -794,10 +792,6 @@ func mergeAuthBootstrapFile(cfg *Config, b *struct {
 // out of [mergeAuthFile] for cyclomatic complexity. Unlike the sibling
 // helpers it takes the whole fileConfig: its shadow struct has too many
 // fields to restate as a parameter type.
-//
-// A malformed timeout is ignored rather than fatal, matching
-// [mergeAuthSessionFile]'s handling of auth.session.ttl — the file layer is
-// lenient where the env layer is strict, and diverging here would surprise.
 func mergeAuthLDAPFile(cfg *Config, fc fileConfig) {
 	if fc.Auth == nil || fc.Auth.LDAP == nil {
 		return
@@ -916,11 +910,10 @@ func setIfNotNilDuration(dst *time.Duration, src *fileDuration) {
 // ── Environment variable layer ────────────────────────────────────────────────
 
 // applyEnv overlays SQI_* environment variables onto cfg. The typed [envvar]
-// setters return an error when a non-empty value cannot be parsed so a
-// malformed security-relevant value — e.g. SQI_AUTH_ENABLED=enabled
-// — fails loud at load time instead of silently reverting to the default (a
-// fail-open). Every violation is collected and returned together via
-// [errors.Join]; an unset or empty var stays a no-op.
+// setters return an error when a non-empty value cannot be parsed, so a
+// malformed security-relevant value (e.g. SQI_AUTH_ENABLED=enabled) fails the
+// load instead of falling back to the default. Every violation is returned
+// together via [errors.Join]; an unset or empty variable is a no-op.
 func applyEnv(cfg *Config) error {
 	var errs []error
 	collect := func(err error) {
@@ -996,7 +989,7 @@ func applyEnv(cfg *Config) error {
 
 // applyLDAPEnv overlays SQI_AUTH_LDAP_* onto cfg. Split out of [applyEnv] to
 // keep its cyclomatic complexity under the lint threshold. role_map has no env
-// form — a list of pairs has no sane flat encoding, so it is file-only.
+// form: a list of pairs has no flat encoding, so it is file-only.
 func applyLDAPEnv(cfg *LDAPConfig) error {
 	var errs []error
 	collect := func(err error) {
@@ -1026,12 +1019,12 @@ func applyLDAPEnv(cfg *LDAPConfig) error {
 
 // applyOIDCEnv overlays SQI_AUTH_OIDC_* onto cfg. Split out of [applyEnv] to
 // keep its cyclomatic complexity under the lint threshold. role_map has no
-// env form — a list of pairs has no sane flat encoding, so it is file-only,
-// exactly as auth.ldap.role_map is.
+// env form: a list of pairs has no flat encoding, so it is file-only, as
+// auth.ldap.role_map is.
 //
-// Unlike [applyLDAPEnv] this block has exactly one fallible setter — every
-// other field is a string or a string list — so the error is returned directly
-// rather than collected.
+// Unlike [applyLDAPEnv] this block has one fallible setter (every other field
+// is a string or a string list), so the error is returned directly rather
+// than collected.
 func applyOIDCEnv(cfg *OIDCConfig) error {
 	envvar.String(&cfg.Issuer, "SQI_AUTH_OIDC_ISSUER")
 	envvar.String(&cfg.ClientID, "SQI_AUTH_OIDC_CLIENT_ID")
@@ -1090,8 +1083,8 @@ func applyNATSEnv(cfg *Config, collect func(error)) {
 // removedNATSKeys are the nats.* keys that moved under nats.embedded.
 var removedNATSKeys = []string{"addr", "data_dir", "max_store_mb", "tls"}
 
-// rejectRemovedNATSKeys fails a config file that still uses a nats.* key that
-// moved under nats.embedded. The strict decode would reject them as unknown
+// rejectRemovedNATSKeys fails a config file that uses a nats.* key that moved
+// under nats.embedded. The strict decode would reject them as unknown
 // keys too, but without naming where they went.
 func rejectRemovedNATSKeys(path string, data []byte) error {
 	root := yamlstrict.Root(data)

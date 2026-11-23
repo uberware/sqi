@@ -27,11 +27,11 @@ var functionShapes = mergeFuncs(
 
 // mergeFuncs folds the per-category tables into one registry.
 //
-// It PANICS on a duplicate name rather than letting one table quietly win.
+// It panics on a duplicate name rather than letting one table quietly win.
 // Several tables write into a single namespace, and RFC 0006 reuses names across
 // categories in ways that are easy to misread — "string" is a conversion while
 // "str"-prefixed helpers are not, "list" is a conversion while the list
-// FUNCTIONS are a separate group. A silent last-write-wins would delete a whole
+// functions are a separate group. A silent last-write-wins would delete a whole
 // function's overload set and surface much later as an unexplained "no
 // signature accepts" at a call site. This runs once at package initialization,
 // so the panic is a build-time failure in practice.

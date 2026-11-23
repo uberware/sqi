@@ -49,10 +49,10 @@ func TestTemplateBind_Success(t *testing.T) {
 	if len(id.Groups) != 1 || id.Groups[0] != "cn=admins,dc=example,dc=com" {
 		t.Errorf("Groups: got %v", id.Groups)
 	}
-	// Exactly one bind, as the user, carrying the USER's password: template
-	// mode's entire point is having no service account. A second bind would
-	// mean one crept back in, and a bind sending anything other than what the
-	// caller supplied would authenticate the wrong credential.
+	// Exactly one bind, as the user, carrying the user's password: template
+	// mode has no service account. A second bind would mean one is in use,
+	// and a bind sending anything other than what the caller supplied would
+	// authenticate the wrong credential.
 	want := bindKey{DN: "uid=bob,ou=people,dc=example,dc=com", PW: "bob-secret"}
 	if len(fc.binds) != 1 || fc.binds[0] != want {
 		t.Errorf("binds: got %v, want exactly one user bind %v", fc.binds, want)
@@ -154,9 +154,9 @@ func TestTemplateBind_MemberOfIsCaseInsensitive(t *testing.T) {
 	}
 }
 
-// firstAttr shares the same case-insensitive lookup as the memberOf
-// resolution above it, rather than a byte-for-byte match — so a directory that echoes UsernameAttr or DisplayNameAttr back in a different
-// case still populates Identity.Username and Identity.DisplayName.
+// firstAttr uses the same case-insensitive lookup as the memberOf resolution,
+// so a directory that echoes UsernameAttr or DisplayNameAttr back in a
+// different case still populates Identity.Username and Identity.DisplayName.
 func TestTemplateBind_UsernameAndDisplayNameAreCaseInsensitive(t *testing.T) {
 	fc := &fakeConn{searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{
 		entry("uid=bob,ou=people,dc=example,dc=com", map[string][]string{
@@ -187,8 +187,8 @@ func TestTemplateBind_NoEntryAfterBind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	// Bind succeeded, so the credentials are valid; groups are simply empty
-	// and MapRole will fall back to DefaultRole.
+	// Bind succeeded, so the credentials are valid; groups are empty and
+	// MapRole falls back to DefaultRole.
 	if len(id.Groups) != 0 {
 		t.Errorf("Groups: got %v, want none", id.Groups)
 	}

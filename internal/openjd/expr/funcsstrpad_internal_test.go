@@ -15,7 +15,7 @@ import (
 //     the floor split's '  ab   '. It only shows up when the padding and the
 //     width are both odd; center('abc',4) and center('é',5) are the same under
 //     either rule. The reference (openjd-expr 0.3.0) uses CPython's rule too.
-//   - a width at or below the current length returns the input UNCHANGED, which
+//   - a width at or below the current length returns the input unchanged, which
 //     is what makes a negative width a harmless no-op. The reference panics on
 //     a negative width instead.
 func TestPaddingFunctions(t *testing.T) {
@@ -65,10 +65,10 @@ func TestPaddingFunctions(t *testing.T) {
 	}
 }
 
-// TestPadding_BoundsWidth checks the bound AT the limit and one past it, and at
+// TestPadding_BoundsWidth checks the bound at the limit and one past it, and at
 // an int64 extreme where naive arithmetic overflows rather than refusing.
 //
-// The reference implementation fails all three: it PANICS with "capacity
+// The reference implementation fails all three: it panics with "capacity
 // overflow" on a negative zfill width and "Formatting argument out of range" on
 // a large ljust width, and builds a 20 MB string for zfill('a', 20000000)
 // without complaint.
@@ -77,7 +77,7 @@ func TestPadding_BoundsWidth(t *testing.T) {
 		name    string
 		src     string
 		wantErr bool
-		// checkInt, when true, checks wantInt against the SUCCESSFUL result's
+		// checkInt, when true, checks wantInt against the successful result's
 		// value — not merely that Eval returned no error. Without this, "at
 		// the limit" could not catch a regression in padWidth that reported
 		// no-padding-needed at the boundary: ljust would then silently

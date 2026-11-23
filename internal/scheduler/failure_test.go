@@ -81,7 +81,7 @@ func newFailureHarness(t *testing.T, policy RetryPolicy) *failureHarness {
 // something to reclaim from).
 //
 // siblingTaskIDs are further tasks of the same step, still ready. Because
-// they are non-terminal, the step (and therefore the job) is NOT complete when
+// they are non-terminal, the step (and therefore the job) is not complete when
 // taskID fails — which is exactly what a park must survive: holding a job that
 // still has work. The whole job is one submission; taskID is then leased and
 // started through production writes, so its attempt is the one that lease
@@ -276,7 +276,7 @@ func (h *failureHarness) parkReason(jobID string) string {
 
 func TestHandleTaskFailed_RetriesUntilCeiling(t *testing.T) {
 	// max_attempts = 2, retry_delay = 0 (synchronous wake, no timer flakiness).
-	// First failure -> task back to ready (retry_after set), NOT failed.
+	// First failure -> task back to ready (retry_after set), not failed.
 	// Second genuine failure -> task terminal failed, step/job completion runs.
 	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 2, RetryDelay: 0, FailureLimit: 0})
 	h.seedRunningTask("j1", "t1", "w1")
@@ -328,9 +328,9 @@ func TestHandleTaskFailed_Retry_EvictsAttemptCache(t *testing.T) {
 	}
 }
 
-// TestHandleTaskFailed_RedeliveryCountsOnce is the IMP-1 regression at the
+// TestHandleTaskFailed_RedeliveryCountsOnce checks redelivery at the
 // scheduler layer. The task-status JetStream consumer is at-least-once, so the
-// same "failed" message can be delivered more than once (NAK, AckWait expiry,
+// same "failed" message can be delivered more than once (Nak, AckWait expiry,
 // MaxDeliver). A redelivery of an already-processed attempt must be counted
 // exactly once — it must not push the task toward its ceiling or the job toward
 // its failure limit, and must not strand the task.
@@ -362,7 +362,7 @@ func TestHandleTaskFailed_RedeliveryCountsOnce(t *testing.T) {
 		t.Fatalf("after first delivery want ready, got %s", got)
 	}
 
-	// Redelivery of the SAME message (same attempt): the attempt is already
+	// Redelivery of the same message (same attempt): the attempt is already
 	// failed, so RecordTaskFailure returns the current counts without
 	// re-incrementing, the retry decision is re-made identically, and the
 	// requeue is re-applied harmlessly.
@@ -382,7 +382,7 @@ func TestHandleTaskFailed_RedeliveryCountsOnce(t *testing.T) {
 		t.Fatalf("job should remain running across a redelivery, got %s", got)
 	}
 
-	// A genuine SECOND attempt still counts: the exactly-once gate is per
+	// A second attempt still counts: the exactly-once gate is per
 	// attempt, not per task.
 	h.reassignAndReportFailed("t1", "w1")
 	if got := h.taskFailedAttempts("t1"); got != 2 {
@@ -393,7 +393,7 @@ func TestHandleTaskFailed_RedeliveryCountsOnce(t *testing.T) {
 func TestHandleTaskFailed_ParksJobAtFailureLimit(t *testing.T) {
 	// The real park scenario: a job with work still remaining. The step holds
 	// two tasks — t1 fails and trips FailureLimit:1, while t2 stays ready. The
-	// step is therefore NOT complete when t1 fails, so checkStepCompletion /
+	// step is therefore not complete when t1 fails, so checkStepCompletion /
 	// checkJobCompletion naturally no-op and the park holds without any guard.
 	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 5, RetryDelay: 0, FailureLimit: 1})
 	h.seedRunningTask("j1", "t1", "w1", "t2") // second task, still ready (non-terminal)
@@ -525,7 +525,7 @@ func lastTaskEvent(t *testing.T, events []ws.TaskEvent, taskID string, status st
 }
 
 func TestHandleTaskFailed_LostWorkDoesNotCount(t *testing.T) {
-	// A worker-offline reclaim must NOT increment failed_attempts — only a
+	// A worker-offline reclaim must not increment failed_attempts — only a
 	// worker-reported "failed" status is a genuine failure.
 	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 2, RetryDelay: 0})
 	h.seedRunningTask("j1", "t1", "w1")
@@ -604,7 +604,7 @@ func TestHandleTaskFailed_PersistsReason(t *testing.T) {
 
 // TestHandleTaskFailed_RetriedAttemptRecordsMessage_TaskReasonStaysClear
 // asserts that a retried (non-terminal) failure still records the closed
-// attempt's Message via RecordTaskFailure, but does NOT set the task's
+// attempt's Message via RecordTaskFailure, but does not set the task's
 // FailureReason — only handleTaskTerminal does that, and the retry path
 // never calls it.
 func TestHandleTaskFailed_RetriedAttemptRecordsMessage_TaskReasonStaysClear(t *testing.T) {
@@ -663,7 +663,7 @@ func TestHandleTaskFailed_CancelRace_DoesNotResurrectTask(t *testing.T) {
 // late-failure-after-reclaim race: worker A drops off, the sweep closes its
 // attempt as failed and reclaims the task, and worker B re-leases it (a newer
 // attempt is running). When worker A reconnects and its buffered "failed" for
-// the OLD attempt is delivered, it must be discarded — acting on it would rip
+// the old attempt is delivered, it must be discarded — acting on it would rip
 // the assignment out from under worker B and let a third worker lease the
 // task into duplicate concurrent execution.
 func TestHandleTaskFailed_SupersededAttempt_LeavesReleasedTaskAlone(t *testing.T) {
@@ -760,7 +760,7 @@ func TestHandleTaskFailed_StaleReportDoesNotPark(t *testing.T) {
 }
 
 // TestHandleTaskFailed_CrashRecoveryRedelivery_StillRequeues pins the
-// crash-recovery contract the stale-report gate must NOT break: the server
+// crash-recovery contract the stale-report gate must not break: the server
 // committed RecordTaskFailure (attempt closed, counters incremented) but died
 // before the requeue, so the un-acked message is redelivered after restart.
 // The attempt is closed as failed and is still the task's latest, so the
@@ -794,7 +794,7 @@ func TestHandleTaskFailed_CrashRecoveryRedelivery_StillRequeues(t *testing.T) {
 // ── park recovery ────────────────────────────────────────────────────────────
 
 // TestParkResume_RearmsFailureLimit covers the auto-park recovery loop: a job
-// parks at its failure limit, the operator resumes it, and the NEXT genuine
+// parks at its failure limit, the operator resumes it, and the next genuine
 // failure must retry normally instead of instantly re-parking. Resume must
 // therefore clear park_reason and reset the job's failure counter.
 func TestParkResume_RearmsFailureLimit(t *testing.T) {

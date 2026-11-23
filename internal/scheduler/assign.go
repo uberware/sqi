@@ -41,7 +41,7 @@ import (
 // buildAssignPayload constructs a [protocol.AssignMsg] for the given task
 // assignment and marshals it to JSON.
 //
-// It receives the store-level task, worker, job, step, and queue records.  It
+// It receives the store-level task, worker, job, step, and queue records. It
 // also receives the attemptID so the worker can correlate status reports and
 // log chunks back to the correct attempt, and the storage location store used
 // to build the path map and resolve loc:// URIs.
@@ -115,14 +115,12 @@ func buildAssignPayload(
 
 	// ── Expression evaluation (EXPR extension) ──────────────────────────────
 	// internal/openjd's validateLetExtension rejects any let: block unless
-	// the template declares EXPR, so a template that reaches here without
-	// EXPR cannot have a populated Let anywhere in it; the hasEXPR gate in
-	// populateEXPRFields is nonetheless what keeps ParameterTypes and
-	// JobParameterTypes (which base-spec templates *do* populate, since
-	// typed parameterDefinitions are base-spec, not EXPR-only) off the wire
-	// for a base-spec assignment. A template without EXPR declared must
-	// produce byte-for-byte the same assignment shape it produced before
-	// this section existed — see [protocol.AssignMsg.EXPR].
+	// the template declares EXPR, so a template without EXPR has no Let. The
+	// hasEXPR gate in populateEXPRFields keeps ParameterTypes and
+	// JobParameterTypes (which base-spec templates also populate, since typed
+	// parameterDefinitions are base-spec) off the wire for a base-spec
+	// assignment, so a template without EXPR carries none of the EXPR fields;
+	// see [protocol.AssignMsg.EXPR].
 	hasEXPR := populateEXPRFields(&msg, tmpl, stepTmpl, job.Name, step.Name)
 
 	// ── OnRun action and step-level embedded files ─────────────────────────
@@ -192,14 +190,12 @@ func buildAssignPayload(
 // buildJobParameters returns the job-parameter values to carry in the
 // assignment message so the worker can resolve {{Param.*}} format strings.
 //
-// When job.Parameters is non-empty (jobs submitted after the parameters-
-// persistence migration), those fully-bound values are used directly — they
-// include both caller-supplied values and applied defaults, so no information
-// is lost and submitted non-default values are preserved.
+// When job.Parameters is non-empty, those bound values (caller-supplied values
+// and applied defaults) are used directly.
 //
-// When job.Parameters is empty (pre-migration jobs or jobs with no declared
-// parameters), the function falls back to extracting defaults from the parsed
-// template so that existing jobs continue to work correctly.
+// When job.Parameters is empty (a job row that stores no bound parameters, or
+// a job with no declared parameters), the defaults are taken from the parsed
+// template.
 func buildJobParameters(tmpl *openjd.JobTemplate, job store.Job) map[string]string {
 	// Prefer persisted bound values when available. Clone so downstream
 	// resolution (e.g. loc:// rewriting in resolveLocURIsInMsg) never mutates
@@ -208,7 +204,7 @@ func buildJobParameters(tmpl *openjd.JobTemplate, job store.Job) map[string]stri
 	if len(job.Parameters) > 0 {
 		return maps.Clone(job.Parameters)
 	}
-	// Fallback: extract defaults from parameter definitions (pre-migration jobs).
+	// Fallback: extract defaults from parameter definitions.
 	if len(tmpl.ParameterDefinitions) == 0 {
 		return nil
 	}
@@ -307,15 +303,12 @@ func convertEnvironment(e openjd.Environment, hasEXPR, isStepEnvironment bool) p
 			ae.Let = e.Script.Let
 		}
 	}
-	// StepEnvironment distinguishes a step-level environment from a
-	// job-level one -- see protocol.AssignEnvironment.StepEnvironment's doc
-	// comment for why the worker's phase-3 symbol-table builder needs this
-	// bit (Step.Name is legal in a step environment's script, per Template
-	// Schemas §3.6.2, but not in a job environment's). Gated on hasEXPR
-	// like every other EXPR-only field, so a base-spec assignment's wire
-	// bytes are unaffected -- the caller already computed isStepEnvironment
-	// for free (this function is called once from the job-environment loop
-	// with false, once from the step-environment loop with true).
+	// StepEnvironment distinguishes a step-level environment from a job-level
+	// one for the worker's phase-3 symbol-table builder (Step.Name is legal
+	// in a step environment's script, per Template Schemas §3.6.2, but not in
+	// a job environment's; see protocol.AssignEnvironment.StepEnvironment).
+	// Gated on hasEXPR like every other EXPR-only field, so a base-spec
+	// assignment does not carry it.
 	ae.StepEnvironment = hasEXPR && isStepEnvironment
 	return ae
 }
@@ -452,14 +445,12 @@ func detectPathFormat(p string) string {
 }
 
 // resolveLocURIsInParamValue concretizes loc:// URIs in one job-parameter
-// value, dispatching on the parameter's DECLARED type.
+// value, dispatching on the parameter's declared type.
 //
 // A scalar is resolved by substring replacement. A LIST[*] value is canonical
-// JSON, and substring replacement on it splices the resolved path inside a
-// JSON string literal -- which survives by luck for a POSIX path and corrupts
-// a Windows one, whose
-// backslashes are not legal JSON escapes and make the value stop decoding
-// entirely. So a list is decoded, resolved element by element, and re-encoded
+// JSON, where substring replacement would splice the resolved path inside a
+// JSON string literal, and a Windows path's backslashes are not legal JSON
+// escapes. So a list is decoded, resolved element by element, and re-encoded
 // through the same codec that produced it.
 func resolveLocURIsInParamValue(
 	value, declaredType string, resolve func(name, relPath string) (string, error),

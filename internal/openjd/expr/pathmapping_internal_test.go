@@ -98,7 +98,7 @@ func TestMapPath(t *testing.T) {
 		{
 			// Two equal-length rules, so mapPath's stable sort leaves them in
 			// this order. The first rule's own destination "/b" is itself a
-			// prefix the SECOND rule's source would match — so an
+			// prefix the second rule's source would match — so an
 			// implementation that kept scanning and applying every matching
 			// rule (rather than stopping at the first) would additionally
 			// rewrite "/b/x" to "/c/x". First-match-wins must stop after
@@ -124,7 +124,7 @@ func TestMapPath(t *testing.T) {
 			want:  "/projects/x",
 		},
 		{
-			// dst governs how the DESTINATION and the transferred remainder
+			// dst governs how the destination and the transferred remainder
 			// are re-expressed, independent of the source's own flavor — a
 			// POSIX source can map into a Windows destination. Every other
 			// case in this table uses dst: PathPOSIX, which would let a bug
@@ -196,11 +196,12 @@ func TestApplyPathMapping_WindowsSourceCaseInsensitive(t *testing.T) {
 }
 
 // TestApplyPathMapping_PassthroughNormalizes pins what "passthrough" means: no
-// RULE rewrote the text, but the result is still re-parsed by boundedPath in the
-// evaluation's flavor, so a non-normal input does not come back verbatim. The
-// vendored fixture cases below depend on this (expr2.3.2--apply-path-mapping's
-// output_windows expects an unmatched POSIX-shaped input back with backslashes),
-// which is why it is pinned separately rather than left implicit.
+// rule rewrote the text, but the result is still re-parsed by boundedPath in
+// the evaluation's flavor, so a non-normal input does not come back verbatim.
+// The vendored fixture cases below depend on this
+// (expr2.3.2--apply-path-mapping's output_windows expects an unmatched
+// POSIX-shaped input back with backslashes), which is why it is pinned
+// separately rather than left implicit.
 func TestApplyPathMapping_PassthroughNormalizes(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -241,7 +242,7 @@ func TestMapPath_ReturnsRawTextOnTheURIAndPassthroughArms(t *testing.T) {
 
 // TestApplyPathMapping_ResultChainsButAPathReceiverIsRefused pins the two claims
 // doc.go makes about the function's signature — string in, path out — meeting the
-// section 1.2.4 rule that a method RECEIVER is not coerced.
+// section 1.2.4 rule that a method receiver is not coerced.
 func TestApplyPathMapping_ResultChainsButAPathReceiverIsRefused(t *testing.T) {
 	t.Run("the path result chains into a path property", func(t *testing.T) {
 		v, err := Eval(`apply_path_mapping('/projects/shot01/out.exr').stem`, MapSymbols{}, TAny)
@@ -275,7 +276,7 @@ func TestApplyPathMapping_ResultChainsButAPathReceiverIsRefused(t *testing.T) {
 //
 // and every want below is copied from their expected.output / output_posix /
 // output_windows blocks, with the "LABEL:" prefix the fixture's python print()
-// adds stripped. They are SPECIFICATION-AUTHORED ground truth, not invented
+// adds stripped. They are specification-authored ground truth, not invented
 // expectations — which matters because apply_path_mapping has no oracle
 // coverage (see doc.go), so this table is the closest thing the function has to
 // an external reference.

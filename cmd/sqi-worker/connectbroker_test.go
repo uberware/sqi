@@ -55,17 +55,15 @@ func startEmbeddedBroker(t *testing.T, auth bus.AuthConfig) *bus.Embedded {
 	return b
 }
 
-// TestConnectToBroker_AuthOffFarmBootsWithNoCredential exercises the exact
+// TestConnectToBroker_AuthOffFarmBootsWithNoCredential exercises the
 // boot-time path runStart takes on the default, auth-off configuration: a
-// worker with no credential file and no join token configured must still
-// connect, exactly as it did before broker authentication existed. This is
-// the regression this feature is not allowed to introduce.
+// worker with no credential file and no join token configured must connect.
 func TestConnectToBroker_AuthOffFarmBootsWithNoCredential(t *testing.T) {
 	b := startEmbeddedBroker(t, bus.AuthConfig{Enabled: false})
 
 	var cfg workerconfig.WorkerConfig
 	cfg.NATS.URL = b.ClientURL()
-	cfg.NATS.CredentialFile = t.TempDir() + "/worker.nk" // deliberately does not exist
+	cfg.NATS.CredentialFile = t.TempDir() + "/worker.nk" // does not exist
 	cfg.NATS.MaxReconnectAttempts = 0
 	cfg.NATS.ReconnectWait = 10 * time.Millisecond
 
@@ -83,7 +81,7 @@ func TestConnectToBroker_AuthOffFarmBootsWithNoCredential(t *testing.T) {
 // TestConnectToBroker_AuthOnFarmWithNoCredentialNamesBothRemediations covers
 // the case the boot-sequence exit message in cmd/sqi-worker/start.go exists
 // for: a worker with neither a credential file nor a join token, against a
-// broker that actually requires authentication. The failure must be fatal
+// broker that requires authentication. The failure must be fatal
 // and must name both ways an operator can fix it.
 func TestConnectToBroker_AuthOnFarmWithNoCredentialNamesBothRemediations(t *testing.T) {
 	// Auth on with nothing enrolled: the callout refuses every key.

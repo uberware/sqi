@@ -89,11 +89,11 @@ func validateCORSOrigins(origins []string) []ValidationError {
 			continue
 		}
 		if strings.Contains(o, "*") {
-			// go-chi/cors treats ANY embedded '*' as a prefix/suffix wildcard,
+			// go-chi/cors treats any embedded '*' as a prefix/suffix wildcard,
 			// so "https://*.example.com" or "https://app.example.com*" would be
-			// honored — with credentials, once auth is enabled — letting an
-			// attacker-registrable origin ride the victim's session cookie. Only
-			// the bare "*" (handled above) is supported; reject the rest.
+			// honored, with credentials when auth is enabled, letting an
+			// attacker-registrable origin use the victim's session cookie. Only
+			// the bare "*" (handled above) is supported.
 			errs = append(errs, ValidationError{
 				Field:   "http.cors_origins",
 				Message: fmt.Sprintf("origin %q must not contain a wildcard %q; wildcard patterns are not supported — name explicit origins (only a bare %q is allowed)", o, "*", "*"),
@@ -429,14 +429,14 @@ func validateDiagnostics(cfg DiagnosticsConfig) []ValidationError {
 // validateOpenJD validates the four EXPR expression limits and the wall-clock
 // submission deadline.
 //
-// These bound what an UNAUTHENTICATED job submission may spend inside the
-// expression checker, so an out-of-range value is a hard startup failure
-// rather than a silently clamped one: an operator who typed 10000000 where
-// they meant 10000 must find out at boot, not by serving a request that pins a
-// core for minutes.
+// These bound what a job submission, which may be unauthenticated, may spend
+// inside the expression checker, so an out-of-range value fails startup
+// rather than being clamped: an operator who typed 10000000 where they meant
+// 10000 finds out at boot, not by serving a request that pins a core for
+// minutes.
 //
 // Each message names the bound, the value observed, and both the environment
-// variable and the YAML key — the shape [validateDiagnostics] established.
+// variable and the YAML key, as [validateDiagnostics] does.
 func validateOpenJD(cfg OpenJDConfig) []ValidationError {
 	limits := []struct {
 		field   string
@@ -487,10 +487,8 @@ func validateOpenJD(cfg OpenJDConfig) []ValidationError {
 	// heartbeat_timeout and unschedulable_grace) so the message can print
 	// "5s" rather than a nanosecond count no operator typed.
 	//
-	// Zero is rejected like the four are, and for a stronger reason: for those
-	// it would mean "unlimited", while here it would mean "give up
-	// immediately". Neither is a setting anyone wants by accident, and an
-	// operator who wants a long deadline has the ceiling to reach for.
+	// Zero is rejected, as it is for the four limits: here it would mean "give
+	// up immediately".
 	if d := cfg.ExprSubmissionDeadline; d < MinOpenJDExprSubmissionDeadline ||
 		d > MaxOpenJDExprSubmissionDeadline {
 		errs = append(errs, ValidationError{
@@ -505,12 +503,13 @@ func validateOpenJD(cfg OpenJDConfig) []ValidationError {
 	return errs
 }
 
-// validateAuth validates the auth config. Rules only apply when auth is
-// enabled — a disabled auth block must never produce validation errors, since
-// its sub-fields carry no operational meaning until the gate is turned on.
+// validateAuth validates the auth config. Its rules apply only when auth is
+// enabled: a disabled auth block produces no validation errors (except an
+// LDAP or OIDC block enabled without it), since its sub-fields have no effect
+// until the gate is on.
 //
-// Bootstrap.Password is intentionally never echoed here: validation errors
-// name the field, never the value.
+// Bootstrap.Password is never echoed here: validation errors name the field,
+// never the value.
 func validateAuth(cfg AuthConfig) []ValidationError {
 	var errs []ValidationError
 	if !cfg.Enabled {
@@ -535,12 +534,11 @@ func validateAuth(cfg AuthConfig) []ValidationError {
 		})
 	}
 	if cfg.Session.CookieName == "" {
-		// An empty name defaults quietly in session.New and newAuthHandler, but
-		// middleware.CSRF reads it raw via r.Cookie(""), which always errors —
-		// every mutating request would then take the "no session cookie" exempt
-		// path and CSRF would be silently disabled. Require it explicitly so
-		// all three consumers agree on the name instead of relying on
-		// convention.
+		// An empty name defaults in session.New and newAuthHandler, but
+		// middleware.CSRF reads it raw via r.Cookie(""), which always errors:
+		// every mutating request would then take the "no session cookie"
+		// exempt path and CSRF would be off. Requiring it keeps all three
+		// consumers on the same name.
 		errs = append(errs, ValidationError{
 			Field:   "auth.session.cookie_name",
 			Message: "must not be empty when auth is enabled; set SQI_AUTH_SESSION_COOKIE_NAME or auth.session.cookie_name",
@@ -607,8 +605,8 @@ func validateAuthLDAP(cfg LDAPConfig) []ValidationError {
 // or answer in ways nothing here expects.
 //
 // username_attr and display_name_attr carry defaults, so reaching those errors
-// means the operator explicitly cleared one. unique_id_attr deliberately has
-// no default and must always be stated — see its error message.
+// means the operator cleared one. unique_id_attr has no default and must
+// always be stated; see its error message.
 func validateLDAPAttrs(cfg LDAPConfig) []ValidationError {
 	var errs []ValidationError
 	if cfg.UsernameAttr == "" {
@@ -627,7 +625,7 @@ func validateLDAPAttrs(cfg LDAPConfig) []ValidationError {
 		errs = append(errs, ValidationError{
 			Field: "auth.ldap.unique_id_attr",
 			Message: `must not be empty; set SQI_AUTH_LDAP_UNIQUE_ID_ATTR or auth.ldap.unique_id_attr ` +
-				`("objectGUID" on Active Directory, "entryUUID" on OpenLDAP). There is deliberately no ` +
+				`("objectGUID" on Active Directory, "entryUUID" on OpenLDAP). There is no ` +
 				`default: no value is correct on both.`,
 		})
 	}
@@ -714,11 +712,9 @@ func validateSearchBind(cfg LDAPConfig) []ValidationError {
 			Message: "must be set for search-then-bind; set SQI_AUTH_LDAP_BASE_DN or auth.ldap.base_dn",
 		})
 	}
-	// An empty bind_dn selects anonymous search, a legitimate deployment
-	// for a world-readable directory. But a bind_password with no bind_dn
-	// to go with it is not that — it is silently discarded and the
-	// service searches anonymously, with no error and no log. Whatever
-	// password the operator meant to configure never reaches the wire.
+	// An empty bind_dn selects anonymous search, valid for a world-readable
+	// directory. A bind_password with no bind_dn would be ignored without an
+	// error or log line, and the service would search anonymously.
 	if cfg.BindDN == "" && cfg.BindPassword != "" {
 		errs = append(errs, ValidationError{
 			Field:   "auth.ldap.bind_dn",
@@ -737,10 +733,9 @@ func validateSearchBind(cfg LDAPConfig) []ValidationError {
 // validateRoleMapping checks role_source, role_map, and default_role for one
 // auth provider block, named by prefix ("auth.ldap" or "auth.oidc").
 //
-// The two blocks are deliberately parallel in the config file — an operator
-// configuring OIDC should not have to learn a different spelling — so the rules
-// and the wording are identical and live here once. Only the field prefix
-// differs.
+// The two blocks are parallel in the config file, so an operator configuring
+// OIDC uses the same spelling as for LDAP; the rules and wording live here
+// once, and only the field prefix differs.
 func validateRoleMapping(prefix, roleSource string, roleMap []RoleMappingConfig, defaultRole string) []ValidationError {
 	var errs []ValidationError
 	switch roleSource {
@@ -835,7 +830,7 @@ func requireAbsoluteURL(field, envKey, value string) []ValidationError {
 
 // validateOIDCClaims checks the scope list and claim-name fields.
 // UsernameClaim and DisplayNameClaim carry defaults, so reaching those errors
-// means the operator explicitly cleared one — mirrors validateLDAPAttrs.
+// means the operator cleared one, as in validateLDAPAttrs.
 func validateOIDCClaims(cfg OIDCConfig) []ValidationError {
 	var errs []ValidationError
 	if len(cfg.Scopes) == 0 {
@@ -871,8 +866,7 @@ func validateOIDCClaims(cfg OIDCConfig) []ValidationError {
 }
 
 // validateOIDCModes checks reauth_mode and logout_mode against the mode
-// constants defined in internal/auth/oidc — the same package that reads
-// them.
+// constants defined in internal/auth/oidc, the package that reads them.
 func validateOIDCModes(cfg OIDCConfig) []ValidationError {
 	var errs []ValidationError
 	switch cfg.ReauthMode {
@@ -916,11 +910,10 @@ func validateTCPAddr(addr string) error {
 	if port == "" {
 		return errors.New("port is required")
 	}
-	// Allow empty host ("0.0.0.0" is encoded as "" by SplitHostPort for "[::]:port").
-	// Attempt a resolution only when a non-empty, non-wildcard host is given.
+	// An empty host (":port") and the wildcards 0.0.0.0 and :: are accepted
+	// as is; any other host that is not an IP literal must resolve.
 	if host != "" && host != "0.0.0.0" && host != "::" {
 		if net.ParseIP(host) == nil {
-			// Not an IP literal — try resolving as a hostname.
 			if _, err := net.DefaultResolver.LookupHost(context.Background(), host); err != nil {
 				return fmt.Errorf("host %q cannot be resolved: %w", host, err)
 			}

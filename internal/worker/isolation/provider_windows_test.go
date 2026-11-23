@@ -83,11 +83,11 @@ func TestNewProvider_UnknownProviderRejected(t *testing.T) {
 	}
 }
 
-// TestCapableOS_ReportsThePrivilegeCheck proves Capable() now reflects the
-// worker's ACTUAL privileges rather than refusing unconditionally.
+// TestCapableOS_ReportsThePrivilegeCheck proves Capable() reflects the
+// worker's privileges rather than refusing unconditionally.
 //
-// The two halves of this claim are asserted in different places on purpose:
-// here, that a process WITHOUT SeAssignPrimaryTokenPrivilege is refused (the
+// The two halves are asserted in different places: here, that a process
+// without SeAssignPrimaryTokenPrivilege is refused (the
 // go test binary is not SYSTEM), and in the System tier
 // (TestIsolationWindowsSystem_Capable) that a process WITH it is accepted. A
 // Capable() that always returned nil would pass one and fail the other.

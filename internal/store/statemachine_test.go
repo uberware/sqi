@@ -2,12 +2,10 @@
 
 package store_test
 
-// Tests for statemachine.go — the task state machine that [store.Store]
-// implementations enforce on every status write.
-//
-// The task machine moved here from internal/openjd so the store can enforce it
-// without an import cycle (openjd imports store). openjd.ValidateTaskTransition
-// now delegates here and keeps its own tests.
+// Tests for statemachine.go: the task state machine that
+// CompleteTaskAttempt enforces in every [store.Store] implementation. It lives
+// in package store so the store can enforce it without an import cycle
+// (openjd imports store).
 
 import (
 	"errors"
@@ -47,8 +45,8 @@ func TestValidateTaskTransition_Legal(t *testing.T) {
 	}
 }
 
-// TestValidateTaskTransition_AssignedToTerminal pins the arrows added when
-// store-level enforcement was introduced. A worker publishes "running" before
+// TestValidateTaskTransition_AssignedToTerminal pins the assigned ->
+// succeeded/failed arrows. A worker publishes "running" before
 // it publishes a terminal status, but status.Publisher drops a first "running"
 // still pending when the task's terminal status is ready to send, so the
 // terminal message can arrive with the task row still in 'assigned'. Rejecting

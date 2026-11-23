@@ -1216,7 +1216,7 @@ func TestLogs_LossInsideFaultWindowIsCounted(t *testing.T) {
 }
 
 // lateLogs is a server whose missing chunk of t1 (lines 11-14) is ingested
-// just before the read number arriveOn; 0 never.
+// before read number arriveOn; 0 never.
 type lateLogs struct {
 	*fakeView
 

@@ -7,7 +7,7 @@ import "testing"
 // TestReprSh pins Python's shlex.quote, which RFC 0006 names explicitly as the
 // behavior repr_sh follows.
 //
-// The reference implementation produces DIFFERENT TEXT for the same inputs — a
+// The reference implementation produces different text for the same inputs — a
 // mixed strategy splicing double- and single-quoted segments, e.g.
 // repr_sh("it's $HOME") gives `"it's "'$HOME'`. That output is shell-equivalent
 // and safe, but it is not what the specification names, so sqi implements
@@ -47,7 +47,7 @@ func TestReprSh(t *testing.T) {
 // the specification's own worked examples, and the reference reproduces all of
 // them, so this function is expected to carry no divergence.
 //
-// The newline stripping is a SECURITY rule, not formatting: cmd.exe has no
+// The newline stripping is a security rule, not formatting: cmd.exe has no
 // escape for a literal newline inside a quoted argument, so anything after one
 // would be read as a new command.
 func TestReprCmd(t *testing.T) {
@@ -96,16 +96,16 @@ func TestReprPwsh(t *testing.T) {
 		{"empty list", `repr_pwsh([])`, "@()"},
 		// A nested list must become a nested "@(...)" array literal, not
 		// sqi's own list rendering ("[a]") quoted as a single PowerShell
-		// STRING, which would give repr_pwsh([['a'],['b']]) =
+		// string, which would give repr_pwsh([['a'],['b']]) =
 		// "@('[a]', '[b]')" — a nested list of text, not a nested array.
 		{"nested list becomes a nested array literal", `repr_pwsh([['a'], ['b']])`, "@(@('a'), @('b'))"},
 		// Section 2.2.6, as restated by openjd-specifications#176: a
-		// ONE-element list whose element is itself a list takes the unary
+		// one-element list whose element is itself a list takes the unary
 		// comma form, because "@(@(1, 2))" flattens to "@(1, 2)" under
 		// PowerShell's array-flattening rules while "@(,@(1, 2))" preserves
-		// the nesting. The rule is about the number of ELEMENTS, not the
+		// the nesting. The rule is about the number of elements, not the
 		// depth: a two-element list of lists needs no comma, and a
-		// one-element list of SCALARS must not get one (@('a') is already
+		// one-element list of scalars must not get one (@('a') is already
 		// unambiguous, and @(,'a') would be a different thing to write).
 		{"single nested list takes the unary comma form", `repr_pwsh([[1, 2]])`, "@(,@(1, 2))"},
 		{"single nested EMPTY list takes the unary comma form", `repr_pwsh([[]])`, "@(,@())"},

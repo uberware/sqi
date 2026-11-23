@@ -4,7 +4,7 @@ Long-form documentation for `sqi-server` operators and contributors.
 
 **Getting started**
 
-- `quickstart.md` — end-to-end first run (binary or Docker Compose): farm, queue, first job
+- `quickstart.md` — first run (binary or Docker Compose) and a first job
 - `index.md` — overview / landing page (mirrors the repo-root `README.md` for the docs site)
 - `examples/` — runnable sample job payloads (e.g. `hello.json`, used by the release runbook)
 
@@ -17,7 +17,7 @@ Long-form documentation for `sqi-server` operators and contributors.
 - `openjd-extensions.md` — the OpenJD extension registry and how to add one (subdocs under `openjd-extensions/`)
 - `openjd-conformance.md` — the official OpenJD conformance suite results, current pass rate, and known gaps
 
-**Products, presets & submitters** (Phase 2)
+**Products, presets & submitters**
 
 - `products.md` — products as a catalog layer over OpenJD templates
 - `preset-library.md` — the community preset library and its index format
@@ -32,16 +32,19 @@ Long-form documentation for `sqi-server` operators and contributors.
 **Configuration & operations**
 
 - `configuration.md` — every server config option with type, default, env var, example
-- `auth.md` — the opt-in `auth.enabled` gate, the `Principal`/`Authenticator` model, and what's scaffolding vs. live
-- `tls.md` — in-process TLS for the API and the embedded broker, `sqi-server tls init`, and optional worker mTLS
+- `auth.md` — the opt-in `auth.enabled` gate, local accounts, sessions, API keys, RBAC, LDAP/AD, OIDC/SSO, broker authentication, and known gaps
+- `tls.md` — in-process TLS for the API and the embedded broker, TLS to an external broker, `sqi-server tls init`, and optional worker mTLS
 - `worker-configuration.md` — the full `sqi-worker` config reference
 - `worker-capabilities.md` — capability tags and software auto-detection
-- `worker-deployment.md` — running workers (systemd, bare binary)
+- `worker-deployment.md` — running workers (systemd, launchd, Windows service), broker credentials
 - `worker-docker.md` — the worker container image
-- `operations.md` — install, upgrade, backup/restore, log rotation, metrics scraping
+- `operations.md` — install, upgrade, backup/restore, PostgreSQL, external NATS, high availability, log rotation, metrics scraping
+- `capacity.md` — capacity groups: how many elastic machines waiting work justifies, and autoscaler integration
 - `observability.md` — diagnostics ring buffer, health, metrics, and why-isn't-my-job-running
 - `release-runbook.md` — cutting a tagged release
 - `cross-platform-validation.md` — the pre-release cross-platform check
+- `load-testing.md` — the `sqi-load` load and soak harness
+- `chaos-testing.md` — the fault-injection suite built on the load harness
 
 **Web UI**
 
@@ -56,4 +59,4 @@ Long-form documentation for `sqi-server` operators and contributors.
 - `roadmap.md` — technical-architecture and roadmap reference (mirrors the repo-root `ROADMAP.md`)
 - `spdx-header.md` — the SPDX license-header convention for source files
 
-The canonical product/vision docs (`README.md`, `ROADMAP.md`, `CONTRIBUTING.md`) live at the repo root; `docs/index.md`, `docs/roadmap.md`, and `docs/contributing.md` are docs-site copies whose only intended difference is site-relative links. Any edit to a root copy must be mirrored into its `docs/` twin in the same commit.
+The canonical product/vision docs (`README.md`, `ROADMAP.md`, `CONTRIBUTING.md`) live at the repo root; `docs/index.md`, `docs/roadmap.md`, and `docs/contributing.md` are docs-site copies that differ only in site-relative links. Mirror any edit to a root copy into its `docs/` twin in the same commit.

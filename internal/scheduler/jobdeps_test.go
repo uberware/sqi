@@ -25,7 +25,7 @@ import (
 
 // jobDepsWorkerID is the worker seedRunnableJob's attempt is opened on, and
 // the worker whose subject completeJob publishes the "succeeded" status on —
-// they must match, since handleTaskStatusMessage now requires the subject's
+// they must match, since handleTaskStatusMessage requires the subject's
 // worker ID to match the attempt's recorded owner.
 const jobDepsWorkerID = "worker-1"
 
@@ -180,7 +180,7 @@ func (h *jobDepsHarness) seedRunnableJobIn(t *testing.T, queueID string) store.J
 // exhausted worker failure and the completion path make — the failure
 // recorded and the task moved to failed (RecordTaskFailure, then
 // CompleteTaskAttempt, as handleTaskFailed does), then its step and the job
-// finalized — WITHOUT the scheduler's completion hook, so the test's own
+// finalized, without the scheduler's completion hook, so the test's own
 // ReconcileDependents call is what reacts to the failure.
 func (h *jobDepsHarness) failJob(t *testing.T, jobID string) {
 	t.Helper()

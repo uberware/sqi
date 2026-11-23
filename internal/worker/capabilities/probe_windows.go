@@ -24,8 +24,8 @@ func (*defaultProbe) RAMMb() int {
 	return windowsRAMMb()
 }
 
-// GPUInfo returns a zero GPUInfo on Windows. Full GPU detection via WMI or
-// Direct3D is deferred to a future phase.
+// GPUInfo returns a zero GPUInfo on Windows: GPU detection via WMI or
+// Direct3D is not implemented.
 func (*defaultProbe) GPUInfo() GPUInfo {
 	return GPUInfo{}
 }

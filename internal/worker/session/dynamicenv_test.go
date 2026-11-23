@@ -19,7 +19,7 @@ import (
 )
 
 // TestDynamicEnv_SetVisibleToSubsequentEnv verifies that an openjd_env directive
-// emitted by one environment's onEnter is visible to a SUBSEQUENT environment's
+// emitted by one environment's onEnter is visible to a subsequent environment's
 // onEnter action.
 func TestDynamicEnv_SetVisibleToSubsequentEnv(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -191,7 +191,7 @@ func TestDynamicEnv_RedactedValueNotLoggedButApplied(t *testing.T) {
 		t.Errorf("subsequent env saw SECRET=%q; want %q", got, "shh")
 	}
 
-	// The secret value must NOT appear anywhere in the captured logs.
+	// The secret value must not appear anywhere in the captured logs.
 	logs := buf.String()
 	if strings.Contains(logs, "shh") {
 		t.Errorf("secret value leaked into logs:\n%s", logs)
@@ -202,14 +202,11 @@ func TestDynamicEnv_RedactedValueNotLoggedButApplied(t *testing.T) {
 	}
 }
 
-// TestDynamicEnv_LongLineDoesNotFailAction is a regression test for the
-// bufio.Scanner default 64 KB token limit. Previously, scanActionStream used
-// bufio.NewScanner without raising the buffer, so any single output line longer
-// than 64 KB caused bufio.ErrTooLong: the scan goroutine exited, the child
-// process received SIGPIPE and terminated with a non-zero exit code, and the
-// action was failed even though the process logic succeeded.
-//
-// The fix raises the per-token limit to 4 MB. This test verifies that:
+// TestDynamicEnv_LongLineDoesNotFailAction covers output lines longer than
+// bufio.Scanner's default 64 KB token limit. With that limit a longer line
+// causes bufio.ErrTooLong: the scan goroutine exits, the child receives
+// SIGPIPE and exits non-zero, and the action fails although the process
+// succeeded. scanActionStream raises the limit to 4 MB. This test checks that:
 //   - Create succeeds when an onEnter action emits a 100 KB line (> 64 KB).
 //   - An openjd_env directive emitted before the long line is still applied.
 func TestDynamicEnv_LongLineDoesNotFailAction(t *testing.T) {

@@ -8,7 +8,7 @@ import "testing"
 // blast radius. Case-insensitivity touches the type field of every parameter
 // in every template, so the gate is what keeps base-spec behavior identical:
 // without extensions: [EXPR], "int" must stay "int" and be rejected downstream
-// as an unknown type, exactly as it is today.
+// as an unknown type.
 func TestDecodeJobParameter_CanonicalizesOnlyUnderEXPR(t *testing.T) {
 	tests := []struct {
 		name         string

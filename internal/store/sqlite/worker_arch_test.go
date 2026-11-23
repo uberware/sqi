@@ -12,17 +12,16 @@ import (
 // TestWorker_ArchRoundTrip pins migration 00028 and the SQL sites that carry a
 // worker's CPU architecture through SQLite.
 //
-// It exercises both accessors deliberately. The arch column had to be added to
-// the shared column list, the INSERT, the ON CONFLICT DO UPDATE, the scan and
-// the argument list — and a miss in any ONE of them is silent in a way the
-// compiler cannot see: the value is a plain string passed positionally, so an
-// omission reads back as "" rather than failing.
+// It exercises both accessors. The arch column appears in the shared column
+// list, the INSERT, the ON CONFLICT DO UPDATE, the scan and the argument list,
+// and a miss in any one of them is invisible to the compiler: the value is a
+// plain string passed positionally, so an omission reads back as "" rather
+// than failing.
 //
-// "" is what a worker predating this field reports, and the scheduler treats it
-// as "matches no attr.worker.cpu.arch requirement" (scheduler.cpuArch). So a
-// round trip that quietly dropped the value would not error anywhere — it would
-// just stop that worker from ever being eligible for architecture-gated work,
-// which is the failure this column exists to prevent.
+// "" is what a worker that reports no arch sends, and the scheduler treats it
+// as "matches no attr.worker.cpu.arch requirement" (scheduler.cpuArch). A
+// round trip that dropped the value would not error anywhere; it would stop
+// that worker from ever being eligible for architecture-gated work.
 func TestWorker_ArchRoundTrip(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

@@ -73,7 +73,7 @@ func TestLen_Rejects(t *testing.T) {
 // mustRangeExpr is defined in ops_internal_test.go and reused here.
 
 // TestLen_EmptyListReceiver pins the section 1.2.4 ruling that an empty list
-// literal is a legal METHOD receiver.
+// literal is a legal method receiver.
 //
 // Binding an unbound type variable to nulltype converts nothing, so there is no
 // implicit coercion for the receiver restriction to suppress. Otherwise
@@ -354,18 +354,18 @@ func TestListAndRangeExpr_Reject(t *testing.T) {
 // it, because they run on different machinery and a regression in one would
 // hide behind another.
 //
-// With a RESOLVED fail() argument, Fn itself errors. When that happens inside
+// With a resolved fail() argument, Fn itself errors. When that happens inside
 // a conditional whose condition is unresolved, condResult suppresses the
-// branch that erred and returns the OTHER branch's type directly — its
+// branch that erred and returns the other branch's type directly — its
 // "thenErr == nil" / "elseErr == nil" cases below, never touching UnionOf.
 // The "is not reached" and "does not widen the type when the condition is
 // unknown" cases exercise exactly that: precise typing (float, not float?)
 // without ever calling UnionOf, because the erroring branch's type never
 // entered the union in the first place.
 //
-// With an UNRESOLVED fail() argument, callFunction returns a placeholder
+// With an unresolved fail() argument, callFunction returns a placeholder
 // before Fn ever runs — nothing has failed yet under static checking. Only
-// when BOTH branches of a conditional succeed under an unresolved condition
+// when both branches of a conditional succeed under an unresolved condition
 // does condResult reach its "thenErr == nil && elseErr == nil" case, which
 // calls UnionOf(thenType, elseType) directly — collectUnionMembers
 // (type.go) is what drops the noreturn member there. The last case below
@@ -418,7 +418,7 @@ func TestFail(t *testing.T) {
 	t.Run("the union path drops noreturn when both branches succeed under an unresolved condition", func(t *testing.T) {
 		// Both the condition and fail()'s argument are unresolved: cond.IsUnresolved()
 		// sends evalCond into condResult, and with an unresolved message
-		// callFunction never runs fail's Fn, so BOTH branches evaluate without
+		// callFunction never runs fail's Fn, so both branches evaluate without
 		// error. That is what reaches condResult's "thenErr == nil && elseErr ==
 		// nil" case, the only one that calls UnionOf(thenType, elseType) — and
 		// collectUnionMembers dropping the noreturn member there is what this

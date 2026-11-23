@@ -1042,7 +1042,7 @@ func TestCapacityGroup_AcceptsActingProviders(t *testing.T) {
 }
 
 // TestCapacityGroup_RemovedScriptProviderStaysReadable: a group whose script
-// provider is no longer configured stays stored and readable; the scheduler,
+// provider is missing from the configuration stays stored and readable; the scheduler,
 // not the API, reports it as not configured.
 func TestCapacityGroup_RemovedScriptProviderStaysReadable(t *testing.T) {
 	e := newCapacityEnv(t, false)

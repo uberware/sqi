@@ -103,7 +103,7 @@ func TestLanguage(t *testing.T) {
 		{name: "list literal, element type inferred", src: "[1, 2]", wantCode: expr.CodeList, want: "[1, 2]"},
 		// Subscript, section 2.1.7.
 		{name: "subscript", src: "Param.Name[0]", wantCode: expr.CodeString, want: "s"},
-		// Calls, methods and property access EVALUATE: the callee resolves,
+		// Calls, methods and property access evaluate: the callee resolves,
 		// arguments are evaluated, and the call reaches the function registry.
 		// A name the registry does not hold fails with "unknown function", a
 		// real diagnostic about a missing function rather than the generic
@@ -144,8 +144,8 @@ func TestLanguage(t *testing.T) {
 
 // TestLanguage_TargetAndPlaceholders states the target-type and static-type-
 // checking half of the language as the same kind of table: an expression, an
-// optional symbol table of placeholders, and a target type in; the RESULT'S
-// TYPE, rendered, or an error out. It is a separate function from TestLanguage
+// optional symbol table of placeholders, and a target type in; the result's
+// type, rendered, or an error out. It is a separate function from TestLanguage
 // because these rows need arguments — syms and target — that the rest of the
 // table does not carry.
 func TestLanguage_TargetAndPlaceholders(t *testing.T) {
@@ -181,13 +181,13 @@ func TestLanguage_TargetAndPlaceholders(t *testing.T) {
 			target: expr.TAny,
 			want:   "unresolved[int | string]",
 		},
-		// A union-typed value can be USED, not just produced: __pow__'s
+		// A union-typed value can be used, not just produced: __pow__'s
 		// declared return, int | float, feeds "+ 1" here. Every member has a
 		// route into the (float, float) shape (int by widening, float
 		// exactly), so it is the only admissible candidate; neither member
 		// alone would pick (int, int), since float has no lossless route to
 		// int. The result is unresolved[float], not unresolved[float | int]:
-		// once "+" has selected its shape, the shape's OWN declared return —
+		// once "+" has selected its shape, the shape's own declared return —
 		// float, not a union — is what propagates, same as any other
 		// operator call.
 		{
@@ -293,8 +293,8 @@ func TestErrorsCarryLineAndColumn(t *testing.T) {
 	}
 }
 
-// TestCollections_Composed exercises the collection features AGAINST EACH
-// OTHER, which nothing else here does.
+// TestCollections_Composed exercises the collection features against each
+// other, which nothing else here does.
 //
 // Every other collections test is per-feature: list literals in one table,
 // subscripts in another, slices in a third, list operators in a fourth. Each
@@ -306,7 +306,7 @@ func TestErrorsCarryLineAndColumn(t *testing.T) {
 //
 // Each shape appears twice: once fully resolved, and once with an unresolved
 // placeholder somewhere in it, since the placeholder path computes its result
-// TYPE from a different code path than the value path computes its value.
+// type from a different code path than the value path computes its value.
 func TestCollections_Composed(t *testing.T) {
 	rng, err := expr.RangeExpr("1-5")
 	if err != nil {
@@ -352,7 +352,7 @@ func TestCollections_Composed(t *testing.T) {
 			"[[1, 2], [3, 4]][Param.I:][0][1]", "", "unresolved[int]",
 		},
 
-		// Membership against a SLICED range_expr: the operator table meets the
+		// Membership against a sliced range_expr: the operator table meets the
 		// slice result type.
 		{"in a sliced range", "2 in Param.Range[1:4]", "true", "bool"},
 		{"not in a reversed range", "9 not in Param.Range[::-1]", "true", "bool"},
@@ -386,11 +386,11 @@ func TestCollections_Composed(t *testing.T) {
 		// The whole chain feeding an arithmetic operator.
 		{"chain feeding arithmetic", "([1, 2] + [3])[::-1][0] + 1", "4", "int"},
 
-		// If OpAdd's generic list shape read T from the LEFT operand only, an
+		// If OpAdd's generic list shape read T from the left operand only, an
 		// empty list on the left would type the concatenation list[nulltype]
 		// while "Param.Items + []" just above — the same concatenation —
 		// comes out list[int]. concatLists recomputes the real element type
-		// at runtime, so no VALUE would be wrong; the placeholder path runs
+		// at runtime, so no value would be wrong; the placeholder path runs
 		// no Fn, which is exactly where the declared type is the whole
 		// answer. The shape's RetOf (ops.go's concatRet) handles it, and this
 		// row pins the two directions agreeing.

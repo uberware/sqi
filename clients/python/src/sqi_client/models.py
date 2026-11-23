@@ -96,7 +96,7 @@ def iter_pages(
     items received and stops as soon as the result set is exhausted — when a page
     comes back empty, when the server's ``total`` has been reached, or when a
     short page signals the end. "Short" is judged against the page size the
-    server actually applied (``Page.limit``), not the requested ``limit``:
+    server applied (``Page.limit``), not the requested ``limit``:
     sqi-server clamps oversized limits (max 1000) rather than rejecting them, and
     a clamped full page must not end the iteration early.
 

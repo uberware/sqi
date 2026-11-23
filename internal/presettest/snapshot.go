@@ -40,10 +40,10 @@ var ErrTemplateHasEnvironments = errors.New("presettest: template declares envir
 // ChunkPatch raises one step's chunks.defaultTaskCount before submission.
 //
 // It is the only permitted deviation from a shipped preset's bytes. Chunk size
-// is a template field rather than a job parameter, and every SQI_CHUNK_BOUNDS
-// preset ships defaultTaskCount 1, so without the patch every chunk golden would
-// have Frame.Start == Frame.End and the multi-frame "-s START -e END"
-// substitution would go untested.
+// is a template field rather than a job parameter, and several presets ship
+// defaultTaskCount 1, so without the patch their chunk goldens would have
+// Frame.Start == Frame.End and the multi-frame "-s START -e END" substitution
+// would go untested.
 //
 // [ApplyChunkPatch] (patch.go) applies it; [Render] prints it in the golden
 // header, so a patched golden is distinguishable from the shipped preset.
@@ -65,7 +65,7 @@ type Options struct {
 }
 
 // FileSnapshot is one resolved embedded file: its identifier, its on-disk name,
-// and its body AFTER format-string or expression resolution.
+// and its body after format-string or expression resolution.
 type FileSnapshot struct {
 	Name     string
 	Filename string

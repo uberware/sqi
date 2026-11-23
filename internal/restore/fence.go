@@ -2,8 +2,9 @@
 
 // Package restore puts a backup in place and makes the farm safe to resume
 // from it: every attempt the restored database still records as open is
-// handed back (the fence), and the JetStream directory, whose messages belong
-// to a different moment, is moved aside. See docs/operations.md, Restore.
+// handed back (the fence), and the JetStream state, whose messages belong to a
+// different moment, is moved aside (the embedded broker's directory) or purged
+// (an external broker). See docs/operations.md, Restore.
 package restore
 
 import (

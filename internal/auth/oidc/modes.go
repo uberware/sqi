@@ -22,7 +22,7 @@
 //
 // Config is defined here rather than reused from internal/config so that this
 // package and internal/api can depend on it without importing the config
-// loader — the same reason toLDAPConfig exists in the LDAP integration.
+// loader; internal/server converts between the two, as it does for LDAP.
 package oidc
 
 import "github.com/uberware/sqi/internal/auth/rolemap"

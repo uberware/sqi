@@ -165,7 +165,7 @@ def _open_log(path: Path) -> int:
             if info.st_uid != getuid():
                 raise OSError(f"{path} is owned by another user")
             if info.st_mode & 0o077:
-                # A log written before it was created private keeps its old mode.
+                # Opening an existing log keeps its mode (0o600 applies only on create).
                 getattr(os, "fchmod")(fd, 0o600)  # noqa: B009 - absent on Windows
     except BaseException:
         os.close(fd)

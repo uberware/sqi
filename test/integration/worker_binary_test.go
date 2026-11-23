@@ -163,8 +163,8 @@ func standInSleep(path string) int {
 }
 
 // buildWorkerBinary compiles cmd/sqi-worker into a temporary directory and
-// returns the path to the executable.  The build runs once per test binary
-// invocation; subsequent calls return the cached path instantly.
+// returns the path to the executable. The build runs once per test binary
+// invocation; later calls return the cached path.
 //
 // The test is skipped, not failed, when the build cannot complete, so CI
 // environments without a full Go toolchain still run the rest of the suite.
@@ -224,8 +224,8 @@ func buildWorkerBinary(tb testing.TB) string {
 // and serve tasks from queueID in farmID.  It blocks until the worker appears
 // online in GET /api/v1/workers and returns its worker ID.
 //
-// The process is automatically terminated via t.Cleanup.  Logs from the
-// subprocess are forwarded to t.Log for visibility in -v mode.
+// The process is terminated via t.Cleanup. The subprocess's stdout and stderr
+// go to the test process's stderr.
 func startRealWorker(t *testing.T, ts *testServer, farmID, queueID string) string {
 	return startRealWorkerWithOptions(t, ts, farmID, queueID, nil, nil)
 }
@@ -242,13 +242,12 @@ func startRealWorkerWithOptions(t *testing.T, ts *testServer, farmID, queueID st
 // startRealWorkerAnyOS is [startRealWorker] for callers whose job commands are
 // cross-platform, so the Windows skip below does not apply to them.
 //
-// The skip guards the job commands, not the worker: sqi-worker itself runs on
-// Windows (scripts/smoke.sh drives it there), but every caller above submits a
-// template whose onRun is a POSIX command such as `echo`, which has no
-// equivalent on a Windows worker. A caller whose command is a real
-// cross-platform binary, such as ffmpeg, is not subject to that limitation;
-// skipping it on Windows would drop the only automated coverage of the
-// PowerShell-gated preset, which cannot run anywhere else.
+// The skip guards the job commands, not the worker: sqi-worker runs on Windows
+// (scripts/smoke.sh drives it there), but the callers of startRealWorker submit
+// templates whose onRun is a POSIX command such as `echo`, which a Windows
+// worker lacks. A caller whose command is a cross-platform binary, such as
+// ffmpeg, does not need the skip, and the PowerShell-gated ffmpeg preset can
+// only run on Windows.
 //
 // The Tier-3 preset harness is the other caller, passing extraEnv to put its
 // stubs on PATH: every command it runs is test/stubproc under the vendor's

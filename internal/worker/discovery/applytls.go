@@ -51,9 +51,9 @@ func ApplyTLS(ctx context.Context, cfg *workerconfig.NATSConfig, found Result, l
 	case found.NATSTLS && !cfg.UseTLS(false):
 		// "auto" with nothing configured locally. The advertisement is the
 		// reason to use TLS, so use it. With no CA configured this verifies
-		// against the system roots, which fails on a farm CA with a readable
-		// certificate error naming the issuer — a far better diagnostic than
-		// a plaintext attempt produces.
+		// against the system roots, which fails on a farm CA with a
+		// certificate error naming the issuer, a clearer diagnostic than a
+		// plaintext attempt produces.
 		logger.InfoContext(ctx,
 			"discovery: server advertises a TLS-required broker; enabling TLS for this connection",
 			slog.String("url", cfg.URL))
@@ -67,8 +67,8 @@ func ApplyTLS(ctx context.Context, cfg *workerconfig.NATSConfig, found Result, l
 	}
 
 	// Enrollment never uses a discovered URL, so this cannot be corrected
-	// automatically — but an http:// server_url against a server advertising
-	// HTTPS is a misconfiguration worth naming before the request fails.
+	// automatically, but an http:// server_url against a server advertising
+	// HTTPS is named before the request fails.
 	if found.HTTPTLS && strings.HasPrefix(cfg.ServerURL, "http://") {
 		logger.WarnContext(ctx,
 			"discovery: server advertises HTTPS but nats.server_url is http://; "+

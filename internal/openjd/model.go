@@ -20,7 +20,7 @@ type JobTemplate struct {
 	Description string
 
 	// Extensions is the optional list of named OpenJD feature extensions to
-	// enable (e.g. "feature-bundle-1").
+	// enable (e.g. "TASK_CHUNKING").
 	Extensions []string
 	// ExtensionsSet records whether the key was present, so a declared but
 	// empty list is distinguishable from an omitted one.
@@ -80,7 +80,7 @@ const (
 	// carries no meaning (RFC 0007, <JobBoolParameterDefinition>).
 	JobParamTypeBool JobParamType = "BOOL"
 	// JobParamTypeRangeExpr is an <IntRangeExpr> string parameter, e.g.
-	// "1-100:2,200". Its default is validated with the SPEC's permissive range
+	// "1-100:2,200". Its default is validated with the specification's permissive range
 	// policy, not internal/openjd's stricter one -- see
 	// validateRangeExprParamConstraints for why the two differ here.
 	JobParamTypeRangeExpr JobParamType = "RANGE_EXPR"
@@ -152,7 +152,7 @@ type JobParameter struct {
 	Default *string
 	// AllowedValues, when non-nil, enumerates the only acceptable values.
 	AllowedValues []string
-	// AllowedValuesSet records whether the key was PRESENT in the template.
+	// AllowedValuesSet records whether the key was present in the template.
 	// "allowedValues: null" and "allowedValues: []" both decode to an empty
 	// slice, which is indistinguishable from the key being absent — but the
 	// spec allows omitting the list entirely while requiring a declared one to
@@ -206,7 +206,7 @@ type JobParameter struct {
 type ItemConstraint struct {
 	// AllowedValues enumerates the only acceptable element values.
 	AllowedValues []string
-	// AllowedValuesSet records whether the key was PRESENT, for the same
+	// AllowedValuesSet records whether the key was present, for the same
 	// reason [JobParameter.AllowedValuesSet] does: a declared list must hold
 	// at least one value, but omitting it entirely is legal, and both decode
 	// to an empty slice.
@@ -294,7 +294,7 @@ type ParameterUserInterface struct {
 	// string so validation can tell an integer from a float: an INT parameter's
 	// delta must itself be an integer.
 	SingleStepDelta *string
-	// LabelSet and GroupLabelSet record whether the key was PRESENT in the
+	// LabelSet and GroupLabelSet record whether the key was present in the
 	// template, as opposed to merely empty. Both fields are optional, but an
 	// explicitly empty one is invalid, and the string alone cannot tell the two
 	// apart.
@@ -332,7 +332,7 @@ type EnvironmentScript struct {
 	Let []string
 	// LetSet records whether the key was present, so a declared but empty
 	// list is distinguishable from an omitted one -- 3.6 constrains a
-	// DEFINED let: block to at least one element.
+	// defined let: block to at least one element.
 	LetSet bool
 	// Actions holds the onEnter and onExit lifecycle hooks.
 	Actions EnvironmentActions
@@ -378,7 +378,7 @@ type StepTemplate struct {
 	Let []string
 	// LetSet records whether the key was present, so a declared but empty
 	// list is distinguishable from an omitted one -- 3.6 constrains a
-	// DEFINED let: block to at least one element.
+	// defined let: block to at least one element.
 	LetSet bool
 	// LogChecks is the step's parsed SQI_LOG_CHECKS block, or nil when the step
 	// has none.
@@ -409,7 +409,7 @@ type StepScript struct {
 	Let []string
 	// LetSet records whether the key was present, so a declared but empty
 	// list is distinguishable from an omitted one -- 3.6 constrains a
-	// DEFINED let: block to at least one element.
+	// defined let: block to at least one element.
 	LetSet bool
 	// Actions holds the task lifecycle hooks.
 	Actions StepActions
@@ -505,7 +505,7 @@ type TaskParamDefinition struct {
 	// decodes here the same way for any type — parse.go's decoder does not
 	// distinguish by type — so a STRING or FLOAT definition can carry a
 	// non-nil RangeExpr too, holding a lone expression that evaluates to a
-	// list. ResolveParameterSpaceParams (resolve.go) is what converts that
+	// list. Parameter-space resolution (resolve.go) converts that
 	// case into RangeList, clearing RangeExpr, before expand.go ever sees it
 	// — expandTaskParam only ever consults RangeExpr for INT/CHUNK[INT].
 	RangeExpr *string
@@ -527,7 +527,7 @@ type TaskChunks struct {
 	// DefaultTaskCountExpr holds defaultTaskCount's raw text when the template
 	// gives it as a format string (the spec types the field
 	// `<integer> | <intstring> # @fmtstring`). DefaultTaskCount is then 0 until
-	// ResolveParameterSpaceParams resolves this into it and clears it;
+	// parameter-space resolution (resolve.go) sets it and clears this;
 	// expandChunkInt refuses a chunk that still carries one.
 	DefaultTaskCountExpr *string
 	// TargetRuntimeSecondsExpr is the same for targetRuntimeSeconds, which is
