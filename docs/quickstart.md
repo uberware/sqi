@@ -42,7 +42,7 @@ macOS (launchd) and Windows.
 ## Option B: Docker Compose
 
 ```sh
-curl -LO https://raw.githubusercontent.com/uberware/sqi/v0.3.0/deploy/docker-compose.yml
+curl -LO https://raw.githubusercontent.com/uberware/sqi/v0.4.0/deploy/docker-compose.yml
 docker compose -f docker-compose.yml up -d
 ```
 

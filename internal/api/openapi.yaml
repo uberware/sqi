@@ -64,7 +64,7 @@ info:
     auth off, every request is the anonymous superuser described above, and
     minting a join token attaches arbitrary compute, a materially larger
     blast radius than every other superuser-bypassed action.
-  version: "0.3.0"
+  version: "0.4.0"
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
