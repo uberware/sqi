@@ -252,26 +252,11 @@ type actWorkerProc struct {
 	done chan struct{}
 }
 
-// loopbackPort returns a TCP port free on loopback. It needs no test, so a
-// provider's handler goroutine can call it.
-func loopbackPort() (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0") //nolint:noctx // a probe released at once
-	if err != nil {
-		return 0, err
-	}
-	defer ln.Close()
-	addr, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		return 0, fmt.Errorf("unexpected address type %T", ln.Addr())
-	}
-	return addr.Port, nil
-}
-
 // launchActWorker starts bin, a sqi-worker, against ts for queueID in farmID
 // with dataDir, global args before "start" and env after the standard
 // environment. The caller stops it.
 func launchActWorker(bin string, ts *testServer, farmID, queueID, dataDir string, args, env []string) (*actWorkerProc, error) {
-	port, err := loopbackPort()
+	port, err := claimPort(drawPort) // not freePort: a provider's handler goroutine calls this, with no test to fail
 	if err != nil {
 		return nil, fmt.Errorf("pick a metrics port: %w", err)
 	}
