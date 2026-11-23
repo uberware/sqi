@@ -19,7 +19,7 @@ import (
 // this binary write directly to os.Stdout via fmt.Printf / fmt.Fprint rather
 // than through cmd.OutOrStdout().
 //
-// Must NOT be called from parallel sub-tests — the redirect is process-wide.
+// Must not be called from parallel sub-tests: the redirect is process-wide.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout
@@ -243,8 +243,8 @@ func TestConfigPrintCmd(t *testing.T) {
 // connecting to NATS or touching the filesystem.  This covers runStart (up to
 // the dry-run branch), loadAndValidateConfig, and runDryRun.
 //
-// "start" without --dry-run is intentionally NOT tested because it blocks
-// on a NATS connection and OS-signal wait.
+// "start" without --dry-run is not tested here because it blocks on a NATS
+// connection and OS-signal wait.
 func TestStartCmd_DryRun(t *testing.T) {
 	t.Run("dry-run prints config and capabilities without connecting", func(t *testing.T) {
 		prepareRoot([]string{"start", "--dry-run"})

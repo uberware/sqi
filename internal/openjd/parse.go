@@ -960,7 +960,7 @@ func decodeTaskChunks(v any) (*TaskChunks, error) {
 	if err != nil {
 		return nil, err
 	}
-	// rangeConstraint is NOT defaulted here: the spec marks it required (no
+	// rangeConstraint is not defaulted here: the spec marks it required (no
 	// @optional annotation, unlike targetRuntimeSeconds on the line above it in
 	// the schema). Defaulting it would make a missing value invisible to
 	// validation.

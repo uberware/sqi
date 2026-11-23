@@ -124,7 +124,7 @@ func isPasswordKey(key string) bool {
 }
 
 // parseKeywordValueDSN tokenizes a keyword/value DSN by the rules of pgx
-// v5.11.0's parseKeywordValueSettings (pgconn/config.go), and reports false
+// v5.13.0's parseKeywordValueSettings (pgconn/config.go), and reports false
 // wherever pgx would return an error:
 //
 //   - a NUL byte anywhere;
@@ -327,7 +327,7 @@ func obscuredPasswordKey(dsn string) bool {
 //
 // A well-formed DSN has at most one "@", the one that ends the userinfo, so
 // more than one, or one with no userinfo to end, is ambiguous. That is
-// deliberately conservative: it also refuses an unescaped "@" in a password
+// conservative: it also refuses an unescaped "@" in a password
 // that did parse correctly (sqi:p@ss@db), and an "@" in a query value, where
 // the only cost is a less informative `config print`.
 func ambiguousAuthority(u *url.URL, dsn string) bool {

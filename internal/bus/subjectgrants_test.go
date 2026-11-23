@@ -57,13 +57,12 @@ func permMatches(pattern, subject string) bool {
 // TestSubjectHelpers_MatchWorkerPermissions binds this package's subject
 // construction to the broker's per-worker publish grants.
 //
-// The two are written independently — [brokerauth.WorkerPermissions] builds its
-// patterns by string concatenation and knows nothing about the helpers here —
-// so nothing but this test stops a reordered or renamed token in subjects.go
-// from silently drifting out of the grant it is supposed to fall under. Such a
-// drift compiles, passes every other test, and surfaces only as a runtime
-// authorization denial on a farm that has broker auth switched on, which is the
-// exact failure the identity-carrying subject scheme exists to make impossible.
+// The two are written independently ([brokerauth.WorkerPermissions] builds its
+// patterns by string concatenation and knows nothing about the helpers here),
+// so only this test stops a reordered or renamed token in subjects.go from
+// drifting out of the grant it falls under. Such a drift compiles, passes
+// every other test, and surfaces only as a runtime authorization denial on a
+// farm with broker auth on.
 func TestSubjectHelpers_MatchWorkerPermissions(t *testing.T) {
 	const me = "worker-a"
 	const other = "worker-b"
@@ -95,10 +94,9 @@ func TestSubjectHelpers_MatchWorkerPermissions(t *testing.T) {
 					tt.mine, me, perms.Publish.Allow,
 				)
 			}
-			// The negative half is what makes the positive half mean
-			// something: a permission set of ">" would satisfy the check
-			// above for every subject, and confining a worker to its own
-			// traffic is the whole purpose of the scheme.
+			// Without the negative half, a permission set of ">" would
+			// satisfy the check above for every subject, and the scheme
+			// exists to confine a worker to its own traffic.
 			if permAllows(perms.Publish, tt.theirs) {
 				t.Errorf(
 					"subject %q is granted by WorkerPermissions(%q) — a worker can publish as another worker",

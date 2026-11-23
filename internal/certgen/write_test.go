@@ -28,16 +28,14 @@ func TestWriteCA_FileModes(t *testing.T) {
 	assertSecretRestricted(t, filepath.Join(dir, "ca.key"))
 }
 
-// assertSecretRestricted asserts that path holds a PRIVATE KEY only its owner
+// assertSecretRestricted asserts that path holds a private key only its owner
 // can read.
 //
-// The POSIX mode is still asserted where it means something. On Windows it
-// does not: os.Chmod maps only to the read-only ATTRIBUTE and cannot deny read
-// access to anyone, so `perm == 0o600` is unsatisfiable there however well the
-// key is protected — fsutil.IsRestricted inspects the real DACL instead.
-// Asserting the POSIX mode on both platforms is exactly what let the farm CA
-// key and every leaf key ship with no confidentiality on Windows while CI
-// stayed green on Linux. See fsutil.WriteSecret for the full account.
+// The POSIX mode is asserted on POSIX only. On Windows os.Chmod maps only to
+// the read-only attribute and cannot deny read access to anyone, so
+// `perm == 0o600` says nothing about the key's protection there;
+// fsutil.IsRestricted inspects the real DACL instead. See
+// fsutil.WriteSecret.
 func assertSecretRestricted(t *testing.T, path string) {
 	t.Helper()
 	if runtime.GOOS != "windows" {
@@ -59,10 +57,9 @@ func assertSecretRestricted(t *testing.T, path string) {
 	}
 }
 
-// assertPublicMode asserts a CERTIFICATE's mode. A certificate is public by
-// design — it goes to every peer in a handshake — so this is a tidiness check,
-// not a security one, and it is POSIX-only for the same reason as above:
-// Windows has no POSIX mode to assert.
+// assertPublicMode asserts a certificate's mode. A certificate is public (it
+// goes to every peer in a handshake), so this is a tidiness check, not a
+// security one, and it is POSIX-only for the same reason as above.
 func assertPublicMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
 	if runtime.GOOS == "windows" {

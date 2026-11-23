@@ -37,17 +37,14 @@ func TestApplyInstallsToken(t *testing.T) {
 	}
 }
 
-// TestApplyRefusesZeroToken is Finding 6's guard: a Credential whose token
-// has been zeroed (Close's post-condition — see Credential.Close's doc) must
-// never reach syscall.StartProcess as SysProcAttr.Token == 0, because that
-// takes the plain CreateProcess branch and starts the child as the DAEMON
-// while apply reports success — silent fallback to the daemon identity,
-// which this package exists to prevent. Not reachable via any production
-// path today (every *Credential apply ever sees either came from a
-// successful logonUserOS call, which always yields a non-zero token, or is
-// nil, handled by Apply before apply is ever called) — this test exists so a
-// future reordering of the session/credential lifecycle that DOES make it
-// reachable fails loudly here instead of shipping a silent escalation.
+// TestApplyRefusesZeroToken: a Credential whose token has been zeroed
+// (Close's post-condition; see Credential.Close's doc) must never reach
+// syscall.StartProcess as SysProcAttr.Token == 0, because that takes the
+// plain CreateProcess branch and starts the child as the worker while apply
+// reports success. Production paths hand apply either a credential from a
+// successful logonUserOS call, which has a non-zero token, or nil, which
+// Apply handles first; a lifecycle change that lets a closed credential
+// reach apply fails here.
 func TestApplyRefusesZeroToken(t *testing.T) {
 	cred := &Credential{} // zero value: token == 0, matching a closed credential
 

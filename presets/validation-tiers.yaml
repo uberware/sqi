@@ -95,10 +95,10 @@ presets:
       caveat: >-
         argv derived from Autodesk's documented Maya Render command-line flags
         (Render -r <renderer> -s/-e -rl <layer> -rd <dir> <scene>). The goldens
-        cover the shipped one-frame-per-task shape and a patched chunk size of 5
-        (1-5 then 6-10, so both bound ends are reviewed). No Maya render session has
-        executed it, so whether the chosen renderer honours -rl and -rd, and whether
-        -r file resolves the scene's own renderer, are unverified. A stepped
+        cover the shipped one-frame-per-task shape and a patched chunk size of
+        5 (1-5 then 6-10, so both bound ends are covered). No Maya render has
+        executed it, so whether the chosen renderer honours -rl and -rd, and
+        whether -r file resolves the scene's own renderer, are unverified. A stepped
         Frames range is not covered by these goldens; it splits into one chunk
         per run of consecutive frames, so -s/-e cannot span an excluded frame.
     tier3:
@@ -112,10 +112,10 @@ presets:
       cases: [default, multi-frame-chunk]
       caveat: >-
         argv derived from Autodesk's documented Maya Render command-line flags
-        (Render -r <renderer> -s/-e -rd <dir> <scene>). Same coverage and same gaps
-        as maya-layer-render, minus -rl: the goldens review the shipped
-        one-frame-per-task shape and a patched chunk size of 5, and no Maya render
-        session has executed either. Which layers Maya treats as renderable,
+        (Render -r <renderer> -s/-e -rd <dir> <scene>). Same coverage and same
+        gaps as maya-layer-render, minus -rl: the goldens cover the shipped
+        one-frame-per-task shape and a patched chunk size of 5, and no Maya
+        render has executed either. Which layers Maya treats as renderable,
         which decides what this variant renders, is not visible in argv.
     tier3:
       case: TestPresetTier3/maya-scene-render/default
@@ -824,10 +824,9 @@ presets:
         argument. The failOn pattern (ERROR +\|) is Deadline's Katana plugin's,
         so what Katana prints and which exit status it returns on failure are
         unverified. Tier 3 runs the stub through a real worker, and the
-        logged-error case proves a task
-        whose process exited 0 still fails on a matching line. The Foundry-
-        documented batch render that hangs on a missing ImageRead file is not
-        tested, and the preset sets no timeout for it. The detector's Linux and
+        logged-error case proves a task whose process exited 0 still fails on
+        a matching line. The Foundry-documented batch render that hangs on a
+        missing ImageRead file is not tested, and the preset sets no timeout for it. The detector's Linux and
         Windows install paths are unverified.
     tier3:
       case: TestPresetTier3/katana-render/default
@@ -923,8 +922,8 @@ presets:
         prints on failure is known, so the preset declares no SQI_LOG_CHECKS and
         a render that exits 0 without writing frames is reported as a success.
         Its exit codes are also undocumented. Tier 3 runs a stub through a
-        real worker and proves only argv delivery. The detector's install folders (SilhouetteFX
-        and BorisFX roots) are unverified, and the Linux -nogui is supplied by
+        real worker and proves only argv delivery. The detector's install
+        folders (SilhouetteFX and BorisFX roots) are unverified, and the Linux -nogui is supplied by
         the detector, not the preset.
     tier3:
       case: TestPresetTier3/silhouette-render/default
@@ -1109,8 +1108,8 @@ presets:
         -dboff:crashreport from Deadline's Modo plug-in), with the script path and
         the params.json path each quoted in braces as Foundry's Macros page
         documents for a name with spaces; a braced script path directly after
-        @ is not shown in any source, and the preset has not been run. The script uses
-        Modo's Python (lx.eval, lx.command with keyword arguments so that no job
+        @ is not shown in any source, and the preset has not been run. The
+        script uses Modo's Python (lx.eval, lx.command with keyword arguments so that no job
         value becomes command text, lx.args, the modo module's Scene.renderItem
         with a select.Item Render fallback). Unverified: the keyword names of
         scene.open (filename, type); that -cmd: runs before licensing and
@@ -1213,8 +1212,8 @@ presets:
         Launcher default C:\Program Files\Epic Games\UE_5.8, and UE 5.7.4's
         on macOS (Apple silicon, from a custom install folder put on PATH), on
         a project the test builds in a folder whose name has a space. It shows
-        that the -execcmds command starts the script, that the editor renders after the
-        script returns and then exits, that SQI_RENDER: OK reaches the worker
+        that the -execcmds command starts the script, that the editor renders
+        after the script returns and then exits, that SQI_RENDER: OK reaches the worker
         so the log checks pass, and that a sequence and a map given as
         package paths (/Game/Maps/Test, no .Test) render exactly the
         sequence's three frames at the config's 64x36 into the Output
@@ -1492,8 +1491,7 @@ presets:
         goldens show that prefix at one frame per task, at five per task with a
         multi-line Command ending in a comment, and over a frame list, where
         the chunks stop at every gap (1,5,10-20 at five per task is 1-1, 5-5,
-        10-13, 14-17, 18-20). Tier 3
-        executes it: a real /bin/sh runs the export prefix and hands the
+        10-13, 14-17, 18-20). Tier 3 executes it: a real /bin/sh runs the export prefix and hands the
         expanded variables to the stub, and expect_inner_argv pins the exact
         values each of the three tasks received. What neither tier observes is
         the argv of the shell itself, which is an absolute path nothing

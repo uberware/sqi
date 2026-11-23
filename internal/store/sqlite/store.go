@@ -47,9 +47,8 @@
 // "Store invariants" in docs/architecture.md), and most of them name their
 // anchor rows via Dialect.LockAnchors, which the SQLite dialect leaves a
 // no-op because the one write connection already serializes every write
-// transaction. A store with concurrent writers must lock those rows instead,
-// and the anchors alone do not suffice there: docs/architecture.md lists the
-// gaps the anchor table leaves open.
+// transaction. The PostgreSQL dialect, which has concurrent writers, locks
+// those rows instead (see "Anchor rows" in docs/architecture.md).
 // Single-row writes carry their own precondition in their WHERE clause on
 // either kind of store.
 //
@@ -60,9 +59,9 @@
 //
 // When [Options.AutoMigrate] is true (the default), [Open] applies every
 // pending migration through a goose provider over the embedded SQLite
-// migration set ([migrations.NewProvider]) before returning. Set AutoMigrate
-// to false in HA deployments where migrations are applied explicitly with
-// "sqi-server migrate up" before rolling out new server instances.
+// migration set ([migrations.NewProvider]) before returning. A caller that
+// must open an existing database without changing its schema sets AutoMigrate
+// to false; "sqi-server migrate up" applies migrations explicitly.
 package sqlite
 
 import (
@@ -102,10 +101,8 @@ var _ store.Store = (*Store)(nil)
 // Options configures [Open].
 type Options struct {
 	// AutoMigrate controls whether Open applies any pending migrations (via
-	// [migrations.NewProvider]) before returning. Default: true.
-	//
-	// Set to false in HA deployments where migrations are applied explicitly
-	// via "sqi-server migrate up" before starting new server instances.
+	// [migrations.NewProvider]) before returning. Default: true. A caller
+	// that must not change the schema sets it to false.
 	AutoMigrate bool
 
 	// ServerLock takes the single-server lock file (LockPath) for the store's

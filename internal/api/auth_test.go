@@ -66,8 +66,8 @@ func seedAuthUser(t *testing.T, st store.Store, username, pw, role string) store
 // noctx linter) with an optional JSON body and optional cookie.
 //
 // When a cookie is present, a real browser sends an Origin header on unsafe
-// methods (POST/PUT/PATCH/DELETE) even for same-origin requests — that's
-// exactly what middleware.CSRF (mounted when AuthEnabled is true) requires to
+// methods (POST/PUT/PATCH/DELETE) even for same-origin requests, which is
+// what middleware.CSRF (mounted when AuthEnabled is true) requires to
 // distinguish a same-origin browser call from a cross-site one riding the
 // ambient cookie. Set Origin from url's own scheme+host to model that.
 func doRequest(t *testing.T, method, url string, body any, cookie *http.Cookie) *http.Response {
@@ -77,8 +77,8 @@ func doRequest(t *testing.T, method, url string, body any, cookie *http.Cookie) 
 
 // doRequestWithClient is [doRequest] with a caller-supplied client. A TLS
 // httptest server needs its own client (http.DefaultClient cannot verify the
-// self-signed certificate), and everything else about the request — the JSON
-// body, the cookie, and the Origin header that goes with it — must stay
+// self-signed certificate), and everything else about the request (the JSON
+// body, the cookie, and the Origin header that goes with it) must stay
 // identical, or a TLS test hits the CSRF middleware for reasons the test
 // itself does not explain.
 func doRequestWithClient(t *testing.T, client *http.Client, method, url string, body any, cookie *http.Cookie) *http.Response {
@@ -237,10 +237,10 @@ func TestLogin_InvalidCredentialsIndistinguishable(t *testing.T) {
 // password.Verify(dummyHash, ...) so that path costs the same as the
 // known-user branch, which always calls password.Verify for real. Timing
 // itself is not asserted here (that would be flaky); instead this pins the
-// structural guarantee that makes the defense work — dummyHash is a genuine,
+// structural guarantee that makes the defense work: dummyHash is a
 // verifiable argon2id hash whose cost parameters match whatever
-// password.Hash currently produces (not a stale hardcoded literal that
-// could silently drift out of sync if the parameters are ever raised).
+// password.Hash produces, not a hardcoded literal that could drift from
+// them.
 func TestDummyHash_MatchesPasswordPackageParams(t *testing.T) {
 	probe, err := password.Hash("unrelated-probe-value")
 	if err != nil {
@@ -309,7 +309,7 @@ func TestLogout_RevokesSessionAndClearsCookie(t *testing.T) {
 
 	logoutResp := doRequest(t, http.MethodPost, srv.URL+"/api/v1/auth/logout", nil, cookie)
 	defer logoutResp.Body.Close()
-	// 200 with a JSON body, not 204: logout now reports whether the client
+	// 200 with a JSON body, not 204: logout reports whether the client
 	// should also navigate to the provider's end-session endpoint.
 	if logoutResp.StatusCode != http.StatusOK {
 		t.Fatalf("logout status = %d, want 200", logoutResp.StatusCode)
@@ -322,7 +322,7 @@ func TestLogout_RevokesSessionAndClearsCookie(t *testing.T) {
 		t.Errorf("cleared cookie MaxAge = %d, want negative", cleared.MaxAge)
 	}
 
-	// The old cookie must no longer authenticate — server-side revocation.
+	// The old cookie must stop authenticating: server-side revocation.
 	meAfter := doRequest(t, http.MethodGet, srv.URL+"/api/v1/auth/me", nil, cookie)
 	defer meAfter.Body.Close()
 	if meAfter.StatusCode != http.StatusUnauthorized {
@@ -332,7 +332,7 @@ func TestLogout_RevokesSessionAndClearsCookie(t *testing.T) {
 
 func TestLogout_UnauthenticatedRejected(t *testing.T) {
 	// logout is mounted inside the auth group, so an unauthenticated request
-	// never reaches the handler at all — it is gated 401 by middleware.Auth.
+	// never reaches the handler at all: it is gated 401 by middleware.Auth.
 	st := fake.New()
 	srv := newAuthTestServer(t, st)
 
@@ -381,7 +381,7 @@ func doLogout(t *testing.T, h *authHandler) (*httptest.ResponseRecorder, logoutR
 
 // Under logout_mode=provider the response carries the provider's end-session
 // URL. It is built from client_id + post_logout_redirect_uri and carries no
-// token: sqi deliberately does not store ID tokens, so there is no id_token_hint
+// token: sqi does not store ID tokens, so there is no id_token_hint
 // to send and no plaintext bearer secret in a schema that otherwise holds only
 // hashes.
 func TestLogout_ProviderModeReturnsEndSessionURL(t *testing.T) {
@@ -412,14 +412,14 @@ func TestLogout_ProviderModeReturnsEndSessionURL(t *testing.T) {
 	}
 }
 
-// A provider that advertises no end-session endpoint must not silently become a
-// local logout: the response still succeeds (there is nothing the user can do),
-// but the operator gets an ERROR line. Degrading silently would let an operator
-// believe a guarantee they do not have.
+// A provider that advertises no end-session endpoint must not become a local
+// logout without notice: the response still succeeds (there is nothing the
+// user can do), but the operator gets an error-level line. Degrading without
+// one would let an operator believe a guarantee they do not have.
 func TestLogout_ProviderModeDegradesWhenUnsupported(t *testing.T) {
 	cfg := oidcTestCfg()
 	cfg.LogoutMode = oidc.LogoutProvider
-	// endSessionOK is false: no endpoint advertised, or discovery unreachable —
+	// endSessionOK is false: no endpoint advertised, or discovery unreachable;
 	// the Provider interface reports the same false for both.
 	p := &fakeOIDCProvider{}
 	h, logs := newLogoutHandler(t, p, cfg)
@@ -430,8 +430,8 @@ func TestLogout_ProviderModeDegradesWhenUnsupported(t *testing.T) {
 		t.Errorf("redirect_url = %q, want it absent", out.RedirectURL)
 	}
 	// Exact match, not Contains: the point is that redirect_url is omitempty
-	// and no other field is set, so the encoded object is empty — a
-	// substring check would pass even if a fatter body happened to contain
+	// and no other field is set, so the encoded object is empty. A
+	// substring check would pass even if a larger body happened to contain
 	// the two literal characters "{}" somewhere inside it.
 	if got := strings.TrimSpace(rr.Body.String()); got != "{}" {
 		t.Errorf("body = %q, want the empty object %q (redirect_url is omitempty)", got, "{}")
@@ -503,7 +503,7 @@ func TestLogout_ReauthMarkerCookie(t *testing.T) {
 				t.Errorf("marker Path = %q, want %q — forceReauth reads it only at that scope",
 					marker.Path, oidcCookiePath)
 			}
-			// Pin the constant's own value, not just the plumbing that
+			// Pin the constant's own value, not only the plumbing that
 			// copies it onto the cookie: comparing only against
 			// oidcCookiePath would still pass if the constant itself were
 			// widened (e.g. to "/").
@@ -523,8 +523,8 @@ func TestLogout_ReauthMarkerCookie(t *testing.T) {
 	}
 }
 
-// TestLogout_SetsReauthMarkerUnderAfterLogout is the end-to-end version, and it
-// is the one that matters: it drives a real logout followed by a real SSO login
+// TestLogout_SetsReauthMarkerUnderAfterLogout is the end-to-end version: it
+// drives a real logout followed by a real SSO login
 // through a cookie jar, so the browser's own path-scoping rules decide whether
 // the marker is delivered. Asserting on the Set-Cookie alone cannot catch a
 // marker written where the reader never looks.
@@ -564,8 +564,8 @@ func TestLogout_SetsReauthMarkerUnderAfterLogout(t *testing.T) {
 				jarPost(t, client, ts.srv.URL+"/api/v1/auth/logout", nil)
 			}
 
-			// The jar decides whether the marker is attached — exactly as a
-			// browser would.
+			// The jar decides whether the marker is attached, as a browser
+			// would.
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
 				ts.srv.URL+"/api/v1/auth/oidc/login", nil)
 			if err != nil {

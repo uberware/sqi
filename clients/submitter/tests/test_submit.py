@@ -212,7 +212,7 @@ def test_failed_save_snapshot_raises_the_not_saved_error() -> None:
 
 
 def test_failed_save_snapshot_of_an_untitled_scene_asks_to_save_first() -> None:
-    """The scene-path check still comes before the save failure, as against the host."""
+    """The scene-path check comes before the save failure, as it does against the host."""
     session = _FakeSession()
     with pytest.raises(SubmitterError, match="Save your scene"):
         submit_form(

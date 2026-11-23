@@ -4,7 +4,7 @@
 //
 // It is a package of its own so the writer (test/stubproc, a main package) and
 // the reader (test/integration's tier-3 test) share one declaration: a second
-// copy of this struct would be free to drift from the JSON actually written.
+// copy of this struct could drift from the JSON written.
 package record
 
 // Record is one invocation of the stub, as written to SQI_STUB_RECORD: one JSON

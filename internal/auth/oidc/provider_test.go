@@ -263,13 +263,11 @@ func TestProvider_DiscoveryFailureBackoff(t *testing.T) {
 
 // TestProvider_ConcurrentDiscovery pins that a herd of first-use callers
 // fetches discovery exactly once and does not serialize behind one another.
-// It also passes against the earlier mutex-held-across-the-fetch
-// implementation, because the first caller populated the cache before
-// releasing the lock and the rest just read it — so it is not the regression
-// guard for that fix. TestProvider_ConcurrentDiscoveryFailure is: against a
-// dead provider, with nothing cached, the old code made every queued caller
-// run its own full discoveryTimeout attempt, and that test is the one that
-// fails against it.
+// A lock held across the fetch would also pass it, because against a healthy
+// provider the first caller fills the cache before releasing the lock.
+// TestProvider_ConcurrentDiscoveryFailure covers that case: against a dead
+// provider such a lock makes every queued caller run its own full
+// discoveryTimeout attempt.
 func TestProvider_ConcurrentDiscovery(t *testing.T) {
 	const (
 		goroutines = 50
@@ -347,22 +345,21 @@ func TestProvider_ConcurrentDiscoveryFailure(t *testing.T) {
 	}
 }
 
-// TestProvider_CanceledCallerDoesNotPoisonBackoff is the regression guard for
-// the elected-caller-cancellation bug: a caller whose context is canceled or
-// times out mid-fetch (a browser aborting /auth/oidc/callback, which cancels
-// the ctx Exchange was called with) must not have that cancellation recorded
-// as a provider failure. The provider here never actually fails; only the
-// first caller's context is too short to wait for it. A subsequent caller
-// with a healthy context must get its own attempt, not be rejected in
-// microseconds from a backoff cache poisoned by the first caller's hangup.
+// TestProvider_CanceledCallerDoesNotPoisonBackoff pins that an elected caller
+// whose context is canceled or times out mid-fetch (a browser aborting
+// /auth/oidc/callback, which cancels the ctx Exchange was called with) does
+// not have that cancellation recorded as a provider failure. The provider
+// here never fails; only the first caller's context is too short to wait for
+// it. A later caller with a healthy context must get its own attempt, not be
+// rejected from a backoff cache holding the first caller's cancellation.
 func TestProvider_CanceledCallerDoesNotPoisonBackoff(t *testing.T) {
 	const delay = 200 * time.Millisecond
 	idp := newFakeIDP(t)
 	idp.discoveryDelay = delay
 	p := New(testConfig(idp.URL()))
-	// An hour-long backoff makes the bug deterministic: if the cancellation
-	// were recorded, caller B below would be rejected from the cached error
-	// for the full window rather than merely a short one.
+	// An hour-long backoff makes the failure deterministic: if the
+	// cancellation were recorded, caller B below would be rejected from the
+	// cached error for the full window.
 	asProvider(t, p).failureBackoff = time.Hour
 
 	// Caller A is elected (it runs first, synchronously) and its context
@@ -449,9 +446,9 @@ func TestProvider_EndSessionURL(t *testing.T) {
 			if q.Get("post_logout_redirect_uri") != tt.wantRedirect {
 				t.Fatalf("post_logout_redirect_uri = %q, want %q", q.Get("post_logout_redirect_uri"), tt.wantRedirect)
 			}
-			// sqi stores no ID tokens, so it can never emit this hint —
-			// storing one would be the first plaintext bearer secret in a
-			// schema that otherwise holds only hashes.
+			// sqi stores no ID tokens, so it can never emit this hint:
+			// storing one would put a plaintext bearer secret in a schema
+			// that otherwise holds only hashes.
 			if q.Has("id_token_hint") {
 				t.Fatal("end-session URL must never carry an id_token_hint")
 			}

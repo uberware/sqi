@@ -238,7 +238,7 @@ func TestStreamsProvisioned(t *testing.T) {
 	}
 }
 
-// ── Push-consumer round trips (status / logs / worker) ────────────────────────
+// ── Consumer round trips (status / logs / worker) ─────────────────────────────
 
 func TestPushConsumers(t *testing.T) {
 	tests := []struct {

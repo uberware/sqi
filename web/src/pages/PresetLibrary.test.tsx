@@ -168,10 +168,10 @@ describe('PresetLibrary readme button', () => {
     expect(link).toHaveAttribute('href', '/presets/nuke-comp?tab=readme')
   })
 
-  // The remote library index deliberately carries no readme field, so a list
-  // row cannot know whether one exists. The button is therefore always
-  // enabled and the detail page shows whatever is actually there. If this ever
-  // becomes a disabled-state test, the index format changed.
+  // The remote library index carries no readme field, so a list row cannot
+  // know whether one exists. The button is therefore always enabled and the
+  // detail page shows whatever is there. A disabled-state test here would mean
+  // the index format changed.
   it('is enabled even though the index carries no readme', async () => {
     fetchMock.mockResolvedValue(ok([makePreset({ name: 'nuke-comp' })]))
     renderPage()

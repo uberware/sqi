@@ -4,11 +4,11 @@ package config
 
 // Tests for the expr: section.
 //
-// Three properties, and the third is the one that is easy to get wrong:
+// Three properties:
 //
 //  1. the defaults are pinned as literals;
-//  2. a value set in the file or the environment actually arrives;
-//  3. an out-of-range value is REJECTED, boundary-exactly. A test that only
+//  2. a value set in the file or the environment arrives;
+//  3. an out-of-range value is rejected, boundary-exactly. A test that only
 //     tries 1 and 10^9 passes with an off-by-one at either end, so every knob
 //     is walked at negative / zero / floor-1 / floor / ceiling / ceiling+1.
 
@@ -21,7 +21,7 @@ import (
 )
 
 // defaultExprConfig is the expr: block a worker with no configuration runs
-// with, spelled as LITERALS rather than as the Default* constants -- comparing
+// with, spelled as literals rather than as the Default* constants: comparing
 // a constant to itself would pass whatever it became.
 var defaultExprConfig = ExprConfig{
 	OperationLimit:          1_000_000,
@@ -41,8 +41,8 @@ func TestDefault_ExprLimits(t *testing.T) {
 }
 
 // TestLoad_ExprLimitsFromFile checks that each key arrives from YAML with a
-// DISTINCT value: five same-typed int64 fields is exactly the shape where a
-// transposed yaml tag loads cleanly and enforces the wrong bound.
+// distinct value: with five same-typed int64 fields, a transposed yaml tag
+// would load cleanly and enforce the wrong bound.
 func TestLoad_ExprLimitsFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sqi-worker.yaml")
 	body := `
@@ -157,7 +157,7 @@ func TestLoad_ExprLimitsFromEnv(t *testing.T) {
 }
 
 // TestValidate_ExprLimits walks six boundary rows per knob. The floor and the
-// ceiling must be ACCEPTED and one step outside each REJECTED, or an
+// ceiling must be accepted and one step outside each rejected, or an
 // off-by-one in the comparison goes unnoticed.
 func TestValidate_ExprLimits(t *testing.T) {
 	knobs := []struct {
@@ -262,9 +262,8 @@ func TestValidate_ExprLimitsAreIndependent(t *testing.T) {
 
 // TestExampleConfig_ExprLimitsMatchDefaults keeps config/sqi-worker.example.yaml
 // in step with the defaults. The example is what an operator copies, so a
-// value in it that drifts from the shipped default silently changes the
-// behavior of everyone who starts from it -- and nothing else in this repo reads that file, so nothing
-// else would notice.
+// value in it that drifts from the shipped default changes the behavior of
+// everyone who starts from it, and nothing else in this repo reads that file.
 func TestExampleConfig_ExprLimitsMatchDefaults(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "config", "sqi-worker.example.yaml")
 	cfg, err := Load(path, FlagOverrides{})

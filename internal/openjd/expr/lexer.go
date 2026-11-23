@@ -150,7 +150,7 @@ func (l *lexer) lexNumber() (token, error) {
 }
 
 // scanNumber advances l.pos past a numeric literal and reports whether it is a
-// float and whether it carries a base prefix. It is deliberately permissive
+// float and whether it carries a base prefix. It is permissive
 // about the literal's internal shape: strconv rejects malformed underscore
 // placement and bad digits, and does it with better messages than a
 // hand-rolled validator would.
@@ -175,7 +175,7 @@ func (l *lexer) scanNumber() (isFloat, based bool) {
 	return isFloat, false
 }
 
-// scanExponent consumes an "e"/"E" exponent when one is genuinely present and
+// scanExponent consumes an "e"/"E" exponent when one is present and
 // reports whether it did. An "e" not followed by a digit — optionally signed —
 // begins an identifier instead, which the parser rejects; consuming it here
 // would turn a clear "unexpected name" into a confusing literal error.
@@ -348,7 +348,7 @@ func writeEscape(b *strings.Builder, src string, bodyOffset int, body string, i 
 		// other escape verbatim, backslash included, and so does this:
 		// rejecting them would break Windows paths and regular expressions
 		// written without an r prefix. \a, \b, \f, \v and octal escapes are
-		// therefore NOT decoded — they are absent from the spec's table.
+		// therefore not decoded — they are absent from the spec's table.
 		b.WriteByte('\\')
 		b.WriteByte(c)
 		return 2, nil

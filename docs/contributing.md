@@ -8,7 +8,7 @@ Thank you for your interest in contributing to `sqi`. We welcome contributions a
 
 ### Code
 
-We maintain a [roadmap and architecture guide](roadmap.md) organized by development phases. Code contributions are welcome at all stages.
+The [roadmap and architecture guide](roadmap.md) describes the design and planned work. Code contributions are welcome.
 
 **Setting up for development:**
 
@@ -44,19 +44,19 @@ npm run dev
 **Code style and conventions:**
 
 - **Go**: Follow [Effective Go](https://golang.org/doc/effective_go). Run `make fmt` (gofumpt + goimports) and `make lint` (golangci-lint) before submitting
-- **Python**: Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/). Use type hints for all function signatures. Format and lint with ruff: `ruff format && ruff check --fix` — this handles style consistency automatically
+- **Python**: Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/). Use type hints for all function signatures. Format and lint with ruff: `ruff format && ruff check --fix`
 - **TypeScript/React**: Use ESLint and Prettier with the project configuration. Functional components and hooks preferred
 - **SPDX header**: every source file (Go, TypeScript, YAML, Python, shell) must carry `SPDX-License-Identifier: AGPL-3.0-or-later` before any `package`/`import`/module declaration, in the file's own comment syntax. See [`docs/spdx-header.md`](spdx-header.md) for the exact template.
-- **Commit messages**: [Conventional Commits](https://www.conventionalcommits.org) format — `type(scope)?: description` — is **enforced** by the `commit-msg` git hook installed by `make hooks`. Valid types: `feat fix docs style refactor test chore build ci perf revert`. Reference issue numbers in the description where relevant (e.g. `fix(scheduler): correct heartbeat timeout calculation (#42)`). `CHANGELOG.md` is generated from these messages by git-cliff, so a non-conforming commit never reaches the changelog.
+- **Commit messages**: [Conventional Commits](https://www.conventionalcommits.org) format — `type(scope)?: description` — is enforced by the `commit-msg` git hook installed by `make hooks`. Valid types: `feat fix docs style refactor test chore build ci perf revert`. Reference issue numbers in the description where relevant (e.g. `fix(scheduler): correct heartbeat timeout calculation (#42)`). `CHANGELOG.md` is generated from these messages by git-cliff, so a non-conforming commit never reaches the changelog.
 
 **Testing:**
 
 - Unit tests are required for code changes. The enforced coverage floor is 70% (`COVERAGE_MIN` in the Makefile); aim higher on new code
 - Integration tests are encouraged for complex features. They live in `test/integration/`; those behind the `integration` build tag need `make test-integration`, because they depend on something the default suite should not require (a built binary, or an external service)
 - Run `make test` (or `make ci`) before submitting a PR — do not run bare `go test ./...` from the repo root, since `web/node_modules/` contains third-party Go files the Makefile filters out
-- **Changing LDAP code?** Run `make test-ldap`. It drives the login path against a real OpenLDAP server in a throwaway container, which is the only thing that catches a mistake in how sqi talks to a directory *on the wire*
-- **Changing OIDC/SSO code?** Run `make test-oidc`. It drives the whole browser flow against a real Keycloak in a throwaway container, which is the only thing that catches what a real provider *omits* — such as a missing group claim: the token still validates and every user drops to `default_role`
-- Both need Docker and **skip** without it — and a skip verifies nothing, so confirm the tests actually ran rather than trusting the exit code. Details in [`docs/development.md`](development.md#testing-against-a-real-directory-or-identity-provider)
+- **Changing LDAP code?** Run `make test-ldap`. It drives the login path against a real OpenLDAP server in a throwaway container; the unit tests use a fake connection and cannot see mistakes in what sqi sends a directory on the wire
+- **Changing OIDC/SSO code?** Run `make test-oidc`. It drives the whole browser flow against a real Keycloak in a throwaway container; the unit tests' fake provider cannot show what a real provider omits, such as a group claim, whose absence still yields a valid token and drops every user to `default_role`
+- Both need Docker and skip without it, so confirm the tests ran (`--- PASS` lines) rather than trusting the exit code. Details in [`docs/development.md`](development.md#testing-against-a-real-directory-or-identity-provider)
 
 **Submitting a PR:**
 
@@ -82,10 +82,8 @@ Before opening a PR, run the same gate CI does, from `web/`:
 npm run format:check && npm run typecheck && npm run lint && npm run test:coverage
 ```
 
-**Storybook.** The project does not ship Storybook yet. Components are developed
-and reviewed through their tests and the running app rather than an isolated
-component explorer. If Storybook is added later, document its `npm run storybook`
-entry point here.
+**Storybook.** The project does not use Storybook. Components are developed
+and reviewed through their tests and the running app.
 
 **Component testing approach.** Tests use [Vitest](https://vitest.dev/) with
 [React Testing Library](https://testing-library.com/) in a `jsdom` environment.
@@ -134,52 +132,54 @@ Conventions:
 
 ### Community Preset Library
 
-The community preset library is the easiest way to contribute and benefits the whole community. Presets are YAML or JSON files defining how to run a specific tool — no programming required.
+Presets are YAML files defining how to run a specific tool; contributing one needs no programming.
 
 **Preset structure:**
 
-Presets define a product (product name, description, parameters, command mapping) for a DCC or tool. A simple example:
+A preset is a product definition: metadata (`name`, `title`, `description`, `category`, `version`, an optional Markdown `readme`) and an inline OpenJD job template. A minimal example:
 
 ```yaml
-name: Arnold CPU Render
-description: Render a scene using Arnold (CPU)
-version: 1.0
-software_required: [ Arnold ]
-parameters:
-  scene_file:
-    type: path
-    required: true
-    description: Arnold scene file (.ass)
-  output_path:
-    type: path
-    required: true
-    description: Output directory for EXR files
-  samples:
-    type: integer
-    default: 100
-    description: Camera samples per pixel
-command:
-  template: |
-    kick -r {{ params.output_path }} \
-         -samples {{ params.samples }} \
-         "{{ params.scene_file }}"
+name: arnold-kick-scene
+title: Arnold Kick Scene Render
+description: Render one Arnold scene file with kick.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Arnold Kick Scene Render
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface: { control: CHOOSE_INPUT_FILE, label: Scene File }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.arnold
+            anyOf: ["true"]
+      script:
+        actions:
+          onRun:
+            command: kick
+            args: ["-i", "{{Param.SceneFile}}", "-dw", "-dp"]
 ```
+
+The full format is in [`docs/products.md`](products.md#definition-file-format).
 
 **Contributing a preset:**
 
-1. Test your preset locally — submit a job through `sqi` and verify output
-2. Document the preset's assumptions (required plugins, environment setup, file paths)
-3. Submit a PR to the [sqi-presets](https://github.com/Uberware/sqi-presets) repository with:
-   - A descriptive name for the preset file
-   - Detailed description in the YAML/JSON
-   - An optional README explaining any setup or quirks
+1. Test your preset locally: submit a job through `sqi` and check the output
+2. Document the preset's assumptions (required plugins, environment setup, file paths) in its `readme`
+3. Add it as `presets/sqi/<name>.yaml` in a PR to this repository. Its tests and validation tiers are described in [`docs/preset-library.md`](preset-library.md#validation-tiers); a preset that needs a new worker capability tag also needs a built-in detector. Each release publishes the presets to the library index that `sqi-server` reads
 4. Include a rendered example (frame, output file) in the PR description if possible
 
-Presets for major DCCs (Arnold, Blender, Houdini, Maya, Nuke, After Effects, Cinema 4D) are especially welcome. Custom tool presets are also valuable — if your studio has a proprietary pipeline tool, sharing the preset helps others.
+Presets for DCCs and renderers that have none are welcome, as are presets for in-house pipeline tools.
 
 ### Documentation
 
-Documentation contributions help the project significantly:
+Documentation contributions include:
 
 - **README improvements**: Clearer setup instructions, getting-started guides, use case examples
 - **API documentation**: Docstrings in code, generated API reference, Python client examples
@@ -208,16 +208,10 @@ Have ideas for a feature, architectural improvement, or design change? Open a [G
 
 ---
 
-## Development Phases and Priorities
+## Priorities
 
-The [ROADMAP.md](roadmap.md) document outlines development phases. Current priorities:
+[ROADMAP.md](roadmap.md) lists planned work. Contributions toward the work in progress there are the quickest to review; others are welcome but may need design discussion first.
 
-- **Phase 1** (v0.1 — released): Core scheduler, pull-based workers, basic web UI, OpenJD execution
-- **Phase 2** (v0.2 — released): Product system, preset library, DCC submitters
-- **Phase 3** (v0.3 — released): Auth (local accounts, API keys, RBAC, LDAP/AD, OAuth2/OIDC SSO), multi-user role model, and run-as-user task isolation; v0.3 also ships the OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets
-- **Phase 4** (in progress): Production hardening, PostgreSQL and backup/restore (implemented, not yet released), HA, auto-scaling
-
-Code contributions aligned with the current phase are most likely to be accepted quickly. Contributions targeting later phases are welcome but may take longer to review if they require design discussion.
 
 ---
 

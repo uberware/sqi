@@ -142,10 +142,9 @@ the same `ca.crt`.
 | `"true"` | Always use TLS, even with no CA configured (system roots), for a broker presenting a publicly-trusted certificate, which nothing else would signal |
 | `"false"` | Never use TLS, even with a CA configured, for a broker the operator knows is plaintext |
 
-A bool would give "infer" and "force off" the same zero value. The usual boolean spellings
-(`1`/`yes`/`on`, `0`/`no`/`off`) are accepted as synonyms in both the file and
-the environment; anything else is rejected at startup rather than silently
-falling back to `auto`.
+The usual boolean spellings (`1`/`yes`/`on`, `0`/`no`/`off`) are accepted as
+synonyms in both the file and the environment; anything else is rejected at
+startup.
 
 ### Discovery fills in "auto"
 
@@ -187,7 +186,7 @@ Certificate problems are refused at startup, with a message naming the config ke
 | File missing, unreadable, or key/certificate mismatch | error at startup |
 | Certificate already expired | error at startup |
 | Certificate expires within 30 days (including the `nats.external.tls` client certificate) | WARN at startup |
-| Certificate files set while `enabled: false` | WARN — "serving plaintext" |
+| Certificate files set while `enabled: false` | WARN ("serving plaintext") |
 | `nats.embedded.tls.client_ca_file` set while `nats.embedded.tls.enabled: false` | error at startup |
 | `nats.external.tls.*` set beside `nats://` URLs, or only one of `cert_file` / `key_file` | error at startup |
 
@@ -203,7 +202,7 @@ sqi-server tls init --out ./certs --host sqi-server.example
 Writes a farm CA (`ca.crt`, `ca.key`: ECDSA P-256, 10 years) and a server
 certificate (`server.crt`, `server.key`: 2 years) covering the hosts given by
 `--host`, plus `localhost`, `127.0.0.1` and `::1` in every case. Private keys are
-written `0600`; certificates `0644`. On success it prints the exact configuration
+written `0600`; certificates `0644`. On success it prints the configuration
 keys to set on each side.
 
 Without `--host`, the certificate covers this machine's hostname and its mDNS
@@ -330,12 +329,12 @@ On Windows, add `--ssl-revoke-best-effort`:
 curl.exe --cacert .\certs\ca.crt --ssl-revoke-best-effort https://sqi-server.example:8080/readyz
 ```
 
-Windows curl builds link Schannel, which insists on checking certificate
-revocation. The CA `tls init` generates publishes no CRL or OCSP endpoint, so
+Windows curl builds link Schannel, which checks certificate revocation. The CA `tls init` generates publishes no CRL or OCSP endpoint, so
 the request otherwise fails with `schannel: the revocation status is unknown`
 (exit 60) against a valid chain. The flag relaxes only the revocation check:
-an untrusted root is still rejected, so the command still shows the server presents a certificate signed by your CA. This affects curl
-only; sqi's own components verify with Go's TLS stack and need no such flag.
+an untrusted root is still rejected, so the command still shows the server
+presents a certificate signed by your CA. This affects curl only; sqi's own
+components verify with Go's TLS stack and need no such flag.
 
 The startup log states the transport:
 
@@ -343,8 +342,8 @@ The startup log states the transport:
 level=INFO msg="http: listening" addr=0.0.0.0:8080 tls=true url=https://localhost:8080
 ```
 
-A worker that fails to connect over TLS logs the reason: a certificate signed by an unknown CA fails verification with that named
-as the cause, and a worker with no TLS configuration attempting a TLS-required
+A worker that fails to connect over TLS logs the reason: a certificate signed
+by an unknown CA fails verification with that named as the cause, and a worker with no TLS configuration attempting a TLS-required
 broker fails with `secure connection not available`.
 
 The server advertises `tls=1` in its mDNS TXT records when the API is

@@ -67,7 +67,7 @@ with SqiClient("http://localhost:8080") as sqi:
   pagination (`list_*` returns a `Page`; `iter_*` walks every page lazily).
 - **Manage** jobs (pause, resume, set priority, cancel, retry) and tasks (cancel, retry) and workers
   (enable, disable).
-- **CRUD** farms, queues, storage locations (``type`` is derived from roots by the server), and usage pools.
+- **CRUD** farms, queues, storage locations (the server derives `type` from the roots), and usage pools.
 - **Tail logs** by polling (`tail_task_logs`) or live over WebSocket with the
   `ws` extra (`tail_task_logs_live`).
 
@@ -169,9 +169,9 @@ with SqiClient("http://localhost:8080") as sqi:
 ```
 
 A product has two independent text fields: `description` is a short
-(max 500 character) plain-text blurb -- not Markdown, since it reaches
-consumers that cannot render markup, such as the Blender addon's tooltip --
-and it is the field product search matches on. `readme` is long-form Markdown
+(max 500 character) plain-text blurb, not Markdown, because it reaches
+consumers that cannot render markup, such as the Blender add-on's tooltip; it
+is the field product search matches on. `readme` is long-form Markdown
 (max 8000 characters), rendered only on the product's detail page in the web
 UI; it is never searched. Both caps are enforced server-side (HTTP 400 on
 create/update) and are not validated client-side.
@@ -184,9 +184,10 @@ and `ValidationError` when the stored template cannot be parsed (HTTP 422).
 `submit_product_job` uses the keyword argument `job_name=` (not `name=`) to
 avoid shadowing the positional product `name` argument; the wire field sent to
 the server is `"name"`. `submit_product_job` also accepts optional `owner`,
-`submitter`, `priority`, `project`, and the retry overrides `max_attempts`,
-`retry_delay_seconds`, `failure_limit`; each is sent only when set and
-otherwise inherits the queue → farm → server default.
+`submitter`, `priority`, `project`, `depends_on`, `estimated_seconds`,
+`paused`, and the retry overrides `max_attempts`, `retry_delay_seconds` and
+`failure_limit`. Each is sent only when set; an unset retry override inherits
+the queue → farm → server default.
 
 ## Documentation
 
@@ -197,4 +198,4 @@ Runnable examples live in [`examples/`](./examples).
 
 ## License
 
-AGPL-3.0-or-later. See the repository root for the full license text.
+AGPL-3.0-or-later. The full license text is in `LICENSE`.

@@ -13,7 +13,7 @@ application — and adds command-flag, environment-variable, and local-staging
 deliveries that base-spec OpenJD does not provide.
 
 ## Relationship to native OpenJD
-- `translation_file` IS the native OpenJD `pathmapping-1.0` file plus the
+- `translation_file` is the native OpenJD `pathmapping-1.0` file plus the
   `{{Session.PathMappingRulesFile}}` format string. Prefer it (and the format
   string) whenever your app can read a mapping file.
 - `command_flags` / `environment` deliver the mapping as individual `src`/`dest`
@@ -62,13 +62,13 @@ worker falls back to a TEMP scratch directory
 Set `staging.defaults: false` to make staging fail hard on an unconfigured
 worker instead.
 
-The built-in copy only moves bytes the worker can already reach (local disk,
-or a filesystem already shared/mounted on that worker) — it is a local/dev
-convenience, not a substitute for real remote transfer. `stage_locally` is
+The built-in copy moves only bytes the worker can already reach (local disk,
+or a filesystem already shared or mounted on that worker), so it suits local
+and development setups and does no remote transfer. `stage_locally` is
 the primary mechanism for accessing S3-backed storage on ephemeral cloud
 workers and, more generally, for a farm whose workers span multiple compute
 locations: that setup needs an explicit `staging.sync_command`
-(`rsync`/`aws-cli`/etc.), not the built-in copy fallback. See
+(`rsync`, `aws-cli` and so on). See
 [`docs/storage-s3.md`](../storage-s3.md) for setup instructions, per-provider
 `sync_command` recipes (AWS, MinIO, R2, B2), and the mounted-vs-staged
 decision guide.

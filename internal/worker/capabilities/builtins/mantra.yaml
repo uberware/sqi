@@ -5,9 +5,10 @@
 # in $HFS/bin, so its checks mirror husk.yaml's.
 #
 # mantra has its own tag because the houdini detector keys on hython and the
-# Houdini application, and a worker can have either without mantra on PATH. The globs match $HFS/bin under the default install
-# roots: /opt/hfs<version> on Linux,
-# "C:\Program Files\Side Effects Software\Houdini <version>" on Windows and
+# Houdini application, and a worker can have either without mantra on PATH.
+# The globs match $HFS/bin under the default install roots: /opt/hfs<version>
+# on Linux, "C:\Program Files\Side Effects Software\Houdini <version>" on
+# Windows and
 # /Applications/Houdini/Houdini<version>/Frameworks/Houdini.framework/Versions/
 # Current/Resources on macOS.
 #

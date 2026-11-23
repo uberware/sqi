@@ -37,10 +37,10 @@ func TestEncodeListDefault(t *testing.T) {
 	}
 }
 
-// TestEncodeListDefault_Rejects pins the narrowness of the widening. The
-// existing scalar reader rejects non-scalars because a coerced value "would
-// otherwise be substituted verbatim into a running task's command, script, or
-// environment" (scalarFieldStrict's own doc comment) — so list acceptance must
+// TestEncodeListDefault_Rejects pins that list acceptance is narrow. The
+// scalar reader rejects non-scalars because a coerced value "would otherwise
+// be substituted verbatim into a running task's command, script, or
+// environment" (scalarFieldStrict's doc comment), so list acceptance must
 // admit sequences of scalars and nothing else, at every level.
 func TestEncodeListDefault_Rejects(t *testing.T) {
 	tests := []struct {
@@ -65,7 +65,7 @@ func TestEncodeListDefault_Rejects(t *testing.T) {
 	}
 }
 
-// TestEncodeListDefault_DoesNotEscapeHTML pins a deliberate departure from
+// TestEncodeListDefault_DoesNotEscapeHTML pins a departure from
 // encoding/json's default. json.Marshal escapes the three characters <, > and
 // & into their \u form so the output is safe to embed in HTML — irrelevant
 // here, and it would mean a template author who writes ["a<b"] reads back an
@@ -82,8 +82,8 @@ func TestEncodeListDefault_DoesNotEscapeHTML(t *testing.T) {
 	}
 }
 
-// TestEncodeListDefault_NoTrailingNewline guards the seam the non-escaping
-// decision introduced: json.Encoder (unlike json.Marshal) terminates every
+// TestEncodeListDefault_NoTrailingNewline guards a side effect of not escaping
+// HTML: json.Encoder (unlike json.Marshal) terminates every
 // value with a newline, and a stored default carrying one would compare
 // unequal to the same list written by hand.
 func TestEncodeListDefault_NoTrailingNewline(t *testing.T) {
@@ -129,9 +129,9 @@ func TestListDefault_ParsedFromTemplate(t *testing.T) {
 	}
 }
 
-// TestListDefault_ScalarTypeUnchanged pins that the widening is type-directed:
-// a STRING parameter given a sequence must still be rejected by the existing
-// scalar reader.
+// TestListDefault_ScalarTypeUnchanged pins that list acceptance is
+// type-directed: a STRING parameter given a sequence is rejected by the scalar
+// reader.
 func TestListDefault_ScalarTypeUnchanged(t *testing.T) {
 	_, err := decodeJobParameter(map[string]any{
 		"name": "S", "type": "string",
@@ -142,11 +142,11 @@ func TestListDefault_ScalarTypeUnchanged(t *testing.T) {
 	}
 }
 
-// TestListDefault_ListTypeWithoutEXPRStillRejected pins that the gate holds at
-// the parse layer too. Without EXPR the type stays the verbatim "LIST[STRING]",
-// which isListParamType does not recognize, so the sequence default falls to
-// the scalar reader and is rejected — the same outcome as before RFC 0007, by
-// the same code path.
+// TestListDefault_ListTypeWithoutEXPRStillRejected pins that the extension
+// check holds at the parse layer too. Without EXPR the type stays the verbatim
+// "LIST[STRING]", which isListParamType does not recognize, so the sequence
+// default falls to the scalar reader and is rejected, as in any base-spec
+// template.
 func TestListDefault_ListTypeWithoutEXPRStillRejected(t *testing.T) {
 	_, err := decodeJobParameter(map[string]any{
 		"name": "L", "type": "LIST[STRING]",
@@ -159,7 +159,7 @@ func TestListDefault_ListTypeWithoutEXPRStillRejected(t *testing.T) {
 
 // TestListDefault_JSONVersusValueString pins what paramjson.go's header
 // describes: the stored form and the interpolated form share their element
-// QUOTING and differ in their SEPARATOR.
+// quoting and differ in their separator.
 //
 // openjd-specifications#176 requires the interpolated form to parse as JSON
 // and to match string()'s conversion, so expr renders through the same
@@ -196,8 +196,8 @@ func TestListDefault_JSONVersusValueString(t *testing.T) {
 		t.Errorf("interpolated pair = %s, want [\"a\", \"b\"] (section 2.2.1, with space)", renderedPair)
 	}
 
-	// The stored form must be valid JSON that round-trips; that is the whole
-	// point of choosing it for storage.
+	// The stored form must be valid JSON that round-trips; that is why storage
+	// uses it.
 	out, err := decodeListDefault(stored, JobParamTypeListString)
 	if err != nil {
 		t.Fatalf("stored form does not round-trip: %v", err)

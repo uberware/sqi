@@ -18,8 +18,8 @@ import (
 // C:\Windows\System32\config\systemprofile\.sqi\worker, which is the wrong
 // place for gigabytes of render scratch and is undiscoverable to an operator.
 //
-// The returned mode is inert — Go ignores permission bits in MkdirAll on
-// Windows — and is present only so this function matches the POSIX signature.
+// The returned mode has no effect (Go ignores permission bits in MkdirAll on
+// Windows) and is present only so this function matches the POSIX signature.
 // The root's real protection is the protected DACL applied to each session
 // directory beneath it (isolation.SecureWorkDir); the root itself needs no
 // per-account grant, because Windows grants "Bypass traverse checking" to

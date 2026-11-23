@@ -3,17 +3,16 @@
 package scheduler
 
 // Tests for the receiver-side wire-protocol version gate on the three worker →
-// server message types the server ACTS ON: worker.register, worker.heartbeat
+// server message types the server acts on: worker.register, worker.heartbeat
 // and task.status.
 //
-// WHY A GATE AT ALL. encoding/json silently drops every field the receiving
-// struct does not declare, so a message that merely decodes is not evidence
-// that sender and receiver agree on its shape — a worker built against a
-// different protocol revision hands the server a half-understood message and
-// the server acts on it as if nothing were missing. This mirrors the check the
-// worker already applies to the assignments it receives
-// (internal/worker/lease.decodeAssignment), which is where the reasoning is
-// written out in full.
+// encoding/json drops every field the receiving struct does not declare, so a
+// message that decodes is not evidence that sender and receiver agree on its
+// shape: a worker built against a different protocol revision would hand the
+// server a half-understood message, and the server would act on it as if
+// nothing were missing. This mirrors the check the worker applies to the
+// assignments it receives (internal/worker/lease.decodeAssignment), where the
+// reasoning is written out in full.
 //
 // These tests drive the real handlers through real JSON bytes. A version gate
 // that is bypassed by the way a test constructs its input tests nothing.
@@ -21,7 +20,7 @@ package scheduler
 // The positive controls live next to the behavior they protect rather than
 // here: TestHandleWorkerRegister_Valid, TestHandleWorkerHeartbeat_Valid and
 // the whole of taskstatus_test.go all carry the current version, so a gate
-// inverted to reject the matching version fails them loudly.
+// inverted to reject the matching version fails them.
 
 import (
 	"errors"
@@ -36,16 +35,14 @@ import (
 // mismatchedVersions are the three shapes a real farm produces: a worker older
 // than this server, a worker newer than it, and a payload carrying no envelope
 // at all (a hand-rolled publisher, or a field renamed out from under the
-// sender). The empty case matters most — it is the one a reader assumes is
-// handled and the one an `if version != "" && version != current` gate lets
-// through.
+// sender). The empty case is the one an `if version != "" && version !=
+// current` gate would let through.
 var mismatchedVersions = []string{"7", "9", ""}
 
 // ── worker.register ───────────────────────────────────────────────────────────
 
-// TestHandleWorkerRegister_VersionMismatch_Discarded pins the highest-value
-// half of the gate: refusing the registration is what actually fences the
-// worker out, because handleLeaseRequest looks the worker up in the store and
+// TestHandleWorkerRegister_VersionMismatch_Discarded pins the registration
+// half of the gate: refusing the registration is what fences the worker out, because handleLeaseRequest looks the worker up in the store and
 // replies empty when it is absent. A worker whose registration is refused is
 // therefore never offered work at all, rather than being offered work it will
 // reject one assignment at a time while the tasks churn through reclaim.
@@ -142,10 +139,10 @@ func TestHandleWorkerHeartbeat_VersionMismatch_Discarded(t *testing.T) {
 
 // TestHandleTaskStatusMessage_VersionMismatch_Discarded is the one with a
 // cost: a terminal status discarded here means the server never learns the
-// task finished and the reaper eventually re-runs it. That is the accepted
-// trade — this message carries the OUTCOME (exit code, session, timestamps),
-// so it is the message where acting on a half-understood payload does the most
-// damage. The task is left exactly as it was found.
+// task finished and the reaper eventually re-runs it. That trade is accepted
+// because this message carries the outcome (exit code, session, timestamps),
+// so acting on a half-understood payload would do the most damage here. The
+// task is left as it was found.
 func TestHandleTaskStatusMessage_VersionMismatch_Discarded(t *testing.T) {
 	for _, v := range mismatchedVersions {
 		t.Run("version="+v, func(t *testing.T) {

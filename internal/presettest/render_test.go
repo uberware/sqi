@@ -118,7 +118,7 @@ func TestRender_GoldensAreHostNeutral(t *testing.T) {
 		Case:   "default",
 		// SourceFile is a full path; OutputDir is a directory the preset joins a
 		// derived filename onto; WindowsSource is a literal Windows fixture, which
-		// is what ffmpeg-segment-transcode-powershell's cases really bind.
+		// is what ffmpeg-segment-transcode-powershell's cases bind.
 		Params: map[string]string{"OutputDir": dir, "SourceFile": src, "WindowsSource": winFx},
 		Steps: []presettest.StepSnapshot{{
 			Name: "Encode",

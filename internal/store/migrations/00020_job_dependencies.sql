@@ -2,7 +2,7 @@
 -- Cross-job (whole-job) dependencies: a job may wait for other whole jobs to
 -- complete before its tasks become schedulable.
 --
--- depends_on_job_id deliberately has NO foreign key. If it cascaded on upstream
+-- depends_on_job_id has no foreign key. If it cascaded on upstream
 -- deletion, the edge would vanish and the release check ("every upstream
 -- completed") would see zero edges and wrongly release the waiter. Keeping the
 -- edge lets the reconciler tell "upstream deleted" (cancel the dependent) from

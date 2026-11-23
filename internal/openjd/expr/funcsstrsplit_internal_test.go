@@ -10,11 +10,11 @@ import (
 // TestSplitAndJoin covers RFC 0006's split, rsplit and join.
 //
 // Three rows are specification text rather than intuition:
-//   - split(”, ',') is [""], one empty string, NOT an empty list. RFC 0006
+//   - split(”, ',') is [""], one empty string, not an empty list. RFC 0006
 //     states this explicitly and calls out that it matches Python.
 //   - split('   ') with no separator is [], because the whitespace form strips
 //     the ends before splitting.
-//   - a NEGATIVE maxsplit means unlimited. The reference answers [] instead,
+//   - a negative maxsplit means unlimited. The reference answers [] instead,
 //     which is a defect.
 func TestSplitAndJoin(t *testing.T) {
 	tests := []struct {
@@ -88,14 +88,14 @@ func TestSplit_RejectsAnEmptySeparator(t *testing.T) {
 	}
 }
 
-// TestJoin_AcceptsAnEmptyList pins that [].join(sep) RESOLVES and returns "",
+// TestJoin_AcceptsAnEmptyList pins that [].join(sep) resolves and returns "",
 // in both function and method form.
 //
 // An empty list literal types as list[nulltype], so a registry carrying only
 // a list[string] join row would reject it outright; the list[nulltype] row
 // exists to make the call resolve at all.
 //
-// This test cannot and does not pin WHICH row runs: joinValues short-circuits
+// This test cannot and does not pin which row runs: joinValues short-circuits
 // an empty list to String("") before any row-specific logic executes, and the
 // list[nulltype] row also returns String("") directly, so every candidate row
 // produces byte-identical output for this input. Which overload the matcher

@@ -35,7 +35,7 @@ func TestExpand_MalformedCombinationExpr(t *testing.T) {
 // a Cartesian product whose task count exceeds the per-step cap is rejected
 // before its ~1M task rows are materialized.
 func TestExpand_TaskCountExplosionRejected(t *testing.T) {
-	// 1024 * 1024 = 1,048,576 tasks, just over the 1,000,000 cap.
+	// 1024 * 1024 = 1,048,576 tasks, over the 1,000,000 cap.
 	a, b := "1-1024", "1-1024"
 	prod := "A*B"
 	ps := &openjd.StepParameterSpace{

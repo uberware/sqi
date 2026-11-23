@@ -13,8 +13,7 @@
 // they keep the original extension — are matched by every "*.yaml" glob and
 // every `strings.HasSuffix(name, ".yaml")` filter. Code that scans a directory
 // then tries to parse one and fails on a control character, reporting a corrupt
-// file that does not exist. This has bitten this repository more than once, in
-// unrelated subsystems, which is why the guard lives in one place.
+// file that does not exist. The guard lives here so every subsystem shares it.
 package fsutil
 
 import (

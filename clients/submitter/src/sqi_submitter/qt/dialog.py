@@ -84,7 +84,7 @@ def _run_submit(call: _SubmitCall) -> list[TargetResult]:
 
     A host's ``save_scene`` (Maya's ``cmds.file``, say) can raise anything, and
     a prepared call re-raises it (see :func:`_raising`); on the worker thread an
-    unhandled exception just ends the thread and the artist sees nothing, so it
+    unhandled exception ends the thread and the artist sees nothing, so it
     is reported through the banner like any other failure.
     """
     try:
@@ -285,11 +285,10 @@ class SubmitDialog(QtWidgets.QDialog):
         form.addRow("Retry delay (s)", self._retry_delay_spin)
         form.addRow("Failure limit", self._failure_limit_spin)
 
-        # The Owner override is only meaningful (and only accepted by the
-        # server) for a credential holding jobs.submit_as; hide it otherwise
-        # so an artist never fills it in only to be 403'd at submit time.
-        # session.may_submit_as fails OPEN when unknown (see its docstring) —
-        # this is a UI affordance, the server is the real enforcement point.
+        # The server accepts an Owner override only from a credential holding
+        # jobs.submit_as; hide it otherwise so an artist never fills it in only
+        # to get a 403 at submit time. session.may_submit_as fails open when
+        # permissions are unknown (see its docstring); the server enforces it.
         owner_visible = self.session.may_submit_as
         self._owner_label.setVisible(owner_visible)
         self._owner_edit.setVisible(owner_visible)
@@ -394,7 +393,7 @@ class SubmitDialog(QtWidgets.QDialog):
         return f"last_targets.{self._host_token()}.{scene or ''}"
 
     def _remembered_ticks(self, names: Sequence[str]) -> set[str]:
-        """Remembered ticked names that still exist; else just the first target."""
+        """Remembered ticked names that still exist; else the first target."""
         stored = self.session.settings.get(self._ticks_key())
         kept = {n for n in stored if n in names} if isinstance(stored, list) else set()
         if not kept and names:
@@ -703,7 +702,7 @@ class SubmitDialog(QtWidgets.QDialog):
         Host APIs are main-thread only, so the worker never sees the live
         adapter: this is the submit's only host contact. The save happens once,
         here; the snapshot records whether it failed, so the shared submit flow
-        reports a failed save exactly as it did when it saved on its own.
+        reports a failed save as it would against the live host.
         """
         adapter = self.adapter
         if adapter is None:

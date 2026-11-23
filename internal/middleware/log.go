@@ -141,7 +141,7 @@ func (rw *responseWriter) Flush() {
 // it supports hijacking. Required for WebSocket upgrades.
 func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
-		// Once hijacked the status code is no longer meaningful, but mark it
+		// A hijacked connection has no meaningful status code, but mark it
 		// so the log line records 101 rather than the 200 default.
 		if !rw.written {
 			rw.status = http.StatusSwitchingProtocols

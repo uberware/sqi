@@ -17,10 +17,10 @@ import (
 // resolved form, because the raw value may be a path for another operating
 // system that cannot be parsed locally: Param.<name> is a path (or list of
 // paths), RawParam.<name> stays a string (or list of strings). Every other
-// declared type binds Param and RawParam to the SAME type. That rule is stated
+// declared type binds Param and RawParam to the same type. That rule is stated
 // in as many words by Template Schemas §7.3.1's value-reference table — "This
 // is the same as RawParam.<ParamName> for all parameter types except PATH"
-// (wiki/2023-09-Template-Schemas.md:1993) — NOT by Expression-Language §1.2.2.
+// (wiki/2023-09-Template-Schemas.md:1993) — not by Expression-Language §1.2.2.
 // §1.2.2's own contribution is the type table above plus the PATH prose
 // ("Param.<name> has type path with path mapping rules applied, while
 // RawParam.<name> has type string containing the original unmapped value"). So
@@ -56,17 +56,17 @@ func JobParamTypes(declared string) (paramType, rawType Type) {
 }
 
 // TaskParamType maps a declared OpenJD task-parameter type per section
-// 1.2.2's task table. CHUNK[INT] is range_expr, NOT list[int], so that a
+// 1.2.2's task table. CHUNK[INT] is range_expr, not list[int], so that a
 // frame range need not be expanded. Task.Param.<name> and
 // Task.RawParam.<name> share this same type for every declared task-
-// parameter type, including PATH. §1.2.2's task table gives ONE expression
+// parameter type, including PATH. §1.2.2's task table gives one expression
 // type per declared type, with no Param/RawParam split at all; the
 // value-versus-type distinction comes from Template Schemas' own task-
 // parameter definitions, which describe Task.Param.<name> as "the value of
 // the parameter with relevant path mapping rules applied to it" and
 // Task.RawParam.<name> as "the value of the parameter as it was defined,
 // with no path mapping rules applied"
-// (wiki/2023-09-Template-Schemas.md:1248-1249). It is a VALUE difference,
+// (wiki/2023-09-Template-Schemas.md:1248-1249). It is a value difference,
 // not a type difference; both remain path.
 //
 // An unrecognized spelling floors to "any", for the same reason
@@ -87,7 +87,7 @@ func TaskParamType(declared string) Type {
 // Value of type t. It returns Unresolved(t) in two distinct situations,
 // which are easy to conflate:
 //
-//  1. PARSE FAILURE, for a type this function does make concrete. INT and
+//  1. Parse failure, for a type this function does make concrete. INT and
 //     FLOAT go concrete when raw parses and fall back to Unresolved(t) when
 //     it does not: this function is not a validator, so a value that fails
 //     to parse here is reported as still-unknown rather than causing a
@@ -95,18 +95,18 @@ func TaskParamType(declared string) Type {
 //     against its declared type happens upstream, before this is called.
 //     STRING and PATH always go concrete — every string parses as either.
 //
-//  2. BY CONSTRUCTION, for a type this function never makes concrete at
-//     all. There is NO SUCH TYPE LEFT: bool and list are handled. A type
-//     added later MUST add its cases here, or its parameters will never
+//  2. By construction, for a type this function never makes concrete at
+//     all. There is no such type: bool and list are handled. A type
+//     added to the table must add its cases here, or its parameters will never
 //     resolve past a placeholder in phase 3 — an unhandled type reaches the
-//     default branch and returns Unresolved(t), which is a LEGITIMATE
+//     default branch and returns Unresolved(t), which is a legitimate
 //     phase-1 result, so nothing errors and nothing logs.
 //     TestValueFromText_ResolvesTheRFC0007Types guards it by asserting
-//     CONCRETENESS rather than correctness, and any future type must join
+//     concreteness rather than correctness, and any future type must join
 //     that table. This is the one place the mapping lives, since phase 2
 //     and phase 3 share it (see JobParamTypes' doc comment).
 //
-// range_expr (CodeRangeExpr) IS made concrete, via RangeExpr(raw) with the
+// range_expr (CodeRangeExpr) is made concrete, via RangeExpr(raw) with the
 // same parse-failure-falls-back-to-Unresolved rule as INT/FLOAT.
 // CHUNK[INT] task parameters are one producer: internal/openjd/expand.go
 // stores a CHUNK[INT] task parameter's value as a range-expression string
@@ -122,7 +122,7 @@ func TaskParamType(declared string) Type {
 // flavor rather than a fixed one: internal/openjd hardcodes PathPOSIX here for
 // submission-time job-parameter binding (a known gap — nothing server-side sets
 // a PathFormat other than the default), while the worker's phase-3 table (a
-// genuine host context) uses PathNative.
+// host context) uses PathNative.
 //
 // The CodeFloat case binds raw as the value's rendered form (FloatText),
 // per section 1.3.4: submitting "3.500" to a FLOAT parameter must preserve
@@ -177,7 +177,7 @@ func ValueFromText(t Type, raw string, pathFlavor PathFormat) Value {
 // parseBoolText interprets a BOOL parameter's submitted text per RFC 0007's
 // accepted-values table.
 //
-// It MUST accept exactly what internal/openjd's parseBoolParamValue accepts.
+// It must accept exactly what internal/openjd's parseBoolParamValue accepts.
 // That function validates a template's declared default; this one converts a
 // submitted value, and a spelling the validator admits but this rejects would
 // pass submission and then resolve to nothing on the host. The two cannot
@@ -200,7 +200,7 @@ func parseBoolText(raw string) (value, ok bool) {
 // The encoding is the one internal/openjd/paramjson.go defines: that file owns
 // the encode half, this is the decode half, and they live apart for the same
 // dependency reason as parseBoolText above. Any element that does not convert
-// makes the WHOLE value unresolved rather than binding a list with a
+// makes the whole value unresolved rather than binding a list with a
 // wrong-typed hole in it -- a partially-correct list is harder to diagnose
 // than an unresolved one, and validation upstream has already reported the
 // real defect.
@@ -224,7 +224,7 @@ func listFromJSON(t Type, raw string, pathFlavor PathFormat) (Value, error) {
 		}
 		out = append(out, v)
 	}
-	// NOTE the argument order: List takes (elem, vals).
+	// Note the argument order: List takes (elem, vals).
 	return List(elemType, out), nil
 }
 

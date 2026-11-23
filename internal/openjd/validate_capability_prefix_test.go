@@ -116,10 +116,8 @@ func TestValidate_CapabilityNamePrefix_Structural(t *testing.T) {
 // "<Identifier>:" is an optional vendor namespace, and the same shape applies
 // to attributes with "attr.".
 //
-// sqi rejected every vendor-prefixed name outright, so a studio could not
-// namespace its own capabilities and conforming templates from other OpenJD
-// tools were refused. Surfaced by the official conformance suite fixtures
-// 3.3--vendor-prefix-amount.yaml and 3.3--vendor-prefix-attribute.yaml.
+// The conformance fixtures 3.3--vendor-prefix-amount.yaml and
+// 3.3--vendor-prefix-attribute.yaml cover it.
 func TestValidate_CapabilityNameVendorPrefix(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -219,14 +217,14 @@ func TestValidate_CapabilityNameVendorPrefix(t *testing.T) {
 
 // The spec reserves "worker", "job", "step", and "task" as the first identifier
 // after a capability namespace (§3.3.1.1) — a name under one of those scopes
-// must be a capability the spec actually defines. sqi accepted anything,
-// so "amount.worker.custom" passed. Surfaced by the conformance fixtures
+// must be a capability the spec defines, so "amount.worker.custom" is
+// rejected. The conformance fixtures
 // 3.3--reserved-scope-{worker,job,step,task}.invalid.yaml and
-// 3.3.2--both-anyof-allof.invalid.yaml (attr.worker.capabilities).
+// 3.3.2--both-anyof-allof.invalid.yaml (attr.worker.capabilities) cover it.
 //
-// sqi permits a small set of its own names under the reserved worker scope —
-// see sqiReservedScopeNames — because worker tags, usage pools, and compute
-// locations predate this check and every shipped preset depends on them.
+// sqi permits a small set of its own names under the reserved worker scope
+// (see sqiReservedScopeNames), because worker tags, usage pools and compute
+// locations are built on them and every shipped DCC preset depends on them.
 func TestValidate_ReservedCapabilityScope(t *testing.T) {
 	amount := func(name string) func(*openjd.JobTemplate) {
 		return func(tp *openjd.JobTemplate) {

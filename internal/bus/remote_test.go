@@ -95,6 +95,25 @@ func dataJS(t *testing.T, c *bustest.Cluster) jetstream.JetStream {
 	return js
 }
 
+// consumerState describes durable's delivery counters on stream, for a
+// failure message. It reports an error in place of the state rather than
+// failing the test.
+func consumerState(t *testing.T, c *bustest.Cluster, stream, durable string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cons, err := dataJS(t, c).Consumer(ctx, stream, durable)
+	if err != nil {
+		return "unavailable: " + err.Error()
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		return "unavailable: " + err.Error()
+	}
+	return fmt.Sprintf("delivered %d, ack floor %d, ack pending %d, redelivered %d, pending %d, waiting pulls %d",
+		info.Delivered.Stream, info.AckFloor.Stream, info.NumAckPending, info.NumRedelivered, info.NumPending, info.NumWaiting)
+}
+
 func streamInfo(t *testing.T, js jetstream.JetStream, name string) *jetstream.StreamInfo {
 	t.Helper()
 	s, err := js.Stream(t.Context(), name)
@@ -322,7 +341,7 @@ const deliveryBudget = 10 * time.Second
 func TestRemote_SurvivesBrokerRestart(t *testing.T) {
 	t.Parallel()
 	c := bustest.StartCluster(t, 3, bustest.Options{})
-	logger, _ := bufLogger()
+	logger, logs := bufLogger()
 	r := startRemote(t, remoteConfig(c, bus.DefaultAccount, 3), logger)
 	client, err := r.NewClient()
 	if err != nil {
@@ -332,12 +351,30 @@ func TestRemote_SurvivesBrokerRestart(t *testing.T) {
 	ctx := t.Context()
 
 	// The status durable exists but is not consuming while the message is
-	// published, so only the restarted cluster can deliver it.
+	// published, so only the restarted cluster can deliver it. The consumer's
+	// leader keeps the stopped context's pull until it sees the unsubscribe;
+	// a message published before then goes to that pull, unacked, and returns
+	// only after the 30s ack wait.
 	statusCC, err := client.ConsumeTaskStatus(ctx, func(jetstream.Msg) {})
 	if err != nil {
 		t.Fatal(err)
 	}
 	statusCC.Stop()
+	js := dataJS(t, c)
+	eventually(t, 10*time.Second, "the stopped status pull to be dropped", func() error {
+		cons, err := js.Consumer(ctx, bus.StreamTask, "sqi-task-status-srv")
+		if err != nil {
+			return err
+		}
+		info, err := cons.Info(ctx)
+		if err != nil {
+			return err
+		}
+		if info.NumWaiting != 0 {
+			return fmt.Errorf("%d pulls still waiting", info.NumWaiting)
+		}
+		return nil
+	})
 	if err := client.PublishTaskStatus(ctx, "w1", "before-restart", []byte("before-restart")); err != nil {
 		t.Fatal(err)
 	}
@@ -376,13 +413,16 @@ func TestRemote_SurvivesBrokerRestart(t *testing.T) {
 		})
 		return err
 	})
+	resumed := time.Now()
 	select {
 	case got := <-status:
 		if got != "before-restart" {
 			t.Fatalf("status durable delivered %q, want before-restart", got)
 		}
+		t.Logf("the status durable delivered %s after it resumed", time.Since(resumed).Round(time.Millisecond))
 	case <-time.After(deliveryBudget):
-		t.Fatal("the status message published before the restart was not delivered")
+		t.Fatalf("the status message published before the restart was not delivered within %s\nconsumer: %s\nbus log:\n%s",
+			deliveryBudget, consumerState(t, c, bus.StreamTask, "sqi-task-status-srv"), logs)
 	}
 
 	eventually(t, 20*time.Second, "publish a heartbeat after the restart", func() error {

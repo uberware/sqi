@@ -456,8 +456,8 @@ func TestUpdateUser_DisableLastAdminRejected(t *testing.T) {
 // ── auth_source enforcement ──────────────────────────────────────────────────
 
 // In directory mode the role column is owned by the group mapping, so the
-// API must refuse an edit rather than accept one that silently reverts at the
-// user's next login.
+// API must refuse an edit rather than accept one that reverts at the user's
+// next login.
 func TestUsers_RoleEditRejectedForLDAPUserInDirectoryMode(t *testing.T) {
 	st := fake.New()
 	ctx := context.Background()
@@ -488,7 +488,7 @@ func TestUsers_RoleEditRejectedForLDAPUserInDirectoryMode(t *testing.T) {
 	}
 }
 
-// Non-role fields stay editable — an admin must still be able to disable a
+// Non-role fields stay editable: an admin must still be able to disable a
 // directory account, which is the local override that works during an outage.
 func TestUsers_DisableAllowedForLDAPUserInDirectoryMode(t *testing.T) {
 	st := fake.New()
@@ -521,9 +521,9 @@ func TestUsers_DisableAllowedForLDAPUserInDirectoryMode(t *testing.T) {
 }
 
 // A PATCH that round-trips the account's existing role (unchanged) alongside
-// a field that IS changing must not be rejected: req.Role != orig.Role is
+// a field that is changing must not be rejected: req.Role != orig.Role is
 // what distinguishes "the client echoed back a field it didn't touch" from
-// "the client is actually trying to change the role". If that inequality
+// "the client is trying to change the role". If that inequality
 // check were dropped (or flipped), this would 409 instead of applying
 // display_name.
 func TestUsers_NoOpRolePatchAllowedForLDAPUserInDirectoryMode(t *testing.T) {
@@ -589,7 +589,7 @@ func TestUsers_RoleEditAllowedForLDAPUserInLocalMode(t *testing.T) {
 	}
 }
 
-// Role edits on LOCAL accounts are unaffected in either mode.
+// Role edits on local accounts are unaffected in either mode.
 func TestUsers_RoleEditAlwaysAllowedForLocalUser(t *testing.T) {
 	for _, mode := range []string{ldap.RoleSourceDirectory, ldap.RoleSourceLocal} {
 		t.Run(mode, func(t *testing.T) {
@@ -786,9 +786,9 @@ func TestUsers_RoleEditableMatchesPatchOutcome(t *testing.T) {
 }
 
 // directoryOwnsRole is the single predicate behind both the PATCH guard and the
-// role_editable field. It takes the two role sources SEPARATELY because LDAP
-// and OIDC are configured independently — an operator may trust one provider's
-// groups and not the other's — so a cross-source row (LDAP account, OIDC in
+// role_editable field. It takes the two role sources separately because LDAP
+// and OIDC are configured independently (an operator may trust one provider's
+// groups and not the other's), so a cross-source row (LDAP account, OIDC in
 // directory mode) must come back editable.
 func TestDirectoryOwnsRole(t *testing.T) {
 	tests := []struct {
@@ -837,9 +837,9 @@ func TestDirectoryRoleConflictDetail(t *testing.T) {
 			}
 		})
 	}
-	// The two details must actually differ, or a test asserting each contains
-	// its own substring could pass against a single hardcoded string in the
-	// rare case both substrings were (wrongly) present in it.
+	// The two details must differ, or a test asserting each contains its own
+	// substring could pass against a single hardcoded string that contained
+	// both substrings.
 	ldapDetail := directoryRoleConflictDetail(store.User{AuthSource: store.AuthSourceLDAP})
 	oidcDetail := directoryRoleConflictDetail(store.User{AuthSource: store.AuthSourceOIDC})
 	if ldapDetail == oidcDetail {
@@ -911,7 +911,7 @@ func TestSetPassword_OIDCAccountConflictNamesProvider(t *testing.T) {
 // TestPatchUserRole_RejectedForOIDCUnderDirectory pins the two consumers of
 // directoryOwnsRole together for an OIDC account. They must never disagree: an
 // admin who sees an editable field, edits it, and gets a 200 would watch the
-// change revert silently at the user's next login. Updating the guard without
+// change revert at the user's next login. Updating the guard without
 // the wire field (or the reverse) fails here.
 func TestPatchUserRole_RejectedForOIDCUnderDirectory(t *testing.T) {
 	modes := []struct {
@@ -933,8 +933,8 @@ func TestPatchUserRole_RejectedForOIDCUnderDirectory(t *testing.T) {
 				t.Fatal(err)
 			}
 			seedAuthUser(t, st, "root", "hunter2!", "admin")
-			// LDAP is deliberately in directory mode throughout: it must have no
-			// bearing on an OIDC account.
+			// LDAP is in directory mode throughout: it must have no bearing on
+			// an OIDC account.
 			srv := newOIDCUsersServer(t, st,
 				ldap.Config{RoleSource: ldap.RoleSourceDirectory},
 				oidc.Config{RoleSource: m.roleSource})
@@ -1023,9 +1023,9 @@ func TestUsers_RoleEditableIsPerSource(t *testing.T) {
 // telling the client what its own set-password guard will do. Unlike the role
 // rule this one turns on auth_source alone, but it is still computed
 // server-side so the advertised control and the enforced guard share a single
-// definition. Note that it does NOT vary with either role_source — the two
-// rules are independent, and coupling them would freeze a local account's
-// password the moment a directory was put in directory mode.
+// definition. It does not vary with either role_source: the two rules are
+// independent, and coupling them would freeze a local account's password as
+// soon as a provider was put in directory mode.
 func TestUsers_ResponsePasswordEditable(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1070,9 +1070,9 @@ func TestUsers_ResponsePasswordEditable(t *testing.T) {
 
 // The advertised value and the enforced behavior must agree: whatever
 // password_editable says, PUT /users/{id}/password must succeed exactly when
-// it is true. This is the test that fails if only one of the two is changed —
-// it asserts them against each other, not against a hardcoded expectation, so
-// moving either off the shared predicate breaks it.
+// it is true. This test fails if only one of the two is changed: it asserts
+// them against each other, not against a hardcoded expectation, so moving
+// either off the shared predicate breaks it.
 func TestUsers_PasswordEditableMatchesSetPasswordOutcome(t *testing.T) {
 	for _, authSource := range []string{store.AuthSourceLocal, store.AuthSourceLDAP, store.AuthSourceOIDC} {
 		t.Run(authSource, func(t *testing.T) {
@@ -1135,7 +1135,7 @@ func TestPasswordEditable(t *testing.T) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// newOIDCUsersServer builds an auth-enabled router carrying BOTH role-source
+// newOIDCUsersServer builds an auth-enabled router carrying both role-source
 // settings. No OIDC provider is wired: the users routes read only the config,
 // so this exercises the role-source plumbing without an SSO round trip.
 func newOIDCUsersServer(t *testing.T, st store.Store, lcfg ldap.Config, ocfg oidc.Config) *httptest.Server {
@@ -1201,7 +1201,7 @@ func mustReadAll(t *testing.T, resp *http.Response) []byte {
 // assertNoSecretLeak fails the test if raw (a raw HTTP response body) contains
 // the password_hash JSON key, or any known password-hash-shaped value
 // (argon2id encoded hashes always contain this prefix), asserted on the
-// marshaled bytes directly rather than a decoded struct — a decode-based
+// marshaled bytes directly rather than a decoded struct: a decode-based
 // check would miss a leak if the DTO used a different key name.
 func assertNoSecretLeak(t *testing.T, raw []byte) {
 	t.Helper()

@@ -277,10 +277,10 @@ func TestStore_DeleteTerminalJobsBefore(t *testing.T) {
 }
 
 // TestStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent
-// verifies the retention-purge fix: a completed upstream older than the
-// cutoff must NOT be purged while a dependent still waits on it (blocked),
-// because the reconciler would read the purge as a missing upstream and
-// wrongly cancel the dependent even though the upstream actually succeeded.
+// verifies retention: a completed upstream older than the cutoff must not be
+// purged while a dependent still waits on it (blocked), because the reconciler
+// would read the purge as a missing upstream and cancel the dependent even
+// though the upstream succeeded.
 // Once the dependent reaches a terminal status, the upstream becomes
 // eligible for purge again.
 func TestStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent(t *testing.T) {
@@ -439,7 +439,7 @@ func TestJob_ListDependentsAndBlocked(t *testing.T) {
 
 // TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming verifies the asymmetric
 // delete behavior: deleting the downstream job removes its outgoing edges,
-// but deleting the upstream job leaves the (now-dangling) edge intact so the
+// but deleting the upstream job leaves the (dangling) edge intact so the
 // reconciler can observe "upstream deleted".
 func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 	// Not t.Parallel(): see comment in TestJob_ListDependentsAndBlocked.
@@ -454,7 +454,7 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 	}
 	storetest.Submit(t, st, store.JobSubmission{Job: down, DependsOn: []string{up.ID}})
 
-	// Deleting the UPSTREAM must NOT delete the edge (no FK on depends_on_job_id):
+	// Deleting the upstream must not delete the edge (no FK on depends_on_job_id):
 	if err := st.DeleteJob(ctx, up.ID); err != nil {
 		t.Fatalf("DeleteJob(up): %v", err)
 	}
@@ -509,7 +509,7 @@ func TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored(t *testing.T) {
 	}
 }
 
-// TestJob_ListJobDependencyIDs_OrderedByUpstreamID locks in the ordering fix:
+// TestJob_ListJobDependencyIDs_OrderedByUpstreamID pins the ordering:
 // ListJobDependencyIDs must return upstream IDs sorted by ID, regardless of
 // the order they were passed in the submission or created in.
 func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
@@ -525,7 +525,7 @@ func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
 		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
 		TemplateFormat: store.TemplateFormatJSON,
 	}
-	// Deliberately not alphabetical.
+	// Not alphabetical.
 	storetest.Submit(t, st, store.JobSubmission{Job: down, DependsOn: []string{zeta.ID, alpha.ID, mike.ID}})
 
 	deps, err := st.ListJobDependencyIDs(ctx, down.ID)

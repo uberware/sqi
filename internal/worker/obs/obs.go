@@ -2,7 +2,7 @@
 
 // Package obs provides the local observability HTTP server for sqi-worker.
 //
-// The server is intentionally minimal and listens on a loopback address
+// The server listens on a loopback address
 // (default 127.0.0.1:9091) so it is accessible to local monitoring agents
 // and container orchestrators without being reachable from the network.
 //
@@ -48,10 +48,9 @@ const (
 // TLSConfig terminates TLS on the worker's observability listener.
 //
 // This listener serves metrics, health and optionally pprof. It defaults to
-// loopback, where plaintext is fine — but an operator scraping it from
+// loopback, where plaintext is fine, but an operator scraping it from
 // Prometheus has to bind it wider, and then everything on it, pprof included,
-// crosses the network in the clear. Zero value leaves it plaintext, which is
-// the default and unchanged.
+// crosses the network in the clear. The zero value serves plaintext.
 type TLSConfig struct {
 	Enabled  bool
 	CertFile string
@@ -96,8 +95,8 @@ func New(
 	}
 }
 
-// Run starts the HTTP server and blocks until the listener stops — which
-// happens when [Server.Shutdown] is called, NOT when ctx is canceled. Canceling
+// Run starts the HTTP server and blocks until the listener stops, which
+// happens when [Server.Shutdown] is called, not when ctx is canceled. Canceling
 // ctx alone stops the uptime goroutine and leaves the listener serving.
 //
 // Run also starts a background goroutine that refreshes the uptime metric on
@@ -137,8 +136,8 @@ func (s *Server) Run(ctx context.Context) {
 	)
 
 	// Certificates are loaded once, here, and handed to the server rather than
-	// passed as paths — the same reason internal/server does it: re-reading at
-	// listen time could pick up a half-written file mid-rotation.
+	// passed as paths, as internal/server does: re-reading at listen time could
+	// pick up a half-written file mid-rotation.
 	serve := s.httpServer.ListenAndServe
 	if s.tlsCfg.Enabled {
 		tlsConf, err := tlsutil.ServerConfig(s.tlsCfg.CertFile, s.tlsCfg.KeyFile, "")

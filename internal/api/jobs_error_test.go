@@ -5,7 +5,7 @@ package api
 // Additional unit tests for job REST handlers.
 //
 // These tests cover the error and filter paths not reached by jobs_test.go.
-// An storeErr wrapper is used to inject store-level errors without touching
+// A storeErr wrapper is used to inject store-level errors without touching
 // the real fake.Store implementation.
 
 import (
@@ -98,7 +98,7 @@ func (e *storeErr) ListTaskLogs(ctx context.Context, attemptID string, afterNATS
 // errInjected is the sentinel error returned by storeErr wrapper methods during tests.
 var errInjected = errors.New("store: internal error")
 
-// ── Item 5: listJobs additional paths ─────────────────────────────────────────
+// ── listJobs additional paths ─────────────────────────────────────────────────
 
 func TestListJobs_AdditionalFiltersAndErrors(t *testing.T) {
 	t.Run("filter by owner", func(t *testing.T) {
@@ -206,7 +206,7 @@ func TestListJobs_AdditionalFiltersAndErrors(t *testing.T) {
 	})
 }
 
-// ── Item 5: getJob additional paths ───────────────────────────────────────────
+// ── getJob additional paths ───────────────────────────────────────────────────
 
 func TestGetJob_StoreError(t *testing.T) {
 	t.Run("store error returns 500", func(t *testing.T) {
@@ -223,7 +223,7 @@ func TestGetJob_StoreError(t *testing.T) {
 	})
 }
 
-// ── Item 5: cancelJob additional paths ────────────────────────────────────────
+// ── cancelJob additional paths ────────────────────────────────────────────────
 
 func TestCancelJob_TerminalAndConflict(t *testing.T) {
 	t.Run("completed job returns 409", func(t *testing.T) {

@@ -348,10 +348,9 @@ func TestCompleteTaskAttempt_SupersededAttemptIsRejected(t *testing.T) {
 // latest-attempt check runs in: after the reporting attempt is closed and its
 // claims released, as on every path, so only the task move is refused. The
 // shape, an older attempt still open beside the latest one, cannot come from
-// the current store operations (each closes a task's attempts whenever it
-// takes the task back), but a reaper race in v0.3.0 could leave it behind, and
-// the old worker's report must release that attempt's slot rather than keep
-// it.
+// the store operations (each closes a task's attempts whenever it takes the
+// task back), but a database can hold it from a reaper race, and the old
+// worker's report must release that attempt's slot rather than keep it.
 func TestCompleteTaskAttempt_SupersededOpenAttemptIsClosed(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

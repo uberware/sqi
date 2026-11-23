@@ -112,7 +112,7 @@ func (s *Store) transitionPendingTasksWhereLocked(
 // with an AssignedAt older than cutoff back to [store.TaskStatusReady], closes
 // each reclaimed task's running attempts as failed and releases the claims of
 // its closed attempts, and returns the reclaimed tasks as they are after the
-// reset (assigned_worker_id empty), matching the SQLite store's RETURNING.
+// reset (assigned_worker_id empty), matching the SQL store's RETURNING.
 // Tasks named in skip are left as they are.
 func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time, skip map[string]bool) ([]store.Task, error) {
 	s.mu.Lock()
@@ -429,7 +429,7 @@ func (s *Store) CountUnschedulableTasksByJob(_ context.Context, jobID string) (i
 	return n, nil
 }
 
-// FailureReasonSummary implements [store.TaskStore]. It mirrors the sqlite
+// FailureReasonSummary implements [store.TaskStore]. It mirrors the SQL
 // group-by-then-order-by(n DESC, reason ASC) semantics: the dominant reason
 // is the most frequent one, ties broken by reason string ascending.
 func (s *Store) FailureReasonSummary(_ context.Context, jobID string) (store.FailureSummary, error) {

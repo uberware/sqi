@@ -102,12 +102,10 @@ func TestBuildOIDCProvider_EnabledBuildsProviderAndKey(t *testing.T) {
 	}
 }
 
-// TestBuildOIDCProvider_UnreachableIssuerStillBoots pins the deliberate
-// asymmetry with buildLDAPVerifier: construction performs no network I/O, so
-// an issuer that does not resolve at all must not stop the server from
-// starting. A render farm's scheduler going down because the identity provider
-// is briefly unreachable would make an external service a hard dependency of
-// the whole system rather than of SSO alone.
+// TestBuildOIDCProvider_UnreachableIssuerStillBoots pins the asymmetry with
+// buildLDAPVerifier: construction performs no network I/O, so an issuer that
+// does not resolve must not stop the server from starting. The identity
+// provider is a dependency of SSO alone, not of the scheduler.
 func TestBuildOIDCProvider_UnreachableIssuerStillBoots(t *testing.T) {
 	cfg := Config{AuthEnabled: true}
 	cfg.AuthOIDC = validOIDCConfig()
@@ -125,14 +123,12 @@ func TestBuildOIDCProvider_UnreachableIssuerStillBoots(t *testing.T) {
 }
 
 // TestWireAuthDeps_SSORoutesAreRegistered is the end-to-end wiring assertion:
-// a fully-configured SSO deployment must actually serve the SSO routes.
+// a fully-configured SSO deployment must serve the SSO routes.
 //
-// This exists because the failure it catches is silent. NewRouter registers
-// /auth/oidc/login only when BOTH the provider and a non-empty state key are
-// present, so forgetting to assign deps.OIDCStateKey — a single line in
-// wireAuthDeps, with nothing else in the system referencing it — yields a
-// server that boots cleanly, logs "auth: oidc enabled", and 404s the login
-// route. No other test in either package would notice.
+// NewRouter registers /auth/oidc/login only when both the provider and a
+// non-empty state key are present, so a missing deps.OIDCStateKey assignment
+// in wireAuthDeps yields a server that boots, logs "auth: oidc enabled", and
+// answers 404 on the login route.
 func TestWireAuthDeps_SSORoutesAreRegistered(t *testing.T) {
 	cfg := Config{AuthEnabled: true, AuthCookieName: "sqi_session"}
 	cfg.AuthOIDC = validOIDCConfig()
@@ -189,14 +185,11 @@ func TestWireAuthDeps_SSORoutesAreRegistered(t *testing.T) {
 // TestToOIDCConfig_MapsEveryField pins the hand-written field-by-field
 // conversion in toOIDCConfig, exactly as TestToLDAPConfig_MapsEveryField pins
 // its LDAP twin. Every source field carries a distinct, recognizable value so
-// that a swapped assignment — sourcing GroupsClaim from UsernameClaim, say —
+// that a swapped assignment (sourcing GroupsClaim from UsernameClaim, say)
 // shows up as a mismatch naming the field rather than being masked by two
-// fields that happen to share a value.
-//
-// This matters more here than the compiler suggests: nearly every field is a
-// string, so a transposition is invisible to the type checker and would
-// surface only against a real identity provider, as a login that fails or —
-// worse — silently maps everyone to the wrong role.
+// fields that share a value. Nearly every field is a string, so the type
+// checker cannot catch a transposition, which would otherwise surface only
+// against a real identity provider as a failed login or a wrong role.
 func TestToOIDCConfig_MapsEveryField(t *testing.T) {
 	logger := testLogger()
 	cfg := config.OIDCConfig{

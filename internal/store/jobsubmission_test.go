@@ -40,8 +40,8 @@ func submissionFixture(ctx context.Context, t *testing.T, st store.Store) store.
 }
 
 // assertFreshTimestamps checks that a row the store just created carries a
-// CreatedAt that is actually "now" and an UpdatedAt equal to it, rather than
-// merely a non-zero value.
+// CreatedAt that is "now" and an UpdatedAt equal to it, rather than only a
+// non-zero value.
 func assertFreshTimestamps(t *testing.T, what string, createdAt, updatedAt time.Time) {
 	t.Helper()
 	if createdAt.IsZero() {
@@ -56,8 +56,8 @@ func assertFreshTimestamps(t *testing.T, what string, createdAt, updatedAt time.
 	}
 }
 
-// TestJobStore_CreateJobSubmission_WritesEverything pins the happy path on both
-// backends: one call produces the job, its steps and its tasks, and returns
+// TestJobStore_CreateJobSubmission_WritesEverything pins the happy path on
+// every backend: one call produces the job, its steps and its tasks, and returns
 // them populated, with the store's own timestamps.
 func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 	for name, st := range newStores(t) {
@@ -111,24 +111,20 @@ func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 
 // TestJobStore_CreateJobSubmission_RollsBackEntirely pins the method's main
 // guarantee: a submission that fails partway leaves nothing, not the job row,
-// not the steps that already inserted, not their tasks. Writing those rows one
-// call at a time, a mid-way failure strands a pending job that no sweep reaps
-// and that checkJobCompletion would later mark completed despite missing
-// steps.
+// not the steps that already inserted, not their tasks. A mid-way failure that
+// kept those rows would strand a pending job that no sweep reaps and that
+// checkJobCompletion would later mark completed despite missing steps.
 //
 // The induced failure is a duplicate step name, which violates the (JobID,
-// Name) uniqueness every backend enforces on steps.
-// It fires on the SECOND step, so the job row and the first step have already
-// been written inside the transaction when it hits.
+// Name) uniqueness every backend enforces on steps. It fires on the second
+// step, so the job row and the first step have already been written inside
+// the transaction when it hits.
 //
-// The sqlite subtest carries the whole test. Sabotaged by replacing SQLite's
-// deferred Rollback with a Commit, it fails with the job row and exactly ONE
-// step row surviving — which is what proves the conflict fires after real
-// writes rather than before any. The fake subtest is vacuous by construction
-// and stays green under that same sabotage: validateSubmission runs to
-// completion before the first map assignment, so on the failing path the fake
-// never wrote anything to roll back. That is the fake's intended design, not
-// an oversight, but it means this test's non-vacuity rests entirely on sqlite.
+// Only the SQL subtests can fail: with the deferred Rollback replaced by a
+// Commit they fail with the job row and one step row surviving, which shows
+// the conflict fires after real writes. The fake's subtest cannot fail this
+// way: validateSubmission runs to completion before the first map
+// assignment, so on the failing path the fake has written nothing.
 func TestJobStore_CreateJobSubmission_RollsBackEntirely(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -201,12 +197,10 @@ func TestJobStore_CreateJobSubmission_WritesDependencyEdges(t *testing.T) {
 // store copies what it is handed: mutating the slices and maps given to
 // CreateJobSubmission after it returns must not change what is stored.
 //
-// This is effectively a FAKE-ONLY test wearing a cross-backend harness, and a
-// later reader should not over-trust the fact that it passes on both. SQLite
-// marshals every one of these fields to JSON on the way in and re-scans it on
-// the way out, so aliasing caller memory is impossible there no matter what
-// the code does; only the fake, which stores Go values directly, can fail it.
-// It is run on both anyway so the contract is stated once rather than twice.
+// Only the fake can fail it. The SQL stores marshal every one of these fields
+// to JSON on the way in and re-scan it on the way out, so they cannot alias
+// caller memory; the fake stores Go values directly. It runs on every backend
+// so the contract is stated once.
 func TestJobStore_CreateJobSubmission_DoesNotAliasCallerMemory(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -255,16 +249,16 @@ func TestJobStore_CreateJobSubmission_DoesNotAliasCallerMemory(t *testing.T) {
 }
 
 // TestJobStore_CreateJobSubmission_RejectsDuplicateIDs pins that a submission
-// reusing a step or task ID is REJECTED rather than accepted with rows
-// silently dropped.
+// reusing a step or task ID is rejected rather than accepted with rows
+// dropped.
 //
-// SQLite gets this from the steps and tasks PRIMARY KEY. The fake checks it
-// explicitly: its maps are keyed by ID, so without the check a duplicate
-// overwrites, and the call returns a JobSubmission of the submitted length
-// while ListSteps returns one fewer — reporting success having lost a row. A
-// Submit regression that reused an ID would then be green through every
-// fake-backed test in internal/openjd, internal/api and internal/scheduler,
-// and ErrConflict only in production.
+// The SQL stores get this from the steps and tasks PRIMARY KEY. The fake
+// checks it explicitly: its maps are keyed by ID, so without the check a
+// duplicate overwrites, and the call returns a JobSubmission of the submitted
+// length while ListSteps returns one fewer, reporting success having lost a
+// row. A Submit that reused an ID would then pass every fake-backed test in
+// internal/openjd, internal/api and internal/scheduler, and fail with
+// ErrConflict only on a real store.
 func TestJobStore_CreateJobSubmission_RejectsDuplicateIDs(t *testing.T) {
 	cases := map[string]func(sub *store.JobSubmission){
 		"duplicate step ID": func(sub *store.JobSubmission) { sub.Steps[1].ID = sub.Steps[0].ID },
@@ -295,18 +289,17 @@ func TestJobStore_CreateJobSubmission_RejectsDuplicateIDs(t *testing.T) {
 }
 
 // TestJobStore_CreateJobSubmission_StampsDistinctRowTimestamps pins that every
-// step and task in one submission gets its OWN created_at.
+// step and task in one submission gets its own created_at.
 //
-// Two SQLite consumers depend on this — the t.created_at tiebreaker in
+// Two SQL store consumers depend on this, the t.created_at tiebreaker in
 // sqlListReadyTasks and ListTasks' single-column ORDER BY with LIMIT, which has
 // no secondary key and therefore no stable page boundaries when the sort key
-// ties (see insertTasksTx) — and the fake mirrors it. A coarse wall clock
-// (observed on Windows) returns one instant for consecutive rows, so distinct
-// stamps come from each submission's strictly increasing clock, not from
-// time.Now alone.
+// ties (see insertTasksTx), and the fake mirrors it. A coarse wall clock
+// (Windows) returns one instant for consecutive rows, so distinct stamps come
+// from each submission's strictly increasing clock, not from time.Now alone.
 //
-// A future reintroduction of one shared timestamp for the whole batch must
-// fail here rather than pass and quietly change dispatch order.
+// One shared timestamp for the whole batch would change dispatch order; this
+// test fails on it.
 func TestJobStore_CreateJobSubmission_StampsDistinctRowTimestamps(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -344,7 +337,7 @@ func assertDistinctRowTimestamps(t *testing.T, st store.Store) {
 		stepTimes[s.CreatedAt] = s.ID
 	}
 
-	// The stored rows, not just the returned ones.
+	// The stored rows as well as the returned ones.
 	stored, err := st.ListTasks(ctx, store.ListTasksOptions{JobID: "job-1"})
 	if err != nil {
 		t.Fatalf("ListTasks: %v", err)

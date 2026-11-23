@@ -2,13 +2,12 @@
 -- Add parameters column to jobs table.
 --
 -- Persists the fully-bound job-parameter values (JSON object) produced by
--- BindJobParameters at submission time, including applied defaults.  The
+-- BindJobParameters at submission time, including applied defaults. The
 -- scheduler reads this column at assignment time so workers receive the
--- correct submitted values rather than just template defaults.
+-- submitted values rather than only the template defaults.
 --
--- Pre-existing rows default to '{}' (empty JSON object) for backwards
--- compatibility; the scheduler falls back to template defaults when this
--- column is empty.
+-- Existing rows default to '{}' (empty JSON object); the scheduler falls back
+-- to template defaults when this column is empty.
 
 -- +goose Up
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Wire payload types for WebSocket push events.
-// These mirror the hub's internal wire structs (internal/ws/hub.go) serialised
-// to JSON.  Keep in sync with that file when the event shapes change.
+// These mirror the hub's push structs (internal/ws/hub.go) serialised to JSON.
+// Keep in sync with that file when the event shapes change.
 
 import type { JobStatus, TaskStatus, WorkerStatus } from '@/api/types'
 
@@ -15,8 +15,8 @@ export interface WsJobEvent {
   status: JobStatus | typeof JOB_REMOVED_STATUS
   /**
    * Set when the event is not a status change. `estimate`: only the job's
-   * estimate moved, and `status` is merely the status the server read, which
-   * may already be stale; refetch the job instead of applying it.
+   * estimate moved, and `status` is the status the server read, which may
+   * already be stale; refetch the job instead of applying it.
    */
   change?: typeof JOB_CHANGE_ESTIMATE
   updated_at: string
@@ -27,9 +27,9 @@ export const JOB_CHANGE_ESTIMATE = 'estimate'
 
 /**
  * Payload received when a task changes status. Delivered on the
- * "jobs/{jobId}/tasks" subject (per-job detail view) and, with the same shape,
- * on the aggregate "jobs" subject so list subscribers can update progress
- * without subscribing to every job. Distinguished from {@link WsJobEvent} by
+ * "jobs/{jobId}/tasks" subject (per-job detail view) and, without `worker_id`
+ * and `unschedulable_reason`, on the aggregate "jobs" subject so list
+ * subscribers can update progress without subscribing to every job. Distinguished from {@link WsJobEvent} by
  * the presence of `task_id`.
  */
 export interface WsTaskEvent {

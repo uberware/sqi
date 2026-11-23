@@ -16,12 +16,10 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// Source directories the tier registry and the harness know about.
-//
-// Both exist because "what job types does sqi have?" cannot be answered from
-// presets/ alone: internal/product/builtins/ ships seven compiled-in products
-// (script, script-powershell, python, container, and the three sequence
-// built-ins) that are always present with no preset-library install.
+// Source directories the tier registry and the harness know about: the shipped
+// presets, and internal/product/builtins/, which holds the seven compiled-in
+// products (script, script-powershell, python, container, and the three
+// sequence built-ins) that are present with no preset-library install.
 const (
 	SourcePresets  = "presets/sqi"
 	SourceBuiltins = "internal/product/builtins"
@@ -45,21 +43,20 @@ type Case struct {
 	// False (the default) shadows the task's own command, so the observed argv
 	// has a computed counterpart and assertObservedMatchesComputed applies.
 	//
-	// True shadows what that command invokes INSIDE instead -- the shape of the
-	// `script` built-in, whose /bin/sh is an absolute path the worker execs
-	// directly without ever consulting PATH, and of `script-powershell`, where
-	// shadowing powershell itself would prove argv delivery and nothing else.
-	// For these the computed side is the shell's own argv, so the cross-check
-	// cannot apply and ExpectInvocations carries the whole claim.
+	// True shadows what that command invokes inside it instead: the shape of
+	// the `script` built-in, whose /bin/sh is an absolute path the worker execs
+	// without consulting PATH, and of `script-powershell`, where shadowing
+	// powershell itself would prove argv delivery and nothing else. For these
+	// the computed side is the shell's own argv, so the cross-check cannot
+	// apply and ExpectInvocations carries the whole claim.
 	//
-	// Declared rather than inferred: the previous filepath.IsAbs(command)
-	// inference returns FALSE on Windows for "/bin/sh", because a POSIX path
-	// carries no volume name.
+	// It is declared rather than inferred because filepath.IsAbs(command) is
+	// false on Windows for "/bin/sh": a POSIX path carries no volume name.
 	StubInner bool `yaml:"stub_inner"`
 
-	// ExpectTasks is the number of tasks this case must expand to. Stated in
-	// the fixture rather than derived, so an expansion change is a review
-	// event rather than a silently different golden.
+	// ExpectTasks is the number of tasks this case must expand to. It is
+	// stated in the fixture rather than derived, so an expansion change fails
+	// the case instead of producing a different golden.
 	ExpectTasks int `yaml:"expect_tasks"`
 
 	// ExpectInvocations maps a stubbed command's basename to the exact number
@@ -70,7 +67,7 @@ type Case struct {
 	// ExpectInnerArgv is, for a StubInner case, the exact set of argument
 	// vectors the stub must record (order ignored). ExpectInvocations only
 	// counts invocations, which for a stub reached through a shell cannot show
-	// that a value -- an environment variable the shell expanded -- arrived.
+	// that a value (an environment variable the shell expanded) arrived.
 	// Legal only with StubInner: otherwise the observed-vs-computed cross-check
 	// already compares argv.
 	ExpectInnerArgv [][]string `yaml:"expect_inner_argv"`
@@ -83,7 +80,7 @@ type Case struct {
 	StubEnv map[string]string `yaml:"stub_env"`
 
 	// ExpectStatus is the job status Tier 3 must observe: "completed" (the
-	// default when empty) or "failed". A case that sets it is an OUTCOME case,
+	// default when empty) or "failed". A case that sets it is an outcome case,
 	// which TestPresetOutcomes runs; it says what the job does, not what its
 	// argv is.
 	ExpectStatus string `yaml:"expect_status"`

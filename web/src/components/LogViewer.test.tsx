@@ -520,7 +520,7 @@ describe('LogViewer', () => {
 
       // Wait a tick to let any async rejection settle.
       await waitFor(() => expect(clipboardWriteText).toHaveBeenCalled())
-      // No error alert should appear — failure is silently swallowed by design.
+      // No error alert appears: the component ignores a failed copy.
       expect(container.querySelector('[role="alert"]')).toBeNull()
     })
   })

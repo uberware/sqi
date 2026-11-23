@@ -10,9 +10,8 @@ package integration
 // the full path through a real worker: a job declaring SQI_PATH_TRANSLATION with
 // swap_in_place + stage_locally is submitted; the worker copies the IN file into
 // scratch, runs the task against the scratch paths, and copies the OUT file back
-// to its real location. It guards against staging bugs that unit tests cannot
-// catch, because they never exercise stage-in → execute → stage-out as one
-// flow.
+// to its real location. The unit tests never run stage-in → execute →
+// stage-out as one flow.
 
 import (
 	"fmt"
@@ -26,8 +25,8 @@ import (
 // TestWorkerBinaryStaging configures a real worker with a scratch dir and a
 // cp-based sync command, submits a stage_locally job with an IN and an OUT PATH
 // parameter, and asserts the output is copied back to its real path carrying the
-// staged input's content — proving stage-in, scratch redirection, and stage-out
-// all ran end-to-end.
+// staged input's content, which shows stage-in, scratch redirection, and
+// stage-out all ran end-to-end.
 func TestWorkerBinaryStaging(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)

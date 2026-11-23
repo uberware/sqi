@@ -19,24 +19,21 @@ export const queryClient = new QueryClient({
   },
   queryCache: new QueryCache({
     onError: (error, query) => {
-      // A 401 from *any* query means the session is gone (expired, revoked,
+      // A 401 from any query means the session is gone (expired, revoked,
       // never existed). This is one of two paths that evict the cache and
-      // transition the app to anon — the other is explicit logout
-      // (`useLogout` in `mutations.ts`). Both call the shared
-      // `evictAllExceptAuthMe` helper so a session that merely *expires*
-      // (rather than being logged out of) gets the same cross-user cache
-      // eviction, not just the auth.me invalidation that flips the app to
-      // the login page. Skip when the failing query IS auth.me itself: its
-      // own query state already carries the fresh error, and evicting here
-      // would just queue an immediate, redundant refetch of a request
-      // that's already known to fail (and would self-invalidate via its own
-      // onError in a loop).
+      // transition the app to anon; the other is explicit logout (`useLogout`
+      // in `mutations.ts`). Both call the shared `evictAllExceptAuthMe` helper
+      // so an expired session gets the same cross-user cache eviction as a
+      // logout, on top of the auth.me invalidation that flips the app to the
+      // login page. Skip when the failing query is auth.me itself: its own
+      // query state already carries the error, and evicting here would queue
+      // a redundant refetch of a request known to fail (which would
+      // self-invalidate via its own onError in a loop).
       //
-      // `queryClient` isn't assigned yet at the point this closure is
-      // *defined* (it's still inside its own initializer), but it is always
-      // assigned by the time the closure actually *runs* — onError only
-      // fires for a query that failed after the client exists — so this
-      // self-reference is safe.
+      // `queryClient` is not assigned yet when this closure is defined (it is
+      // inside its own initializer), but it is assigned by the time the
+      // closure runs: onError fires only for a query that failed after the
+      // client exists.
       const isAuthMeQuery = query.queryKey[0] === 'auth' && query.queryKey[1] === 'me'
       if (error instanceof ApiError && error.status === 401 && !isAuthMeQuery) {
         evictAllExceptAuthMe(queryClient)

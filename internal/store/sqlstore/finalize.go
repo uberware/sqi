@@ -77,8 +77,8 @@ WHERE  job_id = ?
 	// restricted to steps of a job that is not itself terminal. The job
 	// condition keeps a healthy farm quiet: a terminal job has no downstream
 	// that needs its steps finalized, and a job cancel finalizes its own steps
-	// (migration 00033 repairs those canceled by earlier releases). Its cross-job
-	// dependents follow the job's own status.
+	// (migration 00033 finalizes open steps of jobs already terminal). Its
+	// cross-job dependents follow the job's own status.
 	sqlListStuckSteps = `SELECT ` + stepCols + `
 FROM   steps
 WHERE  status NOT IN ('completed', 'failed', 'canceled')
@@ -344,8 +344,8 @@ const (
 	// "every upstream completed" check is part of the statement that writes the
 	// release, and the status guard (I1) means a job another writer already
 	// canceled or released is never rewritten. An edge whose upstream no longer
-	// exists counts as unsatisfied (the edge deliberately survives the
-	// upstream's deletion, see migration 00020).
+	// exists counts as unsatisfied (the edge survives the upstream's deletion,
+	// see migration 00020).
 	sqlReleaseBlockedJob = `
 UPDATE jobs SET status = 'pending', dependency_hold = false, updated_at = ?
 WHERE  id = ? AND status = 'blocked'

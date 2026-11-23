@@ -1,12 +1,13 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
 -- Structured log ingestion with monotonic sequence numbers.
 --
--- task_logs stores log chunks published by workers to task.logs.<task>.
--- Each row is one chunk of stdout/stderr output from a running task attempt.
+-- task_logs stores log chunks published by workers to
+-- task.logs.<workerID>.<taskID>. Each row is one chunk of stdout/stderr output
+-- from a running task attempt.
 --
 -- Retention and pagination notes:
 --   - nats_seq (JetStream message sequence from SQI_LOGS) is the stable cursor
---     used by the REST log-tail endpoint.  It is monotonically increasing within
+--     used by the REST log-tail endpoint. It is monotonically increasing within
 --     the stream and therefore suitable as an offset for forward paging:
 --
 --       SELECT ... WHERE attempt_id = ? AND nats_seq > ? ORDER BY nats_seq LIMIT ?

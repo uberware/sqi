@@ -4,14 +4,12 @@ description: chaos - lower the server's file descriptor limit to 10 free descrip
 # Linux only (RLIMIT_NOFILE, set on the server with prlimit); it needs no
 # privilege and no container.
 #
-# A server started with a low limit and more workers than it can hold would
-# exercise this, but the simulated fleet fails the whole run when a worker
-# cannot connect at start, so that shape cannot run. Instead the limit is
-# applied to the running server while a partitioned rack redials, which
-# exercises the same paths: EMFILE in the HTTP and broker accept loops, and
-# every file the server opens meanwhile (SQLite, JetStream blocks, logs).
-# "Recovers when workers leave" becomes "recovers when descriptors are free
-# again".
+# The limit is applied to the running server while a partitioned rack
+# redials, not at startup: the simulated fleet fails the whole run when a
+# worker cannot connect at start. The redial exercises EMFILE in the HTTP and
+# broker accept loops and in every file the server opens meanwhile (SQLite,
+# JetStream blocks, logs), and the farm recovers once descriptors are free
+# again.
 #
 # A cut worker redials on the real worker's backoff: nats.go waits before each
 # attempt, 4s, 8s, 16s, 32s, 64s, each +-20%, so the attempts come about 4s,

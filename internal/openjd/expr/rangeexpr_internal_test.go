@@ -12,9 +12,9 @@ import (
 
 // TestExpandOneRange_MatchesGeneralPath is the safety net under rangeInts's
 // single-sub-range fast path (expandOneRange): it skips the de-duplication map
-// AND the sort that expandRanges performs, on the argument that one arithmetic
+// and the sort that expandRanges performs, on the argument that one arithmetic
 // progression is already strictly monotonic. Every case here is run through
-// BOTH functions and the results compared element for element, so the fast
+// both functions and the results compared element for element, so the fast
 // path cannot quietly answer something the general path would not.
 //
 // The descending rows are the reason this test exists rather than a spot check:
@@ -102,7 +102,7 @@ func TestRangeExpr_ConstructAndExpand(t *testing.T) {
 // directly, rather than relying only on cases this package's own author chose.
 //
 // The table's last row, "1-10:4,10-15" -> "Error: ranges overlap", is
-// deliberately NOT reproduced here: that constraint belongs to
+// not reproduced here: that constraint belongs to
 // <IntTaskParameterDefinition>'s use of the <IntRangeExpr> grammar to define a
 // step's task parameter space (internal/openjd/validate.go's
 // intRangeHasOverlap), not to the EXPR language's range_expr type. The EXPR
@@ -205,7 +205,7 @@ func TestCanonicalRange(t *testing.T) {
 
 // TestRangeExprCount_AgreesWithExpansion pins rangeExprCount against the
 // actual expansion (len(rangeInts(v))) for every case, not against
-// hand-written numbers: a table of expected COUNTS could repeat an
+// hand-written numbers: a table of expected counts could repeat an
 // overcounting mistake such as summing Count() across every sub-range
 // unconditionally, which double-counts overlap. Comparing against rangeInts's
 // own de-duplicated, sorted
@@ -252,23 +252,23 @@ func TestRangeExprCount_AgreesWithExpansion(t *testing.T) {
 
 // TestRangeExprCount_LargeSingleRangeStaysArithmetic proves the single-
 // sub-range path never materializes anything, rather than merely asserting
-// it returns the right answer. "1-2000000000" is 2 BILLION values, 200 times
+// it returns the right answer. "1-2000000000" is 2 billion values, 200 times
 // this package's own maxElements bound: actually expanding it would allocate
 // gigabytes and take long enough that this test's own time budget below would
 // catch it, and TestRangeExpr_RejectsTooManyValues shows rangeInts still
 // rejects the identical text via the bound check rather than by finishing an
-// expansion — that is unchanged, because rangeInts DOES materialize.
+// expansion — that is unchanged, because rangeInts does materialize.
 //
-// rangeExprCount must NOT reject it: its own doc comment names
+// rangeExprCount must not reject it: its own doc comment names
 // "len(range_expr('1-20000000'))" as the motivating case for answering
 // arithmetically. Running every sub-range's Count() through checkElementCount
 // before branching on len(ranges) == 1 would bound-check the single-range
 // path exactly like the materializing multi-range path it is exempt from. That
-// bound guards MATERIALIZATION (maxElements' own doc comment: "how many
+// bound guards materialization (maxElements' own doc comment: "how many
 // elements one operation may materialize") — irrelevant here, since
 // intrange.Range.Count() answers arithmetically and allocates nothing however
 // large the range is, and Count() itself already saturates to math.MaxInt
-// rather than overflow if the arithmetic would. The point of THIS test is
+// rather than overflow if the arithmetic would. The point of this test is
 // that the right, unbounded answer comes back in microseconds.
 func TestRangeExprCount_LargeSingleRangeStaysArithmetic(t *testing.T) {
 	v, err := RangeExpr("1-2000000000")
@@ -285,7 +285,7 @@ func TestRangeExprCount_LargeSingleRangeStaysArithmetic(t *testing.T) {
 		t.Fatalf("rangeExprCount(%q) = %d, want 2000000000", "1-2000000000", got)
 	}
 	// A generous ceiling: real arithmetic finishes in microseconds, while
-	// appending 2 billion int64s (rangeInts's own path, deliberately NOT
+	// appending 2 billion int64s (rangeInts's own path, not
 	// taken here) would not complete in under a second on any machine this
 	// suite runs on, and would more likely exhaust memory first.
 	if elapsed > time.Second {

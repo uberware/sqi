@@ -23,8 +23,8 @@ import (
 // registers t.Cleanup to close the store when the test ends.
 //
 // It uses a file in t.TempDir() rather than ":memory:" so the store under test
-// is configured the way a real server configures it — most importantly, with a
-// separate read connection pool. An in-memory database shares one pool for
+// is configured the way a real server configures it, with a separate read
+// connection pool. An in-memory database shares one pool for
 // reads and writes (see the Concurrency section of the package doc), so a
 // statement routed to the wrong pool would be invisible here.
 func openTestStore(t *testing.T) *sqlite.Store {

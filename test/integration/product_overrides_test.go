@@ -11,8 +11,8 @@ import (
 
 // TestProductSubmit_RetryOverrides submits a job through the built-in "python"
 // product with per-job retry overrides and verifies the created job carries
-// them back — proving the overrides survive the full REST -> submitter ->
-// store round trip against the real server binary.
+// them back, so the overrides survive the full REST -> submitter -> store
+// round trip against an in-process server.
 func TestProductSubmit_RetryOverrides(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -46,7 +46,7 @@ func TestProductSubmit_RetryOverrides(t *testing.T) {
 		t.Errorf("failure_limit = %v, want 7", created.FailureLimit)
 	}
 
-	// Re-fetch to confirm the values persisted, not just echoed.
+	// Re-fetch to confirm the values persisted, not only echoed.
 	var fetched struct {
 		MaxAttempts *int `json:"max_attempts"`
 	}

@@ -3,10 +3,9 @@
 package server
 
 // Tests for the WebSocket-hub wiring: wsJobOwnerResolver itself, and
-// newWSHub — the small wrapper around ws.NewHub that (*Server).start calls.
-// Without a test exercising newWSHub, a regression that reverted its body to
-// ws.NewHub(logger, nil) would pass every other test in this package, since
-// nothing else constructs the hub with a real store-backed resolver.
+// newWSHub, the wrapper around ws.NewHub that (*Server).start calls. Nothing
+// else in this package constructs the hub with a store-backed resolver, so
+// these tests are what catch newWSHub dropping owner scoping.
 
 import (
 	"context"

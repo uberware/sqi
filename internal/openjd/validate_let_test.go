@@ -3,8 +3,8 @@
 package openjd_test
 
 // Tests that a let: block requires the EXPR extension. This is the
-// one let rule that fires on the base-spec path -- see validateLetExtension's
-// doc comment in validate.go for why it cannot live in exprcheck.go alongside
+// one let rule that fires on the base-spec path; see validateLetExtension's
+// doc comment in validate.go for why it cannot live in exprcheck.go with
 // every other let rule.
 
 import (
@@ -80,10 +80,10 @@ steps:
 				t.Fatalf("Parse: %v", err)
 			}
 			// openjd.Validate returns the concrete ValidationErrors type, not
-			// error -- kept as its own variable (rather than reusing the
-			// error-typed err above) so the empty-slice/nil check below is a
-			// real len() check, not a typed-nil-in-interface comparison that
-			// staticcheck (SA4023) correctly flags as always false.
+			// error. It gets its own variable, rather than reusing the error-typed
+			// err above, so the empty-slice/nil check below is a real len() check
+			// and not a typed-nil-in-interface comparison, which staticcheck
+			// (SA4023) flags as always false.
 			verrs := openjd.Validate(tmpl)
 			if len(verrs) == 0 {
 				t.Fatal("Validate = nil, want an error: let: requires the EXPR extension")
@@ -99,8 +99,7 @@ steps:
 }
 
 func TestValidate_LetAcceptedWithEXPR(t *testing.T) {
-	// EXPR is registered-but-unsupported, so the ONLY error must be the status
-	// gate -- never a "let requires EXPR" complaint.
+	// With EXPR declared, Validate must not complain about the let: block.
 	y := `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
 name: TestJob
@@ -123,7 +122,7 @@ steps:
 }
 
 // TestValidate_LetStructuralConstraints covers Template Schemas
-// 3.6's element-count bounds on a let: block -- "If defined, then there must
+// 3.6's element-count bounds on a let: block: "If defined, then there must
 // be at least one element in this list" and "Maximum number of items: 50."
 // The 50/51 boundary rows are the point of this test: a cap that only checked
 // 1 and 100 would pass with an off-by-one error.
@@ -167,11 +166,10 @@ steps:
 				t.Fatalf("Parse: %v", err)
 			}
 			// openjd.Validate returns the concrete ValidationErrors type, not
-			// error -- kept as its own variable (rather than reusing the
-			// error-typed err above) so the empty check below is a real
-			// len() check, not a typed-nil-in-interface comparison that
-			// staticcheck (SA4023) correctly flags as always true (see
-			// TestValidate_LetRequiresEXPR above for the same fix).
+			// error. It gets its own variable, rather than reusing the error-typed
+			// err above, so the empty check below is a real len() check and not a
+			// typed-nil-in-interface comparison, which staticcheck (SA4023) flags
+			// as always true (as in TestValidate_LetRequiresEXPR above).
 			verrs := openjd.Validate(tmpl)
 			got := ""
 			if len(verrs) > 0 {

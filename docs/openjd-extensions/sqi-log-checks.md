@@ -16,9 +16,8 @@ with no frames.
 
 This extension lets a step say what a failure looks like in the process's own
 output: a pattern that must never appear (`failOn`) and a pattern that must
-appear at least once (`requireLine`). The worker already reads every output line
-of a task process to forward logs and to catch `openjd_fail`, so the check is a
-small addition there, and one shared checker keeps every preset a single file.
+appear at least once (`requireLine`). The worker checks each output line of the
+task process as it forwards it to the task log.
 
 ## Schema
 Declare the extension, and put a `SQI_LOG_CHECKS` block on the step, as a sibling
@@ -38,7 +37,7 @@ of `script`:
               command: render
               args: ["{{Param.SceneFile}}"]
 
-This is a **step-level** block. `SQI_PATH_TRANSLATION`, by contrast, is a
+This is a step-level block. `SQI_PATH_TRANSLATION`, by contrast, is a
 top-level block. A `SQI_LOG_CHECKS` key at the top level of the template is
 rejected whether or not the extension is declared.
 
@@ -47,11 +46,11 @@ rejected whether or not the extension is declared.
 - `requireLine`: a list of RE2 patterns. Each pattern must match at least one
   line of the process's output, or the task fails.
 - At least one of the two lists must be present and non-empty.
-- The patterns are **literal text, not format strings**: `{{ ... }}` in a pattern
-  is regular-expression syntax, not a substitution. They are validated once at
+- The patterns are literal text: `{{ ... }}` in a pattern is regular-expression
+  syntax, not a format-string substitution. They are validated once at
   submission and cannot vary per task.
-- Matching is **unanchored** (a pattern matches anywhere in the line) and
-  **case-sensitive**; use `(?i)` to fold case, and `^`/`$` to anchor.
+- Matching is unanchored (a pattern matches anywhere in the line) and
+  case-sensitive; use `(?i)` to fold case, and `^`/`$` to anchor.
 - The block applies to the step's `onRun` action only, not to environment
   `onEnter`/`onExit` actions.
 
@@ -80,32 +79,28 @@ Structural, enforced at submission (`internal/openjd/logchecks.go`,
 - The block holds only `failOn` and `requireLine`; any other field is an error.
 - Each list must be a list of strings (an unquoted YAML `404` is rejected as
   "must be a string" rather than coerced).
-- A list holds at most **32** patterns; a pattern is at most **1024** bytes; an
+- A list holds at most 32 patterns; a pattern is at most 1024 bytes; an
   empty pattern is rejected (an empty `failOn` pattern would fail every task).
-- Every pattern must compile as RE2 (Go `regexp`). RE2 never backtracks, so
-  matching is linear in the length of the line, but the cost per byte also
-  scales with the size of the compiled program, and a short pattern can compile
-  to a huge one: Go bounds nested repetition but not concatenation, so the
-  905-byte `.{0,999}` repeated 113 times, followed by `x`, compiles to about
-  226,000 instructions and takes seconds to match a single 4 KiB line. The
-  compiled program is therefore capped at **2000** instructions
-  (`logpattern.MaxProgramInsts`, `internal/openjd/logpattern`); realistic
-  patterns compile to 10 to 100. A bounded repeat costs roughly twice its upper
-  bound, so `.{0,N}` needs N below about 1000 and a two-sided window such as
-  `.{0,500}foo.{0,500}` (2005) is over the cap. A larger pattern is rejected at its own pointer
+- Every pattern must compile as RE2 (Go `regexp`). RE2 matching is linear in
+  the length of the line, but its cost per byte grows with the size of the
+  compiled program, and Go bounds nested repetition but not concatenation, so a
+  short pattern can compile to a very large program. The compiled program is
+  capped at 2000 instructions (`logpattern.MaxProgramInsts`,
+  `internal/openjd/logpattern`); typical patterns compile to 10 to 100. A
+  bounded repeat costs roughly twice its upper bound, so `.{0,N}` needs N below
+  about 1000, and a two-sided window such as `.{0,500}foo.{0,500}` (2005) is
+  over the cap. A larger pattern is rejected at its own pointer
   (`/steps/N/SQI_LOG_CHECKS/failOn/I`): "pattern compiles to <n> instructions; at
   most 2000 are allowed". The worker enforces the same bound from the same
-  constant when it builds the checker. Measuring a program means building it,
-  so a pattern is first sized from its parse, the way Go's own parser estimates
-  a program, without expanding its repeats: the estimate is never above the real
-  size and falls at most 2 short of it, and a pattern estimated at more than twice the cap (4000) is
-  refused unbuilt, with "pattern compiles to about <n> instructions; at most
-  2000 are allowed".
-- All of a template's patterns together may compile to at most **128,000**
+  constant when it builds the checker. Before building a pattern, the validator
+  estimates its size from the parse without expanding repeats; the estimate is
+  never above the real size and at most 2 below it, and a pattern estimated at
+  more than twice the cap (4000) is refused without being built, with "pattern
+  compiles to about <n> instructions; at most 2000 are allowed".
+- All of a template's patterns together may compile to at most 128,000
   instructions, one step's worst case (two full lists at the cap), so a step
   valid on its own is valid in any template. The bound keeps validation cost
-  independent of the number of steps, since each pattern is built to be
-  measured. The pattern that goes over is rejected at its pointer ("pattern takes the
+  independent of the number of steps. The pattern that goes over is rejected at its pointer ("pattern takes the
   template's SQI_LOG_CHECKS patterns over 128000 compiled instructions in total,
   the most allowed; later patterns are not checked"), and no later pattern is
   built. The worker builds only its own step's patterns, so it needs no such
@@ -118,7 +113,7 @@ The scheduler copies the step's block into the task assignment
 
 **Which lines.** A checker wraps the output handler that `scanOutput` feeds, so it
 sees every stdout and stderr line of the `onRun` process. Lines are matched
-**after redaction** (`ScrubRedacted`), the same text the task log shows, so a
+after redaction (`ScrubRedacted`), the same text the task log shows, so a
 failure reason never leaks a redacted environment value. The
 `openjd_redacted_env:` directive line itself is never scanned, because it carries
 the secret in the clear before the value is registered for scrubbing.
@@ -137,7 +132,7 @@ once the process exits. A process that hangs is the step timeout's job.
 not start, an `openjd_fail`, a cancel, a worker shutdown, a timeout, and a
 non-zero exit each decide the task, even when the output also matched a `failOn`
 pattern. Only a task that would
-otherwise have **succeeded** is then judged by the checks: the first `failOn`
+otherwise have succeeded is then judged by the checks: the first `failOn`
 match wins, then the first `requireLine` pattern no line matched. A non-zero
 exit still fails the task even when every check passed. A task failed by the
 checks stages no outputs.
@@ -175,12 +170,11 @@ that enforces it:
   SQI_LOG_CHECKS; upgrade sqi-worker`. The sweep only runs when
   `scheduler.unschedulable_grace` is greater than zero; with it disabled the job
   waits silently.
-- A job row that records no declared-extension list (written before migration
-  `00027`) is not gated: the extension did not exist then.
+- A job row that records no declared-extension list is not gated.
 
-`ProtocolVersion` is not bumped: `AssignMsg.LogChecks` and
-`RegisterMsg.Extensions` are additive `omitempty` fields, and the gate keeps
-checked jobs away from workers that do not know them.
+`AssignMsg.LogChecks` and `RegisterMsg.Extensions` are additive `omitempty`
+fields and do not change `ProtocolVersion`; the gate keeps checked jobs away
+from workers that do not know them.
 
 ### Host scripts: the success markers
 Presets that render by running an embedded script inside the application (Unreal,
@@ -198,8 +192,8 @@ rendering, for example after a licence failure) fails the task.
 An application's Python `print` does not reliably reach the process's stdout as a
 bare line (Unreal routes it through its log as `[...][  0]LogPython: ...`), so a
 script writes each marker straight to file descriptor 1 with `os.write(1, ...)`,
-bypassing the host's `sys.stdout` redirection. The patterns are nevertheless
-matched **unanchored**, so a host that prefixes even descriptor-1 output still
+bypassing the host's `sys.stdout` redirection. The patterns are matched
+unanchored, so a host that prefixes even descriptor-1 output still
 matches.
 
 ## Compatibility

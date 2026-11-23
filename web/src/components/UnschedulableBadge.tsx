@@ -11,9 +11,9 @@ interface UnschedulableBadgeProps {
 /**
  * Small warning pill shown next to a task's {@link StatusBadge} while the task
  * is blocked from scheduling (e.g. no online workers with matching
- * capabilities). Deliberately separate from `StatusBadge` — that component is
- * a closed union keyed by lifecycle status, and "unschedulable" is an
- * orthogonal, transient condition rather than a status value.
+ * capabilities). Separate from `StatusBadge`, which is a closed union keyed
+ * by lifecycle status: "unschedulable" is a transient condition, not a status
+ * value.
  */
 export default function UnschedulableBadge({ reason, className }: UnschedulableBadgeProps) {
   return (

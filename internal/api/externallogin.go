@@ -40,19 +40,19 @@ type externalIdentity struct {
 
 // externalPlaceholderHash occupies users.password_hash for externally-verified
 // accounts. It is not a valid argon2id encoding, so password.Verify against it
-// always fails — meaning even a future code path that mistakenly ran a local
-// password check on such an account could not be satisfied by any password.
+// always fails, so a local password check run on such an account by mistake
+// cannot be satisfied by any password.
 //
-// LDAP rows provisioned before stable-identifier matching carry "!ldap"
-// instead. No migration rewrites them: the property that matters is "not a
-// valid argon2id encoding", which both satisfy.
+// LDAP rows with an empty external_id carry "!ldap" instead. No migration
+// rewrites them: the property that matters is "not a valid argon2id
+// encoding", which both satisfy.
 const externalPlaceholderHash = "!external"
 
 // Refusal reasons from resolveExternalUser. They are compared with errors.Is,
 // never by string: the caller has to tell an operator misconfiguration (the
-// provider returned no stable identifier — worth surfacing loudly) from a
-// deliberate local override (the account is disabled — routine) in order to
-// log them differently, while returning the identical 401 for both.
+// provider returned no stable identifier, logged as an error) from a local
+// override (the account is disabled, which is routine) in order to log them
+// differently, while returning the identical 401 for both.
 var (
 	// errNoStableIdentifier means the verified identity carried no external
 	// id, so there is nothing safe to match the account on.
@@ -72,9 +72,8 @@ func (h *authHandler) resolveExternalUser(
 ) (store.User, error) {
 	ctx := r.Context()
 	if id.ExternalID == "" {
-		// Refusing is the whole point of the identifier: a provider that
-		// returns no stable id must not silently fall back to name matching,
-		// which is the hazard this design removes.
+		// A provider that returns no stable id is refused: falling back to
+		// name matching would reopen the recycled-name hazard described above.
 		h.logger.ErrorContext(ctx, "auth: external login carried no stable identifier",
 			slog.String("auth_source", authSource), slog.String("username", id.Username))
 		return store.User{}, errNoStableIdentifier

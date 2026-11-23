@@ -160,7 +160,7 @@ func drain(ch chan Envelope) []Envelope {
 
 // TestOwnerCache_FailureCooldown pins both halves of the failure policy: a
 // failed lookup is suppressed for the cooldown (so a degraded store cannot be
-// re-queried per event on the dispatch goroutine), and it IS retried once the
+// re-queried per event on the dispatch goroutine), and it is retried once the
 // window passes (so a transient error never hides a job permanently).
 func TestOwnerCache_FailureCooldown(t *testing.T) {
 	var calls int

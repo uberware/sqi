@@ -27,10 +27,10 @@ import (
 	"github.com/uberware/sqi/internal/fsutil"
 )
 
-// FS is the embedded filesystem containing all SQL migration files.
-// It filters out macOS AppleDouble metadata files (._*) that may appear on
-// HFS+/APFS volumes mounted on Linux, which would otherwise cause goose to
-// fail when parsing migration file names.
+// raw is the embedded filesystem containing all SQL migration files. [FS]
+// filters out the macOS AppleDouble metadata files (._*) that may appear on
+// HFS+/APFS volumes mounted on Linux, which would otherwise make goose fail
+// when parsing migration file names.
 //
 //go:embed *.sql
 var raw embed.FS

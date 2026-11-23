@@ -82,10 +82,9 @@ func TestNewRejectsBadCAFile(t *testing.T) {
 // c.SetTimeout(cfg.Timeout) has to run BEFORE the StartTLS branch: go-ldap
 // only arms a per-request timer when its internal requestTimeout is already >
 // 0 at send time, and SetTimeout is the only thing that sets it. Moved after
-// StartTLS, the extended request goes out with no timer at all. A listener
-// that accepts and never replies is exactly the server this guards against —
-// no live directory, no DNS, nothing outside this test's own loopback
-// listener.
+// StartTLS, the extended request goes out with no timer. The server here is a
+// loopback listener that accepts and never replies; no live directory or DNS
+// is involved.
 func TestRealDialer_StartTLSIsBoundedByTimeout(t *testing.T) {
 	var lc net.ListenConfig
 	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")

@@ -14,7 +14,7 @@ package api
 //  2. h.authn.Authenticate(r) runs; a nil authn defaults to auth.Anonymous().
 //  3. websocket.Accept completes the handshake (101 Switching Protocols).
 //  4. readLoop starts and blocks for the lifetime of the connection:
-// a. Registers the client with the hub and starts a send goroutine.
+//       a. Registers the client with the hub and starts a send goroutine.
 //       b. Drives the server-side ping ticker (keep-alive + idle detection).
 //       c. Decodes inbound frames and dispatches to subscribe/unsubscribe/ping.
 //  5. On disconnect or context cancellation readLoop runs cleanup defers:
@@ -104,8 +104,9 @@ const wsIdleTimeout = 5 * time.Minute
 //
 // When Enabled is false (auth off), origin checking is disabled entirely
 // (InsecureSkipVerify: true), since with no session cookie there is no
-// ambient credential for a hostile page to ride.  When true (auth on), AllowedOrigins (converted to coder/websocket's
-// host-pattern form by [originPatterns]) is passed as OriginPatterns; the
+// ambient credential for a hostile page to ride. When true (auth on),
+// AllowedOrigins (converted to coder/websocket's host-pattern form by
+// [originPatterns]) is passed as OriginPatterns; the
 // request's own host is always implicitly authorized by the library, so an
 // empty AllowedOrigins still permits same-origin connections (the embedded
 // UI) while rejecting everything else.
@@ -149,7 +150,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	acceptOpts := &websocket.AcceptOptions{
 		// Disable per-message compression: the Go implementation allocates a
-		// zlib.Writer per message without pooling; revisit when profiling warrants.
+		// zlib.Writer per message without pooling.
 		CompressionMode: websocket.CompressionDisabled,
 	}
 	if h.origin.Enabled {
@@ -486,7 +487,7 @@ func (wc *wsConn) authorizeSubscribe(ctx context.Context, subject string) string
 		if err != nil {
 			// Matches the REST equivalent's Error-level log (jobscope.go's
 			// requireJobAccess): a store outage on this gate must be visible to
-			// operators, not just surfaced as an opaque ack error to the client.
+			// operators, not only surfaced as an opaque ack error to the client.
 			wc.logger.ErrorContext(ctx, "authz: job access lookup failed", slog.Any("error", err))
 			return "failed to resolve job"
 		}
@@ -563,11 +564,10 @@ func (wc *wsConn) handleUnsubscribe(ctx context.Context, env internalws.Envelope
 
 // originPatterns converts configured origins (e.g. "https://farm.example",
 // full URLs as stored in cfg.CORSOrigins) into the host[:port] pattern form
-// coder/websocket's OriginPatterns expects. Entries that fail to parse as a
-// URL with a host, plus the empty string and the literal wildcard "*", are
-// passed through only when non-empty and not "*" — "*" is deliberately never
-// forwarded (see the wildcard-drop discussion on cfg.AuthEnabled in
-// router.go); use InsecureSkipVerify to intentionally allow every origin.
+// coder/websocket's OriginPatterns expects. An entry that does not parse as a
+// URL with a host is passed through as-is. The empty string and the wildcard
+// "*" are dropped: "*" is never forwarded (see resolveCORSOrigins in
+// router.go); InsecureSkipVerify is the way to allow every origin.
 func originPatterns(origins []string) []string {
 	pats := make([]string, 0, len(origins))
 	for _, o := range origins {

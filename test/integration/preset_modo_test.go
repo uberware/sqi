@@ -509,8 +509,8 @@ func TestPresetModo_ScriptDrivesModo(t *testing.T) {
 // TestPresetModo_EmitsStatus pins the one directive render.py writes to file
 // descriptor 1: a status line naming the chunk's first and last frame, before
 // the render call. There is no progress line, as one blocking render call
-// reports nothing between its start and end. Only the stub modo has been run;
-// no Modo has.
+// reports nothing between its start and end. This runs against the stub modo
+// module only, not a real Modo.
 func TestPresetModo_EmitsStatus(t *testing.T) {
 	python := findPython3(t)
 	if python == "" {

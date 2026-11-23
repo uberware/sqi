@@ -147,7 +147,7 @@ func scoreChunkingJob(t *testing.T, fx chunkingJob, invalid bool) []string {
 // chunkingJobOutput creates the fixture's job and returns, for each task, the
 // text its resolved onRun action prints. presettest.Capture runs the production
 // pipeline end to end: submission, the scheduler's assignment, and the
-// worker's phase-3 resolution.
+// worker's resolution at run time.
 func chunkingJobOutput(t *testing.T, fx chunkingJob) ([]string, error) {
 	t.Helper()
 	raw, err := yaml.Marshal(&fx.Template)

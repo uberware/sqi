@@ -44,7 +44,7 @@ func TestEvalCall_Errors(t *testing.T) {
 // callee that is neither a Name nor an Access, so there is no function name to
 // look up at all.
 //
-// It asserts the WHOLE message, not a substring, on purpose. A message built
+// It asserts the whole message, not a substring, on purpose. A message built
 // with "%T" would render the Go type of the tree node — "a *expr.IntLit cannot
 // be called" — leaking this package's internals into a diagnostic a template
 // author reads, while every other message here names spec types. A substring
@@ -127,7 +127,7 @@ func TestEvalCall_DispatchesThroughTheRegistry(t *testing.T) {
 }
 
 // TestEvalProperty_RealFailureIsNotRelabeledUnknown is the discriminating test
-// for the errUnknownFunction sentinel: a property that IS registered but
+// for the errUnknownFunction sentinel: a property that is registered but
 // fails for a real reason — its Fn errors, or no signature accepts the
 // receiver's type — must surface that real cause, not the "unknown property"
 // wording that is reserved for a property that was never registered at all.
@@ -187,7 +187,7 @@ func TestEvalProperty_RealFailureIsNotRelabeledUnknown(t *testing.T) {
 
 // TestEvalCall_PropertyChainThenMethod covers the one outcome of
 // Call.nameTarget's four that TestEvalCall_DispatchesThroughTheRegistry never
-// exercises: a receiver walk through one or more LEADING properties before
+// exercises: a receiver walk through one or more leading properties before
 // the trailing method, "Param.N.doubled.twice()" — Rest is ["doubled",
 // "twice"], so the "every segment but the last is a property" loop actually
 // runs.
@@ -212,7 +212,7 @@ func TestEvalCall_PropertyChainThenMethod(t *testing.T) {
 }
 
 // TestEvalCall_NoSignatureAccepts covers callFunction's other failure path —
-// the function IS registered, but no shape accepts the argument types given —
+// the function is registered, but no shape accepts the argument types given —
 // which TestEvalCall_Errors never exercises (every case there hits the
 // "unknown function" branch instead).
 func TestEvalCall_NoSignatureAccepts(t *testing.T) {
@@ -249,7 +249,7 @@ func TestEvalProperty_DispatchesThroughTheRegistry(t *testing.T) {
 // TestReceiverCoercionRestriction pins specification section 1.2.4: when a
 // function is called as a method, implicit coercion does not apply to the
 // receiver. The spec's own example is startswith(path, string), and this
-// exercises the SHIPPED startswith from funcsstrfind.go rather than a
+// exercises the shipped startswith from funcsstrfind.go rather than a
 // signature the test registers itself.
 //
 // This is not the only place the restriction is exercised end to end: doc.go
@@ -270,7 +270,7 @@ func TestReceiverCoercionRestriction(t *testing.T) {
 		t.Errorf("function-position call = %s, want true", got)
 	}
 
-	// Method position: the receiver does NOT coerce, so no signature matches.
+	// Method position: the receiver does not coerce, so no signature matches.
 	_, err = Eval("Param.Dir.startswith('/foo')", syms, TAny)
 	if err == nil {
 		t.Fatal("method-position call on a path = nil error, want no matching signature")
@@ -302,7 +302,7 @@ func TestReceiverCoercionRestriction(t *testing.T) {
 }
 
 // TestReceiverRestriction_DisqualifiesAShapeNotTheCall pins the branch that
-// separates "this SHAPE is out" from "this CALL is out": with an OVERLOAD SET,
+// separates "this SHAPE is out" from "this CALL is out": with an overload set,
 // a receiver the restriction disqualifies from one signature must still select
 // another that accepts it exactly.
 //
@@ -315,7 +315,7 @@ func TestReceiverCoercionRestriction(t *testing.T) {
 // function rather than targeting a shipped one: it needs a two-row overload
 // set with a (path, string) row, and the shipped startswith deliberately has
 // no such row — RFC 0006 gives it the string signature only, and a path
-// argument is meant to reach it by coercion in FUNCTION position, not by a
+// argument is meant to reach it by coercion in function position, not by a
 // dedicated path overload. So the synthetic function here is named
 // "prefixed", not "startswith", to avoid colliding with the real registry
 // entry.
@@ -349,7 +349,7 @@ func TestReceiverRestriction_DisqualifiesAShapeNotTheCall(t *testing.T) {
 		// The string receiver still picks the string shape, so the added
 		// overload has not simply swallowed everything.
 		{"a string receiver still selects the string shape", "Param.S.prefixed('/foo')", "string shape"},
-		// In FUNCTION position both are admissible for a path argument, and
+		// In function position both are admissible for a path argument, and
 		// the exact match still wins on cost — the restriction changes which
 		// shapes are candidates, not how the winner is ranked.
 		{"function position still prefers the exact shape", "prefixed(Param.Dir, '/foo')", "path shape"},
@@ -368,7 +368,7 @@ func TestReceiverRestriction_DisqualifiesAShapeNotTheCall(t *testing.T) {
 }
 
 // TestPropertyReceiverCoercionRestriction pins the ruling that section 1.2.4's
-// receiver restriction reaches a PROPERTY receiver, not just an explicit method
+// receiver restriction reaches a property receiver, not just an explicit method
 // call: section 1.3.3 makes "x.p" method syntax over "__property_p__", so
 // evalProperty (resolve.go) dispatches with methodStyle set and the receiver is
 // not coerced on the way in.
@@ -378,14 +378,14 @@ func TestReceiverRestriction_DisqualifiesAShapeNotTheCall(t *testing.T) {
 // not with, say, an int receiver: the restriction removes exactly the
 // conversions overload selection would otherwise have made on the caller's
 // behalf, and path -> string is one of the four the spec names as compatible
-// (shape.go's promotable). Any receiver type that is NOT promotable to string
+// (shape.go's promotable). Any receiver type that is not promotable to string
 // fails identically whether the restriction is applied or not, so a test built
 // on one would pass against the unrestricted code too — which is exactly what
 // TestEvalProperty_RealFailureIsNotRelabeledUnknown's "__property_onlystring__"
 // case looks like it covers but does not.
 func TestPropertyReceiverCoercionRestriction(t *testing.T) {
 	// The premise, asserted rather than assumed: without the restriction, a
-	// path receiver WOULD reach a string parameter. If this ever stops holding
+	// path receiver would reach a string parameter. If this ever stops holding
 	// the test below has quietly stopped discriminating anything.
 	if !promotable(TPath, TString) {
 		t.Fatal("promotable(path, string) = false; this test no longer discriminates the receiver restriction")

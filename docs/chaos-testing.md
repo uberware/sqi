@@ -31,7 +31,7 @@ whose machine sleeps, a rack that loses its network for a minute.
 It is not:
 
 - **A fix for what it finds.** A defect the suite finds is recorded as a
-  known violation against a tracker item (see [Known
+  known violation naming the issue that tracks it (see [Known
   violations](#known-violations)) and fixed separately.
 - **A latency test.** Like the load harness, it asserts invariants, never
   timings. A run's wall-clock times are not compared with anything.
@@ -96,8 +96,8 @@ look for `--- PASS: TestChaos/chaos-disk-` lines. Set `SQI_LOAD_OUT` to keep
 the run directories; the container writes them as root. A Docker host that
 applies its default AppArmor profile refuses the tmpfs mounts the ballast
 tests make, so the `docker run` line passes `--security-opt
-apparmor=unconfined`. Whether that is enough on GitHub's runners is
-unverified. The container scenarios run on SQLite only:
+apparmor=unconfined`; it is not confirmed that this is enough on GitHub's
+hosted runners. The container scenarios run on SQLite only:
 `make chaos-container STORE=postgres` stops with an error.
 
 The test logs each run's directory, and on a failure its `summary.md`. A
@@ -108,8 +108,8 @@ in the output.
 seconds, but the server marks no worker offline for about 3 minutes 10
 seconds after it starts, and the faults that depend on a worker being marked
 offline fire after that, so a run is several minutes longer than its faults
-need. On Linux each of the three smoke scenarios takes about 4 to 5.5 minutes, about
-13 minutes for the three plus the first binary build. A full pass of the
+need. On Linux each of the three smoke scenarios takes about 4 to 5.5 minutes,
+and the three take about 13 minutes with the first binary build. A full pass of the
 scenarios that apply on one platform and store takes about two hours; `make
 chaos` allows three.
 
@@ -439,8 +439,8 @@ the store could not be read. `chaos-net-blip`, `chaos-net-slow-site`,
 
 ## Known violations
 
-When a chaos run finds a defect in sqi, the scenario records it rather than
-fail forever. Each entry is a finding the scenario expects:
+When a chaos run finds a defect in sqi, the scenario records it so the run
+does not keep failing on it. Each entry is a finding the scenario expects:
 
 ```yaml
 expect:
@@ -461,7 +461,7 @@ expect:
 | `match` | A regular expression (RE2) that scopes the entry to the violations it matches. Optional, and an error on a `rework` entry. |
 | `os` | The operating systems (`linux`, `darwin`, `windows`) the entry applies on. Empty means all. On any other system the entry does nothing. |
 | `reason` | What the defect does. Required. |
-| `tracker` | The tracker item, such as `H99x`. Required. |
+| `tracker` | The identifier of the issue that tracks the defect, such as `H99x`. Required. |
 
 How an entry is applied:
 
@@ -495,8 +495,8 @@ How an entry is applied:
   a race, whose effect varies from run to run.
 - A failure no entry names fails the run.
 
-`TestChaos_MustViolationThatDoesNotFireFails` proves the stops-firing rule is
-enforced end to end: it runs `chaos-server-term` with a `must` entry for
+`TestChaos_MustViolationThatDoesNotFireFails` tests the stops-firing rule
+end to end: it runs `chaos-server-term` with a `must` entry for
 `outcomes` that cannot fire and asserts the run records a failed
 `known:outcomes`. The rule itself is unit-tested in `internal/loadtest/chaos`.
 
@@ -526,7 +526,7 @@ chaos-container`.
 | `chaos-server-stall-short` | SIGSTOP the server for 15s at 3m15s, under `heartbeat_timeout`. POSIX. | rework 0, reclaims 0 | 3m45s |
 | `chaos-server-stall-long` | SIGSTOP for 60s at 3m15s, about twice `heartbeat_timeout`. POSIX. | rework 0 | 4m30s |
 | `chaos-logs-during-restart` | 40 workers, tasks of 5,000 lines of 200 bytes, the server killed at 1m and restarted 20s later: every terminal status must still arrive. | rework 0 | 3m |
-| `chaos-worker-kill-mid-task` | One of 2 real workers killed at 1m30s while it runs 180s process trees (a chatty and a silent child), restarted 3s later. Its restart kills the orphaned trees before it registers, inside the 10s orphan grace; without that, the silent child outlives the grace every run. 60 simulated workers carry the background load. | rework 6 | 4m |
+| `chaos-worker-kill-mid-task` | One of 2 real workers killed at 1m30s while it runs 180s process trees (a chatty and a silent child), restarted 3s later. Its restart kills the orphaned trees before it registers, inside the 10s orphan grace, which the silent child would otherwise outlive. 60 simulated workers carry the background load. | rework 6 | 4m |
 | `chaos-worker-gone` | One of 2 real workers killed at 30s while it runs 30s tasks, never restarted: its work is reclaimed and the worker is shown offline. **Smoke.** | rework 4 | 3m |
 | `chaos-worker-sleep` | SIGSTOP one of 2 real workers for 75s at 3m15s while it runs 90s tasks, then SIGCONT: stale attempts are canceled, nothing is credited twice. POSIX. | rework 8 | 4m45s |
 | `chaos-churn-storm` | No fault: 100 simulated workers each crash about 30 times an hour and restart 10s later. | rework 5 | 3m |
@@ -635,10 +635,10 @@ ignores the dispatch's `scenario` input.
 
 | Job | Runs on | Scenarios | Artifacts |
 |---|---|---|---|
-| `chaos` | Linux, SQLite | The 26 that apply, plus one job for the framework test (`make chaos-framework`). | `chaos-runs-sqlite-<scenario>` |
-| `chaos-postgres` | Linux, PostgreSQL 18 in a service container | The 27 that apply, the database ones among them (`make chaos STORE=postgres`). | `chaos-runs-postgres-<scenario>` |
+| `chaos` | Linux, SQLite | The 27 that apply, plus one job for the framework test (`make chaos-framework`). | `chaos-runs-sqlite-<scenario>` |
+| `chaos-postgres` | Linux, PostgreSQL 18 in a service container | The 28 that apply, the database ones among them (`make chaos STORE=postgres`). | `chaos-runs-postgres-<scenario>` |
 | `chaos-container` | Linux, Docker | The three `chaos-disk-*` scenarios and the ballast tests, on real size-limited volumes (`make chaos-container`). | `chaos-runs-container` |
-| `chaos-windows` | Windows, SQLite | The 22 that apply (no stall, descriptor limit or disk fault). | `chaos-runs-windows-<scenario>` |
+| `chaos-windows` | Windows, SQLite | The 23 that apply (no stall, descriptor limit or disk fault). | `chaos-runs-windows-<scenario>` |
 
 The container job asserts the three disk scenarios and the two ballast tests
 (`TestFill_LeavesHeadroom`, `TestFill_Inodes`) by name, because the target

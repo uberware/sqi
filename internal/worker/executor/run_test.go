@@ -27,14 +27,12 @@ import (
 
 // recordingApplier records whether applyCredential (the isolation.Apply seam
 // in this package) was invoked, and captures both arguments it was called
-// with. It intentionally does not delegate to the real isolation.Apply:
-// actually switching the OS identity of a launched process is exactly what a
-// fake cannot verify — that needs a real OS (see make test-isolation and
-// isolation.NewFake's own doc). This test proves execProcess invokes Apply at
-// all for the task-process launch site, AND that it is invoked with the
-// actual cmd and the session's own (non-nil) credential — not just that some
-// call happened, which would still pass a guard that discarded both
-// arguments even if a launch site started passing nil.
+// with. It does not delegate to the real isolation.Apply: a fake cannot
+// verify switching the OS identity of a launched process, which needs a real
+// OS (see make test-isolation and isolation.NewFake's doc). The test using it
+// proves execProcess invokes Apply for the task-process launch site with the
+// actual cmd and the session's own non-nil credential, so a launch site
+// passing nil fails it.
 type recordingApplier struct {
 	mu     sync.Mutex
 	called bool
@@ -60,17 +58,14 @@ func (r *recordingApplier) snapshot() (called bool, cmd *exec.Cmd, cred *isolati
 }
 
 // testUID and testGID return a uid/gid a fake account can be given that
-// session creation can actually chown its workdir to without real privilege:
-// normally the current process's own uid/gid (chowning a file to the uid it
-// already has needs no privilege — see isolation.SecureWorkDir), but a fixed
-// non-zero synthetic pair when the current process IS root. Two reasons the
-// root case needs its own value: isolation.CheckNotPrivileged unconditionally
-// refuses a uid-0 account (so os.Getuid() itself cannot be used as a fake
-// account's UID when tests run as root, e.g. inside a container in CI — a
-// routine setup, not a hypothetical one), and root can chown to ANY uid
-// regardless, so there is no privilege reason to prefer the process's own.
-// 65534 is the conventional "nobody" uid/gid on Linux — any fixed non-zero
-// value would do.
+// session creation can chown its workdir to without privilege: normally the
+// current process's own uid/gid (chowning a file to the uid it already has
+// needs no privilege; see isolation.SecureWorkDir), but a fixed non-zero
+// synthetic pair when the current process is root. isolation.CheckNotPrivileged
+// refuses a uid-0 account, so os.Getuid() cannot be a fake account's UID when
+// tests run as root (e.g. inside a CI container), and root can chown to any
+// uid anyway. 65534 is the conventional "nobody" uid/gid on Linux; any fixed
+// non-zero value would do.
 func testUID() uint32 {
 	if os.Getuid() == 0 {
 		return 65534
@@ -85,21 +80,18 @@ func testGID() uint32 {
 	return uint32(os.Getgid())
 }
 
-// newTraversableSessionDataDir returns a fresh directory rooted directly
-// under the OS-standard, universally 1777 /tmp — not t.TempDir(), which
-// sits under several testing/OS-owned layers hardcoded 0700 that some
-// sandboxed dev environments refuse to widen regardless of Unix ownership.
-// This is the same fix as internal/worker/executor_test's own (external test
-// package) newCredentialFailureSessionRoot and
-// internal/worker/session's own newTraversableSessionDataDir — duplicated
-// here rather than shared because this file lives in the internal
-// `executor` test package (white-box, for the applyCredential seam), a
-// different Go package from executor_test.go's `executor_test` despite
-// sharing a directory. Since Finding 4, session.Manager.Create validates
-// every ancestor of the session root for an isolated assignment; rooting
-// directly under /tmp means that validation always succeeds here, because
-// every ancestor above the one directory this helper creates (/tmp itself,
-// and above that /) is already traversable by design on every POSIX system.
+// newTraversableSessionDataDir returns a fresh directory directly under /tmp
+// (mode 1777 on every POSIX system), not t.TempDir(), which sits under 0700
+// layers the testing package and OS create and that some sandboxed dev
+// environments refuse to widen whatever the Unix ownership. It matches the
+// external test package's newCredentialFailureSessionRoot and
+// internal/worker/session's newTraversableSessionDataDir; it is duplicated
+// because this file is in the internal `executor` test package (white-box,
+// for the applyCredential seam), a different Go package from
+// executor_test.go's `executor_test`. session.Manager.Create validates every
+// ancestor of the session root for an isolated assignment; under /tmp that
+// validation always succeeds, because every ancestor above the directory this
+// helper creates (/tmp, and /) is traversable.
 func newTraversableSessionDataDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "sqi-executor-*") //nolint:usetesting // t.TempDir() is exactly what this must NOT use — see doc above
@@ -121,7 +113,7 @@ func (discardNATS) Publish(_ string, _ []byte) error { return nil }
 
 func (discardNATS) PublishAcked(context.Context, string, []byte, string) error { return nil }
 
-// TestTaskActionsCarryCredential is the guard test for launch site 2 — the
+// TestTaskActionsCarryCredential is the guard test for launch site 2: the
 // task's OnRun action, started in execProcess. Launch site 1 (the OpenJD
 // environment onEnter/onExit action) is covered by
 // TestEnvironmentActionsCarryCredential in
@@ -142,12 +134,8 @@ func TestTaskActionsCarryCredential(t *testing.T) {
 
 	logger := slog.New(slog.DiscardHandler)
 	dataDir := newTraversableSessionDataDir(t)
-	// A fake account resolved to a uid/gid session creation can actually
-	// chown to without a real privilege escalation: the current process's own
-	// (see isolation.SecureWorkDir), unless that current process IS root (uid
-	// 0) — in which case CheckNotPrivileged would refuse a uid-0 account
-	// outright (and root can chown to any uid regardless), so testUID/testGID
-	// substitute a fixed non-zero synthetic uid/gid when running as root.
+	// A fake account resolved to a uid/gid session creation can chown to
+	// without privilege (see testUID/testGID).
 	uid, gid := testUID(), testGID()
 	account := isolation.FakeAccount{UID: uid, GID: gid}
 	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": account})

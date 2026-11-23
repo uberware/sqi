@@ -253,14 +253,12 @@ func TestValidate_PathParam_ObjectTypeAndDataFlow(t *testing.T) {
 }
 
 // fileFilters and fileFilterDefault live under `userInterface`, not at the
-// parameter root (schema §2.2). sqi decoded them from the root, so a
-// conforming template's filters were silently dropped and every validation
-// rule for them — label required, the §2.8 pattern grammar, the 20-filter cap
-// — was unreachable dead code. Ten conformance fixtures passed validation that
-// should have been rejected.
+// parameter root (schema §2.2). Decoded from the root, a conforming
+// template's filters would be dropped and every validation rule for them
+// (label required, the §2.8 pattern grammar, the 20-filter cap) would never
+// run.
 //
-// This asserts the filters are actually decoded from the right place; without
-// it, a future refactor could quietly reinstate the silent drop.
+// This asserts the filters are decoded from the right place.
 func TestParse_FileFiltersDecodedFromUserInterface(t *testing.T) {
 	tmpl := mustParse(t, `
 specificationVersion: jobtemplate-2023-09

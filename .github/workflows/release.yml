@@ -38,9 +38,9 @@ jobs:
           # and for git-cliff to produce a complete CHANGELOG.md.
           fetch-depth: 0
 
-      # Fail fast (before goreleaser publishes anything) if the client version
-      # was not bumped to match the release tag — keeping sqi_client.__version__
-      # aligned with the repo's single version scheme. The comparison is PEP 440
+      # Fail before goreleaser publishes anything if the client version does
+      # not match the release tag, so sqi_client.__version__ follows the repo's
+      # single version scheme. The comparison is PEP 440
       # aware (via `packaging`) so pre-release tags like v0.1.0-alpha match a
       # normalized __version__ of "0.1.0a0".
       - name: Check sqi-sdk version matches the tag
@@ -74,9 +74,9 @@ jobs:
           PY
 
       # Same rule as the sqi-sdk check above, applied to the submitter package:
-      # fail the release outright if clients/submitter's version was not bumped
-      # to match the tag. Kept strict and symmetric — bumping the version is a
-      # release-runbook step, not something this workflow does automatically.
+      # fail the release if clients/submitter's version does not match the tag.
+      # Bumping the version is a release-runbook step; this workflow does not
+      # do it.
       - name: Check sqi-submitter version matches the tag
         if: ${{ !contains(github.ref_name, '-rc') }}
         run: |
@@ -165,8 +165,8 @@ jobs:
           rcodesign --version
 
       # Detect whether macOS signing secrets are configured so the signing and
-      # notarization steps below cleanly no-op on a tag pushed before the
-      # maintainer has added the Apple credentials (see release runbook).
+      # notarization steps below no-op when the Apple credentials are absent
+      # (see release runbook).
       - name: Check for macOS signing secrets
         id: macsign_check
         env:
@@ -302,12 +302,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Publish sqi-submitter to PyPI via OIDC trusted publishing, gated on the
-      # same PUBLISH_TO_PYPI repository variable as sqi-sdk. NOTE: the
+      # same PUBLISH_TO_PYPI repository variable as sqi-sdk. The
       # `sqi-submitter` PyPI project must exist and have a trusted publisher
-      # configured before the first tagged release reaches this step — claim
-      # the name with a one-time manual placeholder upload (see release
-      # runbook; name verified free 2026-07-05). Until that setup is done,
-      # leave PUBLISH_TO_PYPI unset/false so this step no-ops.
+      # configured before this step can publish; the name is claimed with a
+      # one-time manual placeholder upload (see release runbook). Without that
+      # setup, leave PUBLISH_TO_PYPI unset or false so this step no-ops.
       - name: Publish sqi-submitter to PyPI (trusted publishing)
         if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -317,7 +316,7 @@ jobs:
   # ── Reference preset library ──────────────────────────────────────────────
   # Publish the authored first-party presets (presets/sqi/) to the community
   # preset library repo so `sqi-server` can install them. Runs only after a successful
-  # release, and only when PUBLISH_PRESETS is set — so it no-ops until the
+  # release, and only when PUBLISH_PRESETS is set, so it no-ops unless the
   # library repo and SQI_PRESETS_TOKEN secret are configured (see release
   # runbook). Skipped for -rc tags to keep pre-releases out of the live library.
   publish-presets:
@@ -336,7 +335,7 @@ jobs:
 
       # presetgen regenerates index.json + the sqi/ definition files in a
       # checkout of the library repo (merging, so any non-sqi entries survive),
-      # then we commit + push only when something actually changed. The
+      # then the step commits and pushes only when something changed. The
       # fine-grained PAT (SQI_PRESETS_TOKEN) needs Contents: write on the
       # library repo; it authenticates the clone/push as the git password.
       - name: Publish presets to the library repo

@@ -16,15 +16,11 @@ import (
 	"github.com/uberware/sqi/internal/redact"
 )
 
-// Client is the typed in-process NATS client used by all sqi-server code.
-//
-// Rather than importing the raw nats package directly, every component that
-// needs to publish or subscribe goes through Client.  This indirection keeps
-// the raw nats API out of callers, making it easy to add instrumentation,
-// swap transport, or substitute a [FakeClient] in unit tests.
+// Client is the typed NATS client sqi-server code publishes and subscribes
+// through, which keeps the raw nats API out of its callers.
 //
 // Obtain a Client via [Broker.NewClient] after the broker has been started.
-// A Client should be shared across goroutines — its methods are safe for
+// A Client should be shared across goroutines; its methods are safe for
 // concurrent use.
 type Client struct {
 	nc     *nats.Conn
@@ -49,7 +45,7 @@ type Client struct {
 
 	// mu guards cons; all other fields are immutable after construction.
 	mu   sync.Mutex
-	cons []jetstream.ConsumeContext // push consumers tracked for drain
+	cons []jetstream.ConsumeContext // consumers tracked for drain
 }
 
 // BusUpSince returns when the client's connection was last established or
@@ -260,7 +256,7 @@ func (c *Client) publish(ctx context.Context, subject string, data []byte) error
 
 // ── Drain and close ──────────────────────────────────────────────────────────
 
-// Drain stops all push consumers started by this Client, waits for in-flight
+// Drain stops all consumers started by this Client, waits for in-flight
 // message handlers to finish, and then drains the underlying NATS connection
 // (flushing pending publish-acks and waiting for all outstanding messages to
 // be delivered) and waits for it to close. It respects the given context
@@ -273,9 +269,9 @@ func (c *Client) publish(ctx context.Context, subject string, data []byte) error
 // shuts the broker down, and on an external broker releases its account
 // guard, as soon as Drain returns.
 //
-// Call Drain before [Client.Close] or [Broker.Shutdown] to guarantee a clean
-// shutdown — no in-flight messages are dropped and no pending publishes are
-// lost.  After Drain returns, no further messages will arrive at handlers.
+// Call Drain before [Client.Close] or [Broker.Shutdown] for a clean shutdown:
+// no in-flight messages are dropped and no pending publishes are lost.  After
+// Drain returns, no further messages will arrive at handlers.
 // When ctx ends first, Drain stops the consumers, closes the connection and
 // returns an error.
 func (c *Client) Drain(ctx context.Context) error {

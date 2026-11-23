@@ -4,8 +4,8 @@
  * The three retry-policy override inputs — max attempts, retry delay, and
  * failure limit — shared by the farm, queue, and job-submission forms.
  * Styling comes from the host page via the className props so each form
- * keeps its existing look; label wording and placeholder text likewise
- * stay per-page (`labelVariant`, `placeholder`).
+ * keeps its own look; label wording and placeholder text are also per-page
+ * (`labelVariant`, `placeholder`).
  */
 
 const LABELS = {

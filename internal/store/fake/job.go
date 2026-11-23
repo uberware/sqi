@@ -12,17 +12,18 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// normalizeDeclaredExtensions mirrors what a round trip through the SQLite
+// normalizeDeclaredExtensions mirrors what a round trip through the SQL
 // declared_extensions column does to the pair of fields carrying a job's
 // declared OpenJD extensions.
 //
-// The tri-state must survive identically on both backends, because the
-// scheduler branches on all three: NOT RECORDED falls back to scanning the raw
-// template, RECORDED-EMPTY does not, and RECORDED-NON-EMPTY answers outright.
-// SQLite stores ” for the first and '[]' for the second and reads a recorded
-// row back as a non-nil slice. Without this, the fake would hand back a nil
-// slice where SQLite hands back an empty one, so a nil-vs-empty assumption
-// could pass every fake-backed test and fail against a real database.
+// The tri-state must survive identically on every backend, because the
+// scheduler branches on all three: not recorded falls back to scanning the raw
+// template, recorded-empty does not, and recorded-non-empty answers outright.
+// The SQL stores write "" for the first and "[]" for the second and read a
+// recorded row back as a non-nil slice. Without this, the fake would hand back
+// a nil slice where the SQL stores hand back an empty one, so a nil-vs-empty
+// assumption could pass every fake-backed test and fail against a real
+// database.
 func normalizeDeclaredExtensions(job store.Job) store.Job {
 	if !job.ExtensionsRecorded {
 		job.DeclaredExtensions = nil
@@ -37,7 +38,7 @@ func normalizeDeclaredExtensions(job store.Job) store.Job {
 
 // CreateJobSubmission implements [store.JobStore]. It validates the whole
 // submission before mutating anything, so a rejected submission leaves the
-// store untouched — the in-memory equivalent of the SQLite implementation's
+// store untouched, the in-memory equivalent of the SQL implementation's
 // transaction.
 func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
 	s.mu.Lock()
@@ -79,7 +80,7 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 	}
 
 	// Each step and task is stamped with its own, strictly later time,
-	// mirroring the SQLite implementation (rowClock in sqlstore/job.go), where
+	// mirroring the SQL implementation (rowClock in sqlstore/job.go), where
 	// tasks within a step sharing one created_at would disable the
 	// ready-task ordering tiebreaker and make ListTasks paging unstable. A coarse
 	// wall clock returns the same instant for consecutive rows, so a row the
@@ -137,7 +138,7 @@ func (s *Store) validateSubmission(sub store.JobSubmission) error {
 	return s.validateSubmissionTasks(sub.Tasks)
 }
 
-// checkUpstreamsLocked is the in-memory counterpart of SQLite's
+// checkUpstreamsLocked is the in-memory counterpart of sqlstore's
 // checkUpstreamsTx: every DependsOn upstream must exist and must not have
 // failed or been canceled, else the submission is refused with a
 // [*store.DependencyUnsatisfiableError] (which matches
@@ -228,7 +229,7 @@ func (s *Store) GetJob(_ context.Context, id string) (store.Job, error) {
 }
 
 // ListJobDependencyIDs returns the upstream job IDs jobID waits on, ordered
-// by upstream job ID (matching the SQLite implementation's ORDER BY).
+// by upstream job ID (matching the SQL implementation's ORDER BY).
 func (s *Store) ListJobDependencyIDs(_ context.Context, jobID string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

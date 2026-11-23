@@ -91,7 +91,7 @@ func leaseHolder(lease store.Lease, members []store.ServerMember) *store.ServerM
 
 // compareVersion logs one WARN per distinct pair when the leader runs another
 // version than this standby. A mixed-version group is allowed during a
-// rolling upgrade; it is worth knowing about.
+// rolling upgrade, so this is a warning and not a refusal.
 func (s *Server) compareVersion(ctx context.Context, leader *store.ServerMember) {
 	self := s.ha.self.Version
 	if leader.Version == self || !s.firstWarning("version", leader.Version, self) {

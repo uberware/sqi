@@ -79,8 +79,7 @@ func seedExprLeaseFixture(
 
 // seedExprLeaseFixtureJob is [seedExprLeaseFixture] for a caller that needs to
 // control more of the job row than its raw template, such as whether the
-// declared-extension list is recorded at all (a job row from before that column
-// existed has none). Only ID, FarmID, QueueID, Name and the lifecycle columns
+// declared-extension list is recorded at all. Only ID, FarmID, QueueID, Name and the lifecycle columns
 // are supplied here; everything else comes from seed.
 func seedExprLeaseFixtureJob(
 	t *testing.T,
@@ -424,9 +423,9 @@ func TestExprCapShortfall_Table(t *testing.T) {
 // for a worker that sends no caps at all, against fmtres rather than a literal.
 //
 // A worker that advertises always sends validated non-zero values (its config
-// layer rejects 0), so silence means an older binary, whose limits were fixed
-// constants; fmtres's TestExprLimits_DefaultsMatchLiteralValues checks that the
-// defaults equal them. See legacyWorkerExprCaps.
+// layer rejects 0), so a zero is read as the worker defaults;
+// fmtres's TestExprLimits_DefaultsMatchLiteralValues checks the defaults'
+// values. See legacyWorkerExprCaps.
 func TestExprCaps_UnadvertisedCapsAreTheDefaults(t *testing.T) {
 	d := fmtres.DefaultExprLimits()
 	got := workerExprCapsOrLegacy(store.WorkerExprLimits{})
@@ -669,7 +668,7 @@ func TestNew_NormalizesExprLimits(t *testing.T) {
 // needed: a field added to protocol.RegisterMsg that the server should persist
 // would otherwise go unread. A dropped field decodes to the zero value on every
 // registration with no error; for expr_limits that makes every worker read as
-// "not advertised", workerExprCapsOrLegacy substitutes the legacy defaults,
+// "not advertised", workerExprCapsOrLegacy substitutes the worker defaults,
 // and a tight worker is handed EXPR work it cannot run.
 //
 // Renaming a json tag on the shared type is covered by the protocol version
@@ -906,11 +905,9 @@ const houdiniEXPRCacheJSON = `{
 // TestJobMayUseEXPR_RequiresAnExtensionDeclaration checks that the byte scan
 // requires an extensions key as well as the bytes EXPR. Otherwise a base-spec
 // template that only mentions EXPR is a false positive: on a farm whose
-// workers are short (reachable through documented configuration, since "raise
-// the workers first" is guidance and not enforcement) the job's tasks stay
-// `ready` with no capable worker, flagged with a reason naming limits the
-// template does not use. The false negative needs an obfuscated
-// declaration (see jobMayUseEXPR).
+// workers are short the job's tasks stay `ready` with no capable worker,
+// flagged with a reason naming limits the template does not use. The false
+// negative needs an escaped declaration (see jobMayUseEXPR).
 //
 // The check is a byte scan that errs in the safe direction: a false positive
 // only withholds work, while a false negative dispatches EXPR work to a worker
@@ -1182,14 +1179,13 @@ func TestExprCaps_SubmittedEXPRJobIsStillWithheld(t *testing.T) {
 }
 
 // TestExprCaps_LegacyRowFallsBackToTheByteScan covers job rows with no recorded
-// extension list (written before migration 00027). For those the byte scan is
-// the only evidence. Defaulting the column to '[]' instead of ” would make
+// extension list. For those the byte scan is the only evidence. Defaulting the column to '[]' instead of ” would make
 // every such row look like a job that declares nothing, and an EXPR job already
 // in the queue would lose the gate.
 func TestExprCaps_LegacyRowFallsBackToTheByteScan(t *testing.T) {
 	st := newCheckedFake(t)
 	// seedExprLeaseFixture writes the job row directly and records no extension
-	// list, the shape of a row written before the column existed.
+	// list.
 	w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, minWorkerExprCaps())
 
 	job := mustJob(t, st, mustTask(t, st, taskID).JobID)

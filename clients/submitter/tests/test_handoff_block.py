@@ -207,7 +207,7 @@ def test_write_context_refuses_a_folder_another_user_owns(
     folder = tmp_path / "sqi-handoff"
     folder.mkdir()
     folder.chmod(0o777)
-    # The folder is really ours; pretend we are someone else. (st_uid, not os.getuid,
+    # The folder is ours; pretend we are someone else. (st_uid, not os.getuid,
     # so the test still type-checks on a Windows host, where os has no getuid.)
     someone_else = folder.stat().st_uid + 1
     monkeypatch.setattr("os.getuid", lambda: someone_else)

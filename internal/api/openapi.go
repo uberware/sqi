@@ -4,8 +4,8 @@ package api
 
 // OpenAPI spec serving.
 //
-// The spec is embedded from api/openapi.yaml at compile time so the binary is
-// self-contained.  The handler is wired into the router at:
+// The spec is embedded from internal/api/openapi.yaml at compile time so the
+// binary is self-contained. The handler is wired into the router at:
 //
 //	GET /api/v1/openapi.yaml
 

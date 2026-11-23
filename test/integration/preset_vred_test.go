@@ -401,8 +401,8 @@ func TestPresetTier3_FoldsAScriptPathQuotedInsideAnArgument(t *testing.T) {
 // TestPresetVRED_EmitsStatus pins the one directive render.py writes to file
 // descriptor 1: a status line naming the chunk's first and last frame, before
 // the render call. There is no progress line, as startRenderToFile blocks and
-// reports nothing between its start and end. Only the stub VRED has been run;
-// no VRED has.
+// reports nothing between its start and end. It runs against the stub VRED
+// only.
 func TestPresetVRED_EmitsStatus(t *testing.T) {
 	python := findPython3(t)
 	if python == "" {

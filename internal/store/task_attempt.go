@@ -44,7 +44,7 @@ type TaskAttempt struct {
 	ID            string
 	TaskID        string
 	WorkerID      string
-	SessionID     string // OpenJD session ID; may be empty for legacy workers
+	SessionID     string // OpenJD session ID; empty until the worker reports one
 	AttemptNumber int    // 1-based; incremented on each retry
 	Status        AttemptStatus
 	ExitCode      *int // nil while running or if the process was signaled
@@ -129,8 +129,8 @@ type TaskAttemptStore interface {
 	// of its latest attempt, for a task that is in flight or finished (not
 	// pending or ready: a requeued task's earlier attempt is closed and its
 	// snapshot stale). A task with no attempt, or whose latest attempt has no
-	// snapshot (no ProgressAt and no status text), is absent from the map. No tasks returns an empty map
-	// without querying.
+	// snapshot (no ProgressAt and no status text), is absent from the map. No
+	// tasks returns an empty map without querying.
 	LatestAttemptProgress(ctx context.Context, taskIDs []string) (map[string]TaskProgress, error)
 
 	// RunningProgressByJob returns the sum, over the job's running tasks, of

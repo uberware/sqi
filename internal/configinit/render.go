@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package configinit renders the starter configuration files that
-// "config init" writes for sqi-server and sqi-worker. It is pure: it builds
-// text and paths for the platform it is given and touches no file.
+// Package configinit implements "config init" for sqi-server and sqi-worker:
+// it renders a starter configuration file and writes it with the owner, mode
+// or ACL the platform needs. Rendering ([Render], [DefaultTarget], [DataDir],
+// [SessionDir]) is pure: it builds text and paths for the platform it is given
+// and touches no file.
 package configinit
 
 import (

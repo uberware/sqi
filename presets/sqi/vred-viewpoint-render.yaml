@@ -44,13 +44,14 @@ readme: |
   VRED loads the scene, then runs the code, which only executes the preset's
   embedded `render.py` from the task's session folder. No job value is ever
   written into Python source: the script reads the scene, the task's frames,
-  the view and the output file from a `params.json` written beside it, built with the
-  `EXPR` extension and its JSON quoting.
+  the view and the output file from a `params.json` written beside it, built
+  with the `EXPR` extension and its JSON quoting.
 
   The script turns on animation rendering, clears the clip range, sets the
   task's first and last frame and a frame step of 1, selects the view, sets
-  the render filename when one is given, and calls `startRenderToFile`. It then prints
-  `SQI_RENDER: OK` and quits VRED with `terminateVred`. On any error it prints
+  the render filename when one is given, and calls `startRenderToFile` after
+  an `openjd_status` naming the frames. It then prints `SQI_RENDER: OK` and
+  quits VRED with `terminateVred`. On any error it prints
   `SQI_RENDER: FAILED:` with the reason and quits with `crashVred(1)`.
 
   Building `params.json` is metered against the worker's `EXPR` limits, and

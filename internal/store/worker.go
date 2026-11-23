@@ -35,10 +35,9 @@ const (
 // sqi assumes a homogeneous GPU configuration: all GPUs on the host are
 // the same model with the same VRAM. VRAMMb is the per-device VRAM capacity;
 // Count is the number of identical devices. Mixed-GPU workers (e.g. a render
-// card alongside a display adapter) are not modeled — workers with
+// card alongside a display adapter) are not modeled; a worker with
 // heterogeneous GPUs should report the lowest common VRAM to avoid
-// over-scheduling. A []GPUDevice slice should replace this struct when
-// heterogeneous per-device tracking is required.
+// over-scheduling.
 type GPUInfo struct {
 	Vendor string `json:"vendor,omitempty"`
 	Model  string `json:"model,omitempty"`
@@ -70,10 +69,10 @@ type GPUInfo struct {
 // compiled-in defaults; see internal/scheduler's legacyWorkerExprCaps.
 //
 // All five of the worker's expr.* keys are carried. The server has no
-// per-table counterpart to compare LetRetainedBytes against, but a worker at
-// that key's floor rejects, once per task, a let: block the server accepted
-// under a raised openjd.expr_template_retained_bytes. The server bounds the
-// same values at a wider scope, which is a valid upper bound; see
+// per-table counterpart to LetRetainedBytes, yet a worker at that key's floor
+// rejects, on every task, a let: block the server accepted under a raised
+// openjd.expr_template_retained_bytes. The server's limit bounds the same
+// values at a wider scope, so it serves as the comparison; see
 // internal/scheduler's exprCapShortfall for the comparison and for what it
 // cannot promise.
 type WorkerExprLimits struct {
@@ -89,7 +88,7 @@ type WorkerExprLimits struct {
 	// AssignmentRetainedBytes is how many bytes let: bindings may retain
 	// across one assignment (expr.assignment_retained_bytes).
 	AssignmentRetainedBytes int64 `json:"assignment_retained_bytes,omitempty"`
-	// LetRetainedBytes is how many bytes one phase-3 symbol table may hold
+	// LetRetainedBytes is how many bytes one task-time symbol table may hold
 	// live (expr.let_retained_bytes), measured across the whole table rather
 	// than only its let-bound names.
 	LetRetainedBytes int64 `json:"let_retained_bytes,omitempty"`
@@ -333,10 +332,9 @@ type WorkerStore interface {
 	// wake-failed worker becomes awake (PowerStateAt is now and PowerReason is
 	// cleared), a retiring worker stays retiring, and a new worker is awake.
 	// When the stored InstanceID is non-empty and differs from a non-empty
-	// incoming one, the
-	// previous worker process is gone: in the same transaction its assigned and
-	// running tasks are reclaimed exactly as [WorkerStore.OfflineWorker]
-	// reclaims them (attempts closed as failed with
+	// incoming one, the previous worker process is gone: in the same
+	// transaction its assigned and running tasks are reclaimed as
+	// [WorkerStore.OfflineWorker] reclaims them (attempts closed as failed with
 	// [FailureReasonWorkerRestarted], claims released, tasks ready) and
 	// returned as they are after the reset.
 	//
@@ -450,8 +448,7 @@ type WorkerStore interface {
 	// the tasks it reclaimed (invariant I2), as they are after the reset, and
 	// true. When the guard does not match (the worker is unknown, is not
 	// online, or has a heartbeat at or after cutoff) nothing is written and it
-	// returns
-	// (nil, false, nil). A worker with no recorded heartbeat is never stale.
+	// returns (nil, false, nil). A worker with no recorded heartbeat is never stale.
 	//
 	// now stamps the worker's and the reclaimed tasks' updated_at, the closed
 	// attempts' ended_at and the released claims' released_at.
@@ -478,7 +475,7 @@ type WorkerStore interface {
 	// landed: the deregister is from a superseded process (a late or redelivered
 	// message), and nothing is written; the call returns (nil, false, nil). The
 	// check is part of the guarded write (invariant I1). An empty ID on either
-	// side proves nothing, and the worker is taken offline as before.
+	// side proves nothing, and the worker is taken offline.
 	OfflineWorker(ctx context.Context, id, instanceID string, now time.Time) ([]Task, bool, error)
 
 	// CountIdleWorkers returns the number of online, enabled workers in the
@@ -528,8 +525,8 @@ type ListWorkersOptions struct {
 
 	// IncludeUnaffiliated, when true and FarmID is non-empty, also returns
 	// workers whose FarmID is empty (unaffiliated workers that accept tasks
-	// from any farm). Used by the scheduler's pickWorker so that workers
-	// started without an explicit farm configuration are still dispatched to.
+	// from any farm). The scheduler's onlineWorkers sets it, so workers started
+	// without an explicit farm configuration are still dispatched to.
 	IncludeUnaffiliated bool
 
 	// Ordering — zero values use WorkerSortByHostname / SortAsc.

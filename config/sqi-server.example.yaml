@@ -5,7 +5,7 @@
 #
 # Copy this file to one of the default search locations and customise as needed:
 #
-#   ./config/sqi-server.yaml          (next to the binary — recommended for dev)
+#   ./config/sqi-server.yaml          (relative to the working directory; for dev)
 #   ~/.sqi/sqi-server.yaml            (user-level override)
 #   /etc/sqi/sqi-server.yaml          (system-wide installation)
 #
@@ -25,8 +25,8 @@ http:
   addr: "0.0.0.0:8080"
 
   # Expose Go runtime profiling endpoints at /debug/pprof/.
-  # Profiling data reveals memory layout, goroutine stacks, and CPU hotspots —
-  # never enable this on a server accessible to untrusted networks.
+  # Profiling data reveals memory layout, goroutine stacks, and CPU hotspots,
+  # so never enable this on a server reachable from untrusted networks.
   # Enable temporarily on a loopback-only instance for performance diagnosis.
   # Default: false
   # Type: bool   Env: SQI_HTTP_ENABLE_PPROF
@@ -41,9 +41,9 @@ http:
 
   # In-process TLS termination for the REST API, WebSocket gateway and web UI.
   #
-  # OFF by default. When enabled the listener above UPGRADES IN PLACE — there
-  # is no plaintext port left, so enabling this on a running farm is a
-  # coordinated restart, not a rolling one. Generate a certificate pair with
+  # Off by default. When enabled, the listener above upgrades in place and no
+  # plaintext port is left, so enabling this on a running farm needs a
+  # coordinated restart rather than a rolling one. Generate a certificate pair with
   # `sqi-server tls init`. Full guide: docs/tls.md.
   #
   # Certificates are validated at startup: a missing file, a mismatched key or
@@ -68,9 +68,8 @@ nats:
   mode: "embedded"
 
   # Broker authentication for worker connections, in both modes. Opt-in and
-  # independent of the top-level auth block (auth.enabled) below — that block
-  # gates human users and API keys; this one gates workers connecting to the
-  # broker.
+  # independent of auth.enabled, which gates human users and API keys; this
+  # block gates workers connecting to the broker.
   auth:
     # Requires every NATS client to present a per-worker nkey credential.
     # When false, the broker accepts any anonymous connection and refuses one
@@ -125,8 +124,9 @@ nats:
     # Type: string   Env: SQI_NATS_EMBEDDED_DATA_DIR
     data_dir: "data/nats"
 
-    # Maximum disk space JetStream may use, in megabytes.
-    # When the limit is reached, older messages are evicted per stream policy.
+    # Maximum disk space JetStream may use, in megabytes. Messages leave sqi's
+    # streams by age; when this cap is reached first, the broker refuses new
+    # messages until space frees.
     # Type: int   Env: SQI_NATS_EMBEDDED_MAX_STORE_MB
     max_store_mb: 1024
 
@@ -313,8 +313,9 @@ scheduler:
 
   # How long a worker that has stopped sending heartbeats may remain offline
   # before the retention sweep hard-deletes it, bounding the worker table on
-  # farms with ephemeral nodes. Disabled and online workers are never
-  # auto-removed. Set to 0 to disable automatic removal.
+  # farms with ephemeral nodes. Disabled and online workers, and capacity-group
+  # members, are never removed by this sweep. Set to 0 to disable automatic
+  # removal.
   # Type: duration   Env: SQI_SCHEDULER_OFFLINE_WORKER_RETENTION
   offline_worker_retention: "24h"
 
@@ -379,52 +380,47 @@ discovery:
 
 # ── OpenJD submission ─────────────────────────────────────────────────────────
 openjd:
-  # Enforce OpenJD's quantitative limits at submission time (maximum name
-  # lengths, parameter/step/environment counts, reserved-name rules). Disable
-  # only when onboarding templates that predate the strict limits and cannot yet
-  # be updated.
+  # Enforce OpenJD's quantitative limits at submission time (name and label
+  # lengths, parameter-definition, value and host-requirement counts) and
+  # sqi's 100-step cap. Disable only for existing templates that break these
+  # limits and cannot be updated.
   # Type: bool   Env: SQI_OPENJD_ENFORCE_LIMITS   Flag: --openjd-enforce-limits
   enforce_limits: true
 
   # ── EXPR expression limits ─────────────────────────────────────────────────
-  # These four bound what ONE submitted job template may spend inside the
-  # OpenJD expression-language checker. They matter because POST /api/v1/jobs
-  # accepts a template of up to 4 MiB and, with auth off (the default), accepts
-  # it anonymously.
-  #
-  # Read this before raising any of them:
-  #   * None of these bounds WALL CLOCK. An operation's real cost varies by
-  #     orders of magnitude between arithmetic and a regex over a large string,
-  #     so raising a limit lengthens the worst request your farm can be asked
-  #     to serve, roughly in proportion. There is no value of these settings
-  #     that makes a slow request impossible.
-  #   * expr_operation_limit and expr_template_positions MULTIPLY. The
-  #     cumulative operation ceiling for one request is their product; raising
-  #     both raises it twice over (at the maxima, 100x the default ceiling).
-  #   * WORKER LIMITS. Each of these has a counterpart in every worker's own
-  #     expr.* configuration, metering the same thing one phase later, and a
-  #     worker must not be TIGHTER than this server:
+  # These four bound what one submitted job template may spend inside the
+  # OpenJD expression-language checker. POST /api/v1/jobs accepts a template
+  # of up to 4 MiB and, with auth off (the default), accepts it anonymously.
+  # See docs/configuration.md, "EXPR expression limits", before raising any
+  # of them:
+  #   * None of them bounds wall-clock time. The CPU time behind one operation
+  #     differs by more than an order of magnitude between functions, so
+  #     raising a limit lengthens the worst request the server can be asked
+  #     to serve, roughly in proportion.
+  #   * expr_operation_limit and expr_template_positions multiply. The
+  #     cumulative operation ceiling for one request is their product (at the
+  #     maxima, 100x the default ceiling).
+  #   * Each has a counterpart in every worker's expr.* configuration, which
+  #     meters the same thing at run time, and a worker must not be tighter
+  #     than this server:
   #         expr_operation_limit         <= worker expr.operation_limit
   #         expr_memory_limit            <= worker expr.memory_limit
   #         expr_template_positions      <= worker expr.assignment_positions
   #         expr_template_retained_bytes <= worker expr.assignment_retained_bytes
-  #     Workers advertise their values at registration, and this server REFUSES
-  #     TO DISPATCH an EXPR job to a worker that is tighter -- it does not
-  #     accept the job and then fail it on the host. If you raise a limit here
-  #     above a worker's counterpart, that worker stops being offered EXPR work
-  #     (only EXPR work; it keeps running everything else), the reason is logged
-  #     when it registers, and any task with no capable worker is flagged
-  #     unschedulable with the two numbers named -- unless you have turned that
-  #     sweep off (scheduler.unschedulable_grace <= 0), in which case such a
-  #     task simply waits, with the registration log line as the only signal.
-  #     Raise the workers first.
-  #   * expr_template_retained_bytes counts cumulative ALLOCATION, not peak
-  #     live retention. A template that never holds more than a few MB at once
-  #     is still charged the sum of every let: block, so sizing a host's RAM
-  #     against this number over-provisions, and sizing this number against an
-  #     observed RSS under-bounds it.
+  #         expr_template_retained_bytes <= worker expr.let_retained_bytes
+  #     Workers advertise their values at registration, and this server does
+  #     not dispatch EXPR work to a tighter worker; that worker keeps running
+  #     everything else. The reason is logged when it registers, and a task
+  #     with no capable worker is flagged unschedulable with both numbers
+  #     named, unless scheduler.unschedulable_grace is 0, in which case the
+  #     task waits and the registration log line is the only signal. Raise
+  #     the workers first.
+  #   * expr_template_retained_bytes counts cumulative allocation, not peak
+  #     live retention. A template is charged the sum of every let: block, so
+  #     sizing a host's RAM against this number over-provisions, and sizing
+  #     this number against an observed RSS under-bounds it.
   #
-  # An out-of-range value is a startup failure, not a clamp.
+  # An out-of-range value fails startup; it is never clamped.
 
   # Operations (specification section 1.3.10) one expression may spend.
   # Type: int   Range: 1000-100000   Env: SQI_OPENJD_EXPR_OPERATION_LIMIT
@@ -435,8 +431,8 @@ openjd:
   expr_memory_limit: 1000000
 
   # Expression positions one template may contain, across the whole validation
-  # pass. NOTE: your workers' own per-assignment position cap must not be
-  # LOWER than this (see "worker limits" below).
+  # pass. Every worker's expr.assignment_positions must be at least this
+  # (see above).
   # Type: int   Range: 256-100000   Env: SQI_OPENJD_EXPR_TEMPLATE_POSITIONS
   expr_template_positions: 10000
 
@@ -445,25 +441,20 @@ openjd:
   expr_template_retained_bytes: 10000000
 
   # ── EXPR wall-clock backstop ───────────────────────────────────────────────
-  # How long this server keeps evaluating ONE submission's expressions before
+  # How long this server keeps evaluating one submission's expressions before
   # giving up on it.
   #
-  # THIS IS LIVE, like the four limits above: EXPR is a supported extension,
-  # every EXPR template is evaluated on its merits, and this deadline governs
-  # real submissions, including the 503s described below.
+  # This does not decide whether a template is valid. The four limits above
+  # do: a breach is deterministic, so the submitter gets HTTP 422 and a retry
+  # cannot help. This one decides only whether this server keeps working on
+  # this request (the same template could be accepted on an idle host), so a
+  # breach is HTTP 503 and a retry may succeed.
   #
-  # This is NOT a fifth limit. The four above decide whether a template is
-  # VALID: a breach is deterministic, so the submitter is told their template
-  # is wrong (HTTP 422) and retrying is pointless. This one decides only
-  # whether THIS SERVER, on THIS request, keeps working -- the same template
-  # would be accepted on an idle host -- so a breach reports that the server
-  # gave up (HTTP 503) and a retry may well succeed.
-  #
-  # It exists because none of the four bounds TIME: specification section
-  # 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly
-  # free in operations and expensive in seconds. Lower it if you would rather
-  # shed load than serve a slow submission; raise it only if legitimate
-  # templates are being refused with a 503.
+  # None of the four limits bounds time: specification section 1.3.10 prices
+  # 256 bytes at one operation, so byte-heavy work costs few operations and
+  # many seconds. Lower this to shed load rather than serve a slow
+  # submission; raise it if legitimate templates are refused with a 503, and
+  # whenever you raise the four limits.
   # Type: duration   Range: 1s-60s   Env: SQI_OPENJD_EXPR_SUBMISSION_DEADLINE
   expr_submission_deadline: 5s
 
@@ -472,9 +463,9 @@ diagnostics:
   # Maximum diagnostic-log records retained per component (the server plus each
   # worker), surfaced in the web UI and at GET /api/v1/diagnostics/logs. A
   # positive value is the per-component capacity. Set to 0 to disable
-  # diagnostics entirely — no ring buffer, no worker.diag subscription, and the
-  # REST endpoint returns 503 — when logs are collected out-of-band
-  # (journald / Docker / Loki / etc.). Must not be negative.
+  # diagnostics when logs are collected out-of-band (journald, Docker, Loki):
+  # no ring buffer, no worker.diag subscription, and the REST endpoint returns
+  # 503. Must not be negative.
   # Type: int   Env: SQI_DIAGNOSTICS_BUFFER_SIZE
   buffer_size: 1000
 
@@ -482,7 +473,7 @@ diagnostics:
 preset_library:
   # JSON index URL for the community preset library browsed and installed from
   # the web UI (the raw index file, not a repo page). Leave empty to disable the
-  # feature entirely. Defaults to the official sqi preset library.
+  # feature. Defaults to the official sqi preset library.
   # Type: string   Env: SQI_PRESET_LIBRARY_URL
   url: "https://uberware.github.io/sqi-presets/index.json"
 

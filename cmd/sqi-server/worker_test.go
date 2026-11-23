@@ -435,16 +435,16 @@ func TestWorkerCmd_MissingDatabaseIsErrorNotCreation(t *testing.T) {
 }
 
 // TestWorkerCmd_DBPath_ExplicitFlagBeatsConfig verifies that --db wins even
-// when a config file names a different (nonexistent) database — proving the
-// flag is actually consulted via cmd.Flags().Changed("db") rather than
-// config always winning once loaded.
+// when a config file names a different (nonexistent) database, so the flag
+// is consulted via cmd.Flags().Changed("db") rather than config always
+// winning once loaded.
 func TestWorkerCmd_DBPath_ExplicitFlagBeatsConfig(t *testing.T) {
 	explicitPath := filepath.Join(t.TempDir(), "explicit.db")
 	createTestDB(t, explicitPath)
 
 	configuredPath := filepath.Join(t.TempDir(), "from-config.db")
-	// Deliberately never created — if the flag were ignored in favor of the
-	// config layer, this run would fail with "no database at" the
+	// Never created: if the flag were ignored in favor of the config layer,
+	// this run would fail with "no database at" the
 	// configured path instead of succeeding against the explicit one.
 	withConfigFile(t, writeStoreConfigFile(t, configuredPath))
 
@@ -478,7 +478,7 @@ func TestWorkerCmd_DBPath_ConfigFileHonoredWhenFlagOmitted(t *testing.T) {
 // single NATS subject token, at the offline enrollment boundary.
 //
 // The recorded worker_id is what brokerauth.WorkerPermissions builds this
-// credential's grants from, and those grants are subject PATTERNS: a
+// credential's grants from, and those grants are subject patterns: a
 // worker ID of "*" yields "task.status.*.*", "worker.deregister.*",
 // "work.lease.*.*" and the rest, so one credential could publish concrete
 // subjects belonging to any worker on the farm. ">" additionally produces

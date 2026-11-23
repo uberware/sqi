@@ -31,12 +31,11 @@ class FormField:
         ui = self.parameter.user_interface
         control = ui.control if (ui is not None and ui.control) else ""
         t = self.parameter.type
-        # PATH is type-first: a PATH parameter with no control (or a stale
-        # LINE_EDIT — not a legal control on PATH server-side, but tolerated
-        # here defensively) derives the picker instead of falling
-        # back to a plain text field. An explicit CHOOSE_* control falls
-        # through to the `if control` branch below and yields the same
-        # result; an explicit HIDDEN still wins. See docs/dcc-submitters.md.
+        # PATH is type-first: a PATH parameter with no control, or with
+        # LINE_EDIT (which the server rejects on PATH), gets a picker rather
+        # than a plain text field. An explicit CHOOSE_* control reaches the
+        # `if control` branch below with the same result; an explicit HIDDEN
+        # wins. See docs/dcc-submitters.md.
         if t == "PATH" and control in ("", "LINE_EDIT"):
             if self.parameter.object_type == "DIRECTORY":
                 return "CHOOSE_DIRECTORY"

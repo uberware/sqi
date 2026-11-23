@@ -11,37 +11,24 @@ import (
 // strPadFuncs is the fourth string-function group: RFC 0006 section 2.2.4's
 // padding functions.
 //
-// Separated from the split group because these are bounded by a BYTE count and
-// those by an ELEMENT count — see funcsstrsplit.go's header.
+// Separated from the split group because these are bounded by a byte count and
+// those by an element count — see funcsstrsplit.go's header.
 //
 // Section 1.3.10 rule 3: all six rows declare Cost{ResultBytes: true} — the
-// PRODUCED, padded string's length, not ArgBytes on the input. Discriminated by
-// holding the input FIXED at 10 bytes and growing only the requested WIDTH: an
-// ArgBytes(input) reading would stay flat at every width; it does not — 2/3/4
-// at widths 20/300/600
+// produced, padded string's length, not ArgBytes on the input: with a 10-byte
+// input the count is 2/3/4 at widths 20/300/600
 // (TestOperationCount_PaddingFunctionsChargeProducedBytes). This matches the
 // same ResultBytes-over-ArgBytes idiom join uses above (funcsstrsplit.go) and
 // the "+"/"*" operators use (ops.go): the work here is proportional to what the
-// function BUILDS (a string sized by the requested width), not to what it was
+// function builds (a string sized by the requested width), not to what it was
 // handed.
 //
-// zfill is the ONE row in this file where the reference disagrees with its own
-// three siblings: probing shows its measured count does NOT scale with width at
-// all — '5'.zfill(10), .zfill(300), .zfill(600) and .zfill(1000) all measure 2,
-// tracking only the 1-byte INPUT ('5')'s own ArgBytes charge, never the padded
-// output. zfillString shares the EXACT SAME padWidth mechanism
-// ljust/rjust/center use below, and does the exact same proportional work, so
-// this is a reference omission rather than a meaningful semantic difference —
-// the same family of defect as the reference's negative-width behavior
-// (center('ab', -3) failing with a bogus 72-quadrillion operation count, and
-// zfill with a negative width panicking outright) but on the positive-width
-// path instead. Per the standing rule ("the specification outranks the
-// reference"), sqi does not reproduce the omission: all three zfill rows
-// declare the SAME Cost{ResultBytes: true} as their siblings, rather than
-// making zfill the one padding function whose declared cost does not reflect
-// the padding it performs. See
-// TestOperationCount_ZfillDivergesFromReferenceOnWidth and
-// cost_string_internal_test.go's PROBE comment for the full transcript.
+// zfillString shares the padWidth mechanism ljust/rjust/center use below and
+// does the same proportional work, so all three zfill rows declare the same
+// Cost{ResultBytes: true} as their siblings. The reference charges two length
+// terms for every padding function, the argument's and the added padding's,
+// where rule 3 names one value; test/oracle/baseline-ops.txt's padding section
+// adjudicates it. See TestOperationCount_ZfillDivergesFromReferenceOnWidth.
 //
 // A negative width never reaches this growth path at all — padWidth
 // (below) already treats width <= the current length as a no-op, so there is
@@ -67,7 +54,7 @@ var strPadFuncs = map[string][]Shape{
 	// RFC 0006 gives zfill three rows, one per first-argument type, because a
 	// number has to be rendered before it can be padded. The int and float rows
 	// render through the value's own String(), which is formatFloat for a float
-	// — deliberately, so zfill and string() can never disagree about a float.
+	// — so zfill and string() can never disagree about a float.
 	//
 	// The float row is also why "(42).zfill(5)" needs its parentheses: RFC 0006
 	// notes the Python grammar reads "42." as the start of a float literal.
@@ -96,8 +83,8 @@ const (
 // padWidth reports how many pad runes take s up to width, and reports false
 // when none are needed.
 //
-// width is a CODEPOINT count, matching len(s) and s[i]. A width at or below the
-// current length yields no padding at all, which is what makes a NEGATIVE width
+// width is a codepoint count, matching len(s) and s[i]. A width at or below the
+// current length yields no padding at all, which is what makes a negative width
 // a harmless no-op rather than an error: RFC 0006 declares no error condition
 // for it, so inventing a rejection would be adding a rule the specification does
 // not have. (The reference implementation instead panics with "capacity
@@ -116,10 +103,10 @@ func padWidth(ec evalCtx, s string, width int64) (padLen int, need bool, err err
 	if _, err := checkRepeat(1, n, maxStringBytes-len(s)); err != nil {
 		return 0, false, err
 	}
-	// RESERVE rule 3's charge on the PADDED length before any of it is
+	// Reserve rule 3's charge on the padded length before any of it is
 	// allocated. The rows' Cost{ResultBytes: true} is levied by chargeResult
-	// once the padded string exists, which reported 39,064 operations against
-	// a 10,000 limit only after building 10 MB ("".ljust(10000000), measured).
+	// once the padded string exists, which would report 39,064 operations
+	// against a 10,000 limit only after building 10 MB ("".ljust(10000000)).
 	// The pad is a rune count and the fill is one byte per rune, so
 	// len(s)+n is the produced byte length exactly. See meter.reserve.
 	if err := ec.m.reserveBytes(int64(len(s)) + n); err != nil {
@@ -137,8 +124,7 @@ func padWidth(ec evalCtx, s string, width int64) (padLen int, need bool, err err
 //
 // RFC 0006 says only "Center, pad with spaces to width" and does not settle the
 // tie, so with the spec silent the tie-break follows the library the function
-// is modeled on, which is also what the reference does (openjd-expr 0.3.0,
-// openjd-model 0.11.3+).
+// is modeled on, which is also what the reference does.
 func padString(ec evalCtx, s string, width int64, side padSide) (Value, error) {
 	n, need, err := padWidth(ec, s, width)
 	if err != nil {

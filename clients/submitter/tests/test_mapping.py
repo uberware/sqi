@@ -74,9 +74,8 @@ def test_extras_match_case_and_separator_insensitively() -> None:
 
 def test_extras_win_over_convention_for_same_name() -> None:
     # "Frames" is both a convention-aliased key (frame_range) and, here, a
-    # target extra. Extras must win: this is what makes the Blender "Scene"
-    # extra (the scene NAME) safe while "scene" is not a scene_path alias —
-    # a fork adding a same-named extra always beats the convention.
+    # target extra. The extra wins, so a host or fork that adds an extra with
+    # a convention name always beats the convention.
     target = RenderTarget(name="T", kind="write_node", frame_range="10-20", extra={"Frames": "999"})
     got = prefill([_p("Frames")], CTX, target)
     assert got == {"Frames": "999"}
@@ -84,9 +83,8 @@ def test_extras_win_over_convention_for_same_name() -> None:
 
 def test_scene_is_no_longer_a_scene_path_alias() -> None:
     # "scene" is not in CONVENTION_ALIASES["scene_path"]: it would collide
-    # with hosts/blender/sqi_blender_addon.py's "Scene" extra (the scene NAME, not a
-    # path). A parameter literally named "Scene" does not prefill from
-    # SceneContext.scene_path.
+    # with hosts/blender/sqi_blender_addon.py's "Scene" extra (the scene name, not a
+    # path). A parameter named "Scene" does not prefill from SceneContext.scene_path.
     got = prefill([_p("Scene")], CTX)
     assert got == {}
 

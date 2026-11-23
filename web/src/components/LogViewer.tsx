@@ -173,7 +173,7 @@ export default function LogViewer({ taskId, taskStatus }: LogViewerProps) {
       return [...prev, liveChunk]
     })
     if (!autoScrollRef.current) {
-      // Count actual rendered lines, not just WS messages.
+      // Count rendered lines, not WS messages.
       const newLineCount = chunkToLines(liveChunk, 0).length
       setUnreadCount((n) => n + newLineCount)
     }

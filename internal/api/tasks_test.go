@@ -107,10 +107,11 @@ func seedTask(t *testing.T, st *fake.Store, taskStatus store.TaskStatus) (store.
 // seedTaskSpec configures [seedTaskWith].
 type seedTaskSpec struct {
 	// status is the task's status. An assigned or running task is submitted
-	// ready and then leased (see [storetest.SubmitLeasing]), so it comes with the attempt
-	// a real lease writes.
+	// ready and then leased (see [storetest.SubmitLeasing]), so it comes with
+	// the attempt a real lease writes.
 	status store.TaskStatus
-	// stepStatus is the step's status; "" is running, the legacy live status.
+	// stepStatus is the step's status; "" is running, a reserved status that
+	// counts as live.
 	stepStatus store.StepStatus
 	// failureReason is the FailureReason the task is submitted with.
 	failureReason string
@@ -459,7 +460,7 @@ func TestGetTaskLogs(t *testing.T) {
 
 		// A page with chunks reports the highest nats_seq it returned, so the
 		// next poll (after_nats_seq=12) fetches only newer chunks. Echoing the
-		// request (the old bug) would leave the cursor stuck at 0.
+		// request instead would leave the cursor stuck at 0.
 		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID+"/logs", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
@@ -654,7 +655,7 @@ func TestRetryTask(t *testing.T) {
 	})
 
 	t.Run("retry under a live step returns ready status", func(t *testing.T) {
-		// seedTask's step is running (the legacy live status), so RetryTasks
+		// seedTask's step is running (a live status), so RetryTasks
 		// revives the task ready: nothing would release it from pending there.
 		st := fake.New()
 		sched := &fakeTaskCanceler{retryStore: st, retryStatus: store.TaskStatusPending}
@@ -682,7 +683,7 @@ func TestRetryTask(t *testing.T) {
 		sched := &fakeTaskCanceler{retryStore: st, retryStatus: store.TaskStatusPending}
 		r := newTaskRouterCanceler(st, sched)
 		// The failed task's step failed with it. RetryTasks resets that step to
-		// pending and, because the step is no longer live, revives the task
+		// pending and, because the step is then not live, revives the task
 		// pending too, for ResolveDependencies to gate.
 		_, tk, _ := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusFailed, stepStatus: store.StepStatusFailed})
 

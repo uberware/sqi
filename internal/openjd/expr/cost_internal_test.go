@@ -45,7 +45,7 @@ func TestCost_ArgBytes(t *testing.T) {
 	}
 }
 
-// TestCost_Result charges rule 2 for a value the function PRODUCED.
+// TestCost_Result charges rule 2 for a value the function produced.
 //
 // This case is not symmetric with the argument ones and is not optional:
 // range(1000) costs 1001 and list(range_expr('1-100')) costs 102, and both
@@ -93,7 +93,7 @@ func TestCost_ZeroPolicyChargesOnlyTheCall(t *testing.T) {
 }
 
 // TestSpecNamedIteratingFunctions pins section 1.3.10 rule 2's own named-
-// REGISTRY-function list (not verbatim against the wiki's token list --
+// registry-function list (not verbatim against the wiki's token list --
 // "contains()" is deliberately omitted; see specNamedIteratingFunctions's
 // doc comment, shape.go), so a future edit that drifts from the spec
 // text fails a test rather than shrinking what
@@ -127,14 +127,14 @@ func TestSpecNamedStringFunctions(t *testing.T) {
 // 1.3.10 names in rules 2 and 3 carries a non-zero Cost on at least one of its
 // signatures.
 //
-// The specification ENUMERATES these names, so the table can be checked
+// The specification enumerates these names, so the table can be checked
 // against its own source rather than against someone's memory of it. A
 // function added to the registry without a Cost decision fails here rather
 // than under-charging.
 //
 // It iterates specNamedIteratingFunctions and specNamedStringFunctions
 // (shape.go) directly rather than a hand-copied list that could drift from
-// either. Names appearing in BOTH lists (join, repr_sh) are checked twice,
+// either. Names appearing in both lists (join, repr_sh) are checked twice,
 // which is harmless: the loop body is idempotent per name.
 func TestCost_SpecNamedFunctionsAllCharge(t *testing.T) {
 	named := append(slices.Clone(specNamedIteratingFunctions()), specNamedStringFunctions()...)

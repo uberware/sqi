@@ -10,9 +10,8 @@ import (
 	"github.com/uberware/sqi/internal/server"
 )
 
-// TestExprLimitsFromConfig pins the mapping field by field, with four DISTINCT
-// values. Four same-typed int64 fields assigned across a struct boundary is
-// exactly the shape where a transposition compiles, starts, and silently
+// TestExprLimitsFromConfig pins the mapping field by field, with four distinct
+// values: a transposition of four same-typed int64 fields compiles, starts and
 // enforces the wrong bound on an unauthenticated request path.
 func TestExprLimitsFromConfig(t *testing.T) {
 	got := server.ExprLimitsFromConfig(config.OpenJDConfig{
@@ -43,8 +42,7 @@ func TestExprLimitsFromConfig(t *testing.T) {
 // TestExprLimits_ConfigMatchesOpenJD is the duplication guard both sides'
 // comments name. internal/config carries its own copies of the defaults and of
 // the operator-configurable range because it may not import internal/openjd;
-// this package can see both, so it is where a drift between them fails the
-// build rather than shipping.
+// this package can see both, so a drift between them fails here.
 func TestExprLimits_ConfigMatchesOpenJD(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		got := server.ExprLimitsFromConfig(config.DefaultConfig().OpenJD)
@@ -79,23 +77,20 @@ func TestExprLimits_ConfigMatchesOpenJD(t *testing.T) {
 	})
 }
 
-// TestDefaultConfig_ExprLimitsAreOpenJDDefaults pins the OTHER half of "a fresh
-// install changes nothing": server.DefaultConfig (used by every test in this
-// repo that builds a Server without going through cmd/sqi-server) must carry
-// the same limits, and a Config literal that omits the field entirely must
-// still behave as the default once openjd normalizes it.
+// TestDefaultConfig_ExprLimitsAreOpenJDDefaults pins that server.DefaultConfig
+// (used by tests that build a Server without going through cmd/sqi-server)
+// carries internal/openjd's default limits, and that a Config literal that
+// omits the field behaves as the default once openjd normalizes it.
 func TestDefaultConfig_ExprLimitsAreOpenJDDefaults(t *testing.T) {
 	if got, want := server.DefaultConfig().OpenJDExprLimits, openjd.DefaultExprLimits(); got != want {
 		t.Fatalf("server.DefaultConfig().OpenJDExprLimits = %+v, want %+v", got, want)
 	}
 
-	// A server.Config literal that OMITS the field -- which every test in this
-	// repo that builds one does -- must still behave as the default. That is
-	// openjd's own normalization and is pinned by TestExprLimits_OrDefaults
-	// there; it cannot be observed from this package without exporting the
-	// normalizer, and duplicating it here as `zero == zero` would assert
-	// nothing. What IS this package's to assert is that the mapping does not
-	// quietly turn a populated config into a zero value.
+	// A server.Config literal that omits the field must behave as the
+	// default. That is openjd's own normalization, pinned by
+	// TestExprLimits_OrDefaults there; it cannot be observed from this package
+	// without exporting the normalizer. This package asserts that the mapping
+	// does not turn a populated config into a zero value.
 	if got := server.ExprLimitsFromConfig(config.DefaultConfig().OpenJD); got == (openjd.ExprLimits{}) {
 		t.Fatal("the default config must map to populated limits, not the zero value")
 	}

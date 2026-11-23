@@ -128,7 +128,7 @@ func TestAuthenticate_TouchesLastUsed_Throttled(t *testing.T) {
 		t.Fatalf("first use should set last_used_at to base, got %v", k1.LastUsedAt)
 	}
 
-	// Second use 5s later (< 1m throttle) must NOT advance last_used_at.
+	// Second use 5s later (< 1m throttle) must not advance last_used_at.
 	clock = base.Add(5 * time.Second)
 	if _, err := a.Authenticate(reqWithBearer(t, raw)); err != nil {
 		t.Fatalf("auth 2: %v", err)

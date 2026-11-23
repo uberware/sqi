@@ -327,7 +327,7 @@ func TestApplyBinary_Ordering(t *testing.T) {
 func TestApplyBinary_OrderingIsSameTypeOnly(t *testing.T) {
 	// Section 2.1.4: "Ordering operators ... T1 and T2 may differ for
 	// compatible pairs (int/float and string/path); comparing other cross-type
-	// pairs is an error." Cost-ranked shape matching supplies BOTH named pairs
+	// pairs is an error." Cost-ranked shape matching supplies both named pairs
 	// from the plain same-type shapes in orderingShapes, with no dedicated
 	// cross-type shape needed: int -> float and path -> string are both
 	// coercibleConditional's named compatible pairs, so argCost admits them at
@@ -823,7 +823,7 @@ func TestListOperators_Errors(t *testing.T) {
 		{"[1] + 1", "unsupported operand types"},
 		{"[0] * 100000000", "too large"},
 		{"'x' * 100000000", "too large"},
-		// String CONCATENATION must be bounded like repetition, or a chain of
+		// String concatenation must be bounded like repetition, or a chain of
 		// individually-legal repetitions walks straight past maxStringBytes.
 		// Each term here is well inside the bound on its own; only the sum is
 		// over it, which is exactly what concatStrings checks.
@@ -844,7 +844,7 @@ func TestListOperators_Errors(t *testing.T) {
 		{"[1] < [[]]", "unsupported operand types"},
 		{"[] < 1", "unsupported operand types"},
 		{"1 < []", "unsupported operand types"},
-		// Section 2.1.4's compatible pairs ARE applied elementwise (see
+		// Section 2.1.4's compatible pairs are applied elementwise (see
 		// orderingUnified, shape.go, and TestListOrdering_CompatiblePairs
 		// below), which widens what list ordering admits — so every row above
 		// is also the fence around that widening. int/float and string/path
@@ -881,7 +881,7 @@ func TestListOperators_Errors(t *testing.T) {
 //
 // Both halves are tested together because they are one ruling: the same
 // promoteNoRangeText annotation (shape.go) produces both, and the "+" rows that
-// the spec DOES name must keep working, or the ruling has been over-applied.
+// the spec does name must keep working, or the ruling has been over-applied.
 // The reference implementation independently rejects both rejected forms
 // ("Cannot use '*' operator with range_expr and int", "Cannot use 'in'
 // operator with range_expr and string") — corroboration, not the reason.
@@ -893,8 +893,8 @@ func TestRangeExpr_TextCoercionIsAddOnly(t *testing.T) {
 		// A non-positive count would take the same route and produce "".
 		"Param.Range * 0",
 		// Section 2.1.2's __contains__(string, string) must not either: this
-		// would ask whether "1" is a SUBSTRING of "1-10", which it is, rather than
-		// the membership question section 2.1.3 defines.
+		// would ask whether "1" is a substring of "1-10", which it is, rather
+		// than the membership question section 2.1.3 defines.
 		"'1' in Param.Range",
 		"'1' not in Param.Range",
 		"Param.Range in '1-10'",
@@ -921,7 +921,7 @@ func TestRangeExpr_TextCoercionIsAddOnly(t *testing.T) {
 		{"2 in Param.Range", "true"},
 		{"99 not in Param.Range", "true"},
 		{"Param.Range + [11]", "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]"},
-		// A range_expr coerced to a string TARGET is section 1.2.3's rule
+		// A range_expr coerced to a string target is section 1.2.3's rule
 		// working normally; only overload selection is restricted.
 		{"Param.Range", "1-10"},
 	}
@@ -940,42 +940,40 @@ func TestRangeExpr_TextCoercionIsAddOnly(t *testing.T) {
 
 // TestListOperators_RepeatOverflow pins repeatList/repeatString against an
 // overflow class of bug: computing unitSize*n and checking the
-// PRODUCT — rather than checking the operands first — lets int64
+// product — rather than checking the operands first — lets int64
 // multiplication overflow and wrap, silently defeating the bound. Every case
-// here is chosen so the WRAPPED product would slip past a naive "product >
+// here is chosen so the wrapped product would slip past a naive "product >
 // max" check (landing on a negative number, or on a small positive one),
 // while the guard that actually runs (checkRepeat, limits.go) rejects it by
 // comparing the operands before ever forming that product — so each case
 // here returns instantly with a clean errTooLarge rather than panicking or
 // hanging.
 //
-// Deliberately NOT included: a list wrap-to-ZERO case (the string one below,
+// Not included: a list wrap-to-zero case (the string one below,
 // "wraps to zero", has a list analog: "([0] * 1048576) * 17592186044416").
 // Unlike every case actually here, that one is not safe to run if the guard
 // regresses: repeatList's own loop ("for range n { append }") has no
 // built-in guard the way strings.Repeat and make()'s capacity check do, so
-// without checkRepeat it does not panic — run that way, it grows past 13GB
-// resident and is still climbing after 15 seconds, with no panic and no
-// termination. A test that OOM-kills the process instead of failing cleanly
-// when the thing it guards regresses is worse than no test at all — it turns
-// a caught regression into an outage. TestCheckRepeat_
-// OverflowSafe (limits_internal_test.go) already covers this exact wrap-to-
-// zero arithmetic directly against checkRepeat, which cannot allocate at
-// all since it never calls the operator; do not re-add an end-to-end list
-// version of it for symmetry.
+// without checkRepeat it does not panic; it grows to many gigabytes resident
+// with no termination. A test that OOM-kills the process instead of failing
+// cleanly when the thing it guards breaks is worse than no test at all.
+// TestCheckRepeat_ OverflowSafe (limits_internal_test.go) already covers this
+// exact wrap-to- zero arithmetic directly against checkRepeat, which cannot
+// allocate at all since it never calls the operator; do not re-add an
+// end-to-end list version of it for symmetry.
 func TestListOperators_RepeatOverflow(t *testing.T) {
 	tests := []struct {
 		name string
 		src  string
 	}{
 		// 2 * 9223372036854775807 (math.MaxInt64) overflows int64 and wraps
-		// to a NEGATIVE number. Safe if the guard regresses:
+		// to a negative number. Safe if the guard regresses:
 		// make([]Value, 0, total) panics on the negative capacity.
 		{"list: wraps to negative", "[0, 0] * 9223372036854775807"},
 		{"string: wraps to negative", "'xx' * 9223372036854775807"},
 		// 1048576 (2^20) * 17592186044416 (2^44) is exactly 2^64, which
-		// wraps to ZERO — the smallest possible positive-check bypass. Safe
-		// if the guard regresses for the STRING case specifically:
+		// wraps to zero — the smallest possible positive-check bypass. Safe
+		// if the guard regresses for the string case specifically:
 		// strings.Repeat has its own internal overflow guard and panics
 		// rather than looping.
 		// The inner "* 1048576" is itself well within the limit and builds
@@ -1005,7 +1003,7 @@ func TestListOperators_Unresolved(t *testing.T) {
 		{"Param.Items * 3", "unresolved[list[int]]"},
 		{"[1] * Param.N", "unresolved[list[int]]"},
 		{"1 in Param.Items", "unresolved[bool]"},
-		// Concatenation's declared result must not depend on operand ORDER.
+		// Concatenation's declared result must not depend on operand order.
 		// A shape Ret of list[T] with T bound from the left operand would
 		// answer list[nulltype] for an empty left operand — no runtime value
 		// would be wrong, because concatLists recomputes the element type,
@@ -1016,7 +1014,7 @@ func TestListOperators_Unresolved(t *testing.T) {
 		{"Param.Items + []", "unresolved[list[int]]"},
 		{"([] + Param.Items)[0]", "unresolved[int]"},
 		{"(Param.Items + [])[0]", "unresolved[int]"},
-		// The same unification, now with a type to FIND rather than adopt:
+		// The same unification, now with a type to find rather than adopt:
 		// section 2.1.3's common type of int and float is float, in either
 		// order, which substituting the left binding into Ret cannot say.
 		{"Param.Items + [2.0]", "unresolved[list[float]]"},
@@ -1066,7 +1064,7 @@ func TestListEqualityAndOrdering(t *testing.T) {
 		{"[1, 2] >= [1, 2]", "true"},
 		{"['a'] < ['b']", "true"},
 		// Section 1.2.5's "if all compared elements are equal, the shorter list
-		// is considered less than the longer one", with the shorter list EMPTY.
+		// is considered less than the longer one", with the shorter list empty.
 		// This is order-dependent if handled naively: the empty literal's
 		// list[nulltype] can pin the shared type variable to nulltype before
 		// int arrives, so "[] < [1]" errors at shape matching while "[1] < []"
@@ -1074,8 +1072,8 @@ func TestListEqualityAndOrdering(t *testing.T) {
 		// provisional binding is list[nulltype] rather than nulltype.
 		//
 		// Both directions of both depths are listed: an exception written only
-		// for an empty BINDING meeting a real argument, and not for the
-		// reverse, works with the empty list on the LEFT and errors with it on
+		// for an empty binding meeting a real argument, and not for the
+		// reverse, works with the empty list on the left and errors with it on
 		// the right. A row for one direction alone cannot see that.
 		{"[] < [1]", "true"},
 		{"[] <= [1]", "true"},
@@ -1103,7 +1101,7 @@ func TestListEqualityAndOrdering(t *testing.T) {
 }
 
 // TestListOrdering_CompatiblePairs pins an adjudication: section 2.1.4's
-// compatible pairs (int/float and string/path) apply ELEMENTWISE to list
+// compatible pairs (int/float and string/path) apply elementwise to list
 // ordering, so "[1] < [1.0]" is false rather than an "unsupported operand
 // types" error.
 //
@@ -1114,8 +1112,8 @@ func TestListEqualityAndOrdering(t *testing.T) {
 // single shared type variable, which requires exact equality by construction.
 //
 // Every case was also queried against the reference implementation. It agrees
-// on every int/float row and on the two same-type path rows. It does NOT agree
-// on the MIXED path/string rows: it answers false for both
+// on every int/float row and on the two same-type path rows. It does not agree
+// on the mixed path/string rows: it answers false for both
 // "[path('/a')] < ['/b']" and "['/b'] < [path('/a')]", which cannot both be
 // right — "/a" and "/b" are unequal, so one order must be true. Section 1.2.5
 // says the path is converted to string for the comparison and section 2.1.4
@@ -1125,7 +1123,7 @@ func TestListEqualityAndOrdering(t *testing.T) {
 // so there is no baseline entry to add — it is recorded here instead.
 //
 // The same-type path rows cover a separate gap: list[path] against list[path]
-// matches the ordering shape EXACTLY, so nothing coerces its elements, and
+// matches the ordering shape exactly, so nothing coerces its elements, and
 // compareValues needs its own path row to compare them (ops.go), since section
 // 2.1.4 lists path as orderable.
 func TestListOrdering_CompatiblePairs(t *testing.T) {
@@ -1211,7 +1209,7 @@ func TestRangeExprEquality_SelfEquality(t *testing.T) {
 // TestPathOperators covers RFC 0006 section 2.1.5.
 //
 // The absolute-right-operand row is pathlib's rule and is easy to miss: a
-// relative child is appended, but an ABSOLUTE child replaces the left operand
+// relative child is appended, but an absolute child replaces the left operand
 // entirely.
 func TestPathOperators(t *testing.T) {
 	tests := []struct{ src, want, wantType string }{
@@ -1239,10 +1237,10 @@ func TestPathOperators(t *testing.T) {
 	}
 }
 
-// TestPathPlus_BeatsTheCoercedStringRow pins that "P + 'x'" is a PATH.
+// TestPathPlus_BeatsTheCoercedStringRow pins that "P + 'x'" is a path.
 //
 // __add__(string, string) also accepts a path by coercion and would produce
-// the STRING "/a/bx"; RFC 0006 requires a path. A test asserting only the text
+// the string "/a/bx"; RFC 0006 requires a path. A test asserting only the text
 // would pass either way, so this asserts the type — and asserts it through a
 // symbol as well as a literal, since a symbol is how a real template supplies
 // a path.
@@ -1259,16 +1257,15 @@ func TestPathPlus_BeatsTheCoercedStringRow(t *testing.T) {
 	}
 }
 
-// TestPathOperators_POSIXEdges pins edge shapes beyond the plain join, every
-// one of them probed against the reference implementation first.
+// TestPathOperators_POSIXEdges pins edge shapes beyond the plain join.
 //
-// The result of a join is a path VALUE, and every path value in this package is
+// The result of a join is a path value, and every path value in this package is
 // normalized on construction (Value.Path re-parses), so the join normalizes too:
 // "P / ”", "P / '.'" and "P / 'c/'" all collapse. CPython agrees
 // (PurePosixPath('/a/b') / '.' is PurePosixPath('/a/b')). The reference
-// implementation at openjd-model 0.11.1 does NOT — it renders "/a/b/",
+// implementation does not — it renders "/a/b/",
 // "/a/b/." and "/a/b/c/" respectively, while simultaneously reporting the
-// SAME joined value's .parts and .name as if it had normalized. That is a
+// same joined value's .parts and .name as if it had normalized. That is a
 // reference defect (its own two views of one value disagree), and RFC 0006
 // says this family matches pathlib, so these follow pathlib.
 func TestPathOperators_POSIXEdges(t *testing.T) {
@@ -1291,13 +1288,13 @@ func TestPathOperators_POSIXEdges(t *testing.T) {
 		{`path('/a/b') + '/c'`, "/a/b/c", "path"},
 		{`path('/') + 'x'`, "/x", "path"},
 		{`path('/a/b') + 'x' + 'y'`, "/a/bxy", "path"},
-		// A path on the RIGHT of "+" has no row of its own in RFC 0006's
+		// A path on the right of "+" has no row of its own in RFC 0006's
 		// table, so it reaches __add__(path, string) by the section 1.2.3
 		// path -> string coercion, at a lower cost than the (string, string)
-		// row: the result is a PATH. The reference answers the same text as a
+		// row: the result is a path. The reference answers the same text as a
 		// string, having picked the (string, string) row instead.
 		{`path('/a/b') + path('c')`, "/a/bc", "path"},
-		// A string on the LEFT keeps the (string, string) row, since
+		// A string on the left keeps the (string, string) row, since
 		// string -> path is not a promotion the matcher will make.
 		{`'x' + path('/a')`, "x/a", "string"},
 	}
@@ -1321,7 +1318,7 @@ func TestPathOperators_POSIXEdges(t *testing.T) {
 // that no filesystem flavor can exercise: "A trailing slash on the left
 // operand is consumed by the join". Only a URI can carry one this far — both
 // filesystem flavors drop a trailing separator during parsing — and the
-// reference consumes a whole trailing RUN of them, not just one.
+// reference consumes a whole trailing run of them, not just one.
 func TestPathOperators_URI(t *testing.T) {
 	tests := []struct{ src, want, wantType string }{
 		{`path('s3://b/d') / 'f'`, "s3://b/d/f", "path"},
@@ -1331,15 +1328,15 @@ func TestPathOperators_URI(t *testing.T) {
 		// Interior empty components are opaque and survive, which is the
 		// defining property of the URI flavor.
 		{`path('s3://b/d//x') / 'f'`, "s3://b/d//x/f", "path"},
-		// UNRESOLVED — the specification and the reference disagree here, and
-		// this pins the SPECIFICATION's reading. Section 2.1.5 says "for URI
+		// Unresolved — the specification and the reference disagree here, and
+		// this pins the specification's reading. Section 2.1.5 says "for URI
 		// paths, joining a relative child is equivalent to
-		// path(p.parts + child.parts)": the child is a PATH, parsed under the
+		// path(p.parts + child.parts)": the child is a path, parsed under the
 		// evaluator's flavor, so its own trailing separator and its own
 		// repeated separators are normalized away before it ever becomes URI
-		// components. The reference joins the child's TEXT instead and answers
+		// components. The reference joins the child's text instead and answers
 		// "s3://b/d/a/" and "s3://b/d/a//b" — and unlike its other
-		// non-normalizing join answers this is NOT the same defect, since a
+		// non-normalizing join answers this is not the same defect, since a
 		// URI parse would preserve those separators even if the reference
 		// re-parsed its own result. Reversing the ruling would mean parsing a
 		// URI parent's child as URI segments rather than as a path.
@@ -1374,10 +1371,10 @@ func TestPathOperators_URI(t *testing.T) {
 // and splitRootWindows were ported from.
 //
 // The four cases that matter are the ones a rule keyed on is_absolute() alone
-// gets wrong, because a Windows child can anchor itself WITHOUT being
+// gets wrong, because a Windows child can anchor itself without being
 // absolute:
 //   - "/x" has a root but no drive, so it keeps the parent's drive;
-//   - "D:b" has a drive but no root, and a DIFFERENT drive discards the parent;
+//   - "D:b" has a drive but no root, and a different drive discards the parent;
 //   - "C:b" on the same drive is an ordinary relative child;
 //   - "c:b" is the same drive spelled differently, and the child's spelling wins.
 func TestPathOperators_Windows(t *testing.T) {
@@ -1392,10 +1389,10 @@ func TestPathOperators_Windows(t *testing.T) {
 		{`path('C:/a') / '//host/share'`, `\\host\share\`},
 		{`path('C:/a') / '//host/share/x'`, `\\host\share\x`},
 		{`path('//srv/share') / 'b'`, `\\srv\share\b`},
-		// A BARE UNC server, with no share. Its drive ("\\srv") carries no
+		// A bare UNC server, with no share. Its drive ("\\srv") carries no
 		// separator of its own, so without an inserted separator the
 		// components glue straight onto the server name and
-		// "path('//nas') / 'renders'" addresses a DIFFERENT host
+		// "path('//nas') / 'renders'" addresses a different host
 		// ("\\nasrenders"). ntpath.join's final block inserts
 		// the separator; see pathJoin. The trailing separator CPython leaves
 		// on two of these is not a typo: "\\srv\b" re-parses as a
@@ -1405,7 +1402,7 @@ func TestPathOperators_Windows(t *testing.T) {
 		{`path('//srv') / 'x/y'`, `\\srv\x\y`},
 		{`path('//./dev') / 'b'`, `\\.\dev\b`},
 		{`path('//?./name') / 'b'`, `\\?.\name\b`},
-		// A bare "\\" anchor already ENDS in a separator, so the same block
+		// A bare "\\" anchor already ends in a separator, so the same block
 		// must not add a second one.
 		{`path('//') / 'x'`, `\\x`},
 		{`path('//srv/share') / '/x'`, `\\srv\share\x`},
@@ -1467,9 +1464,9 @@ func TestPathJoin_SingleLetterSchemeIsADrive(t *testing.T) {
 }
 
 // TestPathOperators_Unsupported pins the operand pairs RFC 0006's table does
-// NOT list. Each one is an error in the reference implementation too, and each
+// not list. Each one is an error in the reference implementation too, and each
 // stays an error only because string -> path and int -> string are not
-// promotions the shape matcher will make to SELECT an overload.
+// promotions the shape matcher will make to select an overload.
 func TestPathOperators_Unsupported(t *testing.T) {
 	for _, src := range []string{
 		`'/a' / path('b')`,

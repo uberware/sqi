@@ -15,9 +15,9 @@
 // Session.PathMappingRulesFile. Each dot-separated segment is an OpenJD
 // identifier matching [A-Za-z_][A-Za-z0-9_]*.
 //
-// The package is intentionally a self-contained leaf with no dependencies on
-// other internal packages, because it is used by BOTH the server (at job
-// submit/expansion time) and the worker (at task-run time). It does not
+// The package is a leaf with no dependencies on other internal packages,
+// because both the server (at job submit/expansion time) and the worker (at
+// task-run time) use it. It does not
 // hardcode the available variable namespaces; instead callers supply a [Scope]
 // that maps fully-qualified names (for example "Task.Param.Frame") to values.
 //

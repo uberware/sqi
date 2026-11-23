@@ -12,9 +12,9 @@
 # the mechanism; it is detached, so stdout and the exit code travel through
 # files.
 #
-# Exits 0 with a message when not elevated, mirroring how `make test-isolation`
-# exits 0 when Docker is missing. A skip therefore verifies nothing — CI
-# asserts each test by name for this reason.
+# Exits 0 with a message when not elevated, as `make test-isolation` exits 0
+# when Docker is missing, so a skipped run checks nothing; CI asserts each test
+# by name.
 
 $ErrorActionPreference = 'Stop'
 
@@ -25,7 +25,7 @@ $ErrorActionPreference = 'Stop'
 # redirector, so every account cmdlet below fails with CommandNotFound. GNU
 # make for Windows (ezwinports) is a 32-bit binary, so
 # `make test-isolation-windows` hits this on a stock developer machine. CI
-# invokes this script from 64-bit pwsh and therefore cannot catch it.
+# invokes this script from 64-bit pwsh, so it does not exercise this path.
 #
 # Sysnative is the reverse alias: visible only to 32-bit processes, it reaches
 # the real System32. The relaunch inherits this process's token, so an elevated
@@ -60,18 +60,15 @@ $userB    = 'sqi-iso-b'
 
 function New-RandomPassword {
     # 24 random chars, plus a fixed 4-char suffix that guarantees at least
-    # one lower/upper/digit/symbol regardless of what the random draw
-    # produced -- so this always satisfies a default 3-of-4 complexity
-    # policy.
+    # one lower/upper/digit/symbol whatever the random draw produced, so this
+    # always satisfies a default 3-of-4 complexity policy.
     #
-    # The charset intentionally excludes '%': this password is delivered to
-    # the SYSTEM-tier process via a `set VAR=<password>` line in a generated
-    # .cmd file (see the tier-2 comment below), and cmd.exe percent-expands
-    # %name% pairs at parse time -- even inside a `set` value -- dropping an
-    # undefined %ref% or substituting a real environment variable. Do not
-    # widen this charset to include '%' or any other cmd.exe metacharacter
-    # (& | < > ^ "); doing so causes intermittent, hard-to-diagnose password
-    # corruption.
+    # The charset excludes '%': this password reaches the SYSTEM-tier process
+    # through a `set VAR=<password>` line in a generated .cmd file (see the
+    # tier-2 comment below), and cmd.exe percent-expands %name% pairs at parse
+    # time, even inside a `set` value, dropping an undefined %ref% or
+    # substituting a real environment variable. Adding '%' or any other
+    # cmd.exe metacharacter (& | < > ^ ") would corrupt some passwords.
     $chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$'
     -join (1..24 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] }) + 'aA1!'
 }
@@ -81,16 +78,15 @@ function New-RandomPassword {
 # Windows refuses a batch logon for any account lacking SeBatchLogonRight
 # ("Log on as a batch job") with ERROR_LOGON_TYPE_NOT_GRANTED. Default
 # workstation policy grants that right to Administrators, Backup Operators and
-# Performance Log Users only -- never to a plain standard user -- so freshly
-# created accounts like sqi-iso-a/-b cannot be logged on until it is granted.
-# This is a real operator requirement, not a test artifact: see the Windows
-# section of docs/worker-configuration.md.
+# Performance Log Users only, not to a standard user, so new accounts like
+# sqi-iso-a/-b cannot be logged on until it is granted. Operators need the
+# same grant: see the Windows section of docs/worker-configuration.md.
 #
 # LsaAddAccountRights/LsaRemoveAccountRights are used rather than a
-# `secedit /export` + `/configure` round-trip because they touch exactly one
-# right for exactly one SID. secedit re-applies the entire USER_RIGHTS area
-# from a regenerated template, which is far too blunt to point at a developer's
-# own machine. There is no built-in cmdlet for either API.
+# `secedit /export` + `/configure` round-trip because they touch one right for
+# one SID. secedit re-applies the entire USER_RIGHTS area from a regenerated
+# template, which is too broad to run on a developer's own machine. There is
+# no built-in cmdlet for either API.
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -223,8 +219,7 @@ function Grant-BatchLogonRight([string]$name) {
 # not enable them itself -- so without this the unload fails with "A required
 # privilege is not held by the client" and the hive, plus the profile directory
 # it locks, survives every run. Enabling a privilege already present in the
-# token needs no elevation beyond what the token already carries; it just flips
-# the enabled bit.
+# token needs no further elevation; it sets the enabled bit.
 Add-Type -Namespace SqiPriv -Name Token -MemberDefinition @'
 [DllImport("advapi32.dll", SetLastError = true)]
 static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
@@ -275,9 +270,8 @@ public static void Enable(string name)
 '@ -UsingNamespace 'System.ComponentModel'
 
 # Idempotent: enables the two privileges reg unload needs, once. A failure here
-# is not fatal -- the unload fails later with its own clear message, and on a
-# machine whose policy withholds these from Administrators
-# there is nothing this could do anyway.
+# is not fatal: the unload fails later with its own message, and on a machine
+# whose policy withholds these from Administrators nothing here can help.
 $script:HiveUnloadReady = $false
 function Enable-HiveUnloadPrivileges {
     if ($script:HiveUnloadReady) { return }
@@ -306,10 +300,10 @@ function Invoke-RegUnload([string]$key) {
 }
 
 function Remove-TestAccount([string]$name) {
-    # Each step is independently fault-tolerant: a locked profile or a
-    # pending-delete account (both happen for real on Windows) must not
-    # abort cleanup of the *other* account or the work directory. Failures
-    # are surfaced as warnings, never swallowed and never thrown.
+    # Each step tolerates the others failing: a locked profile or a
+    # pending-delete account, both of which Windows produces, must not abort
+    # cleanup of the other account or the work directory. Failures are
+    # reported as warnings, never swallowed and never thrown.
     #
     # Revoking runs first and only while the account still exists: the LSA
     # policy stores the grant against a SID, so deleting the account without
@@ -332,14 +326,14 @@ function Remove-TestAccount([string]$name) {
     Remove-TestProfile $name
 }
 
-# Profile removal. Two things the obvious "delete the Win32_UserProfile whose
-# LocalPath ends in \<name>" loop gets wrong, both observed on a real host:
+# Profile removal. Two things a plain "delete the Win32_UserProfile whose
+# LocalPath ends in \<name>" loop gets wrong:
 #
 #  1. The directory is not always <ProfilesDirectory>\<name>. When a directory
-#     for that name already exists -- a leftover from an earlier run -- Windows
+#     for that name already exists (a leftover from an earlier run), Windows
 #     gives the new profile "<name>.<COMPUTERNAME>" instead. Matching only
-#     "*\<name>" skips it, so leftovers accumulate one directory per
-#     run rather than being cleaned up by the next one.
+#     "*\<name>" skips it, so leftovers would accumulate one directory per
+#     run.
 #
 #  2. A profile whose registry hive is still mounted cannot be deleted at all:
 #     the delete fails with "being used by another process" and both the record
@@ -349,9 +343,9 @@ function Remove-TestAccount([string]$name) {
 #     strands one.
 #
 # So: match both spellings, unload a stranded hive and retry, then sweep any
-# directory still on disk. That last step is not redundant -- an orphaned
-# directory whose profile record is already gone has no Win32_UserProfile
-# instance left to delete through, and would otherwise stay forever.
+# directory still on disk. A directory whose profile record is already gone
+# has no Win32_UserProfile instance to delete through, so only the sweep
+# removes it.
 function Remove-TestProfile([string]$name) {
     try {
         Get-CimInstance Win32_UserProfile -ErrorAction Stop |
@@ -480,20 +474,20 @@ try {
     # The scheduled task inherits none of this shell's environment, so the
     # variables (including the throwaway passwords) are written into a batch
     # file that /tr points at, rather than into an inline "cmd /c ..."
-    # command line. Two independent reasons this matters:
+    # command line, for two reasons:
     #
     #  1. cmd.exe percent-expands an entire logical command line in a single
     #     pass, before any of its &-chained pieces execute. An inline line
-    #     of the form "... & echo %ERRORLEVEL%" therefore always echoes the
+    #     of the form "... & echo %ERRORLEVEL%" therefore echoes the
     #     errorlevel from before the line ran, not the test binary's exit
-    #     code — verified empirically:
+    #     code. For example:
     #       > cmd /c "cd /d C:\NoSuchDir_ABC123 & echo %ERRORLEVEL%"
     #       The system cannot find the path specified.
     #       0
     #     A batch file parses and executes each line separately, so
-    #     %ERRORLEVEL% on a later line correctly reflects the previous
-    #     line's result. Do not collapse this into one inline command line —
-    #     that breaks the pass/fail signal without reporting any error.
+    #     %ERRORLEVEL% on a later line reflects the previous line's result.
+    #     Collapsing this into one inline command line would break the
+    #     pass/fail signal without reporting any error.
     #  2. Keeping the "set" lines out of the schtasks command line keeps the
     #     passwords out of `schtasks /query /tn ... /v`, the task XML under
     #     C:\Windows\System32\Tasks, and command-line auditing of the
@@ -506,19 +500,16 @@ try {
     $cmdLines += "echo %ERRORLEVEL% > `"$code`""
     Set-Content -Path $cmdFile -Value $cmdLines -Encoding ASCII
 
-    # The /tr value must survive as a single argv token that contains both
-    # an embedded space (a scratch path derived from a real user's full
-    # name commonly contains one, even though $env:TEMP does not on this
-    # machine) and embedded double quotes around the .cmd path. PowerShell's
-    # native-command argument marshaling wraps a space-containing argument
-    # in an outer pair of double quotes but does not reinterpret quote
-    # characters already present in the string -- so building the value
-    # with backslash-escaped quotes (\") here, rather than bare double
-    # quotes, is what makes the resulting Win32 command line parse back
-    # into the single intended argument. Verified empirically against a
-    # path containing a space; do not replace this with bare double quotes
-    # (`"$cmdFile`") -- that construction splits the value across
-    # multiple argv tokens whenever the path contains a space.
+    # The /tr value must survive as a single argv token that can contain an
+    # embedded space (a scratch path derived from a user's full name often
+    # contains one) and contains double quotes around the .cmd path.
+    # PowerShell's native-command argument marshaling wraps a
+    # space-containing argument in an outer pair of double quotes but does
+    # not reinterpret quote characters already in the string, so the
+    # backslash-escaped quotes (\") here make the resulting Win32 command
+    # line parse back into the one intended argument. Bare double quotes
+    # (`"$cmdFile`") would split the value across several argv tokens
+    # whenever the path contains a space.
     $trValue = 'cmd /c \"' + $cmdFile + '\"'
     schtasks /create /tn $taskName /tr $trValue /ru SYSTEM /rl HIGHEST /sc ONCE /st 00:00 /f | Out-Null
     if ($LASTEXITCODE -ne 0) {

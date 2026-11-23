@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package fmtres resolves OpenJD "{{...}}" format strings on the worker, where
-// the session working directory — and therefore Session.WorkingDirectory — is
-// only known at run time.
+// the session working directory, and therefore Session.WorkingDirectory, is
+// known only at run time.
 //
 // The server resolves loc:// URIs and the job-parameter space before
 // dispatching an assignment (see internal/scheduler/assign.go); this package
@@ -18,12 +18,11 @@
 //     Task.RawParam.<n> (task parameters), and Session.WorkingDirectory.
 //   - Environment-action context (an environment's onEnter/onExit actions and
 //     its variable values) exposes Param.<n> / RawParam.<n> and
-//     Session.WorkingDirectory, but NOT Task.Param.* — environments are
+//     Session.WorkingDirectory, but not Task.Param.*: environments are
 //     session-scoped and entered once, not per task.
 //
 // [TaskScope] and [EnvScope] return a [fmtstring.MapScope] (a plain map) so
-// callers can extend the scope with future keys — such as Task.File.*,
-// Env.File.*, or Session.PathMappingRulesFile — before resolving.
+// callers can add keys, such as Task.File.* or Env.File.*, before resolving.
 package fmtres
 
 import (
@@ -50,9 +49,9 @@ import (
 // hasPathMap is true, Session.PathMappingRulesFile (otherwise that key is
 // absent).
 //
-// Param.<n> and RawParam.<n> currently map to the same value; path-mapped
-// (cooked) Param values are a later task. The returned map may be mutated by
-// the caller to add additional keys before resolving.
+// Param.<n> and RawParam.<n> map to the same value; Param values are not
+// path-mapped here. The caller may add keys to the returned map before
+// resolving.
 func TaskScope(jobParams, taskParams map[string]string, workDir, pathMapFile string, hasPathMap bool) fmtstring.MapScope {
 	// A task scope is the environment scope (job params + Session.* keys) plus
 	// the per-task Task.Param.* / Task.RawParam.* keys.
@@ -68,13 +67,12 @@ func TaskScope(jobParams, taskParams map[string]string, workDir, pathMapFile str
 // environment's onEnter/onExit command and args) and for environment variable
 // values.
 //
-// Unlike [TaskScope], the environment scope does NOT expose Task.Param.* /
+// Unlike [TaskScope], the environment scope does not expose Task.Param.* /
 // Task.RawParam.*: environments are session-scoped and entered once, not per
 // task. jobParams are exposed as Param.<n> and RawParam.<n>; workDir is exposed
 // as Session.WorkingDirectory. pathMapFile and hasPathMap populate
-// Session.PathMappingRulesFile / Session.HasPathMappingRules exactly as in
-// [TaskScope]. The returned map may be mutated by the caller to add additional
-// keys before resolving.
+// Session.PathMappingRulesFile / Session.HasPathMappingRules as in
+// [TaskScope]. The caller may add keys to the returned map before resolving.
 func EnvScope(jobParams map[string]string, workDir, pathMapFile string, hasPathMap bool) fmtstring.MapScope {
 	m := make(fmtstring.MapScope, 2*len(jobParams)+3)
 	for k, v := range jobParams {
@@ -91,8 +89,8 @@ func EnvScope(jobParams map[string]string, workDir, pathMapFile string, hasPathM
 //
 // Session.HasPathMappingRules is always set to "true" or "false".
 // Session.PathMappingRulesFile is set to pathMapFile only when hasPathMap is
-// true; when there are no rules the key is left absent so a reference to it
-// fails loudly rather than resolving to an empty path.
+// true; when there are no rules the key is absent, so a reference to it fails
+// instead of resolving to an empty path.
 func addPathMappingKeys(m fmtstring.MapScope, pathMapFile string, hasPathMap bool) {
 	if hasPathMap {
 		m["Session.HasPathMappingRules"] = "true"
@@ -107,7 +105,7 @@ func addPathMappingKeys(m fmtstring.MapScope, pathMapFile string, hasPathMap boo
 // EmbeddedFileName computes the on-disk filename for an embedded file: it uses
 // f.Filename when set, falling back to f.Name. Filenames containing path
 // separators or null bytes are rejected to prevent directory traversal (a
-// defense-in-depth check, since the assignment is server-signed).
+// defense-in-depth check, since the server builds the assignment).
 //
 // This is the single source of truth for the materialized filename, shared by
 // the embedded-file writer and by [AddFileVars], so the path placed into

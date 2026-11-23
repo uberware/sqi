@@ -25,28 +25,20 @@ func statPerm(t *testing.T, path string) os.FileMode {
 	return info.Mode().Perm()
 }
 
-// newTraversableTestRoot returns a fresh directory rooted directly under the
-// OS-standard, universally 1777 /tmp — not t.TempDir(), which nests it under
-// MULTIPLE testing-owned and OS-owned layers that are 0700 by construction
-// and have nothing to do with the behavior under test: the per-package
-// scratch root Go's testing package creates via os.MkdirTemp (0700), and —
-// on macOS specifically — the per-user private $TMPDIR itself (e.g.
-// /var/folders/<x>/<y>/T, also 0700 by OS design). Some sandboxed dev
-// environments refuse to widen either regardless of Unix ownership, which
-// made tests built on t.TempDir() here skip via t.Skipf, proving nothing on
-// such machines (see internal/worker/executor's
-// newCredentialFailureSessionRoot for the same fix applied there first, in
-// this branch's precedent commit). Rooting directly under /tmp sidesteps the
-// problem: only the ONE directory MkdirTemp creates here needs widening (it
-// is always created 0700 regardless of requested mode), because every
-// ancestor above it (/tmp itself, and above that /) is already traversable
-// by design on every POSIX system — neither is something session.Manager or
-// staging.Stager would ever be asked to create in production anyway (a real
-// deployment's session root sits under /var/lib or an operator-chosen path —
-// see cmd/sqi-worker's effectiveSessionRoot).
+// newTraversableTestRoot returns a fresh directory directly under /tmp (mode
+// 1777 on every POSIX system), not t.TempDir(), which nests it under 0700
+// layers unrelated to the behavior under test: the per-package scratch root
+// Go's testing package creates via os.MkdirTemp, and on macOS the per-user
+// private $TMPDIR (e.g. /var/folders/<x>/<y>/T). Some sandboxed dev
+// environments refuse to widen either whatever the Unix ownership
+// (internal/worker/executor's newCredentialFailureSessionRoot does the same).
+// Under /tmp only the directory MkdirTemp creates needs widening (it is
+// always created 0700), because every ancestor above it (/tmp, and /) is
+// traversable. A real deployment's session root sits under /var/lib or an
+// operator-chosen path (see cmd/sqi-worker's effectiveSessionRoot).
 func newTraversableTestRoot(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "sqi-traversable-*") //nolint:usetesting // t.TempDir() is exactly what this must NOT use — see doc above
+	dir, err := os.MkdirTemp("/tmp", "sqi-traversable-*") //nolint:usetesting // t.TempDir() has 0700 parents; see doc above
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
@@ -59,8 +51,8 @@ func newTraversableTestRoot(t *testing.T) string {
 
 // TestValidateTraversable_TraversableChainPasses is the "happy path": every
 // ancestor already has the execute bit for others, so validation succeeds
-// and — critically — nothing is chmod'd, which this test verifies directly
-// by re-checking every mode afterward.
+// and nothing is chmod'd, which this test checks by re-reading every mode
+// afterward.
 func TestValidateTraversable_TraversableChainPasses(t *testing.T) {
 	root := newTraversableTestRoot(t)
 	mid := filepath.Join(root, "mid")
@@ -69,10 +61,9 @@ func TestValidateTraversable_TraversableChainPasses(t *testing.T) {
 		t.Fatalf("set up traversable chain: %v", err)
 	}
 	// See newTraversableTestRoot's doc: rooting under /tmp instead of
-	// t.TempDir() means every ancestor above root is already traversable by
-	// design, so this is a genuinely end-to-end traversable chain, not just
-	// a self-contained assertion about the "mid"/"leaf" levels this test
-	// itself created.
+	// t.TempDir() means every ancestor above root is traversable, so this
+	// checks the whole chain, not only the "mid"/"leaf" levels this test
+	// created.
 
 	before := map[string]os.FileMode{
 		root: statPerm(t, root),
@@ -94,8 +85,7 @@ func TestValidateTraversable_TraversableChainPasses(t *testing.T) {
 
 // TestValidateTraversable_FailsOnNarrowAncestor is the guard: an ancestor
 // missing the execute bit for others must fail with an error naming that
-// exact directory, and — just as importantly — must not have been chmod'd to
-// "fix" it.
+// directory, and must not be chmod'd to make it pass.
 func TestValidateTraversable_FailsOnNarrowAncestor(t *testing.T) {
 	root := t.TempDir()
 	narrow := filepath.Join(root, "narrow")

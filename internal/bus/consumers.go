@@ -83,7 +83,7 @@ const (
 
 // ── Consumer name helpers ─────────────────────────────────────────────────────
 
-// taskStatusConsumerName is the durable name for the server-side push consumer
+// taskStatusConsumerName is the durable name for the server-side consumer
 // that processes task-status transitions.  One server process runs this
 // consumer at a time: in a high-availability group only the server holding
 // the leader lease runs a scheduler, and a deposed leader's writes are fenced
@@ -92,24 +92,24 @@ const (
 // private to its one server.
 const taskStatusConsumerName = "sqi-task-status-srv"
 
-// taskLogsConsumerName is the durable name for the server-side push consumer
+// taskLogsConsumerName is the durable name for the server-side consumer
 // that ingests log chunks from the SQI_LOGS stream.
 const taskLogsConsumerName = "sqi-task-logs-srv"
 
-// workerConsumerName is the durable name for the server-side push consumer
+// workerConsumerName is the durable name for the server-side consumer
 // that processes worker-registration and heartbeat messages.
 const workerConsumerName = "sqi-worker-srv"
 
-// ── Task status — server-side push consumer ───────────────────────────────────
+// ── Task status — server-side consumer ────────────────────────────────────────
 
-// ConsumeTaskStatus creates or updates the server-side durable push consumer
+// ConsumeTaskStatus creates or updates the server-side durable consumer
 // for task-status messages (SQI_TASK stream) and begins delivering them to
 // handler.  The returned ConsumeContext is tracked internally and stopped
 // automatically during [Client.Drain].
 //
 // Ack / redelivery policy:
-//   - AckWait 30 s — the server has 30 s to persist a status update to SQLite
-//     before NATS redelivers.
+//   - AckWait 30 s — the server has 30 s to persist a status update to the
+//     store before NATS redelivers.
 //   - MaxDeliver 10 — allows for transient DB errors without dropping updates.
 //     The scheduler naks a failed message with a growing delay, so the ten
 //     deliveries span minutes of store outage, not milliseconds.
@@ -141,9 +141,9 @@ func (c *Client) ConsumeTaskStatus(ctx context.Context, handler jetstream.Messag
 	return cc, nil
 }
 
-// ── Task logs — server-side push consumer ────────────────────────────────────
+// ── Task logs — server-side consumer ─────────────────────────────────────────
 
-// ConsumeTaskLogs creates or updates the server-side durable push consumer for
+// ConsumeTaskLogs creates or updates the server-side durable consumer for
 // log-chunk messages (SQI_LOGS stream) and begins delivering them to handler.
 // The returned ConsumeContext is tracked internally and stopped automatically
 // during [Client.Drain].
@@ -185,17 +185,17 @@ func (c *Client) ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageH
 	return cc, nil
 }
 
-// ── Worker registration / heartbeat — server-side push consumer ───────────────
+// ── Worker registration / heartbeat — server-side consumer ────────────────────
 
-// ConsumeWorker creates or updates the server-side durable push consumer for
+// ConsumeWorker creates or updates the server-side durable consumer for
 // worker-registration and heartbeat messages (SQI_WORKER stream) and begins
 // delivering them to handler.  The returned ConsumeContext is tracked
 // internally and stopped automatically during [Client.Drain].
 //
 // Ack / redelivery policy:
 //   - AckWait 10 s — heartbeats are time-sensitive; a 10 s window is well
-//     within the scheduler's heartbeat-timeout sweep interval (≈30 s) so
-//     delays are caught before workers are incorrectly marked offline.
+//     within the scheduler's default 30 s heartbeat timeout, so a redelivery
+//     lands before a worker is wrongly marked offline.
 //   - MaxDeliver 11. The scheduler naks a failed message with a growing
 //     delay (1, 2, 4, 8, 16, 30, 30 s…), so deliveries land at about 0, 1,
 //     3, 7, 15, 31, 61, 91 and 121 s. The stream's 2-minute MaxAge removes

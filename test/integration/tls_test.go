@@ -4,19 +4,18 @@
 
 package integration
 
-// TestTLSEndToEnd proves the whole TLS path with real binaries and real
-// generated certificates: sqi-server serves HTTPS, its embedded broker
-// requires TLS, and a real sqi-worker subprocess enrolls over HTTPS with a
-// join token and then connects to the TLS broker.
+// TestTLSEndToEnd covers the whole TLS path with real binaries and generated
+// certificates: sqi-server serves HTTPS, its embedded broker requires TLS, and
+// a real sqi-worker subprocess enrolls over HTTPS with a join token and then
+// connects to the TLS broker.
 //
-// Enrollment is the part that unit tests cannot prove is sufficient. It runs
-// over REST BEFORE the worker holds any broker credential, so it is the first
-// thing a farm does and the first thing that breaks if the worker cannot
-// trust the server's certificate.
+// Enrollment runs over REST before the worker holds any broker credential, so
+// it is the first thing that fails if the worker cannot trust the server's
+// certificate.
 //
 // The counterpart is TestTLSWorkerWithoutCAIsRefused: the same server, a
-// worker given no CA, which must never register. Without it this suite could
-// pass while TLS was quietly optional.
+// worker given no CA, which must never register. Without it this suite would
+// pass with TLS optional.
 
 import (
 	"context"
@@ -36,15 +35,14 @@ import (
 
 // tlsMaterial generates a farm CA and a loopback server certificate into a
 // temp directory, returning the directory. It uses the same internal/certgen
-// package that `sqi-server tls init` uses, so this exercises the shipped
-// generator rather than a test-only substitute.
+// package that `sqi-server tls init` uses.
 func tlsMaterial(t *testing.T) string {
 	t.Helper()
 	return tlsMaterialFor(t, []string{"localhost", "127.0.0.1", "::1"})
 }
 
 // tlsMaterialFor is [tlsMaterial] with an explicit SAN list, for a server that
-// has to be reachable by a name other than loopback — see the mDNS discovery
+// has to be reachable by a name other than loopback, as in the mDNS discovery
 // tests, where the advertisement carries this machine's hostname.
 func tlsMaterialFor(t *testing.T, sans []string) string {
 	t.Helper()
@@ -67,12 +65,8 @@ func tlsMaterialFor(t *testing.T, sans []string) string {
 }
 
 // tlsMaterialWithClient generates the farm CA, a server certificate and a
-// worker CLIENT certificate in one pass, returning the directory and the
-// client keypair's paths.
-//
-// It mints all three together because `sqi-server tls init` refuses to
-// overwrite an existing CA, so a second invocation cannot issue a client
-// certificate against a CA it already wrote.
+// worker client certificate in one pass, returning the directory and the
+// client keypair's paths. This is what `sqi-server tls init --client` writes.
 func tlsMaterialWithClient(t *testing.T, workerID string) (dir, certFile, keyFile string) {
 	t.Helper()
 	dir = t.TempDir()
@@ -131,8 +125,8 @@ func startTLSServer(t *testing.T, so backend.Options, dir string) *testServer {
 		cfg.NATS.Embedded.TLS = config.NATSTLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
 		cfg.NATS.Auth.EnrollmentEndpointEnabled = true
 	})
-	// startBrokerAuthServer stamps ts.Scheme/ts.Client from cfg.HTTPTLS, so
-	// every shared helper already speaks https here.
+	// startBrokerAuthServer sets ts.Scheme/ts.Client from cfg.HTTPTLS, so
+	// every shared helper speaks https here.
 	return ts
 }
 
@@ -142,7 +136,7 @@ func TestTLSEndToEnd(t *testing.T) {
 	joinToken := seedJoinToken(t, so, "tls-e2e")
 	ts := startTLSServer(t, so, dir)
 
-	// The API really is HTTPS, verified against the farm CA.
+	// The API is HTTPS, verified against the farm CA.
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 		"https://"+ts.HTTPAddr+"/readyz", nil)
 	if err != nil {
@@ -164,7 +158,7 @@ func TestTLSEndToEnd(t *testing.T) {
 		// resolves duplicate environment entries to the last one.
 		"SQI_WORKER_NATS_URL=nats://" + ts.NATSAddr,
 		"SQI_WORKER_NATS_TLS_CA_FILE=" + caFile,
-		// Enrollment over HTTPS — the bootstrap-critical half.
+		// Enrollment over HTTPS.
 		"SQI_WORKER_NATS_SERVER_URL=https://" + ts.HTTPAddr,
 		"SQI_WORKER_NATS_SERVER_TLS_CA_FILE=" + caFile,
 		"SQI_WORKER_NATS_JOIN_TOKEN=" + joinToken,
@@ -174,9 +168,8 @@ func TestTLSEndToEnd(t *testing.T) {
 		t.Fatal("worker never came online over TLS: enrollment over HTTPS or the TLS broker connection failed")
 	}
 
-	// Registering proves the transport works. Running a job proves the whole
-	// path does: submitted over HTTPS, assigned over the TLS broker, executed,
-	// and its status read back over HTTPS.
+	// Running a job covers the whole path: submitted over HTTPS, assigned over
+	// the TLS broker, executed, and its status read back over HTTPS.
 	jobID := submitJob(t, ts, farmID, queueID)
 	if got := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, 60*time.Second); got != "completed" {
 		t.Errorf("job %s ended %q, want completed", jobID, got)
@@ -199,19 +192,19 @@ func TestTLSWorkerWithoutCAIsRefused(t *testing.T) {
 	}, true)
 
 	if id := findOnlineWorker(t, ts, farmID, 10*time.Second); id != "" {
-		t.Fatalf("worker %s registered without any CA configured; TLS is not actually being enforced", id)
+		t.Fatalf("worker %s registered without any CA configured; TLS is not enforced", id)
 	}
 }
 
-// TestTLSMutualAuthEndToEnd covers the mTLS flow docs/tls.md promotes, with a
+// TestTLSMutualAuthEndToEnd covers the mTLS flow docs/tls.md describes, with a
 // real worker binary: `sqi-server tls init --client <id>` issues a client
 // keypair, the worker presents it via nats.tls_cert_file/tls_key_file, and the
 // broker accepts it.
 //
-// The unit tests in internal/bus hand-build the client tls.Config, so they
-// never traverse natsclient.buildTLSOptions — which is the code an operator's
-// configuration actually reaches, and where a wrong ExtKeyUsage on the
-// generated certificate would bite.
+// The unit tests in internal/bus hand-build the client tls.Config, so they do
+// not reach natsclient.TLSOptions, the code an operator's configuration goes
+// through and where a wrong ExtKeyUsage on the generated certificate would
+// fail.
 func TestTLSMutualAuthEndToEnd(t *testing.T) {
 	dir, clientCert, clientKey := tlsMaterialWithClient(t, "render-01")
 
@@ -250,8 +243,8 @@ func TestTLSMutualAuthEndToEnd(t *testing.T) {
 
 // TestTLSMutualAuthRefusesWorkerWithoutCertificate is the negative half: the
 // same broker must reject a worker that presents no client certificate.
-// Without it, a broker that silently stopped requiring one would still pass
-// the test above.
+// Without it, a broker that did not require one would still pass the test
+// above.
 func TestTLSMutualAuthRefusesWorkerWithoutCertificate(t *testing.T) {
 	dir := tlsMaterial(t)
 	so := storeFor(t, filepath.Join(t.TempDir(), "sqi.db"))
@@ -293,10 +286,10 @@ func TestTLSMutualAuthRefusesWorkerWithoutCertificate(t *testing.T) {
 // existing mTLS farm. The unit tests show the certificate chains; this shows
 // the broker accepts it.
 func TestTLSMutualAuthWithIssuedCertificate(t *testing.T) {
-	// A farm that already exists, with no client certificate for our worker.
+	// An existing farm, with no client certificate for this worker.
 	dir := tlsMaterial(t)
 
-	// Day two: issue one from the SAME CA, exactly as the CLI does.
+	// Issue one from the same CA, as `tls issue` does.
 	caPEM, err := os.ReadFile(filepath.Join(dir, "ca.crt"))
 	if err != nil {
 		t.Fatalf("read ca.crt: %v", err)

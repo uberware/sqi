@@ -16,9 +16,8 @@ import (
 
 // Credential holds a Windows primary token obtained via LogonUserW.
 // os/exec's windows implementation calls CreateProcessAsUser internally
-// whenever SysProcAttr.Token is non-zero (see apply_windows.go) — that field
-// is the entire integration point; no other Win32 call is needed to make the
-// child process actually run as cred's identity.
+// whenever SysProcAttr.Token is non-zero (see apply_windows.go); no other
+// Win32 call is needed to make the child process run as cred's identity.
 type Credential struct {
 	token windows.Token
 	// User is the account name this credential was resolved for, kept so the
@@ -35,20 +34,17 @@ type Credential struct {
 	profile windows.Handle
 }
 
-// Close releases the token handle. Idempotent and safe to call more than
-// once: the token field is zeroed immediately after the underlying handle is
-// closed, so a second call takes the zero-token no-op branch instead of
-// closing an already-released (and potentially since-reused) handle value a
-// second time. The session lifecycle (internal/worker/session) calls Close on
-// every path that obtains a credential — normal cleanup and every error
-// return in Manager.Create — so this method must tolerate being invoked
-// exactly once per credential, from exactly one of those paths, with no
-// double-free regardless of which path that turns out to be.
+// Close unloads the profile and releases the token handle. It is
+// idempotent: the token field is zeroed after the handle is closed, so a
+// second call takes the zero-token no-op branch instead of closing a released
+// (and possibly reused) handle value again. The session lifecycle
+// (internal/worker/session) calls Close once per credential, from normal
+// cleanup or from one of Manager.Create's error returns.
 func (c *Credential) Close() error {
 	if c.token == 0 {
 		return nil
 	}
-	// Unload the hive BEFORE closing the token: UnloadUserProfileW needs the
+	// Unload the hive before closing the token: UnloadUserProfile needs the
 	// same token that loaded it, so the reverse order would leak the mounted
 	// hive for the lifetime of the worker.
 	profErr := unloadProfile(c.token, c.profile)
@@ -65,33 +61,31 @@ func (c *Credential) Close() error {
 // logon is the right type for a service performing work on behalf of a
 // user: unlike interactive logon it does not require the "log on locally"
 // right, and unlike an S4U logon it does grant network credentials, which
-// render jobs commonly need for UNC/share access. (S4U is not implemented —
+// render jobs commonly need for UNC/share access. (S4U is not implemented;
 // see newProvider.)
 const (
 	logon32LogonBatch      = 4
 	logon32ProviderDefault = 0
 )
 
-// advapi32.dll!LogonUserW has no wrapper in golang.org/x/sys/windows — checked
-// against the version this module depends on (v0.47.0): neither the function
-// nor the LOGON32_* constants are exposed there, unlike most other Win32
-// security APIs that package does wrap. It is declared directly here instead,
-// the same way golang.org/x/sys/windows's own generated zsyscall_windows.go
-// declares every Win32 call it does wrap.
+// advapi32.dll!LogonUserW has no wrapper in golang.org/x/sys/windows: neither
+// the function nor the LOGON32_* constants are exposed there, unlike most
+// other Win32 security APIs that package wraps. It is declared here instead,
+// the same way golang.org/x/sys/windows's generated zsyscall_windows.go
+// declares the calls it wraps.
 var (
 	modAdvapi32    = windows.NewLazySystemDLL("advapi32.dll")
 	procLogonUserW = modAdvapi32.NewProc("LogonUserW")
 )
 
 // logonUserW wraps the raw LogonUserW syscall. domain may be nil, which asks
-// Windows to resolve username against the local account database — the right
-// behavior for the local accounts this provider targets. Callers MUST pass an
+// Windows to resolve username against the local account database, which is
+// where the accounts this provider targets live. Callers must pass an
 // already-normalized username (normalizeAccountName): logonUserProvider.Resolve
 // does this before invoking the logon seam, stripping any ".\"/"DOMAIN\"
 // qualifier or trailing "@domain" UPN suffix, because a NULL domain does not
-// strip either of those from the username string itself — LogonUserW would
-// otherwise try to look up a literal account named e.g. ".\render-svc" and
-// fail.
+// strip either from the username string, and LogonUserW would look up a
+// literal account named, for example, ".\render-svc" and fail.
 func logonUserW(username, domain, password *uint16, logonType, logonProvider uint32) (windows.Token, error) {
 	if err := mustResolve(procLogonUserW); err != nil {
 		return 0, err
@@ -107,13 +101,11 @@ func logonUserW(username, domain, password *uint16, logonType, logonProvider uin
 	)
 	if r1 == 0 {
 		// syscall.Proc.Call's third result is a syscall.Errno, and Errno(0)
-		// is still a NON-NIL error interface value — so `e1 != nil` is
-		// always true and the fallback below was unreachable. A LogonUserW
-		// that fails with GetLastError()==0 would then have surfaced as
-		// "The operation completed successfully." as the reason isolation
-		// could not resolve a credential. Compare against the zero Errno
-		// instead, which is what actually distinguishes "the call set an
-		// error code" from "it did not".
+		// is a non-nil error interface value, so `e1 != nil` is always true.
+		// Comparing against the zero Errno tells whether the call set an
+		// error code; a LogonUserW that fails with GetLastError()==0 gets the
+		// fallback below rather than "The operation completed successfully."
+		// as its reason.
 		var errno syscall.Errno
 		if errors.As(e1, &errno) && errno != 0 {
 			return 0, errno
@@ -153,8 +145,8 @@ func logonUserOS(_ context.Context, user, secret string) (*Credential, error) {
 	home, err := tok.GetUserProfileDirectory()
 	if err != nil {
 		// Tolerated: the session layer falls back to its own working
-		// directory. Far less likely now that loadProfile has run, which
-		// creates the profile directory if it did not exist.
+		// directory. Unlikely after loadProfile, which creates the profile
+		// directory if it did not exist.
 		home = ""
 	}
 	return &Credential{token: tok, profile: prof, User: user, Home: home}, nil
@@ -189,7 +181,7 @@ func hasRequiredPrivileges() error {
 // process, which is what SysProcAttr.Token ultimately requires.
 //
 // The message names LocalSystem because the natural first attempt is an
-// elevated Administrator, and that does NOT work: SeAssignPrimaryTokenPrivilege
+// elevated Administrator, and that does not work: SeAssignPrimaryTokenPrivilege
 // is held by default only by LocalSystem and the LOCAL/NETWORK SERVICE
 // accounts. Without saying so, an operator sees a refusal from a shell they
 // already ran "as administrator" and reasonably concludes sqi is broken.
@@ -205,9 +197,9 @@ func capableOS() error {
 }
 
 // tokenHasPrivilege reports whether t's privilege set includes name,
-// regardless of whether that privilege is currently enabled —
-// CreateProcessAsUser enables the privilege it needs internally, so what
-// matters here is only that the token carries it at all. This mirrors how
+// whether or not that privilege is enabled: CreateProcessAsUser enables the
+// privilege it needs internally, so what matters is that the token carries
+// it. This mirrors how
 // the POSIX provider's Capable() checks identity (euid==0) rather than some
 // finer-grained enabled/disabled state.
 func tokenHasPrivilege(t windows.Token, name string) (bool, error) {
@@ -233,8 +225,8 @@ func tokenHasPrivilege(t windows.Token, name string) (bool, error) {
 }
 
 // tokenPrivileges retrieves t's full privilege set via GetTokenInformation,
-// growing the buffer if the initial guess is too small — mirroring the same
-// growth loop golang.org/x/sys/windows uses internally for this call
+// growing the buffer if the initial guess is too small, like the growth loop
+// golang.org/x/sys/windows uses internally for this call
 // (Token.getInfo), which is unexported and so cannot be called directly from
 // this package.
 func tokenPrivileges(t windows.Token) (*windows.Tokenprivileges, error) {
@@ -242,8 +234,7 @@ func tokenPrivileges(t windows.Token) (*windows.Tokenprivileges, error) {
 	for {
 		buf := make([]byte, n)
 		// buf was allocated with make([]byte, n) immediately above, so
-		// len(buf) == int(n) exactly; converting it back to uint32 can never
-		// overflow — it is the same value n already held as a uint32.
+		// len(buf) == int(n); converting it back to uint32 cannot overflow.
 		bufLen := uint32(len(buf)) //nolint:gosec // len(buf) == n (a uint32) by construction; cannot overflow
 		err := windows.GetTokenInformation(t, windows.TokenPrivileges, &buf[0], bufLen, &n)
 		if err == nil {
@@ -260,9 +251,9 @@ func tokenPrivileges(t windows.Token) (*windows.Tokenprivileges, error) {
 
 // newProvider returns the Windows Provider selected by cfg.Provider:
 // "logon_user" (the default, matching workerconfig's own default). "s4u" is
-// refused explicitly rather than silently aliased to logon_user — that would
-// run tasks under a different credential-acquisition mechanism than the
-// operator configured without telling anyone. See
+// refused rather than treated as logon_user, which would run tasks under a
+// different credential-acquisition mechanism than the operator configured.
+// See
 // workerconfig.IsolationConfig.Provider for why s4u is not implemented.
 func newProvider(cfg Config) (Provider, error) {
 	switch cfg.Provider {
@@ -275,37 +266,31 @@ func newProvider(cfg Config) (Provider, error) {
 	}
 }
 
-// fakeCredentialToken is a deliberately bogus, non-real HANDLE value given to
-// every fake Windows Credential (newFakeCredential below). It exists solely
-// so a fake credential can pass through apply's zero-token guard
-// (apply_windows.go): that guard exists to stop a genuinely token-less
-// Credential from producing a silently-unisolated process in PRODUCTION, not
-// to stop tests built on NewFake from exercising isolation.Apply's mechanical
-// SysProcAttr-handling at all (see TestApplyPreservesExistingSysProcAttr).
-// This value is never passed to a real Win32 call except CloseHandle, via
-// Credential.Close — an invalid handle there is a harmless, already-
-// established pattern in this package (see
-// TestCredentialClose_IdempotentAfterRealClose, which closes the equally
-// bogus windows.Token(0x1234) on purpose).
+// fakeCredentialToken is an invalid, non-zero HANDLE value given to every fake
+// Windows Credential (newFakeCredential below), so a fake credential passes
+// apply's zero-token guard (apply_windows.go) and tests built on NewFake can
+// exercise isolation.Apply's SysProcAttr handling (see
+// TestApplyPreservesExistingSysProcAttr). The guard is there to stop a
+// token-less production Credential from starting an unisolated process. The
+// value reaches no Win32 call except CloseHandle, via Credential.Close, where
+// an invalid handle is harmless (TestCredentialClose_IdempotentAfterRealClose
+// closes windows.Token(0x1234) the same way).
 const fakeCredentialToken = windows.Token(0x1)
 
 // newFakeCredential builds a Credential from a fake account for tests. It
 // keeps Credential opaque outside this package while letting fake.go (which
 // is platform-independent) hand back a real *Credential. The fake carries no
-// real token — NewFake's own doc already states a fake cannot verify real OS
-// identity switching; that needs make test-isolation-windows or a real
-// Windows run.
+// real token: a fake cannot verify OS identity switching (see NewFake), which
+// needs make test-isolation-windows.
 //
 // User is set to name (the account-map key a real Resolve would have
-// received as spec.User), NOT left empty: SecureWorkDir/ChownRecursive
-// resolve a Credential's identity by NAME via lookupUserSID, so a fake
-// credential with no name cannot exercise those real, production ACL calls
-// at all — the fake would look isolated while SecureWorkDir failed on every
-// use. Callers building fake accounts for a test that reaches SecureWorkDir
-// must key the account (and the Isolation.User the assignment carries) with
-// a name that actually resolves via LookupSID on the machine the test runs
-// on — typically the test process's own account, the same self-service
-// trick testUID/testGID play for uid/gid on POSIX.
+// received as spec.User): SecureWorkDir/ChownRecursive resolve a
+// Credential's identity by name through lookupUserSID, so a fake credential
+// with no name would make SecureWorkDir fail on every use. Callers building
+// fake accounts for a test that reaches SecureWorkDir must key the account
+// (and the Isolation.User the assignment carries) with a name that resolves
+// through LookupSID on the test machine, typically the test process's own
+// account, as testUID/testGID do for uid/gid on POSIX.
 func newFakeCredential(name string, a FakeAccount) *Credential {
 	return &Credential{User: name, Home: a.Home, token: fakeCredentialToken}
 }

@@ -6,9 +6,9 @@ package session
 // travel worker config -> Manager -> Session -> AssignmentBudget -> every
 // phase-3 evaluation.
 //
-// The fmtres tests prove each limit is enforced; these prove the
-// WIRING, which is the half that can silently degrade to "the defaults" with
-// every one of those tests still green.
+// The fmtres tests prove each limit is enforced; these prove the wiring,
+// which can fall back to the defaults with every one of those tests still
+// passing.
 
 import (
 	"context"
@@ -23,9 +23,9 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// tightLimits is deliberately unlike the defaults in EVERY field, so a
-// half-wired mapping (four fields threaded, one forgotten) fails rather than
-// coincidentally matching.
+// tightLimits differs from the defaults in every field, so a half-wired
+// mapping (four fields threaded, one forgotten) fails rather than matching by
+// coincidence.
 var tightLimits = fmtres.ExprLimits{
 	OperationLimit:          123_456,
 	MemoryLimit:             2_345_678,
@@ -55,8 +55,8 @@ func TestManagerCreate_ExprLimitsReachTheAssignmentBudget(t *testing.T) {
 }
 
 // TestManagerCreate_ZeroExprLimitsAreTheDefaults pins the other half: a
-// Manager constructed with the zero value (every caller that predates this
-// field, and every test in this package) behaves exactly as it did before.
+// Manager constructed with the zero value (as most tests in this package do)
+// meters by the defaults.
 func TestManagerCreate_ZeroExprLimitsAreTheDefaults(t *testing.T) {
 	dataDir := t.TempDir()
 	mgr := NewManager(
@@ -76,7 +76,7 @@ func TestManagerCreate_ZeroExprLimitsAreTheDefaults(t *testing.T) {
 
 // TestManagerCreate_ConfiguredLimitRejectsEnvironmentEntry is the behavioral
 // counterpart of the two structural tests above: a configured per-table
-// retention limit must actually change the verdict of a real environment
+// retention limit must change the verdict of a real environment
 // entry through Manager.Create. One environment binds ~2 MB, which the default
 // (10 MB) accepts and a configured 1 MB does not.
 func TestManagerCreate_ConfiguredLimitRejectsEnvironmentEntry(t *testing.T) {
@@ -107,27 +107,24 @@ func TestManagerCreate_ConfiguredLimitRejectsEnvironmentEntry(t *testing.T) {
 		t.Fatal("a configured 1 MB per-table retention limit must reject a ~2 MB let binding")
 	}
 	if !strings.Contains(err.Error(), "1000000") {
-		t.Errorf("error = %v, want it to name the CONFIGURED limit", err)
+		t.Errorf("error = %v, want it to name the configured limit", err)
 	}
 }
 
-// TestResolveEnvAction_TeardownUsesTheConfiguredLimits pins the one path that
-// is deliberately exempt from the assignment-wide LEDGER: environment
-// teardown. It must still be metered by the operator's LIMITS. Passing no
-// budget at all -- the obvious way to preserve the ledger exemption --
-// would silently meter
+// TestResolveEnvAction_TeardownUsesTheConfiguredLimits pins the one path
+// exempt from the assignment-wide ledger: environment teardown. It is still
+// metered by the operator's limits. Passing no budget at all would meter
 // teardown against the built-in defaults on a host configured otherwise.
 //
-// The construction is chosen so the two are DISTINGUISHABLE, which required
-// configuring the limit LOOSER than the default rather than tighter: three
-// 4 MB bindings retain ~12,000,192 bytes in one table, which the configured
-// 15 MB per-table limit accepts and the built-in 10 MB default does not. Entry
-// therefore succeeds, and teardown succeeds only if it is metered by the same
-// configured number.
+// To tell the two apart the limit is configured looser than the default:
+// three 4 MB bindings retain ~12,000,192 bytes in one table, which the
+// configured 15 MB per-table limit accepts and the built-in 10 MB default
+// does not. Entry succeeds, and teardown succeeds only if it is metered by the
+// same configured number.
 //
-// It also pins the FRESH half of "fresh ledger, same limits": entry already
+// It also pins the fresh half of "fresh ledger, same limits": entry already
 // charged ~12 MB against the 20 MB assignment-wide default, so a teardown that
-// re-used the entry ledger would trip at ~24 MB.
+// reused the entry ledger would trip at ~24 MB.
 func TestResolveEnvAction_TeardownUsesTheConfiguredLimits(t *testing.T) {
 	dataDir := t.TempDir()
 	mgr := NewManager(
@@ -158,24 +155,25 @@ func TestResolveEnvAction_TeardownUsesTheConfiguredLimits(t *testing.T) {
 
 // TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation pins that each of
 // resolveEnvAction's four evaluations (EnvSymbols, ResolveVarsExpr,
-// ApplyEnvLet, ResolveActionExpr) gets its own budget. With ONE budget passed
-// to all four, their POSITION charges would accumulate against a single
+// ApplyEnvLet, ResolveActionExpr) gets its own budget. With one budget passed
+// to all four, their position charges would accumulate against a single
 // 10,000 cap.
 //
-// THE CONSEQUENCE: an environment with 9,000 variables and a 1,500-arg onExit
-// ENTERS successfully (9,001 positions against the assignment-wide ledger)
-// and then fails at TEARDOWN -- 9,000 variables + 1 command + 1,500 args =
-// 10,501 against one shared cap. [Session.ExitEnvironments] treats a resolve
-// failure as a WARNING and continues, so the onExit is SKIPPED: the license
-// check-in, daemon shutdown or unmount never runs -- the same leak the
-// teardown exemption from the assignment-wide ledger exists to prevent.
+// An environment with 9,000 variables and a 1,500-arg onExit then enters
+// successfully (9,001 positions against the assignment-wide ledger) and fails
+// at teardown: 9,000 variables + 1 command + 1,500 args = 10,501 against one
+// shared cap. [Session.ExitEnvironments] treats a resolve failure as a
+// warning and continues, so the onExit is skipped and the license check-in,
+// daemon shutdown or unmount never runs, the leak the teardown exemption from
+// the assignment-wide ledger exists to prevent.
 //
-// It is reachable at the shipped defaults, and more easily once an operator
+// This is reachable at the default limits, and more easily when an operator
 // raises the server's openjd.expr_template_positions (values up to 100,000
 // are legal), because the template budget is not gated by EnforceLimits.
 //
-// Mutation: replace the four s.teardownBudget() calls with one shared budget
-// and this test fails, naming the assignment-wide budget.
+// Passing one shared budget to resolveEnvParts instead of the
+// s.teardownBudget method value makes this test fail, naming the
+// assignment-wide budget.
 func TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation(t *testing.T) {
 	vars := make(map[string]string, 9_000)
 	for i := range 9_000 {
@@ -189,7 +187,7 @@ func TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation(t *testing.T) {
 	env := protocol.AssignEnvironment{
 		Name:      "env",
 		Variables: vars,
-		// Portable: this action is really EXECUTED by Create, and the budget
+		// Portable: Create executes this action, and the budget
 		// property under test does not care which process runs. See noopAction.
 		OnEnter: noopAction(),
 	}
@@ -204,9 +202,9 @@ func TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation(t *testing.T) {
 		t.Fatalf("Create: 9,001 positions is under the 10,000 assignment-wide default: %v", err)
 	}
 
-	// onExit is only RESOLVED, never started, so its command need not exist --
-	// but it is kept portable anyway so the file carries no POSIX-only name to
-	// copy into a test that does start one. The 1,500 args are the point here.
+	// onExit is only resolved, never started, so its command need not exist;
+	// it is kept portable so the file carries no POSIX-only name to copy into
+	// a test that does start one. The 1,500 args are what matters here.
 	onExit := &protocol.Action{Command: noopAction().Command, Args: args}
 	if _, _, err := s.resolveEnvAction(env, onExit, vars); err != nil {
 		t.Fatalf("teardown must resolve 9,000 variables and a 1,500-arg onExit -- each evaluation "+

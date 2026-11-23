@@ -14,10 +14,9 @@ import (
 // fixture.
 //
 // The .invalid fixtures for this rule (2.9--bool-param-{int,float,string}-
-// invalid) score as a pass on ANY rejection, so the aggregate conformance
-// score cannot prove this table works. This test is what proves it; the three
-// values those fixtures use (2, 0.5, "maybe") are in the invalid set below by
-// name.
+// invalid) score as a pass on any rejection, so the aggregate conformance
+// score cannot show this table works; this test does. The three values those
+// fixtures use (2, 0.5, "maybe") are in the invalid set below.
 func TestParseBoolParamValue(t *testing.T) {
 	tests := []struct {
 		in    string
@@ -117,10 +116,10 @@ func TestValidateBoolParamConstraints_Default(t *testing.T) {
 }
 
 // TestValidateBoolParamConstraints_RejectsScalarBounds pins that the numeric
-// and length bounds of the scalar types are not silently ignored on a BOOL.
-// RFC 0007's <JobBoolParameterDefinition> schema lists no such fields, and a
-// bound nothing enforces is worse than a rejected one: the author believes it
-// is in force.
+// and length bounds of the scalar types are rejected on a BOOL rather than
+// ignored. RFC 0007's <JobBoolParameterDefinition> schema lists no such
+// fields, and an ignored bound would leave the author believing it is in
+// force.
 func TestValidateBoolParamConstraints_RejectsScalarBounds(t *testing.T) {
 	s, n := "1", 1
 	tests := []struct {
@@ -149,21 +148,20 @@ func TestValidateBoolParamConstraints_RejectsScalarBounds(t *testing.T) {
 // TestValidateRangeExprParamConstraints_UsesTheSpecPolicy pins which
 // <IntRangeExpr> policy a RANGE_EXPR parameter's value is checked under.
 //
-// internal/openjd deliberately parses <IntRangeExpr> more strictly than the
-// spec: openjdRangePolicy sets PositiveStepOnly and AscendingOnly, rejecting
-// start > end and a negative step (both preserved on purpose). A RANGE_EXPR
-// PARAMETER must NOT use that policy. The
-// conformance fixture 2.10--range-expr-param.yaml declares NegativeStep
-// "10-1:-1" and NegativeRangeNegativeStep "-1--10:-1"; under the strict policy
-// the fixture cannot pass.
+// internal/openjd parses <IntRangeExpr> more strictly than the spec:
+// openjdRangePolicy sets PositiveStepOnly and AscendingOnly, rejecting
+// start > end and a negative step, and that must be kept. A RANGE_EXPR
+// parameter does not use that policy: the conformance fixture
+// 2.10--range-expr-param.yaml declares NegativeStep "10-1:-1" and
+// NegativeRangeNegativeStep "-1--10:-1", which the strict policy rejects.
 //
-// The permissive policy is also what the value meets downstream. The LONE
-// whole-field form range: "{{Param.FrameRange}}" evaluates as a VALUE through
+// The permissive policy is also what the value meets downstream. The lone
+// whole-field form range: "{{Param.FrameRange}}" evaluates as a value through
 // range_expr's own list[int] coercion and never re-enters <IntRangeExpr> text
 // (resolve.go), and expr.ValueFromText's CodeRangeExpr case calls the
-// permissive expr.RangeExpr. The strict policy keeps governing literal
-// base-spec range text, including text assembled from an EMBEDDED reference
-// (see resolveRangeExprField's doc comment).
+// permissive expr.RangeExpr. The strict policy governs literal base-spec
+// range text, including text assembled from an embedded reference (see
+// resolveRangeExprField's doc comment).
 func TestValidateRangeExprParamConstraints_UsesTheSpecPolicy(t *testing.T) {
 	// Every default in 2.10--range-expr-param.yaml, in fixture order.
 	valid := []string{
@@ -171,7 +169,7 @@ func TestValidateRangeExprParamConstraints_UsesTheSpecPolicy(t *testing.T) {
 		"1-100", "-10-10",
 		"0-100:10", "1-9:3",
 		"10-1:-1",   // descending: rejected by openjdRangePolicy, legal here
-		"-1--10:-1", // descending AND negative step: same
+		"-1--10:-1", // descending and negative step: same
 		"1,3,5,7",
 		"1-10,20-30:2,42",
 		"0-3:3,5-10:5,12,13,14,15",
@@ -210,21 +208,19 @@ func TestValidateRangeExprParamConstraints_UsesTheSpecPolicy(t *testing.T) {
 }
 
 // TestValidateRangeExprParamConstraints_EmptyElementsAreTolerated records a
-// leniency of the shared parser rather than endorsing it.
+// leniency of the shared parser.
 //
 // The <IntRangeExpr> grammar has no empty element and no empty step, so
-// "1,,2" and "1-2:" are both strictly invalid — but the shared parser tolerates
+// "1,,2" and "1-2:" are both invalid, but the shared parser tolerates
 // each: intrange.ParseWithPolicy skips empty comma-separated parts (intrange.go:
 // `if part == "" { continue }`) and reads a trailing colon as "no step given",
 // yielding [1 2] and [1-2] respectively, for both the base-spec range path
 // and the expression language.
 //
-// RANGE_EXPR validation does NOT tighten it. The leniency is in the shared
+// RANGE_EXPR validation does not tighten it. The leniency is in the shared
 // leaf package, so rejecting "1,,2" for a RANGE_EXPR parameter while a task
-// parameter's range: "1,,2" keeps working would be incoherent, and tightening
-// BOTH would be an acceptance change to the base spec — templates accepted
-// today would start being rejected — which is not a change to make in
-// passing.
+// parameter's range: "1,,2" is accepted would be inconsistent, and tightening
+// both would reject templates the parser accepts.
 func TestValidateRangeExprParamConstraints_EmptyElementsAreTolerated(t *testing.T) {
 	for _, d := range []string{"1,,2", "1-2:"} {
 		t.Run(d, func(t *testing.T) {
@@ -233,13 +229,13 @@ func TestValidateRangeExprParamConstraints_EmptyElementsAreTolerated(t *testing.
 				JobParameter{Name: "R", Type: JobParamTypeRangeExpr, Default: &def}, "/p",
 			)
 			if len(errs) != 0 {
-				t.Fatalf("%q rejected: %v\nIf this is now rejected, the shared intrange "+
+				t.Fatalf("%q rejected: %v\nIf this is rejected, the shared intrange "+
 					"leniency changed — check that the base-spec range path changed with "+
 					"it, because that is a base-spec acceptance change.", d, errs)
 			}
 
-			// Equally tolerated by the strict base-spec policy: the leniency is
-			// in the shared parser, not in either policy.
+			// Also tolerated by the strict base-spec policy: the leniency is in
+			// the shared parser, not in either policy.
 			if _, err := intrange.ParseWithPolicy(d, openjdRangePolicy); err != nil {
 				t.Errorf("openjdRangePolicy rejected %q (%v), so the leniency is NOT "+
 					"shared and this test's premise is wrong", d, err)
@@ -249,19 +245,18 @@ func TestValidateRangeExprParamConstraints_EmptyElementsAreTolerated(t *testing.
 }
 
 // TestValidateRangeExprParamConstraints_StrictPolicyWouldReject is the other
-// half of the policy choice above: these two defaults ARE rejected by
-// internal/openjd's own policy, so choosing between the policies makes a
-// difference.
+// half of the policy choice above: internal/openjd's own policy rejects these
+// two defaults, so the choice between the policies matters.
 //
-// If this test ever stops failing under the strict policy, the two policies
-// have converged and the choice above needs revisiting.
+// If the strict policy accepts them, the two policies have converged and the
+// choice above needs revisiting.
 func TestValidateRangeExprParamConstraints_StrictPolicyWouldReject(t *testing.T) {
 	for _, s := range []string{"10-1:-1", "-1--10:-1"} {
 		t.Run(s, func(t *testing.T) {
 			if _, err := intrange.ParseWithPolicy(s, openjdRangePolicy); err == nil {
 				t.Errorf("openjdRangePolicy accepted %q; the two policies have "+
 					"converged and validateRangeExprParamConstraints' choice of the "+
-					"permissive one no longer distinguishes anything", s)
+					"permissive one does not distinguish anything", s)
 			}
 			if _, err := intrange.Parse(s); err != nil {
 				t.Errorf("the spec's permissive policy rejected %q: %v", s, err)
@@ -271,10 +266,10 @@ func TestValidateRangeExprParamConstraints_StrictPolicyWouldReject(t *testing.T)
 }
 
 // TestValidateRangeExprParamConstraints_Length pins that minLength/maxLength
-// bound the expression's STRING length (RFC 0007), with a default maximum of
+// bound the expression's string length (RFC 0007), with a default maximum of
 // 1024 when the template declares none. A range expression is a compact
-// notation precisely so that "1-1000000" is nine characters, so bounding the
-// expanded element count here would be the wrong measure entirely.
+// notation ("1-1000000" is nine characters), so the bound is on the text, not
+// the expanded element count.
 func TestValidateRangeExprParamConstraints_Length(t *testing.T) {
 	d := "1-100" // five characters
 	minLen, maxLen := 10, 20
@@ -305,7 +300,7 @@ func TestValidateRangeExprParamConstraints_Length(t *testing.T) {
 // TestValidateRangeExprParamConstraints_RejectsInapplicableFields mirrors the
 // BOOL case: RFC 0007's <JobRangeExprParameterDefinition> schema lists only
 // minLength and maxLength, so a numeric bound or an allowedValues list on one
-// is a constraint nothing would ever enforce.
+// is a constraint nothing would enforce.
 func TestValidateRangeExprParamConstraints_RejectsInapplicableFields(t *testing.T) {
 	s := "1"
 	tests := []struct {
@@ -337,15 +332,15 @@ func TestValidateRangeExprParamConstraints_RejectsInapplicableFields(t *testing.
 // TestValidateListParamConstraints transcribes each 2.11-2.16 .invalid
 // fixture's rule as a direct test.
 //
-// Those fixtures score as a pass on ANY rejection, so the aggregate
-// conformance score cannot prove any of these rules works. Each case below
+// Those fixtures score as a pass on any rejection, so the aggregate
+// conformance score cannot show any of these rules works. Each case below
 // names the fixture it stands in for.
 func TestValidateListParamConstraints(t *testing.T) {
 	tests := []struct {
 		name    string
 		p       JobParameter
 		wantErr bool
-		wantPtr string // when wantErr, the pointer the FIRST error must carry
+		wantPtr string // when wantErr, the pointer the first error must carry
 	}{
 		{
 			name: "valid list of strings",
@@ -450,10 +445,10 @@ func TestValidateListParamConstraints(t *testing.T) {
 			wantErr: true, wantPtr: "/p/default/0",
 		},
 		{
-			// RFC 0007: a LIST[BOOL] item accepts the SAME spellings as a BOOL
-			// parameter, so a quoted "yes" and a bare 1 are both valid. This is
-			// why bool elements are checked as TEXT while every other element
-			// type is checked by JSON type.
+			// RFC 0007: a LIST[BOOL] item accepts the same spellings as a BOOL
+			// parameter, so a quoted "yes" and a bare 1 are both valid. Bool
+			// elements are therefore checked as text, while every other
+			// element type is checked by JSON type.
 			name: "bool spellings are accepted in a list of bools",
 			p:    JobParameter{Type: JobParamTypeListBool, Default: new(`[true,"yes",1,"off"]`)},
 		},
@@ -560,8 +555,8 @@ func TestValidateListParamConstraints(t *testing.T) {
 
 // TestValidateListParamConstraints_SkipsFormatStringDefault mirrors the
 // scalar types: a default containing "{{" is not known until submission, so
-// validating it against the declared type here would reject a template that is
-// perfectly valid.
+// validating it against the declared type here would reject a valid
+// template.
 func TestValidateListParamConstraints_SkipsFormatStringDefault(t *testing.T) {
 	p := JobParameter{
 		Type: JobParamTypeListInt, Default: new(`"{{Param.Other}}"`),
@@ -629,13 +624,13 @@ func TestControlsByType_EXPRTypes(t *testing.T) {
 	}
 }
 
-// TestValidateUserInterface_ListControlsEndToEnd drives the real validator
-// with the exact userInterface blocks the 2.11-2.16 fixtures declare, so the
+// TestValidateUserInterface_ListControlsEndToEnd drives the validator with
+// the exact userInterface blocks the 2.11-2.16 fixtures declare, so the
 // controls are exercised through validateUserInterface rather than only as map
 // membership.
 //
 // singleStepDelta and decimals are the two that need more than a map entry:
-// both were written against the scalar SPIN_BOX, and 2.13/2.14 pair them with
+// both are defined for the scalar SPIN_BOX, and 2.13/2.14 pair them with
 // SPIN_BOX_LIST.
 func TestValidateUserInterface_ListControlsEndToEnd(t *testing.T) {
 	tests := []struct {
@@ -724,11 +719,11 @@ steps:
 // BOOL parameter is accepted.
 //
 // RFC 0007 gives BOOL the CHECK_BOX control, and separately forbids
-// allowedValues on it. The BASE spec's CHECK_BOX rule (validateCheckBoxValues)
-// requires EXACTLY TWO allowedValues. BOOL is in controlsByType, so a
+// allowedValues on it. The base spec's CHECK_BOX rule (validateCheckBoxValues)
+// requires exactly two allowedValues. BOOL is in controlsByType, so a
 // CHECK_BOX on a BOOL reaches the control check; applying
-// validateCheckBoxValues to it would reject it for having no allowedValues —
-// which RFC 0007 says it must not have — and 2.9--bool-param.yaml with it.
+// validateCheckBoxValues to it would reject it, and 2.9--bool-param.yaml,
+// for having no allowedValues, which RFC 0007 says it must not have.
 func TestValidateBool_CheckBoxControlIsValid(t *testing.T) {
 	tmpl, err := Parse([]byte(`
 specificationVersion: jobtemplate-2023-09
@@ -755,7 +750,7 @@ steps:
 	for _, e := range Validate(tmpl) {
 		if e.Pointer == "/parameterDefinitions/0/userInterface/control" {
 			t.Fatalf("CHECK_BOX rejected on a BOOL parameter: %s\n"+
-				"RFC 0007 gives BOOL the CHECK_BOX control AND forbids allowedValues on it, "+
+				"RFC 0007 gives BOOL the CHECK_BOX control and forbids allowedValues on it, "+
 				"so the base spec's two-allowedValues requirement must not apply here.",
 				e.Message)
 		}

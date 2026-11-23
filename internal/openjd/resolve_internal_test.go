@@ -12,15 +12,13 @@ import (
 // resolveFormatStringExpr's lone-reference branch against the panic
 // Value.AsStr raises (Value.mustBe) for any payload code other than string.
 //
-// loneTarget is a caller-supplied PARAMETER, not a constant baked into this
-// function, and callers do vary it: resolveRangeListEntry targets
-// rangeExprElemType(typ) -- TInt, TFloat or TPath for an INT, FLOAT or PATH
-// entry, not always TString. Calling v.AsStr() on the lone branch would
-// therefore crash the process, inside a synchronous submit handler, for any
-// non-string target. Value.String() is total over every Value and is already
-// what evalRangeExprField's elements use; this test pins that
-// resolveFormatStringExpr uses it rather than AsStr, for every scalar/list
-// shape a target might plausibly produce.
+// loneTarget is supplied by the caller: resolveRangeListEntry passes
+// rangeExprElemType(typ), which is TInt, TFloat or TPath for an INT, FLOAT or
+// PATH entry. Calling v.AsStr() on the lone branch would crash the process,
+// inside a synchronous submit handler, for any non-string target.
+// Value.String() is total over every Value and is what evalRangeExprField's
+// elements use; this test pins that resolveFormatStringExpr uses it rather
+// than AsStr, for each scalar and list shape a target can produce.
 func TestResolveFormatStringExpr_NonStringLoneTargetDoesNotPanic(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

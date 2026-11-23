@@ -35,7 +35,7 @@
 #   SQI_WORKER_BIN   path to a prebuilt sqi-worker (default: <repo>/bin/sqi-worker)
 #   SQI_AUTH_DEMO_KEEP=1   same as --keep
 #
-# Exit status: 0 only if every assertion passed; non-zero with a clear message
+# Exit status: 0 only if every assertion passed; non-zero with a message
 # (and the relevant server/worker log tail) otherwise.
 
 set -euo pipefail
@@ -104,12 +104,12 @@ command -v python3 >/dev/null 2>&1 \
   || fail "python3 is required (used only to allocate free loopback ports)"
 
 # jbody <key> <value> [<key> <value> ...] — build a flat JSON object of string
-# fields. Everything goes through `jq --arg`, so quoting is never our problem.
+# fields. Every value goes through `jq --arg`, which handles quoting.
 #
 # Use this rather than hand-escaping a literal: a `-d "{\"k\":\"v\"}"` payload
-# does not survive nesting inside "$( ... )" — the backslashes reach the server
-# verbatim and it answers 400 "invalid JSON body", which reads like an auth
-# failure and sends you hunting in the wrong place.
+# does not survive nesting inside "$( ... )". The backslashes reach the server
+# verbatim and it answers 400 "invalid JSON body", which looks like an auth
+# failure.
 jbody() {
   local args=() parts=""
   while [ $# -gt 0 ]; do
@@ -133,13 +133,13 @@ PY
 
 # ── Request helpers ───────────────────────────────────────────────────────────
 #
-# Two authentication styles are exercised deliberately:
+# Two authentication styles are exercised:
 #
 #   as_key    Bearer API key. No cookie is sent, so the CSRF guard passes the
-#             request through untouched — this is how headless clients talk.
+#             request through; headless clients authenticate this way.
 #   as_cookie Session cookie from a jar. Unsafe methods must also carry an
-#             Origin or the CSRF guard rejects them with 403, which the CSRF
-#             step (section 4) proves.
+#             Origin or the CSRF guard rejects them with 403, as the CSRF step
+#             (section 4) asserts.
 #
 # Both print the response body; the HTTP status is captured separately by
 # code_* so a failing assertion can report a real status rather than an
@@ -224,7 +224,7 @@ BASE_URL="http://${HTTP_ADDR}"
 API="${BASE_URL}/api/v1"
 
 # The bootstrap only fires on an empty user table, which the fresh temp SQLite
-# path guarantees. Against an existing database it is a deliberate no-op.
+# path guarantees. Against an existing database it does nothing.
 SQI_HTTP_ADDR="$HTTP_ADDR" \
 SQI_NATS_EMBEDDED_ADDR="$NATS_ADDR" \
 SQI_NATS_EMBEDDED_DATA_DIR="${TMP_DIR}/nats" \
@@ -260,9 +260,9 @@ step "unauthenticated requests are rejected"
 assert_eq "GET /jobs unauthenticated" "401" \
   "$(curl -sS -o /dev/null -w '%{http_code}' "${API}/jobs")"
 
-# /readyz and the OpenAPI document stay public by design — liveness probes and
-# API documentation must not require a credential.
-assert_eq "GET /openapi.yaml unauthenticated (public by design)" "200" \
+# /readyz and the OpenAPI document stay public: liveness probes and API
+# documentation must not require a credential.
+assert_eq "GET /openapi.yaml unauthenticated (public)" "200" \
   "$(curl -sS -o /dev/null -w '%{http_code}' "${API}/openapi.yaml")"
 
 # ── 3. Bootstrap admin login ──────────────────────────────────────────────────
@@ -389,7 +389,7 @@ assert_eq "PATCH /auth/me ignored role escalation" "user" \
 
 # ── 7. The worker joins with no credentials at all ────────────────────────────
 
-step "start sqi-worker — note it is given NO credentials"
+step "start sqi-worker with no credentials"
 
 # Broker authentication (nats.auth.enabled) is a separate, opt-in gate from
 # the auth.enabled this demo exercises — see docs/auth.md's transport
@@ -480,7 +480,7 @@ assert_eq "artist GET  /jobs/{own job}"   "200" "$(code_key "$ARTIST_KEY" "${API
 
 # ── 9. The farm still runs ────────────────────────────────────────────────────
 
-step "the job actually executes — auth gates the API, not the farm"
+step "the job executes: auth gates the API, not the farm"
 
 # Jobs reach "completed"; it is tasks that reach "succeeded".
 job_status=""
@@ -552,7 +552,7 @@ step "admin revokes the artist's API key (apikeys.admin)"
 
 # An admin can list and revoke another user's keys but cannot mint one for
 # them: revoking someone's credential and minting one they are accountable for
-# are different acts, so there is deliberately no admin key-create route.
+# are different acts, so there is no admin key-create route.
 assert_eq "artist cannot list another user's keys" "403" \
   "$(code_key "$ARTIST_KEY" "${API}/users/${ARTIST_ID}/api-keys")"
 assert_eq "admin lists the artist's keys" "1" \

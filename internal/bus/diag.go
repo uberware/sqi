@@ -11,8 +11,8 @@ import (
 // SubjectWorkerDiagPrefix is the prefix for worker diagnostic-log subjects.
 // Full subject: SubjectWorkerDiagPrefix + "." + workerID.
 //
-// Unlike task/work/status subjects, diagnostic logs use CORE NATS (not
-// JetStream): they are best-effort and never retained on the broker.  The
+// Unlike the task-status, log and worker subjects, diagnostic logs use core
+// NATS (not JetStream), like work leases: they are best-effort and never retained on the broker.  The
 // server keeps a bounded in-memory ring buffer instead.
 const SubjectWorkerDiagPrefix = "worker.diag"
 

@@ -22,9 +22,7 @@ import (
 
 // The worker's observability listener serves metrics, health and optionally
 // pprof. It defaults to loopback, but an operator scraping it from Prometheus
-// has to bind it wider — and until this, there was no way to protect it. It was
-// the one listener sqi opens that TLS did not reach, which made the top line of
-// docs/tls.md false.
+// has to bind it wider, and TLS is what protects it then.
 
 func obsCerts(t *testing.T) (certFile, keyFile, caFile string) {
 	t.Helper()
@@ -104,7 +102,7 @@ func get(t *testing.T, client *http.Client, url string) (*http.Response, error) 
 }
 
 func TestObs_PlaintextByDefault(t *testing.T) {
-	// The default path must be byte-for-byte what it always was.
+	// The zero TLSConfig serves plain HTTP.
 	addr := runObs(t, obs.TLSConfig{})
 	resp, err := get(t, &http.Client{Timeout: 5 * time.Second}, "http://"+addr+"/healthz")
 	if err != nil {
@@ -145,7 +143,7 @@ func TestObs_ServesHTTPSWhenEnabled(t *testing.T) {
 		}
 	}
 
-	// And plaintext must no longer be served on that port.
+	// Plain HTTP is not served on that port.
 	if r, err := get(t, &http.Client{Timeout: 5 * time.Second}, "http://"+addr+"/healthz"); err == nil {
 		code := r.StatusCode
 		_ = r.Body.Close()

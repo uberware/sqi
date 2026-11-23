@@ -3,13 +3,12 @@
 // Package ldap authenticates usernames and passwords against an LDAP or
 // Active Directory server.
 //
-// LDAP is a login-time credential verifier, NOT an auth.Authenticator: a
-// directory bind is far too expensive to run on every request, and the
-// directory has no notion of a session. POST /auth/login calls Verify for
-// accounts whose store.User.AuthSource is "ldap" and, on success, mints the
-// same server-side session a local password login produces. Everything
-// downstream — RBAC, owner binding, WebSocket scoping — is therefore
-// unchanged.
+// LDAP is a login-time credential verifier, not an auth.Authenticator: a
+// directory bind is too expensive to run on every request, and the directory
+// has no notion of a session. POST /auth/login calls Verify for accounts whose
+// store.User.AuthSource is "ldap" and, on success, mints the same server-side
+// session a local password login produces, so RBAC, owner binding and
+// WebSocket scoping treat both kinds of account alike.
 package ldap
 
 import (
@@ -36,9 +35,7 @@ var (
 )
 
 // RoleMapping is one group-DN → role rule. It is an alias for
-// [rolemap.Mapping], not a distinct type: the two were field-identical, and
-// keeping them separate meant converting the whole slice on every login purely
-// to change its name.
+// [rolemap.Mapping], so a role map passes to rolemap without conversion.
 type RoleMapping = rolemap.Mapping
 
 // Config configures directory authentication. It mirrors config.LDAPConfig;
@@ -60,18 +57,17 @@ type Config struct {
 	DisplayNameAttr string
 	// UniqueIDAttr names the attribute holding the entry's stable,
 	// non-reusable identifier: objectGUID on Active Directory, entryUUID on
-	// OpenLDAP and other RFC 4530 servers. Required — there is no value
-	// correct on both, and auto-detection would silently guess wrong on a
-	// server exposing both.
+	// OpenLDAP and other RFC 4530 servers. Required: no default is correct
+	// on both, and auto-detection would guess wrong on a server exposing
+	// both.
 	UniqueIDAttr string
 	RoleSource   string
 	RoleMap      []rolemap.Mapping
 	DefaultRole  string
-	// Logger receives the operational warnings this package cannot resolve on
-	// its own — currently only a failed nested-group expansion, which degrades
-	// silently to flat memberOf and would otherwise demote admins who hold
-	// admin solely through a nested group with no signal anywhere. Optional:
-	// nil is safe and disables that logging.
+	// Logger receives the warning for a failed or empty nested-group
+	// expansion, which falls back to flat memberOf and can demote an admin
+	// who holds admin only through a nested group. Optional: nil disables
+	// that logging.
 	Logger *slog.Logger
 }
 

@@ -12,8 +12,8 @@ import (
 // TestTranslatePattern_Rejects covers every construct RFC 0006 excludes.
 //
 // Two groups are represented. The first is the specification's own explicit
-// "Not supported" list. The second is derived from its stated RULE — that the
-// syntax is the INTERSECTION of Python's re and Rust's regex — which the
+// "Not supported" list. The second is derived from its stated rule — that the
+// syntax is the intersection of Python's re and Rust's regex — which the
 // reference implementation does not enforce: it accepts \p{...}, (?<n>...) and
 // [[:alpha:]], all of which Python's re either rejects outright or reads as
 // something different.
@@ -100,7 +100,7 @@ func TestTranslatePattern_AcceptsSupported(t *testing.T) {
 // Perl classes into Unicode ones.
 //
 // The in-class column is the reason this is a scanner. Outside a class \w
-// becomes a bracketed class; INSIDE one it must become the bracket's CONTENTS,
+// becomes a bracketed class; inside one it must become the bracket's contents,
 // because Go reads a nested "[" as a literal "[" — "[[\p{L}]]" compiles and
 // matches the wrong thing rather than erroring.
 func TestTranslatePattern_UnicodeShorthands(t *testing.T) {
@@ -180,7 +180,7 @@ func TestTranslatePattern_ShorthandsMatchUnicode(t *testing.T) {
 // TestUnicodeSpaceSet_MatchesWhiteSpace pins the expansion against Unicode's
 // White_Space property, one codepoint at a time.
 //
-// \p{White_Space} is NOT usable: Go's regexp supports Unicode categories and
+// \p{White_Space} is not usable: Go's regexp supports Unicode categories and
 // scripts only, not properties, and rejects it. So the set is written out, and
 // this test is what stops it drifting.
 func TestUnicodeSpaceSet_MatchesWhiteSpace(t *testing.T) {
@@ -200,12 +200,12 @@ func TestUnicodeSpaceSet_MatchesWhiteSpace(t *testing.T) {
 	}
 }
 
-// TestTranslatePattern_UnicodeEscapes covers the escapes RFC 0006 REQUIRES but
+// TestTranslatePattern_UnicodeEscapes covers the escapes RFC 0006 requires but
 // Go cannot parse. Both Python and Rust accept \uHHHH and \UHHHHHHHH; Go's
 // regexp has no \u escape at all and rejects them.
 //
-// Note the asymmetry with the rejection tests: \u{41} is REFUSED (Rust-only
-// brace syntax) while \u0041 is TRANSLATED, and the translation emits the
+// Note the asymmetry with the rejection tests: \u{41} is refused (Rust-only
+// brace syntax) while \u0041 is translated, and the translation emits the
 // very \x{...} spelling the input is not allowed to use. That is deliberate:
 // the rejection governs what a template may contain, the emission governs
 // what Go is handed.
@@ -269,15 +269,15 @@ func TestTranslatePattern_RejectsMalformedUnicodeEscape(t *testing.T) {
 // scanner rewrites an entire enclosing construct.
 //
 // "[\Wa]" means "not a word character, or the letter a". Go's engine cannot
-// build a class that UNIONS a negated set with more members, so the class
+// build a class that unions a negated set with more members, so the class
 // becomes an alternation instead. That is sound here because each alternative
 // matches exactly one character, so there is no leftmost-match ambiguity, and
 // "(?:...)" is an atom just as a class is, so a following quantifier still
 // binds to the whole thing. Alternation takes any number of branches, so a
-// class may hold BOTH \W and \S — one branch per distinct shorthand present,
+// class may hold both \W and \S — one branch per distinct shorthand present,
 // plus one more for any ordinary members left over.
 //
-// The negated form "[^\Wa]" is a different problem — word characters MINUS a,
+// The negated form "[^\Wa]" is a different problem — word characters minus a,
 // i.e. set subtraction — and is rejected directly by classNeedsAlternation.
 func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 	tests := []struct {
@@ -296,7 +296,7 @@ func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 		{"S class matches the extra member", `^[\Sx]$`, "x", true},
 		{"S class rejects a space", `^[\Sx]$`, " ", false},
 		// \W and \S together: every character is either not-a-word-char or
-		// not-a-space-char (no character is BOTH a word char and a space
+		// not-a-space-char (no character is both a word char and a space
 		// char), so the union covers everything — a degenerate but correct
 		// result.
 		{"W and S together matches a word char, via the S branch", `^[\W\S]$`, "a", true},
@@ -320,12 +320,12 @@ func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 		// leading-] convention — same meaning, different source syntax.
 		{"escaped ] plus W matches the bracket", `^[\W\]]$`, "]", true},
 		{"escaped ] plus W rejects a word char", `^[\W\]]$`, "a", false},
-		// A remainder containing a TRANSLATED escape (\d -> \p{Nd}), not a
+		// A remainder containing a translated escape (\d -> \p{Nd}), not a
 		// bare literal — exercises classBodyWithout's call into scanEscape.
 		{"W plus d matches a digit via the remainder", `^[\W\d]$`, "3", true},
 		{"W plus d matches non-word via the W branch", `^[\W\d]$`, "!", true},
 		{"W plus d rejects a non-digit word char", `^[\W\d]$`, "a", false},
-		// The critical case: a literal "^" that was NOT first in the source
+		// The critical case: a literal "^" that was not first in the source
 		// can be promoted to first position once the shorthand ahead of it is
 		// dropped. Escaped, it stays literal; unescaped, Go would read it as
 		// the class's negation marker and invert the whole match.
@@ -335,7 +335,7 @@ func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 		{"caret after a dropped W stays literal, rejects a digit", `^[\W^a]$`, "3", false},
 		{"caret after a dropped S stays literal, matches the caret", `^[\S^a]$`, "^", true},
 		{"caret after a dropped S stays literal, rejects a space", `^[\S^a]$`, " ", false},
-		// The degenerate case: dropping \W leaves ONLY a caret behind. The
+		// The degenerate case: dropping \W leaves only a caret behind. The
 		// remainder must be the one-member literal class "[\^]", not the
 		// bare, uncompilable "[^]".
 		{"W with nothing but a caret left behind matches the caret", `^[\W^]$`, "^", true},
@@ -358,14 +358,14 @@ func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 	}
 }
 
-// TestTranslatePattern_AlternationText pins the exact translated TEXT of
+// TestTranslatePattern_AlternationText pins the exact translated text of
 // every alternation-producing class, not just its match behavior: a wrong
 // bracket placement can compile and even match every probe character in
 // TestTranslatePattern_NegatedShorthandInPositiveClass correctly by
 // coincidence (as "[\W^a]" mistranslated to "(?:[^\p{L}_\p{N}]|[^a])" would —
 // it only diverges from the correct translation on inputs the match-behavior
 // test does not probe), while still being the wrong regex. Every string here was verified independently: compiled
-// with regexp.Compile and checked against the pattern's OWN meaning across a
+// with regexp.Compile and checked against the pattern's own meaning across a
 // probe set, not merely copied from whatever this package currently emits.
 func TestTranslatePattern_AlternationText(t *testing.T) {
 	tests := []struct {
@@ -385,11 +385,11 @@ func TestTranslatePattern_AlternationText(t *testing.T) {
 		{"caret after a dropped S is escaped", `[\S^a]`, `(?:[^` + unicodeSpaceSet + `]|[\^a])`},
 		{"a lone caret left behind is escaped rather than emitting the uncompilable []", `[\W^]`, `(?:[^\p{L}_\p{N}]|[\^])`},
 		// A shorthand repeated with itself: classNeedsAlternation collapses
-		// every occurrence of a given shorthand to the SAME one branch (see
+		// every occurrence of a given shorthand to the same one branch (see
 		// its own doc), so nothing is left over and the alternation holds a
 		// single branch. This guards a live panic: if classBodyWithout ever
-		// dropped only the FIRST occurrence instead of every one, the second
-		// \W/\S would reach writeSetEscape as class CONTENTS with negate
+		// dropped only the first occurrence instead of every one, the second
+		// \W/\S would reach writeSetEscape as class contents with negate
 		// true, which panics by construction (writeSetEscape's own doc) —
 		// and nothing else in the suite would go red first.
 		{"W repeated with itself collapses to one branch", `[\W\W]`, `(?:[^\p{L}_\p{N}])`},
@@ -412,19 +412,19 @@ func TestTranslatePattern_AlternationText(t *testing.T) {
 }
 
 // TestTranslatePattern_WordShorthandAdjacentDash covers \w's expansion, which
-// unlike \d, \D and \s contains a BARE LITERAL character ("_"). If the
-// expansion ended in it, an adjacent "-" in the SOURCE would form an
-// unintended character RANGE with it: "[\w-a]" would translate its set into
+// unlike \d, \D and \s contains a bare literal character ("_"). If the
+// expansion ended in it, an adjacent "-" in the source would form an
+// unintended character range with it: "[\w-a]" would translate its set into
 // "[\p{L}\p{N}_-a]", where Go reads "_-a" as the range U+005F..U+0061 —
 // matching the backtick, which is neither a word character nor "a" under any
 // reading of the source. Verified directly against Python's re: it and the
-// reference both REJECT "[\w-a]" outright ("bad character range \w-a"; the
+// reference both reject "[\w-a]" outright ("bad character range \w-a"; the
 // reference: "regex parse error").
 //
-// unicodeWordSet (see its doc) puts the underscore in the MIDDLE of the set,
+// unicodeWordSet (see its doc) puts the underscore in the middle of the set,
 // between the two \p{...} property escapes, so it can never be the first or
 // last character spliced in and therefore can never directly abut whatever
-// SOURCE text sits next to the \w escape, on either side — checked here in
+// source text sits next to the \w escape, on either side — checked here in
 // both directions.
 func TestTranslatePattern_WordShorthandAdjacentDash(t *testing.T) {
 	t.Run("translated text", func(t *testing.T) {
@@ -457,7 +457,7 @@ func TestTranslatePattern_WordShorthandAdjacentDash(t *testing.T) {
 			input   string
 			want    bool
 		}{
-			// The critical case: "[\w-a]" must NOT match the backtick.
+			// The critical case: "[\w-a]" must not match the backtick.
 			// U+0060 is neither a word character nor "a" under any reading
 			// of the source, but a translation ending in "_" would match it via
 			// the accidental "_-a" range.
@@ -506,11 +506,11 @@ func TestTranslatePattern_WordShorthandAdjacentDash(t *testing.T) {
 }
 
 // TestTranslatePattern_AlternationAdjacentDash covers dropping a lifted \W/\S
-// shorthand, which SPLICES its two former neighbors together; if one of them
-// is a literal "-" the splice can form a character RANGE the source never
+// shorthand, which splices its two former neighbors together; if one of them
+// is a literal "-" the splice can form a character range the source never
 // wrote: a naive translation turns "[a\W-c]" into
 // "(?:[^\p{L}_\p{N}]|[a-c])", which Go reads as the range a..c and so
-// MATCHES "b" — outside every reading of the source, since the "-" sat
+// matches "b" — outside every reading of the source, since the "-" sat
 // between "\W" and "c" in the original text, never between "a" and "c".
 // Verified directly: both Python's re ("bad character range \W-c") and the
 // reference ("regex parse error") refuse to parse "[a\W-c]" and "[0\W-9]"
@@ -603,7 +603,7 @@ func TestTranslatePattern_AlternationAdjacentDash(t *testing.T) {
 }
 
 // TestTranslatePattern_NestedClassIsNeverEmitted pins the failure the scanner
-// exists to prevent. Go compiles "[[\p{L}]]" WITHOUT ERROR and matches
+// exists to prevent. Go compiles "[[\p{L}]]" without error and matches
 // something other than intended, so a translation that emitted a nested class
 // would ship a silently wrong matcher. No output may contain "[[".
 func TestTranslatePattern_NestedClassIsNeverEmitted(t *testing.T) {

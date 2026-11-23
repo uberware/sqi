@@ -4,9 +4,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import CopyableId from './CopyableId'
 
-// Note: userEvent.setup() installs its own navigator.clipboard stub, overriding
-// any mock we define. We use fireEvent.click() for clipboard tests so that the
-// component calls our mock directly rather than user-event's internal clipboard.
+// userEvent.setup() installs its own navigator.clipboard stub, overriding any
+// mock defined here. The clipboard tests use fireEvent.click() so that the
+// component calls the mock directly rather than user-event's clipboard.
 
 function mockClipboard(writeText: ReturnType<typeof vi.fn>) {
   Object.defineProperty(navigator, 'clipboard', {

@@ -58,9 +58,8 @@ func get(t *testing.T, client *http.Client, url string) (*http.Response, error) 
 // startTestServer boots a real Server on free loopback ports, applies mutate
 // to its Config, waits for the listener, and returns the base URL.
 //
-// Shared by the TLS tests and by the plaintext-default regression test, so the
-// two cannot drift apart in how they boot a server — the difference between
-// them should be the TLS config and nothing else.
+// Shared by the TLS tests and the plaintext-default test, so the only
+// difference in how they boot a server is the TLS config.
 func startTestServer(t *testing.T, scheme string, mutate func(*Config)) (*Server, string) {
 	t.Helper()
 	httpAddr := freeLoopbackAddr(t)
@@ -196,8 +195,8 @@ func TestServer_PlaintextRequestToTLSPortIsRefusedNotHung(t *testing.T) {
 	base := startTLSServer(t, certFile, keyFile)
 
 	// Same address, http:// scheme. Go's server answers this with a 400 and a
-	// readable body rather than hanging; the timeout makes a regression to a
-	// hang fail fast instead of stalling CI.
+	// readable body rather than hanging; the timeout makes a hang fail fast
+	// instead of stalling CI.
 	plain := "http://" + base[len("https://"):]
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := get(t, client, plain+"/healthz")

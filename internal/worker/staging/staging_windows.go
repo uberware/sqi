@@ -20,10 +20,9 @@ import (
 // augments on unix.
 //
 // This affects only copyFile, the stage-in path. Stage-out does not open by
-// path: openStageOutSource opens through an os.Root, which on Windows maps to
-// OBJ_DONT_REPARSE and makes the kernel refuse a lookup that meets any
-// reparse point. That is stronger than O_NOFOLLOW and closes the junction
-// bypass.
+// path: openStageOutSource opens through an os.Root, which on Windows walks
+// with OBJ_DONT_REPARSE and refuses every junction (see its doc for the one
+// in-root symlink case it follows).
 //
 // dest needs no equivalent: Go's syscall.Open sets FILE_FLAG_OPEN_REPARSE_POINT
 // whenever O_CREAT|O_EXCL is requested, so copyFromFile's
@@ -40,10 +39,9 @@ const noFollowFlag = 0
 // input asset carrying a second NTFS hardlink therefore fails stage-in on
 // Windows with "copy refused: ... has more than one hardlink". Content-addressed
 // and dedup asset stores, and "rsync --link-dest"-style delivery, produce
-// multiply linked files routinely. The refusal is correct under run-as-user
-// isolation and POSIX behaves the same way. See copyFile's doc for the
-// operator-facing half and docs/worker-configuration.md for why a hardlink is
-// treated as the file itself.
+// multiply linked files routinely. POSIX behaves the same way. See copyFile's
+// doc, and docs/worker-configuration.md for why a hardlink is treated as the
+// file itself.
 //
 // It goes through GetFileInformationByHandle because Windows exposes no link
 // count via os.FileInfo: Sys() yields a *syscall.Win32FileAttributeData, which
@@ -84,7 +82,7 @@ func hasExtraHardlinks(f *os.File) (bool, error) {
 // The sharing cases are why this is a per-platform helper: a task's background
 // child that outlives it (the process tree is not killed when a task exits
 // successfully; see proctree.Tree.Release) can still hold the staged output
-// open with a restrictive share mode, and NTFS answers the daemon's open with
+// open with a restrictive share mode, and NTFS answers the worker's open with
 // ERROR_SHARING_VIOLATION. Go maps neither that nor ERROR_LOCK_VIOLATION to
 // fs.ErrPermission, so without naming them a task that left a writer open
 // would be reported to the operator as a containment breach.

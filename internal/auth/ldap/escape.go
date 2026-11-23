@@ -9,30 +9,28 @@ import (
 )
 
 // EscapeUsernameFilter escapes a username for interpolation into a search
-// filter. This is not optional hygiene: UserFilter is operator-supplied with a
-// %s placeholder, so an unescaped `*)(uid=*` would rewrite "(uid=%s)" into a
-// filter matching every entry in the base DN — an authentication bypass, not
-// merely a malformed query.
+// filter. UserFilter is operator-supplied with a %s placeholder, so an
+// unescaped `*)(uid=*` would rewrite "(uid=%s)" into a filter matching every
+// entry in the base DN, bypassing authentication.
 func EscapeUsernameFilter(username string) string {
 	return ldapv3.EscapeFilter(username)
 }
 
-// dnSpecialChars are the characters RFC 4514 requires escaping wherever they
-// appear in a DN value: comma, plus, double quote, backslash, angle
-// brackets, semicolon, and equals.
+// dnSpecialChars are the characters escaped in a DN value: RFC 4514's comma,
+// plus, double quote, backslash, angle brackets and semicolon, plus equals
+// (see EscapeUsernameDN).
 const dnSpecialChars = `,+"\<>;=`
 
 // EscapeUsernameDN escapes a username for interpolation into UserDNTemplate.
 // Without it a username containing a comma could graft extra RDNs onto the
-// template and bind as a different entry entirely.
+// template and bind as a different entry.
 //
-// go-ldap/v3's EscapeDN follows the RFC 4514 grammar strictly, which does not
-// require escaping "=" inside a value (only the top-level type/value
-// separator is significant to a conformant parser). UserDNTemplate is built
-// by plain %s substitution rather than a structured DN encoder, so this
-// implements escaping locally, treating "=" as sensitive too: defense in
-// depth over relying on every consumer of the template being a fully
-// RFC-conformant DN parser.
+// go-ldap/v3's EscapeDN follows the RFC 4514 grammar, which does not require
+// escaping "=" inside a value (only the top-level type/value separator is
+// significant to a conformant parser). UserDNTemplate is filled by plain %s
+// substitution rather than a structured DN encoder, so this escapes locally
+// and treats "=" as special too, in case a consumer of the template is not a
+// fully RFC-conformant DN parser.
 func EscapeUsernameDN(username string) string {
 	if username == "" {
 		return ""

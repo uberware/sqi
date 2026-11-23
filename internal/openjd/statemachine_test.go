@@ -26,8 +26,8 @@ func TestValidateStepTransition(t *testing.T) {
 		{store.StepStatusReady, store.StepStatusCompleted},
 		{store.StepStatusReady, store.StepStatusFailed},
 		{store.StepStatusReady, store.StepStatusCanceled},
-		// A running step cannot be produced by any code path, but old databases
-		// and fixtures hold one, and FinalizeStep must be able to finish it.
+		// No code path writes a running step, but a database or fixture can
+		// hold one, and FinalizeStep must be able to finish it.
 		{store.StepStatusRunning, store.StepStatusCompleted},
 		{store.StepStatusRunning, store.StepStatusFailed},
 		{store.StepStatusRunning, store.StepStatusCanceled},

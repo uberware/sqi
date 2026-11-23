@@ -56,8 +56,9 @@ func TestCancelJobExecution_FinalizesEveryStep(t *testing.T) {
 
 // TestCancelJobExecution_CancelsTheJobRow pins that the job's own row is
 // canceled in the transaction that cancels its work, whatever non-terminal
-// status it held. Before, the job row was a second write (CancelJobStatus) whose
-// loss left a job with every step terminal and nothing for a start to repair.
+// status it held. A job row written by a second call (CancelJobStatus) could
+// be lost and leave a job with every step terminal and nothing for a start to
+// repair.
 func TestCancelJobExecution_CancelsTheJobRow(t *testing.T) {
 	for _, status := range []store.JobStatus{store.JobStatusRunning, store.JobStatusPending, store.JobStatusBlocked} {
 		for name, st := range newStores(t) {

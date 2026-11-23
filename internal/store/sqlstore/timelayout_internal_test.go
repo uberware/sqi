@@ -30,10 +30,10 @@ func TestTimeToText_IsFixedWidthUTC(t *testing.T) {
 	}
 }
 
-// TestTextToTime_ReadsEveryStoredForm pins the lenient read: every form an
-// earlier release stored, and the form this one stores, read back as the same
-// instant. textToTime parses with time.RFC3339Nano, the layout every earlier
-// release parses with, so the nine-digit case is also the downgrade guarantee.
+// TestTextToTime_ReadsEveryStoredForm pins the lenient read: every form older
+// binaries wrote, and the form this one writes, read back as the same instant.
+// textToTime parses with time.RFC3339Nano, the layout older binaries also
+// parse with, so the nine-digit case also shows they can read this form.
 func TestTextToTime_ReadsEveryStoredForm(t *testing.T) {
 	half := time.Date(2026, 10, 10, 12, 0, 5, 500_000_000, time.UTC)
 	whole := time.Date(2026, 10, 10, 12, 0, 5, 0, time.UTC)

@@ -188,7 +188,7 @@ export function providerForKind(
 export interface ProviderContext {
   /** The server's provider list; undefined while it is loading or failed to load. */
   providers: CapacityProvider[] | undefined
-  /** The provider the group already has. The server accepts it unchanged even if no longer offered. */
+  /** The provider the group already has. The server accepts it unchanged even when it is not in the list. */
   original?: string
 }
 

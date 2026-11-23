@@ -31,10 +31,10 @@ export function validateParam(p: ProductParameter, value: string): string | null
   }
 
   // STRING / PATH length constraints. RANGE_EXPR's grammar and BOOL's
-  // accepted spellings are the server's to enforce (see validateListValue's
-  // doc comment for why a second copy would be a drift hazard); RANGE_EXPR's
-  // min_length/max_length bound its string length exactly as the server
-  // does, and BOOL declares neither, so both correctly fall through here.
+  // accepted spellings are the server's to enforce (a second copy here would
+  // drift from it; see isBoolTruthy in productForm.ts). RANGE_EXPR's
+  // min_length/max_length bound its string length as the server does, and
+  // BOOL declares neither, so both fall through here.
   if (p.min_length !== null && value.length < p.min_length)
     return `must be at least ${p.min_length} characters`
   if (p.max_length !== null && value.length > p.max_length)
@@ -74,8 +74,8 @@ function validateListValue(
 }
 
 /** Validate one element against its declared type and the item: constraints
- * for its level. Deliberately shallow for BOOL — the server owns the accepted
- * spellings — and for an inner list, whose own elements the raw-JSON fallback
+ * for its level. Shallow for BOOL, whose accepted spellings the server owns,
+ * and for an inner list, whose own elements the raw-JSON fallback
  * leaves to the server. */
 function validateElement(
   element: unknown,

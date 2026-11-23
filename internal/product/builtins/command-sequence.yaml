@@ -96,7 +96,7 @@ template:
           onRun:
             # OpenJD forbids a line break in a template's literal args, so the
             # exports join Command with `;`. The values are integers and
-            # START-END range text -- nothing that needs escaping inside single
+            # START-END range text, nothing that needs escaping inside single
             # quotes. Nothing follows Command, so a `#` comment in it can only
             # swallow the rest of its own line.
             command: /bin/sh

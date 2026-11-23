@@ -12,14 +12,11 @@ import (
 
 // logonUserOS and capableOS back a logonUserProvider constructed via
 // newLogonUserProvider on every platform except Windows. Production never
-// reaches them here: this package's own newProvider (provider_unix.go)
-// returns the POSIX unixProvider instead of a logonUserProvider. They exist,
-// and fail closed rather than panicking or silently succeeding, purely so
-// that logonuser.go — which carries no build tag — compiles and behaves
-// safely on every platform, and so that a test which constructs a
-// logonUserProvider through the real public entry point (newLogonUserProvider)
-// rather than a fake seam still observes a well-defined, non-escalating
-// error instead of undefined behavior.
+// reaches them here: newProvider (provider_unix.go) returns the POSIX
+// unixProvider instead of a logonUserProvider. They exist so logonuser.go,
+// which carries no build tag, compiles on every platform, and they fail
+// closed, so a test that constructs a logonUserProvider through
+// newLogonUserProvider rather than a fake seam gets a well-defined error.
 var logonUserOS logonFunc = func(context.Context, string, string) (*Credential, error) {
 	return nil, errors.New("isolation: logon_user is only implemented on windows")
 }

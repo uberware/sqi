@@ -4,11 +4,10 @@ package openjd
 
 import "testing"
 
-// TestDecodeJobParameter_CanonicalizesOnlyUnderEXPR is the guard on RFC 0007's
-// blast radius. Case-insensitivity touches the type field of every parameter
-// in every template, so the gate is what keeps base-spec behavior identical:
-// without extensions: [EXPR], "int" must stay "int" and be rejected downstream
-// as an unknown type, exactly as it is today.
+// TestDecodeJobParameter_CanonicalizesOnlyUnderEXPR pins that RFC 0007's
+// case-insensitive type names apply only under EXPR. They touch the type
+// field of every parameter in every template, so without extensions: [EXPR],
+// "int" must stay "int" and be rejected downstream as an unknown type.
 func TestDecodeJobParameter_CanonicalizesOnlyUnderEXPR(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -44,8 +43,8 @@ func TestDecodeJobParameter_CanonicalizesOnlyUnderEXPR(t *testing.T) {
 }
 
 // TestDecodeTaskParamDefinition_CanonicalizesOnlyUnderEXPR is the task-side
-// half of the same gate. RFC 0007 makes task type names case-insensitive too,
-// but adds no task types -- so a list type stays verbatim (and is rejected
+// half of the same rule. RFC 0007 makes task type names case-insensitive too,
+// but adds no task types, so a list type stays verbatim (and is rejected
 // downstream) even under EXPR.
 func TestDecodeTaskParamDefinition_CanonicalizesOnlyUnderEXPR(t *testing.T) {
 	tests := []struct {
@@ -78,7 +77,7 @@ func TestDecodeTaskParamDefinition_CanonicalizesOnlyUnderEXPR(t *testing.T) {
 
 // TestValidate_BaseSpecStillRejectsLowercaseType is the end-to-end half of the
 // guard, driven through the real Parse + Validate path rather than the decoder
-// alone: a base-spec template using "int" must still be rejected.
+// alone: a base-spec template using "int" must be rejected.
 func TestValidate_BaseSpecStillRejectsLowercaseType(t *testing.T) {
 	tmpl, err := Parse([]byte(`
 specificationVersion: jobtemplate-2023-09
@@ -105,9 +104,7 @@ steps:
 
 // TestValidate_EXPRAcceptsLowercaseBaseType is its mirror: the same template
 // with the extension declared must get past the unknown-type check. It asserts
-// the ABSENCE of a type error rather than overall acceptance, because the
-// EXPR extension is registered-but-unsupported and the status gate rejects the
-// template for an unrelated reason (see internal/openjd/extension.go).
+// only that no error is reported at the parameter's type pointer.
 func TestValidate_EXPRAcceptsLowercaseBaseType(t *testing.T) {
 	tmpl, err := Parse([]byte(`
 specificationVersion: jobtemplate-2023-09

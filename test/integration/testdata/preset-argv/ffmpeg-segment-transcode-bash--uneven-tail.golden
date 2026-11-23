@@ -106,11 +106,11 @@ task 1/1  name="Join"
     
     # Windows (git-bash): a drive-letter or UNC path arrives with
     # backslashes, which are not separators to dirname/basename or to
-    # the glob below, so every path operation here would silently
-    # produce garbage. Fold them to forward slashes, which bash, the
-    # glob, and ffmpeg.exe all accept on Windows. Guarded on the
-    # Windows path prefixes so a POSIX path that legitimately contains
-    # a backslash is left untouched.
+    # the glob below, so every path operation here would produce wrong
+    # paths. Fold them to forward slashes, which bash, the glob, and
+    # ffmpeg.exe all accept on Windows. Guarded on the Windows path
+    # prefixes so a POSIX path that contains a backslash is left
+    # untouched.
     case "$out" in
       [A-Za-z]:[\\/]* | \\\\*) out="${out//\\//}" ;;
     esac

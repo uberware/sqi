@@ -260,7 +260,7 @@ def test_fixtures_match_schema() -> None:
 
 
 def test_invalid_fixtures_that_break_the_schema_are_caught() -> None:
-    """The mini-checker must actually reject, or the test above proves nothing."""
+    """The mini-checker must reject, or the test above proves nothing."""
     schema = _load_schema()
     for name in ("invalid-version.json", "invalid-no-scene-path.json", "invalid-extra-value.json"):
         document = json.loads((FIXTURES / name).read_text(encoding="utf-8"))

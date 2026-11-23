@@ -13,17 +13,15 @@ import (
 // candidate value, attaching ptr as the pointer prefix for every error it
 // reports.
 //
-// It is the ONE implementation of those rules. Two callers need them against
-// different sources: validation checks the template's own default
-// (validate_paramtypes.go), and binding checks a submitted value. Writing the
-// rules twice is how the two drift apart, and this package already carries
-// one deliberately-duplicated coercion table -- expr.parseBoolText against
-// openjd.parseBoolParamValue -- which is justified only because the worker
-// binary cannot import internal/openjd. Inside one package there is no such
-// boundary and no such justification.
+// It is the single implementation of those rules, used against two sources:
+// validation checks the template's own default (validate_paramtypes.go), and
+// binding checks a submitted value. The one duplicated coercion table,
+// expr.parseBoolText against openjd.parseBoolParamValue, exists because the
+// worker binary cannot import internal/openjd; within this package the rules
+// are not duplicated.
 //
-// It does NOT check whether the field was declared or defaulted, and it does
-// NOT check the LEGALITY of an item: constraint for the declared element type
+// It does not check whether the field was declared or defaulted, and it does
+// not check the legality of an item: constraint for the declared element type
 // -- both are properties of the declaration, not of a value, so they stay
 // with the caller. Running a legality check per submitted value would report
 // the same declaration error once per submission.
@@ -95,7 +93,7 @@ func checkRangeExprValue(value string, p JobParameter, ptr string) ValidationErr
 // satisfy minLength/maxLength, and does every element satisfy its type and
 // item: constraint.
 //
-// It does NOT check the item: constraint's own legality for the declared
+// It does not check the item: constraint's own legality for the declared
 // element type -- that is validateItemConstraintLegality, which stays with
 // the caller because it is a property of the declaration.
 func checkListValue(value string, p JobParameter, ptr string) ValidationErrors {
@@ -117,7 +115,7 @@ func checkListValue(value string, p JobParameter, ptr string) ValidationErrors {
 
 // prefixPointers rewrites every error's pointer as though checkParamValueAgainstType
 // had been called at ptr+field instead of ptr, so a caller can place the
-// shared core's result under the field the value actually came from (e.g.
+// shared core's result under the field the value came from (e.g.
 // "/default" for a declared default). Any element-relative suffix the core
 // appended -- an index, or a nested index -- stays trailing.
 //

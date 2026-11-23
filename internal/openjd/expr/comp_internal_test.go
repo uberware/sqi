@@ -56,12 +56,12 @@ func compSyms(t *testing.T) MapSymbols {
 }
 
 // TestEvalListComp_UnionIterable pins iterableElem's union rule: a union is
-// iterable only when EVERY member is, and its element type is the unification
+// iterable only when every member is, and its element type is the unification
 // of the members' own.
 //
-// Delegating the whole question to listElem (coerce.go), which SKIPS a union's
+// Delegating the whole question to listElem (coerce.go), which skips a union's
 // non-list members, would type "range_expr | list[string]" as list[string], a
-// WRONG static type for a value that may be a range_expr yielding int at
+// wrong static type for a value that may be a range_expr yielding int at
 // runtime. Refusing every union is also wrong, and the URange case below is
 // why: this package manufactures "range_expr | list[int]" itself for a slice
 // of a range_expr whose length is not yet known, and that union genuinely is
@@ -148,13 +148,13 @@ func TestEvalListComp_Values(t *testing.T) {
 	}
 }
 
-// evalRaw parses and evaluates src against target WITHOUT Expression.Eval's own
+// evalRaw parses and evaluates src against target without Expression.Eval's own
 // final boundary coerce.
 //
-// That final coerce narrows the WHOLE expression's result to target no matter
+// That final coerce narrows the whole expression's result to target no matter
 // what an inner node computed, which masks exactly the class of bug
 // TestEvalListComp_TargetFlowsInward exists to catch: when the comprehension
-// IS the entire expression, Eval's own boundary call quietly repairs a wrong
+// is the entire expression, Eval's own boundary call quietly repairs a wrong
 // inner derivation (an unresolved list[int] narrows straight to list[float]
 // when the target asks for it, whether or not the inner code that produced
 // list[int] ever consulted the target at all), so a test built on the public
@@ -172,14 +172,14 @@ func evalRaw(t *testing.T, src string, syms Symbols, target Type) (Value, error)
 
 // TestEvalListComp_TargetFlowsInward pins that the element expression is an
 // identity position for the target type, like a list literal's elements — on
-// BOTH the resolved iterable path (runComp's coerce call) and the unresolved
+// both the resolved iterable path (runComp's coerce call) and the unresolved
 // one (unresolvedComp). The two are pinned separately because they can
 // disagree: an unresolved path that derived its result type solely from the
 // element expression would drop the target, so the same source text would
 // report two different static types depending on whether its iterable
 // happened to be resolved at the time. The unresolved-path subtests use
 // evalRaw, not Eval, because Eval's own final boundary coerce independently
-// narrows the WHOLE result to target and would pass even against an
+// narrows the whole result to target and would pass even against an
 // unresolvedComp that ignores the target — see evalRaw's doc.
 func TestEvalListComp_TargetFlowsInward(t *testing.T) {
 	syms := compSyms(t)
@@ -233,10 +233,10 @@ func TestEvalListComp_TargetFlowsInward(t *testing.T) {
 }
 
 // TestEvalListComp_MidIterationUnresolved exercises runComp's fallback to
-// unresolvedComp when a CONCRETE iterable's filter or element turns out
+// unresolvedComp when a concrete iterable's filter or element turns out
 // unresolved partway through iteration — the subtlest path in the file.
 // TestEvalListComp_Unresolved does not reach it: it only varies the
-// ITERABLE, which short-circuits to unresolvedComp before runComp's loop
+// iterable, which short-circuits to unresolvedComp before runComp's loop
 // ever starts.
 func TestEvalListComp_MidIterationUnresolved(t *testing.T) {
 	syms := compSyms(t)
@@ -273,7 +273,7 @@ func TestEvalListComp_MidIterationUnresolved(t *testing.T) {
 }
 
 // TestEvalListComp_ElemTypeIsThreadedNotRederived pins that runComp's
-// fallback to unresolvedComp uses the SAME elemType
+// fallback to unresolvedComp uses the same elemType
 // evalListComp computed from the iterable's own declared type, not re-derive
 // one from whatever partial items runComp happened to collect before falling
 // back.
@@ -289,7 +289,7 @@ func TestEvalListComp_ElemTypeIsThreadedNotRederived(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
-	// The iterable's OWN declared element type is float; the first collected
+	// The iterable's own declared element type is float; the first collected
 	// item's raw payload type (int) must not leak into the result.
 	if got, want := v.Type.String(), "unresolved[list[float]]"; got != want {
 		t.Errorf("type = %s, want %s", got, want)
@@ -298,7 +298,7 @@ func TestEvalListComp_ElemTypeIsThreadedNotRederived(t *testing.T) {
 
 // TestEvalListComp_FilterAcceptsAnyTypedPlaceholder pins that a filter bound
 // to an untyped ("any") placeholder, such as an untyped "let" binding, is not
-// rejected as "not a bool" when it COULD, at runtime, turn out to be one. It
+// rejected as "not a bool" when it could, at runtime, turn out to be one. It
 // must defer, like evalCond does for the identical question about its own
 // condition, not reject outright. A placeholder that could never be a bool
 // must still be rejected, which the third case pins so the deferral does not
@@ -333,7 +333,7 @@ func TestEvalListComp_FilterAcceptsAnyTypedPlaceholder(t *testing.T) {
 		}
 	})
 	t.Run("a placeholder that could never be bool is rejected directly over a concrete iterable too", func(t *testing.T) {
-		// Unlike the previous case, Param.Items is CONCRETE, so evaluation
+		// Unlike the previous case, Param.Items is concrete, so evaluation
 		// reaches evalCompFilter's own includes check first (runComp's
 		// per-item loop), which rejects on the spot rather than only
 		// deferring to checkCompFilter's identical check by way of the
@@ -409,7 +409,7 @@ func TestEvalListComp_Unresolved(t *testing.T) {
 // TestEvalListComp_DepthIsBounded pins that nesting a comprehension inside
 // another's element expression reaches a depth guard rather than the stack.
 //
-// This exercises the PARSER's depth guard only (Parse, not Eval): at
+// This exercises the parser's depth guard only (Parse, not Eval): at
 // maxParseDepth = 500 and roughly 3 parser frames per nested "[... for ... in
 // ...]", parsing already rejects source this deeply nested, so evalNode's own
 // maxEvalDepth (10,000) can never be reached by nesting comprehensions this

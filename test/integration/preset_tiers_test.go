@@ -2,15 +2,19 @@
 
 package integration
 
-// preset_tiers_test.go — the tier registry's verification.
+// preset_tiers_test.go: the tier registry's verification.
 //
 // presets/validation-tiers.yaml states which validation tier each preset
-// reached. This file makes each of those statements a FACT rather than an
-// intention, by refusing five kinds of unearned claim. Rule 3 is the important
-// one: a Tier-3 claim whose case skipped on a platform the entry lists in
-// required_on FAILS. Every container-backed target in this repo can exit 0
-// while running nothing; elsewhere a CI job asserts test names by hand, and
-// here it is enforced in Go instead.
+// reached. This file fails on a claim that nothing backs:
+//
+//  1. every shipped preset and built-in has an entry, and every entry names one;
+//  2. a Tier-1 claim needs a fixture case and a golden;
+//  3. an execution-tier case that skipped on a platform the entry lists in
+//     required_on fails;
+//  4. an execution-tier case that never reported fails.
+//
+// A skipped test verifies nothing, so rule 3 does in Go what CI jobs elsewhere
+// do by asserting test names.
 
 import (
 	"fmt"
@@ -26,9 +30,9 @@ import (
 	"github.com/uberware/sqi/internal/product"
 )
 
-// TestZZPresetTierRegistrySatisfied runs LAST in this package on purpose: it
-// asserts on what the tier tests recorded while running, so it must observe
-// them. The ZZ prefix is what orders it.
+// TestZZPresetTierRegistrySatisfied runs last in this package: it asserts on
+// what the tier tests recorded while running, so it must run after them. The
+// ZZ prefix orders it.
 func TestZZPresetTierRegistrySatisfied(t *testing.T) {
 	reg, err := presettest.LoadRegistry()
 	if err != nil {
@@ -110,12 +114,9 @@ func execTierViolation(
 	return ""
 }
 
-// TestExecTierViolation pins rules 3 and 4 directly, for both tiers.
-//
-// Tier 2 is the tier most able to pass while proving nothing: its tests skip
-// when the vendor application is absent, and ffmpeg is absent by default on
-// most machines. The registry must treat that skip exactly as it treats a
-// Tier-3 one.
+// TestExecTierViolation pins rules 3 and 4 for both tiers. Tier 2's tests
+// skip when the vendor application is absent, as ffmpeg is on most machines
+// by default, so the registry treats that skip as it treats a Tier-3 one.
 func TestExecTierViolation(t *testing.T) {
 	tier := &presettest.TierExec{Case: "synthetic", RequiredOn: []string{"linux"}}
 	skipped := presettest.Outcome{Ran: true, Skipped: true, Reason: "ffmpeg not on PATH"}
@@ -183,8 +184,8 @@ func TestExecTierViolation_RequiresApp(t *testing.T) {
 // What a template admits is derived from its attr.worker.os.family
 // requirements alone, across every step: those are the only requirements no
 // test environment can fake (see unsatisfiableOSFamily). Tier 2 is not held to
-// this -- ffmpeg-segment-transcode-bash's tier2 omits windows on purpose until
-// the Windows runner image is seen to run it.
+// this: ffmpeg-segment-transcode-bash's tier2 omits windows because the
+// Windows CI runner is not known to provide bash.
 func TestPresetTier3RequiredOnMatchesOSGate(t *testing.T) {
 	reg, err := presettest.LoadRegistry()
 	if err != nil {
@@ -237,9 +238,8 @@ func admittedGOOS(attrs []openjd.AttributeRequirement) []string {
 
 // assertRegistryCoversEverySource is rule 1, in both directions: every shipped
 // preset and built-in has an entry, and no entry names something that does not
-// exist. This is what makes adding a preset a paired change — the same
-// discipline internal/product/sqipresets_test.go's count check enforces for the
-// schema.
+// exist, so adding a preset needs a registry entry, as
+// internal/product/sqipresets_test.go's count check does for the schema.
 func assertRegistryCoversEverySource(t *testing.T, reg presettest.Registry) {
 	t.Helper()
 	root, err := presettest.RepoRoot()

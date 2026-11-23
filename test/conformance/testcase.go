@@ -22,7 +22,7 @@ type TestCase struct {
 	Section string
 	// Description is the human-readable remainder of the filename.
 	Description string
-	// Invalid reports whether the implementation is expected to REJECT this
+	// Invalid reports whether the implementation is expected to reject this
 	// fixture (filename carries ".invalid").
 	Invalid bool
 	// IsJobTest reports whether this is a job-execution test (".test"), which
@@ -36,8 +36,8 @@ type TestCase struct {
 //
 // A ".yaml" suffix alone is not enough: AppleDouble companions keep the
 // extension (see [fsutil.IsAppleDouble]), and no fixture in the suite begins
-// with a dot, so leading-dot names are excluded outright — which also covers
-// ".DS_Store" and any other OS metadata.
+// with a dot, so leading-dot names are excluded, which also covers
+// ".DS_Store" and other OS metadata.
 func IsFixtureFile(name string) bool {
 	return strings.HasSuffix(name, ".yaml") &&
 		!strings.HasPrefix(name, ".") &&

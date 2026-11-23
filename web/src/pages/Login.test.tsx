@@ -177,7 +177,7 @@ describe('Login', () => {
 
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(/sign-in failed/i)
-    // Generic on purpose: the server refuses to say why, because distinguishing
+    // Generic: the server does not say why, because distinguishing
     // "unknown user" from "no role mapping" would make the callback an
     // enumeration oracle. The web must not invent a reason it was never told.
     expect(alert.textContent ?? '').not.toMatch(/unknown|not found|role|mapping|claim/i)

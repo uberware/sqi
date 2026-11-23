@@ -106,7 +106,7 @@ textarea {
  * different intrinsic height than text inputs even with identical padding;
  * pinning both to --control-height (with the global border-box model) keeps
  * them aligned. Checkboxes and radios keep their native sizing, and the
- * multi-line textarea is intentionally excluded so it can still grow.
+ * multi-line textarea is excluded so it can grow.
  */
 input:not([type='checkbox']):not([type='radio']),
 select {
@@ -187,8 +187,8 @@ table {
 }
 
 /* ---- Scrollbars ---- */
-/* Theme scrollbars to match the design tokens. These only take space / appear
-   when an element actually overflows — no permanent reserved gutter. */
+/* Theme scrollbars to match the design tokens. They take space and appear only
+   when an element overflows; no gutter is reserved. */
 * {
   scrollbar-color: var(--color-border) transparent; /* Firefox */
 }

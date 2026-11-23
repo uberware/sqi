@@ -47,9 +47,9 @@ type Capabilities struct {
 	// Arch is the CPU architecture as reported by runtime.GOARCH: "amd64",
 	// "arm64", and so on. Advertised at registration so the scheduler can
 	// satisfy OpenJD's reserved attr.worker.cpu.arch host requirement, whose
-	// values are the SPECIFICATION's tokens ("x86_64", "arm64") rather than
-	// Go's — the server translates, the worker reports GOARCH verbatim, the
-	// same division of labor as OS/os.family.
+	// values are the specification's tokens ("x86_64", "arm64") rather than
+	// Go's. The worker reports GOARCH verbatim and the server translates, as
+	// for OS and os.family.
 	Arch string
 
 	// CPUCount is the number of logical (hardware-thread) CPUs available.

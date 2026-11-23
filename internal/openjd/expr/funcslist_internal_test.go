@@ -35,7 +35,7 @@ func TestRangeAndFlatten(t *testing.T) {
 		{"flatten of concretely-typed empty inner lists", "flatten([[1, 2][2:2], [3, 4][2:2]])", "[]", "list[int]"},
 		// rangeCount overflow: "stop - start" in plain int64 wraps to -1 for
 		// these arguments, which then divides to a count of 0, answering the
-		// empty list rather than erroring OR the true 2-element answer.
+		// empty list rather than erroring or the true 2-element answer.
 		{
 			"range across the full int64 span with a matching step",
 			"range(-9223372036854775807, 9223372036854775807, 9223372036854775807)",
@@ -195,7 +195,7 @@ func TestAnyAll_RejectNonBoolElements(t *testing.T) {
 // TestSorted_RejectsAnUnorderableElementType pins that sorted reuses section
 // 1.2.5's comparator and inherits its refusals rather than inventing an order.
 //
-// The unorderable case has to come from a SYMBOL, not a literal. section 2.1.4
+// The unorderable case has to come from a symbol, not a literal. section 2.1.4
 // lists the orderable types and range_expr is not among them, so compareValues
 // has no arm for it — but there is no way to write a list of range expressions
 // as a literal, and "[null, null]" is not usable either because section 1.3.2

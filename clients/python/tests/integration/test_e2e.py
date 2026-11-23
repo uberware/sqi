@@ -180,9 +180,9 @@ def test_websocket_live_log_tail(client: SqiClient, worker_farm: WorkerFarm) -> 
     pytest.importorskip("websockets")
 
     job = client.submit_job(_ECHO_JOB, farm_id=worker_farm.farm_id, queue_id=worker_farm.queue_id)
-    # The task exists at submit time, before the worker picks it up and executes,
-    # so subscribing now (since_seq=0 is live-only) reliably precedes the echo
-    # output, which then arrives live.
+    # The task exists at submit time, before the worker picks it up. Subscribing
+    # with since_seq=0 replays anything already buffered, so the echo output
+    # arrives whether it was written before or after the subscription.
     task_id = _first_task_id(client, job.id, timeout=30.0)
 
     # Live-tail over WebSocket until the echoed line arrives.
@@ -306,7 +306,7 @@ def test_product_create_parameters_and_submit(client: SqiClient) -> None:
     # No worker is running, so the job sits PENDING — creation is the assertion.
     assert client.get_job(job.id).status is JobStatus.PENDING
 
-    # Custom products are deletable; the delete actually removes it.
+    # Custom products are deletable, and the delete removes the product.
     client.delete_product(product_name)
     with pytest.raises(NotFoundError):
         client.get_product(product_name)

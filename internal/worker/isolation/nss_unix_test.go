@@ -518,10 +518,10 @@ func TestResolveToolPathFallsBackToBareNameWhenUnresolvable(t *testing.T) {
 	}
 }
 
-// TestResolveToolPathLogsWarnOnFallback is the Minor-4 fix: falling back to a
-// $PATH search for a tool this package is about to run as root must be
-// visible at WARN, not buried at Debug, since it silently re-opens the
-// trojan-binary exposure nssToolCandidates exists to close.
+// TestResolveToolPathLogsWarnOnFallback: falling back to a $PATH search for a
+// tool this package is about to run as root must be logged at WARN, not
+// Debug, since it is the trojan-binary exposure nssToolCandidates exists to
+// avoid.
 func TestResolveToolPathLogsWarnOnFallback(t *testing.T) {
 	var rec warnLevelRecorder
 	logger := slog.New(&rec)
@@ -676,13 +676,12 @@ func TestRunNSSCommandIncludesStderrInError(t *testing.T) {
 //
 // ident.groups (from GroupIds() or `id -G`) passed through finalizeGroups
 // unfiltered would let an account whose supplementary groups happen to
-// include gid 0 hand the child process gid-0 group membership even though every other check in this package refuses gid 0 as
-// an explicit target. These tests pin: gid 0 is dropped unconditionally, an
-// ordinary non-privileged supplementary gid survives untouched, and — the
-// deliberate part of the decision, not an oversight — a privileged NAMED
-// group's gid (e.g. 999, docker's gid on many distros) also survives, so a
-// later reader does not "fix" that away. See stripGID0FromSupplementary's
-// doc comment in provider_unix.go for the full rationale.
+// include gid 0 give the child process gid-0 group membership although every
+// other check in this package refuses gid 0 as an explicit target. These
+// tests pin: gid 0 is dropped unconditionally, an ordinary non-privileged
+// supplementary gid survives, and a privileged named group's gid (e.g. 999,
+// docker's gid on many distros) also survives by design. See
+// stripGID0FromSupplementary's doc comment in provider_unix.go.
 
 // TestStripGID0FromSupplementary covers the shapes gid=2001
 // Groups=[2001 0 2010] and Groups=[2001 999]: it exercises the single
@@ -753,9 +752,9 @@ func TestUnixProviderFallbackStripsGID0FromSupplementaryGroups(t *testing.T) {
 }
 
 // TestUnixProviderFallbackPreservesPrivilegedNamedGroupGID is the Resolve-
-// level companion proving the deliberate half of the decision: a
-// supplementary gid that happens to belong to a privileged NAMED group
-// (999, as in Groups=[2001 999]) is NOT stripped — only literal gid 0 is.
+// level companion for the other half of the rule: a supplementary gid that
+// belongs to a privileged named group (999, as in Groups=[2001 999]) is not
+// stripped; only gid 0 is.
 func TestUnixProviderFallbackPreservesPrivilegedNamedGroupGID(t *testing.T) {
 	run := fakeRunner(t, map[string]nssResponse{
 		"id -u " + fallbackUser:         {out: "1001\n"},

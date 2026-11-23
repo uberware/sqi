@@ -3,9 +3,9 @@
 // Package jointoken mints and hashes worker join tokens: the one-time or
 // reusable secrets an operator issues (via the CLI or the REST API) and a
 // worker redeems to enroll and receive its broker credential. It is
-// server-side only — issuance and redemption both happen on sqi-server — and
-// reuses the same random-token and hashing primitives as session tokens and
-// API keys (internal/auth/password) rather than re-deriving them.
+// server-side only (issuance and redemption both happen on sqi-server) and
+// uses the same random-token and hashing primitives as session tokens and API
+// keys (internal/auth/password).
 package jointoken
 
 import (

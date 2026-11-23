@@ -27,7 +27,7 @@ readme: |
   ## Exit status
 
   The task's exit status is decided once the whole command has run, mostly by
-  its **last** statement - much as `/bin/sh -c` does on Linux and macOS:
+  its last statement, much as `/bin/sh -c` does on Linux and macOS:
 
   - an explicit `exit N` exits `N`;
   - a native executable's non-zero exit code is forwarded - `$LASTEXITCODE`
@@ -36,9 +36,9 @@ readme: |
   - a thrown exception, or a cmdlet error in the last statement, exits 1;
   - otherwise it exits 0.
 
-  A native command writing to stderr is **not** a failure, even when that
-  stderr is redirected (`2>&1`, `2> log.txt`) - tools such as ffmpeg write
-  their progress there.
+  A native command writing to stderr is not a failure, even when that stderr
+  is redirected (`2>&1`, `2> log.txt`): tools such as ffmpeg write their
+  progress there.
 
   A cmdlet error in an earlier statement does not fail the task if later
   statements succeed. To stop at the first cmdlet error instead, start the
@@ -74,17 +74,17 @@ template:
             anyOf: ["windows"]
       script:
         embeddedFiles:
-          # The command runs as a script FILE rather than as -Command text for
+          # The command runs as a script file rather than as -Command text for
           # two reasons. OpenJD forbids a line break in a template's literal
-          # args, so a -Command wrapper must join its statements with `;` --
-          # and a trailing `#` comment in Command then swallows everything the
+          # args, so a -Command wrapper must join its statements with `;`, and
+          # a trailing `#` comment in Command then swallows everything the
           # wrapper appends. And Windows PowerShell 5.1 reads a BOM-less .ps1
           # in the ANSI code page, so the data opens with a UTF-8 BOM (\uFEFF)
           # or a non-ASCII command would be mangled.
           #
           # After Command: $? is read before anything can reset it. $Error is
           # consulted because Windows PowerShell 5.1 records each line of a
-          # native command's REDIRECTED stderr as a NativeCommandError and
+          # native command's redirected stderr as a NativeCommandError and
           # clears $?, so a trailing `ffmpeg ... 2>&1` that exited 0 would
           # otherwise fail the task.
           - name: command

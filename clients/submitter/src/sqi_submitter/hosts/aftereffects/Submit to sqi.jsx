@@ -54,7 +54,7 @@ var SQI_MSG = {
 };
 
 // The sqi-submit paths that answered --version this session (keys "p:<path>"). Only a
-// success is remembered, so a fixed install is picked up on the next submit.
+// success is remembered, so a path that failed is probed again on the next submit.
 var SQI_VERSION_OK = {};
 
 // -- pure functions (run under Node by the tests) ---------------------------------------
@@ -195,7 +195,7 @@ function sqiBuildContext(hostVersion, scenePath, targets) {
 // The program to launch for the located exe: on Windows, the GUI-subsystem sqi-submitw.exe
 // beside an sqi-submit.exe when exists(path) says it is there. sqi-submit.exe is a console
 // program, so `start` would give it a console window, open for as long as the dialog is.
-// Anything else (a .cmd wrapper, an install from before sqi-submitw) is launched as it is.
+// Anything else (a .cmd wrapper, or an install with no sqi-submitw.exe) is launched as it is.
 function sqiWindowedExe(isWindows, exe, exists) {
     if (!isWindows) {
         return exe;

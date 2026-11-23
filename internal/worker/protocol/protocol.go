@@ -65,7 +65,7 @@ import (
 // older peer would misread bumps the version; adding an omitempty field that an
 // older peer ignores harmlessly does not.
 //
-// The current wire shape:
+// What workers and servers at this version agree on:
 //   - Every worker → server NATS subject carries the publishing worker's
 //     identity: task.status.<worker>.<job>, task.logs.<worker>.<task>,
 //     work.lease.<worker>.<queue> and worker.{register,heartbeat,deregister}.<worker>
@@ -179,10 +179,9 @@ type RegisterMsg struct {
 	// ("amd64", "arm64"). The server translates it onto OpenJD's
 	// attr.worker.cpu.arch tokens ("x86_64", "arm64") when matching.
 	//
-	// A registration-payload field, not a ProtocolVersion change, for the
-	// reason ExprLimits below gives. A server that does not know the field
-	// ignores it, and a worker that omits it is stored with "", which matches
-	// no arch requirement.
+	// Not gated by ProtocolVersion, for the reason ExprLimits below gives. A
+	// server that does not know the field ignores it, and a worker that omits
+	// it is stored with "", which matches no arch requirement.
 	Arch string `json:"arch,omitempty"`
 
 	// WorkerVersion is the sqi-worker build version (internal/version.Version),
@@ -197,10 +196,8 @@ type RegisterMsg struct {
 	// GPUInfo describes GPU(s) installed on the worker host.
 	GPUInfo GPUInfo `json:"gpu_info"`
 
-	// MaxConcurrentTasks is the maximum number of tasks this worker will
-	// execute simultaneously. It is informational: the server does not persist
-	// or enforce it; the worker enforces it locally via a semaphore in the pull
-	// loop.
+	// MaxConcurrentTasks is unused: the worker does not set it and the server
+	// does not read it. The server gates a worker's capacity by its CPUCount.
 	MaxConcurrentTasks int `json:"max_concurrent_tasks,omitempty"`
 
 	// Tags holds arbitrary key/value capability tags the worker self-reports.
@@ -212,12 +209,12 @@ type RegisterMsg struct {
 	// openjd.expr_* limits and does not dispatch an EXPR job to a worker whose
 	// caps are tighter; see [ExprLimits].
 	//
-	// It is a registration-payload field, not a [ProtocolVersion] change:
-	// nothing about an assignment depends on it. A server that does not know
-	// this field ignores it, and a worker that does not send it reports zeroes,
-	// which the server reads as "not advertised". Adding a field is
-	// compatible. Renaming one must bump the version, because old and new
-	// workers would otherwise disagree about the key undetected.
+	// It is not gated by [ProtocolVersion]: nothing about an assignment
+	// depends on it. A server that does not know this field ignores it, and a
+	// worker that does not send it reports zeroes, which the server reads as
+	// "not advertised". Adding a field needs no version bump. Renaming one
+	// does, because workers on either side of the rename would disagree about
+	// the key undetected.
 	ExprLimits ExprLimits `json:"expr_limits,omitzero"`
 
 	// Extensions lists the worker-enforced OpenJD extensions this worker
@@ -226,9 +223,9 @@ type RegisterMsg struct {
 	// whose checks nobody enforces would pass or fail on the process exit status
 	// alone and drop the guarantee its author asked for.
 	//
-	// A registration-payload field, not a [ProtocolVersion] change, for the
-	// reason ExprLimits above gives: a server that does not know it ignores it,
-	// and a worker that omits it is read as enforcing nothing.
+	// Not gated by [ProtocolVersion], for the reason ExprLimits above gives:
+	// a server that does not know it ignores it, and a worker that omits it is
+	// read as enforcing nothing.
 	Extensions []string `json:"extensions,omitempty"`
 
 	// Interfaces lists the worker's network interfaces that carry a hardware
@@ -248,8 +245,8 @@ type RegisterMsg struct {
 	// farm. With authentication on, membership comes from the group token the
 	// worker enrolled with and the field is ignored.
 	//
-	// A registration-payload field, not a [ProtocolVersion] change: an older
-	// server ignores it, and an older worker omits it and joins nothing.
+	// Not gated by [ProtocolVersion]: a server that does not know it ignores
+	// it, and a worker that omits it joins nothing.
 	CapacityGroup string `json:"capacity_group,omitempty"`
 }
 
@@ -441,7 +438,7 @@ type DeregisterMsg struct {
 	// [DeregisterPreempted] the server deletes an ephemeral capacity-group
 	// member's worker row and revokes its credential; any other value, the
 	// empty one included, keeps both. Optional and omitted when empty, so it
-	// is not a [ProtocolVersion] change: a server that does not know it
+	// is not gated by [ProtocolVersion]: a server that does not know it
 	// ignores it.
 	Kind DeregisterKind `json:"kind,omitempty"`
 }
@@ -477,8 +474,8 @@ type HeartbeatMsg struct {
 	// this worker at the moment the heartbeat was composed.
 	ActiveTaskCount int `json:"active_task_count"`
 
-	// MaxConcurrentTasks is the worker's configured concurrency ceiling. It is
-	// informational: the server does not read it.
+	// MaxConcurrentTasks is the worker's CPU count. It is informational: the
+	// server does not read it.
 	MaxConcurrentTasks int `json:"max_concurrent_tasks"`
 
 	// ActiveTaskIDs is the list of task IDs currently executing on this

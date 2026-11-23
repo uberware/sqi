@@ -36,8 +36,8 @@ override order:
 
   built-in defaults → config file → SQI_WORKER_* environment variables → CLI flags
 
-The YAML output is a valid config file — you can redirect it to a file and
-use it as a starting point for customisation.`,
+The YAML output is a valid config file: redirect it to a file to use as a
+starting point.`,
 	RunE: runConfigPrint,
 }
 

@@ -9,30 +9,25 @@ import (
 	"testing"
 )
 
-// These tests exist because the highest-risk code in this package —
-// dpapiProtect/dpapiUnprotect (unsafe.Slice over an OS-allocated buffer with
-// a deferred LocalFree) and writeSecured/secureDir (real SetSecurityInfo
-// calls) — is otherwise covered only by
+// The riskiest code in this package, dpapiProtect/dpapiUnprotect
+// (unsafe.Slice over an OS-allocated buffer with a deferred LocalFree) and
+// writeSecured/secureDir (real SetSecurityInfo calls), is otherwise covered
+// only by
 // TestIsolationWindows_CredentialRoundTrip
 // (test/integration/isolation_windows_test.go), which needs
 // SQI_TEST_ISOLATION_WINDOWS=1 and an elevation harness and therefore never
 // runs on an ordinary `go test`. A DPAPI round trip with
 // CRYPTPROTECT_LOCAL_MACHINE needs no special privilege — any local account
 // can protect/unprotect its own machine-scope blobs — so that much runs
-// unprivileged outright. Applying a protected admin-only DACL is a
-// different story: contrary to folklore, NTFS grants an object's owner NO
-// implicit access beyond what its DACL actually says (verified empirically
-// against the real API — see adminOnlyDACL's doc in acl_windows.go for how
-// secureDir/writeSecured route around that rather than depend on it), so an
-// unprivileged process genuinely cannot read a file Put has correctly
-// locked down. These tests are written to prove every one of the flagged
-// primitives executes for real without ever requiring that impossible
-// step — see each test's own doc for how.
+// unprivileged. A protected admin-only DACL is different: NTFS grants an
+// object's owner no implicit access beyond what its DACL says (see
+// adminOnlyDACL's doc in acl_windows.go for how secureDir/writeSecured
+// handle that), so an unprivileged process cannot read a file Put has locked
+// down. Each test's doc says how it executes these primitives without that
+// step.
 
-// TestDpapiRoundTrip actually executes dpapiProtect and dpapiUnprotect
-// end to end — the "highest-risk code [that] has never been executed" this
-// test exists to cover — rather than merely asserting a call returned no
-// error.
+// TestDpapiRoundTrip executes dpapiProtect and dpapiUnprotect end to end
+// rather than only asserting a call returned no error.
 func TestDpapiRoundTrip(t *testing.T) {
 	const want = "correct horse battery staple"
 
@@ -57,8 +52,8 @@ func TestDpapiRoundTrip(t *testing.T) {
 // blobDataPointer via dpapiProtect's zero-length path: without the guard,
 // `&plain[0]` on a nil slice panics before CryptProtectData is ever called.
 // Protecting an empty secret still produces a real, non-empty DPAPI
-// envelope (verified: CryptProtectData rejects a NULL pbData even when
-// cbData is 0, which is exactly what the guard's fallback pointer avoids),
+// envelope (CryptProtectData rejects a NULL pbData even when cbData is 0,
+// which the guard's fallback pointer avoids),
 // so the full round trip back through dpapiUnprotect must still recover an
 // empty plaintext with no error.
 func TestDpapiProtect_EmptyInput(t *testing.T) {
@@ -113,25 +108,18 @@ func TestDpapiUnprotect_EmptyBlobDoesNotPanic(t *testing.T) {
 // naming scheme (store.path) at the location Put itself would write it,
 // Secret() reads it back and decrypts it to the original secret.
 //
-// This deliberately does not chain directly after a call to Put(), and
-// that is not a shortcut: an unprivileged Put() call cannot complete,
-// because adminOnlyDACL locks the directory to SYSTEM and
-// Administrators only (see the file-level doc comment above), and
+// It does not call Put() first: an unprivileged Put() cannot complete,
+// because adminOnlyDACL locks the directory to SYSTEM and Administrators
+// (see the file-level doc comment above), and
 // TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees
-// (test/integration/isolation_windows_test.go) proves for real, in the
-// elevated tier, that Put locks the file it writes down to SYSTEM and
-// Administrators only — which holds even for the very account that created
-// it (verified empirically: NTFS grants an object's owner no implicit
-// access beyond what its DACL says; there is no "owner override" for
-// WRITE_DAC despite folklore to the contrary). Proving Secret() can decrypt
-// a real Put-produced file from this same unprivileged process would
-// therefore require either elevating (which this unelevated test tier must
-// not do) or grabbing access this process was never granted — and if either
-// worked, THAT would itself be the credential-disclosure bug the ACL exists
-// to prevent, not a legitimate test setup step. Writing the identical bytes without Put's restrictive
-// DACL isolates exactly the property this test needs to prove — that
-// Secret()'s read-plus-decrypt path is correct — from the ACL property
-// already proven directly, for real, elsewhere.
+// (test/integration/isolation_windows_test.go) checks in the elevated tier
+// that Put restricts the file it writes to SYSTEM and Administrators, even
+// against the account that created it (NTFS grants an object's owner no
+// implicit access beyond what its DACL says). Reading a Put-produced file
+// from this unprivileged process would need elevation, which this tier must
+// not do, or access the ACL exists to deny. Writing the same bytes without
+// Put's DACL tests Secret()'s read-and-decrypt path on its own; the ACL is
+// tested elsewhere.
 func TestFileStore_SecretDecryptsWhatPutWrites(t *testing.T) {
 	dir := t.TempDir()
 	store, ok := NewFileStore(dir).(*fileStore)

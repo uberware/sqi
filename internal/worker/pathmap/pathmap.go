@@ -22,11 +22,10 @@
 //
 // # Ordering
 //
-// Rules are applied in declaration order.  If a command string contains a
-// source path that matches multiple rules the first matching rule wins for
-// any given starting position — but because each rule is applied as a global
-// string replacement in turn, the caller should ensure rule source paths are
-// non-overlapping prefix/path pairs to avoid unexpected chained substitutions.
+// Rules are applied in declaration order, each as a global string replacement
+// over the result of the rules before it, so a later rule can rewrite what an
+// earlier rule produced. Callers should keep rule source paths
+// non-overlapping to avoid chained substitutions.
 //
 // # Empty path map
 //
@@ -242,16 +241,16 @@ type pathMappingDoc struct {
 // equivalent to an empty map).
 //
 // The file is written with mode 0644 (world-readable). An existing file at
-// the path (including one this same function wrote earlier in the session —
-// see internal/worker/executor's buildEffectiveLookup, which rewrites this
-// file once staging rules are known) is replaced via writeSecure rather than
-// a plain os.WriteFile: this file is written by the root daemon at points
-// that can run AFTER job code has already executed as the target uid (the
-// rewrite specifically runs after the environment onEnter action), at a
-// deterministic name, so a naive open-by-path is exactly the shape a
-// hardlink/symlink swap could exploit. writeSecure refuses to write through
-// any pre-existing entry that was not put there by this call, on every
-// platform — see its per-OS doc comment for the mechanism.
+// the path (including one this function wrote earlier in the session: see
+// internal/worker/executor's buildEffectiveLookup, which rewrites this file
+// once staging rules are known) is replaced via writeSecure rather than a
+// plain os.WriteFile. The root daemon writes this file at a deterministic
+// name, at points that can run after job code has executed as the target
+// uid (the rewrite runs after the environment onEnter action), so an
+// open-by-path could be redirected by a hardlink or symlink swap.
+// writeSecure refuses to write through any pre-existing entry that was not
+// put there by this call, on every platform; see its per-OS doc comment for
+// the mechanism.
 func WritePathMappingFile(workDir string, rules []protocol.PathMapRule) error {
 	if len(rules) == 0 {
 		return nil
@@ -273,7 +272,7 @@ func WritePathMappingFile(workDir string, rules []protocol.PathMapRule) error {
 
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		// Unreachable in practice: entries contains only strings.
+		// Unreachable: entries contains only strings.
 		return fmt.Errorf("pathmap: marshal %s: %w", PathMappingFileName, err)
 	}
 

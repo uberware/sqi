@@ -7,10 +7,9 @@ package session
 // Manager.Create -> enterEnvironments -> enterOne -> resolveEnvEntry ->
 // fmtres.ApplyEnvLet(..., s.exprBudget). The fmtres-package tests
 // (assignmentbudget_test.go) prove the budget type itself sums correctly
-// across several tables built directly; this file proves the WIRING is
-// live -- that a real Manager.Create call, entering several real
-// environments in one real session, shares ONE budget across all of them,
-// not one budget per environment.
+// across several tables built directly; this file proves the wiring: a
+// Manager.Create call entering several environments in one session shares
+// one budget across all of them, not one budget per environment.
 
 import (
 	"context"
@@ -28,12 +27,11 @@ import (
 )
 
 // bigEnvLetMsg returns an AssignMsg declaring n job environments, each
-// entered in order, each with a let: block that binds ONE name to a string
-// of bytesPerEnv bytes -- individually well under
-// fmtres's own per-table LetRetainedBytes limit (10,000,000 bytes) at the
-// sizes this file's tests use, so any rejection is attributable to the
-// ASSIGNMENT-wide budget summing across environments, not the pre-existing
-// per-table one.
+// entered in order, each with a let: block that binds one name to a string
+// of bytesPerEnv bytes, each well under fmtres's per-table LetRetainedBytes
+// limit (10,000,000 bytes) at the sizes this file's tests use, so any
+// rejection comes from the assignment-wide budget summing across
+// environments, not the per-table one.
 func bigEnvLetMsg(n, bytesPerEnv int) *protocol.AssignMsg {
 	envs := make([]protocol.AssignEnvironment, n)
 	for i := range envs {
@@ -50,14 +48,13 @@ func bigEnvLetMsg(n, bytesPerEnv int) *protocol.AssignMsg {
 }
 
 // TestManagerCreate_EnterEnvironment_EXPR_AssignmentBudgetSharedAcrossEnvironments
-// is this task's central end-to-end proof: 3 environments, each retaining
-// ~7,000,064 bytes (well under fmtres's own 10,000,000-byte PER-TABLE limit,
-// so that limit alone would accept every one of them), whose CUMULATIVE
-// total (~21,000,192 bytes) exceeds the assignment-wide budget
-// (20,000,000 bytes) on the third environment -- proving Manager.Create
-// shares ONE fmtres.AssignmentBudget across every environment it enters, not
-// a fresh one per environment (a fresh-per-environment budget would accept
-// all three, since each is individually compliant).
+// is the end-to-end proof: 3 environments, each retaining ~7,000,064 bytes
+// (well under fmtres's 10,000,000-byte per-table limit, which alone would
+// accept every one of them), whose cumulative total (~21,000,192 bytes)
+// exceeds the assignment-wide budget (20,000,000 bytes) on the third
+// environment. This proves Manager.Create shares one fmtres.AssignmentBudget
+// across every environment it enters; a budget per environment would accept
+// all three.
 func TestManagerCreate_EnterEnvironment_EXPR_AssignmentBudgetSharedAcrossEnvironments(t *testing.T) {
 	dataDir := t.TempDir()
 	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
@@ -76,20 +73,20 @@ func TestManagerCreate_EnterEnvironment_EXPR_AssignmentBudgetSharedAcrossEnviron
 }
 
 // TestManagerCreate_EnterEnvironment_EXPR_AssignmentBudgetFreshPerSession is
-// the wiring-level FreshPerCall proof: TWO independent sessions, each
-// entering environments that would ALONE fit comfortably under the
-// assignment-wide budget (well under both dimensions), must EACH succeed --
-// proving Manager.Create allocates a NEW fmtres.AssignmentBudget every call,
-// not a Manager-level (or process-wide) one a second session would inherit
-// an already-partly-spent allowance from.
+// the wiring-level FreshPerCall proof: two independent sessions, each
+// entering environments that alone fit under the assignment-wide budget
+// (well under both dimensions), must each succeed, proving Manager.Create
+// allocates a new fmtres.AssignmentBudget every call rather than a
+// Manager-level (or process-wide) one a second session would inherit
+// partly spent.
 func TestManagerCreate_EnterEnvironment_EXPR_AssignmentBudgetFreshPerSession(t *testing.T) {
 	dataDir := t.TempDir()
 	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	// Each session's own environments retain ~14,000,128 bytes (2 x
-	// 7,000,064) -- comfortably under the 20,000,000-byte assignment-wide
-	// cap ALONE, but two sessions' worth summed (~28,000,256) would exceed it
-	// if they shared one budget.
+	// 7,000,064), under the 20,000,000-byte assignment-wide cap alone, but
+	// two sessions' worth summed (~28,000,256) would exceed it if they shared
+	// one budget.
 	for i := range 2 {
 		msg := bigEnvLetMsg(2, 7_000_000)
 		msg.JobID = "j"
@@ -105,19 +102,18 @@ func TestManagerCreate_EnterEnvironment_EXPR_AssignmentBudgetFreshPerSession(t *
 }
 
 // TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap:
-// teardown must not silently skip onExit actions merely because entry-time
-// let bindings pushed the assignment-wide budget close to its cap.
+// teardown must not skip onExit actions because entry-time let bindings
+// brought the assignment-wide budget close to its cap.
 //
-// Two environments each let-bind a 7 MB string at ENTRY -- Manager.Create
-// succeeds at ~14,000,128 bytes, comfortably under the 20,000,000-byte
-// assignment-wide cap. If resolveEnvAction re-evaluated the SAME two let:
-// blocks a SECOND time at EXIT against the SAME shared budget, the
-// cumulative total would reach ~21,000,192 bytes -- over the cap -- so
-// ExitEnvironments' second (later-entered) environment would fail to
-// resolve, log a warning, and skip its onExit entirely, with only the FIRST
-// environment's onExit having already run via the earlier iteration. Both
-// onExit actions must run: each writes its own witness file, and this test
-// asserts both exist and ExitEnvironments returns no error.
+// Two environments each let-bind a 7 MB string at entry; Manager.Create
+// succeeds at ~14,000,128 bytes, under the 20,000,000-byte assignment-wide
+// cap. If resolveEnvAction re-evaluated the two let: blocks at exit against
+// the same shared budget, the cumulative total would reach ~21,000,192 bytes,
+// over the cap, so ExitEnvironments' second (later-entered) environment would
+// fail to resolve, log a warning and skip its onExit, with only the first
+// environment's onExit having run. Both onExit actions must run: each writes
+// its own witness file, and this test asserts both exist and
+// ExitEnvironments returns no error.
 func TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses POSIX shell commands")

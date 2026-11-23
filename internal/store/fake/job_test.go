@@ -55,7 +55,7 @@ func TestJob_ListDependentsAndBlocked(t *testing.T) {
 
 // TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming verifies the asymmetric
 // delete behavior: deleting the downstream job removes its outgoing edges,
-// but deleting the upstream job leaves the (now-dangling) edge intact so the
+// but deleting the upstream job leaves the (dangling) edge intact so the
 // reconciler can observe "upstream deleted".
 func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 	s := New()
@@ -71,7 +71,7 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 		DependsOn: []string{up.ID},
 	}).Job
 
-	// Deleting the UPSTREAM must NOT delete the edge (no FK on depends_on_job_id):
+	// Deleting the upstream must not delete the edge (no FK on depends_on_job_id):
 	if err := s.DeleteJob(ctx(), up.ID); err != nil {
 		t.Fatalf("DeleteJob(up): %v", err)
 	}
@@ -126,10 +126,10 @@ func TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored(t *testing.T) {
 	}
 }
 
-// TestJob_ListJobDependencyIDs_OrderedByUpstreamID locks in the ordering fix:
+// TestJob_ListJobDependencyIDs_OrderedByUpstreamID pins the ordering:
 // ListJobDependencyIDs must return upstream IDs sorted by ID, regardless of
 // the order they were passed in the submission or created in, mirroring the
-// equivalent SQLite test.
+// equivalent sqlstore test.
 func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
 	s := New()
 	farm := mustCreateFarm(t, s, "order")
@@ -142,7 +142,7 @@ func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
 		ID: "down-order", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
 		Priority: 50, Status: store.JobStatusBlocked,
 	}
-	// Deliberately not alphabetical.
+	// Not alphabetical.
 	storetest.Submit(t, s, store.JobSubmission{Job: down, DependsOn: []string{zeta.ID, alpha.ID, mike.ID}})
 
 	deps, err := s.ListJobDependencyIDs(ctx(), down.ID)

@@ -48,7 +48,7 @@ const maxSuppressEntries = 1024
 //
 // The first fatal error is also recorded, so [Embedded.Start] can fail with
 // it: nats-server reports a listener or JetStream failure only through its
-// logger, and otherwise just never becomes ready.
+// logger, and otherwise never becomes ready.
 type natsLogger struct {
 	log   *slog.Logger
 	fatal chan error // the first fatal error; buffered, never blocks the server

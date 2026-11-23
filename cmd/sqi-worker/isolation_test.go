@@ -74,7 +74,7 @@ func TestEffectiveSessionRoot_RootDefaultsToPlatformRoot(t *testing.T) {
 		t.Errorf("got %q, want %q (data_dir must never be reused as the session root)", got, wantRoot)
 	}
 	if mode != wantMode {
-		t.Errorf("mode = %o, want %o (traversable from birth — the only worker kind that can actually isolate)", mode, wantMode)
+		t.Errorf("mode = %o, want %o (traversable from creation: the only worker kind that can isolate)", mode, wantMode)
 	}
 }
 
@@ -95,25 +95,24 @@ func TestEffectiveSessionRoot_NonRootFallsBackUnderDataDir(t *testing.T) {
 
 	want := filepath.Join("/data", "sessions")
 	if got != want {
-		t.Errorf("got %q, want %q — the pre-split location, so non-root deployments are byte-for-byte unaffected", got, want)
+		t.Errorf("got %q, want %q (the non-root fallback under data_dir)", got, want)
 	}
 	if mode != 0o750 {
-		t.Errorf("mode = %o, want 0750 — the pre-split mode; a non-root worker can never actually isolate, "+
-			"so it gains nothing from the wider 0711 and should not silently get `other +x`", mode)
+		t.Errorf("mode = %o, want 0750: a non-root worker can never isolate, "+
+			"so it gains nothing from the wider 0711 and must not get `other +x`", mode)
 	}
 }
 
-// TestDefaultSessionRootNeverNestsUnderDefaultDataDir guards against the
-// self-inflicted boot refusal a prior round introduced: defaultSessionRoot()
-// (/var/lib/sqi-worker-sessions on POSIX; ProgramData\sqi\worker\sessions on
-// Windows) must never be a descendant of workerconfig.Default().Worker.DataDir,
-// in EITHER the HOME-set or HOME-unset case. workerconfig.LoadOrCreateWorkerID
-// creates DataDir at 0700 by design; if the session root nested under it,
-// this package's own boot-time isolation.ValidateTraversable would walk up
-// from the session root, hit DataDir at 0700, and refuse to start over a
-// directory sqi itself had just created (as a POSIX default of
-// /var/lib/sqi-worker/sessions, nesting under the HOME-unset DataDir fallback
-// /var/lib/sqi-worker, would).
+// TestDefaultSessionRootNeverNestsUnderDefaultDataDir pins that
+// defaultSessionRoot() (/var/lib/sqi-worker-sessions on POSIX;
+// ProgramData\sqi\worker\sessions on Windows) is never a descendant of
+// workerconfig.Default().Worker.DataDir, in either the HOME-set or HOME-unset
+// case. workerconfig.LoadOrCreateWorkerID creates DataDir at 0700; if the
+// session root nested under it, this package's boot-time
+// isolation.ValidateTraversable would walk up from the session root, hit
+// DataDir at 0700, and refuse to start over a directory sqi itself created
+// (as a POSIX default of /var/lib/sqi-worker/sessions, nested under the
+// HOME-unset DataDir fallback /var/lib/sqi-worker, would).
 func TestDefaultSessionRootNeverNestsUnderDefaultDataDir(t *testing.T) {
 	cases := []struct {
 		name string
@@ -153,12 +152,11 @@ func isDescendantPath(ancestor, path string) bool {
 
 func TestValidateIsolationAncestors_SkippedWhenNotRequired(t *testing.T) {
 	// isolation.required=false must never cause a boot refusal over directory
-	// permissions, even on a worker that COULD isolate (root): root and
-	// will-actually-isolate are not the same predicate, and there is nothing
-	// an operator could act on via chmod for a queue that isn't isolated in
-	// the first place. The per-assignment check (session.Manager.Create /
-	// staging.Stager.StageIn) covers this worker if an isolated assignment
-	// ever actually arrives.
+	// permissions, even on a worker that could isolate (root): root is not
+	// the same as "will isolate", and there is nothing an operator could act
+	// on via chmod for a queue that is not isolated. The per-assignment check
+	// (session.Manager.Create / staging.Stager.StageIn) covers this worker if
+	// an isolated assignment arrives.
 	if err := validateIsolationAncestors(false, "/some/traversal-guarded/path", ""); err != nil {
 		t.Errorf("err = %v, want nil when isolation.required is false", err)
 	}

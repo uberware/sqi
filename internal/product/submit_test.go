@@ -2,9 +2,9 @@
 
 package product_test
 
-// End-to-end matrix test: each built-in product (script / python / container)
-// is submitted through the real Submitter backed by the fake store. No binary
-// or NATS instance is required.
+// End-to-end matrix test: the script, python and container built-ins are each
+// submitted through the real Submitter backed by the fake store. No binary or
+// NATS instance is required.
 
 import (
 	"slices"
@@ -60,9 +60,10 @@ func assertDockerRequirement(t *testing.T, step store.Step) {
 	t.Fatal("container step HostRequirements.Attributes does not contain attr.worker.tag.docker")
 }
 
-// TestBuiltinProductsSubmitEndToEnd verifies each built-in submits successfully
-// through the real Submitter, producing at least one step and one task. The
-// container product additionally carries the attr.worker.tag.docker host requirement.
+// TestBuiltinProductsSubmitEndToEnd verifies the script, python and container
+// built-ins submit through the real Submitter, producing at least one step and
+// one task. The container product also carries the attr.worker.tag.docker host
+// requirement.
 func TestBuiltinProductsSubmitEndToEnd(t *testing.T) {
 	st := fake.New()
 	farmID, queueID := seedFarmQueue(t, st)

@@ -39,11 +39,10 @@ steps:
 
 // TestValidateOptions_MapOntoOpenJD pins the field-by-field mapping.
 //
-// It is worth a test for the reason internal/server's ExprLimitsFromConfig is:
-// a struct literal copying one options type into another is the shape where an
-// assignment can be dropped or pointed at the wrong member and still compile,
-// start and serve. Every value below is non-default, so a mapping that
-// substituted a zero value could not pass.
+// A struct literal copying one options type into another can drop or
+// misassign a field and still compile, as with internal/server's
+// ExprLimitsFromConfig. Every value below is non-default, so a mapping that
+// substituted a zero value cannot pass.
 func TestValidateOptions_MapOntoOpenJD(t *testing.T) {
 	deadline := time.Unix(1_700_000_000, 0)
 	limits := openjd.ExprLimits{
@@ -68,9 +67,10 @@ func TestValidateOptions_MapOntoOpenJD(t *testing.T) {
 	}
 }
 
-// TestValidateOptions_ZeroGivesDefaultLimitsAndNoDeadline pins that a caller offering no
-// configuration — ParseDefinition, loading built-ins from package init where no
-// config exists yet — gets default EXPR limits and no deadline.
+// TestValidateOptions_ZeroGivesDefaultLimitsAndNoDeadline pins that a caller
+// offering no configuration (ParseDefinition loading built-ins from package
+// init, where no configuration exists) gets default EXPR limits and no
+// deadline.
 func TestValidateOptions_ZeroGivesDefaultLimitsAndNoDeadline(t *testing.T) {
 	got := ValidateOptions{EnforceLimits: true}.openjdOptions()
 	if got.ExprLimits != (openjd.ExprLimits{}) {
@@ -81,19 +81,18 @@ func TestValidateOptions_ZeroGivesDefaultLimitsAndNoDeadline(t *testing.T) {
 	}
 }
 
-// TestValidateTemplate_DeadlineSurvivesAsTheSentinel is the composition test:
-// the options this package builds really do stop the walk, and the resulting
-// error is still matchable with errors.Is by the time it leaves this package.
+// TestValidateTemplate_DeadlineSurvivesAsTheSentinel asserts that the options
+// this package builds stop the walk, and that the resulting error still
+// matches with errors.Is when it leaves this package.
 //
-// It drives the EXPORTED [ValidateTemplate] with nothing forced, so what it
-// pins is the whole path POST /api/v1/products takes: the raw template, the
-// parse, the ValidateOptions -> openjd.ValidateOptions mapping, and the walk
-// that mapping is supposed to bound.
+// It drives the exported [ValidateTemplate] with nothing forced, so it pins the
+// whole path POST /api/v1/products takes: the raw template, the parse, the
+// ValidateOptions -> openjd.ValidateOptions mapping, and the walk that mapping
+// bounds.
 //
-// The errors.Is assertion is the half that matters. internal/api tells a
-// deadline from a bad template STRUCTURALLY, on this sentinel; a wrapper here
-// that flattened the error to a string would turn every 503 into a 400 with
-// nothing failing.
+// internal/api tells a deadline from a bad template with errors.Is on this
+// sentinel; a wrapper here that flattened the error to a string would turn
+// every 503 into a 400.
 func TestValidateTemplate_DeadlineSurvivesAsTheSentinel(t *testing.T) {
 	verr := ValidateTemplate(exprProductTemplate, store.TemplateFormatYAML, ValidateOptions{
 		EnforceLimits: true,
@@ -112,15 +111,15 @@ func TestValidateTemplate_DeadlineSurvivesAsTheSentinel(t *testing.T) {
 }
 
 // TestValidateTemplate_SameFixtureWithoutADeadlineIsNotTheSentinel is the
-// non-vacuity guard for the test above, on the SAME fixture.
+// non-vacuity guard for the test above, on the same fixture.
 // TestValidateParsed_InvalidTemplateIsNotADeadline makes the same point with a
 // base-spec template that never reaches an expression at all; this one keeps
 // everything constant except the deadline, so the sentinel above can only have
 // come from the deadline.
 //
-// The fixture is rejected either way -- 100,000 comprehension iterations trip
-// the deterministic operation limit -- which is exactly the discrimination
-// internal/api depends on: that rejection is a 4xx the client can act on, and
+// The fixture is rejected either way, because 100,000 comprehension
+// iterations trip the deterministic operation limit. internal/api depends on
+// that distinction: the limit rejection is a 4xx the client can act on, and
 // only the wall-clock sentinel is the 503 that says "retry, this server gave
 // up".
 func TestValidateTemplate_SameFixtureWithoutADeadlineIsNotTheSentinel(t *testing.T) {
@@ -137,7 +136,7 @@ func TestValidateTemplate_SameFixtureWithoutADeadlineIsNotTheSentinel(t *testing
 }
 
 // TestValidateParsed_InvalidTemplateIsNotADeadline is the other half: an
-// ordinary bad template must NOT look like the backstop, or internal/api would
+// ordinary bad template must not look like a deadline, or internal/api would
 // answer 503 ("retry, the server gave up") to a submitter whose template is
 // wrong and will never validate.
 func TestValidateParsed_InvalidTemplateIsNotADeadline(t *testing.T) {
@@ -158,7 +157,7 @@ steps: []`), openjd.FormatYAML)
 }
 
 // TestParseDefinition_PassesOptionsThrough pins that [ParseDefinition]'s opts
-// argument actually reaches the validator.
+// argument reaches the validator.
 //
 // The preset install path (internal/presetlib, reached from
 // POST /api/v1/presets/{name}/install) reaches the validator through this

@@ -10,13 +10,12 @@ import (
 )
 
 // templateBindVerifier authenticates by formatting the user's DN from a
-// template and binding as it directly — no service account.
+// template and binding as it directly, with no service account.
 //
-// Because there is no service account, group resolution has to run on the
-// user's OWN authenticated connection: after a successful bind it reads
-// memberOf from the user's entry. That inherits memberOf's limitation —
-// nested groups are not expanded — which is why config validation rejects
-// nested_groups in this mode.
+// Without a service account, group resolution runs on the user's own
+// authenticated connection: after a successful bind it reads memberOf from
+// the user's entry. memberOf does not expand nested groups, which is why
+// config validation rejects nested_groups in this mode.
 type templateBindVerifier struct {
 	cfg  Config
 	dial dialFunc

@@ -4,15 +4,14 @@
 
 package integration
 
-// failure_reason_realworker_test.go — the real-worker regression guard for
-// task failure-reason visibility. Unlike TestTaskFailureReason_VisibleEndToEnd
-// (which uses the mock worker and fabricates the failure Message, proving only
-// the server→store→REST transport), this test runs a REAL sqi-worker subprocess
-// with NO staging configured and submits a job that requests the stage_locally
-// path delivery. The worker's real failPreExec path (internal/worker/executor/
-// run.go buildEffectiveLookup → "worker not configured for staging …") fails
-// the task before it executes; this test asserts that reason surfaces all the
-// way through to the REST API.
+// failure_reason_realworker_test.go: task failure-reason visibility with a real
+// worker. TestTaskFailureReason_VisibleEndToEnd uses the mock worker and
+// supplies the failure message itself, so it covers only the
+// server→store→REST path. These tests run a real sqi-worker subprocess with no
+// staging configured and submit a job that requests the stage_locally path
+// delivery. The worker's failPreExec path (internal/worker/executor/run.go
+// buildEffectiveLookup → "worker not configured for staging …") fails the
+// task before it runs, and that reason must reach the REST API.
 
 import (
 	"fmt"
@@ -24,8 +23,8 @@ import (
 )
 
 // TestWorkerBinaryStagingFailureReason starts a real worker with no staging
-// config, submits a stage_locally job with max_attempts=1 (so the single
-// pre-exec failure is immediately terminal), and asserts:
+// config, submits a stage_locally job with max_attempts=1 (so the one
+// pre-exec failure is terminal), and asserts:
 //
 //   - the task ends "failed" with failure_reason mentioning "staging" (the
 //     worker's real failPreExec message), and
@@ -35,19 +34,19 @@ func TestWorkerBinaryStagingFailureReason(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
-	// Start the real worker with staging.defaults explicitly disabled — with
-	// defaults on, an unconfigured worker stages successfully by default
-	// (built-in copy + TEMP scratch), so this test must opt out to keep
-	// exercising the failPreExec path.
+	// staging.defaults is off: with it on, an unconfigured worker stages with
+	// the built-in copy and a TEMP scratch directory, and never reaches the
+	// failPreExec path.
 	stagingCfg := filepath.Join(t.TempDir(), "sqi-worker.yaml")
 	if err := os.WriteFile(stagingCfg, []byte("staging:\n  defaults: false\n"), 0o600); err != nil {
 		t.Fatalf("write staging config: %v", err)
 	}
 	startRealWorkerWithOptions(t, ts, farmID, queueID, []string{"--config", stagingCfg}, nil)
 
-	// A job requesting the stage_locally delivery. The command is never reached:
-	// the worker fails during pre-exec because staging is unconfigured. A PATH
-	// parameter is present so the SQI_PATH_TRANSLATION block is well-formed.
+	// A job requesting the stage_locally delivery. The command never runs: the
+	// worker fails the task before it runs because staging is unconfigured. A
+	// PATH parameter is present so the SQI_PATH_TRANSLATION block is
+	// well-formed.
 	const jobYAML = `specificationVersion: "jobtemplate-2023-09"
 name: Staging Failure Reason Test
 extensions: [ SQI_PATH_TRANSLATION ]
@@ -82,7 +81,6 @@ steps:
 		t.Fatalf("job final status = %q, want failed", final)
 	}
 
-	// Find the (single) task and assert its surfaced failure reason.
 	taskID := firstTaskID(t, ts, jobID)
 	task := getTaskFailure(t, ts, taskID)
 	if task.Status != "failed" {
@@ -104,12 +102,10 @@ steps:
 			job.FailureSummary.DominantReason, "staging")
 	}
 
-	// The attempt-history endpoint must independently surface the same
-	// staging failure: at least one recorded attempt is "failed" with a
-	// message mentioning "staging". This exercises GET
-	// /api/v1/tasks/{id}/attempts end-to-end against a real worker's
-	// failPreExec path, not just the fake-worker/API-level coverage in
-	// internal/api/tasks_test.go.
+	// GET /api/v1/tasks/{id}/attempts must surface the same staging failure:
+	// at least one recorded attempt is "failed" with a message mentioning
+	// "staging". internal/api/tasks_test.go covers this endpoint against the
+	// fake store only.
 	attempts := getTaskAttempts(t, ts, taskID)
 	if len(attempts.Items) < 1 {
 		t.Fatalf("task attempts: got %d items, want >= 1", len(attempts.Items))
@@ -130,18 +126,15 @@ steps:
 // sibling of TestWorkerBinaryStagingFailureReason: same real worker with no
 // staging configured and the same stage_locally job, but with max_attempts=2
 // and retry_delay_seconds=0, so the task's first failure is retried
-// immediately (RequeueTaskForRetry — see TestAutoRetry_RetryThenSucceed),
-// fails a second time, and only then goes terminal "failed" once
-// max_attempts is exhausted. That guarantees the attempt-history endpoint
-// has recorded (and correctly ordered) two independent attempts, not just
-// one — the thing a single-attempt test cannot prove.
+// immediately (RequeueTaskForRetry; see TestAutoRetry_RetryThenSucceed),
+// fails a second time, and goes terminal "failed" once max_attempts is
+// exhausted. The attempt-history endpoint must then list two attempts in
+// order.
 func TestWorkerBinaryStagingFailureReason_MultipleAttempts(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
-	// Start the real worker with staging.defaults explicitly disabled — see
-	// TestWorkerBinaryStagingFailureReason for why this opt-out is required
-	// to keep exercising the failPreExec path.
+	// staging.defaults is off; see TestWorkerBinaryStagingFailureReason.
 	stagingCfg := filepath.Join(t.TempDir(), "sqi-worker.yaml")
 	if err := os.WriteFile(stagingCfg, []byte("staging:\n  defaults: false\n"), 0o600); err != nil {
 		t.Fatalf("write staging config: %v", err)
@@ -149,7 +142,7 @@ func TestWorkerBinaryStagingFailureReason_MultipleAttempts(t *testing.T) {
 	startRealWorkerWithOptions(t, ts, farmID, queueID, []string{"--config", stagingCfg}, nil)
 
 	// Same stage_locally job as TestWorkerBinaryStagingFailureReason; the
-	// command is never reached because the worker fails during pre-exec.
+	// command never runs.
 	const jobYAML = `specificationVersion: "jobtemplate-2023-09"
 name: Staging Failure Reason Test (multi-attempt)
 extensions: [ SQI_PATH_TRANSLATION ]
@@ -179,10 +172,8 @@ steps:
 	})
 	t.Logf("submitted multi-attempt staging-failure job %s", jobID)
 
-	// Bounded polling (no sleeps): reaching a terminal job status guarantees
-	// both attempts (the initial failure and its immediate retry) have
-	// completed, since max_attempts=2 keeps the task non-terminal after the
-	// first failure.
+	// A terminal job status means both attempts have finished: max_attempts=2
+	// keeps the task non-terminal after the first failure.
 	final := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled", "paused"}, 60*time.Second)
 	if final != "failed" {
 		t.Fatalf("job final status = %q, want failed", final)
@@ -215,19 +206,16 @@ steps:
 }
 
 // TestWorkerBinaryStagingDefault_Succeeds is the positive counterpart to
-// TestWorkerBinaryStagingFailureReason: it starts a real worker with NO
+// TestWorkerBinaryStagingFailureReason: it starts a real worker with no
 // staging config at all (staging.defaults defaults to true), submits the
 // same stage_locally shape of job as TestWorkerBinaryStaging (an IN and an
 // OUT PATH parameter), and asserts the task succeeds with the OUT file
-// copied back to its real path — proving the built-in copy + TEMP scratch
-// default works out of the box on an unconfigured worker.
+// copied back to its real path, using the built-in copy and a TEMP scratch
+// directory.
 func TestWorkerBinaryStagingDefault_Succeeds(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
-	// Start the real worker with no staging config — staging.defaults is on
-	// by default, so stage_locally must succeed using the built-in copy and a
-	// TEMP scratch directory.
 	startRealWorker(t, ts, farmID, queueID)
 
 	// Input file that must be staged into scratch for the job to read it.
@@ -291,9 +279,8 @@ steps:
 		t.Errorf("task status = %q, want succeeded", task.Status)
 	}
 
-	// The output must exist at its REAL path (copied back from scratch) and
-	// carry the staged input's content, proving the built-in copy staged the
-	// output back from scratch without any operator-provided staging config.
+	// The output must exist at its real path, copied back from scratch, and
+	// carry the staged input's content.
 	data, err := os.ReadFile(outFile)
 	if err != nil {
 		t.Fatalf("output not copied back to %q: %v", outFile, err)

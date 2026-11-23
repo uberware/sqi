@@ -10,7 +10,7 @@ import (
 // TestTrimAndAffix covers strip/lstrip/rstrip and removeprefix/removesuffix.
 //
 // The empty-argument rows are the point. RFC 0006 declares an empty argument an
-// ERROR for count/find/rfind/index/rindex/replace/split/rsplit and says nothing
+// error for count/find/rfind/index/rindex/replace/split/rsplit and says nothing
 // of the kind for these five, so an empty chars, prefix or suffix here is a
 // no-op rather than a rejection. Confirmed against the reference.
 func TestTrimAndAffix(t *testing.T) {
@@ -57,7 +57,7 @@ func TestTrimAndAffix(t *testing.T) {
 
 // TestSearchFunctions covers startswith/endswith/count/find/rfind/index/rindex.
 //
-// The non-ASCII rows check that indices are CODEPOINT offsets, matching
+// The non-ASCII rows check that indices are codepoint offsets, matching
 // len(s) (utf8.RuneCountInString, funcsconv.go) and s[i] (rune-indexed,
 // list.go:302). A byte-offset implementation answers 3 for find('héllo','l')
 // instead of 2 — a plausible-looking wrong answer that no ASCII test can see.
@@ -72,7 +72,7 @@ func TestSearchFunctions(t *testing.T) {
 		{"startswith no", `startswith('abcdef', 'z')`, "false", "bool"},
 		{"startswith empty is true", `startswith('abc', '')`, "true", "bool"},
 		{"endswith yes", `endswith('abcdef', 'def')`, "true", "bool"},
-		// endswith's FALSE path, the twin of "startswith no" above; nothing
+		// endswith's false path, the twin of "startswith no" above; nothing
 		// else in the unit table or the oracle corpus exercises endswith
 		// returning false for a non-matching suffix.
 		{"endswith no", `endswith('abcdef', 'z')`, "false", "bool"},
@@ -166,7 +166,7 @@ func TestReplace(t *testing.T) {
 	}
 }
 
-// TestReplace_BoundsGrowth checks the bound AT the limit rather than near it:
+// TestReplace_BoundsGrowth checks the bound at the limit rather than near it:
 // a test that stops short of the boundary proves only the happy path, and a
 // defect such as a float-to-int narrowing shows only at the boundary.
 func TestReplace_BoundsGrowth(t *testing.T) {

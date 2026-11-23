@@ -54,7 +54,7 @@ readme: |
 
   ## Requirements
 
-  - **Windows or macOS workers only.** The step requires
+  - Windows or macOS workers only. The step requires
     `attr.worker.os.family` = `windows` or `macos` as well as the tag.
   - Workers tagged `attr.worker.tag.aftereffects = true`
   - An `aerender` command the worker can resolve: its `worker.commands`
@@ -79,7 +79,7 @@ readme: |
   - How `-s` and `-e` number frames in a comp whose display start is not 0.
   - That `-s` and `-e` override the `-rqindex` item's own time span, which
     Adobe implies ("like with the -comp flag") rather than states.
-  - The install folder names the detector looks for. Adobe's page still spells
+  - The install folder names the detector looks for. Adobe's page spells
     them "Adobe After Effects CC"; the detector assumes the current "Adobe
     After Effects <year>" form, so an install in a folder named otherwise needs
     `aerender` on `PATH` or a `worker.commands` entry.

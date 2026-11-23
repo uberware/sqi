@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`sqi` is currently in pre-release development. Until a stable v1.0 is tagged, only the latest commit on the `main` branch receives security fixes. There is no backport policy for pre-release versions.
+`sqi` is in pre-release development. Until a stable v1.0 is tagged, only the latest commit on the `main` branch receives security fixes. There is no backport policy for pre-release versions.
 
 Once stable releases begin, this table will be updated to reflect which release lines are actively supported.
 
@@ -13,7 +13,7 @@ Once stable releases begin, this table will be updated to reflect which release 
 
 ## Reporting a vulnerability
 
-**Please do not open a public GitHub issue for security vulnerabilities.** Public disclosure before a fix is available puts all users at risk.
+Do not open a public GitHub issue for a security vulnerability. Public disclosure before a fix is available puts all users at risk.
 
 ### Preferred: GitHub private vulnerability reporting
 
@@ -63,14 +63,14 @@ We follow coordinated disclosure. This means:
 
 The following are in scope for security reports:
 
-- `sqi-server` — scheduler, REST API, WebSocket, embedded NATS, SQLite state management
+- `sqi-server` — scheduler, REST API, WebSocket, the NATS broker integration, the SQLite and PostgreSQL state stores, high availability
 - `sqi-worker` — task executor and worker agent
 - The Python client library (`sqi-sdk`) and the DCC submitter package (`sqi-submitter`)
 - The authentication and authorization implementation (`internal/auth/`) — the auth gate, local accounts, sessions, API keys, RBAC, LDAP/AD, and OAuth2/OIDC SSO
 - Run-as-user task isolation (`internal/worker/isolation/`) — privilege separation between task processes and the worker service account
 - Dependency vulnerabilities in the Go module graph or npm packages
 
-The following are **out of scope**:
+The following are out of scope:
 
 - Vulnerabilities in third-party software that `sqi` integrates with but does not control (e.g. Arnold, Houdini, Nuke)
 - Issues in the community preset library that are specific to a user's own environment configuration

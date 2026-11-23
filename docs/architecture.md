@@ -397,8 +397,11 @@ handleLeaseRequest(workerID, queueID)
 
 A parked request is woken when new work becomes available for that queue (job
 submitted, task becomes `ready`, task completes freeing cores, or stale-task
-reaper reclaims a task). Unfulfillable requests time out after ~30 s and return
-an empty batch; the worker immediately re-requests.
+reaper reclaims a task). A wake that lands after a request has read the store
+but before it parks is not lost: the scheduler counts the wakes on each queue,
+and a request whose count moved since its read returns at once and selects
+again. Unfulfillable requests time out after ~30 s and return an empty batch;
+the worker immediately re-requests.
 
 **Compute-location registry.** sqi maintains a curated, auto-populated catalog
 of named compute locations (`compute_locations` table; served at
@@ -1253,7 +1256,7 @@ WHERE id … ORDER BY id FOR …` per run of anchors on one table in one mode:
 marked shared. Queue, farm and usage-pool anchors, which only the lease takes,
 are `LockNoKeyUpdate`. That mode conflicts with itself and with an `UPDATE` or
 `DELETE` of the row, so two leases on one capped row serialize (which makes
-I5's count and write atomic; `TestPGRace_G2_PoolCapHoldsUnderConcurrentLeases`
+I5's count and write atomic; `TestPGRace_PoolCapHoldsUnderConcurrentLeases`
 covers pools) and a cap change waits for a lease in flight. It does not
 conflict with the `FOR KEY SHARE` lock a foreign-key check takes, so inserting
 a job into the queue and farm and leasing from them never wait for each other.
@@ -1366,7 +1369,7 @@ serializes every writer. On PostgreSQL they remain open:
   then the job row). A log insert's foreign-key check takes `FOR KEY SHARE` on
   its task row, so an append arriving after that waits for the delete and then
   fails on the foreign key; one already past the check commits first and the
-  cascade deletes its row (`TestPGRace_G7_DeleteJobHoldsOffALogThatRaced`). The
+  cascade deletes its row (`TestPGRace_DeleteJobHoldsOffALogThatRaced`). The
   task rows are locked rather than the attempt rows because an insert checks
   its task before its attempt: holding the attempts would let an insert hold
   its task while waiting, and the cascade's delete of the tasks would deadlock

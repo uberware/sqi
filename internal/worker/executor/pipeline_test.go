@@ -38,7 +38,7 @@ func TestApplyDeliveries_FlagsAndEnv(t *testing.T) {
 
 // TestApplyDeliveries_CanonicalOrder verifies that deliveries are applied in the
 // fixed canonical order (swap_in_place → command_flags → environment) regardless
-// of the declared order. When command_flags is declared BEFORE swap_in_place the
+// of the declared order. When command_flags is declared before swap_in_place the
 // appended flag strings must not be double-substituted by the swap.
 func TestApplyDeliveries_CanonicalOrder(t *testing.T) {
 	lookup, err := pathmap.NewLookup([]protocol.PathMapRule{
@@ -48,7 +48,7 @@ func TestApplyDeliveries_CanonicalOrder(t *testing.T) {
 		t.Fatalf("NewLookup: %v", err)
 	}
 	action := &protocol.Action{Command: "render", Args: []string{"/projects/shot.ma"}}
-	// Intentionally wrong declared order: command_flags listed BEFORE swap_in_place.
+	// Wrong declared order: command_flags listed before swap_in_place.
 	deliveries := []protocol.PathDelivery{
 		{Kind: "command_flags", Pattern: "--remap {src}={dest}"},
 		{Kind: "swap_in_place"},

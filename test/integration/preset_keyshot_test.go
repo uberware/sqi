@@ -345,7 +345,7 @@ func TestPresetKeyShot_ScriptDrivesKeyShot(t *testing.T) {
 	}
 	studio := `Cam 'A' "wide" \ left`
 	// A double quote cannot be part of a Windows file name, and this test
-	// really writes the files; the quoting case of the fixtures covers the
+	// writes the files; the quoting case of the fixtures covers the
 	// spelling in params.json on every OS.
 	hero := `it's the "hero" shot`
 	if runtime.GOOS == "windows" {
@@ -555,9 +555,9 @@ func TestPresetKeyShot_ScriptDrivesKeyShot(t *testing.T) {
 
 // TestPresetKeyShot_EmitsProgress pins the directives render.py writes to
 // file descriptor 1 as it works through a chunk: a status line naming the frame
-// before each renderImage and the share of the chunk done after each. A frame
-// whose render fails reports no progress, and the success line still comes last.
-// Only the stub lux has been run; no KeyShot has.
+// before each renderImage and the share of the chunk done after each, with the
+// success line last. A frame whose render fails reports no progress, and
+// nothing follows it. This runs against the stub lux only, not KeyShot.
 func TestPresetKeyShot_EmitsProgress(t *testing.T) {
 	python := findPython3(t)
 	if python == "" {

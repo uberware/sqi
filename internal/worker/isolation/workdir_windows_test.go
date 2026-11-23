@@ -37,7 +37,7 @@ func currentUsername(t *testing.T) string {
 	return account
 }
 
-// TestSecureWorkDir_NilCredentialIsNoOp proves the pre-isolation path (no
+// TestSecureWorkDir_NilCredentialIsNoOp proves the no-isolation path (no
 // queue-configured run-as-user, so resolveCredential never calls Resolve) is
 // completely unaffected: SecureWorkDir must stay a no-op for a nil credential
 // exactly as it always has.
@@ -104,26 +104,23 @@ func TestWriteFileFchown_RefusesToWriteThroughAPreexistingEntry(t *testing.T) {
 	}
 }
 
-// assertSecured fails the test unless path carries EXACTLY the DACL
-// secureDACL builds: protected (no inherited ACEs survive), and exactly the
-// three trustees (target account, SYSTEM, Administrators) — the same
-// structural check TestSecureDACL_GrantsExactlyThreeTrustees makes against
-// the ACL in isolation, applied here to what actually landed on disk. It
-// reads the security descriptor straight from the filesystem via
-// GetNamedSecurityInfo, independently of the openForACL/applyProtectedDACL
-// primitives production code uses to write it, so a bug in those primitives
-// can't hide from this assertion the way it could if the test reused the
-// same code path to verify itself.
+// assertSecured fails the test unless path carries the DACL secureDACL
+// builds: protected (no inherited ACEs survive), with exactly the three
+// trustees (target account, SYSTEM, Administrators). It is the structural
+// check TestSecureDACL_GrantsExactlyThreeTrustees makes against the ACL
+// itself, applied to what landed on disk. It reads the security descriptor
+// from the filesystem with GetNamedSecurityInfo, independently of the
+// openForACL/applyProtectedDACL primitives production code writes it with,
+// so a bug in those primitives cannot hide from it.
 //
-// Checking the PROTECTED control bit (not just "sid is present somewhere in
-// the DACL") is what makes this distinguish "the code under test actually
-// secured this entry" from "this entry merely inherited an ACL that happens
-// to already grant sid" — the latter is a real risk whenever cred names the
-// account the test itself runs as: that account also created path's parent
+// Checking the PROTECTED control bit, not only that sid appears in the DACL,
+// tells "the code under test secured this entry" from "this entry inherited
+// an ACL that already grants sid". The second can happen whenever cred names
+// the account the test runs as: that account created path's parent
 // directory and, by ordinary Windows inheritance, may already appear on its
-// ACL (e.g. via a CREATOR-OWNER-derived ACE) with no help from the code under
-// test at all. A fresh file's inherited ACL is never PROTECTED, so that bit
-// alone would already fail before either fix lands a hand on the entry.
+// ACL (e.g. via a CREATOR-OWNER-derived ACE). A fresh file's inherited ACL is
+// never PROTECTED, so that bit alone fails an entry the code did not
+// secure.
 func assertSecured(t *testing.T, path string, sid *windows.SID) {
 	t.Helper()
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
@@ -150,8 +147,8 @@ func assertSecured(t *testing.T, path string, sid *windows.SID) {
 }
 
 // TestWriteFileFchown_AppliesACLForRealCredential proves the ACL apply step
-// actually succeeds when it is invoked for real, not merely that
-// WriteFileFchown returns nil.
+// succeeds when invoked for a real credential, not only that WriteFileFchown
+// returns nil.
 //
 // A create through os.OpenFile, which on Windows only ever requests
 // GENERIC_WRITE, carries READ_CONTROL but not WRITE_DAC, and Windows fixes a
@@ -183,33 +180,28 @@ func TestWriteFileFchown_AppliesACLForRealCredential(t *testing.T) {
 // entry in root still gets ChownRecursive's DACL even when a reparse point
 // sorts lexically before it.
 //
-// The natural reproduction uses a real NTFS symlink (IO_REPARSE_TAG_SYMLINK)
-// — what production code actually encounters — but creating one needs
-// SeCreateSymbolicLinkPrivilege (or Developer Mode), which an unelevated test
-// process does not hold: both os.Symlink and `mklink` (no /j) fail with "A
-// required privilege is not held by the client" unless the Developer Mode
-// registry key (HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\
-// AppModelUnlock\AllowDevelopmentWithoutDevLicense) is set. So this test
-// cannot drive the defect through an actual symlink.
+// The direct reproduction uses an NTFS symlink (IO_REPARSE_TAG_SYMLINK), but
+// creating one needs SeCreateSymbolicLinkPrivilege (or Developer Mode),
+// which an unelevated test process does not hold: both os.Symlink and
+// `mklink` (no /j) fail with "A required privilege is not held by the
+// client" unless the Developer Mode registry key
+// (HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\
+// AppModelUnlock\AllowDevelopmentWithoutDevLicense) is set.
 //
-// A directory JUNCTION (IO_REPARSE_TAG_MOUNT_POINT, `mklink /j`) needs no
-// privilege at all — but is exactly what
-// TestIsolationWindows_ChownRecursiveDoesNotFollowJunction
-// (test/integration/isolation_windows_test.go) already uses, and Go 1.23+
+// A directory junction (IO_REPARSE_TAG_MOUNT_POINT, `mklink /j`) needs no
+// privilege, and TestIsolationWindows_ChownRecursiveDoesNotFollowJunction
+// (test/integration/isolation_windows_test.go) uses one, but Go 1.23+
 // reports a junction as fs.ModeIrregular, not fs.ModeSymlink
-// (os/types_windows.go's isReparseTagNameSurrogate/mode split from the
-// pre-1.23 behavior): an unadorned junction never reaches the
-// ModeSymlink-gated branch the defect lives in, so a plain junction test
-// would pass against the buggy code exactly as it does against the correct
-// code, proving nothing.
+// (os/types_windows.go's isReparseTagNameSurrogate/mode split): a plain
+// junction never reaches a ModeSymlink-gated branch, so a plain junction
+// test would pass whether or not ChownRecursive had one.
 //
-// GODEBUG=winsymlink=0 restores the pre-Go-1.23 compatibility mode, in which
-// a junction DirEntry reports fs.ModeSymlink exactly like a real symlink does
-// by default (checked against os.ReadDir). That is the SAME DirEntry.Type()
-// bit a buggy branch would key off, so setting it drives the actual
-// conditional, through the real ChownRecursive function and a real
-// filepath.WalkDir, using only a filesystem object any unprivileged account
-// can create — the closest an unelevated test can get to the symlink case.
+// GODEBUG=winsymlink=0 selects the pre-Go-1.23 compatibility mode, in which
+// a junction DirEntry reports fs.ModeSymlink as a real symlink does by
+// default (checked against os.ReadDir). That is the DirEntry.Type() bit such
+// a branch would key off, so the test drives it through the real
+// ChownRecursive and filepath.WalkDir with a filesystem object any
+// unprivileged account can create.
 func TestChownRecursive_SecuresSiblingsAfterAReparsePoint(t *testing.T) {
 	t.Setenv("GODEBUG", "winsymlink=0")
 
@@ -218,9 +210,9 @@ func TestChownRecursive_SecuresSiblingsAfterAReparsePoint(t *testing.T) {
 	if err := os.Mkdir(target, 0o755); err != nil {
 		t.Fatalf("mkdir %q: %v", target, err)
 	}
-	// Named to sort lexically BEFORE the ordinary entry below: the bug's
-	// early loop break (see ChownRecursive's own doc) abandons every sibling
-	// sorting AFTER the reparse point, so the reparse point must come first.
+	// Named to sort before the ordinary entry below: returning SkipDir for
+	// the reparse point (see ChownRecursive's comment) would skip every
+	// sibling sorting after it, so the reparse point must come first.
 	reparse := filepath.Join(root, "aaa_reparse")
 	fsutiltest.Junction(t, reparse, target)
 	after := filepath.Join(root, "zzz_after")

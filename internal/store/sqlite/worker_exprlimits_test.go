@@ -16,14 +16,13 @@ import (
 // The scheduler refuses to dispatch an EXPR job to a worker whose caps are
 // below the server's configured limits (internal/scheduler/exprcaps.go). If
 // these values did not survive the round trip they would read back as zero,
-// which the scheduler interprets as "not advertised" — i.e. as the worker's
-// compiled-in defaults — and a genuinely tight worker would be handed work it
-// cannot run. The values are distinct on purpose: this is FIVE same-typed
-// int64s through one JSON column, where a transposition round-trips cleanly and
-// no compiler sees it. Every field must appear in both literals below -- a
-// four-of-five literal leaves the omitted dimension zero on both sides of the
-// comparison, which is the one shape this test cannot detect. The field count
-// is asserted at the end for exactly that reason.
+// which the scheduler interprets as "not advertised" (the worker's compiled-in
+// defaults), and a tighter worker would be handed work it cannot run. The
+// values are distinct because these are five same-typed int64s through one
+// JSON column, where a transposition round-trips cleanly and no compiler sees
+// it. Every field must appear in both literals below: a literal missing one
+// leaves that dimension zero on both sides of the comparison, so the end of
+// the test asserts that every field of both literals is populated.
 func TestWorker_ExprLimitsRoundTrip(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -79,13 +78,10 @@ func TestWorker_ExprLimitsRoundTrip(t *testing.T) {
 	}
 
 	// The comparisons above are only as complete as the literals that feed
-	// them. A dimension left out of BOTH literals is zero on both sides of
+	// them. A dimension left out of both literals is zero on both sides of
 	// every == in this test, so it passes while nothing checks the column
-	// carries it -- and that is not hypothetical: this test shipped covering
-	// four of five fields after the fifth was added. Counting fields would
-	// only catch the NEXT one; assert instead that every field of both
-	// literals is actually populated, which catches an omission in the literal
-	// that already exists.
+	// carries it. Assert that every field of both literals is populated, which
+	// catches an omission in either literal.
 	for _, lit := range []struct {
 		name string
 		v    store.WorkerExprLimits

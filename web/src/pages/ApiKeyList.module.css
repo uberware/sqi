@@ -2,7 +2,7 @@
 
 /*
  * ApiKeyList's own inline create-form and secret-callout styles. The form
- * fields compose the shared entity-form scaffold (see UserForm.module.css);
+ * fields compose the shared entity-form scaffold (entityForm.module.css);
  * the table itself uses entityList.module.css directly, like UserList.
  */
 

@@ -11,13 +11,11 @@ import (
 	"github.com/uberware/sqi/internal/openjd/expr"
 )
 
-// TestDerivedPrefixes_MatchTheShippedLiterals is the safety net for making the
-// scope declaration the single source of truth. The base-spec path keeps
-// prefix-matching and keeps its error text; only the SOURCE of the prefixes
-// moves. If a derived list ever differs from the literal it replaced, a
-// template that validates today could start failing, so this pins all three
-// byte for byte INCLUDING ORDER -- validateFormatString joins them into the
-// "allowed: ..." message a user reads.
+// TestDerivedPrefixes_MatchTheShippedLiterals pins the base-spec prefix lists
+// derived from the scope declaration. If a derived list changed, a template
+// that validates could start failing, so this pins all three byte for byte,
+// including order: validateFormatString joins them into the "allowed: ..."
+// message a user reads.
 func TestDerivedPrefixes_MatchTheShippedLiterals(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -48,22 +46,22 @@ func TestDerivedPrefixes_MatchTheShippedLiterals(t *testing.T) {
 }
 
 // TestDerivedPrefixes_EnvironmentScopesAreIdenticalToBaseSpec states the
-// property that makes the four-scope split safe: the only symbol separating a
-// job environment from a step environment is Step.Name, which is EXPR-only, so
-// the two derive to the same base-spec list and no base-spec template can tell
-// them apart.
+// property that makes separate environment scopes safe: the only symbol
+// separating a job environment from a step environment is Step.Name, which is
+// EXPR-only, so the two derive to the same base-spec list and no base-spec
+// template can tell them apart.
 func TestDerivedPrefixes_EnvironmentScopesAreIdenticalToBaseSpec(t *testing.T) {
 	job := derivedPrefixes(ScopeJobEnvironment)
 	step := derivedPrefixes(ScopeStepEnvironment)
 	if !reflect.DeepEqual(job, step) {
 		t.Errorf("job env %q and step env %q derive differently; base-spec templates "+
-			"would now be treated differently depending on where the environment sits", job, step)
+			"would be treated differently depending on where the environment sits", job, step)
 	}
 }
 
 // TestScopeHostContext pins which scopes may call a host-context-only function.
-// Submission-time positions -- the job name, host requirements, the parameter
-// space -- are not host contexts; environments and step scripts are.
+// Submission-time positions (the job name, host requirements, the parameter
+// space) are not host contexts; environments and step scripts are.
 func TestScopeHostContext(t *testing.T) {
 	tests := []struct {
 		scope Scope
@@ -98,14 +96,14 @@ func TestScopeStepScriptExcludesEnvFile(t *testing.T) {
 }
 
 // TestScopeFixed_PerScopeMembership pins, per scope, exactly which fixed
-// symbols scopeFixed exposes -- both presence AND absence, and each one's
-// type. Absence is the half that matters: it is what makes Step.Name illegal
-// in a job environment while legal in a step environment, which is the entire
-// reason the four-scope split exists. derivedPrefixes cannot assert this,
-// because every fixed symbol is EXPR-only and so all four are filtered out of
-// it by design (TestDerivedPrefixes_EnvironmentScopesAreIdenticalToBaseSpec).
-// A membership-only check would also pass with every type wrong, so each
-// expected symbol's type is checked with expr.Type.Equal too.
+// symbols scopeFixed exposes, both presence and absence, and each one's type.
+// Absence is what makes Step.Name illegal in a job environment and legal in
+// a step environment, the reason the two environment scopes are separate.
+// derivedPrefixes cannot assert this, because every fixed symbol is EXPR-only
+// and so derivedPrefixes filters them all out
+// (TestDerivedPrefixes_EnvironmentScopesAreIdenticalToBaseSpec). A
+// membership-only check would pass with every type wrong, so each expected
+// symbol's type is checked with expr.Type.Equal too.
 func TestScopeFixed_PerScopeMembership(t *testing.T) {
 	tests := []struct {
 		scope Scope
@@ -172,12 +170,11 @@ func TestScopeFixed_PerScopeMembership(t *testing.T) {
 
 // TestScopeFixed_AllEXPROnly guards the invariant derivedPrefixes' correctness
 // depends on: every fixed symbol must be EXPROnly, because derivedPrefixes
-// only excludes EXPR-only entries from the base-spec prefix list. If a future
-// fixed symbol were added without the flag, derivedPrefixes would gain a
-// prefix and a base-spec template would start accepting a reference it
-// should reject, with nothing to catch it. Asserted as an invariant over
-// scopeFixed for every scope, so a new entry is covered automatically rather
-// than needing its own line here.
+// only excludes EXPR-only entries from the base-spec prefix list. A fixed
+// symbol added without the flag would give derivedPrefixes a new prefix, and
+// a base-spec template would accept a reference it should reject. The test
+// asserts the invariant over scopeFixed for every scope, so a new entry is
+// covered without its own line here.
 func TestScopeFixed_AllEXPROnly(t *testing.T) {
 	for _, s := range []Scope{
 		ScopeJob, ScopeJobEnvironment, ScopeStepEnvironment, ScopeStepScript, ScopeStepTemplate,
@@ -252,8 +249,8 @@ func TestScopeString_CoversEveryScope(t *testing.T) {
 // derivedPrefixes makes for ScopeStepTemplate: nil, not a derived list. A
 // <StepTemplate>.let block cannot appear without the EXPR extension
 // (validate.go enforces this before ScopeStepTemplate is ever consulted),
-// so this scope has no base-spec "allowed: ..." message to produce -- unlike
-// every other scope, which all have real base-spec positions.
+// so this scope has no base-spec "allowed: ..." message to produce, unlike
+// every other scope, which all have base-spec positions.
 func TestDerivedPrefixes_StepTemplateHasNoBaseSpecExistence(t *testing.T) {
 	if got := derivedPrefixes(ScopeStepTemplate); got != nil {
 		t.Errorf("derivedPrefixes(ScopeStepTemplate) = %q, want nil: "+

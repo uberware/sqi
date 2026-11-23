@@ -118,7 +118,7 @@ func TestAPIKeys_RevokeInvalidatesAndScopes(t *testing.T) {
 		t.Fatalf("alice delete status = %d, want 204", aliceDelete.StatusCode)
 	}
 
-	// The revoked key no longer appears in Alice's list.
+	// The revoked key is absent from Alice's list.
 	listResp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/api-keys", nil, aliceCookie)
 	defer listResp.Body.Close()
 	if listResp.StatusCode != http.StatusOK {

@@ -55,10 +55,10 @@ def main(argv: list[str]) -> int:
 #
 #     with SqiClient(server_url) as sqi:
 #         render = sqi.submit_job(
-#             "render.yaml", farm_id=farm_id, queue_id=queue_id
+#             Path("render.yaml"), farm_id=farm_id, queue_id=queue_id
 #         )
 #         comp = sqi.submit_job(
-#             "comp.yaml",
+#             Path("comp.yaml"),
 #             farm_id=farm_id,
 #             queue_id=queue_id,
 #             depends_on=[render.id],

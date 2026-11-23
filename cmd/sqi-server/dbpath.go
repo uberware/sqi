@@ -28,26 +28,25 @@ import (
 //     passed --db on the command line).
 //  2. The config layer: the root -c/--config file and SQI_STORE_SQLITE_PATH,
 //     i.e. whatever [config.LoadWithSources] resolves store.sqlite_path to,
-//     when [config.Sources.StoreSQLitePath] reports the file or env var
-//     actually set it — NOT when the resolved value merely differs from the
-//     built-in default, which a config file that restates the default
-//     value (as config/sqi-server.example.yaml does) would defeat.
-//  3. The legacy SQI_SQLITE_PATH environment variable, kept working as an
-//     alias. A deprecation notice naming SQI_STORE_SQLITE_PATH — the
-//     variable sqi-server itself reads — is printed to stderr when this is
-//     the layer that decided the path.
+//     when [config.Sources.StoreSQLitePath] reports the file or env var set
+//     it. Comparing the resolved value with the built-in default would miss
+//     a config file that restates the default (as
+//     config/sqi-server.example.yaml does).
+//  3. The legacy SQI_SQLITE_PATH environment variable, an alias. When this
+//     is the layer that decided the path, a deprecation notice naming
+//     SQI_STORE_SQLITE_PATH (the variable sqi-server itself reads) is
+//     printed to stderr.
 //  4. The built-in default ("sqi.db").
 //
 // The config layer is always loaded, even when an explicit --db makes its
-// result moot, so a malformed --config file is reported as an error rather
-// than silently ignored when the operator asked for a specific one (root
-// -c/--config was passed explicitly). Without an explicit -c, a config-load
-// failure — an auto-discovered but broken /etc/sqi/sqi-server.yaml, or an
-// unrelated malformed SQI_* env var with nothing to do with the database
-// path — is NOT a hard failure: backup, migrate, and worker are the tools
-// reached for when something is already broken, so a warning goes to
-// stderr and resolution falls through to the legacy env var and default as
-// if the config layer had decided nothing.
+// result moot, so a malformed --config file is reported as an error when the
+// operator asked for a specific one (root -c/--config was passed
+// explicitly). Without an explicit -c, a config-load failure (an
+// auto-discovered but broken /etc/sqi/sqi-server.yaml, or a malformed SQI_*
+// env var unrelated to the database path) is not a hard failure: backup,
+// migrate, and worker are the tools reached for when something is already
+// broken, so a warning goes to stderr and resolution falls through to the
+// legacy env var and default as if the config layer had decided nothing.
 func resolveDBPath(explicit string, explicitChanged bool) (string, error) {
 	c, err := loadCLIConfig()
 	if err != nil {
@@ -109,8 +108,7 @@ func (c cliConfig) dbPath(explicit string, explicitChanged bool) string {
 
 // requireExistingDB stats path and returns an actionable error naming it and
 // how to point elsewhere when no file exists there. Used by backup and
-// worker, which must never create a database — unlike migrate, whose job is
-// to create one.
+// worker, which must never create a database (migrate does).
 func requireExistingDB(path string) error {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -128,9 +126,9 @@ func requireExistingDB(path string) error {
 // requireMigratedDB catches the case requireExistingDB's stat check cannot
 // see: a file that exists at path but was never migrated (empty, or created
 // by something other than "migrate up" or the server's own AutoMigrate).
-// sqlite.Open with AutoMigrate: false succeeds against such a file — SQLite
-// opens an empty database happily — so the first real query would otherwise
-// fail with a raw driver error ("no such table: ..."). Checked directly
+// sqlite.Open with AutoMigrate: false succeeds against such a file (SQLite
+// opens an empty database), so the first real query would otherwise fail
+// with a raw driver error ("no such table: ..."). Checked directly
 // against sqlite_master rather than through the store, so it runs before
 // any store method that would surface that error unremediated.
 func requireMigratedDB(path string) error {

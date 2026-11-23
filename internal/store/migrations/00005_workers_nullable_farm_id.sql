@@ -1,13 +1,12 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
 -- Workers without a farm affiliation (farm_id = NULL) are valid.
 --
--- The original schema required farm_id NOT NULL REFERENCES farms(id), which
--- prevents registering a worker that has not been assigned to any farm.
--- Unaffiliated workers are useful for testing and for deployments where all
--- workers accept tasks from any farm.  The scheduler already handles the
--- NULL case: ListWorkers with an empty FarmID omits the farm_id filter, so
--- NULL-farm workers appear in global listings but are not matched to
--- farm-specific job queries.
+-- 00001 declares farm_id NOT NULL REFERENCES farms(id), which prevents
+-- registering a worker that has not been assigned to any farm. Unaffiliated
+-- workers are useful for testing and for deployments where all workers accept
+-- tasks from any farm. ListWorkers with an empty FarmID omits the farm_id
+-- filter; with a FarmID it includes NULL-farm workers only when
+-- IncludeUnaffiliated is set.
 --
 -- SQLite does not support ALTER TABLE to change a column constraint, so this
 -- migration recreates the workers table without the NOT NULL on farm_id.

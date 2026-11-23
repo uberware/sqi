@@ -145,11 +145,11 @@ var registry = map[string]Extension{
 //
 // Exported for internal/scheduler, which decides per lease request whether a
 // job needs a worker capable of phase-3 expression evaluation. It compares this
-// name against the extension list [Submitter.Submit] persisted on the job row,
-// so the test is exact for every job submitted since migration 00027. Rows
-// older than that column record no list, and for those alone the scheduler
-// falls back to scanning the raw template for these bytes, a heuristic whose
-// two error directions are described in that package's exprcaps.go.
+// name against the extension list [Submitter.Submit] persists on the job row.
+// For a job row that records no list (the column was added in migration
+// 00027), the scheduler falls back to scanning the raw template for these
+// bytes, a heuristic whose two error directions are described in that
+// package's exprcaps.go.
 const ExtensionEXPR = "EXPR"
 
 // ExtensionLogChecks is the registry name of the sqi-defined step-level

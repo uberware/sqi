@@ -21,7 +21,7 @@ const projects = only ? allProjects.filter((p) => p.name === only) : allProjects
 
 export default defineConfig({
   testDir: './e2e',
-  // Ignore macOS AppleDouble sidecar files (._*) that appear on this volume.
+  // Ignore macOS AppleDouble sidecar files (._*) that some volumes create.
   testIgnore: ['**/._*'],
   // Single shared server, so run serially to keep worker scheduling predictable.
   fullyParallel: false,

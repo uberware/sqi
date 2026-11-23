@@ -22,9 +22,9 @@ type FakeAccount struct {
 	// credential is built from, mirroring what GroupIds()/`id -G` would
 	// report for a real account. Unlike Groups, this is not name-keyed and
 	// may contain gids with no corresponding entry in Groups (e.g. gid 0, or
-	// a privileged named group's gid) — exactly the shape needed to exercise
-	// stripGID0FromSupplementary's gid-0 filter and its deliberate choice to
-	// leave privileged named groups alone.
+	// a privileged named group's gid), the shape needed to exercise
+	// stripGID0FromSupplementary's gid-0 filter and its choice to leave
+	// privileged named groups alone.
 	SupplementaryGIDs []uint32
 	Home              string
 }
@@ -38,9 +38,9 @@ type fakeProvider struct {
 
 // NewFake returns an in-memory Provider for unit tests.
 //
-// A fake CANNOT verify the things that actually break here — real uid/gid
-// switching, supplementary groups, workdir ownership, Setpgid survival. Those
-// need make test-isolation against a real OS. Use this only for policy logic.
+// A fake cannot verify uid/gid switching, supplementary groups, workdir
+// ownership or Setpgid survival; those need make test-isolation against a
+// real OS. Use this only for policy logic.
 func NewFake(accounts map[string]FakeAccount) Provider {
 	return &fakeProvider{accounts: accounts}
 }
@@ -54,8 +54,8 @@ func NewFakeIncapable(accounts map[string]FakeAccount) Provider {
 func (f *fakeProvider) Resolve(_ context.Context, spec Spec) (*Credential, error) {
 	// validateAccountArg is the same gate the real POSIX provider applies
 	// before spec.User/spec.Group is used for anything. Skipping it here
-	// would mean a "-u"-shaped username passes the fake in tests and then
-	// fails only against the real provider — a fake/real divergence.
+	// would let a "-u"-shaped username pass the fake in tests and fail only
+	// against the real provider.
 	if err := validateAccountArg(spec.User, "user"); err != nil {
 		return nil, err
 	}
@@ -70,12 +70,12 @@ func (f *fakeProvider) Resolve(_ context.Context, spec Spec) (*Credential, error
 
 	gid := acct.GID
 	if spec.Group == "" {
-		// Mirrors resolveGID's real-provider fix: an account whose PRIMARY
-		// group is gid 0 must be refused even with no explicit group
-		// requested, since queue config only chooses the username and the
-		// username determines the primary group. Deliberately does not run
-		// the full name-based CheckGroupNotPrivileged here, for the same
-		// reason the real provider doesn't: an account's primary group name
+		// Mirrors the real provider's resolveGID: an account whose primary
+		// group is gid 0 is refused even with no explicit group requested,
+		// since queue config only chooses the username and the username
+		// determines the primary group. It does not run the full name-based
+		// CheckGroupNotPrivileged here, for the same reason the real provider
+		// does not: an account's primary group name
 		// (e.g. macOS's "staff") may itself be on privilegedGroupNames
 		// without that account being privileged.
 		if gid == 0 {
@@ -96,7 +96,7 @@ func (f *fakeProvider) Resolve(_ context.Context, spec Spec) (*Credential, error
 	}
 
 	// spec.User is threaded through separately from FakeAccount: on Windows,
-	// SecureWorkDir/ChownRecursive resolve a Credential's identity by NAME
+	// SecureWorkDir/ChownRecursive resolve a Credential's identity by name
 	// (Credential.User), not by uid/gid, so newFakeCredential needs the
 	// account name a real Resolve would have carried even though FakeAccount
 	// itself (an entry in a name-keyed map) has no name field of its own.

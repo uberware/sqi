@@ -1,10 +1,10 @@
 # ![sqi](sqi_logo.png)
 
-`sqi` (pronounced "sky") is an open source distributed task and render farm manager built for modern production pipelines. It is designed to run simply on a handful of local workstations and scale to hybrid on-premises and cloud infrastructure without changing how you work.
+`sqi` (pronounced "sky") is an open source distributed task and render farm manager built for modern production pipelines. It runs on a handful of local workstations and scales to hybrid on-premises and cloud infrastructure without changing how you work.
 
 📖 **[Documentation](https://uberware.github.io/sqi/)** — quickstart, architecture, configuration, and full reference.
 
-> **Status:** v0.3.0 (Phase 3) released — opt-in authentication and multi-user support: local accounts, API keys, RBAC, job-owner identity, LDAP/AD, OAuth2/OIDC SSO, and queue-scoped run-as-user task isolation on POSIX and Windows. Also in this release: the official OpenJD `EXPR` expression-language extension, and expanded reference presets (ffmpeg transcode, sequence-encode and segment-transcode; Mistika Boutique, VR and Workflows). Auth is **off by default**, so an existing deployment is unaffected until enabled. **Phase 4** (production hardening) is in progress: the PostgreSQL state store and backup/restore are implemented, not yet released. Contributions, feedback, and discussion welcome.
+> **Status:** pre-1.0. `sqi` schedules OpenJD jobs (including the `EXPR` expression-language extension) on pull-based workers, with products and presets, DCC submitters, opt-in authentication (local accounts, API keys, RBAC, LDAP/AD, OAuth2/OIDC SSO), run-as-user task isolation on POSIX and Windows, SQLite or PostgreSQL state, an embedded or external NATS broker, and an optional high-availability scheduler. Auth is off by default. Contributions, feedback, and discussion welcome.
 
 ---
 
@@ -24,7 +24,7 @@ The render farm management space is in an awkward moment. Legacy on-premises sys
 
 **Not tied to any cloud provider.** Workers run on Linux, macOS, and Windows — bare metal, VMs, or containers. Cloud compute locations are supported across AWS, GCP, Azure, and any provider that can run a container or a binary. Your control plane runs where you want it.
 
-**OpenJD compatible.** `sqi` adopts the [Open Job Description](https://github.com/OpenJobDescription/openjd-specifications) format as its native job execution layer — not an import step or a partial translation, but the format `sqi` jobs are authored and validated in directly. This is a real standard designed for portability, not a proprietary format. Conformance is measured, not asserted: `sqi` runs the official OpenJD conformance test suite on every CI build and publishes the current pass rate and known gaps at [`docs/openjd-conformance.md`](docs/openjd-conformance.md). One caveat is by design rather than a gap: a template that opts into an OpenJD extension `sqi` does not implement is rejected outright, rather than being accepted and misinterpreted. The official `EXPR` (expression language) extension **is** implemented and supported — see [`docs/openjd-extensions/expr.md`](docs/openjd-extensions/expr.md).
+**OpenJD compatible.** `sqi` adopts the [Open Job Description](https://github.com/OpenJobDescription/openjd-specifications) format as its native job execution layer — not an import step or a partial translation, but the format `sqi` jobs are authored and validated in directly. It is an open standard designed for portability. `sqi` runs the official OpenJD conformance test suite on every CI build and publishes the current pass rate and known gaps at [`docs/openjd-conformance.md`](docs/openjd-conformance.md). A template that opts into an OpenJD extension `sqi` does not implement is rejected, so it is never run with the extension ignored. The official `EXPR` (expression language) extension is supported; see [`docs/openjd-extensions/expr.md`](docs/openjd-extensions/expr.md).
 
 **General purpose.** Rendering is the primary use case and the domain `sqi` is designed around, but the job model is general. Any workload expressible as a command with defined inputs, outputs, and environment is a valid `sqi` job — simulation, transcoding, machine learning pipelines, data processing, software development, or anything else a studio runs at scale.
 
@@ -42,17 +42,15 @@ The render farm management space is in an awkward moment. Legacy on-premises sys
 
 - **Path translation** handles the fact that different applications deal with cross-platform and cross-environment paths differently. Product definitions declare how paths should be resolved — baked into the command line, passed as remapping arguments, set as environment variables, or staged locally before execution.
 
-- **Usage pool management** tracks concurrent usage of any shared, finite resource across all workers. Tell `sqi` you have 20 Arnold render licenses (or a per-show task cap, or any other limit) and it ensures no more than that many tasks run at once, globally, across every compute location. Bring-your-own-limit — `sqi` enforces your cap, not its own.
+- **Usage pool management** tracks concurrent usage of any shared, finite resource across all workers. Tell `sqi` you have 20 Arnold render licenses (or a per-show task cap, or any other limit) and it ensures no more than that many tasks run at once, globally, across every compute location. You set the limit; `sqi` enforces it.
 
 - **Pull-based workers** register with the farm and pull assigned tasks rather than receiving pushed assignments. Workers can be added, removed, and scaled without the scheduler needing to manage their lifecycle. This makes auto-scaling and ephemeral cloud workers straightforward.
 
-- **Layered authentication** — from no auth at all (local network trust, appropriate for small private farms) through local accounts, API keys, role-based access control, LDAP/Active Directory, and OAuth2/OIDC for SSO. Designed so simple deployments stay simple and enterprise deployments get what they need. Auth is **off by default**: set `auth.enabled: true` to turn it on, and see [docs/auth.md](docs/auth.md) for the model, roles, and identity-provider setup.
+- **Layered authentication** — from no auth at all (local network trust, appropriate for small private farms) through local accounts, API keys, role-based access control, LDAP/Active Directory, and OAuth2/OIDC for SSO. Auth is off by default: set `auth.enabled: true` to turn it on, and see [docs/auth.md](docs/auth.md) for the model, roles, and identity-provider setup.
 
 - **Web UI** is the primary interface. No required desktop application. Real-time job and worker status, log streaming, preset management, product configuration, and farm administration — all in a browser.
 
 - **DCC submitters** for Maya, Houdini, Nuke, 3ds Max, VRED, Blender, Cinema 4D, After Effects, Unreal Engine, Katana, KeyShot, Silhouette, Fusion, and Modo via the [`sqi-submitter`](docs/dcc-submitters.md) Python package — in-application submission with per-host scene extraction and pre-fill, built on top of the [`sqi-sdk` Python library](docs/python-client.md), which covers scripted submission and pipeline integration on its own.
-
-- **Optional LLM integration** (disabled by default) adds natural-language interfaces for farm management — explain a job failure in plain English, manage workers or job priorities by description, filter and search jobs conversationally. Pluggable provider model: bring your own API key (OpenAI, Anthropic, Azure, or a local Ollama instance). `sqi` never requires or bundles an AI service.
 
 ---
 
@@ -65,15 +63,15 @@ sqi-server          # runs the scheduler, API, web UI, everything
 sqi-worker          # run on each render node — finds the server automatically
 ```
 
-On a local network, workers discover the server via mDNS and connect without any configuration. Open a browser, start submitting. That's it.
+On a local network, workers discover the server via mDNS and connect without any configuration. Open a browser and start submitting.
 
-There is no authentication in this mode — the server trusts the local network, by design. To require logins, set `auth.enabled: true` and see [docs/auth.md](docs/auth.md), which covers the first-admin bootstrap, roles, API keys, and connecting a directory or SSO provider. Traffic is unencrypted in this mode too; [docs/tls.md](docs/tls.md) covers turning on TLS for the API and the worker transport, which is a separate opt-in setting.
+There is no authentication in this mode: the server trusts the local network. To require logins, set `auth.enabled: true` and see [docs/auth.md](docs/auth.md), which covers the first-admin bootstrap, roles, API keys, and connecting a directory or SSO provider. Traffic is unencrypted in this mode too; [docs/tls.md](docs/tls.md) covers turning on TLS for the API and the worker transport, which is a separate opt-in setting.
 
 See the [Quickstart](docs/quickstart.md) for a full walkthrough (binary or Docker Compose), including creating a farm and queue and submitting your first job.
 
 **Distributed (production mode)**
 
-State in PostgreSQL and the message bus on a NATS cluster you run, with workers connecting to the cluster directly. Set `store.driver: postgres` for the store (see [Running on PostgreSQL](docs/operations.md#running-on-postgresql) and [`deploy/docker-compose.postgres.yml`](deploy/docker-compose.postgres.yml)) and `nats.mode: external` for the broker (see [Running on an external NATS cluster](docs/operations.md#running-on-an-external-nats-cluster) and [`deploy/docker-compose.nats-cluster.yml`](deploy/docker-compose.nats-cluster.yml)); the cluster outlives `sqi-server` restarts and, with three stream replicas, the loss of a node. The scheduler itself is not highly available: one `sqi-server` runs per database and per broker account. An HA scheduler and Kubernetes manifests are planned for Phase 4.
+State in PostgreSQL and the message bus on a NATS cluster you run, with workers connecting to the cluster directly. Set `store.driver: postgres` for the store (see [Running on PostgreSQL](docs/operations.md#running-on-postgresql) and [`deploy/docker-compose.postgres.yml`](deploy/docker-compose.postgres.yml)) and `nats.mode: external` for the broker (see [Running on an external NATS cluster](docs/operations.md#running-on-an-external-nats-cluster) and [`deploy/docker-compose.nats-cluster.yml`](deploy/docker-compose.nats-cluster.yml)); the cluster outlives `sqi-server` restarts and, with three stream replicas, the loss of a node. With `ha.enabled`, several `sqi-server`s share the database and the broker account: one leader schedules and serves the API while the others wait as standbys (see [Running more than one server](docs/operations.md#running-more-than-one-server-high-availability) and [`deploy/docker-compose.ha.yml`](deploy/docker-compose.ha.yml)). Without it, one `sqi-server` runs per database and per broker account. Kubernetes manifests are not provided.
 
 Both modes run the same software. The difference is configuration; an existing SQLite farm moves to PostgreSQL with `sqi-server store copy` (see [Moving to PostgreSQL](docs/operations.md#moving-to-postgresql)), and to an external broker by changing `nats.mode` (see [Switching broker mode](docs/operations.md#switching-broker-mode)).
 
@@ -81,11 +79,7 @@ Both modes run the same software. The difference is configuration; an existing S
 
 ## Status and roadmap
 
-`sqi` v0.1.0 delivered the Phase 1 core: scheduler, pull-based workers, OpenJD job execution, and a basic web UI, with a Python client and single-binary or Docker Compose deployment. v0.2.0 completes Phase 2 — products and presets as an authoring layer over OpenJD, the community preset-library integration, a product-driven submission form, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. **Phase 3** — opt-in authentication and multi-user support: local accounts and API keys, role-based access control, an authenticated owner/submitter identity on jobs, LDAP/Active Directory, OAuth2/OIDC SSO, and queue-scoped run-as-user task isolation (tasks execute as a distinct, unprivileged OS account instead of the worker's own, on POSIX and Windows) — ships in v0.3.0, alongside the official OpenJD `EXPR` expression-language extension and expanded ffmpeg and Mistika reference presets. Auth is off by default, so an existing deployment is unaffected until enabled. Production hardening (Phase 4) is in progress.
-
-This is a real project with a concrete development commitment, not a design document waiting for funding. Feedback on priorities is welcome — [open an issue](https://github.com/uberware/sqi/issues/new) or [start a discussion](https://github.com/uberware/sqi/discussions/new/choose).
-
-See [ROADMAP.md](ROADMAP.md) for more information about the design and implementation plan.
+`sqi` is pre-1.0 and under active development. Planned work, including optional LLM integration for farm management, is described in [ROADMAP.md](ROADMAP.md). Feedback on priorities is welcome — [open an issue](https://github.com/uberware/sqi/issues/new) or [start a discussion](https://github.com/uberware/sqi/discussions/new/choose).
 
 ---
 
@@ -93,7 +87,7 @@ See [ROADMAP.md](ROADMAP.md) for more information about the design and implement
 
 Contributions are welcome at all stages — code, preset definitions, documentation, bug reports, and design discussion.
 
-The community preset library in particular benefits from people who know their tools well. If you have a working submission setup for a DCC or tool and want to share it as a `sqi` preset, that's a valuable contribution that doesn't require any Go or server-side knowledge.
+The community preset library in particular benefits from people who know their tools well. If you have a working submission setup for a DCC or tool, you can share it as a `sqi` preset without any Go or server-side knowledge.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 

@@ -9,8 +9,8 @@ import (
 
 // evalSlice evaluates a slice (spec sections 1.3.8 and 2.1.8).
 //
-// Slice semantics follow Python: out-of-bounds bounds are CLAMPED rather than
-// rejected — in deliberate contrast to a subscript, where an out-of-bounds index
+// Slice semantics follow Python: out-of-bounds bounds are clamped rather than
+// rejected — unlike a subscript, where an out-of-bounds index
 // is an error — negative indices count from the end, and a step of zero is an
 // error.
 func evalSlice(n *Slice, ec evalCtx, depth int) (Value, error) {
@@ -36,7 +36,7 @@ func evalSlice(n *Slice, ec evalCtx, depth int) (Value, error) {
 	}
 	// Slice is not Shape-dispatched (sliceValue is called directly), so rule 1
 	// is charged here rather than by callShape. Per RFC 0005's dunder-transform
-	// table, "Subscript(value, Slice(lower, upper, step))" becomes ONE
+	// table, "Subscript(value, Slice(lower, upper, step))" becomes one
 	// __getitem__ call carrying the bounds as extra arguments -- not a second
 	// call -- so this is the whole rule-1 charge, unconditional past the
 	// receiver-type check exactly as evalIndex's is.
@@ -48,18 +48,17 @@ func evalSlice(n *Slice, ec evalCtx, depth int) (Value, error) {
 	// as well as consumers"). Nor does "one call" make rule 1 and rule 2
 	// mutually exclusive -- join() charges rule 2's element count AND rule 3's
 	// byte count on a single call, and list repetition charges rule 1 via
-	// callShape AND ResultElements. The question this package asks is whether
+	// callShape and ResultElements. The question this package asks is whether
 	// the work is element-count-dominated, and sliceValue below answers it: an
 	// O(1) bounds computation (sliceIndices) followed by real O(n) work that a
 	// rule 2 or rule 3 charge already covers elsewhere in this package for the
 	// identical shape -- see sliceValue's own doc comment for exactly what "n"
-	// is for each of the three receiver kinds, which is NOT uniform (a list's
-	// real work scales with what was SELECTED; a string's and a range_expr's
-	// both scale with the RECEIVER regardless of selection, matching what this
-	// package's own []rune conversion and rangeInts expansion actually do).
+	// is for each of the three receiver kinds, which is not uniform (a list's
+	// real work scales with what was selected; a string's and a range_expr's
+	// both scale with the receiver regardless of selection, matching what this
+	// package's own []rune conversion and rangeInts expansion do).
 	// Each branch charges before doing that O(n) work, so an already-exhausted
-	// budget stops it from running rather than merely being billed after the
-	// fact.
+	// budget stops it from running rather than being billed after the fact.
 	if err := ec.m.charge(1); err != nil {
 		return Value{}, err
 	}
@@ -79,7 +78,7 @@ func evalSlice(n *Slice, ec evalCtx, depth int) (Value, error) {
 }
 
 // sliceComponent evaluates one optional slice component. It returns (nil, true,
-// nil) when the component is ABSENT, which is not the same as zero: section
+// nil) when the component is absent, which is not the same as zero: section
 // 1.3.8's defaults depend on the sign of the step. ok is false when the
 // component has no value yet.
 func sliceComponent(n Node, ec evalCtx, depth int) (val *int64, ok bool, err error) {
@@ -106,7 +105,7 @@ func sliceComponent(n Node, ec evalCtx, depth int) (val *int64, ok bool, err err
 // sliceResultType gives the type a slice of recv produces, per section 2.1.8's
 // three signatures.
 //
-// The range_expr row is the awkward one, and only a NEGATIVE step is knowable
+// The range_expr row is the awkward one, and only a negative step is knowable
 // from the step alone: section 2.1.8 makes that unconditionally a list[int]
 // ("range_expr cannot represent descending sequences"), regardless of what
 // else is unknown. This function only ever runs on evalSlice's placeholder
@@ -114,7 +113,7 @@ func sliceComponent(n Node, ec evalCtx, depth int) (val *int64, ok bool, err err
 // slice bypasses it and asks sliceValue directly) — so for anything else
 // (a positive step, an absent one, defaulting to positive, or a step whose own
 // sign is not yet known) there is no length to check the selection against,
-// and an empty selection is ALSO a list[int] regardless of a positive step
+// and an empty selection is also a list[int] regardless of a positive step
 // (see sliceRangeExpr): the correct answer is the union of both.
 func sliceResultType(recv Type, step *int64) (Type, error) {
 	switch t := unwrapUnresolved(recv); t.Code {
@@ -154,39 +153,39 @@ func errNotSliceable(t Type) error {
 
 // sliceValue performs the slice on a receiver that has one.
 //
-// Each branch charges section 1.3.10 BEFORE doing the O(n) work it is about
+// Each branch charges section 1.3.10 before doing the O(n) work it is about
 // to do, so an already-exhausted operation budget stops that work rather
 // than merely billing it after the fact (mirroring meter.charge's own
-// check-then-act contract). Which quantity is charged is NOT uniform across
+// check-then-act contract). Which quantity is charged is not uniform across
 // the three receivers, because the real work sqi's own implementation does
 // is not uniform either:
 //
-//   - list: rule 2, the RESULT's raw element count (ArgElements/
+//   - list: rule 2, the result's raw element count (ArgElements/
 //     ResultElements' own convention -- ops.go's list repetition,
 //     funcsconv.go's string(list)). recv.AsList() is O(1) (it returns the
-//     backing slice, no copy — see AsList's own doc comment), so the ONLY
+//     backing slice, no copy — see AsList's own doc comment), so the only
 //     real work a list slice does is the copy loop below, which is
-//     O(len(idx)) -- proportional to what was SELECTED, not to the
+//     O(len(idx)) -- proportional to what was selected, not to the
 //     receiver's size. Confirmed against the reference too: probing
 //     [1,2,3,4,5,6,7,8,9,10] at several bounds shows its charge scaling
-//     with the selection (4/11/6/12 for growing selections off the SAME
+//     with the selection (4/11/6/12 for growing selections off the same
 //     10-element list), never with the receiver alone.
 //   - string and range_expr: rule 3 / rule 2 respectively, but on the
-//     RECEIVER's own size, NOT the selection -- the opposite of list. Both
-//     branches do REAL O(receiver-size) work regardless of what is
+//     receiver's own size, not the selection -- the opposite of list. Both
+//     branches do real O(receiver-size) work regardless of what is
 //     selected, before any slicing happens at all: recv.AsStr() is cheap,
-//     but converting it to []rune below touches every byte of the WHOLE
+//     but converting it to []rune below touches every byte of the whole
 //     string to find rune boundaries (Go's utf8 decoding is not
 //     random-access), and rangeInts (called by sliceRangeExpr) fully
-//     EXPANDS a range_expr to a concrete []int64 regardless of the slice
+//     expands a range_expr to a concrete []int64 regardless of the slice
 //     bounds -- there is no cheaper path in this package's own range_expr
 //     representation. Confirmed against the reference: ('a'*500)[0:1] and
 //     ('a'*500)[0:500] both charge the identical 4 extra operations beyond
 //     the receiver's own construction cost (2 + ceil(500/256)), and
 //     range_expr('1-10000')[0:1] and range_expr('1-10000')[0:10000] both
-//     charge the same flat amount -- neither moves with the SELECTED
+//     charge the same flat amount -- neither moves with the selected
 //     count, only (for strings) with the receiver's byte length. So both
-//     branches charge on the RECEIVER, before doing the receiver-sized
+//     branches charge on the receiver, before doing the receiver-sized
 //     work (the []rune conversion, or rangeInts's expansion) that is about
 //     to happen regardless of selection.
 func sliceValue(ec evalCtx, recv Value, start, stop, step *int64) (Value, error) {
@@ -207,10 +206,10 @@ func sliceValue(ec evalCtx, recv Value, start, stop, step *int64) (Value, error)
 		}
 		return List(elemType, out), nil
 	case CodeString:
-		// Charged on the RECEIVER, before the []rune conversion that is
+		// Charged on the receiver, before the []rune conversion that is
 		// about to touch every byte of it regardless of what is selected --
 		// the same "real work is receiver-sized, not exception-carved for a
-		// function whose work COULD be smaller" reasoning funcsstrfind.go
+		// function whose work could be smaller" reasoning funcsstrfind.go
 		// already states for strip/find/startswith/endswith (ArgBytes on
 		// the full receiver even though a real implementation only needs a
 		// span of it).
@@ -237,14 +236,14 @@ func sliceValue(ec evalCtx, recv Value, start, stop, step *int64) (Value, error)
 // as an integer list rather than as its text.
 //
 // A positive step gives back a range_expr, which means deriving range text from
-// the selected integers. An EMPTY result cannot be a range_expr at all — section
-// 2.2.1 makes range_expr("") an error — so it comes back as an empty list[int],
-// the same type a negative step gives.
+// the selected integers. An empty result cannot be a range_expr at all —
+// section 2.2.1 makes range_expr("") an error — so it comes back as an empty
+// list[int], the same type a negative step gives.
 //
-// Charged under rule 2 on the RECEIVER's own element count -- see
+// Charged under rule 2 on the receiver's own element count -- see
 // sliceValue's doc comment for why range_expr takes the receiver-sized
 // treatment rather than list's selection-sized one: rangeInts below fully
-// EXPANDS the range_expr regardless of what the slice bounds go on to
+// expands the range_expr regardless of what the slice bounds go on to
 // select, so that expansion's cost is what must be charged, computed
 // via rangeExprCount -- arithmetic for a single sub-range, a bounded expansion
 // for two or more (rangeexpr.go) -- so that an already-exhausted budget is

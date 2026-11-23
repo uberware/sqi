@@ -4,38 +4,36 @@
 
 package integration
 
-// oidc_test.go — the real-provider regression guard for SSO.
+// oidc_test.go: SSO against a real provider.
 //
 // # Why this file exists
 //
 // The unit tests drive a fake provider (internal/auth/oidc/fakeidp_test.go).
-// It is stronger than the LDAP tests' fake conn in one respect — it signs
-// real tokens, so a validation mistake surfaces — but it shares the fake's
-// fundamental blind spot: it returns whatever the test tells it to, so it
-// cannot show what a real provider OMITS.
+// It is stronger than the LDAP tests' fake conn in one respect (it signs
+// real tokens, so a validation mistake surfaces), but it returns whatever the
+// test tells it to, so it cannot show what a real provider omits.
 //
-// The concrete trap: Keycloak does not put group memberships in a token unless
+// Keycloak does not put group memberships in a token unless
 // a protocol mapper is configured for them. Without one, every login succeeds
 // carrying zero groups, so every user silently lands on default_role — a
 // privilege downgrade with no error anywhere. That has the same shape as LDAP's
 // operational-attribute trap, and a fake does not reproduce it.
 //
-// It also settles two vendor claims the logout design rests on: whether
+// It also pins two provider behaviors the logout design rests on: whether
 // end_session_endpoint is honored with client_id and no id_token_hint, and
-// whether prompt=login actually forces re-authentication.
+// whether prompt=login forces re-authentication.
 //
 // # What it runs against
 //
 // A pinned, throwaway Keycloak container, seeded via its admin API with a
 // realm, groups, users, and the groups protocol mapper. The image tag is
-// pinned rather than floating on :latest because the login form is scraped —
-// a vendor UI refresh must break loudly here, not silently elsewhere.
+// pinned because the login form is scraped, so a vendor markup change fails
+// here.
 //
 // Set SQI_TEST_OIDC_ISSUER to point at a realm you already have (one that
 // already holds the fixture below) and no container is started; the tests that
-// need the admin API to mutate the fixture skip instead. Skips cleanly when
-// Docker is unavailable, so it never blocks a developer who has not installed
-// it.
+// need the admin API to mutate the fixture skip instead. Skips when Docker is
+// unavailable.
 
 import (
 	"bytes"
@@ -65,16 +63,15 @@ import (
 // ── Provider fixture ──────────────────────────────────────────────────────────
 
 const (
-	// keycloakImage is pinned, not floating on :latest, because the browser
-	// leg below SCRAPES Keycloak's login form out of its HTML. A vendor UI
-	// refresh changes that markup, and pinning means it breaks here instead
-	// of somewhere downstream at upgrade time.
+	// keycloakImage is pinned because the browser leg below scrapes
+	// Keycloak's login form out of its HTML, and a vendor UI change alters
+	// that markup. It must match the docker pull in .github/workflows/ci.yml.
 	keycloakImage = "quay.io/keycloak/keycloak:26.0.7"
 
 	kcAdminUser = "admin"
 	kcAdminPass = "admin"
 
-	// kcRealm is the realm name an EXTERNALLY supplied provider is expected to
+	// kcRealm is the realm name an externally supplied provider is expected to
 	// hold the fixture in (SQI_TEST_OIDC_ISSUER). The managed container gets a
 	// fresh realm per test instead — see startKeycloak.
 	kcRealm = "sqi"
@@ -85,9 +82,9 @@ const (
 	kcGroupAdmins  = "farm-admins"
 	kcGroupArtists = "artists"
 
-	// Container start can be slow on a cold image pull or a busy CI runner.
-	// Keycloak builds its augmented distribution on first boot, so this is
-	// considerably longer than the LDAP fixture needs.
+	// Container start can be slow on a cold image pull or a busy CI runner,
+	// and Keycloak builds its augmented distribution on first boot, so this is
+	// longer than the LDAP fixture needs.
 	kcReadyTimeout = 180 * time.Second
 
 	// Attempts allowed for the admin token grant, with a linear backoff between
@@ -105,8 +102,8 @@ type keycloak struct {
 	// container is the docker container name, empty when the provider was
 	// supplied externally via SQI_TEST_OIDC_ISSUER.
 	container string
-	// client is a plain HTTP client for the admin API. It deliberately does NOT
-	// share the browser's cookie jar: admin calls are bearer-authenticated and
+	// client is a plain HTTP client for the admin API. It does not share the
+	// browser's cookie jar: admin calls are bearer-authenticated and
 	// must not be able to disturb, or be disturbed by, a login under test.
 	client *http.Client
 }
@@ -132,16 +129,12 @@ var (
 // the fixture below and no container is started. Otherwise the package's single
 // shared Keycloak is used, and this test gets a brand new realm on it.
 //
-// One container, many realms — rather than a container per test — because
-// Keycloak takes about thirteen seconds to boot and about a tenth of a second
-// to create a realm, and a realm is a full isolation boundary for everything
-// these tests touch: users, groups, clients, sessions, and the "sub" values
-// they hang identity off. Even TestOIDC_RenameAtProviderKeepsAccount, which
-// mutates a user, is contained by it exactly as well as a private container
-// would contain it.
+// One container serves many realms, because Keycloak is slow to boot and fast
+// to create a realm, and a realm isolates everything these tests touch: users,
+// groups, clients, sessions, and the "sub" values identity hangs off, including
+// the user TestOIDC_RenameAtProviderKeepsAccount renames.
 //
-// The test skips — it does not fail — when Docker is unavailable, so a
-// developer without Docker is never blocked.
+// The test skips when Docker is unavailable.
 func startKeycloak(t *testing.T, redirectURI, postLogoutURI string) *keycloak {
 	t.Helper()
 
@@ -187,8 +180,8 @@ func startKeycloak(t *testing.T, redirectURI, postLogoutURI string) *keycloak {
 
 // bootKeycloak starts the container and waits for it to answer. It returns an
 // error rather than taking a *testing.T because it runs under a sync.Once, on
-// whichever test got there first — reporting through that test's T would make
-// the outcome invisible to the others.
+// whichever test got there first: reporting through that test's T would hide
+// the outcome from the others.
 func bootKeycloak(port int) (*keycloak, error) {
 	name := fmt.Sprintf("sqi-oidc-it-%d", port)
 
@@ -196,9 +189,9 @@ func bootKeycloak(port int) (*keycloak, error) {
 	// explicit remove in TestMain then becomes a no-op.
 	//
 	// start-dev rather than start: it skips the production hostname/HTTPS
-	// checks that would otherwise refuse to serve on plain HTTP, and leaves the
-	// issuer derived from the request's Host header, which is what lets the
-	// fixture work on whatever ephemeral port it was given.
+	// checks that would refuse to serve on plain HTTP, and derives the issuer
+	// from the request's Host header, so the fixture works on whatever
+	// ephemeral port it was given.
 	runCtx, runCancel := context.WithTimeout(context.Background(), kcReadyTimeout)
 	defer runCancel()
 	out, err := exec.CommandContext(
@@ -226,9 +219,7 @@ func bootKeycloak(port int) (*keycloak, error) {
 }
 
 // waitReady blocks until the provider answers a discovery request for the realm
-// it ships with. Polling beats a fixed sleep in both directions: a sleep long
-// enough for a cold CI runner is wasted on every local run, and one tuned for
-// local is flaky on CI.
+// it ships with.
 func (k *keycloak) waitReady() error {
 	deadline := time.Now().Add(kcReadyTimeout)
 	var last string
@@ -263,10 +254,9 @@ func (k *keycloak) waitReady() error {
 // adminToken fetches an admin access token from the master realm, retrying a
 // few times.
 //
-// waitReady only proves that master-realm *discovery* answers, and the admin
-// endpoints can still be warming up behind it — on a loaded CI runner the first
-// token request can come back 401 or 503. A single attempt turns that into a
-// t.Fatalf that looks like a credential bug.
+// waitReady only proves that master-realm discovery answers; the admin
+// endpoints can still be warming up behind it, so the first token request can
+// come back 401 or 503.
 func (k *keycloak) adminToken(t *testing.T) string {
 	t.Helper()
 	var last string
@@ -372,11 +362,10 @@ func (k *keycloak) admin(t *testing.T, method, path string, payload any, wantSta
 // bob   → artists     (maps to user)
 // carol → no group    (falls through to default_role)
 //
-// The groups protocol mapper on the client is what this file exists to check.
-// Keycloak emits NO group claim without one: the login still succeeds, the
-// token still validates, and every user silently lands on default_role. Delete
-// the mapper below and TestOIDC_AuthCodeRoundTripMapsGroups must go red — if it
-// does not, that test is not testing what it claims to.
+// The groups protocol mapper on the client is what this file checks. Keycloak
+// emits no group claim without one: the login still succeeds, the token still
+// validates, and every user lands on default_role. Without the mapper below,
+// TestOIDC_AuthCodeRoundTripMapsGroups must fail.
 func (k *keycloak) seed(t *testing.T, redirectURI, postLogoutURI string) {
 	t.Helper()
 
@@ -385,9 +374,7 @@ func (k *keycloak) seed(t *testing.T, redirectURI, postLogoutURI string) {
 		"enabled": true,
 		// Keycloak treats username as read-only unless a realm opts into
 		// renames, rejecting the change with error-user-attribute-read-only.
-		// TestOIDC_RenameAtProviderKeepsAccount needs a rename to be possible at
-		// all, and a realm that permits them is the deployment whose
-		// users can outgrow their login name — the case that test is about.
+		// TestOIDC_RenameAtProviderKeepsAccount needs a rename to be possible.
 		"editUsernameAllowed": true,
 	}, http.StatusCreated)
 
@@ -406,8 +393,7 @@ func (k *keycloak) seed(t *testing.T, redirectURI, postLogoutURI string) {
 		"redirectUris":              []string{redirectURI},
 		"webOrigins":                []string{"+"},
 		// Keycloak refuses a post_logout_redirect_uri it has not been told
-		// about, so registering it is part of configuring RP-initiated logout —
-		// not an incidental fixture detail.
+		// about, so registering it is part of configuring RP-initiated logout.
 		"attributes": map[string]string{"post.logout.redirect.uris": postLogoutURI},
 		"protocolMappers": []map[string]any{{
 			"name":           "groups",
@@ -415,9 +401,9 @@ func (k *keycloak) seed(t *testing.T, redirectURI, postLogoutURI string) {
 			"protocolMapper": "oidc-group-membership-mapper",
 			"config": map[string]string{
 				// full.path=false emits bare names ("farm-admins") rather than
-				// paths ("/farm-admins"). Either is fine as long as the role_map
-				// agrees; the two disagreeing is the other way a deployment ends
-				// up matching nothing and defaulting everyone.
+				// paths ("/farm-admins"). Either works if the role_map agrees;
+				// if they disagree, nothing matches and every user gets
+				// default_role.
 				"full.path":            "false",
 				"id.token.claim":       "true",
 				"access.token.claim":   "true",
@@ -444,7 +430,7 @@ func (k *keycloak) createUser(t *testing.T, username, pass, displayName, group s
 		"firstName":     first,
 		"lastName":      last,
 		"email":         username + "@example.com",
-		// temporary=false matters: a temporary password makes Keycloak
+		// temporary=false: a temporary password makes Keycloak
 		// interpose an "update password" screen, and every login below would
 		// hang on a form this test does not know how to fill in.
 		"credentials": []map[string]any{{"type": "password", "value": pass, "temporary": false}},
@@ -514,11 +500,9 @@ func baseOIDCConfig(issuer, sqiAddr string) config.OIDCConfig {
 
 // newOIDCFixture starts a Keycloak and an sqi-server bound to each other.
 //
-// The sqi port is chosen FIRST, because the redirect URI and the post-logout
-// redirect URI have to be registered with the client at seeding time. Keycloak
-// rejects both if they were not registered, so "pick the port later" is not an
-// option — and registering a wildcard instead would switch off the
-// validation a real deployment relies on.
+// The sqi port is chosen first, because Keycloak rejects a redirect URI or
+// post-logout redirect URI not registered with the client at seeding time. A
+// wildcard would turn off the validation a real deployment relies on.
 func newOIDCFixture(t *testing.T, mutate func(*config.OIDCConfig)) *oidcFixture {
 	t.Helper()
 
@@ -547,9 +531,9 @@ func startOIDCServer(t *testing.T, httpAddr string, oidcCfg config.OIDCConfig) *
 
 // ── Browser ───────────────────────────────────────────────────────────────────
 
-// browserMaxHops bounds a redirect chain. A full login is about six hops; well
-// under this, and a runaway loop fails with the chain printed rather than
-// hanging until the test timeout.
+// browserMaxHops bounds a redirect chain. A full login is about six hops; a
+// runaway loop fails with the chain printed rather than hanging until the test
+// timeout.
 const browserMaxHops = 20
 
 // browser is a headless stand-in for the user agent the auth-code flow needs.
@@ -573,8 +557,8 @@ func newBrowser(t *testing.T) *browser {
 	// it; sslRequired=none does not turn it off). Go's jar treats a loopback
 	// host as a secure origin and sends Secure cookies to it anyway — see
 	// entry.secureMatch in $GOROOT/src/net/http/cookiejar/jar.go — and the
-	// container is published on 127.0.0.1. If SQI_TEST_OIDC_ISSUER ever pointed
-	// at a NON-loopback provider over plain HTTP, that exemption would not
+	// container is published on 127.0.0.1. If SQI_TEST_OIDC_ISSUER pointed at
+	// a non-loopback provider over plain HTTP, that exemption would not
 	// apply, the provider's session would be invisible to this client, and the
 	// control step in TestOIDC_PromptLoginForcesReauth is what would catch it.
 	return &browser{t: t, c: &http.Client{
@@ -591,8 +575,7 @@ type page struct {
 	URL    *url.URL
 	Status int
 	Body   string
-	// Chain is every URL visited on the way here, for failure messages — a
-	// login that ends somewhere unexpected is almost unreadable without it.
+	// Chain is every URL visited on the way here, for failure messages.
 	Chain []string
 }
 
@@ -708,9 +691,8 @@ func scrapeForm(t *testing.T, p page, re *regexp.Regexp, what string) (string, u
 	t.Helper()
 	m := re.FindStringSubmatch(p.Body)
 	if m == nil {
-		t.Fatalf("no %s on %s (HTTP %d).\nThis is usually one of: the provider did not ask for "+
-			"credentials at all, or %s changed its markup — the pin on the image is what makes the "+
-			"second show up here.\nchain: %v\nbody:\n%s",
+		t.Fatalf("no %s on %s (HTTP %d).\nUsually either the provider did not ask for "+
+			"credentials, or %s changed its markup.\nchain: %v\nbody:\n%s",
 			what, p.URL, p.Status, keycloakImage, p.Chain, truncate(p.Body, 2000))
 	}
 	action, err := p.URL.Parse(html.UnescapeString(m[1]))
@@ -744,8 +726,8 @@ func truncate(s string, n int) string {
 
 // ── Login helpers ─────────────────────────────────────────────────────────────
 
-// beginLogin navigates to sqi's SSO entry point and follows wherever it leads —
-// which is either the provider's credential form or, when the provider still
+// beginLogin navigates to sqi's SSO entry point and follows wherever it leads:
+// either the provider's credential form or, when the provider still
 // considers this browser signed in, straight back through sqi's callback.
 func (f *oidcFixture) beginLogin(b *browser) page {
 	b.t.Helper()
@@ -772,7 +754,7 @@ func (f *oidcFixture) signIn(b *browser, username, pass string) {
 	done := f.submitCredentials(b, p, username, pass)
 	if strings.Contains(done.URL.String(), "sso_error") {
 		b.t.Fatalf("login for %q was refused by sqi's callback (%s). The reason is only in the "+
-			"server log, by design — run with the server at debug level to see it.\nchain: %v",
+			"server log; run the server at debug level to see it.\nchain: %v",
 			username, done.URL, done.Chain)
 	}
 	if b.cookie(f.sqiURL("/"), "sqi_session") == "" {
@@ -781,10 +763,10 @@ func (f *oidcFixture) signIn(b *browser, username, pass string) {
 	}
 }
 
-// principal is the subset of GET /auth/me these tests assert on. Note that
-// Subject is the sqi ACCOUNT id, not the provider's "sub" — the distinction
-// matters in the rename test, which asserts a stable account across a changed
-// username while the provider subject stays put.
+// principal is the subset of GET /auth/me these tests assert on. Subject is
+// the sqi account id, not the provider's "sub": the rename test asserts a
+// stable account across a changed username while the provider subject stays
+// put.
 type principal struct {
 	Subject     string   `json:"subject"`
 	Username    string   `json:"username"`
@@ -804,7 +786,7 @@ func (p principal) role() string {
 }
 
 // me reads the signed-in principal back from the server, which is where the
-// role that actually took effect can be observed.
+// role that took effect can be observed.
 func (f *oidcFixture) me(b *browser) principal {
 	b.t.Helper()
 	status, _, body := b.request(http.MethodGet, f.sqiURL("/api/v1/auth/me"), nil)
@@ -827,7 +809,7 @@ type storedAccount struct {
 }
 
 // account reads a stored user row. /auth/me describes the authenticated
-// principal and deliberately says nothing about which backend vouched for it,
+// principal and says nothing about which backend vouched for it,
 // so auth_source can only be observed here. Requires an admin browser.
 func (f *oidcFixture) account(b *browser, id string) storedAccount {
 	b.t.Helper()
@@ -877,23 +859,21 @@ func (f *oidcFixture) logout(b *browser) string {
 }
 
 // sqiLoginIsSilent reports whether a login started at sqi completes without a
-// credential prompt. It answers a question about SQI's behavior — whether it
-// asked the provider to re-prompt — not purely about the provider's session.
+// credential prompt. It answers a question about sqi's behavior (whether it
+// asked the provider to re-prompt), not only about the provider's session.
 //
-// Note the side effect: when the login is silent it runs to completion, minting
-// a fresh sqi session. That is unavoidable — "would this be challenged?" cannot
-// be asked without asking it — and harmless to callers that do not go on to
-// assert on session state.
+// When the login is silent it runs to completion, minting a fresh sqi session,
+// which matters only to a caller that goes on to assert on session state.
 func (f *oidcFixture) sqiLoginIsSilent(b *browser) bool {
 	b.t.Helper()
 	return !f.beginLogin(b).hasLoginForm()
 }
 
-// providerSessionLive asks the PROVIDER directly whether this browser still has
-// a session, with prompt=none — the standard "answer without interacting"
+// providerSessionLive asks the provider directly whether this browser still has
+// a session, with prompt=none: the standard "answer without interacting"
 // probe, which returns either a code or error=login_required.
 //
-// It deliberately bypasses sqi's login route. Going through sqi cannot answer
+// It bypasses sqi's login route. Going through sqi cannot answer
 // this question after a logout: sqi sets prompt=login under
 // reauth_mode=after_logout, so the provider presents a credential form whether
 // or not its own session survived, and a probe built on that would read every
@@ -903,7 +883,7 @@ func (f *oidcFixture) providerSessionLive(b *browser) bool {
 	q := url.Values{
 		"client_id": {kcClientID},
 		// Must be a registered URI even though the walk stops before reaching
-		// it — the provider validates it before deciding anything else.
+		// it: the provider validates it before deciding anything else.
 		"redirect_uri":  {"http://" + f.sqiAddr + "/api/v1/auth/oidc/callback"},
 		"response_type": {"code"},
 		"scope":         {"openid"},
@@ -932,10 +912,10 @@ func (f *oidcFixture) providerSessionLive(b *browser) bool {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-// TestOIDC_AuthCodeRoundTripMapsGroups is the mapper guard: it asserts the user
-// lands on the MAPPED role, not on default_role. Asserting only "login
-// succeeded" would pass with zero groups and prove nothing — which is what a
-// Keycloak with no groups protocol mapper produces.
+// TestOIDC_AuthCodeRoundTripMapsGroups checks the groups mapper: it asserts the
+// user lands on the mapped role, not on default_role. Asserting only "login
+// succeeded" would pass with zero groups, which is what a Keycloak with no
+// groups protocol mapper produces.
 func TestOIDC_AuthCodeRoundTripMapsGroups(t *testing.T) {
 	f := newOIDCFixture(t, nil)
 
@@ -947,13 +927,12 @@ func TestOIDC_AuthCodeRoundTripMapsGroups(t *testing.T) {
 			t.Fatal("alice landed on default_role. Her token carried no usable groups claim, " +
 				"so the group→role mapping matched nothing and she was silently downgraded. " +
 				"The usual cause is a provider with no groups protocol mapper, or one emitting " +
-				"the claim under a different name than groups_claim. This is the silent-downgrade " +
-				"regression this whole file exists to catch.")
+				"the claim under a different name than groups_claim.")
 		}
 		if got.role() != "admin" {
 			t.Errorf("role = %q, want admin (group→role mapping over a real provider)", got.role())
 		}
-		// alice is an admin, so this browser may read the stored row — the only
+		// alice is an admin, so this browser may read the stored row, the only
 		// place the provisioning backend is visible.
 		if src := f.account(b, got.Subject).AuthSource; src != "oidc" {
 			t.Errorf("auth_source = %q, want oidc", src)
@@ -1002,10 +981,10 @@ func TestOIDC_AuthCodeRoundTripMapsGroups(t *testing.T) {
 // leaving "sub" untouched, and asserts the second login lands on the same
 // account ID.
 //
-// The rename is what makes the assertion meaningful: afterwards the username no
-// longer matches the stored row, so ONLY subject matching can reach the original
-// account. Match on the username instead and this test provisions a second row —
-// one account per rename, each holding a slice of the person's jobs.
+// After the rename the username no longer matches the stored row, so only
+// subject matching can reach the original account. Matching on the username
+// would provision a second row per rename, each holding a slice of the
+// person's jobs.
 func TestOIDC_RenameAtProviderKeepsAccount(t *testing.T) {
 	f := newOIDCFixture(t, nil)
 
@@ -1025,14 +1004,14 @@ func TestOIDC_RenameAtProviderKeepsAccount(t *testing.T) {
 		t.Fatalf("the rename changed the subject (%s -> %s); the fixture no longer tests what it claims to", sub, got)
 	}
 
-	// A fresh browser, so the second login genuinely re-authenticates rather
-	// than riding the first one's provider session.
+	// A fresh browser, so the second login re-authenticates rather than riding
+	// the first one's provider session.
 	second := newBrowser(t)
 	f.signIn(second, "alice.smith", "alicepass")
 	after := f.me(second)
 
 	if after.Subject != before.Subject {
-		t.Fatalf("the rename created a NEW account (%s -> %s): the provider reports the same "+
+		t.Fatalf("the rename created a new account (%s -> %s): the provider reports the same "+
 			"person with the same \"sub\", so accounts are being matched on the username instead "+
 			"of the subject. Every rename would fork the account, splitting a user's job "+
 			"ownership across two rows.", before.Subject, after.Subject)
@@ -1045,17 +1024,17 @@ func TestOIDC_RenameAtProviderKeepsAccount(t *testing.T) {
 // TestOIDC_StateMismatchRejected replays the callback with a tampered state
 // parameter and asserts no session cookie is set.
 //
-// The state cookie is the ONLY CSRF defense the callback has — it is a public
-// GET that mints a session, and middleware.CSRF cannot guard it. A callback
+// The state cookie is the callback's only CSRF defense: it is a public GET that
+// mints a session, and middleware.CSRF cannot guard it. A callback
 // that accepted a mismatched state would let an attacker complete a login of
 // their choosing in someone else's browser.
 func TestOIDC_StateMismatchRejected(t *testing.T) {
 	f := newOIDCFixture(t, nil)
 	b := newBrowser(t)
 
-	// Walk a real login right up to the callback, then stop — so the code and
-	// state below are genuine, and the only thing wrong with the request is the
-	// state value.
+	// Walk a real login up to the callback, then stop, so the code and state
+	// below are real and the only thing wrong with the request is the state
+	// value.
 	isCallback := func(u *url.URL) bool {
 		return u.Host == f.sqiAddr && u.Path == "/api/v1/auth/oidc/callback"
 	}
@@ -1095,30 +1074,29 @@ func TestOIDC_StateMismatchRejected(t *testing.T) {
 	}
 }
 
-// TestOIDC_EndSessionAcceptsClientIDWithoutTokenHint tests the vendor claim the
-// logout design rests on.
+// TestOIDC_EndSessionAcceptsClientIDWithoutTokenHint pins the provider
+// behavior the logout design rests on.
 //
-// sqi deliberately does not store ID tokens: doing so would put the first
-// plaintext bearer secret into a schema that otherwise holds only hashes, and
-// the realistic leak path is an accidental log line or a future session-listing
-// endpoint. The cost is that provider logout uses client_id and
-// post_logout_redirect_uri with NO id_token_hint.
+// sqi does not store ID tokens: doing so would put a plaintext bearer secret
+// into a schema that otherwise holds only hashes, where a log line or a
+// session-listing endpoint could leak it. So provider logout uses client_id
+// and post_logout_redirect_uri with no id_token_hint.
 //
-// # Observed behavior
+// # Keycloak's behavior
 //
 // On keycloakImage:
 //
-//   - Keycloak ACCEPTS the request. No error, no rejection — the client_id and
-//     the registered post_logout_redirect_uri are honored.
-//   - But it does NOT complete the logout. It answers HTTP 200 with an
-//     interactive logout-CONFIRMATION page, and the provider session stays live
-//     until a human clicks through it. Only after the confirmation is posted
-//     does Keycloak end the session and redirect to post_logout_redirect_uri.
+//   - Keycloak accepts the request: the client_id and the registered
+//     post_logout_redirect_uri are honored.
+//   - It does not complete the logout. It answers HTTP 200 with an interactive
+//     logout-confirmation page, and the provider session stays live until a
+//     human clicks through it. Only after the confirmation is posted does
+//     Keycloak end the session and redirect to post_logout_redirect_uri.
 //
 // So logout_mode=provider on Keycloak is a confirmation prompt, not a silent
-// provider logout. The assertions below pin that observed behavior, so a
-// future Keycloak that changes either half breaks here. Avoiding the prompt by
-// storing the ID token would reverse the decision above.
+// provider logout. The assertions below pin both halves, so a Keycloak that
+// changes either fails here. Avoiding the prompt would mean storing the ID
+// token.
 func TestOIDC_EndSessionAcceptsClientIDWithoutTokenHint(t *testing.T) {
 	f := newOIDCFixture(t, func(c *config.OIDCConfig) { c.LogoutMode = oidc.LogoutProvider })
 	b := newBrowser(t)
@@ -1158,24 +1136,23 @@ func TestOIDC_EndSessionAcceptsClientIDWithoutTokenHint(t *testing.T) {
 		t.Fatalf("the provider answered an end-session error page:\n%s", truncate(got.Body, 1500))
 	}
 
-	// Claim under test, part two: the redirect alone does NOT end the
+	// Claim under test, part two: the redirect alone does not end the
 	// session; Keycloak interposes a confirmation page and keeps the session
 	// live behind it.
 	if !strings.Contains(got.Body, "logout-confirm") {
 		t.Fatalf("expected an interactive logout-confirmation page from %s.\n"+
-			"If this provider now logs out without confirmation, that is GOOD news and the "+
-			"limitation recorded in docs/auth.md is stale — but it must be re-verified and "+
-			"rewritten deliberately, not by deleting this assertion.\nbody:\n%s",
+			"If this provider logs out without confirmation, the limitation recorded in "+
+			"docs/auth.md is stale: update it together with this assertion.\nbody:\n%s",
 			keycloakImage, truncate(got.Body, 1500))
 	}
 	if !f.providerSessionLive(b) {
-		t.Error("the provider session ended without the confirmation being posted; the observed " +
-			"behavior recorded above has changed and docs/auth.md should be re-checked")
+		t.Error("the provider session ended without the confirmation being posted; the " +
+			"behavior pinned above has changed and docs/auth.md should be re-checked")
 	}
 
-	// And the session does end once the confirmation is posted, landing on the
+	// The session ends once the confirmation is posted, landing on the
 	// registered post-logout URI. Without this the test would show that the
-	// logout is blocked but not that it is reachable at all.
+	// logout is blocked but not that it is reachable.
 	//
 	// A fresh end-session request rather than reusing got: the confirmation
 	// page carries a single-use session_code, and the probe above has already
@@ -1188,7 +1165,7 @@ func TestOIDC_EndSessionAcceptsClientIDWithoutTokenHint(t *testing.T) {
 			"(http://%s/), landed on %s\nchain: %v", f.sqiAddr, done.URL, done.Chain)
 	}
 	if f.providerSessionLive(b) {
-		t.Error("the provider session survived a CONFIRMED logout; RP-initiated logout is not " +
+		t.Error("the provider session survived a confirmed logout; RP-initiated logout is not " +
 			"working at all, which is worse than the confirmation-prompt limitation above")
 	}
 }
@@ -1197,10 +1174,9 @@ func TestOIDC_EndSessionAcceptsClientIDWithoutTokenHint(t *testing.T) {
 // and asserts Keycloak presents the credential form again rather than silently
 // redirecting back with a code.
 //
-// The control in the middle is what makes it a test rather than a tautology: if
-// this browser's provider session were not live to begin with, every login would
-// show a credential form and the final assertion would pass having proved
-// nothing.
+// The control step in the middle is needed: if this browser's provider session
+// were not live to begin with, every login would show a credential form and the
+// final assertion would pass having proved nothing.
 func TestOIDC_PromptLoginForcesReauth(t *testing.T) {
 	f := newOIDCFixture(t, func(c *config.OIDCConfig) { c.ReauthMode = oidc.ReauthAfterLogout })
 	b := newBrowser(t)
@@ -1208,9 +1184,9 @@ func TestOIDC_PromptLoginForcesReauth(t *testing.T) {
 	// 1. A first login must challenge: nothing is signed in yet.
 	f.signIn(b, "alice", "alicepass")
 
-	// 2. CONTROL: a second login with no logout in between must be silent. This
+	// 2. Control: a second login with no logout in between must be silent. This
 	//    proves the provider session exists and that sqi is not sending
-	//    prompt=login unconditionally — without it, step 3 proves nothing.
+	//    prompt=login unconditionally; without it, step 3 proves nothing.
 	if !f.sqiLoginIsSilent(b) {
 		t.Fatal("a re-login with no logout in between was challenged for credentials. The " +
 			"provider session is not live in this browser, so the assertion below cannot " +
@@ -1223,7 +1199,7 @@ func TestOIDC_PromptLoginForcesReauth(t *testing.T) {
 	}
 
 	// 3. After an explicit logout, reauth_mode=after_logout must force the
-	//    provider to ask again — even though its own session is still live.
+	//    provider to ask again, even though its own session is still live.
 	f.logout(b)
 	p := f.beginLogin(b)
 	if !p.hasLoginForm() {
@@ -1233,10 +1209,10 @@ func TestOIDC_PromptLoginForcesReauth(t *testing.T) {
 			"signed in as the last one.\nchain: %v", p.URL, p.Chain)
 	}
 
-	// And the forced re-authentication genuinely completes — a prompt that
-	// cannot be satisfied would be its own kind of broken.
+	// The forced re-authentication completes: a prompt that cannot be satisfied
+	// would be broken too.
 	//
-	// Re-authenticating as the SAME user, not a different one: Keycloak treats
+	// Re-authenticating as the same user, not a different one: Keycloak treats
 	// prompt=login against a live session as "prove you are still alice", and
 	// answering it with bob's credentials re-renders the form. Switching
 	// users is a logout-then-login, which is a different flow from this one.

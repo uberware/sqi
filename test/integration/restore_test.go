@@ -10,9 +10,9 @@ package integration
 //
 // The worker is started once and outlives every server restart in a test: it
 // reconnects to the next server on the same NATS address under its stable
-// worker ID, exactly as a farm's workers ride out a server restore. Whatever
-// it was running when the server stopped becomes a ghost run whose late
-// reports reach a database that no longer expects them: the case the restore
+// worker ID, as a farm's workers do across a server restore. Whatever it was
+// running when the server stopped becomes a ghost run whose late reports
+// reach a database that does not expect them: the case the restore
 // fence and the discard of superseded reports handle, and which
 // TestBackupRestore_FarmResumes asserts.
 
@@ -118,7 +118,7 @@ steps:
 //     is gone;
 //   - per task, the last attempt succeeded and every earlier one was closed
 //     failed with the worker-shutdown reason the fence records;
-//   - a ghost run really reported into the restored farm: the worker finished
+//   - a ghost run reported into the restored farm: the worker finished
 //     job A's first task, whose attempt the fence had closed, on the restored
 //     server (its output is stored on that attempt), the restored server
 //     logged that it discarded the attempt's late "succeeded" report, and that

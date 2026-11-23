@@ -33,11 +33,11 @@ func TestResolveLocURIsInParamValue_Scalar(t *testing.T) {
 	}
 }
 
-// TestResolveLocURIsInParamValue_ListIsElementWise is the point of this task.
-// Splicing a resolved path into canonical JSON by substring replacement
-// produces valid-looking output for a POSIX path and CORRUPT output for a
-// Windows one, because a backslash is not a legal JSON escape. Resolving
-// element-wise and re-encoding is what makes both safe.
+// TestResolveLocURIsInParamValue_ListIsElementWise: splicing a resolved path
+// into canonical JSON by substring replacement produces valid-looking output
+// for a POSIX path and corrupt output for a Windows one, because a backslash
+// is not a legal JSON escape. Resolving element-wise and re-encoding makes
+// both safe.
 func TestResolveLocURIsInParamValue_ListIsElementWise(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -122,9 +122,8 @@ func TestResolveLocURIsInParamValue_MalformedListIsAnError(t *testing.T) {
 }
 
 // TestBuildStagingManifest_ListPath pins that a LIST[PATH] with a dataFlow
-// direction produces one StageEntry PER ELEMENT. Skipping it entirely — which
-// is what a PATH-only check does — means a job declaring its inputs as a list
-// stages none of them, silently.
+// direction produces one StageEntry per element. A PATH-only check would skip
+// it, and a job declaring its inputs as a list would stage none of them.
 func TestBuildStagingManifest_ListPath(t *testing.T) {
 	tmpl := &openjd.JobTemplate{
 		ParameterDefinitions: []openjd.JobParameter{

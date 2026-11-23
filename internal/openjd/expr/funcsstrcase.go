@@ -17,21 +17,20 @@ import (
 // share this file because they share the rune predicates and casers below.
 //
 // Section 1.3.10 rule 3: every row in this file declares Cost{ArgBytes:
-// []int{0}} -- the RECEIVER's own byte length, not the produced result's.
-// Confirmed by a probe designed to tell the two apart: 'İ' (U+0130, 2 UTF-8
-// bytes) lowers to 'i' plus a combining dot above (3 UTF-8 bytes), so 100
-// copies is 200 INPUT bytes (ceil/256 = 1) but 300 OUTPUT bytes (ceil/256 = 2).
-// The reference measures 2 for ('İ'*100).lower() -- matching ArgBytes, not
-// ResultBytes -- which is the OPPOSITE of string "+" (ResultBytes, ops.go). See
-// cost_string_internal_test.go's PROBE comment for the full transcript.
+// []int{0}} -- the receiver's own byte length, not the produced result's, as
+// the reference charges. 'İ' (U+0130, 2 UTF-8 bytes) lowers to 'i' plus a
+// combining dot above (3 UTF-8 bytes), so 100 copies is 200 input bytes
+// (ceil/256 = 1) but 300 output bytes (ceil/256 = 2), and ('İ'*100).lower()
+// costs 2 -- the opposite of string "+" (ResultBytes, ops.go). See
+// cost_string_internal_test.go.
 //
 // The four case transforms are named directly ("upper()", "lower()" by rule
 // 3's own text; capitalize()/title() are not, but do the identical
 // length-proportional work, so "and similar" covers them). The seven
-// classification predicates below are NOT named by rule 3's enumeration
+// classification predicates below are not named by rule 3's enumeration
 // either, and are decided explicitly rather than left to fall out of the
-// zero value: they scan the WHOLE string (RFC 0006's "all characters are X"),
-// so they are rule-3 charges under "and similar" -- NOT len()-style exempt
+// zero value: they scan the whole string (RFC 0006's "all characters are X"),
+// so they are rule-3 charges under "and similar" -- not len()-style exempt
 // lookups. Confirmed scaling 10/300 bytes -> 2/3 for every one of the seven,
 // with len() on the identical input pinned flat at 1 as the control (see
 // TestOperationCount_ClassificationFunctionsAreNotLenExempt).
@@ -48,13 +47,13 @@ var strCaseFuncs = map[string][]Shape{
 	"isalnum": {runePredShape(allRunes, isAlnumRune)},
 	"isspace": {runePredShape(allRunes, isSpaceRune)},
 	// isupper and islower are not allRunes over a case predicate. RFC 0006
-	// defines them over CASED characters — "all cased characters are uppercase
+	// defines them over cased characters — "all cased characters are uppercase
 	// and there is at least one cased character" — so an uncased rune neither
 	// satisfies nor breaks the test. isupper("ABC1") is true because a digit is
 	// uncased; isupper("1") is false because nothing in it is cased at all.
 	"isupper": {runePredShape(allCased, isUpperRune)},
 	"islower": {runePredShape(allCased, isLowerRune)},
-	// isascii is the ONE predicate RFC 0006 declares true on the empty string:
+	// isascii is the one predicate RFC 0006 declares true on the empty string:
 	// "all characters are ASCII (U+0000-U+007F), OR string is empty". The other
 	// six require non-empty. That asymmetry is the specification's, not a slip.
 	"isascii": {
@@ -71,13 +70,14 @@ var strCaseFuncs = map[string][]Shape{
 
 // caseShape builds the single row of one string -> string case transform.
 //
-// The pre-check is IN THE CONSTRUCTOR, which is why this exists rather than
-// four hand-written rows: checkCaseInputBytes is a measured bound (without it,
-// upper() on a 10 MB string of U+0390 allocates 172 MB to build a result it
-// then refuses -- see its own doc comment), and it is exactly the line a fifth
+// The pre-check is in the constructor, which is why this exists rather than
+// four hand-written rows: checkCaseInputBytes is a pre-allocation bound
+// (without it, upper() on a 10 MB string of U+0390 builds a result several
+// times larger before refusing it; see its own doc comment), and it is the
+// line a fifth
 // transform written out longhand would forget. Here a fifth transform is one
 // call and cannot omit it. Cost is likewise declared once: see this file's own
-// COST comment for why every row charges the RECEIVER's bytes rather than the
+// cost comment for why every row charges the receiver's bytes rather than the
 // produced result's.
 func caseShape(f func(string) string) Shape {
 	return Shape{
@@ -110,16 +110,16 @@ func runePredShape(scan func(string, func(rune) bool) bool, pred func(rune) bool
 	}
 }
 
-// upperString and lowerString apply FULL Unicode case mapping, not Go's
+// upperString and lowerString apply full Unicode case mapping, not Go's
 // stdlib simple mapping.
 //
-// This is a deliberate dependency and not a stylistic preference. RFC 0006
+// This dependency is required, not a stylistic preference. RFC 0006
 // defines upper() as "Convert to uppercase" and says nothing further, so the
 // mapping model is undefined by the specification. strings.ToUpper applies
-// SIMPLE case mapping — one rune in, one rune out — and answers "STRAßE" for
+// simple case mapping — one rune in, one rune out — and answers "STRAßE" for
 // "straße" and leaves the "ﬁ" ligature untouched. The specification's own
 // reference implementation and the Python language RFC 0006 defines itself
-// against both apply FULL mapping and answer "STRASSE" and "FI".
+// against both apply full mapping and answer "STRASSE" and "FI".
 //
 // Matching the stdlib would therefore produce oracle divergences with no
 // reason available to record for them, and test/oracle/baseline.txt treats a
@@ -133,13 +133,11 @@ func runePredShape(scan func(string, func(rune) bool) bool, pred func(rune) bool
 // upper()/lower(), twice by capitalizeString() — never in a loop over the
 // input's runes.
 //
-// titleString does NOT route through these: transforming one word at a time
-// still needs a fresh Caser per WORD RUN rather than per expression (see its
+// titleString does not route through these: transforming one word at a time
+// still needs a fresh Caser per word run rather than per expression (see its
 // own doc comment for why), so it builds and reuses its own pair of Casers
 // instead of paying cases.Upper/cases.Lower's construction cost on every
-// rune. Measured on len(title('ab ' * 3333333)): calling these two helpers
-// per rune cost ~997ms and 1.6GB of allocator traffic; hoisting the Casers
-// out of the loop brought that to ~392ms.
+// rune, which on a multi-megabyte title() argument would dominate the call.
 func upperString(s string) string { return cases.Upper(language.Und).String(s) }
 
 func lowerString(s string) string { return cases.Lower(language.Und).String(s) }
@@ -347,7 +345,7 @@ func isCaseIgnorableRune(r rune) bool {
 // bytes, a ratio of exactly 3. Nothing else in the tables exceeds it.
 const caseMapWorstCaseExpansion = 3
 
-// checkCaseInputBytes is a CONSERVATIVE pre-check that runs BEFORE a case
+// checkCaseInputBytes is a conservative pre-check that runs before a case
 // transform, using caseMapWorstCaseExpansion to reject an input that cannot
 // possibly fit under the bound no matter how it expands — without paying for
 // the transform at all. It is not exact: most input expands by far less than
@@ -356,8 +354,8 @@ const caseMapWorstCaseExpansion = 3
 // asymmetry is the point — a cheap, sound pre-check that only ever rejects
 // inputs that were always going to fail, paired with the expensive exact
 // check that catches everything else. Without it, upper() on a 10MB string of
-// U+0390 allocates 172MB to produce (and then refuse) a 30MB result; this
-// pre-check rejects the same input for ~0 bytes allocated.
+// U+0390 allocates far more than its 30MB result before refusing it; this
+// pre-check rejects the same input before allocating.
 func checkCaseInputBytes(n int) error {
 	if n < 0 || n > maxStringBytes/caseMapWorstCaseExpansion {
 		return fmt.Errorf("%w: %d input bytes could exceed %d bytes after case mapping",
@@ -366,12 +364,12 @@ func checkCaseInputBytes(n int) error {
 	return nil
 }
 
-// boundedString wraps a produced string in the package's EXACT size bound —
+// boundedString wraps a produced string in the package's exact size bound —
 // the check that runs after a transform, on the real result, and is not
 // fooled by an input that stayed under checkCaseInputBytes's conservative
 // pre-check but still expanded close to the worst case in practice.
 //
-// Case mapping can GROW a string: lowercasing "İ" (U+0130, LATIN CAPITAL
+// Case mapping can grow a string: lowercasing "İ" (U+0130, LATIN CAPITAL
 // LETTER I WITH DOT ABOVE) produces "i" plus a combining dot above, 2 input
 // bytes to 3 output bytes, so a result built from an argument already near
 // the limit can exceed it. The check is cheap and makes every string function
@@ -383,7 +381,7 @@ func boundedString(s string) (Value, error) {
 	return String(s), nil
 }
 
-// allRunes reports whether every rune of s satisfies pred AND s is non-empty,
+// allRunes reports whether every rune of s satisfies pred and s is non-empty,
 // which is RFC 0006's shape for isdigit, isalpha, isalnum and isspace. isascii
 // does not use it: it is the one predicate true on the empty string.
 func allRunes(s string, pred func(rune) bool) bool {
@@ -398,7 +396,7 @@ func allRunes(s string, pred func(rune) bool) bool {
 	return true
 }
 
-// allCased reports whether every CASED rune of s satisfies pred and at least
+// allCased reports whether every cased rune of s satisfies pred and at least
 // one cased rune exists — RFC 0006's rule for isupper and islower.
 //
 // "Cased" includes titlecase, which is why isupper("ǲ") is false rather than

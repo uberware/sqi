@@ -13,6 +13,7 @@
 // It lives under test/ rather than cmd/ so that it never appears in a release
 // archive. Nothing in the server or worker imports it.
 //
-// Stdin is recorded because some CLIs (modo_cl, for one) are driven by
-// commands piped in rather than by argv, so a test of them asserts on stdin.
+// Stdin is recorded because some CLIs (modo_cl, for one) can be driven by
+// commands piped in rather than by argv, and a test of such a CLI asserts on
+// stdin.
 package main

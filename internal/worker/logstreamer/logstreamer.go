@@ -33,11 +33,11 @@
 // worker far from the broker is not held to one chunk per round trip. It tries
 // each chunk again, with backoff, until the log stream stores it or the
 // failure is one no retry can cure, such as a chunk over the broker's payload
-// limit or a closed connection. Every try of
-// a chunk carries the message ID "<attemptID>/<seq>", so the stream drops a
-// retry it already stored, and the server keeps one copy per seq. The
-// queue holds at most 32 MiB of encoded chunks; past that the oldest are
-// dropped, with a warning at most once a minute.
+// limit or a closed connection. Every try of a chunk carries the message ID
+// "<attemptID>/<seq>", so the stream drops a retry it already stored, and the
+// server keeps one copy per seq. The queue holds at most 32 MiB of encoded
+// chunks; past that the oldest are dropped, with a warning at most once a
+// minute.
 //
 // # Lifecycle
 //
@@ -269,7 +269,7 @@ func (p *Publisher) HandleLine(_ context.Context, taskID, attemptID, _ /* sessio
 //
 // It signals the background flush goroutine to stop, waits for it to exit,
 // then performs a final synchronous drain of any remaining buffered lines for
-// both stdout and stderr.  FlushLogs MUST be called after the task process has
+// both stdout and stderr.  FlushLogs must be called after the task process has
 // exited and before the terminal status message is published. It waits up to
 // the flush wait (5 s) for the attempt's chunks to be stored, so in the normal
 // case all log output reaches the server first.
@@ -298,7 +298,7 @@ func (p *Publisher) FlushLogs(_ context.Context, taskID, attemptID string) error
 	}
 
 	// Signal the background goroutine to stop.  It exits after any in-progress
-	// periodic flush completes; it does NOT perform a final flush itself.
+	// periodic flush completes; it does not perform a final flush itself.
 	close(buf.done)
 	buf.wg.Wait() // wait for the goroutine to exit before the final drain
 

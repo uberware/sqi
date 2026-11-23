@@ -37,7 +37,7 @@ readme: |
   name, the expression stops Blender with a message naming the layer, and the
   task fails without rendering anything.
 
-  The same expression first checks that `-S` really selected the scene you
+  The same expression first checks that `-S` selected the scene you
   named, and stops Blender with a message naming the scene if it did not.
 
   Neither the view layer's name nor the scene's is written into that Python

@@ -36,9 +36,8 @@ docker compose -f deploy/docker-compose.postgres.yml up -d --build
 
 The password is required; it sets the database role's password and reaches the
 server as `PGPASSWORD`, so the DSN in the file carries none. `--build` builds
-the images from this checkout, because PostgreSQL support is not yet in a
-published release (the latest is `v0.3.0`); once a release includes it, pin
-its tag in the file and drop `--build`.
+the images from this checkout; to run a published release instead, pin its
+tag in the file and drop `--build`.
 
 Backups run `pg_dump` inside the database container. Restores run
 `sqi-server restore` into an empty database (created with `createdb`), from a
@@ -62,8 +61,7 @@ takes its name from `SQI_HA_INSTANCE_NAME`.
 The file's header has the setup: generate the broker's accounts and a
 certificate naming the three nodes, write the shared `sqi-server.yaml`, start
 everything but the worker, issue a join token, then start the worker. As with
-the PostgreSQL file, `--build` builds the images from this checkout until a
-release includes high availability.
+the PostgreSQL file, `--build` builds the images from this checkout.
 
 The servers run with `restart: unless-stopped`, which high availability
 depends on: a server that loses its leadership exits with code 75, and is
@@ -87,15 +85,14 @@ shipped on an untrusted network.
 
 To add TLS, generate material with `sqi-server tls init`, mount it into the
 container or place it on the host, and set `http.tls` and `nats.embedded.tls`
-(plus the matching worker CA settings). The full guide, including the fact that enabling
-TLS on a running farm is a coordinated restart rather than a rolling one, is in
-[`docs/tls.md`](../docs/tls.md).
+(plus the matching worker CA settings). The full guide is in
+[`docs/tls.md`](../docs/tls.md); enabling TLS on a running farm is a
+coordinated restart, not a rolling one.
 
-Terminating TLS at a reverse proxy in front of the API is equally supported —
-but note it does nothing for the broker, which workers connect to directly.
+Terminating TLS at a reverse proxy in front of the API is also supported. It
+does not cover the broker, which workers connect to directly.
 
-Kubernetes manifests / a Helm chart for production-mode deployments are planned
-for a later phase and are not shipped yet.
+No Kubernetes manifests or Helm chart are shipped.
 
 Goreleaser configuration lives at the repo root as `.goreleaser.yaml` to match
 tool convention.

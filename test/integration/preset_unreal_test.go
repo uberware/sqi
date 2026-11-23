@@ -123,7 +123,7 @@ func unrealShots(t *testing.T, shots ...string) string {
 // no frame parameter, so it is bounded only by the lengths of the values it
 // quotes (the shot preset's one shot per task among them): with every one of
 // them at its maxLength it must still resolve under the worker's default EXPR
-// limits (phase 3, on the worker) and carry each value whole. One character
+// limits (it is evaluated on the worker) and carry each value whole. One character
 // more must be refused at submission by the maxLength bound itself, or the
 // bound bounds nothing.
 func TestPresetUnreal_ParamsCostIsFixed(t *testing.T) {
@@ -180,8 +180,8 @@ func TestPresetUnreal_ParamsCostIsFixed(t *testing.T) {
 // path, and both quotes and spaces in the output directory) and decodes
 // params.json with encoding/json: every value must come back exactly as given.
 // The output directory comes back in the worker's own form, since under EXPR
-// phase 3 renders PATH values host-native; it is a Windows path, the same on
-// every host.
+// the worker renders PATH values host-native; it is a Windows path, the same
+// on every host.
 func TestPresetUnreal_ParamsJSONRoundTrips(t *testing.T) {
 	for _, preset := range unrealPresets {
 		t.Run(preset, func(t *testing.T) {

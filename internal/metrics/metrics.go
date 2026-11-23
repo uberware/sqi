@@ -35,9 +35,9 @@ type Metrics struct {
 	// HTTPRequestsTotal counts completed HTTP requests, labeled by HTTP
 	// method, request path, and response status code.
 	//
-	// TODO: switch the "path" label to chi's route pattern
-	// (chi.RouteContext(r.Context()).RoutePattern()) to avoid high cardinality
-	// from parameterised segments such as /api/v1/jobs/{id}.
+	// The "path" label is the chi route pattern, such as /api/v1/jobs/{id};
+	// see middleware.RequestMetrics for the values it takes when no route
+	// matched. The "method" label is OTHER for a non-standard method.
 	HTTPRequestsTotal *prometheus.CounterVec
 
 	// HTTPRequestDuration records request latency in seconds, labeled by HTTP
@@ -546,8 +546,8 @@ func New() *Metrics {
 
 // RegisterHA exposes the sqi_server_ha_* families. A server in a
 // high-availability group calls it once at start; further calls do nothing.
-// Without it the families can be written to but are not served, so the
-// /metrics of a server outside a group is unchanged and a
+// Without it the families can be written to but are not served, so a server
+// outside a group serves no sqi_server_ha_* series and a
 // sqi_server_ha_leader == 1 selector never matches it.
 func (m *Metrics) RegisterHA() {
 	m.haOnce.Do(func() {

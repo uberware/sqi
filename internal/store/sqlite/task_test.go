@@ -169,10 +169,9 @@ func TestRetryTasks_MixedStateStep(t *testing.T) {
 }
 
 // TestRetryTasks_ResetsFailureCounters asserts that a manual retry via
-// RetryTasks clears the genuine-failure state Tasks 1-3 introduced: a revived
-// task's FailedAttempts and RetryAfter are zeroed/cleared, and — when the
-// retry resets a terminal job back to pending — the job's FailedAttempts and
-// ParkReason are cleared too.
+// RetryTasks clears the failure state: a revived task's FailedAttempts and
+// RetryAfter are zeroed/cleared, and when the retry resets a terminal job back
+// to pending, the job's FailedAttempts and ParkReason are cleared too.
 func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -185,7 +184,7 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 		Task("t1", "s1", store.TaskStatusReady).
 		Submit(t, s)
 
-	// Drive genuine-failure bookkeeping: a failed attempt bumps both counters
+	// Drive failure bookkeeping: a failed attempt bumps both counters
 	// and stamps a backoff on the requeued task.
 	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1"}, now.Add(time.Minute))
 
@@ -205,7 +204,7 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 		t.Fatalf("FinalizeJob = (%v, %v, %v), want failed", status, ok, err)
 	}
 
-	// Sanity-check the fixture actually has nonzero state before retrying.
+	// Check the fixture has nonzero state before retrying.
 	preTask, err := s.GetTask(ctx, "t1")
 	if err != nil || preTask.FailedAttempts == 0 || preTask.RetryAfter == nil {
 		t.Fatalf("pre-retry task fixture not as expected: %+v err=%v", preTask, err)
@@ -323,9 +322,9 @@ func TestRecordTaskFailure_CountsEachAttempt(t *testing.T) {
 // TestRecordTaskFailure_IdempotentPerAttempt pins that because a worker's
 // "failed" status message is delivered at-least-once, RecordTaskFailure
 // must count exactly once per attempt. The first call closes the running
-// attempt and increments both counters; a second call for the SAME attempt (a
-// redelivery) finds the attempt already terminal, returns the SAME counts, and
-// does NOT re-increment.
+// attempt and increments both counters; a second call for the same attempt (a
+// redelivery) finds the attempt already terminal, returns the same counts, and
+// does not re-increment.
 func TestRecordTaskFailure_IdempotentPerAttempt(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
@@ -356,8 +355,8 @@ func TestRecordTaskFailure_IdempotentPerAttempt(t *testing.T) {
 		t.Errorf("attempt SessionID = %q, want %q", closed.SessionID, sess)
 	}
 
-	// Redelivery: the attempt is already terminal, so the counts must NOT move
-	// and firstClose must be false — the caller uses it to withhold the
+	// Redelivery: the attempt is already terminal, so the counts must not move
+	// and firstClose must be false; the caller uses it to withhold the
 	// retry/park actions from stale reports.
 	tf, jf, first, err = s.RecordTaskFailure(ctx, att.ID, "t1", &exit, sess, "", now.Add(time.Second))
 	if err != nil || tf != 1 || jf != 1 || first {
@@ -459,8 +458,8 @@ func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
 }
 
 // TestRequeueTaskForRetry_GuardedToInFlight asserts the status guard: only an
-// assigned/running task is requeued. A missing task and — critically — a task
-// that has since been canceled, succeeded, or already returned to ready are
+// assigned/running task is requeued. A missing task and a task that has since
+// been canceled, succeeded, or already returned to ready are
 // legitimate no-ops (false, nil), never a resurrection: a stale or redelivered
 // failure report must not flip a terminal task back to ready or clear its
 // failure reason.
@@ -692,8 +691,8 @@ func TestRetryTasks_UnparksAutoParkedJob(t *testing.T) {
 }
 
 // TestRetryTasks_LeavesManualPauseAlone asserts the counterpart guard: a
-// manually paused job (no park_reason) is NOT un-paused by retrying its tasks
-// — the operator's pause outranks the retry.
+// manually paused job (no park_reason) is not un-paused by retrying its tasks:
+// the operator's pause outranks the retry.
 func TestRetryTasks_LeavesManualPauseAlone(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 

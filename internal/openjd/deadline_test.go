@@ -35,20 +35,18 @@ steps:
         args: ["{{ [x * 2 for x in range(100000)] }}"]
 `
 
-// exprDeadlineLetTemplate puts the expression work inside a let: block, which
-// is the one position whose failure path APPENDS and CONTINUES rather than
-// returning -- see checkLetBindings. A deadline recorded there must stop the
-// block, not run every remaining binding past an expired deadline.
+// exprDeadlineLetTemplate puts the expression work inside a let: block, the
+// one position whose failure path appends an error and continues instead of
+// returning (see checkLetBindings). A deadline recorded there must stop the
+// block instead of running the remaining bindings.
 //
-// THE LATER BINDINGS ARE SYNTACTICALLY BROKEN ON PURPOSE, and that is what makes
-// the test's assertion able to tell "stopped" from "kept going quietly". A
-// binding whose expression fails to PARSE appends a ValidationError before any
-// evaluation happens, so recordDeadline never sees it and cannot swallow it: if
-// checkLetBindings continued past the deadline instead of returning, bindings 1
-// and 2 would each report at /steps/0/let/N. With three heavy-but-valid
-// bindings, every later binding would trip the deadline again, be swallowed,
-// and report nothing, so the assertion would hold either way and prove
-// nothing.
+// The later bindings must stay syntactically broken: that is what lets the
+// test tell a block that stopped from one that kept going. A binding that
+// fails to parse appends a ValidationError before any evaluation, so
+// recordDeadline cannot swallow it: if checkLetBindings continued past the
+// deadline, bindings 1 and 2 would each report at /steps/0/let/N. With valid
+// later bindings, each would trip the deadline again, be swallowed and report
+// nothing, so the assertion would hold either way.
 const exprDeadlineLetTemplate = `
 specificationVersion: jobtemplate-2023-09
 extensions:
@@ -67,16 +65,15 @@ steps:
         args: ["hi"]
 `
 
-// exprDeadlineSegmentTemplate puts the same work in a reference EMBEDDED in
-// surrounding text, which is the checker's other format-string shape and its
-// own conversion site: fmtstring.LoneRef is false, so checkFormatString walks
-// segments and evaluates each reference in a loop rather than once.
+// exprDeadlineSegmentTemplate puts the same work in a reference embedded in
+// surrounding text, the checker's other format-string shape and its own
+// conversion site: fmtstring.LoneRef is false, so checkFormatString walks
+// segments and evaluates each reference in a loop.
 //
-// The SECOND reference is a syntax error for the same reason the let fixture's
-// later bindings are: a parse failure is appended before any evaluation, so it
-// is the one thing a swallowed deadline cannot hide. With a single reference,
-// checkFormatString's "return errs" and a "continue" would be
-// indistinguishable, because there would be no later segment to keep going to.
+// The second reference is a syntax error for the same reason the let
+// fixture's later bindings are: a parse failure is appended before any
+// evaluation, so a swallowed deadline cannot hide it. With a single reference,
+// checkFormatString returning and continuing would be indistinguishable.
 const exprDeadlineSegmentTemplate = `
 specificationVersion: jobtemplate-2023-09
 extensions:
@@ -91,7 +88,7 @@ steps:
         args: ["pre {{ [x * 2 for x in range(100000)] }} mid {{ 1 + }} post"]
 `
 
-// exprDeadlineResolveTemplate is the phase-2 RESOLVER's fixture: a step with
+// exprDeadlineResolveTemplate is the phase-2 resolver's fixture: a step with
 // both a let: block (which the resolver evaluates through the same
 // checkLetBindings the checker uses) and a parameterSpace to resolve.
 const exprDeadlineResolveTemplate = `
@@ -116,19 +113,19 @@ steps:
 `
 
 // exprDeadlineResolveRangeExprTemplate is the resolver fixture that reaches
-// resolveTaskParamDefinition, and it deliberately has NO let: block.
+// resolveTaskParamDefinition, and it has no let: block.
 //
-// exprDeadlineResolveTemplate (above) gives its step a let: block, so the
-// walk trips inside stepLetSymbols and ResolveParameterSpaceParams' definition
-// loop breaks before resolveTaskParamDefinition is ever entered. That fixture
-// therefore proves nothing about the resolver's OWN two conversion sites. This
-// one has no let: at all and a whole-field expression range, so the FIRST
-// evaluation of the whole call happens inside resolveRangeExprField.
+// exprDeadlineResolveTemplate gives its step a let: block, so the walk trips
+// inside stepLetSymbols and ResolveParameterSpaceParams' definition loop
+// breaks before resolveTaskParamDefinition is entered; it does not exercise
+// the resolver's own two conversion sites. This fixture has no let: and a
+// whole-field expression range, so the first evaluation of the call happens
+// inside resolveRangeExprField.
 //
-// The second definition's range is a syntax error on purpose: it is what makes
-// "stopped" distinguishable from "kept going quietly". Reached, it appends a
-// parse ValidationError at /parameterSpace/taskParameterDefinitions/1/range;
-// not reached, it appends nothing.
+// The second definition's range is a syntax error so that a walk that stopped
+// can be told from one that kept going: reached, it appends a parse
+// ValidationError at /parameterSpace/taskParameterDefinitions/1/range; not
+// reached, it appends nothing.
 const exprDeadlineResolveRangeExprTemplate = `
 specificationVersion: jobtemplate-2023-09
 extensions:
@@ -151,7 +148,7 @@ steps:
         args: ["hi"]
 `
 
-// exprDeadlineResolveRangeListTemplate reaches the resolver's OTHER conversion
+// exprDeadlineResolveRangeListTemplate reaches the resolver's other conversion
 // site, resolveRangeListDefinition's per-entry append, which
 // exprDeadlineResolveRangeExprTemplate cannot: a whole-field RangeExpr and a
 // RangeList are separate branches of resolveTaskParamDefinition.
@@ -180,13 +177,13 @@ steps:
         args: ["hi"]
 `
 
-// TestValidateWithBudget_DeadlineIsNotAValidationError is the central contract
-// of the wall-clock submission deadline: a wall-clock stop is the SERVER giving
-// up, not a verdict that the template is invalid.
+// TestValidateWithBudget_DeadlineIsNotAValidationError pins the contract of
+// the wall-clock submission deadline: a wall-clock stop means the server gave
+// up, and is not a verdict that the template is invalid.
 //
 // A budget error is a ValidationError and becomes a 422. A deadline must not
-// be, because the same body would validate on an idle machine — encoding it as
-// "invalid" would make acceptance depend on machine load.
+// be one, because the same body would validate on an idle machine; reporting
+// it as invalid would make acceptance depend on machine load.
 func TestValidateWithBudget_DeadlineIsNotAValidationError(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineTemplate), FormatYAML)
 	if err != nil {
@@ -205,9 +202,8 @@ func TestValidateWithBudget_DeadlineIsNotAValidationError(t *testing.T) {
 	if !errors.Is(ferr, expr.ErrDeadlineExceeded) {
 		t.Fatalf("error = %v, want it to wrap expr.ErrDeadlineExceeded", ferr)
 	}
-	// And it must not ALSO have been reported as a validation error: that is
-	// the half of the contract a caller turning errors into status codes
-	// depends on.
+	// It must not also be reported as a validation error: a caller turning
+	// errors into status codes depends on that.
 	for _, e := range errs {
 		if strings.Contains(strings.ToLower(e.Message), "deadline") {
 			t.Errorf("deadline reported as a ValidationError at %s: %s", e.Pointer, e.Message)
@@ -220,13 +216,11 @@ func TestValidateWithBudget_DeadlineIsNotAValidationError(t *testing.T) {
 //
 // The lone-reference path returns on the first failure; this one collects an
 // error per reference and keeps walking the remaining segments, so it needs the
-// same diversion for the same reason [checkLetBindings] does. A test that only
-// exercised the lone-reference shape would leave this site free to convert a
-// deadline into a 422.
+// same diversion [checkLetBindings] does.
 //
-// It also asserts that the segment loop STOPPED, not merely that it stopped
-// reporting -- see exprDeadlineSegmentTemplate for how its second, deliberately
-// unparseable reference makes the difference observable.
+// It also asserts that the segment loop stopped, and did not only stop
+// reporting; see exprDeadlineSegmentTemplate for how its second, unparseable
+// reference makes the difference observable.
 func TestValidateWithBudget_DeadlineInEmbeddedSegmentIsNotAValidationError(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineSegmentTemplate), FormatYAML)
 	if err != nil {
@@ -260,19 +254,17 @@ func TestValidateWithBudget_DeadlineInEmbeddedSegmentIsNotAValidationError(t *te
 // conversion site that appends and continues.
 //
 // checkLetBindings evaluates each binding in turn and, on failure, records an
-// error and moves to the next one — deliberately, so a single malformed line
-// does not hide the rest of the block. For a deadline that behavior is exactly
-// wrong: the whole point of a backstop is to stop, and running the remaining
-// bindings past an expired deadline spends the time the deadline said had run
-// out. So the block must yield the deadline through the budget and produce no
-// per-binding validation errors at all.
+// error and moves to the next one, so a single malformed line does not hide
+// the rest of the block. A deadline must instead stop the block: running the
+// remaining bindings spends time the deadline says has run out. The block
+// yields the deadline through the budget and produces no per-binding
+// validation errors.
 //
-// The "no /steps/0/let error" assertion below only proves anything because of
-// how exprDeadlineLetTemplate is built -- bindings 1 and 2 fail to PARSE, which
-// is reported before any evaluation and so cannot be swallowed by
-// recordDeadline. Read that fixture's comment before changing it: with heavy but
-// valid later bindings this assertion holds whether checkLetBindings returns or
-// continues, and the test stops testing its own name.
+// The "no /steps/0/let error" assertion depends on how
+// exprDeadlineLetTemplate is built: bindings 1 and 2 fail to parse, which is
+// reported before any evaluation and so cannot be swallowed by
+// recordDeadline. With valid later bindings the assertion would hold whether
+// checkLetBindings returns or continues; see that fixture's comment.
 func TestValidateWithBudget_DeadlineInLetBindingsStopsTheBlock(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineLetTemplate), FormatYAML)
 	if err != nil {
@@ -334,12 +326,10 @@ steps:
 // point is unaffected by the deadline plumbing, since every caller but the
 // submission path uses it.
 //
-// EXPR is StatusSupported, so the ONLY thing that can reject this fixture is
-// the walk itself, and the error it must produce is nameable: the fixture is
-// 100,000 comprehension iterations against a 10,000-operation budget, so the
-// verdict is the DETERMINISTIC operation limit and specifically not the
-// wall-clock backstop, which is what "unchanged by the budget plumbing" means
-// for a caller that sets no deadline.
+// Only the expression walk can reject this fixture: it is 100,000
+// comprehension iterations against a 10,000-operation budget, so with no
+// deadline set the verdict is the deterministic operation limit and never the
+// wall-clock deadline.
 func TestValidateWithOptions_UnchangedByBudget(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineTemplate), FormatYAML)
 	if err != nil {
@@ -376,11 +366,10 @@ func containsMessageSubstring(errs ValidationErrors, want string) bool {
 // phase 2 of the same contract.
 //
 // checkExpressionsAtSubmit turns the walk's ValidationErrors into a
-// *SubmitValidationError — the CLIENT-FAULT channel, a 4xx. A deadline adds no
-// ValidationError at all, so without an explicit check this function would see
-// an empty error slice and return nil: a walk that stopped early reported as a
-// clean re-check, after which submission proceeds on expressions nobody
-// finished checking.
+// *SubmitValidationError, the client-fault channel (a 4xx). A deadline adds no
+// ValidationError, so without an explicit check this function would see an
+// empty error slice and return nil, reporting a walk that stopped early as a
+// clean re-check and letting submission proceed on unchecked expressions.
 func TestCheckExpressionsAtSubmit_DeadlineIsNotASubmitValidationError(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineTemplate), FormatYAML)
 	if err != nil {
@@ -405,13 +394,12 @@ func TestCheckExpressionsAtSubmit_DeadlineIsNotASubmitValidationError(t *testing
 // TestResolveParameterSpaceParams_DeadlineYieldsNoParameterSpace pins the third
 // observation point.
 //
-// The resolver has no error channel — it returns (*StepParameterSpace,
-// ValidationErrors) — and a deadline produces neither a ValidationError nor a
-// complete space: the definition loop breaks on !b.ok(), leaving the rest of
-// newDefs zero-valued. Returning that would be indistinguishable from success,
-// and its caller would go on to expand a parameter space the resolver never
-// finished building. So the space must be nil, and the breach must be readable
-// from the shared budget.
+// The resolver returns (*StepParameterSpace, ValidationErrors) and has no
+// error channel. A deadline produces neither a ValidationError nor a complete
+// space: the definition loop breaks on !b.ok(), leaving the rest of newDefs
+// zero-valued. Returning that would look like success, and the caller would
+// expand an unfinished parameter space. So the space must be nil, and the
+// breach must be readable from the shared budget.
 func TestResolveParameterSpaceParams_DeadlineYieldsNoParameterSpace(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineResolveTemplate), FormatYAML)
 	if err != nil {
@@ -444,10 +432,10 @@ func TestResolveParameterSpaceParams_DeadlineYieldsNoParameterSpace(t *testing.T
 // its fixture's let: block trips the deadline first, so the definition loop
 // breaks before that site runs at all.
 //
-// Two things must hold. The deadline must not become a ValidationError — the
-// whole 503-not-422 contract — and the walk must STOP, which the second
-// definition's deliberate syntax error makes observable: converted-and-continued,
-// it reports a parse error at definition 1.
+// Two things must hold: the deadline does not become a ValidationError (it is
+// a 503, never a 422), and the walk stops. The second definition's syntax
+// error makes stopping observable: a walk that continued would report a parse
+// error at definition 1.
 func TestResolveParameterSpaceParams_DeadlineAtRangeExprPosition(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineResolveRangeExprTemplate), FormatYAML)
 	if err != nil {
@@ -515,12 +503,11 @@ func TestResolveParameterSpaceParams_DeadlineAtRangeListPosition(t *testing.T) {
 }
 
 // exprDeadlineSubmitTemplate is the fixture for the Submit-level tests: a
-// valid EXPR template whose one expression is a CALL.
+// valid EXPR template whose one expression is a call.
 //
-// The call matters. A bare literal such as "{{ [1, 2, 3] }}" performs no
-// meter.charge at all, so the first-charge clock sample never fires and the
-// position resolves successfully however long ago the deadline passed -- a
-// fixture built on one proves nothing.
+// It must be a call: a bare literal such as "{{ [1, 2, 3] }}" performs no
+// meter.charge, so the clock is never sampled and the position resolves
+// however long ago the deadline passed.
 const exprDeadlineSubmitTemplate = `
 specificationVersion: jobtemplate-2023-09
 extensions:
@@ -536,18 +523,17 @@ steps:
 `
 
 // TestSubmit_DeadlineIsNotASubmitValidationError drives the deadline contract
-// through the public [Submitter.Submit] API, which is the only place the whole
-// chain is observable: the configured instant reaching both phase-2 budgets,
-// phase 1 calling [ValidateWithBudget] rather than [ValidateWithOptions], and
-// the breach coming back as a plain error rather than as the client-fault type.
+// through the public [Submitter.Submit] API, the only place the whole chain is
+// observable: the configured instant reaching both phase-2 budgets, phase 1
+// calling [ValidateWithBudget] rather than [ValidateWithOptions], and the
+// breach coming back as a plain error rather than as the client-fault type.
 //
-// The message assertion is the decisive half. Both phase 1 and phase 2 walk
-// the same positions, so a deadline trips in whichever runs first: if phase 1
-// still called ValidateWithOptions -- discarding the channel the breach arrives
-// on -- the walk would stop SILENTLY, phase 1 would report success, and phase 2
-// would then produce a deadline error of its own. The test would still see an
-// ErrDeadlineExceeded and pass while the exact defect it exists to catch was
-// present. The phase-1 wording is what distinguishes them.
+// The message assertion is required. Phase 1 and phase 2 walk the same
+// positions, so a deadline trips in whichever runs first. If phase 1 called
+// ValidateWithOptions, which discards the channel the breach arrives on, the
+// walk would stop without an error, phase 1 would report success, and phase 2
+// would produce a deadline error of its own; the ErrDeadlineExceeded check
+// alone would still pass. The phase-1 wording tells the two apart.
 func TestSubmit_DeadlineIsNotASubmitValidationError(t *testing.T) {
 	ctx := t.Context()
 	st := fake.New()
@@ -587,9 +573,9 @@ func TestSubmit_DeadlineIsNotASubmitValidationError(t *testing.T) {
 }
 
 // TestSubmit_NoDeadlineIsUnchanged pins the other direction at the same level:
-// with SubmitOptions.Deadline left zero -- every caller in this repo that is
-// not a submission handler -- the pipeline has no wall-clock bound and submits
-// normally.
+// with SubmitOptions.Deadline left zero, as every caller that is not a
+// submission handler leaves it, the pipeline has no wall-clock bound and
+// submits normally.
 func TestSubmit_NoDeadlineIsUnchanged(t *testing.T) {
 	ctx := t.Context()
 	st := fake.New()
@@ -619,11 +605,11 @@ func TestSubmit_NoDeadlineIsUnchanged(t *testing.T) {
 //
 // Phase 1 trips first for an EXPR template, so nothing downstream of it is
 // exercised there. The resolver budget is handed to every step's
-// ResolveParameterSpaceParams call in Submit's step loop, where a deadline is
-// the difference between stopping and resolving a parameter space nobody
-// finished checking (see TestResolveParameterSpaceParams_DeadlineYieldsNoParameterSpace).
-// prepareTemplate returns it, so the copy can be asserted directly with a
-// deadline that is nowhere near expiring.
+// ResolveParameterSpaceParams call in Submit's step loop, where a deadline
+// stops resolution of an unfinished parameter space (see
+// TestResolveParameterSpaceParams_DeadlineYieldsNoParameterSpace).
+// prepareTemplate returns it, so its deadline can be asserted directly with an
+// instant an hour away.
 func TestPrepareTemplate_DeadlineReachesTheResolverBudget(t *testing.T) {
 	const plainTemplate = `
 specificationVersion: jobtemplate-2023-09
@@ -653,10 +639,10 @@ steps:
 // TestStepLetSymbols_NilBudget pins that stepLetSymbols accepts a nil budget.
 //
 // checkFormatString and checkLetBindings both document their *templateBudget
-// first parameter as nil-able and handle it. stepLetSymbols takes the
-// same-shaped parameter; reading b.limits unconditionally makes
+// first parameter as nil-able and handle it. stepLetSymbols takes the same
+// parameter, and reading b.limits unconditionally would make
 // stepLetSymbols(nil, ...) panic. No production caller passes nil, so this
-// test is what keeps the three siblings on one nil contract.
+// test keeps the three functions on one nil contract.
 func TestStepLetSymbols_NilBudget(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineLetTemplate), FormatYAML)
 	if err != nil {
@@ -676,11 +662,12 @@ func TestStepLetSymbols_NilBudget(t *testing.T) {
 	}
 }
 
-// TestExprLimits_DeadlineSurvivesNormalization pins the failure the carrier
-// choice invites: ExprLimits is normalized ([ExprLimits.orDefaults]) before any
-// evaluation reads it, so a normalization that rebuilt the struct field by
-// field rather than patching a copy would silently drop the deadline and every
-// test above would still pass on a template that finishes quickly.
+// TestExprLimits_DeadlineSurvivesNormalization pins that the deadline carried
+// on ExprLimits survives normalization: ExprLimits is normalized
+// ([ExprLimits.orDefaults]) before any evaluation reads it, and a
+// normalization that rebuilt the struct field by field instead of patching a
+// copy would drop the deadline while the tests above still passed on a
+// template that finishes quickly.
 func TestExprLimits_DeadlineSurvivesNormalization(t *testing.T) {
 	want := time.Unix(1_700_000_000, 0)
 	got := ExprLimits{Deadline: want}.orDefaults()
@@ -689,14 +676,14 @@ func TestExprLimits_DeadlineSurvivesNormalization(t *testing.T) {
 	}
 
 	// It must also survive the budget that carries it to every metered
-	// position, since that is where orDefaults is actually applied.
+	// position, since that is where orDefaults is applied.
 	if b := newTemplateBudget(ExprLimits{Deadline: want}); !b.limits.Deadline.Equal(want) {
 		t.Fatalf("Deadline on a fresh budget = %v, want %v", b.limits.Deadline, want)
 	}
-	// And it must be handed to the evaluator as an option rather than merely
-	// sitting on the struct. Options are opaque closures, so the count is what
-	// is observable here; the deadline REACHING the meter is what
-	// TestValidateWithBudget_DeadlineIsNotAValidationError proves.
+	// It must also be handed to the evaluator as an option. Options are
+	// opaque closures, so only the count is observable here;
+	// TestValidateWithBudget_DeadlineIsNotAValidationError covers the deadline
+	// reaching the meter.
 	set := ExprLimits{Deadline: want}.orDefaults().evalOptions()
 	unset := ExprLimits{}.orDefaults().evalOptions()
 	if len(set) != len(unset)+1 {
@@ -707,10 +694,10 @@ func TestExprLimits_DeadlineSurvivesNormalization(t *testing.T) {
 
 // exprDeadlineResolveChunkTemplate reaches the resolver's chunk-sizing site,
 // resolveChunkInt: definition 0's range is literal text, so nothing before its
-// defaultTaskCount evaluates, and definition 1's deliberate syntax error makes a
-// walk that kept going past the deadline observable. The count is "1 + 1", not
-// "2": the deadline is checked when an operation is charged, and a bare
-// literal charges none.
+// defaultTaskCount evaluates, and definition 1's syntax error makes a walk
+// that kept going past the deadline observable. The count is "1 + 1" because
+// the deadline is checked when an operation is charged, and a bare literal
+// charges none.
 const exprDeadlineResolveChunkTemplate = `
 specificationVersion: jobtemplate-2023-09
 extensions: [EXPR, TASK_CHUNKING]

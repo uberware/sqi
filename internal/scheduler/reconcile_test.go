@@ -2,14 +2,10 @@
 
 package scheduler
 
-// Tests for reconcileStuckSteps, the startup repair for steps left stuck by
-// v0.3.0.
-//
-// A v0.3.0 database can hold a step whose tasks are all terminal but which was
-// never finalized, because completion read the step's tasks through one
-// store.MaxLimit-sized page and never decided on a step with more tasks than
-// that. Nothing reports on those tasks again, so nothing would ever finalize
-// the step, its job, the steps behind it, or the jobs blocked on it.
+// Tests for reconcileStuckSteps, the startup repair for a step whose tasks
+// are all terminal but which was never finalized. Nothing reports on those
+// tasks again, so without the repair nothing would finalize the step, its
+// job, the steps behind it, or the jobs blocked on it.
 //
 // The scenario tests start the scheduler through Run, not by calling the
 // method, so they also pin where the repair sits: it must have finished before
@@ -41,8 +37,7 @@ import (
 )
 
 // stuckStepTasks is the task count of the stuck step the scenario seeds: one
-// past the page size the v0.3.0 completion check read, which is what stranded
-// it.
+// past store.MaxLimit, so the step does not fit in one page of tasks.
 const stuckStepTasks = store.MaxLimit + 1
 
 // errInjectedReconcile is the failure the fault-injecting store returns.
@@ -269,15 +264,12 @@ type stuckFarm struct {
 	canceledJob, canceledStep, canceledTask                 string
 }
 
-// seedStuckFarm seeds the damage a v0.3.0 database can hold, with bigTasks
-// tasks in the big step. Every stuck step is in status running with only
-// terminal tasks.
+// seedStuckFarm seeds stuck steps, with bigTasks tasks in the big step. Every
+// stuck step is in status running with only terminal tasks.
 //
 // Each job is created whole through the real one-transaction submission path,
-// which keeps the statuses it is given. That is how a 1,001-task step is
-// seeded without a thousand separate writes, and it is how the stuck rows got
-// there: the job, step and task rows are exactly what a v0.3.0 submission
-// followed by a full run leaves.
+// which keeps the statuses it is given, so a 1,001-task step is seeded without
+// a thousand separate writes.
 func seedStuckFarm(t *testing.T, st store.Store, bigTasks int) stuckFarm {
 	t.Helper()
 	seedReconcileFarm(t, st)
@@ -301,7 +293,7 @@ func seedStuckFarm(t *testing.T, st store.Store, bigTasks int) stuckFarm {
 	// can never run and must be canceled by the cascade.
 	bad := newReconcileJob("bad", store.JobStatusRunning)
 	// ListStuckSteps orders by job ID, so give this job an ID that sorts before
-	// every random one: the step of this job is then always the FIRST the pass
+	// every random one: the step of this job is then always the first the pass
 	// handles, and a test that makes it fail proves the pass goes on to the rest
 	// rather than depending on where a random UUID happened to land.
 	bad.ID = "00000000-" + bad.ID[len("00000000-"):]
@@ -422,7 +414,7 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 	if err := st.CancelJobStatus(t.Context(), userCanceled.ID); err != nil {
 		t.Fatalf("CancelJobStatus: %v", err)
 	}
-	// The fixture only means something if the cancel really left this shape.
+	// The fixture only means something if the cancel left this shape.
 	wantJobStatus(t, st, userCanceled.ID, "user-canceled (seeded)", store.JobStatusCanceled)
 	wantStepStatus(t, st, cancelRender.ID, "user-canceled/Render (seeded)", store.StepStatusCanceled)
 	wantStepStatus(t, st, cancelLater.ID, "user-canceled/Later (seeded)", store.StepStatusCanceled)
@@ -586,8 +578,7 @@ func (f stuckFarm) wantEvents(t *testing.T, events *reconcileEvents) {
 
 // ── tests ───────────────────────────────────────────────────────────────────
 
-// TestReconcileStuckSteps_RepairsOnStart is the v0.3.0 repair scenario: it
-// seeds a stuck 1,001-task step with a dependent step behind it, a second stuck
+// TestReconcileStuckSteps_RepairsOnStart is the repair scenario: it seeds a stuck 1,001-task step with a dependent step behind it, a second stuck
 // step whose failure cascade-cancels its dependent, a third that finishes its
 // job, and a cross-job dependent on each of those jobs. It starts the
 // scheduler, and asserts that the steps and their jobs are finalized, that the

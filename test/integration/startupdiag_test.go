@@ -12,13 +12,10 @@ import (
 	"time"
 )
 
-// A test server that never starts listening used to fail with only "HTTP server
-// did not come up within 10s": the logger drops everything below WARN, and a
-// server stuck in startup logs nothing at WARN. The Windows preset harness hit
-// that six tests in a row, and the message could not say which startup phase
-// stalled. These helpers keep the INFO trail and, on a timeout, the stacks of
-// the server's own goroutines (the server runs in this process), so the next
-// failure names the call it is blocked in.
+// The test server's logger drops everything below WARN, and a server stuck in
+// startup logs nothing at WARN. These helpers keep the INFO trail and, on a
+// startup timeout, the stacks of the server's own goroutines (the server runs
+// in this process), so the failure names the call startup is blocked in.
 
 // maxTrailLines bounds the startup trail kept per server.
 const maxTrailLines = 2000

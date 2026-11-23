@@ -72,9 +72,9 @@ func TestDecodeJobParamConstraints_ItemAbsent(t *testing.T) {
 }
 
 // TestDecodeItemConstraint_Rejects covers the shapes the decoder must refuse.
-// The depth cap is the one that matters most: RFC 0007 allows list[list[T]] and no
-// deeper, so a third item: level describes a list that cannot exist. Accepting
-// it silently would leave a constraint nothing ever applies.
+// The depth cap: RFC 0007 allows list[list[T]] and no deeper, so a third
+// item: level describes a list that cannot exist. Accepting it would leave a
+// constraint nothing ever applies.
 func TestDecodeItemConstraint_Rejects(t *testing.T) {
 	tests := []struct {
 		name string
@@ -116,10 +116,10 @@ func TestDecodeItemConstraint_Rejects(t *testing.T) {
 }
 
 // TestDecodeItemConstraint_IgnoredWithoutEXPR pins that item: is decoded
-// regardless of the extension gate, and that this is harmless. The gate lives
-// on the TYPE (a base-spec template cannot declare a list type at all, so its
-// item: block can never be reached by validation), which keeps the decoder
-// simple: one fewer conditional, and no way for a gated-off branch to drift.
+// whether or not EXPR is declared, and that this is harmless. The extension
+// check is on the type (a base-spec template cannot declare a list type at
+// all, so validation never reaches its item: block), which keeps the decoder
+// free of a conditional that could drift.
 func TestDecodeItemConstraint_IgnoredWithoutEXPR(t *testing.T) {
 	p, err := decodeJobParameter(map[string]any{
 		"name": "L", "type": "LIST[INT]",

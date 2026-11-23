@@ -24,8 +24,7 @@ var shippedDefinitionDirs = []string{
 }
 
 // shippedDefinition is one product definition file, decoded far enough to check
-// its prose. The template is deliberately not decoded -- the schema tests own
-// that.
+// its prose. The template is not decoded; the schema tests cover it.
 type shippedDefinition struct {
 	Name        string `yaml:"name"`
 	Title       string `yaml:"title"`
@@ -61,8 +60,8 @@ func loadShippedDefinitions(t *testing.T) map[string]shippedDefinition {
 }
 
 // Every shipped product carries a readme. These are the products users meet
-// first, and the readme is where a product explains what it produces -- a
-// product without one leaves its detail page showing nothing but a template.
+// first, and the readme is where a product explains what it produces: a
+// product without one leaves its detail page showing only a template.
 func TestShippedDefinitions_AllHaveAReadme(t *testing.T) {
 	t.Parallel()
 	for path, def := range loadShippedDefinitions(t) {
@@ -108,16 +107,16 @@ func TestShippedDefinitions_DescriptionsAreShortPlainText(t *testing.T) {
 }
 
 // Readmes may use only the subset web/src/components/Markdown.tsx implements.
-// Anything else renders as literal text in the UI -- silently, with no error:
-// a nested list, for example, renders as stray paragraphs.
+// Anything else renders as literal text in the UI with no error: a nested
+// list, for example, renders as stray paragraphs.
 func TestShippedDefinitions_ReadmesUseTheSupportedSubset(t *testing.T) {
 	t.Parallel()
 	// Substring matching is too crude for these: `ffmpeg -ss <offset> -t ...`
 	// in prose contains both "<" and "> ". Block constructs are therefore
 	// matched at line starts, and the HTML check names tags an author might
-	// genuinely expect to render. Raw HTML is harmless either way -- the
-	// renderer emits React elements, so it escapes -- the check is about a
-	// mistaken expectation, not a vulnerability.
+	// expect to render. Raw HTML is harmless either way, because the renderer
+	// emits React elements and so escapes it; the check catches a mistaken
+	// expectation, not a vulnerability.
 	inlineUnsupported := []struct{ name, marker string }{
 		{"an image", "!["},
 	}
@@ -151,7 +150,7 @@ func TestShippedDefinitions_ReadmesUseTheSupportedSubset(t *testing.T) {
 		}
 		// The renderer's list regexes are anchored at column 0, so an indented
 		// list item matches nothing and falls through into a paragraph with a
-		// stray leading marker. The structure is lost with no error anywhere.
+		// stray leading marker, losing the structure with no error.
 		for i, line := range strings.Split(readme, "\n") {
 			trimmed := strings.TrimLeft(line, " \t")
 			if len(line) == len(trimmed) {

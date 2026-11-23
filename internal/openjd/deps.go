@@ -22,11 +22,10 @@ import (
 // after any step transitions to [store.StepStatusCompleted].
 //
 // Steps with an empty DependsOn list are always eligible. In normal operation
-// such steps are created with [store.StepStatusReady] by [Submitter.Submit], so
-// they will simply be skipped here. If a no-dep step is somehow in pending
-// state, ResolveDependencies will promote it correctly.
+// such steps are created with [store.StepStatusReady] by [Submitter.Submit]
+// and are skipped here; a no-dep step in pending state is promoted.
 //
-// Note: ResolveDependencies considers only a single pass through the step list.
+// ResolveDependencies makes a single pass through the step list.
 // Call it again if the first pass unblocked a step whose promotion might
 // unblock further steps in the same job.
 func ResolveDependencies(ctx context.Context, st store.Store, jobID string) (int, error) {

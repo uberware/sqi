@@ -254,7 +254,7 @@ func TestEval_ChainShortCircuitsBeforeABadOperand(t *testing.T) {
 func TestEval_ChainedComparisonBlamesTheFailingLink(t *testing.T) {
 	// A chain's error must blame whichever link actually failed, not always
 	// the chain's first operator: "1 < 2 < 'x'" succeeds on "1 < 2" and fails
-	// on the SECOND "<" (int vs string has no dispatch-table row).
+	// on the second "<" (int vs string has no dispatch-table row).
 	tests := []struct {
 		name       string
 		src        string
@@ -756,19 +756,20 @@ func TestEvalCompare_UnknownLink(t *testing.T) {
 }
 
 // TestEval_RecursionDepthIsBounded is the parser's TestParse_NestingDepthIsBounded
-// for the OTHER half of the hazard: a chain the parser builds ITERATIVELY, and so
-// never counts against maxParseDepth, but which evalNode then walks recursively.
+// for the other half of the hazard: a chain the parser builds iteratively, and
+// so never counts against maxParseDepth, but which evalNode then walks
+// recursively.
 //
-// Like that test, a regression here does not fail the assertion — it takes the
+// Like that test, a broken guard does not fail the assertion — it takes the
 // test binary down with "fatal error: stack overflow", which recover() cannot
-// catch. Without maxEvalDepth, both inputs do exactly that at 600,000
+// catch. Without maxEvalDepth, both inputs do that at a few hundred thousand
 // operators. The depths used here are just past the bound, so the test
 // measures the guard rather than the stack.
 //
 // The trees are built directly rather than through Parse, because Parse cannot
 // reach these depths: maxSourceBytes (limits.go, 10,000 bytes) bounds one
-// expression's SOURCE, and the cheapest chain source can express costs two
-// bytes an operator, so the deepest tree any PARSEABLE expression can produce
+// expression's source, and the cheapest chain source can express costs two
+// bytes an operator, so the deepest tree any parseable expression can produce
 // is about 5,000 — half of maxEvalDepth. Building the tree exercises the
 // identical evalNode guard on the identical shape.
 //
@@ -845,7 +846,7 @@ func TestEval_RecursionWithinTheBoundStillEvaluates(t *testing.T) {
 
 // TestEvalOptions_DefaultAndOverride pins the option plumbing.
 //
-// The default is POSIX and NOT the specification's own default of host-native.
+// The default is POSIX and not the specification's own default of host-native.
 // sqi parses templates server-side, so a host-native default would let the same
 // template expand into different tasks depending on which OS submitted it —
 // a failure that surfaces only in a mixed-OS deployment. Host-context

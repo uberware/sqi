@@ -8,23 +8,19 @@ import (
 )
 
 // validateAccountArg rejects a username or group name before it is used for
-// anything — including a pure-Go os/user lookup or a fake provider's map
-// lookup — not just before it reaches a subprocess. what names the argument
-// in error messages ("user" / "group").
+// anything, including a pure-Go os/user lookup or a fake provider's map
+// lookup, not only before it reaches a subprocess. what names the argument in
+// error messages ("user" / "group").
 //
-// This lives in a platform-neutral file (no build tag) rather than under
-// nss_unix.go/build:unix so both the real POSIX provider and the in-memory
-// fake apply the exact same gate: a fake that skipped this check would
-// accept a "-u"-shaped username that the real provider refuses, which is
-// precisely the fake/real divergence isolation tests exist to catch.
+// It is in a platform-neutral file (no build tag) so the real POSIX provider
+// and the in-memory fake apply the same gate: a fake that skipped it would
+// accept a "-u"-shaped username that the real provider refuses.
 //
-// The NUL and newline checks close off argument-injection-adjacent tricks
-// against tools that scan stdin/file lines; the leading-hyphen check stops
-// the value from being parsed as a flag by id(1)/getent(1) (e.g. a queue
-// misconfigured to send "-u" would otherwise silently change which id(1)
-// switch runs). None of this is a shell-escaping concern — argv elements are
-// never shell-interpolated — but a name id(1) parses as a flag is still a
-// bypass worth closing.
+// The NUL and newline checks stop injection against tools that read
+// line-oriented input; the leading-hyphen check stops id(1)/getent(1) from
+// parsing the value as a flag (a queue configured with "-u" would otherwise
+// change which id(1) switch runs). argv elements are never passed through a
+// shell, so this is not shell escaping.
 func validateAccountArg(name, what string) error {
 	if name == "" {
 		return fmt.Errorf("isolation: %s must not be empty", what)

@@ -56,7 +56,7 @@ readme: |
   Each task runs
   `keyshot_headless -progress [-floating_feature <feature>] <scene> -script render.py`.
   The `-floating_feature` flag appears only when License Feature is set. The
-  script is the preset's embedded `render.py`. No job value is ever written
+  script is the preset's embedded `render.py`. No job value is written
   into Python source: the script reads the task's frames, the output pattern
   and the sizes from a `params.json` written beside it, built with the `EXPR`
   extension and its JSON quoting.

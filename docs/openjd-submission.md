@@ -14,7 +14,7 @@ This document shows three progressively richer examples:
 See [`docs/api.md`](api.md) for the HTTP mechanics (endpoint, query parameters,
 response shape, error handling). See
 [`docs/openjd-conformance.md`](openjd-conformance.md) for which spec version
-and extensions `sqi` implements, and what it deliberately does not.
+and extensions `sqi` implements, and what it does not.
 
 ---
 
@@ -233,7 +233,7 @@ parameterSpace:
   combination: "(InputChunk, OutputChunk)"   # 3 tasks, not 9
 ```
 
-A STRING, PATH or FLOAT `range` **must** be a YAML list. The succinct
+A STRING, PATH or FLOAT `range` must be a YAML list. The succinct
 `<IntRangeExpr>` string form (`"1-100:2"`) exists only for INT and
 `CHUNK[INT]`; a bare string given to a STRING, PATH or FLOAT parameter is
 decoded into `RangeExpr`, which `expand.go` never reads for those types, so the
@@ -348,7 +348,7 @@ steps:
 
 A usage pool is a named concurrency limit that sqi enforces by counting active
 claims — it caps how many tasks may run at once against a shared, finite
-resource. Software licenses are the original use case (e.g. a 10-seat Arnold
+resource. Software licenses are the typical use case (e.g. a 10-seat Arnold
 license), but a usage pool works for *any* dimension where you want a ceiling:
 a product, a renderer version, a show, or a client code.
 
@@ -389,12 +389,12 @@ steps:
 ```
 
 A step may list multiple `amount.worker.usagepool.*` amounts. The scheduler
-dispatches a task only when **every** named pool has a free slot; if any pool
+dispatches a task only when every named pool has a free slot; if any pool
 is at capacity, the task waits. This lets you enforce overlapping limits
 simultaneously — for example, a per-show cap and a global license count at
 the same time.
 
-> **Gotcha — unregistered pools.** If a step names a pool that is not
+> **Unregistered pools.** If a step names a pool that is not
 > registered on the server, sqi treats that pool as having zero capacity.
 > Tasks in that step will never be dispatched. If tasks remain stuck in
 > `ready` state longer than expected, check the Usage Pools page to confirm
@@ -458,7 +458,7 @@ hostRequirements:
       min: 1
 ```
 
-> **Note on `min` defaults:** Only `min` is used as a reservation. A step that
+> **`min` defaults.** Only `min` is used as a reservation. A step that
 > declares `amount.worker.vcpu` but omits `min` (including a `max`-only
 > declaration) defaults to a 1-core reservation — per OpenJD jobtemplate-2023-09,
 > an omitted `min` defaults to the capability's reserved minimum, which is 1 for
@@ -506,7 +506,7 @@ the offending field:
 }
 ```
 
-(Captured from the real validator: a step named `Composite` at index 1 whose
+(The validator's output for a step named `Composite` at index 1 whose
 `dependencies[0].dependsOn` names a step `Rendur` that does not exist in the
 template. Multiple validation failures are joined with `; ` in a single
 `detail` string.)
@@ -529,8 +529,8 @@ Common validation failures:
 ## Submitting JSON instead of YAML
 
 All examples above can be submitted as JSON with
-`Content-Type: application/json`. The field names match the YAML keys converted
-to camelCase:
+`Content-Type: application/json`. The field names are the same as the YAML
+keys:
 
 ```json
 {

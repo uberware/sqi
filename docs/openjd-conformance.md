@@ -2,21 +2,19 @@
 
 This page states, in one place, how far `sqi`'s OpenJD support goes: which spec
 version it implements, where that is enforced in code, which extensions it
-understands, and what it does not implement and why. Read this before
-re-auditing OpenJD conformance from scratch.
+understands, and what it does not implement and why.
 
 ## Spec version
 
-`sqi` implements **`jobtemplate-2023-09`** — the OpenJD job template schema. A
+`sqi` implements `jobtemplate-2023-09`, the OpenJD job template schema. A
 template's `specificationVersion` field must equal that string exactly; anything
 else (missing, a different version string) is a `422` validation error.
 
-`sqi` does **not** implement the standalone `environment-2023-09` template type — a
-second, separate top-level document format in the OpenJD spec for defining
-reusable environments outside a job template. `sqi` only ever parses
-`jobtemplate-2023-09` documents; environments are supported only as they appear
-embedded in a job template (`jobEnvironments`, `stepEnvironments`). This is a
-missing feature, not a violated rule — nothing in the spec requires an
+`sqi` does not implement the standalone `environment-2023-09` template type, a
+separate top-level document format in the OpenJD spec for defining reusable
+environments outside a job template. `sqi` parses only `jobtemplate-2023-09`
+documents; environments are supported as they appear embedded in a job
+template (`jobEnvironments`, `stepEnvironments`). The spec does not require an
 implementation to support both template types.
 
 ## Where validation lives
@@ -34,19 +32,18 @@ The pipeline is parse, then validate, then expand:
    pipeline can run with `EnforceLimits: false` (quantitative caps such as range
    size relaxed) while every *structural* correctness check — required fields,
    dependency resolution, extension gating, host-requirement shape — still runs
-   unconditionally. A structural check that only fired under `EnforceLimits: true`
-   would vanish for any caller that flips the flag.
+   unconditionally. A structural check must not depend on `EnforceLimits`.
 3. **`internal/openjd/expand.go`** — turns a validated template's parameter
    spaces into concrete tasks.
 
 A `422 Unprocessable Entity` from `POST /api/v1/jobs` carries a `detail` string
 built from `ValidationErrors.Error()` — one or more `<pointer>: <message>` entries
 joined with `; `. See [`docs/openjd-submission.md`](openjd-submission.md#validation-errors)
-for a real captured example.
+for an example.
 
 ## Supported extensions and the vendor-prefix rule
 
-OpenJD extensions are **opt-in**: a template lists the ones it needs in its
+OpenJD extensions are opt-in: a template lists the ones it needs in its
 top-level `extensions: [...]` array. `sqi` validates that array unconditionally
 (not gated by `EnforceLimits`) against a fixed registry
 (`internal/openjd/extension.go`, `LookupExtension`):
@@ -61,19 +58,17 @@ top-level `extensions: [...]` array. `sqi` validates that array unconditionally
 | `SQI_LOG_CHECKS` | vendor | A step-level block that fails a task on a log pattern (`failOn`) or a missing success line (`requireLine`); enforced by the worker, and jobs declaring it are only given to workers that advertise support. See [`docs/openjd-extensions/sqi-log-checks.md`](openjd-extensions/sqi-log-checks.md). |
 | `SQI_LOG_PROGRESS` | vendor | A step-level block of patterns that turn the step's `onRun` output lines into task progress and status text; applied by the worker but not worker-enforced, so jobs declaring it are not gated on worker support. See [`docs/openjd-extensions/sqi-log-progress.md`](openjd-extensions/sqi-log-progress.md). |
 
-Every **vendor** extension (`Origin: OriginVendor` — one `sqi` defines itself,
-as opposed to one specified upstream by OpenJD) name must carry the `SQI_`
-prefix. A test invariant (`internal/openjd/extension_test.go`) enforces this,
-so a vendor extension name can never collide with a future official OpenJD name,
-which are always bare identifiers (e.g. `TASK_CHUNKING`, not `SQI_TASK_CHUNKING`).
-If a vendor extension is later upstreamed into the OpenJD spec, the promotion
-path is to drop the `SQI_` prefix and flip its `Origin` to `OriginOfficial` — the
-registry entry moves, it doesn't get a second copy.
+The name of every vendor extension (`Origin: OriginVendor`, one `sqi` defines
+itself rather than one specified by OpenJD) must carry the `SQI_` prefix. A
+test invariant (`internal/openjd/extension_test.go`) enforces this, so a vendor
+extension name never collides with an official OpenJD name, which is always a
+bare identifier (e.g. `TASK_CHUNKING`). If a vendor extension is adopted into
+the OpenJD spec, its registry entry drops the `SQI_` prefix and its `Origin`
+becomes `OriginOfficial`; the entry moves rather than gaining a second copy.
 
 Declaring an extension name not present in the registry is a `422` at
 `/extensions/{i}`, regardless of `EnforceLimits`. Declaring `CHUNK[INT]` without
-`TASK_CHUNKING` in `extensions` is likewise rejected — the extension gate and the
-feature it gates are checked together.
+`TASK_CHUNKING` in `extensions` is also rejected.
 
 ## Runtime stdout messages
 
@@ -85,8 +80,8 @@ as throttled snapshots, at most one per 2 s per attempt.
 
 ## What `sqi` does not implement
 
-Standalone `environment-2023-09` templates are out of scope by design. The
-other entry is a known gap, not intended behavior:
+Standalone `environment-2023-09` templates are out of scope. The other entry
+is a known gap:
 
 - **`Job.Name` / `Step.Name` in `hostRequirements` and `parameterSpace`** — a
   known gap against section 7.3.1. `checkStepExpressions` evaluates both of
@@ -106,23 +101,16 @@ other entry is a known gap, not intended behavior:
   String in the Job Template, except the `name` field of the Job Template
   itself". Section 3.6.2 does not authorize the rejection: it governs where
   *`let` names* are visible and is silent on the fixed symbols. No fixture
-  covers this, so it does not show in the scores below. Closing it means
-  splitting `scopeFixed(ScopeJob)` or adding a distinct scope for these two
-  positions, which can change conformance scoring. A submitted `EXPR` template
-  that hits this gap gets a `422`.
+  covers this, so it does not show in the scores below. A submitted `EXPR`
+  template that hits this gap gets a `422`.
 - **Standalone `environment-2023-09` templates** — see [Spec version](#spec-version)
   above.
 
-**Why rejecting an unimplemented opt-in extension is correct, not a gap:**
-OpenJD extensions exist so a template can declare "I need this capability" and
-a conformant implementation that lacks it can say "then I can't run you"
-instead of guessing. Accepting a template whose syntax `sqi` cannot interpret,
-ignoring the parts it doesn't understand, is worse than refusing it: the result
-is a job that appears to submit successfully and then does something other than
-what the template author asked for, discovered only when the render is wrong.
-The spec does not mandate rejection of an unimplemented extension either way;
-`sqi` rejects because a `422` at submission time is a better failure mode than
-a silent misinterpretation at run time.
+**Unimplemented extensions are rejected.** A template declares the extensions
+it needs so that an implementation lacking one can refuse it. Accepting a
+template whose syntax `sqi` cannot interpret would produce a job that submits
+and then does something other than what its author asked. The spec does not
+mandate either behavior; `sqi` answers `422` at submission.
 
 ### EXPR
 
@@ -131,10 +119,10 @@ scope-checked, expression-checked at submission with concrete parameters, and
 resolved on the worker at run time. `EXPR/job_templates` is scored by
 `TestConformance_Templates` through the same `openjd.Parse` +
 `openjd.ValidateWithOptions` path as every other live directory. It scores
-**230 / 233 pass, 3 baselined**.
+230 / 233 pass, 3 baselined.
 
-**The three baselined fixtures are not EXPR failures.** All three are valid
-templates that `sqi` rejects, and all three do it for the same reason:
+The three baselined fixtures are not EXPR failures. All three are valid
+templates that `sqi` rejects for the same reason:
 they declare `FEATURE_BUNDLE_1` — a separate official OpenJD extension
 ([RFC 0004][rfc0004]) `sqi` does not register — and use that extension's `bash:`
 `SimpleAction` in place of `script:`, so each reports both an unsupported
@@ -159,18 +147,18 @@ Two other fixtures pass for a reason narrower than the rule they name; the
 aggregate score cannot show it:
 
 `expr1.3.9--memory-limit-exceeded` (`{{ 'a' * 100000000 }}`) passes, but not
-because section 1.3.9's memory limit rejected it. That limit *is* implemented
+because section 1.3.9's memory limit rejected it. That limit is implemented
 and is operator configuration
 ([`openjd.expr_memory_limit`](configuration.md#openjdexpr_memory_limit),
 default 1,000,000 bytes) but this fixture never reaches it: the expression is
 refused with the same error at the submission defaults and with no limit
 options at all. It passes because `internal/openjd/expr` carries a
-hard, non-configurable safety bound (`limits.go`'s `maxStringBytes`, 10,000,000
+non-configurable safety bound (`limits.go`'s `maxStringBytes`, 10,000,000
 bytes, applied by `checkRepeat`), and that bound rejects the expression.
 String repetition itself is implemented (`ops.go`'s `OpMul` table registers
-`{TString, TInt} -> repeatString`, and `'a' * 3` evaluates to `"aaa"`). This is
-not a section 1.3.9 pass, because a hard per-operation ceiling is not a memory
-budget.
+`{TString, TInt} -> repeatString`, and `'a' * 3` evaluates to `"aaa"`). A
+per-operation ceiling is not a memory budget, so this is not a section 1.3.9
+pass.
 
 `7.3--apply-path-mapping-in-timeout.invalid.yaml` is rejected by `decodeAction`
 (`internal/openjd/parse.go`), which decodes `timeout` with a strict integer
@@ -179,16 +167,15 @@ validation — and therefore before the scope model — runs at all.
 `checkActionExpressions` does carry a timeout position, but it is
 wired-and-unreachable for any real template; see the standing comment above that
 function in `internal/openjd/exprcheck.go`. Its sibling
-`7.3--apply-path-mapping-in-job-name.invalid.yaml` *is* the scope model's doing:
+`7.3--apply-path-mapping-in-job-name.invalid.yaml` is rejected by the scope model:
 `apply_path_mapping` is host-context-only and the job name field is not a host
 context.
 
-Protected-fixture tests. The score is an aggregate, and an aggregate cannot
-see one fixture regressing while another starts passing for an unrelated reason.
-Seven `TestConformance_*Fixtures` tests in
+Protected-fixture tests. An aggregate score cannot show one fixture regressing
+while another starts passing for an unrelated reason. Seven `TestConformance_*Fixtures` tests in
 `test/conformance/suite_test.go` pin fixtures by name against that swap. Each
 entry carries a "why" string naming the rule it depends on, and each test's
-doc comment states how much its entries pin: several are rejection *floors*
+doc comment states how much its entries pin: several are rejection floors
 rather than proofs that a named mechanism still fires, because
 `conformance.Result` blanks `Reason` the moment a fixture passes. The one
 covering `let` bindings also asserts each fixture's exact validation-error text
@@ -199,12 +186,12 @@ by re-running the pipeline on the side.
 This is why the portability claim in `README.md` and `ROADMAP.md` carries a
 caveat. The gaps fall into two classes:
 
-- **Unimplemented extensions**, rejected by name at submission time, as argued
-  above. A template hits this only by opting in explicitly. This is what the
+- **Unimplemented extensions**, rejected by name at submission time, as
+  described above. A template hits this only by opting in explicitly. This is what the
   three baselined `EXPR/job_templates` fixtures are: valid templates turned away
-  because they *also* declare `FEATURE_BUNDLE_1`.
-- **Over-permissiveness** — templates the spec says are *invalid* that `sqi`
-  nonetheless accepts. There are none: every `.invalid` template-validation
+  because they also declare `FEATURE_BUNDLE_1`.
+- **Over-permissiveness**: templates the spec says are invalid that `sqi`
+  accepts. There are none: every `.invalid` template-validation
   fixture in the suite is rejected.
   `test/conformance/baseline.txt` holds only the three under-permissive cases
   above. CI fails if an entry is added for a test that does not fail, or is
@@ -252,15 +239,15 @@ validate, never expand or submit.
 ### A second, independent check on EXPR: the reference-implementation oracle
 
 The fixture suite scores whether `sqi` reaches the right verdict on the
-templates upstream happens to ship. It cannot tell you whether the *evaluator*
-agrees with upstream on an expression no fixture contains, and it cannot catch a
+templates upstream ships. It cannot show whether the evaluator agrees with
+upstream on an expression no fixture contains, and it cannot catch a
 misreading of the spec applied consistently across `sqi`'s own tests.
 
-`make test-expr-oracle` covers that gap by evaluating a corpus with both `sqi`
+`make test-expr-oracle` evaluates a corpus with both `sqi`
 and the implementation the EXPR spec names as its reference, and comparing.
 It supplements this suite and does not replace it. The reference is Beta, so
 the spec outranks it. Setup, the baseline format, and the
-currently accepted divergences are documented in
+accepted divergences are documented in
 [`docs/development.md`](development.md#differential-testing-expr-against-the-reference-implementation).
 
 ## Known divergence: sqi names under the reserved `worker` scope
@@ -270,7 +257,7 @@ after a capability namespace, "for use in this and future revisions" (§3.3.1.1)
 `sqi` validates that: a name under a reserved scope must be one the spec defines,
 so `amount.worker.custom` is rejected.
 
-Four `sqi` names are exempted. This is a divergence from the spec:
+Four `sqi` names are exempted, which diverges from the spec:
 
 | Name | Backs |
 |---|---|
@@ -279,23 +266,22 @@ Four `sqi` names are exempted. This is a divergence from the spec:
 | `attr.worker.computelocation` | [compute locations](compute-locations.md) |
 | `attr.worker.os.version` | OS version matching |
 
-These names are in wide use; enforcing the spec strictly would
-invalidate `sqi`'s own presets. The conformant fix is to move them behind a
-vendor prefix — `sqi:attr.worker.tag.nuke`, which the validator already accepts
-(see [the vendor-prefix rule](#supported-extensions-and-the-vendor-prefix-rule))
-— but that renames a capability every existing template and worker config uses,
-so it is a breaking change. The exemption list lives in
+Enforcing the spec strictly would invalidate `sqi`'s own presets. A conformant
+spelling would put them behind a vendor prefix (`sqi:attr.worker.tag.nuke`,
+which the validator accepts; see
+[the vendor-prefix rule](#supported-extensions-and-the-vendor-prefix-rule)),
+which would rename a capability every template and worker configuration uses.
+The exemption list lives in
 `sqiReservedScopeNames` in `internal/openjd/validate.go`.
 
-## Adding a deliberate divergence
+## Adding a divergence
 
-If `sqi` needs to diverge from strict spec conformance on purpose (for
-example, to offer a non-standard parameter control such as `CHIP_INPUT`), the
+If `sqi` needs to diverge from strict spec conformance (for example, to offer a non-standard parameter control such as `CHIP_INPUT`), the
 route is the extension mechanism above, not a parser change:
 
 1. A registry entry in `internal/openjd/extension.go` naming the divergence,
    e.g. `SQI_UI_CONTROLS`, with `Origin: OriginVendor` (so the `SQI_` prefix is
-   mandatory and enforced by the test invariant).
+   required, as the test invariant enforces).
 2. Parse/validate support in `internal/openjd` gated on that extension being
    declared — the divergent behavior only activates for a template that opts
    in by name.
@@ -336,7 +322,7 @@ Two rules accept templates a stricter reading would reject: the 1024-value cap o
 instead), and an environment's `script` may give `onExit` alone (§3.5: at least
 one of `onEnter` and `onExit`).
 
-## Measured conformance
+## Conformance results
 
 `sqi` runs the official [OpenJD conformance test
 suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests)
@@ -345,12 +331,12 @@ results:
 
 | Suite | Result |
 |---|---|
-| `base/job_templates` | **459 / 459 pass** |
+| `base/job_templates` | 459 / 459 pass |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
-| `TASK_CHUNKING/job_templates` | **12 / 12 pass** |
-| `TASK_CHUNKING/jobs` | **16 / 18 pass, 2 baselined** — see below |
+| `TASK_CHUNKING/job_templates` | 12 / 12 pass |
+| `TASK_CHUNKING/jobs` | 16 / 18 pass, 2 baselined — see below |
 | `REDACTED_ENV_VARS` | no template fixtures — the suite ships only `jobs/` (8 job-execution tests), which are out of scope; see Scope below |
-| `EXPR/job_templates` | **230 / 233 pass, 3 baselined** — see [EXPR](#expr) |
+| `EXPR/job_templates` | 230 / 233 pass, 3 baselined — see [EXPR](#expr) |
 | `EXPR/env_templates` | not applicable — standalone environment templates unsupported (6 tests) |
 | `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (42 tests) |
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
@@ -384,43 +370,32 @@ require a live session runtime and are not run.
 templates at all — every fixture under any `env_templates/` directory,
 `base` included, is rejected on `/specificationVersion: unsupported version
 "environment-2023-09"; expected "jobtemplate-2023-09"`, never on the fixture's
-own encoded defect. Scoring those results would be meaningless: an
-`.invalid` fixture would be "rejected" for the wrong reason and read as a
-pass, the same false-green failure mode described below for unregistered
-extensions, keyed on document kind instead of extension name. So
-`env_templates` fixtures are classified `StateNotApplicable` unconditionally
-(`test/conformance/classify.go`, `Classify`) and are not scored.
+own encoded defect, so an `.invalid` fixture would read as a pass for the
+wrong reason. `env_templates` fixtures are therefore classified
+`StateNotApplicable` unconditionally (`test/conformance/classify.go`,
+`Classify`) and are not scored.
 
-Not-applicable rows: two distinct things land here, both for the same
-underlying reason — scoring them would be meaningless because rejection
-doesn't mean what the fixture is testing:
+Not-applicable rows cover two cases, both fixtures whose rejection says nothing
+about the rule the fixture tests:
 
-- `sqi` rejects templates declaring an extension it has not implemented, on
-  purpose: accepting a template whose syntax it cannot interpret is worse.
-- `sqi` rejects every `env_templates` fixture regardless of extension,
-  because it does not implement the standalone environment document type at
-  all — see above.
+- templates declaring an extension `sqi` does not implement, which it rejects;
+- every `env_templates` fixture, which `sqi` rejects whatever its extensions,
+  because it does not implement the standalone environment document type.
 
-Those fixtures are therefore reported separately and never counted as passes,
-so an unimplemented extension or document kind can never be mistaken for a
-conforming one.
+They are reported separately and never counted as passes.
 
-Known failures are tracked in `test/conformance/baseline.txt`. CI fails both
-when an unlisted test breaks and when a listed test starts passing, so the list
-changes only by an explicit edit.
+Known template failures are listed in `test/conformance/baseline.txt`, and the
+two `TASK_CHUNKING/jobs` divergences in `chunkingJobDivergences`
+(`test/conformance/chunkingjobs_test.go`). CI fails both when an unlisted test
+breaks and when a listed test starts passing.
 
-## Verifying documentation examples against the real parser
+## Checking documentation examples against the parser
 
-Every OpenJD YAML/JSON example in `docs/openjd-submission.md` is verified by
-parsing and validating it — via `openjd.Parse` +
-`openjd.Validate` — not by inspection. `internal/openjd`'s existing
-`TestParse*` suite exercises the parser broadly; when correcting a specific
-documented example, the fastest way to confirm it is a throwaway
-`_test.go` file in `internal/openjd` that parses the exact YAML/JSON block
-verbatim and asserts zero validation errors, run once, then deleted before
-committing; it is not meant to become a permanent regression test. Two details
-a read-through misses: the step-level dependency key is `dependencies:` (a list
-of `{dependsOn: <Name>}`), not a bare `dependsOn:` list of `{stepName: <Name>}`;
-and an explicit-but-empty `hostRequirements: {}` is rejected (only *omitting*
-the key reserves the whole machine), because host-requirement structural
-checks run unconditionally.
+No test parses the examples in `docs/openjd-submission.md`. When you change
+one, check it with `openjd.Parse` and `openjd.Validate`, for example from a
+temporary `_test.go` file in `internal/openjd` that parses the block verbatim
+and asserts zero validation errors. Two details are easy to get wrong: the
+step-level dependency key is `dependencies:` (a list of `{dependsOn: <Name>}`),
+and an explicit but empty `hostRequirements: {}` is rejected (omitting the key
+reserves the whole machine), because host-requirement structural checks run
+unconditionally.

@@ -85,10 +85,10 @@ func assertPausedAt(t *testing.T, p *pause, want string) {
 	}
 }
 
-// TestPGRace_G4_CancelReportsALeaseThatRaced: a lease that lands while a job
+// TestPGRace_CancelReportsALeaseThatRaced: a lease that lands while a job
 // cancel is between reading the tasks it will report and canceling them must
 // either be refused or be reported, so its worker is told to stop.
-func TestPGRace_G4_CancelReportsALeaseThatRaced(t *testing.T) {
+func TestPGRace_CancelReportsALeaseThatRaced(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 1, "w1")
 	var reported []store.Task
@@ -115,14 +115,14 @@ func TestPGRace_G4_CancelReportsALeaseThatRaced(t *testing.T) {
 	}
 }
 
-// TestPGRace_G9_OfflineReclaimsEveryTaskALeaseCommitted races a lease against
+// TestPGRace_OfflineReclaimsEveryTaskALeaseCommitted races a lease against
 // the heartbeat sweep taking its worker offline, in both orders. The worker
 // row's shared lock serializes the two: an offline transition never commits
 // while a lease to its worker is in flight, so it reclaims every task assigned
 // to the worker when it commits. A lease that waits for the transition then
 // lands on the offline worker: the lease refuses only a disabled worker (see
 // "Known gaps" in docs/architecture.md).
-func TestPGRace_G9_OfflineReclaimsEveryTaskALeaseCommitted(t *testing.T) {
+func TestPGRace_OfflineReclaimsEveryTaskALeaseCommitted(t *testing.T) {
 	t.Run("lease first", func(t *testing.T) {
 		st, p := pgRace(t)
 		w := seedWorld(t, st, 1, "w1")
@@ -179,11 +179,11 @@ func TestPGRace_G9_OfflineReclaimsEveryTaskALeaseCommitted(t *testing.T) {
 	})
 }
 
-// TestPGRace_G11_LateReportCannotEndATaskReLeasedMeanwhile: a superseded
+// TestPGRace_LateReportCannotEndATaskReLeasedMeanwhile: a superseded
 // attempt's terminal report, held between its latest-attempt check and its
 // task write, must not end the task under the attempt a concurrent lease
 // creates.
-func TestPGRace_G11_LateReportCannotEndATaskReLeasedMeanwhile(t *testing.T) {
+func TestPGRace_LateReportCannotEndATaskReLeasedMeanwhile(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 1, "w1", "w2")
 	a1 := storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1"))
@@ -374,9 +374,9 @@ func TestPGRace_LeaseRequiringOnlineRefusesAWorkerGoneBeforeItsLock(t *testing.T
 	}
 }
 
-// TestPGRace_G8_NoDemotionUnderALease: the stall sweep must not demote a
+// TestPGRace_NoDemotionUnderALease: the stall sweep must not demote a
 // running job while a lease of one of its tasks is in flight.
-func TestPGRace_G8_NoDemotionUnderALease(t *testing.T) {
+func TestPGRace_NoDemotionUnderALease(t *testing.T) {
 	st, p := pgRace(t)
 	farm, queue := seedFarmQueueRace(t, st)
 	storetest.NewJob("job-g8", farm, queue).As(store.JobStatusRunning).
@@ -406,11 +406,11 @@ func TestPGRace_G8_NoDemotionUnderALease(t *testing.T) {
 	}
 }
 
-// TestPGRace_G12_ReaperAndCompletionDoNotDeadlock: the reaper writes a task
+// TestPGRace_ReaperAndCompletionDoNotDeadlock: the reaper writes a task
 // then its attempt; a completion writes the attempt then the task. Without the
 // reaper taking the job row first they deadlock, and PostgreSQL aborts one,
 // which the store then retries. With it, neither waits on the other's row.
-func TestPGRace_G12_ReaperAndCompletionDoNotDeadlock(t *testing.T) {
+func TestPGRace_ReaperAndCompletionDoNotDeadlock(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 1, "w1")
 	a1 := storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1"))
@@ -440,9 +440,9 @@ func TestPGRace_G12_ReaperAndCompletionDoNotDeadlock(t *testing.T) {
 	}
 }
 
-// TestPGRace_G1_AReportedTaskIsNeverReaped hammers the reaper against running
+// TestPGRace_AReportedTaskIsNeverReaped hammers the reaper against running
 // reports: a task its worker reported running is never returned to ready.
-func TestPGRace_G1_AReportedTaskIsNeverReaped(t *testing.T) {
+func TestPGRace_AReportedTaskIsNeverReaped(t *testing.T) {
 	st := storetest.Postgres(t)
 	for i := range 50 {
 		w := seedWorld(t, st, 1, fmt.Sprintf("w%d", i))
@@ -471,10 +471,10 @@ func TestPGRace_G1_AReportedTaskIsNeverReaped(t *testing.T) {
 	}
 }
 
-// TestPGRace_G3_ReaperReturnsExactlyWhatItReset: under concurrent completions,
+// TestPGRace_ReaperReturnsExactlyWhatItReset: under concurrent completions,
 // every task the reaper returns is one it reset (ready, its attempt failed),
 // and none it returns was completed.
-func TestPGRace_G3_ReaperReturnsExactlyWhatItReset(t *testing.T) {
+func TestPGRace_ReaperReturnsExactlyWhatItReset(t *testing.T) {
 	st := storetest.Postgres(t)
 	w := seedWorld(t, st, 20, "w1")
 	attempts := map[string]store.TaskAttempt{}
@@ -580,9 +580,9 @@ func assertNoTaskWithOfflineWorker(t *testing.T, st store.Store, w world) {
 	}
 }
 
-// TestPGRace_G6_RetentionSparesAJobRetriedMeanwhile: a job revived between the
+// TestPGRace_RetentionSparesAJobRetriedMeanwhile: a job revived between the
 // retention sweep's candidate read and its lock is not purged.
-func TestPGRace_G6_RetentionSparesAJobRetriedMeanwhile(t *testing.T) {
+func TestPGRace_RetentionSparesAJobRetriedMeanwhile(t *testing.T) {
 	st, p := pgRace(t)
 	farm, queue := seedFarmQueueRace(t, st)
 	storetest.NewJob("job-g6", farm, queue).As(store.JobStatusCanceled).
@@ -623,12 +623,12 @@ func TestPGRace_G6_RetentionSparesAJobRetriedMeanwhile(t *testing.T) {
 	}
 }
 
-// TestPGRace_G7_DeleteJobHoldsOffALogThatRaced: a log line appended while a
+// TestPGRace_DeleteJobHoldsOffALogThatRaced: a log line appended while a
 // delete is mid-cascade (its logs cleared, its attempts not yet) waits for the
 // delete, which locked the job's logged tasks, and then fails on its foreign
 // key. The delete commits on its first run: no log row landed mid-cascade, so
 // the cascade's retry backstop is not needed.
-func TestPGRace_G7_DeleteJobHoldsOffALogThatRaced(t *testing.T) {
+func TestPGRace_DeleteJobHoldsOffALogThatRaced(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 1, "w1")
 	a := storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1"))
@@ -647,11 +647,11 @@ func TestPGRace_G7_DeleteJobHoldsOffALogThatRaced(t *testing.T) {
 	}
 }
 
-// TestPGRace_G7_RetentionHoldsOffALogThatRaced: the retention sweep's cascade
+// TestPGRace_RetentionHoldsOffALogThatRaced: the retention sweep's cascade
 // locks the job's logged tasks as DeleteJob's does. A log line appended after
 // it cleared the logs waits for the sweep and fails on its foreign key, and
 // the sweep purges the job on its first run.
-func TestPGRace_G7_RetentionHoldsOffALogThatRaced(t *testing.T) {
+func TestPGRace_RetentionHoldsOffALogThatRaced(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 1, "w1")
 	a := storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1"))
@@ -837,10 +837,10 @@ func idsOf(ds []store.DeletedJob) []string {
 	return out
 }
 
-// TestPGRace_G2_PoolCapHoldsUnderConcurrentLeases: a lease held between its
+// TestPGRace_PoolCapHoldsUnderConcurrentLeases: a lease held between its
 // claim count and its claim insert keeps a second lease from taking the last
 // slot too.
-func TestPGRace_G2_PoolCapHoldsUnderConcurrentLeases(t *testing.T) {
+func TestPGRace_PoolCapHoldsUnderConcurrentLeases(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 2, "w1")
 	pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: "pool-g2", Name: "lic-g2", MaxConcurrent: 1})
@@ -873,10 +873,10 @@ func TestPGRace_G2_PoolCapHoldsUnderConcurrentLeases(t *testing.T) {
 	}
 }
 
-// TestPGRace_G5_RetryAndCancelSerialize: a single-task cancel that arrives
+// TestPGRace_RetryAndCancelSerialize: a single-task cancel that arrives
 // while a retry is reviving the task waits for the retry and then cancels
 // the revived task.
-func TestPGRace_G5_RetryAndCancelSerialize(t *testing.T) {
+func TestPGRace_RetryAndCancelSerialize(t *testing.T) {
 	st, p := pgRace(t)
 	farm, queue := seedFarmQueueRace(t, st)
 	storetest.NewJob("job-g5", farm, queue).As(store.JobStatusFailed).
@@ -914,7 +914,7 @@ func TestPGRace_G5_RetryAndCancelSerialize(t *testing.T) {
 	}
 }
 
-// TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin: deleting the only two
+// TestPGRace_TwoAdminDeletionsLeaveOneAdmin: deleting the only two
 // enabled admins at once refuses one of them.
 //
 // The guard counts the other enabled admins inside the DELETE, and under READ
@@ -925,7 +925,7 @@ func TestPGRace_G5_RetryAndCancelSerialize(t *testing.T) {
 // has counted two admins. Without the admin anchors both deletes then succeed
 // and no admin is left. With them admin-b's delete waits for admin-a's locks,
 // counts one admin and is refused.
-func TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin(t *testing.T) {
+func TestPGRace_TwoAdminDeletionsLeaveOneAdmin(t *testing.T) {
 	st, p := pgRace(t)
 	for _, id := range []string{"admin-a", "admin-b"} {
 		if _, err := st.CreateUser(t.Context(), store.User{ID: id, Username: id, PasswordHash: "x", Role: "admin"}); err != nil {

@@ -75,22 +75,21 @@ updates:
           - minor
           - patch
     ignore:
-      # @vitest/eslint-plugin 1.6.21 regressed its `valid-expect` rule to
-      # false-positive on the valid `expect.any(String)` asymmetric matcher
-      # (web/src/api/client.test.ts), breaking `npm run lint`. Held at 1.6.20
-      # (pinned exactly in web/package.json) until a fixed release supersedes
-      # it, then remove this ignore and restore the caret range.
+      # @vitest/eslint-plugin 1.6.21's `valid-expect` rule reports a false
+      # positive on the valid `expect.any(String)` asymmetric matcher
+      # (web/src/api/client.test.ts), which breaks `npm run lint`, so that
+      # version is skipped.
       - dependency-name: "@vitest/eslint-plugin"
         versions: ["1.6.21"]
 
   # ── Python client (clients/python) ────────────────────────────────────────────
   # Version-update PRs are disabled (open-pull-requests-limit: 0). This entry
-  # exists to scope Dependabot's *security* updates for the Python client and to
-  # ignore `pytest`: pytest's fixed versions (>= 9.0.3) require Python >= 3.10,
-  # but this library still supports Python 3.9 (see pyproject `requires-python`
-  # and the CI test matrix), so no fixed pytest can be installed on the 3.9 leg.
+  # exists to scope Dependabot's security updates for the Python client and to
+  # ignore `pytest`: pytest's patched versions (>= 9.0.3) require Python >= 3.10,
+  # and this library supports Python 3.9 (see pyproject `requires-python` and the
+  # CI test matrix), so no patched pytest can be installed on the 3.9 leg.
   # pytest is a dev/test-only tool that never ships to consumers, so the advisory
-  # is accepted rather than fixed. Remove this ignore if the floor is raised to 3.10+.
+  # is accepted. Remove this ignore if the floor is raised to 3.10+.
   - package-ecosystem: pip
     directory: /clients/python
     schedule:

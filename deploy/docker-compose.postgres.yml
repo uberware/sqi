@@ -15,10 +15,10 @@
 # database role's password and reaches sqi-server as PGPASSWORD, so the DSN
 # below carries no password.
 #
-# Images: no published release includes PostgreSQL support yet (the latest is
-# v0.3.0), so `--build` builds both images from this checkout (the web UI is
-# embedded from web/dist, so run `make build` first for the full UI). Once a
-# release includes it, pin its tag on the two sqi services and drop `--build`.
+# Images: `--build` builds both sqi images from this checkout (the web UI is
+# embedded from web/dist, so run `make build` first for the full UI). To run a
+# published release instead, pin its tag on the two sqi services and drop
+# `--build`.
 #
 # The server creates the schema itself on first start (store.driver: postgres
 # migrates on open). One sqi-server per database: a second one sharing it is

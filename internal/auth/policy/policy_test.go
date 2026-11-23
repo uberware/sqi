@@ -128,19 +128,14 @@ func allPermissionStrings() []string {
 }
 
 // TestAllCoversEveryGrantedPermission fails when a new Permission constant is
-// granted to a role but never added to All — which would silently omit it from
-// every client's PermissionsFor response.
+// granted to a role but never added to All, which would omit it from every
+// client's PermissionsFor response.
 //
-// This iterates policy.Roles(), a read-only view over the package's real
-// (unexported) grants map, rather than the hand-copied `want` mirror above.
-// `want` is itself maintained by hand, so a permission added to grants but
-// never added to `want` — the same slip this test guards against for All —
-// would silently escape a version of this test that iterated `want` instead:
-// that omission was the actual gap (proven by sabotage: a new Permission
-// granted to a role and left out of All still passed every test in this
-// package, because both `want` and `All` were missing it in lockstep).
-// Iterating the real grants map via Roles() means the only way to pass is
-// for All to actually be complete.
+// It iterates policy.Roles(), a read-only view over the package's real
+// (unexported) grants map, rather than the hand-copied `want` mirror above:
+// a permission missing from both `want` and All would pass a version that
+// iterated `want`. Iterating the real grants map means the test passes only
+// when All is complete.
 func TestAllCoversEveryGrantedPermission(t *testing.T) {
 	inAll := make(map[policy.Permission]bool, len(policy.All))
 	for _, p := range policy.All {

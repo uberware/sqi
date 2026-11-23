@@ -43,7 +43,7 @@ readme: |
      numeric order - writes the matches to a BOM-less UTF-8 concat file list
      (a BOM breaks the concat demuxer's parse of the first line), then runs
      `ffmpeg -f concat -safe 0` to copy the streams into `OutputFile` with no
-     re-encode. On success it deletes the slice files it just joined.
+     re-encode.
 
   The join script removes every slice file it listed once the concat
   succeeds. If the join fails, the slice files are left on disk for you to
@@ -163,10 +163,10 @@ template:
               $list = [System.IO.Path]::GetTempFileName()
               try {
                 $lines = $segs | ForEach-Object { "file '" + $_.FullName + "'" }
-                # Encoding is explicit and deliberate: ASCII (Set-Content's implicit
-                # choice) silently mangles non-ASCII slice paths, and -Encoding UTF8
-                # writes a BOM on Windows PowerShell 5.1 that breaks the concat
-                # demuxer's parse of the first "file" line. BOM-less UTF-8 avoids both.
+                # The encoding is explicit: ASCII (Set-Content's default) mangles
+                # non-ASCII slice paths, and -Encoding UTF8 writes a BOM on Windows
+                # PowerShell 5.1 that breaks the concat demuxer's parse of the
+                # first "file" line. BOM-less UTF-8 avoids both.
                 [System.IO.File]::WriteAllLines($list, $lines, (New-Object System.Text.UTF8Encoding $false))
                 ffmpeg -y -f concat -safe 0 -i $list -c copy $out
                 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

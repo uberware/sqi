@@ -17,7 +17,7 @@ broker over NATS; clients interact with the server over HTTP and WebSocket.
 | **WebSocket gateway** | `/api/v1/ws` endpoint for real-time push of job, task, worker, and log events to subscribed clients. |
 | **NATS broker** | The JetStream broker used for work assignment, status reporting, log streaming, and worker heartbeats: in-process by default, or an external NATS server or cluster with `nats.mode: external` (see [Running on an external NATS cluster](../../docs/operations.md#running-on-an-external-nats-cluster)). With broker authentication on, the server answers the broker's auth callout for every worker connection. |
 | **State store** | The database holding all durable state — jobs, tasks, workers, farms, queues, usage pools, and audit log: an embedded SQLite file by default, or PostgreSQL 16 or later with `store.driver: postgres` (see [Running on PostgreSQL](../../docs/operations.md#running-on-postgresql)). |
-| **Web UI host** | Serves the embedded SPA at the root (`/`, with SPA fallback for extensionless paths; the legacy `/ui/*` prefix still resolves) and the OpenAPI spec at `/api/v1/openapi.yaml`. |
+| **Web UI host** | Serves the embedded SPA at the root (`/`, with SPA fallback for extensionless paths and for paths under `/ui/`) and the OpenAPI spec at `/api/v1/openapi.yaml`. |
 | **mDNS responder** | Advertises `_sqi._tcp` on the local network so workers and the CLI can discover the server without manual address configuration. |
 
 ---
@@ -282,7 +282,8 @@ PostgreSQL to SQLite is not supported. Step by step:
 
 ```
 cmd/sqi-server/
-└── main.go            Entry point — wires the cobra command tree, exits.
+├── main.go            Entry point: runs the cobra command tree and exits.
+└── *.go               One file per command group (serve, migrate, backup, restore, tls, nats, ...).
 
 internal/
 ├── bus/               Broker (embedded and external), auth-callout responder, account guard, typed JetStream client, subjects.

@@ -2,7 +2,7 @@
 
 package fake
 
-// Tests for the previously uncovered fake store methods.
+// Tests for fake store methods not covered by the other test files.
 //
 // Covered here:
 //   task.go       — ListReadyTasks, CountActiveTasksInQueue,
@@ -1521,7 +1521,7 @@ func TestFakeStore_DeleteTerminalJobsBefore(t *testing.T) {
 }
 
 // TestFakeStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent
-// mirrors the sqlite retention-purge fix test: a completed upstream older
+// mirrors the sqlstore retention test: a completed upstream older
 // than the cutoff must not be purged while a dependent still waits on it
 // (blocked), since purging it would make the reconciler read a missing
 // upstream and wrongly cancel the dependent despite the upstream having

@@ -37,19 +37,18 @@ func WorkerIDFilePath(dataDir string) string {
 // An error is returned if the directory cannot be created, the file cannot be
 // read or written, or the stored value is not a valid UUID.
 //
-// dataDir is NEVER widened for run-as-user traversal. As the shared ancestor
-// of isolated session working directories it would have to be chmod'd
-// traversable (0711) for isolated tasks to chdir into their own session — Go's
-// forkAndExecInChild sets the child's process credentials BEFORE chdir. That
-// coupling is backwards: worker.id is the worker's persistent,
-// server-correlated identity and must stay private (0700) and byte-for-byte
-// stable, while session scratch is ephemeral and needs to be world-traversable
-// when isolation is in play. So a worker that can isolate (running as root, or
-// on Windows) keeps its session working directories under a separate root,
-// created traversable FROM BIRTH; only a non-root worker, which cannot isolate,
-// keeps them under <dataDir>/sessions (see cmd/sqi-worker's
-// effectiveSessionRoot and session.Manager). dataDir is created 0700 and its
-// mode is never changed afterwards.
+// dataDir is never widened for run-as-user traversal. As the ancestor of
+// isolated session working directories it would have to be traversable (0711)
+// for isolated tasks to chdir into their own session, because Go's
+// forkAndExecInChild sets the child's process credentials before chdir. But
+// worker.id is the worker's persistent, server-correlated identity and must
+// stay private (0700) and unchanged, while session scratch is ephemeral and
+// must be world-traversable when isolation is in use. So a worker that can
+// isolate (running as root, or on Windows) keeps its session working
+// directories under a separate root, created traversable; only a non-root
+// worker, which cannot isolate, keeps them under <dataDir>/sessions (see
+// cmd/sqi-worker's effectiveSessionRoot and session.Manager). dataDir is
+// created 0700 and its mode is never changed afterwards.
 func LoadOrCreateWorkerID(dataDir string) (string, error) {
 	if dataDir == "" {
 		return "", errors.New("worker.data_dir must not be empty")

@@ -18,8 +18,7 @@ import (
 // without this one the whole production path could be severed and the suite
 // would stay green: internal/config would still validate the range at startup,
 // internal/api would still map the error to a 503, and the server would still
-// boot -- with no deadline in force, leaving every EXPR submission an
-// unbounded request on a live route.
+// boot with no deadline in force, leaving every EXPR submission unbounded.
 func TestRouterConfig_CarriesTheSubmissionDeadline(t *testing.T) {
 	const want = 37 * time.Second // non-default, so a stale default cannot pass
 	cfg := DefaultConfig()
@@ -34,8 +33,7 @@ func TestRouterConfig_CarriesTheSubmissionDeadline(t *testing.T) {
 // TestRouterConfig_DefaultCarriesTheConfigDefault pins that a server left alone
 // still hands the handlers a real duration. The zero value is legal at this
 // boundary and means "no backstop", so "the field is populated" is the whole
-// assertion: a hop that silently zeroes it would look identical to one that
-// never existed.
+// assertion.
 func TestRouterConfig_DefaultCarriesTheConfigDefault(t *testing.T) {
 	got := routerConfig(DefaultConfig()).ExprSubmissionDeadline
 	if want := config.DefaultOpenJDExprSubmissionDeadline; got != want {
@@ -51,9 +49,8 @@ func TestRouterConfig_DefaultCarriesTheConfigDefault(t *testing.T) {
 //
 // POST/PUT /api/v1/products validate a client-supplied template without going
 // through the Submitter, so they are the one production path that does not get
-// these limits from it. Dropped here, that route silently falls back to
-// openjd.DefaultExprLimits() — an operator who tightened the knobs would find
-// one of the three template-accepting routes ignoring them.
+// these limits from it. Dropped here, that route falls back to
+// openjd.DefaultExprLimits() and ignores an operator's tightened limits.
 func TestRouterConfig_CarriesTheExprLimits(t *testing.T) {
 	want := openjd.ExprLimits{
 		SubmissionOperations:  4321, // all non-default, so a stale default cannot pass
@@ -80,9 +77,8 @@ func TestRouterConfig_DefaultCarriesTheExprLimitDefaults(t *testing.T) {
 	}
 }
 
-// TestRouterConfig_CarriesTheOtherHTTPSettings guards the extraction itself:
-// this literal moved out of start to become reachable from a test, and the
-// fields that were already there must still arrive.
+// TestRouterConfig_CarriesTheOtherHTTPSettings checks that routerConfig
+// carries the remaining HTTP settings.
 func TestRouterConfig_CarriesTheOtherHTTPSettings(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CORSOrigins = []string{"https://ui.example"}

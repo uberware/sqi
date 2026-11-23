@@ -29,7 +29,7 @@ import (
 )
 
 // logTestWorkerID is the worker whose subject these tests publish log chunks
-// on. handleLogChunk now checks it against the chunk's attempt, so any test
+// on. handleLogChunk checks it against the chunk's attempt, so any test
 // exercising the persist path must open the attempt on this same worker.
 const logTestWorkerID = "worker-1"
 
@@ -542,10 +542,10 @@ func (s *fkEnforcingLogStore) CreateTaskLog(ctx context.Context, log store.TaskL
 
 // TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals pins that a cache hit
 // against an attempt whose row has been deleted out from under it — e.g.
-// DELETE /api/v1/jobs/{id} on an ACTIVE job cancels its tasks and then runs
+// DELETE /api/v1/jobs/{id} on an active job cancels its tasks and then runs
 // DeleteJob, which removes the task_attempts row, while a worker is still
 // publishing chunks for the window before its process notices — does not turn
-// into a NAK loop.
+// into a Nak loop.
 //
 // The first chunk populates the cache. Deleting the job removes the attempt
 // row underneath it, but nothing evicts the cache entry on that path (it is
@@ -601,7 +601,7 @@ func TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals(t *testing.T) {
 		t.Fatal("test setup invariant broken: cache entry should still be present after DeleteJob")
 	}
 
-	// Second chunk: a cache HIT against the now-stale entry. Both identity
+	// Second chunk: a cache hit against the now-stale entry. Both identity
 	// checks pass (they check the cached, historical values), so the write
 	// is attempted and fails with the FK-style error. The store reports that
 	// as ErrConflict, the same error a duplicate chunk gets, and neither is

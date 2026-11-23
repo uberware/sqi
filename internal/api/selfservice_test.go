@@ -237,8 +237,8 @@ func TestUpdateMe(t *testing.T) {
 	})
 
 	// A self-service route that can reach `role` is a privilege-escalation
-	// hole. `role`, `disabled`, and `username` are
-	// absent from the request struct, so a body carrying them must be inert.
+	// hole. `role`, `disabled`, and `username` are absent from the request
+	// struct, so a body carrying them must be inert.
 	t.Run("cannot escalate role, rename, or re-enable the account", func(t *testing.T) {
 		st := fake.New()
 		u := seedAuthUser(t, st, "alice", "pw", "user")
@@ -363,7 +363,7 @@ func TestSelfService_ChangePasswordRejectedForLDAPUser(t *testing.T) {
 	// No session side effects: the guard fires before SetUserPasswordAndEvict-
 	// Sessions or issueSession run, so no cookie should be set. There is no
 	// pre-existing session to check for eviction here (this test never logs
-	// in — the principal is constructed directly via principalFor), so a
+	// in; the principal is constructed directly via principalFor), so a
 	// live-session check would be a no-op; the cookie check is the cheap
 	// signal that issueSession was never reached.
 	if cookies := rr.Result().Cookies(); len(cookies) != 0 {
@@ -442,7 +442,7 @@ func (failingPasswordStore) SetUserPasswordAndEvictSessions(context.Context, str
 // depends on: the success response claims other devices were signed out, so a
 // store failure must surface as an error rather than a 204. Because the write
 // is atomic, a 500 also means the password itself is unchanged and the caller
-// can safely retry.
+// can retry.
 func TestChangePassword_EvictionFailureIsReported(t *testing.T) {
 	base := fake.New()
 	u := seedAuthUser(t, base, "alice", "old-password", "user")

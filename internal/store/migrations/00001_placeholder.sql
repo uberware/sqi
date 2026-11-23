@@ -2,15 +2,13 @@
 -- Initial schema for sqi-server.
 --
 -- Design notes:
---   - All primary keys are TEXT (UUIDs) for portability to PostgreSQL.
---   - JSON columns are TEXT; PostgreSQL migration can promote them to JSONB.
---   - Timestamps are TEXT in ISO 8601 (YYYY-MM-DDTHH:MM:SS.sssZ).
---   - Schema avoids SQLite-specific type affinity quirks to ease a future
---     migration to PostgreSQL.
+--   - All primary keys are TEXT (UUIDs).
+--   - JSON columns are TEXT.
+--   - Timestamps are TEXT in RFC 3339 UTC; 00037 rewrites them to the
+--     fixed 30-character form the store writes.
 --   - OpenJD sessions are not a first-class table. The OpenJD session ID
---     is recorded as session_id on task_attempts for grouping/attribution.
---     A dedicated sessions table should be added when session-reuse scheduling
---     is implemented (see docs/architecture.md, "SQLite schema overview").
+--     is recorded as session_id on task_attempts for grouping/attribution
+--     (see docs/architecture.md, "SQLite schema overview").
 
 -- +goose Up
 

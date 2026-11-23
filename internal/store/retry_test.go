@@ -12,7 +12,7 @@ import (
 // TestRetryTasks_RevivesReadyUnderAReadyStep pins that retrying a failed
 // task while a sibling still runs (so its step is still ready) revives it
 // ready, because nothing will release a pending task in a ready step.
-// Under a terminal step the task is revived pending as before, and the step
+// Under a terminal step the task is revived pending, and the step
 // is reset for ResolveDependencies to release.
 func TestRetryTasks_RevivesReadyUnderAReadyStep(t *testing.T) {
 	for name, st := range newStores(t) {

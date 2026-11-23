@@ -12,8 +12,8 @@
 //   - A request for a path that has no embedded file and carries no file
 //     extension is treated as a client-side route (the front-end router is
 //     root-based: /jobs, /submit, /workers/{id}, …): the shell is returned so the
-//     router can resolve it on the client. The legacy /ui/* prefix is also
-//     honored. This is the SPA fallback.
+//     router can resolve it on the client. Any path under /ui also gets the
+//     shell. This is the SPA fallback.
 //   - A request whose path has a file extension but no embedded file (e.g. a
 //     stale /assets/old.js) returns 404, so missing assets are not masked by the
 //     shell.
@@ -92,21 +92,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// look like ordinary paths (/jobs, /submit, /workers/{id}, …) with no
 	// embedded file. A request that carries no file extension is treated as such
 	// a route and served the shell so deep links and refreshes resolve on the
-	// client. The legacy /ui/* prefix is also honored for backward compatibility.
+	// client. Any path under /ui also gets the shell.
 	//
-	// A path that *does* carry an extension (e.g. /assets/app.js, /favicon.ico)
-	// but has no embedded file is a genuine asset miss and must 404, so a stale
-	// or mistyped asset URL is not silently masked by the HTML shell.
+	// A path that carries an extension (e.g. /assets/app.js, /favicon.ico) but
+	// has no embedded file is an asset miss and must 404, so a stale or
+	// mistyped asset URL is not masked by the HTML shell.
 	//
 	// Because this handler is the root catch-all mounted after the /api/v1
-	// subrouter and the exact /healthz, /readyz, and /metrics routes, it never
-	// sees those paths — unmatched /api/v1/* paths 404 inside the API subrouter.
+	// subrouter and the exact probe and /metrics routes, it never sees those
+	// paths; unmatched /api/v1/* paths 404 inside the API subrouter.
 	if cleaned == uiPrefix || strings.HasPrefix(cleaned, uiPrefix+"/") || path.Ext(cleaned) == "" {
 		h.serveAsset(w, r, indexFile)
 		return
 	}
 
-	// Genuine miss: an asset-looking path (has an extension) with no embedded file.
+	// Miss: an asset-looking path (has an extension) with no embedded file.
 	http.NotFound(w, r)
 }
 

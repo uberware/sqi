@@ -124,15 +124,15 @@ const (
 	KnownMay  = "may"
 )
 
-// KnownViolation is a finding the scenario expects, recorded against a tracker
-// item.
+// KnownViolation is a finding the scenario expects. Tracker names the issue
+// that records it.
 type KnownViolation struct {
 	Check string   `yaml:"check"` // an invariant name, or "rework"
 	Kind  string   `yaml:"kind"`  // "must" (default) or "may"
 	OS    []string `yaml:"os"`    // GOOS values it applies on; empty = every OS
 	// MaxAttempts is a rework entry's ceiling: rework above the scenario's
-	// max_rework_attempts and at or under this is the defect firing, and more
-	// than this fails. Required on a rework entry, an error on any other.
+	// max_rework_attempts and at or under this is the known violation, and
+	// more than this fails. Required on a rework entry, an error on any other.
 	MaxAttempts *int `yaml:"max_attempts,omitempty"`
 	// Match, when set, is an RE2 pattern that scopes the entry to the
 	// violations it matches: a failure is excused only when each of its
@@ -141,7 +141,7 @@ type KnownViolation struct {
 	// count.
 	Match   string `yaml:"match,omitempty"`
 	Reason  string `yaml:"reason"`
-	Tracker string `yaml:"tracker"` // e.g. "H99x"
+	Tracker string `yaml:"tracker"` // the issue that records the violation
 }
 
 // ReworkCheck names the rework budget in a KnownViolation.

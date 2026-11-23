@@ -2,11 +2,10 @@
 
 -- +goose Up
 
--- Moves "disabled" out of workers.status into its own flag. status was both
--- liveness (online/offline, written by registration, deregistration and the
--- heartbeat sweep) and an operator's decision (disabled), so every liveness
--- write had to take care not to overwrite the decision. Now status is liveness
--- only and disabled is written only by the enable/disable endpoints. A
+-- Moves "disabled" out of workers.status into its own flag, so status is
+-- liveness only (online/offline, written by registration, deregistration and
+-- the heartbeat sweep) and disabled, an operator's decision, is written only
+-- by the enable/disable endpoints and no liveness write can overwrite it. A
 -- disabled row becomes online: the heartbeat sweep takes it offline, and
 -- reclaims anything it holds, if its heartbeat is stale.
 ALTER TABLE workers ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0;

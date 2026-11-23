@@ -51,6 +51,12 @@ A fully commented example file is at
 
 Duration values use Go syntax: `30s`, `1m30s`, `500ms`, `2h`, etc.
 
+A setting whose table has a **Since** row first appears in that release; the
+others are available in every release. The [quick reference
+table](#quick-reference-table) has the same column. Compare it with
+`sqi-worker version` before using the setting: v0.3.0 does not check for
+unknown keys and ignores a newer one without a warning.
+
 ---
 
 ## `nats` — Remote NATS connection
@@ -127,6 +133,7 @@ Path to the client TLS private key (PEM-encoded). Must be set together with
 | **Type** | `string` — `"auto"`, `"true"` or `"false"` |
 | **Default** | `"auto"` |
 | **Env var** | `SQI_WORKER_NATS_TLS_ENABLED` |
+| **Since** | v0.4.0 |
 
 Whether to use TLS on the broker connection. Three-valued, like the server's
 [`auth.session.cookie_secure`](configuration.md#authsessioncookie_secure):
@@ -252,6 +259,7 @@ nats:
 | **Type** | `string` |
 | **Default** | `""` (resolves to `<worker.data_dir>/worker.nk`) |
 | **Env var** | `SQI_WORKER_NATS_CREDENTIAL_FILE` |
+| **Since** | v0.4.0 |
 
 Path to this worker's nkey seed file, which it presents to authenticate to the
 broker. Empty resolves to `<worker.data_dir>/worker.nk`. A worker presents the
@@ -283,6 +291,7 @@ nats:
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_WORKER_NATS_JOIN_TOKEN` |
+| **Since** | v0.4.0 |
 
 A worker enrollment token, used once on first start to obtain a credential
 and ignored once `nats.credential_file` exists. Prefer
@@ -303,6 +312,7 @@ nats:
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_WORKER_NATS_JOIN_TOKEN_FILE` |
+| **Since** | v0.4.0 |
 
 Path to a file containing a join token. Takes precedence over
 [`nats.join_token`](#natsjoin_token).
@@ -321,6 +331,7 @@ nats:
 | **Type** | `string` |
 | **Default** | `""` |
 | **Env var** | `SQI_WORKER_NATS_SERVER_URL` |
+| **Since** | v0.4.0 |
 
 `sqi-server` HTTP base URL used for enrollment, e.g.
 `"http://sqi-server.example:8080"`. Enrollment runs over REST because the
@@ -351,6 +362,7 @@ nats:
 | **Type** | `string` |
 | **Default** | `""` (use system CA pool) |
 | **Env var** | `SQI_WORKER_NATS_SERVER_TLS_CA_FILE` |
+| **Since** | v0.4.0 |
 
 Path to the CA certificate that verifies `sqi-server`'s HTTPS certificate at
 [`nats.server_url`](#natsserver_url), for enrollment.
@@ -379,6 +391,7 @@ nats:
 | **Type** | `bool` |
 | **Default** | `false` |
 | **Env var** | `SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY` |
+| **Since** | v0.4.0 |
 
 Skip verification of `sqi-server`'s HTTPS certificate during enrollment.
 Development only: it accepts any certificate, so the enrollment request and
@@ -612,7 +625,8 @@ bare tag (`gpu`) or a `key=value` pair (`maya=false`), and it overrides any
 auto-detected tag with the same key. A bare tag means `true`, the value a
 detector gives its tags, so a job requirement such as `attr.worker.tag.gpu`
 with `anyOf: ["true"]` matches it. `key=` clears a tag to an empty value,
-which no requirement matches.
+which no requirement matches. A bare tag means `true` since v0.4.0; on v0.3.0
+it registers with an empty value, so write `gpu=true` there.
 
 ```yaml
 worker:
@@ -639,6 +653,7 @@ reference including auto-detected tags.
 | **Type** | map of command name → `{path, args}` |
 | **Default** | `{}` (none) |
 | **Env var** | none (config file only) |
+| **Since** | v0.4.0 |
 
 Says where a command a job runs really lives. A job template names the program
 it runs (`nuke`, `blender`); this table maps that name to the executable to
@@ -651,9 +666,11 @@ Windows is `Nuke17.1.exe`, never `nuke`). Without an entry the worker looks the
 name up on its own `PATH`.
 
 An entry is the first thing consulted. After it, a command of the same name
-already on `PATH` is used as is, and only if there is neither does a detector's
-default apply: the Nuke built-in supplies one from the newest install it finds,
-with no arguments, while the Silhouette built-in adds `-nogui` to `sfxcmd` on Linux (see [Detected commands](worker-capabilities.md#detected-commands)).
+already on `PATH` is used, and only if there is neither does a detector's
+install path apply: the Nuke built-in supplies the newest install it finds. A
+detector can also add arguments the application requires, however the command
+was found: the Silhouette built-in adds `-nogui` to `sfxcmd` on Linux, from
+`PATH` too (see [Detected commands](worker-capabilities.md#detected-commands)).
 `sqi-worker capabilities` prints what each command resolves to and why.
 
 ```yaml
@@ -801,6 +818,7 @@ worker:
 | **Type** | `string` |
 | **Default** | `""` (joins no group) |
 | **Env var** | `SQI_WORKER_CAPACITY_GROUP` |
+| **Since** | v0.4.0 |
 
 The capacity group this worker asks to join when it registers. The server
 honors it only with broker authentication off, and only for a sized group in
@@ -825,6 +843,7 @@ worker:
 | **Type** | `string` |
 | **Default** | `"none"` |
 | **Env var** | `SQI_WORKER_PREEMPTION_WATCH` |
+| **Since** | v0.4.0 |
 
 Watch the cloud provider's instance metadata service for a notice that this
 spot or preemptible machine is about to be reclaimed. One of `none`, `aws`,
@@ -861,6 +880,7 @@ worker:
 | **Type** | `duration` |
 | **Default** | `"5s"` |
 | **Env var** | `SQI_WORKER_PREEMPTION_POLL_INTERVAL` |
+| **Since** | v0.4.0 |
 
 How often the metadata service is polled. Must be between `1s` and `60s`;
 providers give from 30 s (Azure) to 2 minutes (AWS) of warning.
@@ -874,6 +894,7 @@ providers give from 30 s (Azure) to 2 minutes (AWS) of warning.
 | **Type** | `string` |
 | **Default** | `""` (the provider's well-known address) |
 | **Env var** | `SQI_WORKER_PREEMPTION_ENDPOINT` |
+| **Since** | v0.4.0 |
 
 Replaces the metadata base URL, for a proxy or a test. This is the only way to
 send the polls through a proxy: the environment's `HTTP_PROXY` is not used.
@@ -888,6 +909,7 @@ Ignored with `watch: none`.
 | **Type** | `string` |
 | **Default** | `"none"` |
 | **Env var** | `SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE` |
+| **Since** | v0.4.0 |
 
 Read this machine's cloud instance ID from the provider's metadata service once
 at startup, and report it when the worker registers. One of `none`, `aws`, `gcp`
@@ -931,6 +953,7 @@ worker:
 | **Type** | `string` |
 | **Default** | `""` (the provider's well-known address) |
 | **Env var** | `SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT` |
+| **Since** | v0.4.0 |
 
 Replaces the metadata base URL, for a proxy or a test. Ignored with
 `source: none`.
@@ -944,6 +967,7 @@ Replaces the metadata base URL, for a proxy or a test. Ignored with
 | **Type** | `bool` |
 | **Default** | `false` |
 | **Env var** | `SQI_WORKER_POWER_ALLOW_REMOTE_SLEEP` |
+| **Since** | v0.4.0 |
 
 Let `sqi-server` order this machine to sleep or shut down when it retires the
 worker from a capacity group. With `false` both are refused. Either is refused
@@ -980,6 +1004,7 @@ worker:
 | **Type** | `[]string` (program, then arguments; no shell) |
 | **Default** | `[]` (the platform's own command) |
 | **Env var** | none; config file only |
+| **Since** | v0.4.0 |
 
 The commands that suspend and power off the machine. Empty uses `systemctl
 suspend` / `systemctl poweroff` on Linux, `pmset sleepnow` / `shutdown -h now`
@@ -1042,7 +1067,7 @@ worker:
 | **Default** | `"2s"` |
 | **Env var** | `SQI_WORKER_PULL_IDLE_BACKOFF` |
 
-> **Deprecated.** Accepted by the config loader but has no effect (a negative
+> Deprecated. Accepted by the config loader but has no effect (a negative
 > value still fails validation). The server holds an unfulfilled lease
 > request for up to 30 s and the worker re-issues it on return, so there is
 > no polling loop to throttle.
@@ -1057,7 +1082,7 @@ worker:
 | **Default** | `"5s"` |
 | **Env var** | `SQI_WORKER_PULL_NACK_DELAY` |
 
-> **Deprecated.** Accepted by the config loader but has no effect (a negative
+> Deprecated. Accepted by the config loader but has no effect (a negative
 > value still fails validation). The server checks eligibility before
 > leasing a task, and the worker runs what it is given.
 
@@ -1075,7 +1100,7 @@ queue is configured for isolation, this section has no effect.
 
 > Enabling this raises the worker daemon's own privilege. On POSIX, sqi
 > switches to another user with `setuid`/`setgid`/`setgroups`, which requires
-> the daemon to run as root: `isolation.Provider.Capable()` fails unless the
+> the daemon to run as root: the worker's isolation check fails unless the
 > effective uid is 0. A worker that otherwise runs unprivileged needs root so
 > that its tasks can run without it.
 
@@ -1166,10 +1191,10 @@ The worker must run as a service under LocalSystem, or as an account
 granted `SeAssignPrimaryTokenPrivilege`. Windows requires that privilege to
 start a process under another account's token, and an elevated Administrator
 does not hold it by default. A missing privilege is the most common cause
-of `isolation: worker cannot assume another OS identity` on Windows;
-`Capable()` reports it at boot and names the fix.
+of `isolation: worker cannot assume another OS identity` on Windows; the
+worker reports it at boot and names the fix.
 
-`Capable()` also requires `SeIncreaseQuotaPrivilege` (needed by
+The boot check also requires `SeIncreaseQuotaPrivilege` (needed by
 `CreateProcessAsUser`), and loading the target account's profile needs
 `SeBackupPrivilege` and `SeRestorePrivilege`. LocalSystem holds all four. An
 account you install the service under with `sqi-worker service install --user …`
@@ -1268,7 +1293,7 @@ period has passed (30 seconds when the action names none; 120 for a task's
 
 ### Privileged accounts and groups are refused outright
 
-`isolation.Provider.Resolve` refuses these requests:
+The worker refuses these requests:
 
 - A `run_as_user` naming a known-privileged account (`root`, `Administrator`,
   `SYSTEM`, ...) or resolving to uid 0, whatever its name.
@@ -1345,10 +1370,11 @@ with a server limit that meters the same values at submission:
 | `expr.assignment_retained_bytes` | `openjd.expr_template_retained_bytes` |
 | `expr.let_retained_bytes` | `openjd.expr_template_retained_bytes` |
 
-The last row compares a per-table limit with a template-wide one,
-because the server has no per-table limit. A template's total retained bytes
-bounds any one of its tables, so the comparison errs toward withholding work;
-see [`expr.let_retained_bytes`](#exprlet_retained_bytes).
+The last row compares a per-table limit with a template-wide one, because the
+server has no per-table limit. The server counts only what `let:` bindings
+retain, while this worker counts the whole table, parameters included, so
+passing that comparison does not guarantee a table fits; see
+[`expr.let_retained_bytes`](#exprlet_retained_bytes).
 
 The worker advertises all five when it registers, and the server does not
 dispatch EXPR jobs to it while any of them is lower than the server's
@@ -1365,7 +1391,7 @@ can cost more here than at submission, and an accepted job can still exceed
 this worker's limits. That is why the operation and memory defaults are well
 above the server's.
 
-**Raise worker limits before server limits.** Two defaults equal the server's:
+Raise worker limits before server limits. Two defaults equal the server's:
 `expr.assignment_positions` (10,000) matches `openjd.expr_template_positions`,
 and `expr.let_retained_bytes` (10,000,000) matches
 `openjd.expr_template_retained_bytes`. Raising either server key at all
@@ -1451,7 +1477,7 @@ environment the session enters. Only environment entry is charged: teardown
 is exempt, so an exhausted budget never skips an `onExit` action such as a
 license check-in or an unmount.
 
-**Must not be lower than the server's `openjd.expr_template_positions`;**
+Must not be lower than the server's `openjd.expr_template_positions`:
 the server withholds EXPR work from a worker that is (caveat 1). The floor of
 2,000 covers a large session of one task action plus 50 entered environments.
 
@@ -1650,17 +1676,15 @@ not log the one-time warning described under `staging.defaults`.
 >   will not copy a file that may alias content beyond scratch`
 >
 > The stage-out message gives the path relative to the scratch directory. A
-> hardlink shares its inode with the original file, so chowning the staged
-> copy to the run-as-user account would chown the original too. Inputs
+> file with a second hardlink may be another name for a file outside the
+> staged tree, and the worker reads it with its own privileges, so it is
+> refused as a symlink would be. Inputs
 > delivered by a content-addressed or deduplicating asset store, or by
 > `cp -al` / `rsync --link-dest`, are multiply linked and will be refused.
 > Deliver them with a real copy (`rsync -a` without `--link-dest`, `cp`
 > without `-l`) or configure a `sync_command` that makes one.
 >
-> This concerns input files that already have extra links. The next note
-> concerns a `sync_command` that creates them.
->
-> A `sync_command` must not create hardlinks into scratch when run-as-user
+> Separately, a `sync_command` must not create hardlinks into scratch when run-as-user
 > isolation is in use (e.g. `cp -al` or `rsync --link-dest`). Chowning the
 > scratch copy to the run-as-user account would chown the original file too.
 > `rsync -a` without `--link-dest` and the built-in copy are both safe: they
@@ -1723,7 +1747,7 @@ staging:
 |---|---|
 | **Type** | `bool` |
 | **Default** | `true` |
-| **Env var** | `SQI_DIAGNOSTICS_ENABLED` (note: no `WORKER` infix) |
+| **Env var** | `SQI_DIAGNOSTICS_ENABLED` (no `WORKER` infix) |
 
 When enabled (the default), the worker publishes its own `slog` output on the
 core-NATS subject `worker.diag.<workerID>`, which the server keeps in its
@@ -1793,6 +1817,7 @@ log:
 | **Default** | `""` (log to stderr) |
 | **Env var** | `SQI_WORKER_LOG_FILE` |
 | **CLI flag** | — |
+| **Since** | v0.4.0 |
 
 Path of a file to write log output to instead of stderr, rotated by size (see
 `log.max_size_mb` and `log.max_backups`). Relative paths resolve against the
@@ -1823,6 +1848,7 @@ log:
 | **Default** | `100` |
 | **Env var** | `SQI_WORKER_LOG_MAX_SIZE_MB` |
 | **CLI flag** | — |
+| **Since** | v0.4.0 |
 
 Size in megabytes at which `log.file` is rotated. Must be `> 0`. Has no effect
 while `log.file` is empty and the worker is not running as a Windows service.
@@ -1842,6 +1868,7 @@ log:
 | **Default** | `5` |
 | **Env var** | `SQI_WORKER_LOG_MAX_BACKUPS` |
 | **CLI flag** | — |
+| **Since** | v0.4.0 |
 
 How many rotated files (`<file>.1` through `<file>.N`) are kept. `0` keeps
 none: the file is discarded and started fresh when it reaches
@@ -1900,6 +1927,7 @@ metrics:
 | **Type** | `bool` |
 | **Default** | `false` |
 | **Env var** | `SQI_WORKER_METRICS_TLS_ENABLED` |
+| **Since** | v0.4.0 |
 
 Serve HTTPS on `metrics.addr`. As with the server's listeners, the same port
 switches to TLS and no plaintext port remains.
@@ -2049,74 +2077,74 @@ log_streamer:
 
 ## Quick reference table
 
-| Key | Type | Default | Env var | CLI flag |
-|---|---|---|---|---|
-| `nats.url` | string | `""` | `SQI_WORKER_NATS_URL` | — |
-| `nats.tls_enabled` | string | `auto` | `SQI_WORKER_NATS_TLS_ENABLED` | — |
-| `nats.tls_cert_file` | string | `""` | `SQI_WORKER_NATS_TLS_CERT_FILE` | — |
-| `nats.tls_key_file` | string | `""` | `SQI_WORKER_NATS_TLS_KEY_FILE` | — |
-| `nats.tls_ca_file` | string | `""` | `SQI_WORKER_NATS_TLS_CA_FILE` | — |
-| `nats.insecure_skip_verify` | bool | `false` | `SQI_WORKER_NATS_INSECURE_SKIP_VERIFY` | `--nats-insecure-skip-verify` |
-| `nats.max_reconnect_attempts` | int | `-1` | `SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS` | — |
-| `nats.reconnect_wait` | duration | `2s` | `SQI_WORKER_NATS_RECONNECT_WAIT` | — |
-| `nats.credential_file` | string | `""` (`<worker.data_dir>/worker.nk`) | `SQI_WORKER_NATS_CREDENTIAL_FILE` | — |
-| `nats.join_token` | string | `""` | `SQI_WORKER_NATS_JOIN_TOKEN` | — |
-| `nats.join_token_file` | string | `""` | `SQI_WORKER_NATS_JOIN_TOKEN_FILE` | — |
-| `nats.server_url` | string | `""` | `SQI_WORKER_NATS_SERVER_URL` | — |
-| `nats.server_tls_ca_file` | string | `""` | `SQI_WORKER_NATS_SERVER_TLS_CA_FILE` | — |
-| `nats.server_tls_insecure_skip_verify` | bool | `false` | `SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY` | — |
-| `worker.name` | string | hostname | `SQI_WORKER_NAME` | — |
-| `worker.farm_id` | string | `""` | `SQI_WORKER_FARM_ID` | — |
-| `worker.data_dir` | string | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows); `/var/lib/sqi-worker` with no home directory | `SQI_WORKER_DATA_DIR` | — |
-| `worker.session_dir` | string | `""` → resolved at startup | `SQI_WORKER_SESSION_DIR` | — |
-| `worker.compute_location` | string | `""` | `SQI_WORKER_COMPUTE_LOCATION` | — |
-| `worker.capability_tags` | []string | `[]` | `SQI_WORKER_CAPABILITY_TAGS` | — |
-| `worker.commands` | map | `{}` | — (config file only) | — |
-| `worker.heartbeat_interval` | duration | `15s` | `SQI_WORKER_HEARTBEAT_INTERVAL` | — |
-| `worker.shutdown_grace_period` | duration | `30s` | `SQI_WORKER_SHUTDOWN_GRACE_PERIOD` | — |
-| `worker.allow_root` | bool | `false` | `SQI_WORKER_ALLOW_ROOT` | — |
-| `worker.keep_failed_sessions` | bool | `false` | `SQI_WORKER_KEEP_FAILED_SESSIONS` | — |
-| `worker.capacity_group` | string | `""` | `SQI_WORKER_CAPACITY_GROUP` | — |
-| `worker.preemption.watch` | string | `none` | `SQI_WORKER_PREEMPTION_WATCH` | — |
-| `worker.preemption.poll_interval` | duration | `5s` | `SQI_WORKER_PREEMPTION_POLL_INTERVAL` | — |
-| `worker.preemption.endpoint` | string | `""` | `SQI_WORKER_PREEMPTION_ENDPOINT` | — |
-| `worker.cloud_instance_id.source` | string | `none` | `SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE` | — |
-| `worker.cloud_instance_id.endpoint` | string | `""` | `SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT` | — |
-| `worker.power.allow_remote_sleep` | bool | `false` | `SQI_WORKER_POWER_ALLOW_REMOTE_SLEEP` | — |
-| `worker.power.sleep_command` | []string | `[]` | — | — |
-| `worker.power.shutdown_command` | []string | `[]` | — | — |
-| `worker.queue_ids` | []string | `[]` | `SQI_WORKER_QUEUE_IDS` | — |
-| `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — (deprecated, no effect) |
-| `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — (deprecated, no effect) |
-| `isolation.required` | bool | `false` | `SQI_WORKER_ISOLATION_REQUIRED` | — |
-| `isolation.provider` | string | `logon_user` | `SQI_WORKER_ISOLATION_PROVIDER` | — |
-| `isolation.env_passthrough` | []string | `[]` | `SQI_WORKER_ISOLATION_ENV_PASSTHROUGH` | — |
-| `expr.operation_limit` | int | `1000000` | `SQI_WORKER_EXPR_OPERATION_LIMIT` | — |
-| `expr.memory_limit` | int | `20000000` | `SQI_WORKER_EXPR_MEMORY_LIMIT` | — |
-| `expr.assignment_positions` | int | `10000` | `SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS` | — |
-| `expr.assignment_retained_bytes` | int | `20000000` | `SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES` | — |
-| `expr.let_retained_bytes` | int | `10000000` | `SQI_WORKER_EXPR_LET_RETAINED_BYTES` | — |
-| `capabilities.detect` | `[]Detector` | `[]` | — (config file only) | — |
-| `capabilities.disable` | `[]string` | `[]` | `SQI_WORKER_CAPABILITIES_DISABLE` | — |
-| `staging.scratch_dir` | string | `""` | — (config file only) | — |
-| `staging.sync_command` | string | `""` | — (config file only) | — |
-| `staging.defaults` | bool | `true` | `SQI_STAGING_DEFAULTS` | — |
-| `diagnostics.enabled` | bool | `true` | `SQI_DIAGNOSTICS_ENABLED` | — |
-| `log.level` | string | `info` | `SQI_WORKER_LOG_LEVEL` | `--log-level` |
-| `log.format` | string | `json` | `SQI_WORKER_LOG_FORMAT` | `--log-format` |
-| `log.file` | string | `""` | `SQI_WORKER_LOG_FILE` | — |
-| `log.max_size_mb` | int | `100` | `SQI_WORKER_LOG_MAX_SIZE_MB` | — |
-| `log.max_backups` | int | `5` | `SQI_WORKER_LOG_MAX_BACKUPS` | — |
-| `metrics.addr` | string | `127.0.0.1:9091` | `SQI_WORKER_METRICS_ADDR` | — |
-| `metrics.tls.enabled` | bool | `false` | `SQI_WORKER_METRICS_TLS_ENABLED` | — |
-| `metrics.tls.cert_file` | string | `""` | `SQI_WORKER_METRICS_TLS_CERT_FILE` | — |
-| `metrics.tls.key_file` | string | `""` | `SQI_WORKER_METRICS_TLS_KEY_FILE` | — |
-| `metrics.enable_pprof` | bool | `false` | `SQI_WORKER_METRICS_ENABLE_PPROF` | — |
-| `discovery.enable_mdns` | bool | `true` | `SQI_WORKER_DISCOVERY_ENABLE_MDNS` | — |
-| `discovery.mdns_timeout` | duration | `5s` | `SQI_WORKER_DISCOVERY_MDNS_TIMEOUT` | — |
-| `log_streamer.max_lines_per_chunk` | int | `50` | `SQI_WORKER_LOG_STREAMER_MAX_LINES_PER_CHUNK` | — |
-| `log_streamer.max_bytes_per_chunk` | int | `16384` | `SQI_WORKER_LOG_STREAMER_MAX_BYTES_PER_CHUNK` | — |
-| `log_streamer.flush_interval` | duration | `500ms` | `SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL` | — |
+| Key | Type | Default | Env var | CLI flag | Since |
+|---|---|---|---|---|---|
+| `nats.url` | string | `""` | `SQI_WORKER_NATS_URL` | — | |
+| `nats.tls_enabled` | string | `auto` | `SQI_WORKER_NATS_TLS_ENABLED` | — | v0.4.0 |
+| `nats.tls_cert_file` | string | `""` | `SQI_WORKER_NATS_TLS_CERT_FILE` | — | |
+| `nats.tls_key_file` | string | `""` | `SQI_WORKER_NATS_TLS_KEY_FILE` | — | |
+| `nats.tls_ca_file` | string | `""` | `SQI_WORKER_NATS_TLS_CA_FILE` | — | |
+| `nats.insecure_skip_verify` | bool | `false` | `SQI_WORKER_NATS_INSECURE_SKIP_VERIFY` | `--nats-insecure-skip-verify` | |
+| `nats.max_reconnect_attempts` | int | `-1` | `SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS` | — | |
+| `nats.reconnect_wait` | duration | `2s` | `SQI_WORKER_NATS_RECONNECT_WAIT` | — | |
+| `nats.credential_file` | string | `""` (`<worker.data_dir>/worker.nk`) | `SQI_WORKER_NATS_CREDENTIAL_FILE` | — | v0.4.0 |
+| `nats.join_token` | string | `""` | `SQI_WORKER_NATS_JOIN_TOKEN` | — | v0.4.0 |
+| `nats.join_token_file` | string | `""` | `SQI_WORKER_NATS_JOIN_TOKEN_FILE` | — | v0.4.0 |
+| `nats.server_url` | string | `""` | `SQI_WORKER_NATS_SERVER_URL` | — | v0.4.0 |
+| `nats.server_tls_ca_file` | string | `""` | `SQI_WORKER_NATS_SERVER_TLS_CA_FILE` | — | v0.4.0 |
+| `nats.server_tls_insecure_skip_verify` | bool | `false` | `SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY` | — | v0.4.0 |
+| `worker.name` | string | hostname | `SQI_WORKER_NAME` | — | |
+| `worker.farm_id` | string | `""` | `SQI_WORKER_FARM_ID` | — | |
+| `worker.data_dir` | string | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows); `/var/lib/sqi-worker` with no home directory | `SQI_WORKER_DATA_DIR` | — | |
+| `worker.session_dir` | string | `""` → resolved at startup | `SQI_WORKER_SESSION_DIR` | — | |
+| `worker.compute_location` | string | `""` | `SQI_WORKER_COMPUTE_LOCATION` | — | |
+| `worker.capability_tags` | []string | `[]` | `SQI_WORKER_CAPABILITY_TAGS` | — | |
+| `worker.commands` | map | `{}` | — (config file only) | — | v0.4.0 |
+| `worker.heartbeat_interval` | duration | `15s` | `SQI_WORKER_HEARTBEAT_INTERVAL` | — | |
+| `worker.shutdown_grace_period` | duration | `30s` | `SQI_WORKER_SHUTDOWN_GRACE_PERIOD` | — | |
+| `worker.allow_root` | bool | `false` | `SQI_WORKER_ALLOW_ROOT` | — | |
+| `worker.keep_failed_sessions` | bool | `false` | `SQI_WORKER_KEEP_FAILED_SESSIONS` | — | |
+| `worker.capacity_group` | string | `""` | `SQI_WORKER_CAPACITY_GROUP` | — | v0.4.0 |
+| `worker.preemption.watch` | string | `none` | `SQI_WORKER_PREEMPTION_WATCH` | — | v0.4.0 |
+| `worker.preemption.poll_interval` | duration | `5s` | `SQI_WORKER_PREEMPTION_POLL_INTERVAL` | — | v0.4.0 |
+| `worker.preemption.endpoint` | string | `""` | `SQI_WORKER_PREEMPTION_ENDPOINT` | — | v0.4.0 |
+| `worker.cloud_instance_id.source` | string | `none` | `SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE` | — | v0.4.0 |
+| `worker.cloud_instance_id.endpoint` | string | `""` | `SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT` | — | v0.4.0 |
+| `worker.power.allow_remote_sleep` | bool | `false` | `SQI_WORKER_POWER_ALLOW_REMOTE_SLEEP` | — | v0.4.0 |
+| `worker.power.sleep_command` | []string | `[]` | — | — | v0.4.0 |
+| `worker.power.shutdown_command` | []string | `[]` | — | — | v0.4.0 |
+| `worker.queue_ids` | []string | `[]` | `SQI_WORKER_QUEUE_IDS` | — | |
+| `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — (deprecated, no effect) | |
+| `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — (deprecated, no effect) | |
+| `isolation.required` | bool | `false` | `SQI_WORKER_ISOLATION_REQUIRED` | — | |
+| `isolation.provider` | string | `logon_user` | `SQI_WORKER_ISOLATION_PROVIDER` | — | |
+| `isolation.env_passthrough` | []string | `[]` | `SQI_WORKER_ISOLATION_ENV_PASSTHROUGH` | — | |
+| `expr.operation_limit` | int | `1000000` | `SQI_WORKER_EXPR_OPERATION_LIMIT` | — | |
+| `expr.memory_limit` | int | `20000000` | `SQI_WORKER_EXPR_MEMORY_LIMIT` | — | |
+| `expr.assignment_positions` | int | `10000` | `SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS` | — | |
+| `expr.assignment_retained_bytes` | int | `20000000` | `SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES` | — | |
+| `expr.let_retained_bytes` | int | `10000000` | `SQI_WORKER_EXPR_LET_RETAINED_BYTES` | — | |
+| `capabilities.detect` | `[]Detector` | `[]` | — (config file only) | — | |
+| `capabilities.disable` | `[]string` | `[]` | `SQI_WORKER_CAPABILITIES_DISABLE` | — | |
+| `staging.scratch_dir` | string | `""` | — (config file only) | — | |
+| `staging.sync_command` | string | `""` | — (config file only) | — | |
+| `staging.defaults` | bool | `true` | `SQI_STAGING_DEFAULTS` | — | |
+| `diagnostics.enabled` | bool | `true` | `SQI_DIAGNOSTICS_ENABLED` | — | |
+| `log.level` | string | `info` | `SQI_WORKER_LOG_LEVEL` | `--log-level` | |
+| `log.format` | string | `json` | `SQI_WORKER_LOG_FORMAT` | `--log-format` | |
+| `log.file` | string | `""` | `SQI_WORKER_LOG_FILE` | — | v0.4.0 |
+| `log.max_size_mb` | int | `100` | `SQI_WORKER_LOG_MAX_SIZE_MB` | — | v0.4.0 |
+| `log.max_backups` | int | `5` | `SQI_WORKER_LOG_MAX_BACKUPS` | — | v0.4.0 |
+| `metrics.addr` | string | `127.0.0.1:9091` | `SQI_WORKER_METRICS_ADDR` | — | |
+| `metrics.tls.enabled` | bool | `false` | `SQI_WORKER_METRICS_TLS_ENABLED` | — | v0.4.0 |
+| `metrics.tls.cert_file` | string | `""` | `SQI_WORKER_METRICS_TLS_CERT_FILE` | — | v0.4.0 |
+| `metrics.tls.key_file` | string | `""` | `SQI_WORKER_METRICS_TLS_KEY_FILE` | — | v0.4.0 |
+| `metrics.enable_pprof` | bool | `false` | `SQI_WORKER_METRICS_ENABLE_PPROF` | — | |
+| `discovery.enable_mdns` | bool | `true` | `SQI_WORKER_DISCOVERY_ENABLE_MDNS` | — | |
+| `discovery.mdns_timeout` | duration | `5s` | `SQI_WORKER_DISCOVERY_MDNS_TIMEOUT` | — | |
+| `log_streamer.max_lines_per_chunk` | int | `50` | `SQI_WORKER_LOG_STREAMER_MAX_LINES_PER_CHUNK` | — | |
+| `log_streamer.max_bytes_per_chunk` | int | `16384` | `SQI_WORKER_LOG_STREAMER_MAX_BYTES_PER_CHUNK` | — | |
+| `log_streamer.flush_interval` | duration | `500ms` | `SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL` | — | |
 
 ---
 

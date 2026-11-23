@@ -14,6 +14,9 @@
 //   - [Metrics.NATSPublishedTotal]    — NATS publish count by subject
 //   - [Metrics.NATSConsumedTotal]     — NATS consume count by subject
 //   - [Metrics.UptimeSeconds]         — worker process uptime gauge
+//
+// The two NATS families are registered, but no worker code records into
+// them, so they serve no samples.
 package metrics
 
 import (
@@ -45,11 +48,11 @@ type Metrics struct {
 	ExecDuration *prometheus.HistogramVec
 
 	// NATSPublishedTotal counts messages published to the NATS broker,
-	// labeled by subject. Populated by the NATS client.
+	// labeled by subject. Nothing records into it.
 	NATSPublishedTotal *prometheus.CounterVec
 
 	// NATSConsumedTotal counts messages consumed from the NATS broker,
-	// labeled by subject. Populated by the NATS client.
+	// labeled by subject. Nothing records into it.
 	NATSConsumedTotal *prometheus.CounterVec
 
 	// UptimeSeconds is the wall-clock seconds since the worker process started.

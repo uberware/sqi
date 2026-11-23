@@ -7,26 +7,26 @@ package api
 //	GET /api/v1/auth/oidc/login    — start the authorization-code flow (public)
 //	GET /api/v1/auth/oidc/callback — finish it and mint the session  (public)
 //
-// Both routes are PUBLIC — they cannot sit behind middleware.Auth, because
-// their whole purpose is to produce the principal that middleware would
-// require. That has three consequences this file must honor:
+// Both routes are public: they cannot sit behind middleware.Auth, because
+// they produce the principal that middleware would require. That has three
+// consequences this file must honor:
 //
-//  1. The callback is a browser NAVIGATION, not an API call. A JSON problem
+//  1. The callback is a browser navigation, not an API call. A JSON problem
 //     body would be shown to nobody, so every failure redirects to the login
 //     page with a generic marker and the detail goes only to the server log.
 //  2. middleware.CSRF does not cover these routes (it guards the authenticated
 //     group). A public GET that mints a session is inherent to the protocol;
-//     the signed state cookie IS the defense, which is why it is validated
+//     the signed state cookie is the defense, which is why it is validated
 //     before anything else happens.
-//  3. The post-login destination is a CONSTANT. Honoring a "return to"
-//     parameter is how open redirects are built, and an attacker-chosen
-//     destination on a page that has just minted a session is worth real money.
+//  3. The post-login destination is a constant. Honoring a "return to"
+//     parameter would make this an open redirect, on a page that has just
+//     minted a session.
 //
-// Logging, stated plainly: internal/auth/oidc logs nothing when it rejects a
-// token — its logger fires only on a failed discovery. Since the browser is
-// told only "something went wrong", this file is the ONLY place a provider
-// misconfiguration can surface, so every refusal is logged here, server-side,
-// at a level matching how alarming it is.
+// internal/auth/oidc logs nothing when it rejects a token; its logger fires
+// only on a failed discovery. Since the browser is told only "something went
+// wrong", this file is the only place a provider misconfiguration can
+// surface, so every refusal is logged here, server-side, at a level matching
+// its severity.
 
 import (
 	"crypto/subtle"
@@ -52,7 +52,7 @@ const (
 	oidcAppRoot = "/"
 	// reauthMarkerTTL bounds how long a logout's re-auth marker stays useful.
 	// It is a convenience for the browser, not a security control: the marker
-	// only ever causes an EXTRA credential prompt, so an expired one degrades to
+	// only ever causes an extra credential prompt, so an expired one degrades to
 	// a silent SSO login, which is what reauth_mode=never does by design.
 	reauthMarkerTTL = 24 * time.Hour
 	// oidcErrorRedirect is the login page with a generic failure marker. It
@@ -95,10 +95,10 @@ func (h *authHandler) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	// oidc.OpenState checks against the same oidc.StateTTL.
 	h.setOIDCCookie(w, r, oidcStateCookie, sealed, int(oidc.StateTTL.Seconds()))
 	// The marker has done its job for this login; leaving it set would re-prompt
-	// on every subsequent login, not just the one after a logout.
+	// on every subsequent login, not only the one after a logout.
 	h.setOIDCCookie(w, r, oidcReauthCookie, "", -1)
-	// G107/G710: this is the one redirect in sqi that deliberately leaves the
-	// origin, and it is not an open redirect: authURL is built by
+	// G107/G710: this is the one redirect in sqi that leaves the origin, and
+	// it is not an open redirect: authURL is built by
 	// oidc.Provider from the operator-configured issuer's discovered
 	// authorization endpoint, and the only request-derived value reaching it is
 	// r.Context(). Nothing from the query string, the body, or a header can
@@ -106,8 +106,8 @@ func (h *authHandler) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, authURL, http.StatusFound) //nolint:gosec // G710: destination comes from the configured provider's discovery document, never from the request
 }
 
-// oidcCallback finishes the flow. The ORDER of the steps below is the security
-// property, not an implementation detail — see readFlowState.
+// oidcCallback finishes the flow. The order of the steps below is a security
+// property; see readFlowState.
 func (h *authHandler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	fs, ok := h.readFlowState(w, r)
 	if !ok {
@@ -138,7 +138,7 @@ func (h *authHandler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// resolveExternalUser already logged the specifics; this records that a
 		// login was refused because of it. A disabled account is an operator's
-		// deliberate override rather than a fault, so it does not warn.
+		// override rather than a fault, so it does not warn.
 		level := slog.LevelWarn
 		if errors.Is(err, errExternalAccountDisabled) {
 			level = slog.LevelInfo
@@ -159,8 +159,8 @@ func (h *authHandler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 // readFlowState performs the four checks that must precede any use of the
 // callback's parameters, in this order:
 //
-//  1. Read the state cookie and clear it IMMEDIATELY — unconditionally, before
-//     anything can return early. A callback replayed with the same code must
+//  1. Read the state cookie and clear it unconditionally, before anything
+//     can return early. A callback replayed with the same code must
 //     not find a state cookie still waiting for it.
 //  2. Verify the cookie's HMAC (oidc.OpenState), so a cookie-tossing sibling
 //     subdomain cannot supply flow state of its own choosing.
@@ -208,9 +208,9 @@ func (h *authHandler) readFlowState(w http.ResponseWriter, r *http.Request) (oid
 }
 
 // failSSO logs why a login failed and sends the browser to the generic error
-// destination. Splitting the two apart is exactly the mistake this exists to
-// prevent: the response says nothing useful, so a caller that forgot to log
-// would leave an operator with a login that fails silently and no trace of why.
+// destination. The two are kept together because the response says nothing
+// useful: a caller that forgot to log would leave an operator with a login
+// that fails with no trace of why.
 func (h *authHandler) failSSO(w http.ResponseWriter, r *http.Request, level slog.Level, msg string, attrs ...any) {
 	h.logger.Log(r.Context(), level, msg, attrs...)
 	http.Redirect(w, r, oidcErrorRedirect, http.StatusFound)
@@ -226,8 +226,8 @@ func (h *authHandler) forceReauth(r *http.Request) bool {
 	default:
 		// ReauthAfterLogout, and the zero value, which means the same: re-prompt
 		// only when this browser explicitly logged out. Defaulting an unknown
-		// mode here rather than in config keeps the safer behavior — boot
-		// validation rejects unknown modes, so this is unreachable in practice.
+		// mode here rather than in config keeps the safer behavior; boot
+		// validation rejects unknown modes, so this case is not reached.
 		c, err := r.Cookie(oidcReauthCookie)
 		return err == nil && c.Value != ""
 	}
@@ -236,10 +236,10 @@ func (h *authHandler) forceReauth(r *http.Request) bool {
 // markReauthOnLogout reports whether logout should leave the re-auth marker
 // behind. It is the exact complement of forceReauth's default arm and must stay
 // that way: the two are a pair, and a mode that sets no marker but reads one
-// (or the reverse) is a mode where after_logout quietly becomes never.
+// (or the reverse) is a mode where after_logout behaves as never.
 //
 // Under ReauthAlways the marker is redundant (every login re-prompts) and under
-// ReauthNever it must not be written at all — it would sit in the browser
+// ReauthNever it must not be written at all: it would sit in the browser
 // waiting for someone to switch the mode.
 func (h *authHandler) markReauthOnLogout() bool {
 	switch h.oidcCfg.ReauthMode {
@@ -262,7 +262,7 @@ func (h *authHandler) setOIDCCookie(w http.ResponseWriter, r *http.Request, name
 		HttpOnly: true,
 		// Lax, not Strict: the provider's redirect back to the callback is a
 		// cross-site top-level navigation, and Strict would withhold the cookie
-		// on exactly the request that needs it, breaking every login.
+		// on the request that needs it, breaking every login.
 		SameSite: http.SameSiteLaxMode,
 		Secure:   h.secure(r),
 		MaxAge:   maxAge,

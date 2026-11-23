@@ -29,11 +29,10 @@ import (
 
 // statusTestWorkerID is the worker every fixture attempt in this file opens
 // on; statusTestSubject is the matching task.status subject these tests
-// publish on. handleTaskStatusMessage now requires the subject's worker ID
-// to match the attempt's recorded owner, so the two must agree. The job leaf
-// of the subject is not itself checked (only the worker token is), so a
-// fixed placeholder is fine across every test regardless of which job it
-// actually seeds.
+// publish on. handleTaskStatusMessage requires the subject's worker ID to
+// match the attempt's recorded owner, so the two must agree. The job leaf of
+// the subject is not checked (only the worker token is), so a fixed
+// placeholder serves every test whichever job it seeds.
 const statusTestWorkerID = "worker-1"
 
 var statusTestSubject = bus.TaskStatusSubject(statusTestWorkerID, "job")

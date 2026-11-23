@@ -32,16 +32,16 @@
 // streams. Register therefore retries while the stream is absent, up to
 // [RetryBudget] or the caller's context deadline, whichever is sooner.
 //
-// The server processes worker.register.<worker> via a JetStream push consumer and does
-// not send a reply of its own; the stream ack is the acknowledgment. The
-// protocol has no application-level accept or reject.
+// The server processes worker.register.<worker> via a JetStream push consumer
+// and does not send a reply of its own; the stream ack is the acknowledgment.
+// The protocol has no application-level accept or reject.
 //
 // # In-memory capability map
 //
 // The Registrar stores the merged [capabilities.Capabilities] for the lifetime
-// of the process. Heartbeat publishers and log formatters access it via
-// [Registrar.Capabilities] so they can include capability context in their
-// output without re-detecting hardware on every call.
+// of the process and returns a copy from [Registrar.Capabilities], so a
+// caller can read it without re-detecting hardware. No production code calls
+// it.
 package registration
 
 import (
@@ -196,9 +196,9 @@ func New(
 	return r, nil
 }
 
-// Register publishes a RegisterMsg to worker.register.<worker> and returns once the
-// stream has acked it. It is safe to call multiple times (at boot and on NATS
-// reconnect).
+// Register publishes a RegisterMsg to worker.register.<worker> and returns once
+// the stream has acked it. It is safe to call multiple times (at boot and on
+// NATS reconnect).
 //
 // It blocks while the SQI_WORKER stream does not exist yet, returning an error
 // once [RetryBudget] or ctx expires (see package-level documentation).
@@ -335,12 +335,13 @@ func (r *Registrar) publishRegister(ctx context.Context, data []byte) error {
 	}
 }
 
-// Deregister publishes a DeregisterMsg to worker.deregister.<worker> on graceful
-// shutdown so the server marks this worker offline immediately rather than
-// waiting for the heartbeat timeout sweep.
+// Deregister publishes a DeregisterMsg to worker.deregister.<worker> on
+// graceful shutdown so the server marks this worker offline immediately rather
+// than waiting for the heartbeat timeout sweep.
 //
 // kind says whether the worker may come back: "" for a restart, after which
-// it returns with the same identity, or [protocol.DeregisterPreempted] when
+// it returns with the same identity, [protocol.DeregisterRetired] when a
+// capacity group retires the machine, or [protocol.DeregisterPreempted] when
 // its machine is being reclaimed.
 //
 // Deregister is best-effort: failures are logged as warnings since the server

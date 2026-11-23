@@ -34,10 +34,9 @@ func missingPathErrors(certField, keyField, certFile, keyFile string) []Validati
 // validateKeypair checks that certFile and keyFile load together and that the
 // leaf's validity window covers now.
 //
-// This covers loadability, pairing and validity dates — NOT every problem a
-// certificate can have. A SAN or hostname mismatch is still only discovered
-// when a peer verifies the certificate, because it depends on the name that
-// peer used, which is not knowable here.
+// It covers loadability, pairing and validity dates, not every problem a
+// certificate can have. A SAN or hostname mismatch shows only when a peer
+// verifies the certificate, because it depends on the name that peer used.
 func validateKeypair(certField, keyField, certFile, keyFile string) []ValidationError {
 	if certFile == "" || keyFile == "" {
 		return missingPathErrors(certField, keyField, certFile, keyFile)
@@ -66,12 +65,12 @@ func validateKeypair(certField, keyField, certFile, keyFile string) []Validation
 	if now.After(leaf.NotAfter) {
 		return []ValidationError{{
 			Field:   certField,
-			Message: fmt.Sprintf("certificate %s expired at %s; issue a new one (`sqi-server tls init`) — a server that boots with an expired certificate is a server whose whole farm fails to connect", certFile, leaf.NotAfter.Format(time.RFC3339)),
+			Message: fmt.Sprintf("certificate %s expired at %s; issue a new one (`sqi-server tls init`); no peer can connect to a listener presenting it", certFile, leaf.NotAfter.Format(time.RFC3339)),
 		}}
 	}
-	// Not yet valid fails exactly like expired at the peer, and for a reason
-	// (a clock skew, a certificate minted for a future rollout) that is even
-	// harder to read from a handshake error.
+	// A certificate that is not yet valid fails at the peer as an expired one
+	// does, for a reason (clock skew, a certificate minted for a future
+	// rollout) that is harder to read from a handshake error.
 	if now.Before(leaf.NotBefore) {
 		return []ValidationError{{
 			Field:   certField,
@@ -115,11 +114,10 @@ func validateNATSTLS(cfg NATSTLSConfig) []ValidationError {
 // ExpiringSoon reports whether the leaf certificate in certFile expires
 // within 30 days, returning its NotAfter.
 //
-// It inspects the FIRST CERTIFICATE block, which the docs require to be the
-// leaf. A chain written the other way round would have this report the CA's
-// expiry instead — harmless, but it would warn about the wrong date. It is advisory: startup warns, it
-// does not refuse. Errors are swallowed because Validate has already rejected
-// anything unloadable.
+// It inspects the first CERTIFICATE block, which the docs require to be the
+// leaf; a chain written the other way round would make it report the CA's
+// expiry. It is advisory: startup warns, it does not refuse. Errors are
+// ignored because Validate has already rejected anything unloadable.
 //
 // It takes only the certificate: the private key has no bearing on expiry, and
 // asking for it would imply otherwise.

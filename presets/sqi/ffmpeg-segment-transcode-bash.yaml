@@ -41,8 +41,7 @@ readme: |
      to `OutputFile` - zero-padded slice numbers make lexical glob order the
      same as numeric order - builds a concat file list from the matches,
      then runs `ffmpeg -f concat -safe 0` to copy the streams into
-     `OutputFile` with no re-encode. On success it deletes the slice files
-     it just joined.
+     `OutputFile` with no re-encode.
 
   The join script removes every slice file it globbed once the concat
   succeeds. If the join fails, the slice files are left on disk for you to
@@ -51,10 +50,9 @@ readme: |
   ## Requirements
 
   `ffmpeg` and `bash` must be on `PATH` for every worker that runs this job,
-  and workers must be tagged `attr.worker.tag.ffmpeg = true`. There is
-  deliberately no `attr.worker.os.family` requirement: what this variant needs
-  is a working `bash`, not a particular operating system, and tagging the
-  workers that have one says so directly. This is a starting point - duplicate
+  and workers must be tagged `attr.worker.tag.ffmpeg = true`. There is no
+  `attr.worker.os.family` requirement: what this variant needs is a working
+  `bash`, not a particular operating system. This is a starting point - duplicate
   it to customize for your own pipeline.
 category: Transcoding
 version: 1.0.0
@@ -153,11 +151,11 @@ template:
 
               # Windows (git-bash): a drive-letter or UNC path arrives with
               # backslashes, which are not separators to dirname/basename or to
-              # the glob below, so every path operation here would silently
-              # produce garbage. Fold them to forward slashes, which bash, the
-              # glob, and ffmpeg.exe all accept on Windows. Guarded on the
-              # Windows path prefixes so a POSIX path that legitimately contains
-              # a backslash is left untouched.
+              # the glob below, so every path operation here would produce wrong
+              # paths. Fold them to forward slashes, which bash, the glob, and
+              # ffmpeg.exe all accept on Windows. Guarded on the Windows path
+              # prefixes so a POSIX path that contains a backslash is left
+              # untouched.
               case "$out" in
                 [A-Za-z]:[\\/]* | \\\\*) out="${out//\\//}" ;;
               esac

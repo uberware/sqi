@@ -59,9 +59,9 @@ func TestFilterPaths_Empty(t *testing.T) {
 	}
 }
 
-// HideAppleDouble must hide companions from BOTH listing and opening: a caller
+// HideAppleDouble must hide companions from both listing and opening: a caller
 // that already holds a name (from a manifest, say) must not be able to read one
-// either, or the guard only half-works.
+// either.
 func TestHideAppleDouble(t *testing.T) {
 	inner := fstest.MapFS{
 		"dir/real.yaml":    {Data: []byte("name: real\n")},

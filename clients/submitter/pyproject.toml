@@ -160,14 +160,12 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 # qt/dialog.py subclasses QtCore.QThread and QtWidgets.QDialog. qt/_compat.py
-# imports the real PySide6 under TYPE_CHECKING so attribute typos are caught
-# when the qt extra *is* installed; when it is not (Qt-less environments, e.g.
-# this CI lint job which installs only the `dev` extra), the PySide6.* override
-# above makes mypy treat the import as Any via ignore_missing_imports. `strict`
-# also turns on disallow_subclassing_any, which then flags every class that
-# subclasses that Any as a [misc] error — defeating the point of the override.
-# Relax just that one check for this module; every other strict check still
-# applies.
+# imports the real PySide6 under TYPE_CHECKING, so attribute typos are caught
+# when the qt extra is installed; without it (e.g. a CI job that installs only
+# the `dev` extra), the PySide6.* override above makes the import Any. `strict`
+# turns on disallow_subclassing_any, which would flag each class that subclasses
+# that Any as a [misc] error, so this module turns off that one check; every
+# other strict check applies.
 module = "sqi_submitter.qt.dialog"
 disallow_subclassing_any = false
 
@@ -177,8 +175,8 @@ disallow_subclassing_any = false
 # `match` statements internally. mypy parses followed imports with the 3.9
 # target grammar (python_version above), so following anyio's source makes
 # `mypy src` fail to parse it (a [syntax] error) even though sqi-submitter never
-# imports anyio directly. Skip following it — the public sqi-sdk/httpx surface
-# we depend on stays fully typed. Mirrors the same override in
+# imports anyio directly. Skip following it; the public sqi-sdk/httpx surface
+# stays fully typed. Mirrors the same override in
 # clients/python/pyproject.toml; drop both when the floor is 3.10+.
 module = "anyio.*"
 follow_imports = "skip"

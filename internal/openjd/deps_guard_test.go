@@ -170,7 +170,7 @@ func TestCancelDependents_StepMovedByAnotherWriterIsNotOverwritten(t *testing.T)
 }
 
 // A declined cancel still settles the step in the decision map, so a dependent
-// that is visited BEFORE it in step order is picked up by the next pass.
+// that is visited before it in step order is picked up by the next pass.
 func TestCancelDependents_DeclinedCancelStillUnblocksDependents(t *testing.T) {
 	inner := fake.New()
 	defer inner.Close()

@@ -2,7 +2,7 @@
 """Name-convention pre-fill: SceneContext/RenderTarget → product parameters.
 
 The convention is a documented, additive-only contract (docs/dcc-submitters.md):
-pre-fill binds ONLY by parameter name, never by product identity.
+pre-fill binds only by parameter name, never by product identity.
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from sqi_client.models import ProductParameter
 from sqi_submitter.core.context import RenderTarget, SceneContext
 
 CONVENTION_ALIASES: dict[str, frozenset[str]] = {
-    # "scene" is deliberately NOT an alias: hosts/blender/sqi_blender_addon.py emits a
-    # target extra key "Scene" holding the Blender scene NAME (not a path),
-    # and extras beat convention aliases in prefill() below. Keeping "scene"
-    # here would silently overwrite a scene-name extra with a scene path for
-    # any product parameter literally named "Scene".
+    # "scene" is not an alias: hosts/blender/sqi_blender_addon.py emits a
+    # target extra key "Scene" holding the Blender scene name, not a path, and
+    # extras beat convention aliases in prefill() below. As an alias, the
+    # scene-path rule (is_scene_path_param, applied by submit_form) would
+    # overwrite that scene name with the scene path.
     "scene_path": frozenset({"scenefile", "scenepath"}),
     "frame_range": frozenset({"frames", "framerange"}),
     "output_path": frozenset({"outputdir", "outputpath"}),

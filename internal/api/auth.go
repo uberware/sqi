@@ -46,10 +46,8 @@ type authHandler struct {
 }
 
 // authHandlerDeps is what newAuthHandler needs. It is a struct rather than a
-// parameter list because the list had grown past the point where a caller could
-// get the order right by reading it — two adjacent strings (cookieName,
-// cookieSecure) and two adjacent nilable backends are exactly the shape that
-// silently transposes.
+// parameter list because two adjacent strings (cookieName, cookieSecure) and
+// two adjacent nilable backends transpose silently in a positional call.
 type authHandlerDeps struct {
 	Store        store.Store
 	Logger       *slog.Logger
@@ -67,23 +65,19 @@ type authHandlerDeps struct {
 // dummyHash below; it has no security meaning of its own.
 const dummyVerifyPlaintext = "sqi-auth-timing-equalization-dummy"
 
-// dummyHash is a real, valid argon2id encoded hash — produced by
-// password.Hash itself, not a hardcoded literal — computed once on first
-// use. It exists solely so login's unknown-user path can run a genuine
-// argon2id derivation of matching cost to a real password check; see the
-// comment in login for why. Deriving it via password.Hash (rather than
-// hardcoding the encoded string) means it automatically tracks the
-// package's argon2 parameters if they are ever raised, instead of silently
-// falling out of sync and reopening the timing side channel.
+// dummyHash is a valid argon2id encoded hash, produced by password.Hash
+// rather than hardcoded, and computed once on first use. It exists so
+// loginUnknownUser can run an argon2id derivation of matching cost to a real
+// password check. Deriving it through password.Hash keeps it on the
+// package's current argon2 parameters, so the two paths stay equal in cost.
 //
-// Computed lazily (not at package init) so the ~19 MiB / 30-60 ms derivation
-// is not paid by auth-disabled servers or by every test binary that imports
-// this package. An auth-enabled router forces it at construction via
-// warmDummyHash — deferring it to the first request would make the first
-// unknown-username login after each restart measurably slower than a
-// known-username one, which is the timing signal this exists to erase,
-// and would turn mustDummyHash's fail-fast panic into a 500 on a live
-// request instead of a startup abort.
+// Computed lazily (not at package init) so auth-disabled servers and test
+// binaries that import this package do not pay for the derivation. An
+// auth-enabled router forces it at construction via warmDummyHash: deferring
+// it to the first request would make the first unknown-username login after
+// each restart slower than a known-username one, which is the timing signal
+// this exists to erase, and would turn mustDummyHash's fail-fast panic into a
+// 500 on a live request instead of a startup abort.
 var dummyHash = sync.OnceValue(mustDummyHash)
 
 // warmDummyHash forces the dummy-hash derivation before the server accepts
@@ -96,7 +90,7 @@ func mustDummyHash() string {
 		// password.Hash only fails if crypto/rand.Read fails, i.e. the
 		// process' entropy source is broken. That's not something a single
 		// request can recover from, so fail fast at startup instead of
-		// leaving dummyHash empty and silently breaking the timing fix.
+		// leaving dummyHash empty and breaking the timing equalization.
 		panic("auth: failed to precompute dummy password hash: " + err.Error())
 	}
 	return h
@@ -136,18 +130,18 @@ type userResponse struct {
 	AuthSource  string `json:"auth_source"`
 	// RoleEditable tells the client whether PATCH /users/{id} will accept a
 	// role change for this account. It is computed server-side, from the same
-	// predicate that guards the PATCH, precisely so no client has to
-	// reconstruct the two-condition rule (auth_source AND role_source) — the
-	// role_source half is not otherwise exposed by any endpoint, so a client
-	// inferring from auth_source alone gets role_source=local wrong.
+	// predicate that guards the PATCH, so no client has to reconstruct the
+	// two-condition rule (auth_source and role_source). No other endpoint
+	// exposes role_source, so a client inferring from auth_source alone gets
+	// role_source=local wrong.
 	RoleEditable bool `json:"role_editable"`
 	// PasswordEditable tells the client whether PUT /users/{id}/password (and,
 	// for the caller's own account, PUT /auth/password) will accept a new
 	// password for this account. It is computed server-side, from the same
 	// predicate that guards both of those endpoints, so the control a client
-	// offers and the request the server accepts can never disagree — without
-	// it the UI rendered a set-password form for LDAP and OIDC accounts and
-	// turned every submission into a 409.
+	// offers and the request the server accepts cannot disagree; a client
+	// that offered a set-password form for an LDAP or OIDC account would get a
+	// 409 on every submission.
 	PasswordEditable bool      `json:"password_editable"`
 	Disabled         bool      `json:"disabled"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -176,7 +170,7 @@ func toUserResponse(u store.User, ldapRoleSource, oidcRoleSource string) userRes
 // invalidLoginDetail is the single detail string every failed login returns,
 // whatever the reason. Unknown username, wrong local password, wrong directory
 // password, an unreachable directory, no role mapping, and a username
-// collision must be indistinguishable to the client — any difference turns
+// collision must be indistinguishable to the client: any difference turns
 // login into a user-enumeration oracle.
 const invalidLoginDetail = "invalid credentials"
 
@@ -187,9 +181,9 @@ const invalidLoginDetail = "invalid credentials"
 // the stored argon2id hash for local accounts, the directory for LDAP ones.
 // OIDC accounts have no password backend at all and are refused here.
 // A local account is never sent to the directory, not even on a wrong
-// password — every failed login would otherwise cost a network round trip,
+// password: every failed login would otherwise cost a network round trip,
 // and in Active Directory repeated bad binds against a real DN can lock the
-// *directory* account, turning a brute force against sqi into an org-wide
+// directory account, turning a brute force against sqi into an org-wide
 // denial of service.
 func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -212,30 +206,28 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		h.loginLDAP(w, r, req.Username, req.Password, &u)
 
 	case store.AuthSourceLocal, "":
-		// "" is a row written before the auth_source column existed, and it
-		// means the same thing as "local". Nothing normalizes it on read:
-		// SQLite backfills existing rows once, at migration time, and the
-		// fake defaults the field in CreateUser. A row that still carries ""
-		// — one the migration missed, or a hand-written insert — reaches this
-		// switch as "", so the empty case is matched here rather than relied
-		// on to have been rewritten upstream.
+		// "" means the same thing as "local". Nothing normalizes it on read:
+		// the migration that added the column backfills existing rows once,
+		// and the fake defaults the field in CreateUser. A row that still
+		// carries "" (one the migration missed, or a hand-written insert)
+		// reaches this switch as "", so the empty case is matched here.
 		h.loginLocal(w, r, req, u)
 
 	case store.AuthSourceOIDC:
 		// SSO accounts have no local password: their stored PasswordHash is a
 		// placeholder. The login page renders the password form beside the SSO
 		// button, so an SSO user typing a password here is routine, not a sign
-		// of a corrupted row — log it at Info so it cannot bury the Error the
-		// default branch below raises for a genuinely unknown auth_source. The
+		// of a corrupted row. It is logged at Info so it cannot bury the Error
+		// the default branch below raises for an unknown auth_source. The
 		// 401 is the same equalized response as every other failure path.
 		h.logger.InfoContext(ctx, "auth: SSO account cannot use password login",
 			slog.String("username", u.Username), slog.String("auth_source", u.AuthSource))
 		writeProblem(w, r, http.StatusUnauthorized, invalidLoginDetail)
 
 	default:
-		// Nothing validates auth_source in Go (the SQL CHECK was deliberately
-		// omitted so the Down migration works), so a hand-edited row or one
-		// written by a newer binary is reachable here. Falling through to the
+		// Nothing validates auth_source in Go and the column has no SQL CHECK,
+		// so a hand-edited row or one written by a newer binary is reachable
+		// here. Falling through to the
 		// local-password branch would authenticate such an account against
 		// whatever happens to sit in password_hash. Fail closed instead.
 		h.logger.ErrorContext(ctx, "auth: unknown auth_source, refusing login",
@@ -245,35 +237,32 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 }
 
 // loginUnknownUser handles a failed user lookup: JIT provisioning when the
-// username is simply unknown and a directory is configured, an equalized 401
+// username is unknown and a directory is configured, an equalized 401
 // otherwise.
 func (h *authHandler) loginUnknownUser(w http.ResponseWriter, r *http.Request, req loginRequest, err error) {
 	ctx := r.Context()
 	if errors.Is(err, store.ErrNotFound) && h.ldapVerifier != nil {
 		// Unknown username with LDAP on: this is the just-in-time
-		// provisioning path. No dummy verify here — not because the
-		// equalization is unnecessary, but because it is unattainable. The
-		// dummy hash works below only because both sides of that comparison
-		// are argon2id derivations of matching cost; a directory bind is a
-		// network round trip whose cost no local computation can be made to
-		// match. See the security-posture note at the top of ldaplogin.go.
+		// provisioning path. There is no dummy verify here because no local
+		// computation can match the cost of a directory bind, which is a
+		// network round trip; the dummy hash below works only because both
+		// sides of that comparison are argon2id derivations of matching cost.
+		// See the timing note at the top of ldaplogin.go.
 		h.loginLDAP(w, r, req.Username, req.Password, nil)
 		return
 	}
 	if !errors.Is(err, store.ErrNotFound) {
-		// A real store/infrastructure failure (as opposed to "no such
-		// user") deserves a server-side signal — otherwise a database
-		// outage looks identical to a mistyped password with no way to
-		// tell them apart from the logs. This must NOT change what the
-		// client sees: the response below is the same either way.
+		// A store or infrastructure failure (as opposed to "no such user")
+		// is logged, so a database outage can be told apart from a mistyped
+		// password in the logs. It must not change what the client sees: the
+		// response below is the same either way.
 		h.logger.WarnContext(ctx, "auth: user lookup failed", slog.Any("error", err))
 	}
 	// Run a dummy argon2id verify so this path costs about the same as the
-	// known-user path, which always calls password.Verify. Without this,
-	// returning immediately here makes an unknown-username request measurably
-	// faster than a known-username one — a timing side channel that lets an
-	// attacker enumerate valid usernames even though the response bodies are
-	// byte-identical. Do not remove this as a "wasted" call.
+	// known-user path, which always calls password.Verify. Without it, an
+	// unknown-username request returns faster than a known-username one, a
+	// timing side channel that lets an attacker enumerate valid usernames
+	// even though the response bodies are byte-identical.
 	if _, verr := password.Verify(dummyHash(), req.Password); verr != nil {
 		h.logger.WarnContext(ctx, "auth: dummy verify failed unexpectedly", slog.Any("error", verr))
 	}
@@ -289,8 +278,8 @@ func (h *authHandler) loginLocal(w http.ResponseWriter, r *http.Request, req log
 	}
 
 	// A failure here is a token-generation problem, a hashed-token collision,
-	// or a foreign-key violation (the just-fetched user vanished mid-request)
-	// — none are client errors, so this is a 500 rather than the CRUD-style
+	// or a foreign-key violation (the fetched user vanished mid-request).
+	// None are client errors, so this is a 500 rather than the CRUD-style
 	// 409 "already exists", which would be misleading.
 	if err := h.issueSession(w, r, u); err != nil {
 		h.logger.ErrorContext(r.Context(), "auth: create session failed", slog.Any("error", err))
@@ -314,11 +303,11 @@ type logoutResponse struct {
 // It also carries the two SSO logout mechanisms, which are separate and answer
 // different problems:
 //
-//   - reauth_mode governs whether the NEXT SSO login is allowed to be silent.
+//   - reauth_mode governs whether the next SSO login is allowed to be silent.
 //     Clearing sqi's session while the provider still considers the person
 //     signed in is how a shared workstation signs the next person in as the
 //     last one.
-//   - logout_mode governs whether this logout also ends the session AT the
+//   - logout_mode governs whether this logout also ends the session at the
 //     provider, i.e. signs the person out of every tool in the company. Off by
 //     default because that is heavy-handed for someone mid-task elsewhere.
 func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
@@ -344,9 +333,8 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 	// Mark this browser as having explicitly logged out, so the next SSO login
 	// forces re-authentication. Written through setOIDCCookie, not a literal
 	// http.Cookie, so its Path and attributes cannot drift from the ones
-	// forceReauth reads back — scoped anywhere else, the marker is invisible to
-	// the only code that looks for it and after_logout silently degrades to
-	// never.
+	// forceReauth reads back: scoped anywhere else, the marker is invisible to
+	// the only code that looks for it and after_logout degrades to never.
 	if h.oidcProvider != nil && h.markReauthOnLogout() {
 		h.setOIDCCookie(w, r, oidcReauthCookie, "1", int(reauthMarkerTTL.Seconds()))
 	}
@@ -356,8 +344,8 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 		if u, ok := h.oidcProvider.EndSessionURL(ctx); ok {
 			out.RedirectURL = u
 		} else {
-			// Loud, not silent: an operator who configured provider logout and
-			// silently got local logout would believe a guarantee they do not
+			// Logged as an error: an operator who configured provider logout and
+			// got only local logout would believe a guarantee they do not
 			// have. EndSessionURL reports the same false for "no end-session
 			// endpoint advertised" and "discovery is unreachable", so this
 			// message names both rather than asserting the wrong one.
@@ -427,7 +415,7 @@ func toPrincipalResponse(p auth.Principal) principalResponse {
 }
 
 // me returns the principal attached to the request context by middleware.Auth.
-// It is a method (rather than a free function) purely so it can be registered
+// It is a method (rather than a free function) only so it can be registered
 // the same way as login/logout (authH.me); it needs no handler state.
 func (*authHandler) me(w http.ResponseWriter, r *http.Request) {
 	p, ok := auth.FromContext(r.Context())

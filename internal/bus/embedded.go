@@ -476,7 +476,7 @@ const (
 // Lame duck mode closes the client listener and then every client before it
 // shuts the server down, so few clients are still connecting when the system
 // account stops. The auth callout refuses one that is; nats-server v2.15.2
-// crashed on it instead, so sqi needs v2.15.3 or later.
+// crashes on it instead, so sqi needs v2.15.3 or later.
 //
 // The explicit Shutdown is required: lame duck mode returns without shutting
 // down when it has nothing to do (no listener, or already in lame duck mode).

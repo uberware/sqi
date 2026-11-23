@@ -13,42 +13,35 @@ import (
 
 // This file tests the cumulative template-wide budget
 // (checkTemplateExpressions' templateBudget, exprcheck.go): a bound on what
-// ONE template's expressions may cost IN TOTAL, across every position and
-// every let: block. Per-evaluation bounds alone let a template cost a
-// ~9-minute checker walk, a 6.9 GB let: block, a 472 MB worker symbol table
-// or a 96-second resolver run.
+// one template's expressions may cost in total, across every position and
+// every let: block. Per-evaluation bounds alone do not bound the walk, a
+// let: block's retained memory, or the resolver.
 //
-// Two dimensions are asserted here, through separate tests so that removing
-// either bound in isolation fails exactly one of them. The third dimension,
-// operations, is derived rather than measured (defaultTemplatePositions *
-// defaultSubmissionOperations, exprcheck.go's own doc comment) and has
-// nothing to assert here: no operation counter crosses into
-// internal/openjd/expr for this file to observe.
+// Two dimensions are asserted here, in separate tests so that removing
+// either bound fails exactly one of them. The third, operations, is derived
+// (defaultTemplatePositions * defaultSubmissionOperations; see exprcheck.go)
+// and has nothing to assert here: no operation counter crosses into
+// internal/openjd from internal/openjd/expr.
 //
-// HOW TO MUTATION-TEST THESE: the natural mutation is to SET THE KNOB --
-// construct the walk's budget with
+// To mutation-test these, set the knob: construct the walk's budget with
 // newTemplateBudget(ExprLimits{TemplatePositions: n}) (or
-// TemplateRetainedBytes) and observe the verdict move. That is what
-// exprlimits_test.go does, at the exact boundary. Neutering the comparison
-// inside templateBudget.chargePositions/chargeRetainedBytes (exprcheck.go,
-// "if b.positions > b.limits.TemplatePositions") is what to reach for when
-// checking that the ERROR PATH itself is live.
+// TemplateRetainedBytes) and observe the verdict move, as exprlimits_test.go
+// does at the exact boundary. Neutering the comparison inside
+// templateBudget.chargePositions/chargeRetainedBytes (exprcheck.go,
+// "if b.positions > b.limits.TemplatePositions") checks that the error path
+// itself is live.
 //
-// WHAT NOT TO DO: do not raise
-// defaultTemplatePositions/defaultTemplateRetainedBytes themselves. Three of
-// the five tests below SIZE THEIR OWN CONSTRUCTION from the live constant
-// (manyArgs(int(defaultTemplatePositions) + 50), and
-// int(defaultTemplatePositions) - 10 in FreshPerCall): raising
-// defaultTemplatePositions to, say, 2_000_000_000 to "remove the bound"
-// makes those tests try to allocate on the order of two billion string
-// entries, which does not fail fast -- it hangs (past a 600s timeout).
-// Setting the KNOB on a budget has no such hazard: the construction's size
-// stays tied to the default.
+// Do not raise defaultTemplatePositions/defaultTemplateRetainedBytes to
+// remove the bound: three of the tests below size their construction
+// from the constant (manyArgs(int(defaultTemplatePositions) + 50), and
+// int(defaultTemplatePositions) - 10 in FreshPerCall), so a huge value makes
+// them try to allocate billions of entries and hang. Setting the knob on a
+// budget has no such hazard.
 
 // manyArgs returns n trivial, cheap-to-evaluate EXPR args entries: no
 // retained bytes (checkFormatString discards every result) and negligible
 // per-position operation/memory cost, so a construction built from these
-// isolates the POSITIONS dimension from the retained-bytes dimension.
+// isolates the positions dimension from the retained-bytes dimension.
 func manyArgs(n int) []string {
 	args := make([]string, n)
 	for i := range args {
@@ -57,31 +50,24 @@ func manyArgs(n int) []string {
 	return args
 }
 
-// TestCheckTemplateExpressions_TemplateWideBudget_CatchesWhatThePreWalkGuardAdmits reproduces
-// the SHAPE of the construction that measured the resolver's cost -- 16
-// task-parameter definitions x 1024 RangeList entries, one step. With the
-// payload `{{ ("x" * 900000).upper() }}` in every one of the 16,384
-// entries, it cost 96 seconds in the resolver alone, with every per-Eval
-// budget respected the entire time.
+// TestCheckTemplateExpressions_TemplateWideBudget_CatchesWhatThePreWalkGuardAdmits builds
+// a construction of 16 task-parameter definitions x 1024 RangeList entries in
+// one step. With an expensive payload such as `{{ ("x" * 900000).upper() }}`
+// in every entry, it stays inside every per-evaluation budget while costing
+// the resolver a long run.
 //
-// The payload here is deliberately a trivial `{{ 'a' }}`, NOT that
-// expensive expression. The expensive version makes this ONE test cost 455s
-// under -race in isolation -- two orders of magnitude over the other four
-// budget tests combined (1.27s) -- for fidelity the assertions below never
-// use: this test proves POSITION COUNT trips the budget, which a trivial
-// payload demonstrates identically to an expensive one (the budget charges
-// one position per checkFormatString call regardless of what that call
-// evaluates), and rejects in ~milliseconds instead of tens of seconds. A
-// REGRESSION in the position bound therefore fails FAST rather than running
-// to completion in ~95s (non-race) or roughly an hour under race, which on a
-// CI runner reads as a hang, not a red test.
+// The payload here is a trivial `{{ 'a' }}`: the test checks that the
+// position count trips the budget, and the budget charges one position per
+// checkFormatString call whatever the call evaluates. With an expensive
+// payload, a broken position bound would run for minutes instead of failing
+// fast.
 //
-// It is deliberately WITHIN the two count caps parameterSpaceOverCaps checks
-// (maxTaskParameterDefinitions = 16, maxTaskParamValues = 1024 -- both "at
-// most", not "fewer than"), so parameterSpaceOverCaps(tmpl) -- checked
-// directly below -- reports false: the pre-walk guard does NOT reject this
-// construction, and neither does maxSteps (one step). The template-wide
-// budget is therefore the ONLY thing in the package that can still catch it.
+// It is within the two count caps parameterSpaceOverCaps checks
+// (maxTaskParameterDefinitions = 16, maxTaskParamValues = 1024, both "at
+// most"), so parameterSpaceOverCaps(tmpl), checked below, reports false: the
+// pre-walk guard does not reject this construction, and neither does
+// maxSteps (one step). The template-wide budget is the only thing that
+// catches it.
 func TestCheckTemplateExpressions_TemplateWideBudget_CatchesWhatThePreWalkGuardAdmits(t *testing.T) {
 	const numDefs = maxTaskParameterDefinitions // 16
 	const numValues = maxTaskParamValues        // 1024
@@ -135,11 +121,11 @@ func TestCheckTemplateExpressions_TemplateWideBudget_CatchesWhatThePreWalkGuardA
 }
 
 // TestCheckTemplateExpressions_TemplateWideBudget_PositionsDimension isolates
-// the POSITIONS dimension: many CHEAP positions (manyArgs -- no retained
-// bytes, negligible per-position cost), well over defaultTemplatePositions.
-// Mutation target: commenting out chargePositions' cap check (or raising
-// defaultTemplatePositions past this construction's size) must make this
-// test -- and ONLY this dimension's tests -- start passing/accepting.
+// the positions dimension: many cheap positions (manyArgs: no retained bytes,
+// negligible per-position cost), over defaultTemplatePositions. Removing
+// chargePositions' cap check, or raising defaultTemplatePositions past this
+// construction's size, makes the template accepted and fails this
+// dimension's tests only.
 func TestCheckTemplateExpressions_TemplateWideBudget_PositionsDimension(t *testing.T) {
 	n := int(defaultTemplatePositions) + 50
 	tmpl := &JobTemplate{
@@ -176,24 +162,22 @@ func TestCheckTemplateExpressions_TemplateWideBudget_PositionsDimension(t *testi
 }
 
 // TestCheckTemplateExpressions_TemplateWideBudget_RetainedBytesDimension
-// isolates the RETAINED-BYTES dimension: many let: blocks, each
-// INDIVIDUALLY well within every per-block bound (maxLetBindings = 50
-// bindings; each binding's own Eval under defaultSubmissionMemoryBytes =
-// 1,000,000 bytes), that are cumulatively rejected only because the
-// template-wide budget sums bytes ACROSS blocks.
+// isolates the retained-bytes dimension: many let: blocks, each within every
+// per-block bound (maxLetBindings = 50 bindings; each binding's own Eval
+// under defaultSubmissionMemoryBytes = 1,000,000 bytes), rejected together
+// because the template-wide budget sums bytes across blocks.
 //
-// Without that sum, nothing bounds it: checkLetBindings caps a single
-// block's BINDING COUNT but not the BYTES those bindings retain, so a
-// template with many individually-compliant blocks could retain tens of
-// megabytes with no guard seeing it -- the server-side counterpart of the
-// worker's let: retained-bytes limit (internal/worker/fmtres).
+// Nothing else bounds that sum: checkLetBindings caps a block's binding
+// count but not the bytes those bindings retain, so a template with many
+// compliant blocks could retain tens of megabytes unchecked. This is the
+// server-side counterpart of the worker's let: retained-bytes limit
+// (internal/worker/fmtres).
 //
-// Each binding retains 900,064 bytes (64-byte header + a 900,000-byte
-// string, expr.SizeOf). 3 bindings/step x 900,064 = 2,700,192 bytes/step --
-// comfortably under the 10,000,000-byte budget on its own (the first
-// sub-test), so a single block is never the thing that trips it. 4 steps'
-// worth (10,800,768 bytes) crosses it (the second sub-test): the ONLY
-// difference between the two is how many equally-compliant blocks exist.
+// Each binding retains 900,064 bytes (a 64-byte header plus a 900,000-byte
+// string, per expr.SizeOf). 3 bindings per step x 900,064 = 2,700,192 bytes
+// per step, under the 10,000,000-byte budget on its own (the first
+// sub-test). 4 steps (10,800,768 bytes) cross it (the second sub-test); the
+// two sub-tests differ only in how many compliant blocks exist.
 func TestCheckTemplateExpressions_TemplateWideBudget_RetainedBytesDimension(t *testing.T) {
 	const bindingsPerStep = 3
 	const bytesPerBinding = 900_000 // + 64-byte header = 900,064 via expr.SizeOf
@@ -254,13 +238,12 @@ func TestCheckTemplateExpressions_TemplateWideBudget_RetainedBytesDimension(t *t
 }
 
 // TestCheckTemplateExpressions_TemplateWideBudget_FreshPerCall pins one
-// budget per phase: checkTemplateExpressions allocates a
-// NEW templateBudget every call (it is a local variable, not package state),
-// so back-to-back calls on the SAME template each get their own full
-// allowance -- exactly what phase 1 (ValidateWithOptions) and phase 2
-// (checkExpressionsAtSubmit) rely on, since they are two separate calls to
-// this same function. A template sized to land just under the position cap
-// must be accepted on every call, not merely the first.
+// budget per phase: checkTemplateExpressions allocates a new templateBudget
+// on every call (a local variable, not package state), so back-to-back calls
+// on the same template each get a full allowance. Phase 1
+// (ValidateWithOptions) and phase 2 (checkExpressionsAtSubmit) rely on this,
+// as two separate calls to this function. A template sized just under the
+// position cap is accepted on every call.
 func TestCheckTemplateExpressions_TemplateWideBudget_FreshPerCall(t *testing.T) {
 	n := int(defaultTemplatePositions) - 10 // comfortably under the cap
 	tmpl := &JobTemplate{
@@ -287,11 +270,11 @@ func TestCheckTemplateExpressions_TemplateWideBudget_FreshPerCall(t *testing.T) 
 
 // TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected pins
 // the base-spec cost floor: a template without extensions: [EXPR] never
-// enters the walk, so the budget costs it nothing. A
-// construction that WOULD trip the positions budget if the walk ever ran
-// over it must still report zero errors when the template does not declare
-// the extension -- proving the hasExtension("EXPR") gate at the top of
-// checkTemplateExpressions, not the budget, is what decides this.
+// enters the walk, so the budget costs it nothing. A construction that would
+// trip the positions budget if the walk ran over it reports zero errors when
+// the template does not declare the extension, which shows the
+// hasExtension("EXPR") check at the top of checkTemplateExpressions decides
+// this, not the budget.
 func TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected(t *testing.T) {
 	n := int(defaultTemplatePositions) + 50
 	tmpl := &JobTemplate{
@@ -310,82 +293,64 @@ func TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected(t *testi
 	}
 }
 
-// TestTemplateBudget_WorkerCapIsNotTighter pins the ONE relation between this
+// TestTemplateBudget_WorkerCapIsNotTighter pins the relation between this
 // package's template-wide position budget and the worker's per-assignment one
 // (internal/worker/fmtres, [fmtres.DefaultAssignmentPositions]).
 //
-// THE DEFECT IT EXISTS TO PREVENT: if the worker's cap is tighter -- say
-// 10,000 here and 5,000 there -- a template with one job environment
-// declaring 5,000 variables charges ~5,001 positions HERE -- comfortably
-// accepted, created and persisted -- and then trips the worker's
-// 5,000-position budget inside session.Manager.Create, failing EVERY task in
-// the job, one at a time, after submission, naming a budget the submitter
-// never saw.
+// If the worker's cap were tighter (say 10,000 here and 5,000 there), a
+// template with one job environment declaring 5,000 variables would charge
+// ~5,001 positions here, be accepted and persisted, and then trip the
+// worker's 5,000-position budget inside session.Manager.Create, failing every
+// task in the job after submission, naming a budget the submitter never saw.
 //
-// THE RELATION: the positions one assignment resolves on the worker (its own
-// step action and embedded files, plus every job and step environment the
-// session enters) are a SUBSET of the positions this package's walk charged
-// for the whole template. So the worker's cap must be at least this one, or
-// there exists a template the server accepts and the worker cannot run.
-// The worker's cap is raised to match rather than this one lowered: this
-// one is sized not to reject legitimate templates, and the alternative
-// (having the server charge a per-assignment SUB-budget so the rejection
-// lands at submit) needs a partition of the walk that nothing in this
-// package computes.
+// The positions one assignment resolves on the worker (its step action and
+// embedded files, plus every job and step environment the session enters)
+// are a subset of the positions this package's walk charged for the whole
+// template, so the worker's cap must be at least this one. The worker's cap
+// is raised to match rather than this one lowered: this one is sized not to
+// reject legitimate templates, and charging a per-assignment sub-budget at
+// submit would need a partition of the walk that nothing in this package
+// computes.
 //
 // It imports internal/worker/fmtres, which no production file in this package
-// does and none should: the two constants live in different packages in
-// different processes, and an invariant between them has to be asserted
-// somewhere that can see both. A test-only import is the cheapest place that
-// also runs under plain `make test`.
+// does or should: the two constants live in different packages and
+// processes, and a test-only import is a place that sees both and runs under
+// `make test`.
 //
-// THIS COMPARES TWO DEFAULTS, NOT THE ENFORCED VALUES. The server's cap is
-// openjd.ExprLimits.TemplatePositions (openjd.expr_template_positions) and
+// This compares the two defaults, not the enforced values. The server's cap
+// is openjd.ExprLimits.TemplatePositions (openjd.expr_template_positions) and
 // the worker's is fmtres.ExprLimits.AssignmentPositions (the worker config's
-// expr.assignment_positions); the two constants below are only what each
-// falls back to. A farm whose YAML raises one above the other reproduces
-// exactly the failure described above, and no compile-time test can see it.
+// expr.assignment_positions); the constants below are what each falls back
+// to. A farm configured with one above the other is handled at run time: a
+// worker advertises the caps it enforces in its registration message, the
+// server persists them (store.WorkerExprLimits) and does not dispatch an EXPR
+// job to a worker tighter than the limits the template was accepted under
+// (internal/scheduler/exprcaps.go,
+// TestExprCaps_ViolationThroughConfigurationIsCaught). This test covers the
+// defaults, so a default install satisfies the relation.
 //
-// That is closed AT RUNTIME, not here. A worker advertises the caps it will
-// enforce in its registration message; the server persists them
-// (store.WorkerExprLimits) and refuses to dispatch an EXPR job to a worker
-// that is tighter than the limits the template was accepted under
-// (internal/scheduler/exprcaps.go, TestExprCaps_ViolationThroughConfiguration-
-// IsCaught). This test is the DEFAULTS half of the same invariant: it is
-// what fails if an edit ships a fresh install that violates the relation out
-// of the box, which the runtime gate would then enforce by refusing every
-// worker in the farm.
-//
-// The relation is also SATISFIABLE at every legal setting:
-// fmtres.MaxExprAssignmentPositions is >= MaxExprTemplatePositions (today both
-// are 100,000), so there is no server value an operator can choose that a
-// worker cannot legally match. internal/scheduler's
-// TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting extends that
-// check to all four related dimensions.
+// The relation is also satisfiable at every legal setting:
+// fmtres.MaxExprAssignmentPositions is >= MaxExprTemplatePositions, so no
+// server value is beyond what a worker can legally match. internal/scheduler's
+// TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting checks the same
+// for all five gated dimensions.
 func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
 	if fmtres.DefaultAssignmentPositions < defaultTemplatePositions {
-		t.Fatalf("the worker's per-assignment position cap (%d) is TIGHTER than the server's "+
+		t.Fatalf("the worker's per-assignment position cap (%d) is tighter than the server's "+
 			"template-wide cap (%d).\n"+
 			"An assignment's positions are a subset of its template's, so this makes a job the "+
-			"server ACCEPTS fail on the worker -- per task, after submission, naming a budget the "+
+			"server accepts fail on the worker -- per task, after submission, naming a budget the "+
 			"submitter was never shown. Raise fmtres.DefaultAssignmentPositions, or give the server "+
 			"a per-assignment sub-budget so the rejection happens at submit.",
 			fmtres.DefaultAssignmentPositions, defaultTemplatePositions)
 	}
-	// The same relation, one level up: an operator may raise this package's
-	// cap as far as MaxExprTemplatePositions, so the worker's configurable
-	// ceiling must reach at least that far or the relation above becomes
-	// unsatisfiable BY CONFIGURATION -- there would exist a legal server
-	// setting no legal worker setting could match.
-	//
-	// What is asserted is that relation (worker ceiling >= server ceiling),
-	// NOT equality: raising the worker's ceiling alone, or lowering this
-	// package's alone, keeps satisfiability and keeps this green. Only the two
-	// moves that break it -- lowering the worker's or raising this one past it
-	// -- fail here. They are currently equal (both 100,000); that is the
-	// current value, not the invariant.
+	// The same relation for the ceilings: an operator may raise this
+	// package's cap as far as MaxExprTemplatePositions, so the worker's
+	// configurable ceiling must reach at least that far, or some legal server
+	// setting would have no matching legal worker setting. The assertion is
+	// worker ceiling >= server ceiling.
 	if fmtres.MaxExprAssignmentPositions < MaxExprTemplatePositions {
-		t.Fatalf("the worker's configurable position CEILING (%d) is below the server's (%d): "+
+		t.Fatalf("the worker's configurable position ceiling (%d) is below the server's (%d): "+
 			"an operator could set openjd.expr_template_positions to a value no worker's "+
 			"expr.assignment_positions is allowed to match, making the subset relation above "+
 			"unsatisfiable rather than merely breakable.",
@@ -397,15 +362,14 @@ func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
 // template that declares no extensions: [EXPR] does not pay for
 // parameterSpaceOverCaps, the O(n) pre-walk cost guard.
 //
-// The guard exists to decide whether to SKIP the expression walk. For a
-// base-spec template the walk is a no-op, so running the guard is pure waste
-// -- 15 ms on a 200,000-sub-range INT parameter, ~40 ms at the body cap --
-// and it breaks the floor that EXPR support costs such a template nothing.
+// The guard decides whether to skip the expression walk. For a base-spec
+// template the walk is a no-op, so running the guard would be wasted work on
+// a large INT parameter, and EXPR support must cost such a template nothing.
 // The call site in ValidateWithOptions is
 // "exprDeclared && !parameterSpaceOverCaps(t)", and Go's && short-circuits, so
-// asserting the declaration term is false for a base-spec template IS the
-// assertion that the guard never runs. The declaration is the WHOLE of that
-// term, a direct hasExtension call, so this test asserts on that call.
+// asserting the declaration term is false for a base-spec template asserts
+// that the guard never runs. That term is a direct hasExtension call, so this
+// test asserts on that call.
 func TestExprWalkApplies_BaseSpecTemplateShortCircuitsTheCostGuard(t *testing.T) {
 	base := &JobTemplate{Name: "T"} // no Extensions
 	if base.hasExtension("EXPR") {

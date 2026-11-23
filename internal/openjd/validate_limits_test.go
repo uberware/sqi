@@ -52,7 +52,7 @@ func makeAmounts(n int) []openjd.AmountRequirement {
 }
 
 // makeSteps returns n valid, uniquely-named steps, each with a minimal
-// runnable script -- the same shape [minimalValidYAML]'s single step has.
+// runnable script, the same shape [minimalValidYAML]'s single step has.
 func makeSteps(n int) []openjd.StepTemplate {
 	out := make([]openjd.StepTemplate, n)
 	for i := range out {
@@ -72,7 +72,7 @@ func makeSteps(n int) []openjd.StepTemplate {
 // limit at its boundary. Each case mutates a valid base template and asserts
 // that with EnforceLimits=true the expected pointer error appears (or, for "ok"
 // boundary cases, no error appears), while with EnforceLimits=false no limit
-// error appears — proving the gate toggles behavior.
+// error appears, so the gate toggles behavior.
 func TestValidate_Limits_Gated(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -165,9 +165,9 @@ func TestValidate_Limits_Gated(t *testing.T) {
 			wantPtr: "/steps/0/stepEnvironments/0/name",
 		},
 
-		// ── name lengths count CHARACTERS (runes), not bytes ──
+		// ── name lengths count characters (runes), not bytes ──
 		// A multi-byte CJK name within the character limit but over it in bytes
-		// must be ACCEPTED. "好" is 3 bytes; 64 of them = 192 bytes ≤ 64 chars.
+		// is accepted. "好" is 3 bytes; 64 of them = 192 bytes ≤ 64 chars.
 		{
 			name:   "job name 64 CJK chars ok (192 bytes)",
 			mutate: func(t *openjd.JobTemplate) { t.Name = strings.Repeat("好", 64) },
@@ -429,11 +429,11 @@ func TestValidate_Limits_Gated(t *testing.T) {
 	}
 }
 
-// TestValidate_HugeRange_NoOOM is the resource-exhaustion regression guard at
-// the template-validation boundary (the path reachable from POST
-// /api/v1/jobs). A range whose arithmetic count exceeds the hard cap must be
-// rejected at the UNGATED structural parse check — regardless of EnforceLimits
-// — and must do so quickly, without materializing billions of integers.
+// TestValidate_HugeRange_NoOOM is the resource-exhaustion guard at the
+// template-validation boundary (the path reachable from POST /api/v1/jobs).
+// A range whose arithmetic count exceeds the hard cap is rejected at the
+// ungated structural parse check, whatever EnforceLimits says, and quickly,
+// without materializing billions of integers.
 func TestValidate_HugeRange_NoOOM(t *testing.T) {
 	const rangePtr = "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
 
@@ -468,18 +468,17 @@ func TestValidate_HugeRange_NoOOM(t *testing.T) {
 // ─── the parameter-space caps must gate the expression walk ─────────────────
 //
 // The expression walk (checkTemplateExpressions) is the more expensive of the
-// two walks the checker runs over a step's parameter space -- validated
-// directly: one step at exactly maxTaskParameterDefinitions x
-// 1024 entries of `{{ ("x" * 900000).upper() }}` costs ~97s of
-// CPU in this walk alone without the gate, unbounded by anything but the 4
-// MiB request body. These tests assert the PROPERTY the gate establishes --
-// the cap error is present and a walk-only error is absent -- rather than a
-// wall-clock threshold, which flakes on shared CI.
+// two walks the checker runs over a step's parameter space: one step at
+// maxTaskParameterDefinitions x 1024 entries of an expensive expression such
+// as `{{ ("x" * 900000).upper() }}` costs a long CPU run without the gate.
+// These tests assert what the gate establishes (the cap error is present and
+// a walk-only error is absent) rather than a wall-clock threshold, which is
+// unreliable on shared CI.
 
 // exprEnabledYAML is minimalValidYAML with the EXPR extension declared, so
-// checkTemplateExpressions actually walks the template instead of no-oping
-// (it returns nil immediately for a template that does not declare EXPR --
-// see its own doc comment in exprcheck.go).
+// checkTemplateExpressions walks the template instead of no-oping
+// (it returns nil immediately for a template that does not declare EXPR; see
+// its doc comment in exprcheck.go).
 func exprEnabledYAML() string {
 	return `
 specificationVersion: jobtemplate-2023-09
@@ -499,12 +498,12 @@ steps:
 // the expression walk (checkTemplateExpressions -> checkParameterSpaceExpressions
 // -> checkFormatString) can ever report it: the parameter-space cap checks
 // (validateParameterSpaceLimits) never look inside a RangeList entry's text,
-// only at counts. Its presence or absence at a RangeList entry's pointer is
-// therefore a clean proxy for whether the walk ran over that position.
+// only at counts. Its presence or absence at a RangeList entry's pointer
+// therefore shows whether the walk ran over that position.
 const walkOnlySyntaxError = "{{ 1 + }}"
 
 // makeStringTaskParams returns n STRING task-parameter definitions with
-// unique names, each carrying a single-entry RangeList of "ok" -- except
+// unique names, each carrying a single-entry RangeList of "ok", except
 // index badIdx, whose entry is walkOnlySyntaxError.
 func makeStringTaskParams(n, badIdx int) []openjd.TaskParamDefinition {
 	out := make([]openjd.TaskParamDefinition, n)
@@ -524,9 +523,9 @@ func makeStringTaskParams(n, badIdx int) []openjd.TaskParamDefinition {
 
 // walkOnlyErrorPtr is the pointer at which a RangeList entry's own
 // (in-)validity is reported (exprcheck.go's checkParameterSpaceExpressions:
-// "%s/taskParameterDefinitions/%d/range/%d"). No cap check ever produces an
-// error at this shape -- the count cap stops at ".../range" with no trailing
-// list index -- so the two pointer shapes never collide.
+// "%s/taskParameterDefinitions/%d/range/%d"). No cap check produces an error
+// at this shape (the count cap reports at ".../range" with no trailing list
+// index), so the two pointer shapes never collide.
 func walkOnlyErrorPtr(defIdx, entryIdx int) string {
 	return fmt.Sprintf("/steps/0/parameterSpace/taskParameterDefinitions/%d/range/%d", defIdx, entryIdx)
 }
@@ -551,11 +550,11 @@ func TestValidate_OverCapParameterSpace_SkipsExpressionWalk(t *testing.T) {
 	})
 
 	t.Run("baseline: value dimension at the cap (1024), the walk runs", func(t *testing.T) {
-		// Pins the OTHER boundary: a future ">=" typo in the value-count half
-		// of parameterSpaceOverCaps would silently stop checking expressions
-		// for the largest legal parameter lists, with nothing else in the
-		// suite failing (the definition-count baseline above only exercises
-		// 1 value per definition).
+		// Pins the other boundary: a ">=" in the value-count half of
+		// parameterSpaceOverCaps would stop checking expressions for the
+		// largest legal parameter lists, with nothing else in the suite
+		// failing (the definition-count case above exercises only 1 value per
+		// definition).
 		vals := make([]string, 1024)
 		for i := range vals {
 			vals[i] = "ok"
@@ -598,9 +597,9 @@ func TestValidate_OverCapParameterSpace_SkipsExpressionWalk(t *testing.T) {
 
 	t.Run("over the definition-count cap, EnforceLimits=false", func(t *testing.T) {
 		// The submit pipeline runs with EnforceLimits: false. The cap
-		// ValidationError itself stays gated off, but the walk must STILL be
-		// skipped -- gating the walk on EnforceLimits would leave exactly the
-		// pipeline that matters unprotected.
+		// ValidationError itself stays gated off, but the walk is still
+		// skipped; gating the walk on EnforceLimits would leave the submit
+		// pipeline unprotected.
 		tmpl := mustParse(t, exprEnabledYAML())
 		tmpl.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
 			TaskParameterDefinitions: makeStringTaskParams(17, 16),
@@ -641,12 +640,12 @@ func TestValidate_OverCapParameterSpace_SkipsExpressionWalk(t *testing.T) {
 	})
 
 	t.Run("an overlap-only violation (no count problem) does not silence the walk", func(t *testing.T) {
-		// "1-5,3-8" overlaps but is nowhere near either count cap -- 1
-		// definition, 8 values. parameterSpaceOverCaps must not treat this
-		// as over-cap (it checks only maxTaskParameterDefinitions and
-		// 1024, not INT range overlap -- see its own doc
-		// comment), so a second, unrelated task-parameter definition's
-		// walk-only syntax error in the SAME step must still be reported.
+		// "1-5,3-8" overlaps but is far below either count cap (1
+		// definition, 8 values). parameterSpaceOverCaps does not treat it as
+		// over-cap (it checks only maxTaskParameterDefinitions and 1024, not
+		// INT range overlap; see its doc comment), so a second, unrelated
+		// task-parameter definition's walk-only syntax error in the same
+		// step is still reported.
 		overlapping := "1-5,3-8"
 		tmpl := mustParse(t, exprEnabledYAML())
 		tmpl.Steps[0].ParameterSpace = &openjd.StepParameterSpace{

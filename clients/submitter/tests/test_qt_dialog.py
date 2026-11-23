@@ -41,9 +41,9 @@ def app() -> object:
 
 
 def _mock_server(products: "list[dict[str, str]] | None" = None) -> respx.Route:
-    # NOTE: `products` distinguishes "not given" (None, use the default single
-    # product) from "given as []" (an explicitly empty catalog) — `products or
-    # [default]` would silently discard a caller-supplied empty list.
+    # `products` distinguishes "not given" (None: the default single product)
+    # from "given as []" (an empty catalog); `products or [default]` would
+    # discard a caller-supplied empty list.
     if products is None:
         products = [{"name": "mini-render", "title": "Mini Render"}]
     respx.get(f"{BASE}/api/v1/products").mock(return_value=httpx.Response(200, json=products))
@@ -56,7 +56,7 @@ def _mock_server(products: "list[dict[str, str]] | None" = None) -> respx.Route:
             ],
         )
     )
-    # NOTE: list_farms is a bare-array endpoint in the real SDK (see
+    # list_farms is a bare-array endpoint in the real SDK (see
     # tests/test_session.py::test_farms_and_queues_fetch); an {"items": [...]}
     # mock would not match SqiClient.list_farms and would leave farmCombo
     # empty.
@@ -196,7 +196,7 @@ def test_owner_field_hidden_without_submit_as_permission(
 
 @respx.mock
 def test_owner_field_visible_when_me_endpoint_missing(app: object) -> None:
-    """A server predating /auth/me must not lose the Owner field (fail open)."""
+    """A 404 from /auth/me keeps the Owner field visible (fail open)."""
     _mock_server()
     respx.get(f"{BASE}/api/v1/auth/me").mock(return_value=httpx.Response(404))
     dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
@@ -673,7 +673,7 @@ def test_ticks_remembered_per_scene(app: object, monkeypatch: pytest.MonkeyPatch
     # Another scene has nothing remembered: back to the first target.
     assert _ticked(_pass_dialog(PassAdapter(scene_path="/x/other.mini"))) == ["A"]
 
-    # Remembered names that no longer exist are dropped.
+    # Remembered names the scene does not have are dropped.
     dialog.session.settings.set("last_targets.mini./x/s.mini", ["Gone", "B"])
     assert _ticked(_pass_dialog()) == ["B"]
     dialog.session.settings.set("last_targets.mini./x/s.mini", ["Gone"])
@@ -989,7 +989,7 @@ def test_sequence_product_is_whole_scene_for_an_all_movie_queue(app: object) -> 
 def test_single_ticked_target_honours_an_edit_to_its_target_parameter(
     app: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One ticked target behaves like today's single-target pre-fill."""
+    """One ticked target behaves like a single-target pre-fill."""
     route = _mock_pass_server()
     _capture_boxes(monkeypatch)
     dialog = _pass_dialog()
@@ -1307,7 +1307,7 @@ def test_per_target_submit_makes_no_host_call_on_the_worker(
     _submit_on_worker(dialog)
 
     assert route.call_count == 3
-    # The POSTs ran on the worker thread, so this really exercised it.
+    # The POSTs ran on the worker thread, so the test exercised it.
     assert all(t is not threading.main_thread() for t in log.threads("post"))
     _assert_host_calls_on_main_thread(log)
     names = log.names()

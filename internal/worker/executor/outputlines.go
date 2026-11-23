@@ -10,8 +10,7 @@ import (
 
 // maxOutputLine is the most bytes of one task output line delivered as a
 // single piece. A longer line is delivered as consecutive pieces of at most
-// this many bytes. It is bufio.Scanner's default token limit, so lines that
-// were delivered whole before still are.
+// this many bytes. It equals bufio.Scanner's default token limit.
 const maxOutputLine = bufio.MaxScanTokenSize
 
 // lineSplitter turns the slices bufio.Reader.ReadSlice returns into lines and,

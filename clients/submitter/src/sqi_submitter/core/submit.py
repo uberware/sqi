@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The one submit flow shared by every UI (Qt dialog, bpy panel, headless)."""
+"""The submit flow shared by the Qt dialog and headless callers."""
 
 from __future__ import annotations
 

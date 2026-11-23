@@ -94,8 +94,8 @@ function collapseCapabilityTags(tags: Record<string, string>): string[] {
     // A presence tag (value "true") collapses to its base name, with any
     // trailing version removed. The worker writes a version as underscore-
     // separated digits ("nuke_17_0", since OpenJD identifiers allow no dot or
-    // hyphen). A tag written by hand in the older "name-2025" form still
-    // collapses too. An empty value is a tag the operator cleared ("maya="),
+    // hyphen). A hand-written tag in the hyphenated "name-2025" form also
+    // collapses. An empty value is a tag the operator cleared ("maya="),
     // so it is shown as such rather than as present.
     const label =
       value === 'true'

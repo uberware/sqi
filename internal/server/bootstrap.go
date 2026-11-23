@@ -24,10 +24,9 @@ type BootstrapParams struct {
 // bootstrapAdmin seeds a single admin user when auth is enabled and no users
 // exist. It is idempotent and never overwrites an existing account: once the
 // users table is non-empty it is a no-op, even if p carries credentials. With
-// no credentials configured on an empty table it logs a warning and leaves
-// the server usable but unable to authenticate as anyone yet — the auth gate
-// does not fail closed — until an operator sets the bootstrap env vars
-// and restarts.
+// no credentials configured on an empty table it logs a warning and the
+// server starts with no local account to log in with, until an operator sets
+// the bootstrap env vars and restarts.
 func bootstrapAdmin(ctx context.Context, st store.Store, p BootstrapParams, logger *slog.Logger) error {
 	n, err := st.CountUsers(ctx)
 	if err != nil {
@@ -35,12 +34,11 @@ func bootstrapAdmin(ctx context.Context, st store.Store, p BootstrapParams, logg
 	}
 	if n > 0 {
 		if p.Username != "" && p.Password != "" {
-			// Bootstrap credentials were configured but there is already at
-			// least one user (e.g. one created while auth was off, when
-			// /users was unauthenticated) — bootstrap is a no-op and the
-			// configured credentials are silently ignored. Without this log
-			// an operator who restarts expecting a new admin gets nothing
-			// and no explanation. Never log the credentials themselves.
+			// Bootstrap credentials are configured but at least one user
+			// exists (for example one created while auth was off, when
+			// /users was unauthenticated), so bootstrap is a no-op. Log that,
+			// so an operator expecting a new admin learns why. Never log the
+			// credentials themselves.
 			logger.InfoContext(ctx, "auth bootstrap credentials are configured but users already "+
 				"exist — skipping bootstrap; use the /users API or an existing account to log in",
 				slog.String("username", p.Username))

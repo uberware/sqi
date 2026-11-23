@@ -16,7 +16,7 @@ const (
 	// StepStatusReady means all dependencies have succeeded; tasks can be scheduled.
 	StepStatusReady StepStatus = "ready"
 	// StepStatusRunning is reserved and never written: no store operation moves
-	// a step to running, so a step with running tasks stays ready. It survives
+	// a step to running, so a step with running tasks stays ready. It exists
 	// for the wire types and for a submission written at that status (test
 	// fixtures, through CreateJobSubmission), which FinalizeStep can still
 	// finish.
@@ -74,11 +74,11 @@ type Step struct {
 
 // StepHostRequirements is the scheduler-facing representation of a step's
 // hostRequirements block, normalised from the raw OpenJD model at submission
-// time. The scheduler's matching logic reads these fields to
-// determine whether a given worker can run a task.
+// time. The scheduler's matching logic reads these fields to determine whether
+// a given worker can run a task.
 //
-// Capability names follow the conventions established in the OpenJD spec and
-// documented in [matcher.go]:
+// Capability names follow the OpenJD specification and are matched in
+// internal/scheduler/matcher.go:
 //
 //   - "attr.worker.os.family"        → worker OS family ("linux", "windows", "macos";
 //     a worker reporting GOOS "darwin" matches "macos" — see scheduler.osFamily)
@@ -124,12 +124,12 @@ type StepAttributeRequirement struct {
 	// Name is the capability name, e.g. "attr.worker.os.family".
 	Name string `json:"name"`
 	// AnyOf, if non-empty, requires the host attribute to equal at least one
-	// of the listed values.  String comparison is case-insensitive for
+	// of the listed values. String comparison is case-insensitive for
 	// well-known attributes (os.family, computelocation); exact for custom tags.
 	AnyOf []string `json:"any_of,omitempty"`
 	// AllOf, if non-empty, requires the host attribute to equal every listed
-	// value.  Useful for multi-valued tag semantics (e.g. requiring two
-	// software packages to both be installed).
+	// value, for multi-valued tags (e.g. requiring two software packages to
+	// both be installed).
 	AllOf []string `json:"all_of,omitempty"`
 }
 
@@ -145,7 +145,7 @@ type StepStore interface {
 	// FinalizeStep derives the step's terminal status from its tasks and writes
 	// it in one statement (invariant I4): failed if any task failed, else
 	// canceled if any was canceled, else completed. It returns the step's
-	// terminal status and whether THIS call wrote it. While any task is
+	// terminal status and whether this call wrote it. While any task is
 	// non-terminal it returns ("", false, nil) and writes nothing. A step that
 	// is already terminal returns its status with false, so a redelivered
 	// completion still drives the caller's idempotent propagation. A step with
@@ -179,12 +179,12 @@ type StepStore interface {
 	// FinalizeStep would finalize but that no future task report will ever
 	// trigger. Used once at scheduler start. Ordered by job ID, then step order.
 	//
-	// The job condition is deliberate. A job cancel finalizes the
-	// job's steps in its own transaction (CancelJobExecution), and migration
-	// 00033 repaired the jobs canceled by earlier releases, so a terminal job
-	// carries open steps only in a database that skipped that repair; those are
-	// the migration's to finalize, not this start-up pass's, which on a healthy
-	// farm must stay one query and no writes. The repair target is a live job
+	// A job cancel finalizes the job's steps in its own transaction
+	// (CancelJobExecution), and migration 00033 finalizes the open steps of
+	// terminal jobs, so a terminal job carries open steps only in a database
+	// that has not been through that repair; those are the migration's to
+	// finalize, not this start-up pass's, which on a healthy farm must stay
+	// one query and no writes. The repair target is a live job
 	// whose step never finalized (so the job never completed); a terminal job
 	// has no downstream that needs its steps finalized, and jobs blocked on it
 	// follow its job status. A paused job is live and is listed. A step whose

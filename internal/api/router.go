@@ -126,7 +126,7 @@ type Config struct {
 // HAGate is how the router asks a server in a high-availability group for
 // its role, on every request.
 type HAGate struct {
-	// IsLeader reports whether this server leads now.
+	// IsLeader reports whether this server currently leads.
 	IsLeader func() bool
 	// LeaderName names the server leading, "" when none is known.
 	LeaderName func() string
@@ -574,7 +574,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		// "/workers/enroll" has the same two-segment shape as "/workers/{id}"
 		// (GET and DELETE are always registered on that pattern, in the groups
 		// below), so chi routes it there with id="enroll" and the path matches
-		// a registered pattern, just not for POST. openapi.yaml documents 405.
+		// a registered pattern, but not for POST. openapi.yaml documents 405.
 		if deps.NATSAuthEnabled && deps.NATSAuthEnrollmentEndpointEnabled {
 			api.Post("/workers/enroll", workerEnroll.enroll)
 		}
@@ -773,7 +773,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	// ── Embedded web UI ────────────────────────────────────────
 	// Mounted as the root catch-all, so it handles only paths the API and
 	// observability routes above did not claim. The handler serves embedded
-	// assets and falls back to the SPA shell for client-side routes under /ui/*.
+	// assets and falls back to the SPA shell for client-side routes (any
+	// extensionless path with no embedded file).
 	if uiHandler, err := ui.NewHandler(logger); err != nil {
 		// A failure here means the embedded asset tree is malformed. Log it
 		// and leave the UI unmounted; the REST API and WebSocket keep working.

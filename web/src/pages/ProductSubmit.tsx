@@ -59,11 +59,11 @@ export default function ProductSubmit() {
   const [paused, setPaused] = useState(false)
 
   // Seed parameter defaults when data arrives, and re-seed fields the user has
-  // not yet edited whenever the product's parameter payload changes (e.g. after
+  // not edited whenever the product's parameter payload changes (e.g. after
   // the product definition is edited). TanStack Query's structural sharing keeps
-  // params.data referentially stable unless the content actually changed, so this
-  // re-seeds only on a genuine definition change — not on every background
-  // refetch — and never clobbers a value the user has already touched.
+  // params.data referentially stable unless the content changed, so this
+  // re-seeds only on a definition change, not on every background refetch, and
+  // never clobbers a value the user has touched.
   const touchedFields = useRef<Set<string>>(new Set())
   const seededParams = useRef<ProductParameter[] | null>(null)
   useEffect(() => {

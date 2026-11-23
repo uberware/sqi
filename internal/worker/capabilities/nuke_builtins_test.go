@@ -42,9 +42,8 @@ func TestNukeDetector_WindowsGlobIsGated(t *testing.T) {
 // TestNukeDetector_FindsADefaultInstallOnEveryPlatform checks that the shipped
 // globs match each platform's default install, that the version comes out as
 // 17.1 on all of them, and that a Windows-only glob stays silent elsewhere.
-// The Windows row is the one that failed on a real machine: the 17.1v2 MSI
-// writes HKLM\SOFTWARE\Foundry\Nuke 17.1v2, not the key the detector once
-// relied on, so only a glob finds it.
+// On Windows the 17.1v2 MSI writes HKLM\SOFTWARE\Foundry\Nuke 17.1v2, which
+// no registry check reads, so only a glob finds it.
 func TestNukeDetector_FindsADefaultInstallOnEveryPlatform(t *testing.T) {
 	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	d := builtinDetector(t, "nuke")

@@ -12,9 +12,8 @@ import (
 // (U+000A), and TAB (U+0009) characters to support multi-line expressions in
 // YAML literal block scalars" (Expression Language, "When EXPR is enabled").
 //
-// It is a WHOLE-VALUE amendment. An earlier implementation exempted only the
-// insides of a {{ }} — a narrower reading that looks more conservative and is
-// wrong: the fixtures this exists to clear are multi-line Python scripts with
+// The amendment covers the whole value, not only the insides of a {{ }}: the
+// conformance fixtures it applies to are multi-line Python scripts with
 // single-line expressions embedded, so their newlines are all in literal text.
 // Only the three named characters become legal; every other Cc character is
 // still rejected.
@@ -55,8 +54,8 @@ func TestValidateArgStringChars(t *testing.T) {
 }
 
 // TestValidateAction_ArgNewlinesGatedOnEXPR pins that the amendment applies
-// ONLY to a template that declares the extension. A base-spec template's
-// behavior must be byte-for-byte unchanged, diagnostics included.
+// only to a template that declares the extension. A base-spec template keeps
+// the base-spec rule and its diagnostics.
 func TestValidateAction_ArgNewlinesGatedOnEXPR(t *testing.T) {
 	a := Action{Command: "echo", Args: []string{"line one\nline two"}}
 
@@ -68,12 +67,10 @@ func TestValidateAction_ArgNewlinesGatedOnEXPR(t *testing.T) {
 	}
 }
 
-// TestValidateAction_CommandIsNotAmended is the boundary of the amendment, and
-// the reason it is worth its own test: <CommandString> and <ArgString> are
-// SEPARATE types in the schema (Template Schemas §5.1 and §5.2), and the EXPR
-// specification amends only the second. Relaxing both would be easy, symmetric,
-// and unauthorized — a command carrying a line break still cannot survive the
-// round trip to argv, and nothing in the spec says otherwise.
+// TestValidateAction_CommandIsNotAmended pins the boundary of the amendment:
+// <CommandString> and <ArgString> are separate types in the schema (Template
+// Schemas §5.1 and §5.2), and the EXPR specification amends only the second.
+// A command carrying a line break cannot survive the round trip to argv.
 func TestValidateAction_CommandIsNotAmended(t *testing.T) {
 	a := Action{Command: "echo\nhello"}
 	for _, exprDeclared := range []bool{false, true} {

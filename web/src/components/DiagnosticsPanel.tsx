@@ -20,8 +20,8 @@ interface Props {
   /** Optional task_id filter (used by the task-detail fallback). */
   taskId?: string
   /**
-   * When true, the panel grows to fill its flex parent (used on the Admin page
-   * where the server log is the only content). When false (default), the log
+   * When true, the panel grows to fill its flex parent (used on the Server Log
+   * page, where the server log is the only content). When false (default), the log
    * list is capped at a fixed height.
    */
   fill?: boolean

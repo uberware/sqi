@@ -10,19 +10,17 @@ import (
 // ─── section 3.6.2's scope table, transcribed ──────────────────────────────
 //
 // Template Schemas section 3.6.2 gives, per let: location, the set of symbols
-// a binding's own expression MAY reference. This file is that table turned
-// into assertions, taken directly from
-// third_party/openjd-specifications/wiki/2023-09-Template-Schemas.md
-// section 3.6.2.
+// a binding's own expression may reference. This file turns that table, from
+// third_party/openjd-specifications/wiki/2023-09-Template-Schemas.md section
+// 3.6.2, into assertions.
 //
-// Each location gets one test with one table: a row per symbol the row
-// GRANTS, asserting it resolves with no error, and a row per symbol the row
-// WITHHOLDS, asserting it is rejected at the binding's own pointer -- the
-// half most easily skipped, and the half that catches a scope wired too
-// wide. Every withheld symbol is also DECLARED somewhere else in the same
-// template (a sibling step, a sibling environment, or a different scope of
-// the same element) so a withhold failure is provably about SCOPE, not about
-// the symbol simply not existing anywhere in the document.
+// Each location gets one test with one table: a row per symbol the location
+// grants, asserting it resolves with no error, and a row per symbol it
+// withholds, asserting it is rejected at the binding's own pointer; the
+// withheld rows catch a scope wired too wide. Every withheld symbol is also
+// declared elsewhere in the same template (a sibling step, a sibling
+// environment, or a different scope of the same element), so a rejection is
+// about scope, not about the symbol not existing in the document.
 
 // letScopeCase is one row of the table: a symbol reference tried verbatim as
 // a let binding's right-hand side, and whether that location's scope grants
@@ -37,8 +35,8 @@ type letScopeCase struct {
 	wantErr bool
 }
 
-// runLetScopeCases builds a template from tmplFmt -- exactly one "%s",
-// filled with each case's binding -- for every case in cases, and asserts
+// runLetScopeCases builds a template from tmplFmt (exactly one "%s", filled
+// with each case's binding) for every case in cases, and asserts
 // checkTemplateExpressions accepts a granted symbol with zero errors and
 // rejects a withheld one with exactly one error at wantPtr, the let
 // binding's own pointer (checkLetBindings' doc comment: a failed binding
@@ -67,7 +65,7 @@ func runLetScopeCases(t *testing.T, tmplFmt, wantPtr string, cases []letScopeCas
 }
 
 // TestLetScope_StepTemplateLet is section 3.6.2's <StepTemplate>.let row
-// (ScopeStepTemplate, exprcheck.go's checkStepExpressions -- the step's own
+// (ScopeStepTemplate, in exprcheck.go's checkStepExpressions: the step's own
 // let: block, evaluated before hostRequirements/parameterSpace/script/
 // stepEnvironments).
 //
@@ -127,15 +125,15 @@ steps:
 }
 
 // TestLetScope_StepScriptLet is section 3.6.2's <StepScript>.let row
-// (ScopeStepScript, checkStepExpressions -- the step SCRIPT's own let:
+// (ScopeStepScript, in checkStepExpressions: the step script's own let:
 // block).
 //
 // Grants everything <StepTemplate>.let does, plus Task.Param.*,
-// Task.RawParam.*, Task.File.* (the task now exists) and Session.* (a host
-// now exists).
-// Withholds: Env.File.* -- a sibling job environment declares "f", but
-// Env.File. is a different environment's own embedded-file family and is
-// never in a step script's scopeFamilies.
+// Task.RawParam.*, Task.File.* (a task exists in this scope) and Session.*
+// (a host exists).
+// Withholds: Env.File.*. A sibling job environment declares "f", but
+// Env.File. is an environment's own embedded-file family and is never in a
+// step script's scopeFamilies.
 func TestLetScope_StepScriptLet(t *testing.T) {
 	const tmplFmt = `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -188,16 +186,15 @@ steps:
 
 // TestLetScope_EnvironmentScriptLet_JobEnvironment is section 3.6.2's
 // <EnvironmentScript>.let row (ScopeJobEnvironment, checkEnvironmentExpressions
-// called for tmpl.JobEnvironments) at a JOB-level environment -- one with no
+// called for tmpl.JobEnvironments) at a job-level environment, which has no
 // enclosing step.
 //
 // Grants: Param.*, RawParam.*, Job.Name, Session.*, Env.File.* (this
 // environment's own embedded files).
-// Withholds: Step.Name (this is the row's own reason, per the wiki note: a
-// job environment has no enclosing step) and Task.Param.*, Task.RawParam.*,
-// Task.File.* (a sibling step declares task parameter F and an embedded
-// file "f", but no task exists from a job environment's point of view
-// either).
+// Withholds: Step.Name (per the specification's note, a job environment has
+// no enclosing step) and Task.Param.*, Task.RawParam.*, Task.File.* (a
+// sibling step declares task parameter F and an embedded file "f", but no
+// task exists in a job environment).
 func TestLetScope_EnvironmentScriptLet_JobEnvironment(t *testing.T) {
 	const tmplFmt = `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -249,34 +246,29 @@ steps:
 }
 
 // TestLetScope_EnvironmentScriptLet_StepEnvironment is section 3.6.2's
-// <EnvironmentScript>.let row again, this time at a STEP-level environment.
+// <EnvironmentScript>.let row again, at a step-level environment.
 //
-// The row itself does not list Step.Name among what it grants, and its note
-// explains why: EnvironmentScript "may also appear in a Job-level
-// environment or a standalone environment template where no enclosing Step
-// exists" -- the row is written once for one element type used in three
-// places, and the omission is there to cover the two placements that have no
-// step, not to strip Step.Name from the one placement that does.
+// The row does not list Step.Name among what it grants, and its note says
+// why: EnvironmentScript "may also appear in a Job-level environment or a
+// standalone environment template where no enclosing Step exists". The row
+// is written once for an element used in three places, and the omission
+// covers the two placements that have no step.
 //
-// So a step environment's own let: KEEPS Step.Name. Section 7.3.1, not
-// 3.6.2's note, governs where Step.Name is legal, and ScopeStepEnvironment
-// differs from ScopeJobEnvironment by exactly that symbol (scope.go's
-// scopeFixed) for every OTHER position in this same element -- variables,
-// actions, embeddedFiles data. Reading 3.6.2's omission as also stripping
-// Step.Name from a step environment's let would make that one position
-// disagree with every sibling position in the same element, for a reason
-// (the note) that does not apply to it: a step environment's enclosing step
-// exists. The only fixture on this row,
-// 7.3.1--step-name-in-job-environment-let.invalid.yaml, is a JOB
-// environment and does not settle -- and is consistent with -- the step case
-// this test pins.
+// A step environment's own let: therefore keeps Step.Name. Section 7.3.1
+// governs where Step.Name is legal, and ScopeStepEnvironment differs from
+// ScopeJobEnvironment by exactly that symbol (scope.go's scopeFixed) at every
+// other position in the same element: variables, actions, embeddedFiles
+// data. Withholding Step.Name from a step environment's let would make that
+// one position disagree with its siblings, for a reason that does not apply:
+// a step environment has an enclosing step. The only fixture on this row,
+// 7.3.1--step-name-in-job-environment-let.invalid.yaml, is a job environment;
+// it is consistent with the step case this test pins but does not decide it.
 //
 // Grants: everything the job-environment row grants, plus Step.Name.
-// Withholds: Task.Param.*, Task.RawParam.* -- a sibling task parameter (F)
-// exists on the enclosing step -- and Task.File.* -- the enclosing step's
-// own script declares an embedded file "f" -- but this scope's family list
-// still does not include any of the three (a step environment's script does
-// not run per-task).
+// Withholds: Task.Param.* and Task.RawParam.* (a task parameter F exists on
+// the enclosing step) and Task.File.* (the enclosing step's script declares
+// an embedded file "f"); this scope's family list includes none of the three,
+// because a step environment's script does not run per task.
 func TestLetScope_EnvironmentScriptLet_StepEnvironment(t *testing.T) {
 	const tmplFmt = `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -328,16 +320,15 @@ steps:
 }
 
 // TestLetScope_SimpleAction is section 3.6.2's third row, which sqi cannot
-// test because SimpleAction -- a step's bash:/powershell: shorthand -- is a
-// FEATURE_BUNDLE_1 element and is not modeled at all.
+// test because SimpleAction (a step's bash:/powershell: shorthand) is a
+// FEATURE_BUNDLE_1 element that sqi does not model.
 //
-// The row is transcribed here so that whenever FEATURE_BUNDLE_1 is taken up,
-// its rules are already written down rather than re-derived from the spec:
+// The row, for reference:
 //
 //	<SimpleAction>.let may reference: Param.*, RawParam.*, Task.Param.*,
 //	Task.RawParam.*, Session.*, Job.Name, Step.Name, step-level bindings, and
 //	earlier bindings in the same block.
-//	It may NOT reference Task.File.* -- the one place it differs from
+//	It may not reference Task.File.*, the one place it differs from
 //	<StepScript>.let.
 //	Bound names are visible in: script, args.
 func TestLetScope_SimpleAction(t *testing.T) {

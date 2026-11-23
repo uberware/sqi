@@ -16,12 +16,12 @@ ghcr.io/uberware/sqi/sqi-worker:<tag>
 
 | Tag | Description |
 |---|---|
-| `latest` | Rolling build of the `main` branch — republished on every push to `main` (may be ahead of the last tagged release) |
-| `v0.3.0` | A specific tagged release |
-| `v0` | Rolling major-version tag — the newest `v0.x` release |
+| `latest` | Build of the `main` branch, republished on every push to `main` (may be ahead of the last tagged release) |
+| `vX.Y.Z` | A specific tagged release |
+| `v0` | The newest `v0.x` release |
 
-For production, pin a specific release tag (`v0.3.0`) for reproducibility.
-There is no `main` tag; the `latest` tag tracks the `main` branch.
+For production, pin a specific release tag (`vX.Y.Z`).
+There is no `main` tag; `latest` tracks the `main` branch.
 
 Pull the image:
 
@@ -31,16 +31,16 @@ docker pull ghcr.io/uberware/sqi/sqi-worker:latest
 
 ### Image layout
 
-The image is based on **Alpine 3.21** with the following additions:
+The image is based on Alpine 3.21 with the following additions:
 
-- `ca-certificates` — required for TLS connections to NATS over the network.
-- `tzdata` — required for timezone-aware job scheduling.
+- `ca-certificates`, for TLS connections.
+- `tzdata`, time-zone data for the worker and its task processes.
 - A dedicated non-root user `sqiworker` runs the worker process.
 - The worker binary is installed at `/usr/local/bin/sqi-worker`.
-- `/var/lib/sqi-worker` is created and owned by `sqiworker` — mount a volume
-  here for worker ID persistence. The image already pins
+- `/var/lib/sqi-worker` is created and owned by `sqiworker`. Mount a volume
+  here to keep the worker ID. The image sets
   `SQI_WORKER_DATA_DIR=/var/lib/sqi-worker` (the binary's built-in default is
-  `~/.sqi/worker`), so you only need to set it yourself when mounting the volume
+  `~/.sqi/worker`), so set it yourself only when mounting the volume
   at a different path.
 
 The entrypoint is:
@@ -63,28 +63,27 @@ Running the container without arguments starts the worker agent. Pass
 
 ## Required environment variables
 
-The only strictly required environment variable is the NATS server address
-(when mDNS auto-discovery is not available, which is the common case in
-container environments):
+The one required setting is the NATS server address, when mDNS discovery is
+not available (the common case in container networks):
 
 | Variable | Description |
 |---|---|
-| `SQI_WORKER_NATS_URL` | URL of the NATS server embedded in `sqi-server`, e.g. `nats://sqi-server:4222` |
+| `SQI_WORKER_NATS_URL` | URL of the broker: the one embedded in `sqi-server`, e.g. `nats://sqi-server:4222`, or an external NATS cluster's |
 | `SQI_WORKER_DISCOVERY_ENABLE_MDNS` | Set to `false` to disable mDNS (required in container networks that prohibit multicast) |
 
-Strongly recommended when mounting a data volume:
+Recommended when mounting a data volume:
 
 | Variable | Description |
 |---|---|
-| `SQI_WORKER_DATA_DIR` | Set to the volume mount path (`/var/lib/sqi-worker`) so the worker ID is written to the persistent volume rather than the default `~/.sqi/worker`. This **must** be a persistent volume once broker authentication is in use: the worker's nkey seed lives under this directory too (`<data_dir>/worker.nk` by default), and losing the volume does not just lose the identity — the worker's already-enrolled credential still blocks re-enrollment under the same worker ID until an operator revokes it. |
+| `SQI_WORKER_DATA_DIR` | Set to the volume mount path (`/var/lib/sqi-worker`) so the worker ID is written to the persistent volume rather than the default `~/.sqi/worker`. With broker authentication on, this must be a persistent volume: the worker's nkey seed lives under this directory too (`<data_dir>/worker.nk` by default), and after the volume is lost the worker's enrolled credential blocks re-enrollment under the same worker ID until an operator revokes it. |
 
 Required in addition to `SQI_WORKER_NATS_URL` when the server has broker
 authentication on (`nats.auth.enabled`):
 
 | Variable | Description |
 |---|---|
-| `SQI_WORKER_NATS_SERVER_URL` | The server's HTTP base URL (e.g. `http://sqi-server:8080`), used for enrollment over REST. Required whenever a join token is configured — it is not derived from mDNS discovery. |
-| `SQI_WORKER_NATS_JOIN_TOKEN_FILE` | Path to a file containing a join token, mounted as a secret. Preferred over `SQI_WORKER_NATS_JOIN_TOKEN` — a token in an environment variable is visible via the container's inspect output. |
+| `SQI_WORKER_NATS_SERVER_URL` | The server's HTTP base URL (e.g. `http://sqi-server:8080`), used for enrollment over REST. Required whenever a join token is configured; it is not derived from mDNS discovery. |
+| `SQI_WORKER_NATS_JOIN_TOKEN_FILE` | Path to a file containing a join token, mounted as a secret. Preferred over `SQI_WORKER_NATS_JOIN_TOKEN`, because a token in an environment variable is visible in the container's inspect output. |
 | `SQI_WORKER_NATS_JOIN_TOKEN` | A join token supplied directly. Ignored once a credential file already exists at `SQI_WORKER_NATS_CREDENTIAL_FILE`. |
 | `SQI_WORKER_NATS_CREDENTIAL_FILE` | Path to the worker's nkey seed file. Defaults to `<data_dir>/worker.nk`; only meaningful under a mounted, persistent `SQI_WORKER_DATA_DIR`. |
 
@@ -100,12 +99,10 @@ Useful optional variables for container deployments:
 | `SQI_WORKER_LOG_FORMAT` | `json` (default) or `text` |
 | `SQI_DIAGNOSTICS_ENABLED` | `true` (default) mirrors the worker's own logs to the server's diagnostics view; set `false` to disable |
 
-All other configuration options have sensible defaults for container
-deployments. See
-[`docs/worker-configuration.md`](worker-configuration.md) for the full list.
-Note that the operator-owned `staging.scratch_dir` / `staging.sync_command`
-settings (used for `stage_locally` path delivery) have **no** environment-variable
-form — they must be supplied via a mounted config file.
+See [`docs/worker-configuration.md`](worker-configuration.md) for every other
+option. The `staging.scratch_dir` and `staging.sync_command` settings (used for
+`stage_locally` path delivery) have no environment-variable form and must be
+supplied in a mounted config file.
 
 ---
 
@@ -115,9 +112,10 @@ form — they must be supplied via a mounted config file.
 
 Mount a named volume or host path at `/var/lib/sqi-worker` and point
 `SQI_WORKER_DATA_DIR` at it to persist the worker ID across container restarts.
-Without this, every container restart creates a new worker ID and the old
-record in `sqi-server` is orphaned (it will be swept up by the heartbeat
-timeout after ~30 s, but the orphaned record accumulates in the database).
+Without it, every container restart creates a new worker ID. The old record
+in `sqi-server` goes offline after `scheduler.heartbeat_timeout` (30 s by
+default) and is deleted after `scheduler.offline_worker_retention` (24 h by
+default).
 
 ```sh
 docker run \
@@ -139,8 +137,7 @@ docker run \
   ghcr.io/uberware/sqi/sqi-worker:latest
 ```
 
-> **Note:** The Alpine-based worker image intentionally does not include any
-> DCC software. You are responsible for providing the appropriate base image
+> The worker image includes no DCC software. Provide a suitable base image
 > or bind mounts for the software your tasks require.
 
 ### Named storage locations
@@ -157,28 +154,28 @@ docker run \
   ghcr.io/uberware/sqi/sqi-worker:latest
 ```
 
-For **staged** access to object storage (the `stage_locally` path-translation
-mode — see [S3-compatible storage](storage-s3.md)), the worker invokes an
+For staged access to object storage (the `stage_locally` path-translation
+mode; see [S3-compatible storage](storage-s3.md)), the worker invokes an
 operator-provided `staging.sync_command` before and after each task. sqi has no
 S3 client, and its built-in staging copy works on filesystem paths only, so for
 object storage that sync tool (`aws`, `rclone`, `mc`, `rsync`, …) must be
-present in the image — add it to a custom image built `FROM` this one — and the
-`staging.scratch_dir` / `staging.sync_command` settings must come from a mounted
-config file (they have no environment-variable form).
+present in the image (add it to a custom image built `FROM` this one), and the
+`staging.scratch_dir` and `staging.sync_command` settings must come from a
+mounted config file.
 
 ---
 
 ## Network requirements
 
-The worker container must be able to reach the **NATS port** of `sqi-server`
-(default `4222`). No inbound connections from the server to the worker are
-required — all communication is worker-initiated.
+The worker container must be able to reach the NATS port of `sqi-server`
+(default `4222`). The server makes no connections to the worker; the worker
+initiates all communication.
 
 | Direction | Protocol | Port | Purpose |
 |---|---|---|---|
-| Worker → Server | TCP | `4222` | NATS — core-NATS work leases (task assignments) plus JetStream (task status, logs, heartbeat, registration) |
-| Worker → Server | TCP | `8080` (default `http.addr`) | REST — only when the server's `nats.auth.enabled` is on and a join token is configured: a one-time `POST /api/v1/workers/enroll` before the worker ever connects to NATS |
-| (optional) Prometheus → Worker | TCP | `9091` | Metrics scraping — only if metrics are exposed |
+| Worker → Server | TCP | `4222` | NATS: core-NATS work leases (task assignments) plus JetStream (task status, logs, heartbeat, registration) |
+| Worker → Server | TCP | `8080` (default `http.addr`) | REST, only when the server's `nats.auth.enabled` is on and a join token is configured: a one-time `POST /api/v1/workers/enroll` before the worker connects to NATS |
+| (optional) Prometheus → Worker | TCP | `9091` | Metrics scraping, only if metrics are exposed |
 
 ### Docker networking
 
@@ -217,7 +214,7 @@ volumes:
 
 ## `docker run` quickstart
 
-### Minimal — mDNS disabled, explicit NATS URL
+### Minimal: mDNS disabled, explicit NATS URL
 
 ```sh
 docker run -d \
@@ -281,10 +278,10 @@ docker run -d \
 The worker exposes standard health endpoints useful for container orchestrators:
 
 ```sh
-# Liveness — returns 200 when the process is running
+# Liveness: 200 while the process is running
 curl -sf http://localhost:9091/healthz
 
-# Readiness — returns 503 when the NATS connection is not established
+# Readiness: 503 while the NATS connection is down
 curl -sf http://localhost:9091/readyz
 ```
 
@@ -334,8 +331,8 @@ docker run \
   ...
 ```
 
-This is acceptable when the container's root does not map to the host root
-(e.g., using user namespaces).
+Do this only when the container's root does not map to the host root
+(e.g., with user namespaces).
 
 ---
 
@@ -356,7 +353,7 @@ docker build \
 
 ## See also
 
-- [`docs/worker-deployment.md`](worker-deployment.md) — Bare-metal Linux, macOS, and Windows deployment.
-- [`docs/worker-configuration.md`](worker-configuration.md) — Full configuration reference.
-- [`deploy/docker/worker/Dockerfile`](https://github.com/uberware/sqi/blob/main/deploy/docker/worker/Dockerfile) — Image source.
-- [`deploy/docker-compose.smoke.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.smoke.yml) — Smoke-test Compose file for server + worker.
+- [`docs/worker-deployment.md`](worker-deployment.md): bare-metal Linux, macOS, and Windows deployment.
+- [`docs/worker-configuration.md`](worker-configuration.md): full configuration reference.
+- [`deploy/docker/worker/Dockerfile`](https://github.com/uberware/sqi/blob/main/deploy/docker/worker/Dockerfile): image source.
+- [`deploy/docker-compose.smoke.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.smoke.yml): smoke-test Compose file for server + worker.

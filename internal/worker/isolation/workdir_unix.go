@@ -33,14 +33,13 @@ func SecureWorkDir(dir string, cred *Credential) error {
 // are untouched by it and remain daemon-owned unless chowned explicitly. A nil
 // cred is a no-op, matching Apply's no-isolation behavior.
 //
-// Uses os.Lchown, NOT os.Chown, on every entry. root is daemon-created, but
-// its CONTENTS are not: they come from job-supplied staging paths, and the
-// operator's canonical sync command (rsync -a) preserves symlinks rather than
-// following them. os.Chown dereferences a symlink and would chown whatever it
-// points at — including a target OUTSIDE root entirely — to the run-as-user
-// identity, handing that identity write access to an arbitrary daemon-chosen
-// (or worse, attacker-chosen-via-symlink) path. os.Lchown chowns the symlink
-// entry itself and never follows it, closing that escalation.
+// It uses os.Lchown, not os.Chown, on every entry. root is daemon-created,
+// but its contents come from job-supplied staging paths, and the operator's
+// usual sync command (rsync -a) preserves symlinks rather than following
+// them. os.Chown dereferences a symlink and would chown whatever it points
+// at, including a target outside root, to the run-as-user identity, giving
+// that identity write access to a path a job chose. os.Lchown chowns the
+// symlink entry itself and never follows it.
 func ChownRecursive(root string, cred *Credential) error {
 	if cred == nil {
 		return nil
@@ -53,13 +52,11 @@ func ChownRecursive(root string, cred *Credential) error {
 		// gosec's G122 flags any filesystem call inside a WalkDir callback as a
 		// generic symlink-TOCTOU risk (a race between the directory walk's
 		// stat and this call, if path were replaced by a symlink in between).
-		// That risk is specifically about an operation that FOLLOWS the final
-		// symlink component — os.Lchown deliberately does not: even if path
-		// were swapped for a symlink between WalkDir's stat and this call,
-		// Lchown still only ever changes the symlink entry's own ownership,
-		// never a target it might point at. Using Lchown instead of Chown is
-		// the guard against this class of risk (see the doc comment above),
-		// not an instance of it.
+		// That risk applies to an operation that follows the final symlink
+		// component, which os.Lchown does not: even if path were swapped for
+		// a symlink between WalkDir's stat and this call, Lchown changes only
+		// the symlink entry's own ownership, never its target (see the doc
+		// comment above).
 		if chErr := os.Lchown(path, uid, gid); chErr != nil { //nolint:gosec // Lchown does not follow symlinks; see comment above
 			return fmt.Errorf("chown %q: %w", path, chErr)
 		}
@@ -73,27 +70,22 @@ func ChownRecursive(root string, cred *Credential) error {
 // execute ("search") bit for others, returning an actionable error naming the
 // first offending directory instead of silently widening it.
 //
-// It NEVER chmod's anything — widening an existing directory's mode to make
-// it traversable is the anti-pattern this validation replaces: creating a
-// directory 0711 from birth (see session.Manager's session root,
-// staging's scratch base) is a different, safe operation, since it can only
-// ever affect a directory the creating call itself is making for the first
-// time. An operator-chosen path may sit under a directory that is
-// deliberately restricted (/root, above all others) and must never be
-// widened by sqi to make isolation "just work" — refusing to proceed with a
-// clear, actionable error is the correct behavior instead.
+// It never chmods anything. Creating a directory 0711 (session.Manager's
+// session root, staging's scratch base) affects only a directory the call is
+// creating; widening an existing directory is different. An operator-chosen
+// path may sit under a directory restricted on purpose (/root above all),
+// which sqi must not widen to make isolation work, so it refuses with an
+// error instead.
 //
 // A missing ancestor is not an error: os.MkdirAll creates it (at the correct
-// mode) the first time the path is actually used, so there is nothing to
-// validate yet.
+// mode) the first time the path is used, so there is nothing to validate yet.
 //
-// Called from two places, never unconditionally: cmd/sqi-worker's boot-time
-// validateIsolationAncestors (only when isolation.required is set — see its
-// own doc for why Provider.Capable() alone is the wrong gate: root and
-// will-actually-isolate are not the same predicate), and per-assignment from
-// session.Manager.Create / staging.Stager.StageIn the moment an assignment
-// actually carries run-as-user isolation, so that case fails only the one
-// task rather than the whole worker.
+// Called from two places: cmd/sqi-worker's boot-time
+// validateIsolationAncestors (only when isolation.required is set; see its
+// doc for why Provider.Capable() is the wrong gate), and per assignment from
+// session.Manager.Create / staging.Stager.StageIn when an assignment carries
+// run-as-user isolation, so that case fails only the one task rather than
+// the whole worker.
 func ValidateTraversable(paths ...string) error {
 	checked := make(map[string]bool)
 	for _, p := range paths {
@@ -112,7 +104,7 @@ func ValidateTraversable(paths ...string) error {
 }
 
 // validateAncestorChain walks dir and every ancestor of it up to the
-// filesystem root, requiring the "other" execute bit on every EXISTING
+// filesystem root, requiring the "other" execute bit on every existing
 // directory. checked memoizes directories already validated (via an earlier
 // path in the same ValidateTraversable call) so a shared ancestor is not
 // re-stat'd once per caller-supplied path.
@@ -125,7 +117,7 @@ func validateAncestorChain(dir string, checked map[string]bool) error {
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 			// Not created yet; MkdirAll will make it (and everything below
-			// it) at the correct mode when the path is first used for real.
+			// it) at the correct mode when the path is first used.
 		case err != nil:
 			return fmt.Errorf("stat %q: %w", dir, err)
 		default:
@@ -152,45 +144,39 @@ func validateAncestorChain(dir string, checked map[string]bool) error {
 
 // ── Symlink/hardlink-safe file writes ───────────────────────────────────────
 
-// WriteFileFchown (re)writes path with data, refusing to write THROUGH any
+// WriteFileFchown (re)writes path with data, refusing to write through any
 // filesystem entry a job could have swapped in at that deterministic path,
-// and — when cred is non-nil — chowns the result to cred's identity via
-// fchown on the still-open descriptor.
+// and, when cred is non-nil, chowns the result to cred's identity via fchown
+// on the still-open descriptor.
 //
-// Step embedded files are written by the root daemon AFTER job code has
+// Step embedded files are written by the root daemon after job code has
 // already executed as the target uid (the environment onEnter action runs
 // before any task's embedded files are written), at a deterministic path
 // (e.g. {{Task.File.run}}). Between a plain os.WriteFile and a later
 // path-based chown, the target uid could replace that path with:
-//   - a SYMLINK: an open with no O_NOFOLLOW would follow it and write
-//     through to the symlink's target. O_NOFOLLOW refuses the open outright.
-//   - a HARDLINK to a root-owned file elsewhere on the same filesystem: a
+//   - a symlink: an open with no O_NOFOLLOW would follow it and write
+//     through to the symlink's target. O_NOFOLLOW refuses the open.
+//   - a hardlink to a root-owned file elsewhere on the same filesystem: a
 //     plain os.WriteFile's O_TRUNC follows the existing directory entry and
-//     truncates+overwrites THAT inode, and a subsequent path-based chown
-//     would then hand the target uid ownership of it — escalation.
+//     truncates and overwrites that inode, and a later path-based chown
+//     would hand the target uid ownership of it.
 //
-// This mirrors internal/worker/pathmap's writeSecure exactly (see its doc):
-// any existing entry at path is removed first (best-effort; fs.ErrNotExist is
-// not an error — there may be nothing there yet), then the file is created
-// fresh with O_EXCL|O_NOFOLLOW. Remove unlinks the directory ENTRY without
-// ever following it, so an attacker-planted symlink's target — or a
-// hardlink's other name for the same inode — is never touched, only the
-// entry at path is; O_EXCL then guarantees the create only succeeds when
-// nothing (attacker-planted or otherwise) currently occupies that name. A
-// naive O_EXCL-only create (this function's own previous shape) refused ANY
-// pre-existing entry outright, including a second EMBEDDED FILE legitimately
-// sharing the same name — two environments, or an environment and the step,
-// each declaring one named "run" — which OpenJD's own last-wins semantics
-// (see fmtres.AddFileVars's doc) requires this call to allow. Remove-then-
-// create restores that: a legitimate second write succeeds (last-wins), while
-// an attacker's swap is simply unlinked, never written through. If a job
-// wins the race and recreates something in the tiny window between Remove
-// and this Open, the O_EXCL create fails closed (EEXIST), which only ever
-// fails that one task — a job can DoS itself this way, nothing more.
+// This mirrors internal/worker/pathmap's writeSecure (see its doc): any
+// existing entry at path is removed first (fs.ErrNotExist is not an error;
+// there may be nothing there yet), then the file is created fresh with
+// O_EXCL|O_NOFOLLOW. Remove unlinks the directory entry without following
+// it, so a planted symlink's target, or a hardlink's other name for the same
+// inode, is never touched; O_EXCL then makes the create succeed only when
+// nothing occupies that name. Removing first lets a second embedded file
+// with the same name (two environments, or an environment and the step, each
+// declaring one named "run") overwrite the first, as OpenJD's last-wins
+// semantics require (see fmtres.AddFileVars's doc), while a planted entry is
+// unlinked, never written through. If a job recreates something in the
+// window between Remove and this Open, the O_EXCL create fails with EEXIST,
+// which fails only that job's own task.
 //
-// fchown (f.Chown) acts on the inode via the already-open descriptor, so it
-// is immune to the directory entry being replaced after this call returns:
-// there is nothing left at the path to race.
+// fchown (f.Chown) acts on the inode through the open descriptor, so
+// replacing the directory entry afterward has no effect on it.
 func WriteFileFchown(path string, data []byte, perm os.FileMode, cred *Credential) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove existing %q: %w", path, err)

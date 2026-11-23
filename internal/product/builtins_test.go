@@ -49,9 +49,9 @@ func TestBuiltins_ContainerDeclaresDockerRequirement(t *testing.T) {
 	t.Fatal("container built-in not found")
 }
 
-// Every built-in ships a readme. These three are the first products a new
-// operator opens, so they double as the worked example of what the readme
-// field is for and which Markdown the renderer actually supports.
+// Every built-in ships a readme. The built-ins are the first products a new
+// operator opens, so they also serve as the worked example of what the readme
+// field is for and which Markdown the renderer supports.
 func TestBuiltins_AllHaveAReadme(t *testing.T) {
 	builtins := product.Builtins()
 	if len(builtins) == 0 {
@@ -68,9 +68,9 @@ func TestBuiltins_AllHaveAReadme(t *testing.T) {
 }
 
 // The built-in readmes are the reference for authors, so between them they
-// must exercise the whole supported subset -- and nothing outside it. A
-// construct the renderer does not support would render as literal text in the
-// very examples people copy.
+// must exercise the whole supported subset and nothing outside it. A construct
+// the renderer does not support would render as literal text in the examples
+// people copy.
 func TestBuiltins_ReadmesExerciseTheSupportedSubset(t *testing.T) {
 	builtins := product.Builtins()
 	var all strings.Builder
@@ -107,8 +107,8 @@ func TestBuiltins_ReadmesExerciseTheSupportedSubset(t *testing.T) {
 					p.Name, bad.name, bad.marker)
 			}
 		}
-		// Nested list items silently lose their structure -- the renderer's
-		// list regexes are anchored at column 0.
+		// Nested list items lose their structure: the renderer's list regexes
+		// are anchored at column 0.
 		for line := range strings.SplitSeq(p.Readme, "\n") {
 			trimmed := strings.TrimLeft(line, " ")
 			if len(line) > len(trimmed) && (strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ")) {
@@ -121,13 +121,11 @@ func TestBuiltins_ReadmesExerciseTheSupportedSubset(t *testing.T) {
 // TestBuiltins_PlatformSpecificCommandsAreGated refuses a built-in that can
 // only run on some platforms without saying so in its template.
 //
-// `script` shipped for three releases running /bin/sh with no hostRequirements
-// at all, and its readme said in as many words that it "will run anywhere". On
-// a mixed farm a Windows worker leases that task and fails to exec it. The gate
-// is what the scheduler reads, so the template is the only place the claim can
-// be made truthfully.
+// Without an os.family gate, a Windows worker on a mixed farm leases a task
+// that runs /bin/sh and fails to exec it. The gate is what the scheduler reads,
+// so the template is the only place the platform limit can be stated.
 //
-// Two shapes are refused: an ABSOLUTE command path (a filesystem layout is
+// Two shapes are refused: an absolute command path (a filesystem layout is
 // platform-specific by definition) and a bare shell name from the list below
 // (every one of these exists on some platforms and not others).
 func TestBuiltins_PlatformSpecificCommandsAreGated(t *testing.T) {

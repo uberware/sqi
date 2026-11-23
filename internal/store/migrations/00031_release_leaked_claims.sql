@@ -3,14 +3,14 @@
 -- +goose Up
 
 -- Restores invariant I3 ("an active usage claim exists iff its attempt is
--- open") on databases that hit the v0.3.0 claim leaks:
--- offline-worker reclaim, rejected terminal reports, lease-vs-cancel and the
--- stale-assignment reaper all left claims active on closed attempts or
--- terminal tasks, holding a licence slot until the job was deleted. Pure data
--- repair; no schema change. A healthy database is left byte-for-byte as is.
+-- open") on a database holding claims left active on closed attempts or
+-- terminal tasks, by offline-worker reclaim, rejected terminal reports,
+-- lease-vs-cancel or the stale-assignment reaper. Each such claim holds a
+-- licence slot until its job is deleted. Pure data repair; no schema change. A
+-- healthy database is left byte-for-byte as is.
 --
 -- The predicate is the I3 checker's (sqlClaimInvariantViolations in
--- internal/store/sqlite/invariants.go): the attempt is missing or not running,
+-- internal/store/sqlstore/invariants.go): the attempt is missing or not running,
 -- or its task is terminal. released_at is written in the layout the Go code
 -- parses (RFC 3339 with fractional seconds, UTC), from SQLite's own clock.
 UPDATE usage_claims

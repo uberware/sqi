@@ -6,10 +6,9 @@ package openjd
 // always-on, and summed across a job's steps;
 // none of these templates declare any extension.
 //
-// package openjd (not openjd_test) on purpose: the boundary test drives the
-// unexported expansion entry point with a pre-loaded [jobTaskBudget], which is
-// the only way to sit exactly ON the cap without materializing a million task
-// rows.
+// package openjd (not openjd_test): the boundary test drives the unexported
+// expansion entry point with a pre-loaded [jobTaskBudget], which is the only
+// way to sit exactly on the cap without materializing a million task rows.
 
 import (
 	"strings"
@@ -23,15 +22,15 @@ import (
 // maxTasksPerJob + 1: step "Tiny" has no parameter space (1 task) and step
 // "Huge" is a 1,000 x 1,000 Cartesian product (exactly maxTasksPerStep).
 //
-// Every EXISTING limit is respected: 1,000 values per parameter is under
+// Every other limit is respected: 1,000 values per parameter is under
 // maxTaskParamValues (1024), 1,000,000 tasks in one step is exactly
 // maxTasksPerStep, and 2 steps is far under maxSteps. Only the job-wide sum is
 // over, so this template is legal without the cap.
 //
 // Step order matters for the test's cost: "Tiny" materializes its single row,
-// then "Huge" is rejected ARITHMETICALLY, before any of its million rows is
-// built. If this test ever becomes slow, the cap has stopped being checked
-// before materialization.
+// then "Huge" is rejected arithmetically, before any of its million rows is
+// built. The test stays fast only while the cap is checked before
+// materialization.
 const jobWideCapTemplate = `
 specificationVersion: jobtemplate-2023-09
 name: JobWideCapJob
@@ -120,7 +119,7 @@ func TestExpand_JobWideTaskCapAllowsTheLimit(t *testing.T) {
 	}
 
 	// The preceding steps have used everything but three tasks; this step's
-	// three land exactly ON the cap.
+	// three land exactly on the cap.
 	budget := &jobTaskBudget{total: maxTasksPerJob - 3}
 	rows, err := expandParameterSpace(ps, budget)
 	if err != nil {
@@ -133,7 +132,7 @@ func TestExpand_JobWideTaskCapAllowsTheLimit(t *testing.T) {
 		t.Fatalf("budget total = %d, want exactly maxTasksPerJob (%d)", budget.total, maxTasksPerJob)
 	}
 
-	// One more task -- from any later step -- is one too many.
+	// One more task, from any later step, exceeds the cap.
 	one := "1-1"
 	if _, err := expandParameterSpace(&StepParameterSpace{
 		TaskParameterDefinitions: []TaskParamDefinition{
@@ -178,17 +177,16 @@ steps:
           command: echo
 `
 
-// TestJobTaskBudget_ChargeEqualsRowsProduced pins the invariant the two cap
-// tests above do not: that what the budget is CHARGED equals what expansion
-// actually produces.
+// TestJobTaskBudget_ChargeEqualsRowsProduced pins an invariant the two cap
+// tests above do not: what the budget is charged equals what expansion
+// produces.
 //
 // Both of those sit at cap+1 or pre-load the budget directly, so neither would
 // fail if a refactor charged one step twice (halving the real allowance) or
 // added a fourth row-producing return to expandParameterSpace without a charge
-// (leaving rows the cap cannot see). This walks all three of its current
-// row-producing paths -- nil parameter space, empty combination expression, and
-// the materialized product -- against ONE shared budget, exactly as a job's
-// steps do.
+// (leaving rows the cap cannot see). This walks all three of its row-producing
+// paths (nil parameter space, empty combination expression, and the
+// materialized product) against one shared budget, as a job's steps do.
 func TestJobTaskBudget_ChargeEqualsRowsProduced(t *testing.T) {
 	three, five := "1-3", "1-5"
 	spaces := []*StepParameterSpace{
@@ -225,11 +223,10 @@ func TestJobTaskBudget_ChargeEqualsRowsProduced(t *testing.T) {
 // where the budget is created: Submit walks the steps itself, so a step
 // expanded twice would be charged twice.
 //
-// The budget is not observable after Submit returns -- it is a local, and
-// deliberately so, since it must be per-submission. What IS observable is the
-// rows it charged for, and a step expanded twice produces its tasks twice. Read
-// with the test above, which pins charge == rows inside one expansion, that
-// closes the loop.
+// The budget is a per-submission local and is not observable after Submit
+// returns, so this counts the rows it charged for: a step expanded twice
+// produces its tasks twice. With the test above, which pins charge == rows
+// inside one expansion, that covers the charge from Submit down.
 func TestSubmit_ChargesEveryStepExactlyOnce(t *testing.T) {
 	st := fake.New()
 	farmID, queueID := seedJobCapPrereqs(t, st)
@@ -250,7 +247,7 @@ func TestSubmit_ChargesEveryStepExactlyOnce(t *testing.T) {
 
 // TestExpand_JobWideTaskCapAppliesWithoutEnforceLimits pins that the cap is
 // always-on, matching maxTasksPerStep's stance: a caller that relaxes the
-// quantitative POLICY limits does not thereby acquire the right to insert a
+// quantitative policy limits does not thereby acquire the right to insert a
 // hundred million rows.
 func TestExpand_JobWideTaskCapAppliesWithoutEnforceLimits(t *testing.T) {
 	st := fake.New()

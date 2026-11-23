@@ -10,17 +10,15 @@ package integration
 // round trip and reports what happened, rather than guessing from the
 // environment whether multicast is available.
 //
-// These tests do NOT transmit on the network they are running on. Every
-// advertisement is restricted to loopback (see loopbackIfaces), which a browser
-// listening on all interfaces still receives — verified, not assumed. That
-// keeps a test run from announcing a service on an office LAN, and it is an
-// invariant rather than a preference: where loopback cannot carry multicast the
-// tests refuse to run rather than falling back to a real interface.
+// These tests do not transmit on the network they run on. Every advertisement
+// is restricted to loopback (see loopbackIfaces), which a browser listening on
+// all interfaces still receives. That keeps a test run from announcing a
+// service on the LAN: where loopback cannot carry multicast the tests refuse
+// to run rather than fall back to a real interface.
 //
-// Because a skipped test verifies nothing, SQI_TEST_REQUIRE_MULTICAST=1 turns
-// the skip into a failure. `make test-discovery` and the CI job set it, so a
-// runner that silently loses multicast fails the build instead of quietly
-// covering less than it claims.
+// A skipped test verifies nothing, so SQI_TEST_REQUIRE_MULTICAST=1 turns the
+// skip into a failure. `make test-discovery` and the CI job set it, so a
+// runner without multicast fails the build.
 
 import (
 	"context"
@@ -45,14 +43,14 @@ func multicastRequired() bool {
 
 // loopbackIfaces returns the multicast-capable loopback interfaces.
 //
-// Advertising only on these is what keeps a test run off the real network. It
-// works because multicast sent on loopback is delivered to anything listening
-// on loopback, including a resolver bound to every interface — which is what
-// the production worker uses, so the real-binary test needs no special casing.
+// Advertising only on these keeps a test run off the real network. Multicast
+// sent on loopback is delivered to anything listening on loopback, including a
+// resolver bound to every interface, which is what the production worker
+// uses, so the real-binary test needs no special case.
 //
-// Linux `lo` does not carry the MULTICAST flag by default, which is why the CI
-// job enables it — and having the flag is necessary but not sufficient, see
-// advertisable. docs/development.md carries both remediations.
+// Linux `lo` does not carry the MULTICAST flag by default, so the CI job
+// enables it. The flag is necessary but not sufficient; see advertisable.
+// docs/development.md gives both remediations.
 func loopbackIfaces() []net.Interface {
 	ifs, err := net.Interfaces()
 	if err != nil {
@@ -67,13 +65,10 @@ func loopbackIfaces() []net.Interface {
 	return out
 }
 
-// requireMulticast proves an mDNS round trip works on this host before a test
-// depends on one, by advertising a throwaway service on loopback and browsing
-// for it.
-//
-// It exists so a discovery test fails for the reason it actually failed: a
-// broken responder looks identical to a host that cannot do multicast at all,
-// and without this preflight every such failure would be investigated twice.
+// requireMulticast checks that an mDNS round trip works on this host before a
+// test depends on one, by advertising a throwaway service on loopback and
+// browsing for it. Without it, a broken responder and a host that cannot do
+// multicast fail the same way.
 func requireMulticast(t *testing.T) {
 	t.Helper()
 
@@ -139,10 +134,9 @@ func anyAdvertisable(ifaces []net.Interface) bool {
 // drops every loopback one (addrsForInterface: `!ipnet.IP.IsLoopback()`), then
 // fails with "Could not determine host IP addresses" if nothing is left. Linux
 // `lo` carries only 127.0.0.1 and ::1, so registering on loopback alone fails
-// there outright; macOS lo0 also carries fe80::1, which is why the same test
-// passes on a Mac. Without this check that shows up as an error three layers
-// down which says nothing about loopback, and the multicast flag — which is
-// fine — is the first thing anyone suspects.
+// there; macOS lo0 also carries fe80::1, so it succeeds on a Mac. Without this
+// check the failure is an error from deep inside zeroconf that does not
+// mention loopback.
 func advertisable(addrs []net.Addr) bool {
 	for _, a := range addrs {
 		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
@@ -156,21 +150,21 @@ func advertisable(addrs []net.Addr) bool {
 func skipOrFail(t *testing.T, reason string) {
 	t.Helper()
 	if multicastRequired() {
-		t.Fatalf("%s — and SQI_TEST_REQUIRE_MULTICAST is set, so this is a failure, not a skip", reason)
+		t.Fatalf("%s; SQI_TEST_REQUIRE_MULTICAST is set, so this is a failure, not a skip", reason)
 	}
 	t.Skip(reason)
 }
 
 // maxInstanceLabel is the DNS label limit a DNS-SD instance name must fit in.
 // Exceeding it does not error: the responder starts and is never
-// discoverable, which presents as "multicast does not work on this host".
-// The cap is enforced in instanceName so no caller has to remember it.
+// discoverable, which looks like "multicast does not work on this host".
+// instanceName enforces the cap so no caller has to.
 const maxInstanceLabel = 63
 
 // instanceName builds a unique, valid mDNS instance name for this test run.
 //
-// Uniqueness matters because these tests advertise on a real network: two runs
-// on one machine, or two machines on one LAN, must not answer for each other.
+// Two runs on one machine share loopback, so they must not answer for each
+// other.
 func instanceName(t *testing.T, prefix string) string {
 	t.Helper()
 	safe := func(s string) string {
@@ -187,7 +181,7 @@ func instanceName(t *testing.T, prefix string) string {
 	}
 
 	// t.TempDir() is unique per test; its last two elements carry the random
-	// component and the per-test counter, which is all the uniqueness needed.
+	// component and the per-test counter.
 	dir := t.TempDir()
 	unique := safe(filepath.Base(filepath.Dir(dir)) + "-" + filepath.Base(dir))
 	if len(unique) > 24 {
@@ -204,11 +198,11 @@ func instanceName(t *testing.T, prefix string) string {
 // noForeignServer skips when something other than this test is already
 // advertising _sqi._tcp.
 //
-// The tests never advertise beyond loopback, but they still BROWSE on every
-// interface — the production worker does, and the real-binary test runs the
-// production worker. So a live sqi-server on the same LAN can still be
-// discovered, and the test cannot tell a colleague's production broker from its
-// own before connecting to it. Refusing to run is the only safe response.
+// The tests never advertise beyond loopback, but they browse on every
+// interface, as the production worker does and the real-binary test runs the
+// production worker. A live sqi-server on the same LAN can therefore be
+// discovered, and the test cannot tell another farm's broker from its own
+// before connecting to it, so it does not run.
 func noForeignServer(t *testing.T) {
 	t.Helper()
 	if reason := foreignServerReason(); reason != "" {
@@ -216,9 +210,9 @@ func noForeignServer(t *testing.T) {
 	}
 }
 
-// noForeignServerOrFail is [noForeignServer] for a caller that must not
-// silently lose its mDNS coverage: when multicast was declared required, a
-// foreign server fails the test instead of skipping it.
+// noForeignServerOrFail is [noForeignServer] for a caller that must not lose
+// its mDNS coverage: when multicast was declared required, a foreign server
+// fails the test instead of skipping it.
 func noForeignServerOrFail(t *testing.T) {
 	t.Helper()
 	if reason := foreignServerReason(); reason != "" {
@@ -241,12 +235,8 @@ func foreignServerReason() string {
 }
 
 // TestMulticastRequired_FlagParsing pins the switch that decides whether a
-// missing capability is a skip or a failure.
-//
-// It is worth a test of its own because everything else in this file trusts
-// it: get this wrong in the "skip" direction and `make test-discovery` and the
-// CI job go green while running nothing, which is the failure the flag exists
-// to prevent.
+// missing capability is a skip or a failure. Wrong in the "skip" direction,
+// `make test-discovery` and the CI job would pass while running nothing.
 func TestMulticastRequired_FlagParsing(t *testing.T) {
 	for _, v := range []string{"1", "true", "TRUE", "yes", " 1 "} {
 		t.Setenv("SQI_TEST_REQUIRE_MULTICAST", v)
@@ -263,8 +253,8 @@ func TestMulticastRequired_FlagParsing(t *testing.T) {
 }
 
 // TestInstanceName_FitsTheDNSLabelLimit guards against an over-long instance
-// name, which does not error but makes the responder undiscoverable, which is
-// indistinguishable from the host having no multicast at all.
+// name, which does not error but makes the responder undiscoverable, as if the
+// host had no multicast.
 func TestInstanceName_FitsTheDNSLabelLimit(t *testing.T) {
 	got := instanceName(t, "a-deliberately-long-prefix-that-would-overflow-the-label-limit-on-its-own")
 	if len(got) > maxInstanceLabel {
@@ -274,11 +264,10 @@ func TestInstanceName_FitsTheDNSLabelLimit(t *testing.T) {
 		t.Error("instance name is empty")
 	}
 
-	// Uniqueness comes from t.TempDir(), which differs per call, so comparing
-	// two calls proves nothing. What matters is that the unique part SURVIVES
-	// the length cap — truncation keeps the tail for exactly that reason, and
-	// a change that trimmed the other end would make every over-long name
-	// collide on its shared prefix.
+	// Uniqueness comes from t.TempDir(), which differs per call, so two calls
+	// always differ. The unique part must survive the length cap: truncation
+	// keeps the tail, and trimming the other end would make every over-long
+	// name collide on its shared prefix.
 	long := instanceName(t, strings.Repeat("x", 200))
 	short := instanceName(t, "p")
 	if len(long) != maxInstanceLabel {
@@ -295,9 +284,8 @@ func TestInstanceName_FitsTheDNSLabelLimit(t *testing.T) {
 // TestAdvertisable_MatchesZeroconfAddressFilter pins the check that tells a
 // Linux host why a loopback-only advertisement cannot register.
 //
-// The two loopback rows are the core of the test: they are what macOS and Linux
-// actually put on their loopback interface, and only one of them can carry an
-// advertisement.
+// The two loopback rows are what macOS and Linux put on their loopback
+// interface; only the macOS one can carry an advertisement.
 func TestAdvertisable_MatchesZeroconfAddressFilter(t *testing.T) {
 	addr := func(cidr string) net.Addr {
 		ip, n, err := net.ParseCIDR(cidr)

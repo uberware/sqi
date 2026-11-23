@@ -7,7 +7,7 @@ package openjd_test
 //     produces a ValidationError at /extensions/<i> (unconditional).
 //   - CHUNK[INT] usage without declaring TASK_CHUNKING produces a
 //     ValidationError (unconditional).
-//   - Checks are unconditional: EnforceLimits=false does NOT suppress them.
+//   - Checks are unconditional: EnforceLimits=false does not suppress them.
 
 import (
 	"strings"
@@ -108,7 +108,7 @@ func TestValidateExtensions_UnknownExtension_Error(t *testing.T) {
 }
 
 // TestValidateExtensions_TaskChunkingWithoutUsage_OK confirms that declaring
-// TASK_CHUNKING without actually using CHUNK[INT] is allowed.
+// TASK_CHUNKING without using CHUNK[INT] is allowed.
 func TestValidateExtensions_TaskChunkingWithoutUsage_OK(t *testing.T) {
 	tmpl := mustParse(t, minimalValidYAML())
 	tmpl.Extensions = []string{"TASK_CHUNKING"}
@@ -149,7 +149,7 @@ func TestValidateExtensions_MultipleErrors(t *testing.T) {
 	}
 }
 
-// ── Unconditional: EnforceLimits=false does NOT suppress extension errors ─────
+// ── Unconditional: EnforceLimits=false does not suppress extension errors ─────
 
 // TestValidateExtensions_Unconditional_Unknown confirms that even with
 // EnforceLimits=false the unsupported-extension check still fires. The
@@ -175,7 +175,7 @@ func TestValidateExtensions_Unconditional_ChunkNoDeclaration(t *testing.T) {
 	}
 }
 
-// ── Fix 1: Extension name format validation ───────────────────────────────────
+// ── Extension name format validation ───────────────────────────────────
 
 // TestValidateExtensions_FormatError_Lowercase confirms that a lowercase
 // extension name ("expr" instead of "EXPR") is rejected with a format error.
@@ -238,7 +238,7 @@ func TestValidateExtensions_FormatOK_UnsupportedName(t *testing.T) {
 	}
 }
 
-// ── Fix 2: Two steps with CHUNK[INT] without TASK_CHUNKING → two errors ──────
+// ── Two steps with CHUNK[INT] without TASK_CHUNKING → two errors ──────
 
 // TestValidateExtensions_TwoChunkSteps_NoDeclaration confirms that when two
 // steps each use CHUNK[INT] without declaring TASK_CHUNKING, we get two errors
@@ -308,13 +308,13 @@ func TestValidateExtensions_TwoChunkSteps_NoDeclaration(t *testing.T) {
 	}
 }
 
-// ── Fix 3: Unsupported extension + CHUNK[INT] used + TASK_CHUNKING declared ──
+// ── Unsupported extension + CHUNK[INT] used + TASK_CHUNKING declared ──
 
 // TestValidateExtensions_UnsupportedPlusDeclaredChunking confirms that when an
 // unsupported extension is present alongside TASK_CHUNKING, and CHUNK[INT] is
 // used, the unsupported extension at /extensions/0 produces exactly one error
 // at that pointer, and no TASK_CHUNKING-required error is produced anywhere
-// (since TASK_CHUNKING IS declared). This confirms that the declared-set is
+// (since TASK_CHUNKING is declared). This confirms that the declared-set is
 // populated even for unsupported entries. It does not assert the total error
 // count for the template, only what is checked at /extensions/0 and for the
 // TASK_CHUNKING-required message.
@@ -351,7 +351,7 @@ func TestValidateExtensions_UnsupportedPlusDeclaredChunking(t *testing.T) {
 		t.Errorf("expected /extensions/0 error for unsupported extension; got: %v", errs)
 	}
 
-	// Should NOT have a TASK_CHUNKING-required error (since it IS declared)
+	// Should not have a TASK_CHUNKING-required error (since it is declared)
 	if containsMessage(errs, "TASK_CHUNKING") {
 		hasChunkingRequired := false
 		for _, err := range errs {

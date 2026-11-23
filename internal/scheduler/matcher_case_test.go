@@ -9,7 +9,7 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// Per OpenJD jobtemplate-2023-09, capability NAMES are case-insensitive ("All
+// Per OpenJD jobtemplate-2023-09, capability names are case-insensitive ("All
 // comparisons between strings of this type must be case-insensitive"). The
 // matcher must therefore resolve well-known amount/attribute names and the
 // usagepool/tag namespace prefixes regardless of the case used in the template.

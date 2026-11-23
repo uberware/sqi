@@ -11,29 +11,30 @@ import (
 // This file implements section 1.2.3, implicit type coercion, as RFC 0005
 // restated it in openjd-specifications#175.
 //
-// TWO STEPS, IN ORDER. Satisfaction asks whether the result's type already
-// satisfies the target, and if so the value is used UNCHANGED and nothing is
-// converted (satisfies). Otherwise conversion walks the target's DESTINATIONS
+// Two steps, in order. Satisfaction asks whether the result's type already
+// satisfies the target, and if so the value is used unchanged and nothing is
+// converted (satisfies). Otherwise conversion walks the target's destinations
 // in an order fixed by the result's own type, first success wins, and a
 // destination that fails is not an error so long as a later one succeeds
 // (scalarDestinations, orderedListDestinations). Non-list destinations precede
-// list ones, always.
+// list ones.
 //
-// The promotion path below keeps the pre-#175 rules, which phrase every rule
-// against what the target does NOT include ("int to float when the target
+// The promotion path below keeps the rules RFC 0005 stated before
+// openjd-specifications#175, which phrase every rule
+// against what the target does not include ("int to float when the target
 // types do not include int") and have no answer when a target offers two
 // candidates of the same kind: singleScalarTarget gives up rather than
 // choosing.
 //
-// THREE PREDICATES, NOT TWO:
+// There are three predicates:
 //
-//   - coerce()            converts a VALUE against a target type.
+//   - coerce()            converts a value against a target type.
 //   - coercibleToTarget() is coerce()'s type-level twin, for the unresolved
 //     path where there is no value to convert.
-//   - coercible()         belongs to a DIFFERENT MECHANISM: the coercion that
+//   - coercible()         belongs to a different mechanism: the coercion that
 //     resolves a function call and promotes 1 to 1.0 in "1 + 2.0" (promotable,
-//     shape.go). RFC 0005 says in as many words that #175 does not touch it,
-//     so it keeps the older rules deliberately. Routing call dispatch through
+//     shape.go). RFC 0005 says that #175 does not touch it, so it keeps the
+//     older rules. Routing call dispatch through
 //     the destination table would make it depend on a target the caller never
 //     supplied.
 
@@ -58,14 +59,14 @@ func includes(target Type, c Code) bool {
 }
 
 // coercible reports whether a value of type from can be implicitly converted to
-// the type to, under the rules RFC 0005 applies while RESOLVING A FUNCTION CALL
+// the type to, under the rules RFC 0005 applies while resolving a function call
 // -- the mechanism that promotes 1 to 1.0 in "1 + 2.0". It answers at the type
 // level only, and performs nothing.
 //
-// It is NOT the predicate behind target-type coercion; that is
+// It is not the predicate behind target-type coercion; that is
 // coercibleToTarget, and the two differ. The clearest case: coercible(int,
-// "float | int") is FALSE, because nothing needs converting, while
-// coercibleToTarget says TRUE because the target admits an int outright. Both
+// "float | int") is false, because nothing needs converting, while
+// coercibleToTarget says true because the target admits an int outright. Both
 // answers are right for their own question. Its only callers are promotable()
 // and shape matching; do not reach for it from a target-type path.
 func coercible(from, to Type) bool {
@@ -83,26 +84,19 @@ func coercible(from, to Type) bool {
 		constraint, ok := unresolvedConstraint(to)
 		return ok && coercible(from, constraint)
 	}
-	// Null coerces to any target that admits null, and to nothing else -- the
-	// type-level counterpart of coerce()'s own v.IsNull() rule (below), needed
-	// here because coerceUnresolved narrows a PLACEHOLDER's constraint through
-	// coercible rather than converting a concrete value through coerce.
-	// Without this rule, an unresolved union member of type nulltype -- for
-	// example the "else None" branch of "{{ Param.S if Param.Flag else None
-	// }}", still unresolved because Param.Flag has no phase-1 value -- would
-	// be rejected even against a target that admits null (section 1.3.2's
-	// TargetArgItem, "string? | list[string]"), because isScalarCode
-	// excludes nulltype from the catch-all scalar rule below. That exclusion
-	// is about VALUE conversion ("null coerces to nothing"), not about whether
-	// a target that already NAMES null admits it unchanged. A concrete null
-	// value is handled by coerce's own IsNull() branch.
+	// Null coerces to any target that admits null, and to nothing else: the
+	// type-level counterpart of coerce()'s v.IsNull() rule. Without this rule
+	// nulltype would reach no target at all, because isScalarCode excludes
+	// nulltype from the catch-all scalar rule below. That exclusion is about
+	// value conversion ("null coerces to nothing"), not about whether a
+	// target that already names null admits it unchanged.
 	if from.Code == CodeNull {
 		return includes(to, CodeNull)
 	}
-	// A union value is usable only where EVERY member would be: it is SOME ONE
+	// A union value is usable only where every member would be: it is some one
 	// of its members, decided at runtime, so a target that would reject any one
 	// of them cannot safely receive it. This is the dual of shape.go's
-	// unionArgCost, which scores a union on the PARAMETER side by trying each
+	// unionArgCost, which scores a union on the parameter side by trying each
 	// member and keeping the best — correct there because the caller picks
 	// which member satisfies it. Here the union itself picks which member it
 	// is, so every member must clear the bar.
@@ -132,8 +126,8 @@ func coercible(from, to Type) bool {
 }
 
 // coercibleConditional covers the four rules that fire only when the target does
-// NOT already admit the source type, so that a value reaches a target that wants
-// it unchanged rather than being converted needlessly.
+// not already admit the source type, so that a value reaches a target that
+// wants it unchanged rather than being converted needlessly.
 func coercibleConditional(from, to Type) bool {
 	switch from.Code {
 	case CodeInt:
@@ -246,7 +240,7 @@ func isScalarCode(c Code) bool {
 }
 
 // scalarCoercible reports whether section 1.2.3's non-destructive scalar
-// conversions permit from -> to. Whether a particular VALUE survives the
+// conversions permit from -> to. Whether a particular value survives the
 // conversion is coerce()'s question: "3.75" to int is permitted here and fails
 // there.
 func scalarCoercible(from, to Code) bool {
@@ -267,12 +261,12 @@ func scalarCoercible(from, to Code) bool {
 	return false
 }
 
-// satisfies reports whether a result of type from already SATISFIES target, in
+// satisfies reports whether a result of type from already satisfies target, in
 // RFC 0005's sense: the value is used unchanged and no conversion is attempted.
 //
-// The relation is DIRECTIONAL and the specification says so explicitly: an int
-// satisfies any, and any does not satisfy an int. It is deliberately not the
-// symmetric matching that binds type variables during signature matching, which
+// The relation is directional and the specification says so explicitly: an int
+// satisfies any, and any does not satisfy an int. It is not the symmetric
+// matching that binds type variables during signature matching, which
 // would accept a list[T1] target by binding T1 and then discarding the binding.
 // Keep the two apart; shape.go owns the symmetric one.
 func satisfies(from, to Type) bool {
@@ -303,7 +297,7 @@ func satisfies(from, to Type) bool {
 // looking through unions or unresolved constraints.
 //
 // listElem() does look through both, and answers a different question: "which
-// single list type does this TARGET offer". Satisfaction needs the plain one --
+// single list type does this target offer". Satisfaction needs the plain one --
 // a union is decomposed by satisfies() itself, one member at a time, so a
 // union-aware accessor here would answer for the wrong type.
 func listParam(t Type) (Type, bool) {
@@ -314,9 +308,9 @@ func listParam(t Type) (Type, bool) {
 }
 
 // scalarDestinations is RFC 0005's destination-order table, restated by
-// openjd-specifications#175. Two principles fix the order, and both matter:
+// openjd-specifications#175. Two principles fix the order:
 // a value stays within its own kind before it becomes text, and a conversion
-// that CAN FAIL is attempted before one that always succeeds -- a universal
+// that can fail is attempted before one that always succeeds -- a universal
 // fallback tried first would make every destination after it unreachable.
 //
 // The range_expr row's list[int] destination is not here: non-list destinations
@@ -379,7 +373,7 @@ func convertScalar(v Value, to Code) (Value, error) {
 // conversion; a nil error with ok false means the target offered this value no
 // scalar destination at all, so another rule (the list ones) may still apply; a
 // non-nil error means every offered destination was attempted and failed, and
-// that error is the LAST one's, which is the most specific thing there is to
+// that error is the last one's, which is the most specific thing there is to
 // say. Returning a generic "cannot be coerced" there would throw away
 // boolFromString's own message for a string that is not a bool spelling.
 func coerceByDestination(v Value, target Type) (Value, bool, error) {
@@ -400,17 +394,18 @@ func coerceByDestination(v Value, target Type) (Value, bool, error) {
 	return Value{}, false, lastErr
 }
 
-// coercibleToTarget is the TYPE-level twin of coerce(): it answers whether a
+// coercibleToTarget is the type-level twin of coerce(): it answers whether a
 // result of type from could reach target under RFC 0005's two steps, without
 // converting anything and without a value to convert.
 //
-// It is deliberately NOT coercible(). The specification keeps two mechanisms
-// apart and #175 changed only one of them: target-type coercion (this one, the
-// one a template FIELD applies to an expression's result) versus the coercion
-// that resolves a function call and promotes 1 to 1.0 in "1 + 2.0" (coercible,
-// promotable, shape.go). Routing call promotion through the destination table
-// would make dispatch depend on a target the caller never supplied, so the two
-// predicates stay separate even though they overlap heavily.
+// It is not coercible(). The specification keeps two mechanisms apart and
+// openjd-specifications#175 changed only one of them: target-type coercion
+// (this one, the one a template field applies to an expression's result) versus
+// the coercion that resolves a function call and promotes 1 to 1.0 in "1 + 2.0"
+// (coercible, promotable, shape.go). Routing call promotion through the
+// destination table would make dispatch depend on a target the caller never
+// supplied, so the two predicates stay separate even though they overlap
+// heavily.
 func coercibleToTarget(from, to Type) bool {
 	if satisfies(from, to) {
 		return true
@@ -424,7 +419,7 @@ func coercibleToTarget(from, to Type) bool {
 	if c, ok := unresolvedConstraint(to); ok {
 		return coercibleToTarget(from, c)
 	}
-	// A union SOURCE is usable only where every member would be: it is some one
+	// A union source is usable only where every member would be: it is some one
 	// of its members, decided at runtime, so a target that would reject any one
 	// of them cannot safely receive it.
 	if from.Code == CodeUnion {
@@ -499,23 +494,23 @@ func narrowedUnionConstraint(from, target Type) (Type, bool) {
 }
 
 // narrowedConstraint is the type-level half of RFC 0005's "Coercion of
-// Unresolved Values": what a PLACEHOLDER's constraint becomes when it is
+// Unresolved Values": what a placeholder's constraint becomes when it is
 // coerced, given that there is no payload to decide which destination wins.
 //
-// It narrows to the UNION of every destination with a type-level rule rather
+// It narrows to the union of every destination with a type-level rule rather
 // than betting on one, because the invariant the specification states has two
 // halves and a guess breaks the second: the narrowed constraint must satisfy
-// the target, AND the concrete result's type must satisfy the narrowed
+// the target, and the concrete result's type must satisfy the narrowed
 // constraint. unresolved[float] against "int | string" narrows to
 // unresolved[int | string] -- a 3.0 payload takes float->int and a 3.5 payload
 // fails it and falls through to string, and both outcomes lie inside that.
 //
-// A union CONSTRAINT is existential, and this is the one place where a union on
+// A union constraint is existential, and this is the one place where a union on
 // the source side does not mean "every member must clear the bar": a constraint
 // is a set of possibilities, not a value, so members that cannot coerce are
 // discarded rather than failing the whole thing. coercibleToTarget's own
 // union-source rule is the opposite for the opposite reason -- a union-typed
-// VALUE is some one of its members, chosen at runtime, so a target that would
+// value is some one of its members, chosen at runtime, so a target that would
 // reject any one of them cannot safely receive it.
 func narrowedConstraint(from, target Type) (Type, bool) {
 	if from.Code == CodeUnion {
@@ -578,7 +573,7 @@ func listDestinations(target Type) []Type {
 // "list destinations in S's order, applied to their element types", so
 // list[float] against "list[int] | list[string]" attempts list[int] first.
 //
-// The sort is STABLE and unranked destinations keep their normalized position,
+// The sort is stable and unranked destinations keep their normalized position,
 // which is what makes the empty list work without a second rule: list[nulltype]
 // has no destination order of its own (scalarDestinations(nulltype) is empty),
 // so every candidate is unranked and the union's normalized member order stands
@@ -659,8 +654,8 @@ func coerceByListDestination(v Value, target Type) (Value, bool, error) {
 var errNotCoercible = errors.New("cannot be coerced")
 
 // Coerce converts v to target per section 1.2.3's implicit type coercion --
-// the very same conversion an evaluation's own target type applies to its
-// result, exported so a caller that has ALREADY evaluated can convert once
+// the same conversion an evaluation's own target type applies to its
+// result, exported so a caller that has already evaluated can convert once
 // more without re-parsing and re-evaluating the source.
 //
 // It exists for one caller. internal/openjd's task-parameter range resolver
@@ -668,21 +663,19 @@ var errNotCoercible = errors.New("cannot be coerced")
 // expression against exactly the type section 1.3.12 gives that field --
 // "int | string | range_expr | list[int]" for an INT parameter -- because
 // anything else would make its accept/reject verdict differ from the
-// checker's. But those
-// four union members mean DIFFERENT things downstream: an int or a string
-// becomes range TEXT, while a range_expr or a list becomes the range's
-// VALUES. So the resolver evaluates against the union, then converts the
-// range_expr arm -- and only that arm -- into list[int].
+// checker's. But those four union members mean different things downstream: an
+// int or a string becomes range text, while a range_expr or a list becomes the
+// range's values. So the resolver evaluates against the union, then converts
+// the range_expr arm -- and only that arm -- into list[int].
 //
 // Doing that second step through this function reuses section 1.2.3's own
 // range_expr -> list[int] rule (coerceByListDestination's rangeInts call,
-// which expands in
-// increasing, de-duplicated order per section 3.4.1.1.1). The alternative
-// would be a second, independent implementation of "take the integers out of
-// a range_expr" living in internal/openjd, whose ordering policy could drift
-// from this package's -- and internal/openjd already has a deliberately
-// DIFFERENT <IntRangeExpr> policy (first-seen order, no negative step, no
-// start > end), so a second expansion there would differ by default.
+// which expands in increasing, de-duplicated order per section 3.4.1.1.1). The
+// alternative would be a second, independent implementation of "take the
+// integers out of a range_expr" living in internal/openjd, whose ordering
+// policy could drift from this package's, and internal/openjd already has a
+// different <IntRangeExpr> policy (first-seen order, no negative step, no start
+// > end), so a second expansion there would differ by default.
 //
 // Errors carry no position, exactly as coerce's do: the caller is expected to
 // attach whatever position it has.
@@ -698,7 +691,7 @@ func coerce(v Value, target Type) (Value, error) {
 		return coerceUnresolved(v, target)
 	}
 	// Step 1, satisfaction: a result whose type the target already admits is
-	// used UNCHANGED, and step 2 is never reached for it. A list[int] against
+	// used unchanged, and step 2 is never reached for it. A list[int] against
 	// a list[any] target keeps its list[int] type, and "[1.0, 2.0]" against
 	// "list[float] | list[int]" is used as is because the target names its
 	// type.
@@ -729,11 +722,11 @@ func coerce(v Value, target Type) (Value, error) {
 		return Value{}, convErr
 	}
 	// The list destinations, attempted only after every scalar one, because
-	// RFC 0005 puts the whole non-list group first. The gate is on the SOURCE:
-	// a plain scalar reaching a target that merely CONTAINS a list type --
+	// RFC 0005 puts the whole non-list group first. The gate is on the source:
+	// a plain scalar reaching a target that merely contains a list type --
 	// "T? | list[T]", which section 1.3.2 makes the target of every template
 	// "args" item -- has no list conversion to perform, and sending it here
-	// would reach AsList() and PANIC. range_expr is the one non-list source
+	// would reach AsList() and panic. range_expr is the one non-list source
 	// with a list destination.
 	out, ok, listErr := coerceByListDestination(v, target)
 	if ok {
@@ -745,11 +738,11 @@ func coerce(v Value, target Type) (Value, error) {
 	return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
 }
 
-// coerceUnresolved coerces a PLACEHOLDER, which has no value to convert.
+// coerceUnresolved coerces a placeholder, which has no value to convert.
 // Coercing one narrows its constraint and it stays a placeholder — which is
 // what lets a type check proceed through a coercion boundary.
 func coerceUnresolved(v Value, target Type) (Value, error) {
-	// Step 1 applies to a PLACEHOLDER too, and RFC 0005 says what it leaves
+	// Step 1 applies to a placeholder too, and RFC 0005 says what it leaves
 	// behind: "Satisfaction leaves the value alone, so its constraint keeps the
 	// source type" -- an unresolved[list[int]] against a list[any] target stays
 	// unresolved[list[int]] rather than widening, matching the concrete
@@ -824,9 +817,9 @@ func toFloat(v Value) (Value, error) {
 	return Value{}, fmt.Errorf("%s %w to float", v.Type, errNotCoercible)
 }
 
-// promotable reports whether a value of type from may be chosen, ON THE
-// CALLER'S BEHALF, to fill a parameter declared as to — the narrower question
-// shape.go's argCost asks when SELECTING an operator overload, as opposed to
+// promotable reports whether a value of type from may be chosen, on the
+// caller's behalf, to fill a parameter declared as to — the narrower question
+// shape.go's argCost asks when selecting an operator overload, as opposed to
 // coerce()'s question of what happens once a context has already demanded a
 // specific type.
 //
@@ -837,14 +830,14 @@ func toFloat(v Value) (Value, error) {
 // target an operator with several overloads should be steered toward, and
 // applying it there answers a question the spec never asked: every bare-scalar
 // shape in a multi-shape operator trivially "has a single scalar type" on its
-// own, so the catch-all would let ANY scalar argument reach it — an operator
+// own, so the catch-all would let any scalar argument reach it — an operator
 // offering int, float and string overloads would see every pair of scalars
 // funneled through the string one, since bool/int/float/path -> string can
 // never fail, so "true + true" and "'a' + 1" would stop being errors. The
 // catch-all's own qualifier, "a single scalar type", rules out exactly that
 // ambiguity rather than firing once per candidate shape.
 //
-// What DOES belong to overload selection is section 2.1.1's and 2.1.4's own
+// What does belong to overload selection is section 2.1.1's and 2.1.4's own
 // named compatible pairs — "the int is promoted to float", "compatible pairs
 // (int/float and string/path)" — which are exactly coercibleConditional's four
 // rules: int -> float, path -> string, range_expr -> string, range_expr ->

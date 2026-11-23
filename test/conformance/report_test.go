@@ -25,8 +25,8 @@ func TestRollup(t *testing.T) {
 
 	groups := conformance.Rollup(results, baseline)
 
-	// d.yaml fails and is NOT in the baseline, so it is a regression; c.yaml
-	// fails and is, so it is adjudicated. The tally must tell them apart.
+	// d.yaml fails and is not in the baseline, so it is a regression; c.yaml
+	// fails and is, so it is baselined.
 	want := []conformance.Group{
 		{Name: "EXPR/job_templates", NotApplicable: 2},
 		{Name: "base/env_templates", Regressed: 1},
@@ -42,12 +42,9 @@ func TestRollup(t *testing.T) {
 	}
 }
 
-// TestRollup_AgreesWithDiffBaseline is the invariant behind the split: the
-// rollup's regression count and the REGRESSION lines the suite prints beneath it
-// come from the same judgement, so they can never contradict each other. If the
-// rollup labeled every failure "baselined" regardless of the diff, a genuine
-// regression would be summarized as an accepted divergence one line above the
-// text calling it a regression.
+// TestRollup_AgreesWithDiffBaseline pins that the rollup's regression count
+// and the REGRESSION lines the suite prints beneath it come from the same
+// DiffBaseline result, so a regression is never summarized as baselined.
 func TestRollup_AgreesWithDiffBaseline(t *testing.T) {
 	results := []conformance.Result{
 		result("base/job_templates/a.yaml", conformance.StateLive, true),
