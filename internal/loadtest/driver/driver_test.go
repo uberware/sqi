@@ -980,6 +980,11 @@ type opServer struct {
 	calls []string
 	jobs  string // JSON for GET /jobs
 	works string // JSON for GET /workers
+
+	// firstQueueGetDelay holds the first GET of a queue for this long, which
+	// slows the first pause or resume call down.
+	firstQueueGetDelay time.Duration
+	queueGets          int
 }
 
 func (o *opServer) start(t *testing.T) *httptest.Server {
@@ -994,6 +999,13 @@ func (o *opServer) start(t *testing.T) *httptest.Server {
 				fmt.Fprint(w, o.works)
 			default:
 				if strings.HasPrefix(r.URL.Path, "/api/v1/queues/") {
+					o.mu.Lock()
+					o.queueGets++
+					first := o.queueGets == 1
+					o.mu.Unlock()
+					if first && o.firstQueueGetDelay > 0 {
+						time.Sleep(o.firstQueueGetDelay)
+					}
 					fmt.Fprint(w, `{"name":"q"}`) // PauseQueue reads the queue, then puts it back paused
 					return
 				}
@@ -1297,6 +1309,48 @@ func TestActions_ResumeQueue(t *testing.T) {
 	}
 	if n := len(o.made()); n != 2 {
 		t.Errorf("%d calls after ResumePaused, want still 2", n)
+	}
+}
+
+// TestActions_ResumeQueueWaitsForASlowPause checks that a resume scheduled
+// shortly after a pause of the same queue is sent only once the pause has
+// finished, even when the pause's request is slower than the gap between
+// them. Sent out of order, the late pause would leave the queue paused while
+// the driver records it as resumed, so ResumePaused would not resume it.
+func TestActions_ResumeQueueWaitsForASlowPause(t *testing.T) {
+	o := &opServer{firstQueueGetDelay: 100 * time.Millisecond}
+	ts := o.start(t)
+	a := runActions(t, ts, []scenario.Action{{PauseQueue: "other"}, {At: scenario.Duration{Duration: 10 * time.Millisecond}, ResumeQueue: "other"}}, NewJobLedger(), nil)
+	if calls := o.made(); !slices.Equal(calls, []string{"PUT queues/queue-2 paused=true", "PUT queues/queue-2 paused=false"}) {
+		t.Errorf("calls = %v, want the pause and then the resume of queue-2", calls)
+	}
+	if got := a.ResumePaused(t.Context()); len(got) != 0 {
+		t.Errorf("ResumePaused resumed %v, want nothing", got)
+	}
+}
+
+func TestQueuePredecessors(t *testing.T) {
+	at := func(ms int) scenario.Duration {
+		return scenario.Duration{Duration: time.Duration(ms) * time.Millisecond}
+	}
+	tests := []struct {
+		name string
+		acts []scenario.Action
+		want [][]int
+	}{
+		{"pause then resume one queue", []scenario.Action{{PauseQueue: "a"}, {At: at(10), ResumeQueue: "a"}}, [][]int{nil, {0}}},
+		{"listed out of time order", []scenario.Action{{At: at(10), ResumeQueue: "a"}, {PauseQueue: "a"}}, [][]int{{1}, nil}},
+		{"different queues do not wait", []scenario.Action{{PauseQueue: "a"}, {At: at(10), PauseQueue: "b"}}, [][]int{nil, nil}},
+		{"a chain waits only for the one before", []scenario.Action{{PauseQueue: "a"}, {At: at(5), ResumeQueue: "a"}, {At: at(9), PauseQueue: "a"}}, [][]int{nil, {0}, {1}}},
+		{"same time keeps scenario order", []scenario.Action{{PauseQueue: "a"}, {ResumeQueue: "a"}}, [][]int{nil, {0}}},
+		{"actions on no queue", []scenario.Action{{RetryFailed: true}, {At: at(1), RetryFailed: true}}, [][]int{nil, nil}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := queuePredecessors(tc.acts); !slices.EqualFunc(got, tc.want, slices.Equal[[]int]) {
+				t.Errorf("queuePredecessors = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

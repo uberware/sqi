@@ -3,6 +3,7 @@
 package driver
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -121,16 +122,60 @@ func (a *Actions) Run(ctx context.Context, start time.Time) error {
 	for i := range a.acts {
 		rngs[i] = a.rng.child()
 	}
+	after := queuePredecessors(a.acts)
+	done := make([]chan struct{}, len(a.acts))
+	for i := range done {
+		done[i] = make(chan struct{})
+	}
 	var wg sync.WaitGroup
 	for i, act := range a.acts {
 		wg.Go(func() {
-			if sleep.Until(ctx, start.Add(act.At.Duration)) {
-				a.fire(ctx, act, rngs[i])
+			defer close(done[i])
+			if !sleep.Until(ctx, start.Add(act.At.Duration)) {
+				return
 			}
+			for _, j := range after[i] {
+				select {
+				case <-done[j]:
+				case <-ctx.Done():
+					return
+				}
+			}
+			a.fire(ctx, act, rngs[i])
 		})
 	}
 	wg.Wait()
 	return nil
+}
+
+// queuePredecessors returns, for each action, the actions it must wait for:
+// the one scheduled just before it on each queue it pauses or resumes. Calls
+// on one queue then reach the server in schedule order even when an earlier
+// call is slower than the gap between the two; sent out of order, a pause
+// that lands after its resume leaves the queue paused while the driver
+// records it as resumed. Actions at the same time keep their scenario order.
+func queuePredecessors(acts []scenario.Action) [][]int {
+	order := make([]int, len(acts))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(x, y int) int {
+		return cmp.Compare(acts[x].At.Duration, acts[y].At.Duration)
+	})
+	after := make([][]int, len(acts))
+	last := map[string]int{}
+	for _, i := range order {
+		for _, q := range []string{acts[i].PauseQueue, acts[i].ResumeQueue} {
+			if q == "" {
+				continue
+			}
+			if j, ok := last[q]; ok && j != i && !slices.Contains(after[i], j) {
+				after[i] = append(after[i], j)
+			}
+			last[q] = i
+		}
+	}
+	return after
 }
 
 // fire does everything act asks for, in a fixed order.
