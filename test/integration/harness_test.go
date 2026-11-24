@@ -99,55 +99,123 @@ func openTestStore(tb testing.TB, o backend.Options) store.Store {
 
 // ── Port helpers ──────────────────────────────────────────────────────────────
 
+// handedOutPorts holds every loopback port this process has handed out: those
+// freePort returned and those a listener from listenLoopback holds. A port is
+// never handed out twice. The kernel is free to give a just-released port to
+// the next listener on port 0, and two listeners sharing one port makes the
+// second bind fail while a TCP probe of the first still succeeds, which reads
+// as a server that never became ready.
 var (
 	handedOutMu    sync.Mutex
 	handedOutPorts = map[int]struct{}{}
 )
 
+// maxPortDraws bounds how many ports claimPort and listenClaimed try.
+const maxPortDraws = 100
+
+// reservePort records port as handed out and reports whether it was free to
+// hand out.
+func reservePort(port int) bool {
+	handedOutMu.Lock()
+	defer handedOutMu.Unlock()
+	if _, seen := handedOutPorts[port]; seen {
+		return false
+	}
+	handedOutPorts[port] = struct{}{}
+	return true
+}
+
 // freePort asks the OS for an available TCP port on loopback and returns it.
 // The port is released immediately after being discovered, so another process
 // could claim it before the caller binds it; launchServer waits for its ports
-// to be bindable before booting.
-//
-// It never returns the same port twice within a process. The kernel is free to
-// hand a just-released port out again, and two of a server's listeners (HTTP
-// and NATS) sharing one port makes the second bind fail while a TCP probe of
-// the first still succeeds, which reads as a server that never became ready.
+// to be bindable before booting. It never returns a port already handed out.
 func freePort(tb testing.TB) int {
 	tb.Helper()
-	const maxDraws = 100
-	for range maxDraws {
-		port := drawPort(tb)
-		handedOutMu.Lock()
-		_, seen := handedOutPorts[port]
-		if !seen {
-			handedOutPorts[port] = struct{}{}
-		}
-		handedOutMu.Unlock()
-		if !seen {
-			return port
-		}
-	}
-	tb.Fatalf("freePort: %d draws all returned a port already handed out", maxDraws)
-	return 0 // unreachable
-}
-
-// drawPort binds loopback port 0, reads the port the OS chose, and releases it.
-func drawPort(tb testing.TB) int {
-	tb.Helper()
-	lc := &net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	port, err := claimPort(drawPort)
 	if err != nil {
 		tb.Fatalf("freePort: %v", err)
 	}
-	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
+	return port
+}
+
+// claimPort returns the first port from draw not already handed out, and
+// records it as handed out.
+func claimPort(draw func() (int, error)) (int, error) {
+	for range maxPortDraws {
+		port, err := draw()
+		if err != nil {
+			return 0, err
+		}
+		if reservePort(port) {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("%d draws all returned a port already handed out", maxPortDraws)
+}
+
+// drawPort binds loopback port 0, reads the port the OS chose, and releases it.
+func drawPort() (int, error) {
+	ln, err := listenPort0()
+	if err != nil {
+		return 0, err
+	}
+	addr, ok := ln.Addr().(*net.TCPAddr)
 	if err := ln.Close(); err != nil {
-		tb.Fatalf("freePort: close listener: %v", err)
+		return 0, fmt.Errorf("close listener: %w", err)
 	}
 	if !ok {
-		tb.Fatalf("freePort: unexpected address type %T", ln.Addr())
+		return 0, fmt.Errorf("unexpected address type %T", ln.Addr())
 	}
-	return tcpAddr.Port
+	return addr.Port, nil
+}
+
+// listenLoopback returns a listener on a loopback port the test keeps open,
+// such as a proxy's or a load balancer's. Its port is one freePort has not
+// handed out, since a port freePort returned is released until its server
+// binds it, and freePort will not hand it out later. The listener is closed
+// when the test ends.
+func listenLoopback(tb testing.TB) net.Listener {
+	tb.Helper()
+	ln, err := listenClaimed(listenPort0)
+	if err != nil {
+		tb.Fatalf("listenLoopback: %v", err)
+	}
+	tb.Cleanup(func() { _ = ln.Close() })
+	return ln
+}
+
+// listenClaimed returns the first listener from listen whose port is not
+// already handed out, and records that port as handed out. It holds the
+// listeners it rejects until it returns, so listen cannot be given the same
+// port again, and then closes them.
+func listenClaimed(listen func() (net.Listener, error)) (net.Listener, error) {
+	var rejected []net.Listener
+	defer func() {
+		for _, ln := range rejected {
+			_ = ln.Close()
+		}
+	}()
+	for range maxPortDraws {
+		ln, err := listen()
+		if err != nil {
+			return nil, err
+		}
+		addr, ok := ln.Addr().(*net.TCPAddr)
+		if !ok {
+			_ = ln.Close()
+			return nil, fmt.Errorf("unexpected address type %T", ln.Addr())
+		}
+		if reservePort(addr.Port) {
+			return ln, nil
+		}
+		rejected = append(rejected, ln)
+	}
+	return nil, fmt.Errorf("%d listeners all got a port already handed out", maxPortDraws)
+}
+
+// listenPort0 listens on a loopback port the OS chooses.
+func listenPort0() (net.Listener, error) {
+	return (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 }
 
 // ── Server harness ────────────────────────────────────────────────────────────

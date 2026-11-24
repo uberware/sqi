@@ -317,9 +317,6 @@ func (g *haGroup) newNode(name string) *haNode {
 		n.proxies = append(n.proxies, p)
 		urls = append(urls, strconv.Quote("tls://"+p.addr()))
 	}
-	// Drawn while the proxies hold their ports: a proxy listens on port 0,
-	// which freePort does not track, so drawn first the HTTP port could be
-	// handed to a proxy.
 	n.httpAddr = fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	c := g.rig
 	cfg := fmt.Sprintf(`http:
@@ -794,10 +791,7 @@ const haBalancerHold = 8 * time.Second
 
 func newHABalancer(t *testing.T, backends []string) *haBalancer {
 	t.Helper()
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("balancer listen: %v", err)
-	}
+	ln := listenLoopback(t)
 	b := &haBalancer{
 		addr:     ln.Addr().String(),
 		backends: backends,
@@ -923,10 +917,7 @@ type tcpProxy struct {
 
 func newTCPProxy(t *testing.T, target string) *tcpProxy {
 	t.Helper()
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("proxy listen: %v", err)
-	}
+	ln := listenLoopback(t)
 	p := &tcpProxy{ln: ln, target: target, conns: map[net.Conn]struct{}{}}
 	go p.accept()
 	t.Cleanup(func() {
