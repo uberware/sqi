@@ -16,6 +16,10 @@ add them as GitHub secrets.
 
 **Prerequisites:**
 - An active Apple Developer Program membership (individual or organization).
+- Every agreement in [App Store Connect → Business](https://appstoreconnect.apple.com/business)
+  accepted by the Account Holder. The notary service checks these, not the
+  Agreements list on developer.apple.com, and Apple adds new ones there from
+  time to time.
 
 **Procedure:**
 
@@ -144,8 +148,9 @@ dry-run tag `v0.0.1-rc.1` needs no `_version.py` bump.
 - The Release workflow run is green.
 - The resulting GitHub pre-release (`v0.0.1-rc.1`) contains
   `sqi_Darwin_arm64.tar.gz` and `sqi_Darwin_x86_64.tar.gz` as release assets.
-- The **Notarize macOS binaries** step logs `The status is Accepted` for each
-  binary submitted to Apple Notary.
+- The **Notarize macOS binaries** step logs `poll state after <n>s: Accepted`
+  and a notary log with `"status": "Accepted"` for each binary submitted to
+  Apple Notary.
 - Multi-arch image is present:
   ```bash
   docker buildx imagetools inspect ghcr.io/uberware/sqi/sqi-worker:v0.0.1-rc.1
@@ -171,6 +176,10 @@ via the GitHub Packages UI or `gh` API.
 ## Step 5: Local pre-tag sanity check
 
 Run this on the machine used to cut the release (no Apple credentials needed).
+The image builds use `docker buildx`. On macOS with Homebrew's Docker CLI,
+install it with `brew install docker-buildx` and make sure
+`~/.docker/config.json` lists `/opt/homebrew/lib/docker/cli-plugins` under
+`cliPluginsExtraDirs`; `docker buildx version` should then answer.
 
 ```bash
 goreleaser check
@@ -182,7 +191,22 @@ GOVERSION=$(go version | awk '{print $3}') \
 `sqi-worker` are produced for all six target platforms (`linux/amd64`,
 `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`,
 `windows/arm64`). All four Docker image variants build (`-amd64`/`-arm64` per
-image, plus the manifest tags).
+image). A snapshot builds no manifest lists and takes its version from the
+previous tag, so the binaries and image tags name the last release, not
+`$VERSION`.
+
+`goreleaser check` printing that `dockers` and `docker_manifests` are being
+phased out is a notice, not a failure.
+
+The snapshot's `before` hook rebuilds the web UI, which rewrites the asset
+hashes in the tracked `web/dist/index.html`. Restore it so it does not end up in
+the changelog commit, and remove the snapshot images if disk space matters:
+
+```bash
+git restore web/dist/index.html
+docker images --format '{{.Repository}}:{{.Tag}}' \
+  | grep '^ghcr.io/uberware/sqi/' | xargs docker rmi
+```
 
 ---
 
@@ -213,7 +237,16 @@ VERSION=X.Y.Z
 2. Confirm the `main` branch is green in CI and every change meant for the
    release is merged.
 
-3. Regenerate and commit the changelog so the tag includes a dated section.
+3. Confirm the Apple agreements are current: as the Account Holder, open
+   [App Store Connect → Business](https://appstoreconnect.apple.com/business)
+   and accept anything marked new, pending or expired. The Agreements page on
+   developer.apple.com does not list these. An unaccepted one makes Apple's
+   notary service answer `403 FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED`,
+   and notarization runs *after* GoReleaser has published the release, so the
+   release is left half-finished (see
+   [If the Release workflow fails after publishing](#if-the-release-workflow-fails-after-publishing)).
+
+4. Regenerate and commit the changelog so the tag includes a dated section.
    git-cliff generates `CHANGELOG.md` from the Conventional Commit history.
    Make this the last commit before tagging so the section date matches the
    tag date. The release workflow regenerates it for the archives but does not
@@ -225,22 +258,53 @@ VERSION=X.Y.Z
    git push origin main
    ```
    Review the diff first: the new `## [$VERSION]` section should list the
-   commits since the previous tag, grouped by type, with no stray groups.
+   commits since the previous tag, grouped by type, with no stray groups. The
+   diff should only add lines. git-cliff's warning that some commits were
+   skipped due to parse errors refers to non-conventional commits from before
+   v0.2.0 and is expected. `main` requires pull requests, so this push relies
+   on the maintainer's admin bypass.
 
-4. Tag and push:
+5. Tag and push:
    ```bash
    git tag "v$VERSION" && git push origin "v$VERSION"
    ```
 
-5. Wait for the Release workflow to complete.
+6. Wait for the Release workflow to complete.
 
 **Verify:** The GitHub release `v$VERSION` contains:
 - Archives: `sqi_Linux_x86_64.tar.gz`, `sqi_Linux_arm64.tar.gz`,
   `sqi_Darwin_x86_64.tar.gz`, `sqi_Darwin_arm64.tar.gz`,
   `sqi_Windows_x86_64.zip`, `sqi_Windows_arm64.zip`
-- `checksums.txt`, SBOMs (`.sbom`), cosign signatures (`.sig` / `.pem`)
+- `checksums.txt` with its cosign signature and certificate
+  (`checksums.txt.sig`, `checksums.txt.pem`), and SBOMs (`*.sbom.json`)
 - `sqi_sdk-$VERSION-py3-none-any.whl` and `sqi_sdk-$VERSION.tar.gz`
 - `sqi_submitter-$VERSION-py3-none-any.whl` and `sqi_submitter-$VERSION.tar.gz`
+
+### If the Release workflow fails after publishing
+
+GoReleaser creates the GitHub release, uploads the archives and pushes the
+images before the notarization, Python and PyPI steps run. A failure in any of
+those leaves a public release without notarized macOS binaries or Python
+packages.
+
+"Re-run failed jobs" alone does not recover it: `.goreleaser.yaml` does not set
+`release.replace_existing_artifacts`, so GoReleaser stops at the first asset
+the release already has. Instead:
+
+1. Fix the cause (for a notary `403`, the agreement in step 3).
+2. Delete the release but keep the tag:
+   ```bash
+   gh release delete "v$VERSION" --yes
+   ```
+3. Re-run the failed job, which rebuilds everything, publishes the release
+   again and pushes the images again under the same tags:
+   ```bash
+   gh run rerun <run-id> --failed
+   ```
+
+This works only while neither PyPI publish has run. PyPI refuses to accept a
+file it already has, and the publish steps do not skip existing files, so a
+re-run after `sqi-sdk` was published fails at that step.
 
 ---
 
@@ -376,9 +440,15 @@ JOB=$(curl -s -X POST \
 curl -s localhost:8080/api/v1/jobs/$JOB/tasks
 ```
 
-Expected: the job's tasks reach `succeeded` status. The task log in the web UI
-(http://localhost:8080) shows the greeting from `hello.json`, `Hello from sqi
-v<version>`, where the version is the one written in that file at the tag.
+Expected: the job's tasks reach `succeeded` status and the job `completed`. The
+task log in the web UI (http://localhost:8080), or from the API, shows the
+greeting from `hello.json`, `Hello from sqi v<version>`, where the version is
+the one written in that file at the tag:
+
+```bash
+TASK=$(curl -s localhost:8080/api/v1/jobs/$JOB/tasks | jq -r '.items[0].id')
+curl -s localhost:8080/api/v1/tasks/$TASK/logs | jq -r '.items[].data'
+```
 
 Clean up:
 
@@ -401,12 +471,32 @@ docker compose -f docker-compose.yml down -v
    ./sqi-worker start &
    ```
 
-3. Check Gatekeeper acceptance (no quarantine dialog, no "cannot be opened" error):
+3. Check the signature and notarization. A bare command-line binary cannot have
+   a notarization ticket stapled to it, so Gatekeeper looks the ticket up
+   online, and the local tools report it badly:
    ```bash
    spctl -a -vvv -t exec ./sqi-server
    spctl -a -vvv -t exec ./sqi-worker
    ```
-   Expected: `source=Notarized Developer ID` (or `accepted`) for both binaries.
+   Expected: `rejected (the code is valid but does not seem to be an app)` with
+   `origin=Developer ID Application: Uberware, LLC (TH59DBNN8S)`. The
+   `rejected` is `spctl` declining to judge a non-app; the origin line is what
+   to check. `syspolicy_check distribution` likewise reports "Notary Ticket
+   Missing", meaning nothing is stapled.
+
+   To confirm the notarization itself, look each binary's ticket up the way
+   Gatekeeper does, by its code-directory hash:
+   ```bash
+   for b in sqi-server sqi-worker; do
+     cd=$(codesign -dvvv "./$b" 2>&1 | awk -F= '/^CDHash=/{print $2}')
+     curl -s -X POST \
+       https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup \
+       -H 'content-type: application/json' \
+       -d "{\"records\":[{\"recordName\":\"2/2/$cd\"}]}" \
+       | jq -r --arg b "$b" '"\($b): " + (if .records[0].fields.signedTicket then "notarized" else "NO TICKET" end)'
+   done
+   ```
+   Expected: `notarized` for both.
 
 4. Stop both processes when done.
 
@@ -423,3 +513,19 @@ tar -xzf sqi_Linux_arm64.tar.gz
 
 **Verify:** the worker appears as registered in the web UI or via
 `curl -s localhost:8080/api/v1/workers`.
+
+Run the worker as an ordinary user: as root it refuses to start unless given
+`--allow-root`. Without an arm64 Linux host, an arm64 container on an Apple
+Silicon Mac's Docker (Colima's VM is aarch64) serves; pipe the archive in and
+run as a non-root UID:
+
+```bash
+cat sqi_Linux_arm64.tar.gz | docker run --rm -i --platform linux/arm64 \
+  --user 1000:1000 -w /tmp alpine:3 sh -c '
+  tar -xzf -
+  ./sqi-server serve >server.log 2>&1 &
+  sleep 3
+  SQI_WORKER_DATA_DIR=/tmp/worker ./sqi-worker start >worker.log 2>&1 &
+  sleep 10
+  wget -qO - http://127.0.0.1:8080/api/v1/workers'
+```
