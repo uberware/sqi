@@ -10,6 +10,102 @@ Format follows [Conventional Commits](https://www.conventionalcommits.org/) and
 > `docs/development.md`). It is refreshed during release prep and again by the
 > release workflow, which bundles it into the release archives.
 
+## [0.4.0] — 2026-11-24
+
+
+### Bug Fixes
+
+- **expr:** Match CPython's center tie-break and RFC 0005's restated coercion ([#124](https://github.com/uberware/sqi/issues/124)) ([f22f3ec](https://github.com/uberware/sqi/commit/f22f3ec9887a7d93180236d9de0b2c7a4c38146a))
+- **smoke:** Tolerate Schannel's unknown revocation status in TLS mode ([#128](https://github.com/uberware/sqi/issues/128)) ([31643b7](https://github.com/uberware/sqi/commit/31643b7e067ad31ff15a96fb355eb627b1c9f76e))
+- **expr:** Render lists per openjd-specifications #176 ([#133](https://github.com/uberware/sqi/issues/133)) ([87c1368](https://github.com/uberware/sqi/commit/87c13680ed29401c2949af8e0177770c0bf70337))
+- **web:** Bump brace-expansion to 5.0.12 for GHSA-mh99-v99m-4gvg ([#147](https://github.com/uberware/sqi/issues/147)) ([67ed8a9](https://github.com/uberware/sqi/commit/67ed8a93a7e22b798c639bf30606ad529a0c7758))
+- Close the Windows stage-out junction escape and fix POSIX/Windows parity ([#148](https://github.com/uberware/sqi/issues/148)) ([eca7d2b](https://github.com/uberware/sqi/commit/eca7d2b8e38503bf170fe0c2b033e72690b2d4d0))
+- Make store writes and the task and worker lifecycle correct under concurrency ([#158](https://github.com/uberware/sqi/issues/158)) ([1404f77](https://github.com/uberware/sqi/commit/1404f777941175060e90811907fcd11df4726bf2))
+- **store:** Store timestamps in a fixed-width, sortable form ([#162](https://github.com/uberware/sqi/issues/162)) ([8ceafee](https://github.com/uberware/sqi/commit/8ceafee5f093599ebe8b4c8bd4a4e0c40108d9f1))
+- No console window for submit dialogs, safer launch failures and DCC preset follow-ups ([#179](https://github.com/uberware/sqi/issues/179)) ([9308006](https://github.com/uberware/sqi/commit/9308006003fa760b6bd4ecba631b98c92e2ea35e))
+- **worker:** Keep reading task output past a line over 64 KiB ([#182](https://github.com/uberware/sqi/issues/182)) ([b668de8](https://github.com/uberware/sqi/commit/b668de87c67bbd7b39f536c0f0bc3ad159c5971b))
+- **ha:** Stop a leader reporting itself the moment its lease authority lapses ([#195](https://github.com/uberware/sqi/issues/195)) ([55ae6e6](https://github.com/uberware/sqi/commit/55ae6e64151697bf862eb3496c575e36873735b9))
+- **scheduler:** Resend a cancel to a worker that reports a closed attempt running ([#196](https://github.com/uberware/sqi/issues/196)) ([3395402](https://github.com/uberware/sqi/commit/33954024c80000cf9a551610abf2d58a3ddb0211))
+- Send cancels on a per-worker subject and cancel attempts a worker still reports after the store closed or lost them ([#197](https://github.com/uberware/sqi/issues/197)) ([0ce91cb](https://github.com/uberware/sqi/commit/0ce91cb813a978aba665373974a0b55afb8cdb24))
+- **worker:** Fail startup on a malformed numeric, duration or boolean environment variable ([#198](https://github.com/uberware/sqi/issues/198)) ([e847089](https://github.com/uberware/sqi/commit/e847089f4b08ab44bbed1c80259954c564bc9ebd))
+- **worker:** Decode the config file strictly and keep the file's list on a blank list variable ([#200](https://github.com/uberware/sqi/issues/200)) ([eca0921](https://github.com/uberware/sqi/commit/eca0921bb184ce81399d77ccb0438f882737a883))
+- **store:** Work on the symlink-resolved SQLite database file everywhere and refuse a file: URI ([#201](https://github.com/uberware/sqi/issues/201)) ([93a08ac](https://github.com/uberware/sqi/commit/93a08acfa1986e660960736e010bdc04b446f17e))
+- **bus:** Retry a guard bucket publish while its stream has no leader ([#210](https://github.com/uberware/sqi/issues/210)) ([0b82c5f](https://github.com/uberware/sqi/commit/0b82c5feca8140dec772dff817a0bd152a776df2))
+- Ignore stale job and task WebSocket events, and stamp failure-path rows with server time ([#214](https://github.com/uberware/sqi/issues/214)) ([33acef6](https://github.com/uberware/sqi/commit/33acef6b35abea39b403b50cc60111358a67cae2))
+- **scheduler:** Keep a Stop that lands before Run from being lost or racing it ([#216](https://github.com/uberware/sqi/issues/216)) ([df69303](https://github.com/uberware/sqi/commit/df693037280645801dfcab794b7847f60a361762))
+- **loadtest:** Return from a stall only once every thread of the process has stopped ([#217](https://github.com/uberware/sqi/issues/217)) ([426d655](https://github.com/uberware/sqi/commit/426d6558336905a537aaae2a478b2827fbb7c9d2))
+- **bus:** Log the embedded broker's warnings and errors ([#218](https://github.com/uberware/sqi/issues/218)) ([1d46b1a](https://github.com/uberware/sqi/commit/1d46b1a5b285ee39661ba0d6dcf06a92701b8b29))
+- **scheduler:** Judge liveness by how far the consumers have applied their streams (H13f2, H13f3, H13f7) ([#222](https://github.com/uberware/sqi/issues/222)) ([3c66802](https://github.com/uberware/sqi/commit/3c66802d64afa4cf9ea115c957e2cc4ed41cddfe))
+- Answer every lease request on a graceful stop and release the broker guard mid-refresh (H13f11, H13f12) ([#223](https://github.com/uberware/sqi/issues/223)) ([3203107](https://github.com/uberware/sqi/commit/320310709c07639b1be37b0a4f7b48e3b7695540))
+- **executor:** Start a Windows task suspended so it is in its job before it runs (H13f16) ([#225](https://github.com/uberware/sqi/issues/225)) ([cbd9f36](https://github.com/uberware/sqi/commit/cbd9f36e348cf8fc16de49bd1613f173e34a8d5d))
+- **worker:** Contain environment actions and let a cancel or shutdown reach onEnter (H13f17) ([#226](https://github.com/uberware/sqi/issues/226)) ([1619361](https://github.com/uberware/sqi/commit/1619361401a0b9f6b399a742a200d2f44ff4b0dc))
+- **worker:** Acknowledge task status reports so a server stop loses no finished work (H13f1, H13f6) ([#233](https://github.com/uberware/sqi/issues/233)) ([716c221](https://github.com/uberware/sqi/commit/716c2210b4e972ce2734f16ec7a1e66f4b83cf30))
+- **scheduler:** Wait for a restarted worker's last task statuses before its registration reclaims their attempts (H13f18) ([#234](https://github.com/uberware/sqi/issues/234)) ([f8efa9a](https://github.com/uberware/sqi/commit/f8efa9a0731a05c837c128717a1be4fa8fdbe3f4))
+- **worker:** Treat a bare capability tag as true ([#235](https://github.com/uberware/sqi/issues/235)) ([ef97178](https://github.com/uberware/sqi/commit/ef971783e5b71d32d2dd10ade911c6989d864065))
+- **scheduler:** Lease nothing to a worker whose credential was revoked, including a request it parked before the revoke (H13f8) ([#236](https://github.com/uberware/sqi/issues/236)) ([e4f29d2](https://github.com/uberware/sqi/commit/e4f29d29cb95c55eca627880bb5e805c5a50d28f))
+- Recover the embedded broker, acknowledge log delivery and read the account guard from the stream leader ([#237](https://github.com/uberware/sqi/issues/237)) ([e82fc48](https://github.com/uberware/sqi/commit/e82fc480180cd012b0cf0e532d9044ff8eb73c9a))
+- Kill the process trees a killed worker left running before it registers again ([#238](https://github.com/uberware/sqi/issues/238)) ([6a50913](https://github.com/uberware/sqi/commit/6a5091355c98aa81eb1825d69aa7cb9945ac50b0))
+- **worker:** Sweep process trees whose environment macOS 27 withholds ([#240](https://github.com/uberware/sqi/issues/240)) ([8a69384](https://github.com/uberware/sqi/commit/8a69384f000181b78ee311bb21b1b3e74cd2e502))
+- **submitter:** Use the Maxon-registered Cinema 4D plug-in ID ([#242](https://github.com/uberware/sqi/issues/242)) ([0174c9a](https://github.com/uberware/sqi/commit/0174c9a14e224d047c3b2eea406a52c24d902bd5))
+- **scheduler:** Wake a lease request that a submission reaches before it parks ([#243](https://github.com/uberware/sqi/issues/243)) ([4f275be](https://github.com/uberware/sqi/commit/4f275bee799d87a1faa63dabe85ca209ea3f0753))
+- Send a queue's pause and resume in schedule order and fix the broker-restart test's publish race ([#248](https://github.com/uberware/sqi/issues/248)) ([bfa9b61](https://github.com/uberware/sqi/commit/bfa9b6105362cea4da59b901f10afed3de034a7e))
+- Bound HTTP metric labels, add a worker Docker build target and report cross-compile checks on web-only pull requests ([#250](https://github.com/uberware/sqi/issues/250)) ([330e139](https://github.com/uberware/sqi/commit/330e13982b439e01b601bfa2e457535eea2af88d))
+- Count worker uptime from the current process's start ([#251](https://github.com/uberware/sqi/issues/251)) ([45ef0af](https://github.com/uberware/sqi/commit/45ef0aff2b28a28e755e10644320464d22ab50b2))
+
+
+### Documentation
+
+- Record presets not shipped, add a throttled transfer recipe and update the roadmap ([#192](https://github.com/uberware/sqi/issues/192)) ([7dfd645](https://github.com/uberware/sqi/commit/7dfd6453aac5680e20a436f5774318f1cbe32ea2))
+- Clean comments and docs for v0.4.0 and mark settings added since v0.3.0 ([#244](https://github.com/uberware/sqi/issues/244)) ([4c57f5d](https://github.com/uberware/sqi/commit/4c57f5daf4e72e54c5e80e816afcee99fd55bd03))
+- Remove unverified and untested caveats from preset readmes and product docs ([#252](https://github.com/uberware/sqi/issues/252)) ([513d5e4](https://github.com/uberware/sqi/commit/513d5e4231e6d62b7b61ad93672a65b022e8f02b))
+
+
+### Features
+
+- Opt-in broker authentication and per-worker transport identity ([#126](https://github.com/uberware/sqi/issues/126)) ⚠️ BREAKING — workers must be upgraded to match the server. The worker wire protocol (ProtocolVersion 2 → 3) and every worker→server NATS subject changed shape. Upgrade the server first, then workers. ([1a40893](https://github.com/uberware/sqi/commit/1a408933a180918d80bac242756656ce57b16ee2))
+- Add opt-in TLS end to end ([#127](https://github.com/uberware/sqi/issues/127)) ([7fcfa46](https://github.com/uberware/sqi/commit/7fcfa46d9180b61e2d25ab333c3bbde8fa8730b3))
+- Tiered preset validation harness ([#141](https://github.com/uberware/sqi/issues/141)) ([619ee0f](https://github.com/uberware/sqi/commit/619ee0f6c4df7f754cd6c035c41e423b9276a086))
+- **presets:** Validate presets on windows and add a script-powershell built-in ([#151](https://github.com/uberware/sqi/issues/151)) ([55e8fee](https://github.com/uberware/sqi/commit/55e8feef7749423acd6380da63ce2a3d75144600))
+- Windows service manager integration ([#152](https://github.com/uberware/sqi/issues/152)) ([7fbc428](https://github.com/uberware/sqi/commit/7fbc4284cf189de8db732b353c00d21305d56ef5))
+- Built in sequence products for python and platform specific shells ([#155](https://github.com/uberware/sqi/issues/155)) ([336f29d](https://github.com/uberware/sqi/commit/336f29d614bb8b83f368a037780aed711a758b95))
+- **store:** PostgreSQL state store ([#167](https://github.com/uberware/sqi/issues/167)) ([a2d10d2](https://github.com/uberware/sqi/commit/a2d10d223b968d51d399ce40543275434a351bd8))
+- **store:** Backup, restore, upgrade and SQLite to PostgreSQL copy ([#170](https://github.com/uberware/sqi/issues/170)) ([2cf23e4](https://github.com/uberware/sqi/commit/2cf23e41baf0fd7fb7aa2fd0a443b66cd2643450))
+- Standalone renderer presets ([#172](https://github.com/uberware/sqi/issues/172)) ([111f364](https://github.com/uberware/sqi/commit/111f3648c026dac0bace34c54afa44cc9587182a))
+- Cinema 4d, 3ds max, after effects and blender view layer presets, with reference-matching task chunking ([#173](https://github.com/uberware/sqi/issues/173)) ([54f7eff](https://github.com/uberware/sqi/commit/54f7efff716918e4cb901cdb72a9ebc511cef5c0))
+- DCC submit dialogs, worker command defaults and real-application preset tests ([#176](https://github.com/uberware/sqi/issues/176)) ([b03a94d](https://github.com/uberware/sqi/commit/b03a94dfb6037e58982846e6cd7e466c0172e3bf))
+- SQI_LOG_CHECKS extension and twelve DCC presets ([#185](https://github.com/uberware/sqi/issues/185)) ([c1da03d](https://github.com/uberware/sqi/commit/c1da03dae67df4dc1aeaa5978367202c7def538a))
+- Submitters for unreal, katana, vred, keyshot, silhouette, fusion and modo ([#186](https://github.com/uberware/sqi/issues/186)) ([00c14be](https://github.com/uberware/sqi/commit/00c14be967d88df369cc25a189247209a58c231e))
+- Unreal shot and fusion saver presets, katana 8 in-process submit and stricter step validation ([#187](https://github.com/uberware/sqi/issues/187)) ([c39cd3d](https://github.com/uberware/sqi/commit/c39cd3d2c72d811f4c348a633be6aba77d758246))
+- **presets:** P6 pipeline utility presets ([#190](https://github.com/uberware/sqi/issues/190)) ([218a815](https://github.com/uberware/sqi/commit/218a8150bb9e837791ffa1407234f3a07a9e6192))
+- External and clustered NATS deployment mode ([#191](https://github.com/uberware/sqi/issues/191)) ([94bb7c8](https://github.com/uberware/sqi/commit/94bb7c863b4b15eb5af0dba2b14a82d13f8d9a3a))
+- Scheduler high availability ([#193](https://github.com/uberware/sqi/issues/193)) ([605977e](https://github.com/uberware/sqi/commit/605977e0b5606bee02d931ca9128ee536ec11c9e))
+- Load and soak harness (sqi-load) ([#194](https://github.com/uberware/sqi/issues/194)) ([018460f](https://github.com/uberware/sqi/commit/018460ff7f9587e96f40542c0d5df218acd14cea))
+- Task progress, status text and job progress_percent ([#199](https://github.com/uberware/sqi/issues/199)) ([5e9cce4](https://github.com/uberware/sqi/commit/5e9cce46264725b5d5d268689a1bbdc539afb7b7))
+- Report remaining time and ETA for jobs and queues ([#202](https://github.com/uberware/sqi/issues/202)) ([8ae898a](https://github.com/uberware/sqi/commit/8ae898a4ef51236ed2fbc9befbdf850907b5a18b))
+- Report task progress and status from shipped presets ([#203](https://github.com/uberware/sqi/issues/203)) ([dc210fc](https://github.com/uberware/sqi/commit/dc210fce1c2c55b783f6bdd1436c724e16a0f1fb))
+- Capacity groups ([#204](https://github.com/uberware/sqi/issues/204)) ([a0c18a8](https://github.com/uberware/sqi/commit/a0c18a8d7028226bae1468e8fb3e1b5d8228c585))
+- Acting capacity providers (wake-on-LAN and script) ([#208](https://github.com/uberware/sqi/issues/208)) ([5c4545f](https://github.com/uberware/sqi/commit/5c4545f90962f727f23c64623fb79d04a5013cf4))
+- Run Unreal, Houdini and Blender on macOS workers ([#212](https://github.com/uberware/sqi/issues/212)) ([0f1f3b4](https://github.com/uberware/sqi/commit/0f1f3b4d843d61487be244993e457ccef46cdd6a))
+- **web:** Bulk pause and resume on the job list, and keep every bulk action failure ([#221](https://github.com/uberware/sqi/issues/221)) ([5f3efdb](https://github.com/uberware/sqi/commit/5f3efdbb0c31bf6cee7b17eb1d3c687af7fd3900))
+- **web:** Pause and resume on the job list, and job actions on the job detail page ([#224](https://github.com/uberware/sqi/issues/224)) ([ba9f053](https://github.com/uberware/sqi/commit/ba9f0538318236cd52794aeffe48fe8fc6ebd7bf))
+- Catch up with upstream OpenJD spec and pin the reference to openjd-model 0.14.0 ([#227](https://github.com/uberware/sqi/issues/227)) ([e8c0a75](https://github.com/uberware/sqi/commit/e8c0a75174c9c20cfe631f278c4c2d7eba12575f))
+- Submit jobs paused, combining with depends_on ([#239](https://github.com/uberware/sqi/issues/239)) ([67a269c](https://github.com/uberware/sqi/commit/67a269c4b6638e2795fcccf4a239ac765f93e3a4))
+- Beta install path for systemd, launchd and Windows services ([#241](https://github.com/uberware/sqi/issues/241)) ([e7d32ac](https://github.com/uberware/sqi/commit/e7d32ac4789f5dd390223000ac1ab2e5ff32ea95))
+
+
+### Refactoring
+
+- **store:** Delete unused store methods and seed tests through production writes ([#161](https://github.com/uberware/sqi/issues/161)) ([08644bf](https://github.com/uberware/sqi/commit/08644bf0299f486dfa75c95f7ccb0b7cfa28019b))
+- **store:** Prepare the store for a second SQL dialect ([#165](https://github.com/uberware/sqi/issues/165)) ([15a288a](https://github.com/uberware/sqi/commit/15a288a46f4c9e88526581a68310153a80b99cc3))
+
+
+### Testing
+
+- Report where a test server's startup stalls ([#171](https://github.com/uberware/sqi/issues/171)) ([0c00ff8](https://github.com/uberware/sqi/commit/0c00ff85c718e57d1f47921a4e45a24f6a364570))
+- Allow 60s for the test server to start ([#178](https://github.com/uberware/sqi/issues/178)) ([d056379](https://github.com/uberware/sqi/commit/d056379ddc3e035122265523f407b0fd8e1be8f8))
+- **chaos:** Chaos testing suite on the load harness (H13a) ([#213](https://github.com/uberware/sqi/issues/213)) ([dbf956f](https://github.com/uberware/sqi/commit/dbf956f1c65793603128bdcaa524b6e9d94b980d))
+- **chaos:** Database, disk, fd-limit, identity and clock-skew faults (H13b) ([#215](https://github.com/uberware/sqi/issues/215)) ([8757bfe](https://github.com/uberware/sqi/commit/8757bfe83304ff2e2af24ef0fc606a948e5b763a))
+
 ## [0.3.0] — 2026-08-19
 
 
