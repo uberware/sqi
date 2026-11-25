@@ -38,9 +38,12 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// marshalAssignMsg stamps attemptID into msg and marshals it.
-func marshalAssignMsg(msg protocol.AssignMsg, attemptID string) ([]byte, error) {
+// marshalAssignMsg stamps the lease's attempt ID and time into msg and
+// marshals it. assignedAt is the time the lease stored as the task's
+// assigned_at, so the two agree.
+func marshalAssignMsg(msg protocol.AssignMsg, attemptID string, assignedAt time.Time) ([]byte, error) {
 	msg.AttemptID = attemptID
+	msg.AssignedAt = assignedAt
 	return json.Marshal(msg)
 }
 
@@ -102,7 +105,6 @@ func buildAssignMsg(
 		StepID:        task.StepID,
 		TaskName:      task.Name,
 		WorkerID:      worker.ID,
-		AssignedAt:    time.Now().UTC(),
 		Parameters:    task.Parameters,
 		JobParameters: buildJobParameters(tmpl, job),
 	}

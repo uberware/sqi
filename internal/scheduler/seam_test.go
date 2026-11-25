@@ -5,6 +5,7 @@ package scheduler
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -25,7 +26,7 @@ func TestBuildAssignPayload_ExportedSeamMatchesUnexported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildAssignMsg: %v", err)
 	}
-	want, err := marshalAssignMsg(msg, attemptID)
+	want, err := marshalAssignMsg(msg, attemptID, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("marshalAssignMsg: %v", err)
 	}

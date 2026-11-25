@@ -13,6 +13,7 @@ package scheduler
 
 import (
 	"context"
+	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -38,5 +39,5 @@ func BuildAssignPayload(
 	if err != nil {
 		return nil, err
 	}
-	return marshalAssignMsg(msg, attemptID)
+	return marshalAssignMsg(msg, attemptID, time.Now().UTC())
 }

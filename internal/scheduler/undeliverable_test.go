@@ -15,6 +15,7 @@ import (
 
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // newUndeliverableScheduler is newMetricsScheduler with a chosen retry limit.
@@ -102,6 +103,31 @@ func TestHandleLeaseRequest_UndeliverableTaskIsFailedAndBatchContinues(t *testin
 	}
 }
 
+// TestSelectLeaseBatch_AssignedAtIsTheLeaseTime pins that the delivered
+// assignment carries the lease's own time, the assigned_at LeaseTask stored,
+// not the earlier moment the assignment was built. The build's storage
+// location read is slowed so the two moments differ even on a coarse clock.
+func TestSelectLeaseBatch_AssignedAtIsTheLeaseTime(t *testing.T) {
+	inner := newCheckedFake(t)
+	one := 1
+	w, ids := seedLeaseFixture(t, inner, []*int{&one})
+	st := &storageListErrStore{Store: inner, delay: 20 * time.Millisecond}
+	s := newUndeliverableScheduler(st, 1)
+
+	batch, err := s.selectLeaseBatch(t.Context(), w)
+	if err != nil || len(batch) != 1 {
+		t.Fatalf("selectLeaseBatch = %d assignments, err %v; want 1", len(batch), err)
+	}
+	var msg protocol.AssignMsg
+	if err := json.Unmarshal(batch[0], &msg); err != nil {
+		t.Fatalf("unmarshal assignment: %v", err)
+	}
+	task := mustTask(t, inner, ids[0])
+	if task.AssignedAt == nil || !msg.AssignedAt.Equal(*task.AssignedAt) {
+		t.Errorf("AssignMsg.AssignedAt = %v, want the stored assigned_at %v", msg.AssignedAt, task.AssignedAt)
+	}
+}
+
 func TestSelectLeaseBatch_UndeliverableTaskWaitsOutRetryDelay(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newUndeliverableScheduler(st, 3)
@@ -126,11 +152,13 @@ func TestSelectLeaseBatch_UndeliverableTaskWaitsOutRetryDelay(t *testing.T) {
 	}
 }
 
-// storageListErrStore fails ListStorageLocations while failing is set.
+// storageListErrStore fails ListStorageLocations while failing is set, and
+// otherwise answers it after delay.
 type storageListErrStore struct {
 	store.Store
 
 	failing bool
+	delay   time.Duration
 }
 
 var errInjectedStorageList = errors.New("injected storage list failure")
@@ -139,6 +167,7 @@ func (s *storageListErrStore) ListStorageLocations(ctx context.Context) ([]store
 	if s.failing {
 		return nil, errInjectedStorageList
 	}
+	time.Sleep(s.delay)
 	return s.Store.ListStorageLocations(ctx)
 }
 

@@ -522,11 +522,12 @@ func (s *Scheduler) tryLeaseTask(
 	// worker read offline is still served (see "Known gaps" in
 	// docs/architecture.md), so a live worker the sweep wrongly took offline is
 	// refused at most once.
+	now := time.Now().UTC()
 	res, err := s.store.LeaseTask(ctx, store.LeaseRequest{
 		TaskID:        task.ID,
 		WorkerID:      worker.ID,
 		AttemptID:     uuid.NewString(),
-		Now:           time.Now().UTC(),
+		Now:           now,
 		Claims:        buildUsageClaims(gd.step, gd.pools),
 		RequireOnline: worker.Status == store.WorkerStatusOnline,
 	})
@@ -550,7 +551,7 @@ func (s *Scheduler) tryLeaseTask(
 		}
 		return nil, 0, false, nil
 	}
-	payload, err = marshalAssignMsg(msg, attempt.ID)
+	payload, err = marshalAssignMsg(msg, attempt.ID, now)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("lease: marshal payload for %s: %w", task.ID, err)
 	}
