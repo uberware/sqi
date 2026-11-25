@@ -1037,7 +1037,9 @@ worker:
 | **Default** | `[]` (all queues) |
 | **Env var** | `SQI_WORKER_QUEUE_IDS` (comma-separated) |
 
-Restrict this worker to specific queue IDs. The worker keeps one outstanding
+Restrict this worker to specific queue IDs. The worker registers the whole
+list, and the server offers it ready work only from the listed queues, in the
+usual priority order across all of them. The worker keeps one outstanding
 lease request per listed queue, on `work.lease.<workerID>.<queueID>`. When
 empty (the default), it issues a single lease request on
 `work.lease.<workerID>._any`, and the server offers it ready work from any
@@ -1048,7 +1050,14 @@ Each entry becomes one NATS subject token, so an entry that is empty or
 contains `.`, whitespace, `*` or `>` is rejected at load with an error
 naming it. Such an entry would otherwise produce lease requests that the
 broker refuses or the server never answers, with nothing in the worker's log
-saying why.
+saying why. A queue listed twice is also rejected at load.
+
+An ID that names no queue (a typo, or a queue deleted since) does not stop the
+worker from registering. The server logs a warning naming the worker and the
+ID, and the ID matches no job, so the worker gets work only from its other
+queues. A worker whose every listed queue is gone gets no work at all; it is
+never treated as serving every queue. The worker's page in the web UI lists
+its queues by name and shows an unknown ID as it is.
 
 ```yaml
 worker:

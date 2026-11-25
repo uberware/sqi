@@ -709,7 +709,15 @@ curl -s -X POST "$BASE/workers/$WORKER_ID/enable"
 
 # Remove a worker (offline, disabled or not)
 curl -s -X DELETE "$BASE/workers/$WORKER_ID"
+
+# Workers that serve a queue (their queue_ids contain it)
+curl -s "$BASE/workers?queue_id=$QUEUE" | jq '.items[] | {id, hostname, queue_ids}'
 ```
+
+A worker's `queue_ids` are the queues from its `worker.queue_ids`
+configuration, and the only queues it is leased work from. An empty list means
+every queue in its farm. The `queue_id` filter returns the workers whose list
+contains that queue; workers with an empty list are not included.
 
 What disabling a worker does:
 
