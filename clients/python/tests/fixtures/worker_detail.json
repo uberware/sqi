@@ -1,7 +1,7 @@
 {
   "id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1c001",
   "farm_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10001",
-  "queue_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10002",
+  "queue_ids": ["018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10002"],
   "hostname": "render-node-01",
   "ip_address": "10.0.0.5",
   "compute_location": "on-prem",

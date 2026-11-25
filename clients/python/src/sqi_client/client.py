@@ -996,7 +996,8 @@ class SqiClient:
 
         Args:
             farm_id: Filter by farm.
-            queue_id: Filter by queue.
+            queue_id: Only workers whose queue list contains this queue;
+                workers that serve every queue are not included.
             compute_location: Filter by named compute location (e.g.
                 ``on-prem``, ``aws-us-east-1``).
             status: Filter by worker status; accepts a :class:`WorkerStatus` or

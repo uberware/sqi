@@ -847,7 +847,8 @@ class Worker:
     status: WorkerStatus
     registered_at: datetime
     updated_at: datetime
-    queue_id: str | None = None
+    queue_ids: list[str] = field(default_factory=list)
+    """The queues the worker serves; empty means every queue in its farm."""
     ip_address: str | None = None
     compute_location: str | None = None
     os: str | None = None
@@ -894,7 +895,7 @@ class Worker:
             status=WorkerStatus.parse(_as_str(data.get("status"))),
             registered_at=_as_datetime(data.get("registered_at")),
             updated_at=_as_datetime(data.get("updated_at")),
-            queue_id=_opt_str(data.get("queue_id")),
+            queue_ids=_str_list(data.get("queue_ids")),
             ip_address=_opt_str(data.get("ip_address")),
             compute_location=_opt_str(data.get("compute_location")),
             os=_opt_str(data.get("os")),
