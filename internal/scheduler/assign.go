@@ -154,7 +154,7 @@ func buildAssignPayload(
 	// ── Fetch all storage locations once ──────────────────────────────────
 	allLocs, err := locStore.ListStorageLocations(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("build assign payload: list storage locations: %w", err)
+		return nil, fmt.Errorf("build assign payload: list storage locations: %w: %w", errAssignStoreRead, err)
 	}
 
 	// ── PathMap (openjd mode) ──────────────────────────────────────────────

@@ -385,7 +385,13 @@ handleLeaseRequest(workerID, queueID)
   │       per usage pool: re-read its max_concurrent, count, insert the claim
   │     Any outcome but Leased (Lost, QueueFull, FarmFull, PoolFull) writes
   │     nothing: the task is skipped and stays ready for the next request
-  ├─ Leased: decrement free; add to batch
+  ├─ Leased: build the AssignMsg, then decrement free and add it to the batch.
+  │     If building it fails (the template no longer parses, the step is gone,
+  │     a loc:// storage location is missing or has no root for this worker),
+  │     the attempt is applied as a failed report through the retry policy
+  │     (reason "server could not build the task's assignment: …") and the walk
+  │     goes on; if a store read failed, the task goes back to ready with no
+  │     retry used and the walk stops
   │
   └─ bus.Reply(batch []AssignMsg)
          Each AssignMsg includes: task/job/step/attempt IDs, resolved OnRun action
@@ -1745,12 +1751,6 @@ The store does not close the following.
   order, since its own shutdown reports wake its parked request just before its
   deregister lands. A live worker that hits this is refused once, and its
   next request is served.
-- **A `LeaseTask` that commits is not always delivered.** If building the
-  assignment payload fails after `LeaseTask` committed (a deterministic error:
-  the job's template no longer parses, or its step is gone), that task stays
-  `assigned` without being in the batch, and only the stale-assignment reaper
-  returns it to `ready`. A failure of `LeaseTask` itself does not have this
-  effect: the tasks leased earlier in the batch are still delivered.
 - **A refused process re-requests about once a second per queue.** The refusal
   of an unregistered process's lease request is held for `leaseRefusalDelay`
   (1 s) so the worker's lease loop does not spin, but the loop does

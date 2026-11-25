@@ -337,6 +337,9 @@ type leaseGateData struct {
 //
 // On a store error it returns the assignments already leased together with the
 // error: those tasks are committed as assigned, so they must reach the worker.
+// A task whose assignment cannot be built is settled by
+// [Scheduler.handleUndeliverableLease] and, unless that was a store failure,
+// the walk continues past it.
 func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) ([][]byte, error) {
 	full := worker.CPUCount
 	if full <= 0 {
@@ -522,7 +525,13 @@ func (s *Scheduler) tryLeaseTask(
 
 	payload, err = buildAssignPayload(ctx, task, worker, gd.job, gd.step, gd.queue, attempt.ID, s.store)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("lease: build payload for %s: %w", task.ID, err)
+		// The lease committed but cannot be delivered: settle the attempt
+		// rather than leave the task stranded in assigned. A nil return means
+		// it was applied as a failed attempt and the batch goes on.
+		if err := s.handleUndeliverableLease(ctx, attempt, task, err); err != nil {
+			return nil, 0, false, fmt.Errorf("lease: build payload for %s: %w", task.ID, err)
+		}
+		return nil, 0, false, nil
 	}
 	return payload, cost, true, nil
 }
