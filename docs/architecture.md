@@ -1683,8 +1683,19 @@ repaired in four parts:
     leaves a `pending` step that nothing else would release. A `blocked` job is
     excluded because its steps wait on another job, not on their own upstream
     steps.
+- Every heartbeat-sweep tick finalizes the live jobs whose steps are all
+  terminal (`finalizeSettledJobs`). `store.ListJobIDsWithAllStepsTerminal`
+  lists each non-terminal job (a paused one included) that has steps and no
+  open step, reading jobs and steps but never tasks, and each goes through
+  `checkJobCompletion`: `FinalizeJob`, the job's WebSocket event, and its
+  cross-job dependents. Such a job is left when the `FinalizeJob` after a
+  cancel cascade never ran, because the server stopped or the write failed
+  with the server up (a REST task cancel or retry logs that error and moves
+  on, and nothing redelivers it). It runs on every tick rather than at start
+  so that the second case heals without a restart. On a healthy farm the
+  query returns nothing and nothing is written.
 
-Neither pass touches in-flight attempts. A server restarting on its own
+Neither start-up pass touches in-flight attempts. A server restarting on its own
 database and JetStream directory needs no such repair: reports that reached
 the stream before it stopped are still there, and attempt reconciliation
 recovers a task whose report a worker could not deliver. A database that was
@@ -1740,21 +1751,6 @@ The store does not close the following.
   `assigned` without being in the batch, and only the stale-assignment reaper
   returns it to `ready`. A failure of `LeaseTask` itself does not have this
   effect: the tasks leased earlier in the batch are still delivered.
-- **A job whose steps are all terminal but whose own status is not**, left by
-  a server stop between a cancel cascade's commit (`CancelDependents`
-  canceling the last open steps after an upstream step failed) and the
-  `FinalizeJob` that follows it, is repaired by neither start-up reconcile
-  pass: `reconcileStuckSteps` lists non-terminal steps and
-  `reconcilePendingSteps` lists `pending` ones, and this job has neither.
-  There is no start-up repair for it. The paths that can leave it are
-  those whose triggering request is not redelivered: REST `CancelTask` (which
-  logs a completion error and moves on), the REST retry, and the start-up
-  `reconcilePendingSteps` pass itself. When the cascade arrives through a
-  worker's terminal report, the JetStream message is redelivered after the
-  stop, and re-running `checkStepCompletion` (which propagates whenever the
-  step is terminal) reaches `FinalizeJob` and repairs it. A user's job cancel
-  does not leave this shape: `CancelJobExecution` cancels the job row in the
-  same transaction that cancels its tasks and finalizes its steps.
 - **A refused process re-requests about once a second per queue.** The refusal
   of an unregistered process's lease request is held for `leaseRefusalDelay`
   (1 s) so the worker's lease loop does not spin, but the loop does

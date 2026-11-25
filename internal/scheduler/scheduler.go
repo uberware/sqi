@@ -1748,7 +1748,8 @@ func processStart(stamp *time.Time, uptimeSeconds float64) *time.Time {
 // reclaims attempts a live worker has stopped reporting ([reconcileAttempts]),
 // demotes stalled jobs, flags/clears ready tasks no online worker can satisfy
 // ([sweepUnschedulable]), evaluates the enabled capacity groups
-// ([Scheduler.sweepCapacity]), re-evaluates cross-job dependencies for any job
+// ([Scheduler.sweepCapacity]), finalizes live jobs whose steps are all terminal
+// ([Scheduler.finalizeSettledJobs]), re-evaluates cross-job dependencies for any job
 // stuck blocked ([sweepBlockedJobs], the backstop for
 // [Scheduler.ReconcileDependents]), and refreshes the queue-depth, idle-worker
 // and usage-claim Prometheus gauges.
@@ -1787,6 +1788,9 @@ func (s *Scheduler) sweepOnce(ctx context.Context) {
 		s.demoteStalledJobs,
 		s.sweepUnschedulable,
 		s.sweepCapacity,
+		// Before the blocked-job backstop, so a job blocked on one this
+		// finalizes is released on the same tick.
+		s.finalizeSettledJobs,
 		s.sweepBlockedJobsOnce,
 		s.pruneReregisterAsks,
 		// The gauges refresh on the same tick, so there is no separate
