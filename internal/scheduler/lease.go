@@ -337,9 +337,11 @@ type leaseGateData struct {
 //
 // On a store error it returns the assignments already leased together with the
 // error: those tasks are committed as assigned, so they must reach the worker.
-// A task whose assignment cannot be built is settled by
-// [Scheduler.handleUndeliverableLease] and, unless that was a store failure,
-// the walk continues past it.
+// A task whose assignment cannot be built is skipped for this worker when the
+// failure is the worker's (no root for its compute location), is leased and
+// settled as a failed attempt by [Scheduler.handleUndeliverableLease] when it
+// is the job's, and in both cases the walk continues past it; a store read
+// failure stops the walk with nothing leased.
 func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) ([][]byte, error) {
 	full := worker.CPUCount
 	if full <= 0 {
@@ -488,6 +490,20 @@ func (s *Scheduler) tryLeaseTask(
 		return nil, 0, false, nil
 	}
 
+	// The assignment is built before the lease, so a failure commits nothing
+	// unless it is one the task should be charged for (see
+	// classifyAssignFailure).
+	msg, buildErr := buildAssignMsg(ctx, task, worker, gd.job, gd.step, gd.queue, s.store)
+	switch classifyAssignFailure(buildErr) {
+	case assignBuilt, assignFailsTask:
+	case assignSkipWorker:
+		s.logger.DebugContext(ctx, "scheduler: task's assignment cannot be built for this worker — leaving it for another",
+			slog.String("task_id", task.ID), slog.String("worker_id", worker.ID), slog.Any("error", buildErr))
+		return nil, 0, false, nil
+	case assignStoreFailure:
+		return nil, 0, false, fmt.Errorf("lease: build payload for %s: %w", task.ID, buildErr)
+	}
+
 	// The gates above are cheap early filters over values read a moment ago.
 	// This call is the decision: one transaction leases the task, re-checks the
 	// queue, farm and pool caps against their current values, and writes the
@@ -523,15 +539,17 @@ func (s *Scheduler) tryLeaseTask(
 	// the cache is filled here and the first log chunk needs no store read.
 	s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
 
-	payload, err = buildAssignPayload(ctx, task, worker, gd.job, gd.step, gd.queue, attempt.ID, s.store)
-	if err != nil {
-		// The lease committed but cannot be delivered: settle the attempt
-		// rather than leave the task stranded in assigned. A nil return means
-		// it was applied as a failed attempt and the batch goes on.
-		if err := s.handleUndeliverableLease(ctx, attempt, task, err); err != nil {
-			return nil, 0, false, fmt.Errorf("lease: build payload for %s: %w", task.ID, err)
+	if buildErr != nil {
+		// The lease committed only so the failure has an attempt to be
+		// charged to: settle it as a failed attempt and go on to the next task.
+		if err := s.handleUndeliverableLease(ctx, attempt, task, buildErr); err != nil {
+			return nil, 0, false, fmt.Errorf("lease: fail undeliverable task %s: %w", task.ID, err)
 		}
 		return nil, 0, false, nil
+	}
+	payload, err = marshalAssignMsg(msg, attempt.ID)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("lease: marshal payload for %s: %w", task.ID, err)
 	}
 	return payload, cost, true, nil
 }

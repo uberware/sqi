@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
@@ -17,49 +18,68 @@ import (
 // assignment the server could not build.
 const undeliverableReasonPrefix = "server could not build the task's assignment: "
 
-// errAssignStoreRead marks a [buildAssignPayload] failure caused by a store
-// read, not by the job or the farm's configuration: retrying it later can
-// succeed with nothing changed, so it never counts against the task.
+// errAssignStoreRead marks a [buildAssignMsg] failure caused by a store read,
+// not by the job, the farm's configuration or the worker: retrying it later can
+// succeed with nothing changed.
 var errAssignStoreRead = errors.New("store read failed")
 
-// assignFailureUncounted reports whether a failure to build an assignment says
-// nothing about the task: a store read failed, or the server is stopping. Any
-// other failure comes from the job or the farm's configuration (the template
-// no longer parses, the step is gone, a storage location is missing or has no
-// root for the worker) and counts as a failed attempt.
-func assignFailureUncounted(err error) bool {
-	return errors.Is(err, errAssignStoreRead) ||
-		errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded)
+// assignFailure says what [Scheduler.tryLeaseTask] does when building a task's
+// assignment for a worker fails.
+type assignFailure int
+
+const (
+	// assignBuilt: the assignment was built; lease and deliver it.
+	assignBuilt assignFailure = iota
+	// assignStoreFailure: a store read failed or the server is stopping. Lease
+	// nothing and stop the walk, as on any store error; the task is not charged.
+	assignStoreFailure
+	// assignSkipWorker: the failure is this worker's (a storage location has no
+	// root for its compute location). Leave the task ready for another worker;
+	// it is not charged, so one misconfigured worker cannot fail a job others
+	// could run.
+	assignSkipWorker
+	// assignFailsTask: the failure is the job's or the farm's (the template no
+	// longer parses, the step is gone, a storage location does not exist), so
+	// every worker would hit it. Lease the task and charge the attempt through
+	// its retry policy ([Scheduler.handleUndeliverableLease]).
+	assignFailsTask
+)
+
+// classifyAssignFailure sorts a [buildAssignMsg] error; nil is assignBuilt.
+func classifyAssignFailure(err error) assignFailure {
+	var noRoot *openjd.NoRootError
+	switch {
+	case err == nil:
+		return assignBuilt
+	case errors.Is(err, errAssignStoreRead), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return assignStoreFailure
+	case errors.As(err, &noRoot):
+		return assignSkipWorker
+	default:
+		return assignFailsTask
+	}
 }
 
 // handleUndeliverableLease settles an attempt [Scheduler.tryLeaseTask] leased
-// but could not deliver, because building its assignment failed after the
-// lease committed. Left alone, the task would stay assigned, holding the
+// although its assignment could not be built, because the failure is the job's
+// (assignFailsTask). Without it the task would sit assigned, holding the
 // worker's cores and its usage claims, until the stale-assignment reaper
-// returned it to ready, and the next lease would fail on it again, forever.
+// returned it to ready, and the next lease would hit the same failure, forever.
 //
-// A failure [assignFailureUncounted] reports hands the task back to ready with
-// no retry used, and is returned so the lease stops as on any store error. Any
-// other failure is applied as the failed report a worker would send, through
+// The failure is applied as the failed report a worker would send, through
 // [Scheduler.handleTaskFailed], so the task's retry policy decides what
 // follows: a retry after the backoff, or a failed task (and its step and job)
-// whose reason names the error. It returns nil then, and the lease goes on to
-// the next task. Only a fenced write is returned from that path; any other
-// error applying it is logged, and the stale-assignment reaper is the backstop.
+// whose reason names the error. Only a fenced write is returned. Any other
+// error is logged: if the attempt was not closed, the stale-assignment reaper
+// returns the task to ready; if the task was already failed, its step is
+// finalized by the next start's stuck-step pass (see "Known gaps" in
+// docs/architecture.md).
 func (s *Scheduler) handleUndeliverableLease(
 	ctx context.Context, attempt store.TaskAttempt, task store.Task, buildErr error,
 ) error {
-	s.logger.WarnContext(ctx, "scheduler: could not build a leased task's assignment",
+	s.logger.WarnContext(ctx, "scheduler: could not build a leased task's assignment — failing the attempt",
 		slog.String("task_id", task.ID), slog.String("job_id", task.JobID),
 		slog.String("worker_id", attempt.WorkerID), slog.Any("error", buildErr))
-
-	if assignFailureUncounted(buildErr) {
-		if _, err := s.reclaimAttempt(ctx, attempt.ID, task.ID, time.Now().UTC()); err != nil {
-			return errors.Join(buildErr, err)
-		}
-		return buildErr
-	}
 
 	msg := protocol.TaskStatusMsg{
 		Version:   protocol.ProtocolVersion,
@@ -75,7 +95,7 @@ func (s *Scheduler) handleUndeliverableLease(
 		return err
 	}
 	if err != nil {
-		s.logger.WarnContext(ctx, "scheduler: could not fail an undeliverable attempt; the stale-assignment reaper will return it",
+		s.logger.WarnContext(ctx, "scheduler: applying an undeliverable attempt's failure did not complete",
 			slog.String("task_id", task.ID), slog.String("attempt_id", attempt.ID), slog.Any("error", err))
 	}
 	return nil

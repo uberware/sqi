@@ -247,9 +247,22 @@ func addStepRefs(st StepTemplate, add func(string)) {
 
 // ── Concrete-path resolution ──────────────────────────────────────────────────
 
+// NoRootError is [ResolveRoot]'s error when a storage location has neither a
+// root for the compute location nor a default root. It depends on the worker
+// (another compute location may have a root), unlike a missing location.
+type NoRootError struct {
+	Location        string
+	ComputeLocation string
+}
+
+func (e *NoRootError) Error() string {
+	return fmt.Sprintf("storage location %q has no root for compute location %q and no default root",
+		e.Location, e.ComputeLocation)
+}
+
 // ResolveRoot returns the concrete root path for locationRoots given a
 // compute location name.  It prefers the compute-location-specific root,
-// falls back to "default", and returns an error if neither is present.
+// falls back to "default", and returns a [*NoRootError] if neither is present.
 func ResolveRoot(locationName string, roots map[string]string, computeLocation string) (string, error) {
 	if computeLocation != "" {
 		if root, ok := roots[computeLocation]; ok {
@@ -259,10 +272,7 @@ func ResolveRoot(locationName string, roots map[string]string, computeLocation s
 	if root, ok := roots["default"]; ok {
 		return root, nil
 	}
-	return "", fmt.Errorf(
-		"storage location %q has no root for compute location %q and no default root",
-		locationName, computeLocation,
-	)
+	return "", &NoRootError{Location: locationName, ComputeLocation: computeLocation}
 }
 
 // JoinPath joins a resolved root with the relative path portion of a loc://

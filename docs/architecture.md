@@ -377,6 +377,15 @@ handleLeaseRequest(workerID, queueID)
   │     job not paused or terminal, policyGate (queue/farm MaxConcurrentTasks),
   │     WorkerEligible(task, worker) → capability/queue/farm/location/amounts and
   │     usage-pool room
+  ├─ Build the AssignMsg for this worker, before anything is written:
+  │     a store read failed → lease nothing, stop the walk;
+  │     a loc:// storage location has no root for this worker's compute
+  │       location → skip the task for this worker (not charged; it stays
+  │       ready for a worker that has one);
+  │     the template no longer parses, the step is gone, or a storage location
+  │       does not exist → lease it anyway and, once leased, apply the attempt
+  │       as a failed report through the retry policy (reason "server could
+  │       not build the task's assignment: …"); the walk goes on
   ├─ store.LeaseTask(task, worker, attempt ID, now, usage claims)
   │     One transaction (the decision):
   │       guarded ready→assigned (task still leasable), stamp assigned_at,
@@ -385,13 +394,7 @@ handleLeaseRequest(workerID, queueID)
   │       per usage pool: re-read its max_concurrent, count, insert the claim
   │     Any outcome but Leased (Lost, QueueFull, FarmFull, PoolFull) writes
   │     nothing: the task is skipped and stays ready for the next request
-  ├─ Leased: build the AssignMsg, then decrement free and add it to the batch.
-  │     If building it fails (the template no longer parses, the step is gone,
-  │     a loc:// storage location is missing or has no root for this worker),
-  │     the attempt is applied as a failed report through the retry policy
-  │     (reason "server could not build the task's assignment: …") and the walk
-  │     goes on; if a store read failed, the task goes back to ready with no
-  │     retry used and the walk stops
+  ├─ Leased: stamp the attempt ID into the AssignMsg; decrement free; add to batch
   │
   └─ bus.Reply(batch []AssignMsg)
          Each AssignMsg includes: task/job/step/attempt IDs, resolved OnRun action
@@ -1751,6 +1754,19 @@ The store does not close the following.
   order, since its own shutdown reports wake its parked request just before its
   deregister lands. A live worker that hits this is refused once, and its
   next request is served.
+- **A task no worker can resolve a `loc://` root for waits silently.** A
+  task whose storage location has no root for a worker's compute location
+  (and no default root) is skipped for that worker and stays `ready` for one
+  that has a root. If no worker has one, it waits with no unschedulable
+  reason written: the unschedulable sweep does not resolve storage locations.
+- **A failed lease-path failure write can leave a step open until the next
+  start.** When an assignment cannot be built for a job-wide reason, the
+  lease applies the attempt as a failed report. If a store error interrupts
+  that after the task is already `failed` (while finalizing its step or job),
+  nothing redelivers it, as nothing does for the REST task cancel: the step
+  has every task terminal but is not finalized, so the per-tick
+  `finalizeSettledJobs` (which needs every step terminal) does not list it,
+  and only the start-up `reconcileStuckSteps` pass repairs it.
 - **A refused process re-requests about once a second per queue.** The refusal
   of an unregistered process's lease request is held for `leaseRefusalDelay`
   (1 s) so the worker's lease loop does not spin, but the loop does

@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/metrics"
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
@@ -56,21 +57,24 @@ func submitBrokenJob(t *testing.T, st store.Store) (jobID, taskID string) {
 	return sub.Job.ID, sub.Tasks[0].ID
 }
 
-func TestAssignFailureUncounted(t *testing.T) {
+func TestClassifyAssignFailure(t *testing.T) {
 	tests := []struct {
 		name string
 		err  error
-		want bool
+		want assignFailure
 	}{
-		{"store read", fmt.Errorf("build: %w: %w", errAssignStoreRead, errors.New("conn reset")), true},
-		{"context canceled", fmt.Errorf("build: %w", context.Canceled), true},
-		{"deadline exceeded", context.DeadlineExceeded, true},
-		{"step missing from template", errors.New(`step "missing" not found in template`), false},
+		{"built", nil, assignBuilt},
+		{"store read", fmt.Errorf("build: %w: %w", errAssignStoreRead, errors.New("conn reset")), assignStoreFailure},
+		{"context canceled", fmt.Errorf("build: %w", context.Canceled), assignStoreFailure},
+		{"deadline exceeded", context.DeadlineExceeded, assignStoreFailure},
+		{"no root for the worker", fmt.Errorf("resolve: %w", &openjd.NoRootError{Location: "p", ComputeLocation: "b"}), assignSkipWorker},
+		{"step missing from template", errors.New(`step "missing" not found in template`), assignFailsTask},
+		{"storage location missing", errors.New(`storage location "p" not found`), assignFailsTask},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := assignFailureUncounted(tc.err); got != tc.want {
-				t.Errorf("assignFailureUncounted(%v) = %v, want %v", tc.err, got, tc.want)
+			if got := classifyAssignFailure(tc.err); got != tc.want {
+				t.Errorf("classifyAssignFailure(%v) = %d, want %d", tc.err, got, tc.want)
 			}
 		})
 	}
@@ -159,7 +163,7 @@ func (s *storageListErrStore) ListStorageLocations(ctx context.Context) ([]store
 	return s.Store.ListStorageLocations(ctx)
 }
 
-func TestSelectLeaseBatch_StorageListFailureReclaimsUncounted(t *testing.T) {
+func TestSelectLeaseBatch_StorageListFailureLeasesNothing(t *testing.T) {
 	inner := newCheckedFake(t)
 	one := 1
 	w, ids := seedLeaseFixture(t, inner, []*int{&one})
@@ -173,13 +177,69 @@ func TestSelectLeaseBatch_StorageListFailureReclaimsUncounted(t *testing.T) {
 	if task.Status != store.TaskStatusReady || task.FailedAttempts != 0 || task.FailureReason != "" {
 		t.Errorf("task = %q, failed attempts %d, reason %q; want ready, 0, none", task.Status, task.FailedAttempts, task.FailureReason)
 	}
-	attempts, err := inner.ListTaskAttempts(t.Context(), ids[0])
-	if err != nil || len(attempts) != 1 || attempts[0].Status == store.AttemptStatusRunning {
-		t.Errorf("attempts = %+v (err %v), want one closed attempt", attempts, err)
+	if attempts, err := inner.ListTaskAttempts(t.Context(), ids[0]); err != nil || len(attempts) != 0 {
+		t.Errorf("attempts = %+v (err %v), want none: a store read failure must commit no lease", attempts, err)
 	}
 
 	st.failing = false
 	if batch, err := s.selectLeaseBatch(t.Context(), w); err != nil || len(batch) != 1 {
 		t.Errorf("re-lease after the fault cleared = %d assignments, err %v; want 1", len(batch), err)
+	}
+}
+
+// TestSelectLeaseBatch_NoRootForWorkerSkipsOnlyThatWorker pins that a task
+// whose loc:// storage location has no root for one worker's compute location
+// is left for a worker that can resolve it: the first worker is leased
+// nothing and charged nothing, and a worker in a location with a root takes it.
+func TestSelectLeaseBatch_NoRootForWorkerSkipsOnlyThatWorker(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newUndeliverableScheduler(st, 1)
+	one := 1
+	seedLeaseFixture(t, st, nil)
+	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{
+		ID: uuid.NewString(), Name: "projects", Type: store.StorageLocationTypeFilesystem,
+		Roots: map[string]string{"studioA": "/mnt/projects"},
+	}); err != nil {
+		t.Fatalf("CreateStorageLocation: %v", err)
+	}
+	sub := store.JobSubmission{Job: store.Job{
+		ID: uuid.NewString(), FarmID: "f1", QueueID: "q1", Name: "j",
+		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON, RawTemplate: minimalRenderJSON,
+	}}
+	sub.Steps = []store.Step{{ID: uuid.NewString(), JobID: sub.Job.ID, Name: "render", Status: store.StepStatusReady}}
+	sub.Tasks = []store.Task{{
+		ID: uuid.NewString(), JobID: sub.Job.ID, StepID: sub.Steps[0].ID, Name: "t", Status: store.TaskStatusReady,
+		Parameters: map[string]string{"Scene": "loc://projects/shot.ma"}, RequiredCores: &one,
+	}}
+	storetest.Submit(t, st, sub)
+	ids := []string{sub.Tasks[0].ID}
+	now := time.Now().UTC()
+	register := func(id, location string) store.Worker {
+		w, _, err := st.RegisterWorker(t.Context(), store.Worker{
+			ID: id, FarmID: "f1", Hostname: id, Status: store.WorkerStatusOnline, CPUCount: 4,
+			LastHeartbeatAt: &now, Tags: map[string]string{}, ComputeLocation: location,
+		})
+		if err != nil {
+			t.Fatalf("RegisterWorker %s: %v", id, err)
+		}
+		return w
+	}
+	studioB, studioA := register("wB", "studioB"), register("wA", "studioA")
+
+	if batch, err := s.selectLeaseBatch(t.Context(), studioB); err != nil || len(batch) != 0 {
+		t.Fatalf("studioB lease = %d assignments, err %v; want none and no error", len(batch), err)
+	}
+	got := mustTask(t, st, ids[0])
+	if got.Status != store.TaskStatusReady || got.FailedAttempts != 0 || got.RetryAfter != nil {
+		t.Errorf("after studioB: task = %q, failed attempts %d, retry after %v; want ready, 0, none",
+			got.Status, got.FailedAttempts, got.RetryAfter)
+	}
+	if attempts, err := st.ListTaskAttempts(t.Context(), ids[0]); err != nil || len(attempts) != 0 {
+		t.Errorf("after studioB: attempts = %d (err %v), want none", len(attempts), err)
+	}
+
+	batch, err := s.selectLeaseBatch(t.Context(), studioA)
+	if err != nil || len(batch) != 1 || !strings.Contains(string(batch[0]), "/mnt/projects") {
+		t.Fatalf("studioA lease = %d assignments, err %v; want the task, resolved to /mnt/projects", len(batch), err)
 	}
 }
