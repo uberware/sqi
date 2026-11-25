@@ -1055,7 +1055,8 @@ saying why. A queue listed twice is also rejected at load.
 An ID that names no queue (a typo, or a queue deleted since) does not stop the
 worker from registering. The server logs a warning naming the worker and the
 ID, and the ID matches no job, so the worker gets work only from its other
-queues. A worker whose every listed queue is gone gets no work at all; it is
+queues. A queue in a farm other than the worker's `farm_id` is warned about in
+the same way, since the worker is never offered another farm's work. A worker whose every listed queue is gone gets no work at all; it is
 never treated as serving every queue. The worker's page in the web UI lists
 its queues by name and shows an unknown ID as it is.
 
