@@ -290,29 +290,24 @@ authentication. See [docs/auth.md](docs/auth.md) for the model and setup.
 
 ### Phase 4: Production Hardening (v0.4 — beta) ✅ Released
 
-- PostgreSQL state store option: `store.driver: postgres` (PostgreSQL 16 or later), one `sqi-server` per database (or one high-availability group, below), a `pg_dump` backup and a Docker Compose example; an existing SQLite farm moves onto it with `sqi-server store copy`. See [Running on PostgreSQL](docs/operations.md#running-on-postgresql) and [Moving to PostgreSQL](docs/operations.md#moving-to-postgresql).
-- Backup, restore and upgrade: `sqi-server backup` and `sqi-server restore` on SQLite and PostgreSQL, with restore handing back the tasks the backup recorded in flight; forward-only schema migrations (a binary older than the database refuses to start, and rollback is restoring the pre-upgrade backup); one server per database, enforced by a lock; and reconciliation of tasks a live worker stops reporting. See [Upgrade](docs/operations.md#upgrade), [Rollback](docs/operations.md#rollback) and [Restore](docs/operations.md#restore).
-- Scheduler HA: `ha.enabled` runs several `sqi-server`s on one PostgreSQL database and one external NATS account, one leader and warm standbys, with a leader lease kept on the database's clock, every scheduler write fenced by the leader's epoch, and a deposed leader exiting with code 75 for its supervisor to restart as a standby; a standby takes over a crashed leader in about 20 s and a stopped one in about a second, with running tasks untouched. See [Running more than one server (high availability)](docs/operations.md#running-more-than-one-server-high-availability) and [`deploy/docker-compose.ha.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.ha.yml).
-- External and clustered NATS: `nats.mode: external` runs the farm on a NATS server or cluster the operator runs, with configurable stream replicas, worker authentication through the NATS auth callout in both broker modes, one `sqi-server` (or one high-availability group) per broker account, and `sqi-server nats external init` to generate the cluster's accounts configuration. See [Running on an external NATS cluster](docs/operations.md#running-on-an-external-nats-cluster).
-- Capacity groups (elastic and power-managed workers): a capacity group is a named or sized set of machines that sqi publishes a scaling signal for, as `sqi_capacity_*` metrics and a status on the REST API (cores of ready work a group could run, the total machines it should have, and which idle machines are safe to give back). A group's provider decides who acts on it. With `external`, an AWS Auto Scaling group, a GCP managed instance group, an Azure scale set or KEDA acts on the signal. With `wake_on_lan`, sqi wakes switched-off on-premises machines with magic packets, sent through an awake worker on the machine's subnet when there is one, else from the server, and tells idle ones to sleep or shut down, which each worker must allow. With a script provider, sqi runs the operator's own program to wake, grow, retire and list a group's machines; a sized group that does not come up degrades and backs off, and instances that booted but never registered are retired. Example scripts for AWS, GCP, Azure and IPMI ship with it. Machines booted from an image join with a reusable group token; spot and preemptible workers hand their tasks back at once on a provider notice; cloud workers that left for good are removed and their credentials revoked. sqi wakes and stops machines through these providers and never launches a cloud instance itself; a script provider asks the operator's own tool to. See [Capacity groups](docs/capacity.md).
-- Installer packages (Linux, macOS, Windows): a beta install path. The release archives carry the systemd units, the launchd plist and example configs; `sqi-server config init` and `sqi-worker config init` write a starter config; and on Windows, `service install` creates `%ProgramData%\sqi` for administrators only and refuses to install a service whose configuration, binary or log directory other users can change. Native packages (`.deb`/`.rpm`, a macOS `.pkg`, a Windows `.msi`) are planned for Phase 5. See [Running as a system service](docs/operations.md#running-as-a-system-service) and the [worker deployment guide](docs/worker-deployment.md).
-- Reference presets and submitters: 45 presets covering DCC rendering, standalone renderers, transcoding and image processing; seven built-in products, including fan-out `command-sequence`/`python-sequence` and Windows `script-powershell`; in-application submitters for 14 applications; the `SQI_LOG_CHECKS` vendor extension for applications that exit 0 on failure and `SQI_LOG_PROGRESS` for reading task progress from application output; and a checked record of the validation tier each preset has reached. See [Preset Library](docs/preset-library.md).
+- **PostgreSQL state store**: an alternative to SQLite for larger farms, with a move from SQLite
+- **Backup, restore and upgrade**: backup and restore on both databases; forward-only upgrades
+- **Scheduler high availability**: a leader and warm standbys that take over when it fails
+- **External and clustered NATS**: run the farm on an operator-run NATS server or cluster
+- **Capacity groups**: a scaling signal for cloud autoscalers, wake-on-LAN for on-site machines, and a script provider for the rest
+- **Service installs**: a beta install path for running sqi as a system service on Linux, macOS and Windows
+- **Reference presets and submitters**: 45 presets, seven built-in products and submitters for 14 applications
 
-### Phase 5: LLM Plugin and Polish (v0.5 — RC)
+### Phase 5: LLM Plugin and Polish
 
-- Optional LLM plugin (disabled by default)
-- Provider-agnostic interface (OpenAI-compatible)
-- Error log diagnosis feature
-- Worker/job management by natural language
-- Web Push notifications
-- Native installer packages: `.deb`/`.rpm`, a macOS `.pkg` and a Windows `.msi`
+- **Fix what is silently wrong**: bugs that misbehave without an error, plus task sorting and job notes
+- **OpenJD catch-up**: match the current OpenJD specification
+- **Deadline Cloud compatibility and hardware**: Deadline Cloud templates run unchanged; GPU and memory reporting
+- **LLM plugin**: optional and provider-agnostic, starting with error log diagnosis; plus Web Push notifications
+- **Natural language and real-application validation**: manage workers and jobs in plain language; presets tested with the real applications
+- **Release candidate**: native installers and a security review
 
-### Phase 6: v1.0 Release
-
-- Community contributions to the preset library (the first-party reference presets ship in Phase 4)
-- Full documentation
-- Migration guides
-- Dual licensing finalized (AGPL + commercial)
+### Phase 6: Version 1.0 Release
 
 ### Future: turnkey cloud burst
 
