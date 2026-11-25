@@ -1274,6 +1274,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	s.afterRegistration(ctx, m, stored, rc, now)
 	s.noteMemberWoke(ctx, reg, stored, now)
 	s.warnOnExprCapShortfall(ctx, w)
+	s.warnUnknownQueues(ctx, stored)
 
 	s.logger.InfoContext(
 		ctx, "scheduler: worker registered",
@@ -1293,6 +1294,33 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
+}
+
+// warnUnknownQueues logs a warning for each queue in w's list that has no
+// queue row: a mistyped or deleted queue ID, which matches no job, so the
+// worker is never offered that queue's work. The registration has already
+// committed and is acked regardless; a store error other than not-found is
+// logged at Debug and otherwise ignored.
+func (s *Scheduler) warnUnknownQueues(ctx context.Context, w store.Worker) {
+	for _, id := range w.QueueIDs {
+		_, err := s.store.GetQueue(ctx, id)
+		switch {
+		case err == nil:
+		case errors.Is(err, store.ErrNotFound):
+			s.logger.WarnContext(
+				ctx, "scheduler: worker lists a queue that does not exist",
+				slog.String("worker_id", w.ID),
+				slog.String("queue_id", id),
+			)
+		default:
+			s.logger.DebugContext(
+				ctx, "scheduler: could not check a worker's queue",
+				slog.String("worker_id", w.ID),
+				slog.String("queue_id", id),
+				slog.Any("error", err),
+			)
+		}
+	}
 }
 
 // endRevocationOnRegistration ends workerID's revocation

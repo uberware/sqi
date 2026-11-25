@@ -14,6 +14,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,6 +73,105 @@ func TestHandleWorkerRegister_Valid(t *testing.T) {
 	}
 	if w.LastHeartbeatAt == nil {
 		t.Error("expected LastHeartbeatAt set on registration")
+	}
+}
+
+// recordedLogs is a slog handler that keeps every record, for tests that
+// assert on what the scheduler logged.
+type recordedLogs struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordedLogs) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordedLogs) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *recordedLogs) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *recordedLogs) WithGroup(string) slog.Handler { return h }
+
+// warnings returns each Warn record's message with its string attributes.
+func (h *recordedLogs) warnings() []map[string]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []map[string]string
+	for _, r := range h.records {
+		if r.Level != slog.LevelWarn {
+			continue
+		}
+		m := map[string]string{"msg": r.Message}
+		r.Attrs(func(a slog.Attr) bool {
+			m[a.Key] = a.Value.String()
+			return true
+		})
+		out = append(out, m)
+	}
+	return out
+}
+
+// TestHandleWorkerRegister_WarnsOnUnknownQueue pins that a registration
+// listing a queue with no queue row is still recorded, with the list intact,
+// and logs one warning per such queue naming the worker and the queue.
+func TestHandleWorkerRegister_WarnsOnUnknownQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		queues []string
+		warned []string
+	}{
+		{"one unknown queue", []string{"q1", "nope"}, []string{"nope"}},
+		{"every queue exists", []string{"q1"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newCheckedFake(t)
+			if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "farm-1", Name: "F"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.CreateQueue(t.Context(), store.Queue{ID: "q1", FarmID: "farm-1", Name: "Q1"}); err != nil {
+				t.Fatal(err)
+			}
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			logs := &recordedLogs{}
+			s.logger = slog.New(logs)
+
+			msg := &fakeJSMsg{
+				subject: bus.WorkerRegisterSubject("w-1"),
+				data: workerMsgJSON(t, protocol.RegisterMsg{
+					Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
+					WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux", QueueIDs: tc.queues,
+				}),
+			}
+			s.handleWorkerMessage(msg)
+
+			if !msg.acked {
+				t.Fatal("register should be acked")
+			}
+			w, err := st.GetWorker(t.Context(), "w-1")
+			if err != nil {
+				t.Fatalf("GetWorker: %v", err)
+			}
+			if !slices.Equal(w.QueueIDs, tc.queues) {
+				t.Errorf("stored QueueIDs = %v, want %v", w.QueueIDs, tc.queues)
+			}
+			var warned []string
+			for _, rec := range logs.warnings() {
+				if rec["msg"] != "scheduler: worker lists a queue that does not exist" {
+					continue
+				}
+				if rec["worker_id"] != "w-1" {
+					t.Errorf("warning worker_id = %q, want w-1", rec["worker_id"])
+				}
+				warned = append(warned, rec["queue_id"])
+			}
+			if !slices.Equal(warned, tc.warned) {
+				t.Errorf("warned about queues %v, want %v", warned, tc.warned)
+			}
+		})
 	}
 }
 
