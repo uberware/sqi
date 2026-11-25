@@ -52,7 +52,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"slices"
 	"sync/atomic"
 	"time"
 
@@ -213,7 +212,7 @@ func (r *Registrar) Register(ctx context.Context) error {
 		InstanceID:      r.instanceID,
 		FarmID:          r.cfg.FarmID,
 		CapacityGroup:   r.cfg.CapacityGroup,
-		QueueIDs:        slices.Clone(r.cfg.QueueIDs),
+		QueueIDs:        r.cfg.QueueIDs,
 		Name:            r.cfg.Name,
 		Hostname:        hostname,
 		IPAddress:       ip,

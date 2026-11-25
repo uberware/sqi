@@ -20,14 +20,14 @@ import (
 // TestHandleLeaseRequest_QueuelessWorkerWildcardToken reproduces the
 // queueless-worker bug at the scheduler layer: a worker with no queue affinity
 // requests on bus.WildcardQueueToken and must still be leased the farm's ready
-// tasks (selection is farm-wide + eligibility, and an empty-QueueID worker is
-// eligible for any queue).
+// tasks (selection is farm-wide + eligibility, and a worker with no QueueIDs
+// is eligible for any queue).
 func TestHandleLeaseRequest_QueuelessWorkerWildcardToken(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.leaseHoldTimeout = 50 * time.Millisecond
 	one := 1
-	w, _ := seedLeaseFixture(t, st, []*int{&one, &one}) // worker has empty QueueID
+	w, _ := seedLeaseFixture(t, st, []*int{&one, &one}) // worker has no QueueIDs
 
 	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
 	if err != nil {
@@ -219,8 +219,18 @@ func seedLeaseFixtureWith(
 	if err != nil {
 		t.Fatal(err)
 	}
+	return w, submitReadyIn(t, st, "q1", coresPerTask, hostReqs)
+}
+
+// submitReadyIn submits a running job in farm f1's queue queueID with one ready
+// "render" step, which carries hostReqs (nil for none), and one ready task per
+// entry of coresPerTask. It returns the task IDs in that order.
+func submitReadyIn(
+	t *testing.T, st store.Store, queueID string, coresPerTask []*int, hostReqs *store.StepHostRequirements,
+) []string {
+	t.Helper()
 	sub := store.JobSubmission{Job: store.Job{
-		ID: uuid.NewString(), FarmID: "f1", QueueID: "q1", Name: "j",
+		ID: uuid.NewString(), FarmID: "f1", QueueID: queueID, Name: "j",
 		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
 		RawTemplate: minimalRenderJSON,
 	}}
@@ -239,7 +249,7 @@ func seedLeaseFixtureWith(
 		ids = append(ids, tk.ID)
 	}
 	storetest.Submit(t, st, sub)
-	return w, ids
+	return ids
 }
 
 func TestSelectLeaseBatch_FillsFreeCores(t *testing.T) {
@@ -384,19 +394,7 @@ func TestLease_MultiQueueWorkerTakesOnlyItsQueues(t *testing.T) {
 		if _, err := st.CreateQueue(ctx, store.Queue{ID: q, FarmID: "f1", Name: q}); err != nil {
 			t.Fatal(err)
 		}
-		sub := store.JobSubmission{Job: store.Job{
-			ID: uuid.NewString(), FarmID: "f1", QueueID: q, Name: "j-" + q,
-			Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
-			RawTemplate: minimalRenderJSON,
-		}}
-		sub.Steps = []store.Step{{ID: uuid.NewString(), JobID: sub.Job.ID, Name: "render", Status: store.StepStatusReady}}
-		tk := store.Task{
-			ID: uuid.NewString(), JobID: sub.Job.ID, StepID: sub.Steps[0].ID,
-			Name: "t", Status: store.TaskStatusReady, Parameters: map[string]string{}, RequiredCores: &one,
-		}
-		sub.Tasks = []store.Task{tk}
-		storetest.Submit(t, st, sub)
-		taskQueue[tk.ID] = q
+		taskQueue[submitReadyIn(t, st, q, []*int{&one}, nil)[0]] = q
 	}
 	w, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,

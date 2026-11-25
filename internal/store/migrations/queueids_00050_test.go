@@ -15,7 +15,8 @@ import (
 // TestMigration00050_CarriesQueueIDIntoList rewinds past workers.queue_ids and
 // migrates up again. Rewinding puts a one-queue worker's queue back into
 // queue_id and leaves a worker with no queue NULL; migrating up turns them
-// into ["q1"] and [], and the rebuilt table violates no foreign key.
+// into ["q1"] and [], and dropping the foreign-key column in place leaves no
+// foreign key violated.
 func TestMigration00050_CarriesQueueIDIntoList(t *testing.T) {
 	path, s, _ := openSeedable(t)
 	ctx := t.Context()
@@ -73,7 +74,7 @@ func TestMigration00050_CarriesQueueIDIntoList(t *testing.T) {
 	}
 	defer rows.Close()
 	if rows.Next() {
-		t.Error("foreign_key_check reports a violation after the rebuild")
+		t.Error("foreign_key_check reports a violation after migrating up")
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("foreign_key_check rows: %v", err)

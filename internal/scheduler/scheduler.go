@@ -1308,7 +1308,7 @@ func (s *Scheduler) warnUnknownQueues(ctx context.Context, w store.Worker) {
 		q, err := s.store.GetQueue(ctx, id)
 		switch {
 		case err == nil:
-			if w.FarmID != "" && q.FarmID != w.FarmID {
+			if !w.InFarm(q.FarmID) {
 				s.logger.WarnContext(
 					ctx, "scheduler: worker lists a queue in another farm",
 					slog.String("worker_id", w.ID),

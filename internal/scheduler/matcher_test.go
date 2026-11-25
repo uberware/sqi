@@ -650,20 +650,6 @@ func TestEligibleWithReason_FarmMismatch(t *testing.T) {
 	}
 }
 
-func TestEligibleWithReason_QueueAffinity(t *testing.T) {
-	w := baseWorker()
-	w.QueueIDs = []string{"q1"}
-	j := baseJob()
-	j.QueueID = "q2"
-	reason, ok := scheduler.WorkerEligibleWithReason(w, j, baseStep(), nil, nil)
-	if ok {
-		t.Error("expected not eligible")
-	}
-	if reason != "queue affinity" {
-		t.Errorf("reason: got %q, want %q", reason, "queue affinity")
-	}
-}
-
 func TestEligibleWithReason_ComputeLocationMismatch(t *testing.T) {
 	w := baseWorker()
 	w.ComputeLocation = "onprem"

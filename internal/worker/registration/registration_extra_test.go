@@ -141,7 +141,7 @@ func TestDeregister_AfterClose_NoPanic(t *testing.T) {
 	reg.Deregister("shutdown after close", "")
 }
 
-// ── Register: single-queue branch + capability propagation ──────────────────
+// ── Register: queue list + capability propagation ───────────────────────────
 
 // TestRegister_SingleQueueAndCapabilities asserts a single configured queue is
 // sent as a one-element queue list, and that capability fields are propagated
@@ -206,7 +206,7 @@ func TestRegister_SingleQueueAndCapabilities(t *testing.T) {
 	if rm.WorkerID != "worker-q" {
 		t.Errorf("WorkerID = %q, want %q", rm.WorkerID, "worker-q")
 	}
-	if len(rm.QueueIDs) != 1 || rm.QueueIDs[0] != "render-q" {
+	if !slices.Equal(rm.QueueIDs, []string{"render-q"}) {
 		t.Errorf("QueueIDs = %v, want [render-q]", rm.QueueIDs)
 	}
 	if rm.FarmID != "farm-1" {
@@ -236,57 +236,30 @@ func TestRegister_MultiQueue_SendsEveryQueue(t *testing.T) {
 	tests := []struct {
 		name   string
 		queues []string
+		want   string // queue_ids as JSON; "" for the key absent
 	}{
-		{"two queues", []string{"q1", "q2"}},
-		{"no queues", nil},
+		{"two queues", []string{"q1", "q2"}, `["q1","q2"]`},
+		{"no queues", nil, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url := startTestNATS(t)
-			nc := connectNATS(t, url)
-
+			nc := connectNATS(t, startTestNATS(t))
 			cfg := minimalCfg()
 			cfg.QueueIDs = tt.queues
-
-			sub, err := nc.SubscribeSync(bus.WorkerRegisterSubject("worker-multi"))
-			if err != nil {
-				t.Fatalf("SubscribeSync: %v", err)
-			}
-			if err := nc.Flush(); err != nil {
-				t.Fatalf("Flush: %v", err)
-			}
-
 			reg := newRegistrar(t, nc, "worker-multi", cfg, capabilities.Capabilities{OS: "linux"})
 			if err := reg.Register(context.Background()); err != nil {
 				t.Fatalf("Register: %v", err)
 			}
 
-			msg, err := sub.NextMsg(2 * time.Second)
-			if err != nil {
-				t.Fatalf("expected a register message: %v", err)
-			}
-			var raw map[string]any
-			if err := json.Unmarshal(msg.Data, &raw); err != nil {
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(firstWorkerStreamMsg(t, nc), &raw); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
 			if _, ok := raw["queue_id"]; ok {
 				t.Errorf("register message carries queue_id; the field is queue_ids")
 			}
-			got, present := raw["queue_ids"]
-			if len(tt.queues) == 0 {
-				if present {
-					t.Errorf("queue_ids = %v, want the key absent", got)
-				}
-				return
-			}
-			list, _ := got.([]any) //nolint:errcheck // a non-list fails the length check below
-			if len(list) != len(tt.queues) {
-				t.Fatalf("queue_ids = %v, want %v", got, tt.queues)
-			}
-			for i, q := range tt.queues {
-				if list[i] != q {
-					t.Errorf("queue_ids[%d] = %v, want %q", i, list[i], q)
-				}
+			if got := string(raw["queue_ids"]); got != tt.want {
+				t.Errorf("queue_ids = %q, want %q", got, tt.want)
 			}
 		})
 	}

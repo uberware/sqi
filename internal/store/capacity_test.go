@@ -26,7 +26,7 @@ func TestCapacityGroup_ProfileWorker(t *testing.T) {
 	}
 
 	w := g.ProfileWorker()
-	if w.FarmID != "f1" || len(w.QueueIDs) != 1 || w.QueueIDs[0] != "q1" {
+	if w.FarmID != "f1" || !slices.Equal(w.QueueIDs, []string{"q1"}) {
 		t.Errorf("farm/queues = %q/%v, want f1/[q1]", w.FarmID, w.QueueIDs)
 	}
 	if w.CPUCount != 32 || w.RAMMb != 65536 || w.GPUInfo.Count != 2 || w.GPUInfo.VRAMMb != 24576 {

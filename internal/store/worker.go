@@ -306,6 +306,18 @@ func (w Worker) Removable() bool {
 	return w.Status == WorkerStatusOffline
 }
 
+// InFarm reports whether the worker takes work from farmID: an unaffiliated
+// worker (no FarmID) takes any farm's work, otherwise only its own farm's.
+func (w Worker) InFarm(farmID string) bool {
+	return w.FarmID == "" || w.FarmID == farmID
+}
+
+// ServesQueue reports whether the worker takes work from queueID: a worker
+// with no QueueIDs serves every queue, otherwise only the queues it lists.
+func (w Worker) ServesQueue(queueID string) bool {
+	return len(w.QueueIDs) == 0 || slices.Contains(w.QueueIDs, queueID)
+}
+
 // WorkerSortField is a column by which [WorkerStore.ListWorkers] results can
 // be ordered.
 type WorkerSortField string

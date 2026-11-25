@@ -292,62 +292,61 @@ func scanWorker(row scanner) (store.Worker, error) {
 	return w, nil
 }
 
-// workerJSONCols marshals the worker columns stored as JSON TEXT, in the order
-// they appear in [workerCols].
+// workerJSON holds the worker columns stored as JSON TEXT.
+type workerJSON struct {
+	queueIDs, gpu, tags, expr, extensions, interfaces string
+}
+
+// workerJSONCols marshals the worker columns stored as JSON TEXT.
 //
 // Every caller that persists a worker needs all of the columns, so they are
 // marshaled in this one function: a JSON column added to only one of several
 // copies would still compile and would be dropped on the other write paths.
-func workerJSONCols(w store.Worker) (gpuJSON, tagsJSON, exprJSON, extJSON string, err error) {
-	if gpuJSON, err = marshalJSON(w.GPUInfo); err != nil {
-		return "", "", "", "", err
+// A nil list marshals as "null"; the list columns hold '[]' when empty, as
+// their defaults do.
+func workerJSONCols(w store.Worker) (workerJSON, error) {
+	var out workerJSON
+	var err error
+	if out.queueIDs, err = marshalJSON(emptyIfNil(w.QueueIDs)); err != nil {
+		return workerJSON{}, err
 	}
-	if tagsJSON, err = marshalJSON(w.Tags); err != nil {
-		return "", "", "", "", err
+	if out.gpu, err = marshalJSON(w.GPUInfo); err != nil {
+		return workerJSON{}, err
 	}
-	if exprJSON, err = marshalJSON(w.ExprLimits); err != nil {
-		return "", "", "", "", err
+	if out.tags, err = marshalJSON(w.Tags); err != nil {
+		return workerJSON{}, err
 	}
-	// A nil slice marshals as "null"; the column holds a list, '[]' when empty,
-	// as its default does.
-	exts := w.Extensions
-	if exts == nil {
-		exts = []string{}
+	if out.expr, err = marshalJSON(w.ExprLimits); err != nil {
+		return workerJSON{}, err
 	}
-	if extJSON, err = marshalJSON(exts); err != nil {
-		return "", "", "", "", err
+	if out.extensions, err = marshalJSON(emptyIfNil(w.Extensions)); err != nil {
+		return workerJSON{}, err
 	}
-	return gpuJSON, tagsJSON, exprJSON, extJSON, nil
+	if out.interfaces, err = marshalJSON(emptyIfNil(w.Interfaces)); err != nil {
+		return workerJSON{}, err
+	}
+	return out, nil
+}
+
+// emptyIfNil returns s, or an empty slice for nil, so it marshals as [].
+func emptyIfNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
 
 // workerBindArgs are the arguments of sqlUpsertWorker, in its column order.
 func workerBindArgs(w store.Worker, now string) ([]any, error) {
-	gpuJSON, tagsJSON, exprJSON, extJSON, err := workerJSONCols(w)
-	if err != nil {
-		return nil, err
-	}
-	// A nil slice marshals as "null"; the column holds a list, '[]' when empty.
-	ifaces := w.Interfaces
-	if ifaces == nil {
-		ifaces = []store.NetInterface{}
-	}
-	ifaceJSON, err := marshalJSON(ifaces)
-	if err != nil {
-		return nil, err
-	}
-	queues := w.QueueIDs
-	if queues == nil {
-		queues = []string{}
-	}
-	queueJSON, err := marshalJSON(queues)
+	j, err := workerJSONCols(w)
 	if err != nil {
 		return nil, err
 	}
 	return []any{
-		w.ID, nullString(w.FarmID), queueJSON, w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
-		w.OS, w.OSVersion, w.Arch, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, exprJSON, extJSON, string(w.Status),
+		w.ID, nullString(w.FarmID), j.queueIDs, w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
+		w.OS, w.OSVersion, w.Arch, w.Version, w.CPUCount, w.RAMMb, j.gpu, j.tags, j.expr, j.extensions, string(w.Status),
 		nullTimeToText(w.LastHeartbeatAt), now, now, w.InstanceID, nullTimeToText(w.RegistrationBrokerAt),
-		ifaceJSON, w.CloudInstanceID, now,
+		j.interfaces, w.CloudInstanceID, now,
 	}, nil
 }
 

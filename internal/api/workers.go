@@ -485,10 +485,14 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 // server-authoritative [store.Worker.Removable]. PowerState is
 // [store.Worker.EffectivePowerState].
 func toWorkerResponse(wk store.Worker) workerResponse {
+	queues := wk.QueueIDs
+	if queues == nil {
+		queues = []string{}
+	}
 	return workerResponse{
 		ID:              wk.ID,
 		FarmID:          wk.FarmID,
-		QueueIDs:        queueIDsOrEmpty(wk.QueueIDs),
+		QueueIDs:        queues,
 		Name:            wk.Name,
 		Hostname:        wk.Hostname,
 		IPAddress:       wk.IPAddress,
@@ -549,13 +553,4 @@ func toWorkerSortField(s string) store.WorkerSortField {
 	default:
 		return store.WorkerSortByHostname
 	}
-}
-
-// queueIDsOrEmpty returns ids, or an empty list for nil, so the response
-// always carries an array.
-func queueIDsOrEmpty(ids []string) []string {
-	if ids == nil {
-		return []string{}
-	}
-	return ids
 }

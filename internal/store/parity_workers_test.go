@@ -681,10 +681,7 @@ func TestParity_RegisterWorker_QueueIDsRoundTrip(t *testing.T) {
 			farm := seedGraph(t, st, graphOpts{}).Farm
 			for _, queues := range [][]string{{"q1", "q2"}, {"q1"}, nil} {
 				registerQueues(t, st, farm.ID, "w-q", queues)
-				got, err := st.GetWorker(t.Context(), "w-q")
-				if err != nil {
-					t.Fatalf("GetWorker: %v", err)
-				}
+				got := mustWorker(t, st, "w-q")
 				if !slices.Equal(got.QueueIDs, queues) || (queues == nil && got.QueueIDs != nil) {
 					t.Fatalf("after registering %#v: QueueIDs = %#v", queues, got.QueueIDs)
 				}
@@ -701,11 +698,7 @@ func TestParity_RegisterWorker_QueueIDsNeedNoQueueRow(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			farm := seedGraph(t, st, graphOpts{}).Farm
 			registerQueues(t, st, farm.ID, "w-ghost", []string{"no-such-queue"})
-			got, err := st.GetWorker(t.Context(), "w-ghost")
-			if err != nil {
-				t.Fatalf("GetWorker: %v", err)
-			}
-			if !slices.Equal(got.QueueIDs, []string{"no-such-queue"}) {
+			if got := mustWorker(t, st, "w-ghost"); !slices.Equal(got.QueueIDs, []string{"no-such-queue"}) {
 				t.Fatalf("QueueIDs = %#v, want [no-such-queue]", got.QueueIDs)
 			}
 		})
@@ -727,10 +720,7 @@ func TestParity_ListWorkers_QueueFilterIsMembership(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ListWorkers: %v", err)
 			}
-			var ids []string
-			for _, w := range page.Items {
-				ids = append(ids, w.ID)
-			}
+			ids := workerIDs(page.Items)
 			slices.Sort(ids)
 			if !slices.Equal(ids, []string{"wa", "wc"}) {
 				t.Fatalf("workers listing q1 = %v, want [wa wc]", ids)

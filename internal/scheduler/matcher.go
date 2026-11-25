@@ -42,7 +42,6 @@ package scheduler
 //  6. Usage pool availability: all required pools have remaining capacity
 
 import (
-	"slices"
 	"strconv"
 	"strings"
 
@@ -126,14 +125,14 @@ func workerEligible(
 	// An empty worker FarmID means the worker is unaffiliated and accepts
 	// tasks from any farm (analogous to how an empty scheduler FarmID means
 	// "manage all farms"). A non-empty worker FarmID must match the job's farm.
-	if worker.FarmID != "" && worker.FarmID != job.FarmID {
+	if !worker.InFarm(job.FarmID) {
 		return rejectFarm, false
 	}
 
 	// ── 2. Queue affinity ─────────────────────────────────────────────────────
 	// A worker with no queue list accepts tasks from any queue in its farm.
 	// A worker with a list takes only the queues it names.
-	if len(worker.QueueIDs) > 0 && !slices.Contains(worker.QueueIDs, job.QueueID) {
+	if !worker.ServesQueue(job.QueueID) {
 		return rejectQueue, false
 	}
 

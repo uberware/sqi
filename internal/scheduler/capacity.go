@@ -694,7 +694,7 @@ func profileMismatch(g store.CapacityGroup, w store.Worker) string {
 		}
 	}
 	reasons = append(reasons, exprShortfalls(p.ExprLimits, w.ExprLimits)...)
-	if r := queueMismatch(g.QueueIDs, w.QueueIDs); r != "" {
+	if r := queueMismatch(g.QueueIDs, w); r != "" {
 		reasons = append(reasons, r)
 	}
 	return strings.Join(reasons, "; ")
@@ -774,18 +774,18 @@ func exprShortfalls(want, have store.WorkerExprLimits) []string {
 // drives the group. A worker with no list takes work from every queue, as the
 // lease path reads it, and covers any group. A group with no list serves
 // every queue, which only such a worker covers.
-func queueMismatch(groupQueues, workerQueues []string) string {
-	if len(workerQueues) == 0 {
+func queueMismatch(groupQueues []string, w store.Worker) string {
+	if len(w.QueueIDs) == 0 {
 		return ""
 	}
-	affinity := strings.Join(workerQueues, ", ")
 	if len(groupQueues) == 0 {
-		return fmt.Sprintf("queue affinity %s does not cover the group's queues (every queue in the farm)", affinity)
+		return fmt.Sprintf("queue affinity %s does not cover the group's queues (every queue in the farm)",
+			strings.Join(w.QueueIDs, ", "))
 	}
 	for _, q := range groupQueues {
-		if !slices.Contains(workerQueues, q) {
+		if !w.ServesQueue(q) {
 			return fmt.Sprintf("queue affinity %s does not cover the group's queues %s",
-				affinity, strings.Join(groupQueues, ", "))
+				strings.Join(w.QueueIDs, ", "), strings.Join(groupQueues, ", "))
 		}
 	}
 	return ""

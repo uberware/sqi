@@ -34,7 +34,7 @@ function formatDateTime(iso: string | undefined): string {
   })
 }
 
-// ── IdDisplay ─────────────────────────────────────────────────────────────────
+// ── QueueNames ────────────────────────────────────────────────────────────────
 
 /**
  * The worker's queues by name, "Any queue" when it lists none. A queue the
@@ -47,6 +47,8 @@ function QueueNames({ farmId, queueIds }: { farmId: string; queueIds: string[] }
   const names = new Map((data?.items ?? []).map((q) => [q.id, q.name]))
   return <>{queueIds.map((id) => names.get(id) ?? id).join(', ')}</>
 }
+
+// ── IdDisplay ─────────────────────────────────────────────────────────────────
 
 function IdDisplay({ id }: { id: string }) {
   const [copied, setCopied] = useState(false)

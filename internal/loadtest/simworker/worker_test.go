@@ -176,9 +176,8 @@ func TestWorker_RegistersAndCompletesTasks(t *testing.T) {
 				Duration: constDist(0.05), LogLines: constDist(3), LogLineBytes: 32,
 			}})
 			var queues []string
-			wantQueues := []string{}
 			if tt.oneQueue {
-				queues, wantQueues = []string{f.queueID}, []string{f.queueID}
+				queues = []string{f.queueID}
 			}
 			for n := range 3 {
 				f.startWorker(t, n, b, l, queues...)
@@ -195,8 +194,8 @@ func TestWorker_RegistersAndCompletesTasks(t *testing.T) {
 				for _, w := range page.Items {
 					if w.Status == "online" {
 						hosts = append(hosts, w.Hostname)
-						if !slices.Equal(w.QueueIDs, wantQueues) {
-							t.Errorf("worker %s registered queues %v, want %v", w.Hostname, w.QueueIDs, wantQueues)
+						if !slices.Equal(w.QueueIDs, queues) {
+							t.Errorf("worker %s registered queues %v, want %v", w.Hostname, w.QueueIDs, queues)
 						}
 					}
 				}

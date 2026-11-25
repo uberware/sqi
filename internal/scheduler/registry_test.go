@@ -11,12 +11,12 @@ package scheduler
 // used because every handler refreshes the WorkersTotal gauge.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -77,45 +77,6 @@ func TestHandleWorkerRegister_Valid(t *testing.T) {
 	}
 }
 
-// recordedLogs is a slog handler that keeps every record, for tests that
-// assert on what the scheduler logged.
-type recordedLogs struct {
-	mu      sync.Mutex
-	records []slog.Record
-}
-
-func (*recordedLogs) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h *recordedLogs) Handle(_ context.Context, r slog.Record) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.records = append(h.records, r.Clone())
-	return nil
-}
-
-func (h *recordedLogs) WithAttrs([]slog.Attr) slog.Handler { return h }
-
-func (h *recordedLogs) WithGroup(string) slog.Handler { return h }
-
-// warnings returns each Warn record's message with its string attributes.
-func (h *recordedLogs) warnings() []map[string]string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	var out []map[string]string
-	for _, r := range h.records {
-		if r.Level != slog.LevelWarn {
-			continue
-		}
-		m := map[string]string{"msg": r.Message}
-		r.Attrs(func(a slog.Attr) bool {
-			m[a.Key] = a.Value.String()
-			return true
-		})
-		out = append(out, m)
-	}
-	return out
-}
-
 // TestHandleWorkerRegister_WarnsOnUnknownQueue pins that a registration
 // listing a queue the worker can never be offered work from (no queue row, or
 // a queue in another farm) is still recorded, with the list intact, and logs
@@ -145,8 +106,8 @@ func TestHandleWorkerRegister_WarnsOnUnknownQueue(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := newMetricsScheduler(st, &recordBus{}, "")
-			logs := &recordedLogs{}
-			s.logger = slog.New(logs)
+			var logs bytes.Buffer
+			s.logger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 			msg := &fakeJSMsg{
 				subject: bus.WorkerRegisterSubject("w-1"),
@@ -168,7 +129,11 @@ func TestHandleWorkerRegister_WarnsOnUnknownQueue(t *testing.T) {
 				t.Errorf("stored QueueIDs = %v, want %v", w.QueueIDs, tc.queues)
 			}
 			var warned []string
-			for _, rec := range logs.warnings() {
+			for line := range strings.Lines(logs.String()) {
+				var rec map[string]string
+				if err := json.Unmarshal([]byte(line), &rec); err != nil {
+					t.Fatalf("log line %q: %v", line, err)
+				}
 				if !strings.HasPrefix(rec["msg"], "scheduler: worker lists a queue ") {
 					continue
 				}
