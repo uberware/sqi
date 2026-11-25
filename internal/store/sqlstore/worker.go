@@ -299,9 +299,9 @@ type workerJSON struct {
 
 // workerJSONCols marshals the worker columns stored as JSON TEXT.
 //
-// Every caller that persists a worker needs all of the columns, so they are
-// marshaled in this one function: a JSON column added to only one of several
-// copies would still compile and would be dropped on the other write paths.
+// They are marshaled in this one function so that a JSON column added here
+// reaches every write path that persists a worker; a column marshaled inline
+// in one write path would still compile and be dropped by any other.
 // A nil list marshals as "null"; the list columns hold '[]' when empty, as
 // their defaults do.
 func workerJSONCols(w store.Worker) (workerJSON, error) {
