@@ -99,6 +99,17 @@ WHERE  j.status NOT IN ('completed', 'failed', 'canceled')
   AND  NOT j.dependency_hold
   AND  s.status = 'pending'
 ORDER BY j.id`
+
+	// sqlListJobIDsWithAllStepsTerminal selects the live jobs that have steps
+	// and no open one: the per-tick sweep's finalize candidates. It reads jobs
+	// and steps only, so it stays cheap on a farm with many tasks.
+	sqlListJobIDsWithAllStepsTerminal = `
+SELECT j.id FROM jobs j
+WHERE  j.status NOT IN ('completed', 'failed', 'canceled')
+  AND  EXISTS     (SELECT 1 FROM steps s WHERE s.job_id = j.id)
+  AND  NOT EXISTS (SELECT 1 FROM steps s WHERE s.job_id = j.id
+                   AND s.status NOT IN ('completed', 'failed', 'canceled'))
+ORDER BY j.id`
 )
 
 // FinalizeStep implements [store.StepStore].
@@ -209,6 +220,24 @@ func (s *Store) ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return nil, fmt.Errorf("store: scan job with pending steps: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ListJobIDsWithAllStepsTerminal implements [store.StepStore].
+func (s *Store) ListJobIDsWithAllStepsTerminal(ctx context.Context) ([]string, error) {
+	rows, err := s.r.QueryContext(ctx, sqlListJobIDsWithAllStepsTerminal)
+	if err != nil {
+		return nil, fmt.Errorf("store: list jobs with all steps terminal: %w", mapErr(err))
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan job with all steps terminal: %w", err)
 		}
 		ids = append(ids, id)
 	}

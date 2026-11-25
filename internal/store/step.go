@@ -198,4 +198,13 @@ type StepStore interface {
 	// RetryTasks and ResolveDependencies) is released or cascade-canceled. A
 	// blocked job is excluded: its steps wait on another job.
 	ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error)
+
+	// ListJobIDsWithAllStepsTerminal returns, ascending, the IDs of jobs that
+	// are not terminal, have at least one step, and have no step that is not
+	// terminal: jobs FinalizeJob would finalize but that no future task report
+	// will reach, such as one left when a server stopped, or a write failed,
+	// between a cancel cascade and the FinalizeJob after it. A paused job is
+	// listed. Used by the scheduler's per-tick sweep, so it reads only jobs and
+	// steps, never tasks.
+	ListJobIDsWithAllStepsTerminal(ctx context.Context) ([]string, error)
 }
