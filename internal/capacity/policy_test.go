@@ -23,7 +23,7 @@ func canRun(w store.Worker, item DemandItem) bool {
 			return false
 		}
 	}
-	if w.QueueID != "" && w.QueueID != item.Demand.QueueID {
+	if len(w.QueueIDs) > 0 && !slices.Contains(w.QueueIDs, item.Demand.QueueID) {
 		return false
 	}
 	req := item.Demand.RequiredCores

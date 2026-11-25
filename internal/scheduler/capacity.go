@@ -694,7 +694,7 @@ func profileMismatch(g store.CapacityGroup, w store.Worker) string {
 		}
 	}
 	reasons = append(reasons, exprShortfalls(p.ExprLimits, w.ExprLimits)...)
-	if r := queueMismatch(g.QueueIDs, w.QueueID); r != "" {
+	if r := queueMismatch(g.QueueIDs, w.QueueIDs); r != "" {
 		reasons = append(reasons, r)
 	}
 	return strings.Join(reasons, "; ")
@@ -770,18 +770,23 @@ func exprShortfalls(want, have store.WorkerExprLimits) []string {
 }
 
 // queueMismatch reports a worker queue affinity that does not cover the
-// group's queues. A worker with none takes work from every queue, as the
-// lease path reads it, and covers any list.
-func queueMismatch(groupQueues []string, workerQueue string) string {
-	switch {
-	case workerQueue == "":
+// group's queues: the member must be able to take every queue whose work
+// drives the group. A worker with no list takes work from every queue, as the
+// lease path reads it, and covers any group. A group with no list serves
+// every queue, which only such a worker covers.
+func queueMismatch(groupQueues, workerQueues []string) string {
+	if len(workerQueues) == 0 {
 		return ""
-	case len(groupQueues) == 1 && groupQueues[0] == workerQueue:
-		return ""
-	case len(groupQueues) == 0:
-		return fmt.Sprintf("queue affinity %s does not cover the group's queues (every queue in the farm)", workerQueue)
-	default:
-		return fmt.Sprintf("queue affinity %s does not cover the group's queues %s",
-			workerQueue, strings.Join(groupQueues, ", "))
 	}
+	affinity := strings.Join(workerQueues, ", ")
+	if len(groupQueues) == 0 {
+		return fmt.Sprintf("queue affinity %s does not cover the group's queues (every queue in the farm)", affinity)
+	}
+	for _, q := range groupQueues {
+		if !slices.Contains(workerQueues, q) {
+			return fmt.Sprintf("queue affinity %s does not cover the group's queues %s",
+				affinity, strings.Join(groupQueues, ", "))
+		}
+	}
+	return ""
 }

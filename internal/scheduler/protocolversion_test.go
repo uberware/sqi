@@ -37,7 +37,7 @@ import (
 // at all (a hand-rolled publisher, or a field renamed out from under the
 // sender). The empty case is the one an `if version != "" && version !=
 // current` gate would let through.
-var mismatchedVersions = []string{"7", "9", ""}
+var mismatchedVersions = []string{"8", "10", ""}
 
 // ── worker.register ───────────────────────────────────────────────────────────
 

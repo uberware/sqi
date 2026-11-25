@@ -71,7 +71,7 @@ func TestListWorkers_QueueIDFilterAndErrors(t *testing.T) {
 		_, _, err := st.RegisterWorker(t.Context(), store.Worker{
 			ID:           uuid.NewString(),
 			FarmID:       "farm-1",
-			QueueID:      "queue-A",
+			QueueIDs:     []string{"queue-A"},
 			Hostname:     "worker-a",
 			Status:       store.WorkerStatusOnline,
 			RegisteredAt: now,
@@ -84,7 +84,7 @@ func TestListWorkers_QueueIDFilterAndErrors(t *testing.T) {
 		_, _, err = st.RegisterWorker(t.Context(), store.Worker{
 			ID:           uuid.NewString(),
 			FarmID:       "farm-1",
-			QueueID:      "queue-B",
+			QueueIDs:     []string{"queue-B"},
 			Hostname:     "worker-b",
 			Status:       store.WorkerStatusOnline,
 			RegisteredAt: now,

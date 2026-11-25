@@ -365,6 +365,76 @@ func TestHandleLeaseRequest_ReturnsBatch(t *testing.T) {
 	}
 }
 
+// TestLease_MultiQueueWorkerTakesOnlyItsQueues is the regression test for a
+// worker configured with two queues being leased work from every queue in the
+// farm: with one ready task in each of three queues, a request from a worker
+// listing two of them leases exactly those two, and the third stays ready.
+func TestLease_MultiQueueWorkerTakesOnlyItsQueues(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.leaseHoldTimeout = 50 * time.Millisecond
+	ctx := t.Context()
+	now := time.Now().UTC()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "f1", Name: "F1"}); err != nil {
+		t.Fatal(err)
+	}
+	taskQueue := map[string]string{}
+	one := 1
+	for _, q := range []string{"qA", "qB", "qC"} {
+		if _, err := st.CreateQueue(ctx, store.Queue{ID: q, FarmID: "f1", Name: q}); err != nil {
+			t.Fatal(err)
+		}
+		sub := store.JobSubmission{Job: store.Job{
+			ID: uuid.NewString(), FarmID: "f1", QueueID: q, Name: "j-" + q,
+			Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
+			RawTemplate: minimalRenderJSON,
+		}}
+		sub.Steps = []store.Step{{ID: uuid.NewString(), JobID: sub.Job.ID, Name: "render", Status: store.StepStatusReady}}
+		tk := store.Task{
+			ID: uuid.NewString(), JobID: sub.Job.ID, StepID: sub.Steps[0].ID,
+			Name: "t", Status: store.TaskStatusReady, Parameters: map[string]string{}, RequiredCores: &one,
+		}
+		sub.Tasks = []store.Task{tk}
+		storetest.Submit(t, st, sub)
+		taskQueue[tk.ID] = q
+	}
+	w, _, err := st.RegisterWorker(ctx, store.Worker{
+		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
+		CPUCount: 8, LastHeartbeatAt: &now, Tags: map[string]string{}, QueueIDs: []string{"qA", "qB"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	var got leaseReply
+	if err := json.Unmarshal(s.handleLeaseRequest(w.ID, "qA", req), &got); err != nil {
+		t.Fatalf("unmarshal reply: %v", err)
+	}
+	if len(got.Assignments) != 2 {
+		t.Fatalf("assignments = %d, want 2 (one each from qA and qB)", len(got.Assignments))
+	}
+	leased := map[string]bool{}
+	for id, q := range taskQueue {
+		tk, err := st.GetTask(ctx, id)
+		if err != nil {
+			t.Fatalf("GetTask %s: %v", id, err)
+		}
+		if tk.Status == store.TaskStatusAssigned {
+			leased[q] = true
+		}
+		if q == "qC" && tk.Status != store.TaskStatusReady {
+			t.Errorf("qC task status = %q, want ready", tk.Status)
+		}
+	}
+	if !leased["qA"] || !leased["qB"] {
+		t.Errorf("leased queues = %v, want qA and qB", leased)
+	}
+}
+
 // TestHandleLeaseRequest_ConcurrentSameWorkerDoesNotOverLease verifies the
 // per-worker selection lock: two concurrent lease requests for the SAME worker
 // on a fixture with more ready cores than the worker can hold must not both read

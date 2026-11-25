@@ -1389,9 +1389,21 @@ func validateIsolation(cfg WorkerConfig) []ValidationError {
 //
 // brokerauth.ValidWorkerIDToken implements exactly this predicate for worker
 // IDs, which share the same constraint.
+//
+// A queue listed twice is also rejected, at its later index: the list is the
+// set of queues the worker serves, and a repeat is a configuration mistake.
 func validateQueueIDs(queueIDs []string) []ValidationError {
 	var errs []ValidationError
+	first := make(map[string]int, len(queueIDs))
 	for i, q := range queueIDs {
+		if j, seen := first[q]; seen {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("worker.queue_ids[%d]", i),
+				Message: fmt.Sprintf("%q is a duplicate of worker.queue_ids[%d]", q, j),
+			})
+			continue
+		}
+		first[q] = i
 		if !brokerauth.ValidWorkerIDToken(q) {
 			errs = append(errs, ValidationError{
 				Field: fmt.Sprintf("worker.queue_ids[%d]", i),

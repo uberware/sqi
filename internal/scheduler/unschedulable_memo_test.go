@@ -35,7 +35,7 @@ func TestUnschedulable_EvaluatesEachStepOnce(t *testing.T) {
 				backdateTaskReady(t, f.st, task.ID, -time.Minute)
 			}
 			if online {
-				registerOnline(t, f.st, store.Worker{ID: "busy", FarmID: capFarm, CPUCount: 4, QueueID: "elsewhere"})
+				registerOnline(t, f.st, store.Worker{ID: "busy", FarmID: capFarm, CPUCount: 4, QueueIDs: []string{"elsewhere"}})
 			}
 			f.sweep(t, time.Now().UTC())
 			spy.mu.Lock()

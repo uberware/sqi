@@ -980,6 +980,61 @@ func TestWorkerResponse_PowerAndInterfaces(t *testing.T) {
 	}
 }
 
+// TestWorkerResponse_QueueIDs pins the worker's queue list on the wire: always
+// present, [] for a worker that takes any queue, and no queue_id key.
+func TestWorkerResponse_QueueIDs(t *testing.T) {
+	for _, tc := range []struct {
+		queues []string
+		want   string
+	}{
+		{[]string{"q1", "q2"}, `["q1","q2"]`},
+		{nil, `[]`},
+	} {
+		raw, err := json.Marshal(toWorkerResponse(store.Worker{ID: "w1", QueueIDs: tc.queues}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if string(got["queue_ids"]) != tc.want {
+			t.Errorf("queue_ids = %s, want %s", got["queue_ids"], tc.want)
+		}
+		if _, present := got["queue_id"]; present {
+			t.Errorf("response carries queue_id; the field is queue_ids")
+		}
+	}
+}
+
+// TestListWorkers_QueueFilter pins that ?queue_id= returns the workers whose
+// queue list contains that queue.
+func TestListWorkers_QueueFilter(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+	for _, w := range []store.Worker{
+		{ID: "w1", Hostname: "a", Status: store.WorkerStatusOnline, QueueIDs: []string{"q2", "q1"}},
+		{ID: "w2", Hostname: "b", Status: store.WorkerStatusOnline, QueueIDs: []string{"q2"}},
+		{ID: "w3", Hostname: "c", Status: store.WorkerStatusOnline},
+	} {
+		if _, _, err := st.RegisterWorker(ctx, w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rr := httptest.NewRecorder()
+	newWorkerRouter(st).ServeHTTP(rr, newReq(t, http.MethodGet, "/api/v1/workers?queue_id=q1", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var resp workerListResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Items) != 1 || resp.Items[0].ID != "w1" {
+		t.Fatalf("workers = %+v (total %d), want only w1", resp.Items, resp.Total)
+	}
+}
+
 // TestWorkerDetailResponse_Interfaces: the detail carries the interfaces, an
 // array with its addrs included, never null.
 func TestWorkerDetailResponse_Interfaces(t *testing.T) {

@@ -659,3 +659,82 @@ func TestParity_MarkWorkerJoinTokenUsed(t *testing.T) {
 		})
 	}
 }
+
+// registerQueues registers worker id in farm with the given queue list.
+func registerQueues(t *testing.T, st store.Store, farmID, id string, queues []string) {
+	t.Helper()
+	now := time.Now().UTC()
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
+		ID: id, FarmID: farmID, Hostname: "node", Status: store.WorkerStatusOnline,
+		LastHeartbeatAt: &now, QueueIDs: queues,
+	}); err != nil {
+		t.Fatalf("RegisterWorker %s: %v", id, err)
+	}
+}
+
+// TestParity_RegisterWorker_QueueIDsRoundTrip pins that each registration
+// replaces the stored queue list, including back to none, and that no list
+// reads back as nil rather than an empty slice.
+func TestParity_RegisterWorker_QueueIDsRoundTrip(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			for _, queues := range [][]string{{"q1", "q2"}, {"q1"}, nil} {
+				registerQueues(t, st, farm.ID, "w-q", queues)
+				got, err := st.GetWorker(t.Context(), "w-q")
+				if err != nil {
+					t.Fatalf("GetWorker: %v", err)
+				}
+				if !slices.Equal(got.QueueIDs, queues) || (queues == nil && got.QueueIDs != nil) {
+					t.Fatalf("after registering %#v: QueueIDs = %#v", queues, got.QueueIDs)
+				}
+			}
+		})
+	}
+}
+
+// TestParity_RegisterWorker_QueueIDsNeedNoQueueRow pins that a listed queue
+// need not exist: the registration succeeds and the ID is kept, to match
+// nothing, rather than being dropped (which could leave an any-queue worker).
+func TestParity_RegisterWorker_QueueIDsNeedNoQueueRow(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			registerQueues(t, st, farm.ID, "w-ghost", []string{"no-such-queue"})
+			got, err := st.GetWorker(t.Context(), "w-ghost")
+			if err != nil {
+				t.Fatalf("GetWorker: %v", err)
+			}
+			if !slices.Equal(got.QueueIDs, []string{"no-such-queue"}) {
+				t.Fatalf("QueueIDs = %#v, want [no-such-queue]", got.QueueIDs)
+			}
+		})
+	}
+}
+
+// TestParity_ListWorkers_QueueFilterIsMembership pins the worker-list queue
+// filter: a worker matches when its list contains the queue exactly (q1 does
+// not match q10), and a worker with no list (any queue) is not returned.
+func TestParity_ListWorkers_QueueFilterIsMembership(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			registerQueues(t, st, farm.ID, "wa", []string{"q1"})
+			registerQueues(t, st, farm.ID, "wb", []string{"q10"})
+			registerQueues(t, st, farm.ID, "wc", []string{"q2", "q1"})
+			registerQueues(t, st, farm.ID, "wd", nil)
+			page, err := st.ListWorkers(t.Context(), store.ListWorkersOptions{QueueID: "q1"})
+			if err != nil {
+				t.Fatalf("ListWorkers: %v", err)
+			}
+			var ids []string
+			for _, w := range page.Items {
+				ids = append(ids, w.ID)
+			}
+			slices.Sort(ids)
+			if !slices.Equal(ids, []string{"wa", "wc"}) {
+				t.Fatalf("workers listing q1 = %v, want [wa wc]", ids)
+			}
+		})
+	}
+}

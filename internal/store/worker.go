@@ -98,9 +98,13 @@ type WorkerExprLimits struct {
 // capabilities at registration; the server persists the reported values and
 // uses them for task matching.
 type Worker struct {
-	ID      string
-	FarmID  string
-	QueueID string // empty = no queue affinity
+	ID     string
+	FarmID string
+	// QueueIDs lists the queues the worker serves. Nil means every queue in
+	// its farm. An ID need not name an existing queue; one that does not
+	// matches nothing, so a worker whose every listed queue was deleted is
+	// leased nothing, never everything.
+	QueueIDs []string
 	// Name is the worker's human-readable display label (the worker.name
 	// config field, default the hostname). Distinguishes multiple workers
 	// running on one host in the UI; may be empty, in which case callers fall
@@ -511,7 +515,9 @@ type WorkerStore interface {
 // Zero values mean "no filter / use defaults".
 type ListWorkersOptions struct {
 	// Filters
-	FarmID          string
+	FarmID string
+	// QueueID keeps only the workers whose queue list contains it. Workers
+	// that serve every queue (no list) are not included.
 	QueueID         string
 	ComputeLocation string
 	// CapacityGroupID keeps only the members of that capacity group.

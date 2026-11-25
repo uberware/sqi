@@ -827,7 +827,7 @@ func (w *mockWorker) registerCPUs(cpuCount int) {
 		WorkerID:           w.id,
 		InstanceID:         w.instanceID,
 		FarmID:             w.farmID,
-		QueueID:            w.queueID,
+		QueueIDs:           []string{w.queueID},
 		Hostname:           "test-worker",
 		OS:                 "linux",
 		CPUCount:           cpuCount,

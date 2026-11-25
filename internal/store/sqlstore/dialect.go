@@ -28,6 +28,10 @@ type Dialect interface {
 	// own form (PostgreSQL: "<col> ILIKE ? ESCAPE ''"). Like CIEqual it may carry
 	// only the column, a "?" and literals.
 	CILike(col string) string
+	// JSONArrayContains returns a predicate that is true when col, a TEXT
+	// column holding a JSON array of strings, has an element equal to "?".
+	// Like CIEqual it may carry only the column, a "?" and literals.
+	JSONArrayContains(col string) string
 	// ForUpdate returns the clause that makes a SELECT lock the rows it reads
 	// until the transaction ends (PostgreSQL: " FOR UPDATE"), or "" where the
 	// database takes no row locks (SQLite, whose single write connection

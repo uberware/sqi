@@ -58,6 +58,12 @@ func (sqliteDialect) CIEqual(col string) string { return col + " = ? COLLATE NOC
 // CILike uses LIKE, which SQLite matches ASCII case-insensitively.
 func (sqliteDialect) CILike(col string) string { return col + " LIKE ?" }
 
+// JSONArrayContains looks for the element among json_each's values, so an ID
+// that is only a prefix or substring of a listed one does not match.
+func (sqliteDialect) JSONArrayContains(col string) string {
+	return "EXISTS (SELECT 1 FROM json_each(" + col + ") WHERE json_each.value = ?)"
+}
+
 // ForUpdate returns "": SQLite has no row locks, and its single write
 // connection already serializes every write transaction.
 func (sqliteDialect) ForUpdate() string { return "" }

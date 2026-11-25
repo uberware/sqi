@@ -169,6 +169,14 @@ func (pgDialect) CIEqual(col string) string { return "lower(" + col + ") = lower
 // LIKE has no escape character, and a search for a Windows path must match.
 func (pgDialect) CILike(col string) string { return col + " ILIKE ? ESCAPE ''" }
 
+// JSONArrayContains expands the column as a JSON array and compares each
+// element's text, so an ID that is only a prefix or substring of a listed one
+// does not match. The jsonb ? operator is avoided because "?" is the
+// placeholder [pgDialect.Rebind] rewrites.
+func (pgDialect) JSONArrayContains(col string) string {
+	return "EXISTS (SELECT 1 FROM json_array_elements_text(" + col + "::json) AS e(v) WHERE e.v = ?)"
+}
+
 // ForUpdate locks the rows a SELECT reads until the transaction ends.
 func (pgDialect) ForUpdate() string { return " FOR UPDATE" }
 

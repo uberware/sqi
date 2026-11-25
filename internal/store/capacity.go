@@ -270,9 +270,9 @@ type CapacityPowerStore interface {
 // profile declares. The worker owns copies of the profile's tags and
 // extensions.
 //
-// QueueID is the group's sole queue when it serves exactly one, and empty
-// otherwise, which is what a real worker registered against several queues
-// carries (no single queue affinity).
+// QueueIDs is a copy of the group's queues, which is what a member registered
+// against the same queues carries; a group serving every queue gives a worker
+// with no list.
 func (g CapacityGroup) ProfileWorker() Worker {
 	p := g.Profile
 	w := Worker{
@@ -286,9 +286,7 @@ func (g CapacityGroup) ProfileWorker() Worker {
 		Tags:            maps.Clone(p.Tags),
 		Extensions:      slices.Clone(p.Extensions),
 		ExprLimits:      p.ExprLimits,
-	}
-	if len(g.QueueIDs) == 1 {
-		w.QueueID = g.QueueIDs[0]
+		QueueIDs:        slices.Clone(g.QueueIDs),
 	}
 	return w
 }

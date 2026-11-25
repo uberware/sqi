@@ -13,7 +13,7 @@ import (
 )
 
 const workerCols = `
-	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
+	id, farm_id, queue_ids, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
 	last_heartbeat_at, registered_at, updated_at, instance_id, disabled, registration_broker_at,
 	heartbeat_broker_at, capacity_group_id, ephemeral,
@@ -57,14 +57,14 @@ const (
 	// (its machine is still going to sleep); an awake one is unchanged.
 	sqlUpsertWorker = `
 INSERT INTO workers (
-	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
+	id, farm_id, queue_ids, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
 	last_heartbeat_at, registered_at, updated_at, instance_id, registration_broker_at,
 	interfaces, cloud_instance_id, started_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
-	queue_id          = excluded.queue_id,
+	queue_ids         = excluded.queue_ids,
 	name              = excluded.name,
 	hostname          = excluded.hostname,
 	ip_address        = excluded.ip_address,
@@ -220,13 +220,13 @@ RETURNING ` + workerCols
 
 func scanWorker(row scanner) (store.Worker, error) {
 	var w store.Worker
-	var farmID, queueID, lastHeartbeat, registrationBroker, heartbeatBroker, capacityGroupID, powerAt, startedAt sql.NullString
-	var gpuJSON, tagsJSON, exprJSON, extJSON, ifaceJSON, status, powerState string
+	var farmID, lastHeartbeat, registrationBroker, heartbeatBroker, capacityGroupID, powerAt, startedAt sql.NullString
+	var queueJSON, gpuJSON, tagsJSON, exprJSON, extJSON, ifaceJSON, status, powerState string
 	var registeredAt, updatedAt string
 	var disabled, ephemeral dbBool
 
 	if err := row.Scan(
-		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
+		&w.ID, &farmID, &queueJSON, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
 		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &extJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &disabled, &registrationBroker,
 		&heartbeatBroker, &capacityGroupID, &ephemeral,
@@ -236,7 +236,6 @@ func scanWorker(row scanner) (store.Worker, error) {
 	}
 
 	w.FarmID = farmID.String
-	w.QueueID = queueID.String
 	w.Status = store.WorkerStatus(status)
 	w.LastHeartbeatAt = nullTextToTime(lastHeartbeat)
 	w.RegistrationBrokerAt = nullTextToTime(registrationBroker)
@@ -267,6 +266,14 @@ func scanWorker(row scanner) (store.Worker, error) {
 		return store.Worker{}, err
 	}
 	w.ExprLimits = exprLimits
+
+	queueIDs, err := unmarshalJSON(queueJSON, []string(nil))
+	if err != nil {
+		return store.Worker{}, err
+	}
+	if len(queueIDs) > 0 {
+		w.QueueIDs = queueIDs
+	}
 
 	extensions, err := unmarshalJSON(extJSON, []string(nil))
 	if err != nil {
@@ -328,8 +335,16 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	queues := w.QueueIDs
+	if queues == nil {
+		queues = []string{}
+	}
+	queueJSON, err := marshalJSON(queues)
+	if err != nil {
+		return nil, err
+	}
 	return []any{
-		w.ID, nullString(w.FarmID), nullString(w.QueueID), w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
+		w.ID, nullString(w.FarmID), queueJSON, w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
 		w.OS, w.OSVersion, w.Arch, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, exprJSON, extJSON, string(w.Status),
 		nullTimeToText(w.LastHeartbeatAt), now, now, w.InstanceID, nullTimeToText(w.RegistrationBrokerAt),
 		ifaceJSON, w.CloudInstanceID, now,
@@ -448,7 +463,7 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 		args = append(args, opts.FarmID)
 	}
 	if opts.QueueID != "" {
-		where += ` AND queue_id = ?`
+		where += ` AND ` + s.d.JSONArrayContains("queue_ids")
 		args = append(args, opts.QueueID)
 	}
 	if opts.ComputeLocation != "" {

@@ -540,7 +540,7 @@ func seedEveryTable(t *testing.T, path string) {
 	})
 	must("capacity group", err)
 	_, _, err = st.RegisterWorker(ctx, store.Worker{
-		ID: "worker-1", FarmID: "farm-1", QueueID: "queue-1", Name: "node 1", Hostname: "node1", IPAddress: "10.0.0.7",
+		ID: "worker-1", FarmID: "farm-1", QueueIDs: []string{"queue-1"}, Name: "node 1", Hostname: "node1", IPAddress: "10.0.0.7",
 		ComputeLocation: "onprem", OS: "linux", OSVersion: "6.1", Arch: "amd64", Version: "0.3.0", InstanceID: "i-1",
 		CPUCount: 16, RAMMb: 65536, Tags: map[string]string{"gpu": "yes"}, Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 		Interfaces:      []store.NetInterface{{Name: "eth0", MAC: "aa:bb:cc:dd:ee:01", Addrs: []string{"10.0.0.7/24"}}},

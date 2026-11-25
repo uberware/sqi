@@ -484,6 +484,30 @@ func TestValidate_QueueIDRejectsEachInvalidShape(t *testing.T) {
 	}
 }
 
+// TestValidate_QueueIDsDuplicate pins that a queue listed twice is reported
+// once, at the later index, naming the earlier one.
+func TestValidate_QueueIDsDuplicate(t *testing.T) {
+	cfg := Default()
+	cfg.NATS.URL = "nats://localhost:4222"
+	cfg.Worker.QueueIDs = []string{"q1", "q2", "q1"}
+
+	var dup []ValidationError
+	for _, e := range Validate(cfg) {
+		if strings.HasPrefix(e.Field, "worker.queue_ids") {
+			dup = append(dup, e)
+		}
+	}
+	if len(dup) != 1 {
+		t.Fatalf("queue_ids errors = %v, want exactly one", dup)
+	}
+	if dup[0].Field != "worker.queue_ids[2]" {
+		t.Errorf("Field = %q, want worker.queue_ids[2]", dup[0].Field)
+	}
+	if !strings.Contains(dup[0].Message, "duplicate of worker.queue_ids[0]") {
+		t.Errorf("Message = %q, want it to say duplicate of worker.queue_ids[0]", dup[0].Message)
+	}
+}
+
 func TestValidate_QueueIDAcceptsUUID(t *testing.T) {
 	cfg := Default()
 	cfg.NATS.URL = "nats://localhost:4222"

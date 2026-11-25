@@ -35,13 +35,14 @@ package scheduler
 //
 // A worker is eligible for a task when all of the following hold:
 //  1. Farm membership: worker.FarmID == "" (any farm) or worker.FarmID == job.FarmID
-//  2. Queue affinity: worker.QueueID == "" (any queue) or worker.QueueID == job.QueueID
+//  2. Queue affinity: worker.QueueIDs is empty (any queue) or contains job.QueueID
 //  3. Compute-location affinity: step.ComputeLocation == "" (any) or matches worker.ComputeLocation
 //  4. Amount requirements: all are satisfied by the worker's hardware values
 //  5. Attribute requirements: all AnyOf/AllOf constraints are satisfied
 //  6. Usage pool availability: all required pools have remaining capacity
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -130,9 +131,9 @@ func workerEligible(
 	}
 
 	// ── 2. Queue affinity ─────────────────────────────────────────────────────
-	// A worker with an empty QueueID accepts tasks from any queue in its farm.
-	// A worker with a non-empty QueueID is dedicated to that queue only.
-	if worker.QueueID != "" && worker.QueueID != job.QueueID {
+	// A worker with no queue list accepts tasks from any queue in its farm.
+	// A worker with a list takes only the queues it names.
+	if len(worker.QueueIDs) > 0 && !slices.Contains(worker.QueueIDs, job.QueueID) {
 		return rejectQueue, false
 	}
 
