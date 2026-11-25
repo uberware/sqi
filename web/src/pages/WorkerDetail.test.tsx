@@ -143,6 +143,7 @@ function makeWorker(overrides: Partial<WorkerDetailType> = {}): WorkerDetailType
   return {
     id: 'worker-aabbccdd',
     farm_id: 'farm-001',
+    queue_ids: [],
     hostname: 'render-node-01',
     status: 'online',
     removable: false,
@@ -315,6 +316,72 @@ describe('WorkerDetail', () => {
         expect(
           await uptimeShown(makeWorker({ status: 'offline', started_at: '2024-01-01T10:00:00Z' })),
         ).toBe('—')
+      })
+    })
+
+    describe('Queues value', () => {
+      /** Answers the queue list with the given queues and anything else with the worker. */
+      function routeFetch(worker: WorkerDetailType, queues: { id: string; name: string }[]) {
+        fetchMock.mockImplementation((input) => {
+          const url =
+            typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+          if (url.includes('/queues')) {
+            return Promise.resolve(
+              okJson({
+                items: queues.map((q) => ({
+                  ...q,
+                  farm_id: worker.farm_id,
+                  priority: 0,
+                  max_concurrent_tasks: 0,
+                })),
+                total: queues.length,
+                limit: 1000,
+                offset: 0,
+              }),
+            )
+          }
+          return Promise.resolve(okJson(worker))
+        })
+      }
+
+      async function queuesShown(): Promise<string | null | undefined> {
+        render(<WorkerDetail />, { wrapper: Wrapper })
+        await waitFor(() => screen.getByText('Queues'))
+        return screen.getByText('Queues').nextElementSibling?.textContent
+      }
+
+      const farmQueues = [
+        { id: 'q1', name: 'Comp' },
+        { id: 'q2', name: 'Render' },
+      ]
+
+      it('says Any queue when the worker lists none', async () => {
+        routeFetch(makeWorker({ queue_ids: [] }), farmQueues)
+        expect(await queuesShown()).toBe('Any queue')
+      })
+
+      it('names each listed queue', async () => {
+        routeFetch(makeWorker({ queue_ids: ['q1', 'q2'] }), farmQueues)
+        render(<WorkerDetail />, { wrapper: Wrapper })
+        await waitFor(() => screen.getByText('Comp, Render'))
+        expect(screen.getByText('Queues').nextElementSibling?.textContent).toBe('Comp, Render')
+      })
+
+      it('shows the raw ID of a queue the farm does not have', async () => {
+        routeFetch(makeWorker({ queue_ids: ['q1', 'gone'] }), farmQueues)
+        render(<WorkerDetail />, { wrapper: Wrapper })
+        await waitFor(() => screen.getByText('Comp, gone'))
+        expect(screen.getByText('Queues').nextElementSibling?.textContent).toBe('Comp, gone')
+      })
+
+      it('shows raw IDs for a worker with no farm', async () => {
+        routeFetch(makeWorker({ farm_id: '', queue_ids: ['q1'] }), farmQueues)
+        expect(await queuesShown()).toBe('q1')
+        expect(
+          fetchMock.mock.calls.some(([input]) =>
+            String(input instanceof Request ? input.url : input).includes('/queues'),
+          ),
+        ).toBe(false)
       })
     })
 

@@ -185,6 +185,7 @@ function makeWorker(overrides: Partial<Worker> = {}): Worker {
   return {
     id: 'worker-abcdef12',
     farm_id: 'farm-1',
+    queue_ids: [],
     hostname: 'render-node-42',
     gpu: {},
     status: 'online',

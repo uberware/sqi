@@ -58,6 +58,7 @@ export function worker(overrides: Partial<Worker> = {}): Worker {
   return {
     id: 'w-1',
     farm_id: 'farm-1',
+    queue_ids: [],
     hostname: 'render01',
     name: 'render01',
     gpu: { count: 0 },

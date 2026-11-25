@@ -123,6 +123,7 @@ function makeWorker(overrides: Partial<Worker> = {}): Worker {
   return {
     id: 'worker-aabbccdd',
     farm_id: 'farm-1',
+    queue_ids: [],
     hostname: 'render-node-01',
     status: 'online',
     removable: false,
