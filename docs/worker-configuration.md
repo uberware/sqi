@@ -1058,8 +1058,8 @@ ID, and the ID matches no job, so the worker gets work only from its other
 queues. A queue in a farm other than the worker's `farm_id` is warned about in
 the same way, since the worker is never offered another farm's work. A worker
 whose every listed queue is gone gets no work at all; it is never treated as
-serving every queue. The worker's page in the web UI lists
-its queues by name and shows an unknown ID as it is.
+serving every queue. The worker's page in the web UI lists its queues by name
+and shows an unknown ID as it is.
 
 ```yaml
 worker:

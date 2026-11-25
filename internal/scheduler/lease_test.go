@@ -375,10 +375,10 @@ func TestHandleLeaseRequest_ReturnsBatch(t *testing.T) {
 	}
 }
 
-// TestLease_MultiQueueWorkerTakesOnlyItsQueues is the regression test for a
-// worker configured with two queues being leased work from every queue in the
-// farm: with one ready task in each of three queues, a request from a worker
-// listing two of them leases exactly those two, and the third stays ready.
+// TestLease_MultiQueueWorkerTakesOnlyItsQueues pins that a worker listing two
+// queues is leased work only from those: with one ready task in each of three
+// queues, its request leases exactly the two in its queues, and the third
+// stays ready.
 func TestLease_MultiQueueWorkerTakesOnlyItsQueues(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")

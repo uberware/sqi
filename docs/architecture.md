@@ -1426,8 +1426,8 @@ The server treats reports, registrations and cancels as follows.
   of the queue IDs the worker registered (`'[]'` for every queue in its farm),
   replaced by each registration. It has no foreign key: an ID whose queue is
   deleted, or never existed, stays in the list and matches no job, so a worker
-  can lose queues but never silently gain every queue. The registration
-  handler logs a warning for such an ID.
+  can lose queues but never gain every queue. The registration handler logs a
+  warning for such an ID, and for a queue in another farm.
 - **Disabled is a flag, not a status.** `workers.status` is liveness only
   (`online`/`offline`), written by registration, deregistration and the
   heartbeat sweep; `workers.disabled` is the operator's decision, written only
@@ -2159,8 +2159,8 @@ registration, which runs the whole registration path and puts it back
   `sqi_scheduler_worker_reregister_requests_total` by `outcome`: `accepted`,
   `refused`, or `error` (no reply, or one that would not decode).
 
-The command needs a worker at the server's protocol version (`"9"`; the
-command arrived in `"8"`). The server discards every message
+The command needs a worker at the server's protocol version (`"9"`). The
+server discards every message
 from a worker of another version, so a mixed farm is not supported; upgrade
 servers before workers.
 
