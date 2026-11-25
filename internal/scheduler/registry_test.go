@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -83,7 +84,7 @@ type recordedLogs struct {
 	records []slog.Record
 }
 
-func (h *recordedLogs) Enabled(context.Context, slog.Level) bool { return true }
+func (*recordedLogs) Enabled(context.Context, slog.Level) bool { return true }
 
 func (h *recordedLogs) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
@@ -116,8 +117,9 @@ func (h *recordedLogs) warnings() []map[string]string {
 }
 
 // TestHandleWorkerRegister_WarnsOnUnknownQueue pins that a registration
-// listing a queue with no queue row is still recorded, with the list intact,
-// and logs one warning per such queue naming the worker and the queue.
+// listing a queue the worker can never be offered work from (no queue row, or
+// a queue in another farm) is still recorded, with the list intact, and logs
+// one warning per such queue naming the worker and the queue.
 func TestHandleWorkerRegister_WarnsOnUnknownQueue(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -126,6 +128,7 @@ func TestHandleWorkerRegister_WarnsOnUnknownQueue(t *testing.T) {
 	}{
 		{"one unknown queue", []string{"q1", "nope"}, []string{"nope"}},
 		{"every queue exists", []string{"q1"}, nil},
+		{"a queue in another farm", []string{"q1", "q-other"}, []string{"q-other"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := newCheckedFake(t)
@@ -133,6 +136,12 @@ func TestHandleWorkerRegister_WarnsOnUnknownQueue(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := st.CreateQueue(t.Context(), store.Queue{ID: "q1", FarmID: "farm-1", Name: "Q1"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "farm-2", Name: "F2"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.CreateQueue(t.Context(), store.Queue{ID: "q-other", FarmID: "farm-2", Name: "Other"}); err != nil {
 				t.Fatal(err)
 			}
 			s := newMetricsScheduler(st, &recordBus{}, "")
@@ -160,7 +169,7 @@ func TestHandleWorkerRegister_WarnsOnUnknownQueue(t *testing.T) {
 			}
 			var warned []string
 			for _, rec := range logs.warnings() {
-				if rec["msg"] != "scheduler: worker lists a queue that does not exist" {
+				if !strings.HasPrefix(rec["msg"], "scheduler: worker lists a queue ") {
 					continue
 				}
 				if rec["worker_id"] != "w-1" {
