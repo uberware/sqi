@@ -35,8 +35,8 @@ const (
 	// it is not charged, so one misconfigured worker cannot fail a job others
 	// could run.
 	assignSkipWorker
-	// assignFailsTask: the failure is the job's or the farm's (the template no
-	// longer parses, the step is gone, a storage location does not exist), so
+	// assignFailsTask: the failure is the job's or the farm's (the stored
+	// template does not parse, the step is missing, a storage location does not exist), so
 	// every worker would hit it. Lease the task and charge the attempt through
 	// its retry policy ([Scheduler.handleUndeliverableLease]).
 	assignFailsTask
@@ -59,9 +59,9 @@ func classifyAssignFailure(err error) assignFailure {
 
 // handleUndeliverableLease settles an attempt [Scheduler.tryLeaseTask] leased
 // although its assignment could not be built, because the failure is the job's
-// (assignFailsTask). Without it the task would sit assigned, holding the
+// (assignFailsTask). An unsettled attempt would hold the task assigned, with the
 // worker's cores and its usage claims, until the stale-assignment reaper
-// returned it to ready, and the next lease would hit the same failure, forever.
+// returned it to ready, and every later lease would fail the same way.
 //
 // The failure is applied as the failed report a worker would send, through
 // [Scheduler.handleTaskFailed], so the task's retry policy decides what

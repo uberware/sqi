@@ -382,7 +382,7 @@ handleLeaseRequest(workerID, queueID)
   │     a loc:// storage location has no root for this worker's compute
   │       location → skip the task for this worker (not charged; it stays
   │       ready for a worker that has one);
-  │     the template no longer parses, the step is gone, or a storage location
+  │     the stored template does not parse, the step is missing, or a storage location
   │       does not exist → lease it anyway and, once leased, apply the attempt
   │       as a failed report through the retry policy (reason "server could
   │       not build the task's assignment: …"); the walk goes on
@@ -394,7 +394,8 @@ handleLeaseRequest(workerID, queueID)
   │       per usage pool: re-read its max_concurrent, count, insert the claim
   │     Any outcome but Leased (Lost, QueueFull, FarmFull, PoolFull) writes
   │     nothing: the task is skipped and stays ready for the next request
-  ├─ Leased: stamp the attempt ID into the AssignMsg; decrement free; add to batch
+  ├─ Leased: stamp the attempt ID and the lease time (the stored assigned_at)
+  │     into the AssignMsg; decrement free; add to batch
   │
   └─ bus.Reply(batch []AssignMsg)
          Each AssignMsg includes: task/job/step/attempt IDs, resolved OnRun action
