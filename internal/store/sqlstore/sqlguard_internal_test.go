@@ -209,6 +209,11 @@ var concatAllowed = []string{
 	// dialect (" FOR UPDATE" on PostgreSQL; SQLite's "" is never appended).
 	"forUpdate",
 
+	// worker.go ListWorkers: Dialect.JSONArrayContains over the literal column
+	// "queue_ids", which renders as an EXISTS over that column with a single
+	// "?" and literals only; the queue ID it tests is bound.
+	`s.d.JSONArrayContains("queue_ids")`,
+
 	// fence.go checkFence: Dialect.ForShare, a constant clause per dialect
 	// (" FOR SHARE" on PostgreSQL, "" on SQLite).
 	"s.d.ForShare()",

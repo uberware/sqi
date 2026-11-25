@@ -396,9 +396,8 @@ carries an envelope `Version` field, checked by the worker's lease loop
 (`internal/worker/lease.decodeAssignment`) before the message is dispatched:
 a version mismatch is rejected rather than decoded with unrecognized fields
 dropped, so a mismatched worker cannot run a task with the wrong command line.
-`protocol.ProtocolVersion` is `"8"`. These fields carry what EXPR phase-3
-evaluation needs; all nine are `omitempty`, so a base-spec assignment carries
-none of them:
+These fields carry what EXPR phase-3 evaluation needs; all nine are
+`omitempty`, so a base-spec assignment carries none of them:
 
 | Field | Purpose |
 | --- | --- |

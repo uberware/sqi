@@ -11,9 +11,12 @@ package scheduler
 // used because every handler refreshes the WorkersTotal gauge.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +74,78 @@ func TestHandleWorkerRegister_Valid(t *testing.T) {
 	}
 	if w.LastHeartbeatAt == nil {
 		t.Error("expected LastHeartbeatAt set on registration")
+	}
+}
+
+// TestHandleWorkerRegister_WarnsOnUnknownQueue pins that a registration
+// listing a queue the worker can never be offered work from (no queue row, or
+// a queue in another farm) is still recorded, with the list intact, and logs
+// one warning per such queue naming the worker and the queue.
+func TestHandleWorkerRegister_WarnsOnUnknownQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		queues []string
+		warned []string
+	}{
+		{"one unknown queue", []string{"q1", "nope"}, []string{"nope"}},
+		{"every queue exists", []string{"q1"}, nil},
+		{"a queue in another farm", []string{"q1", "q-other"}, []string{"q-other"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newCheckedFake(t)
+			if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "farm-1", Name: "F"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.CreateQueue(t.Context(), store.Queue{ID: "q1", FarmID: "farm-1", Name: "Q1"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "farm-2", Name: "F2"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.CreateQueue(t.Context(), store.Queue{ID: "q-other", FarmID: "farm-2", Name: "Other"}); err != nil {
+				t.Fatal(err)
+			}
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			var logs bytes.Buffer
+			s.logger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+			msg := &fakeJSMsg{
+				subject: bus.WorkerRegisterSubject("w-1"),
+				data: workerMsgJSON(t, protocol.RegisterMsg{
+					Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
+					WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux", QueueIDs: tc.queues,
+				}),
+			}
+			s.handleWorkerMessage(msg)
+
+			if !msg.acked {
+				t.Fatal("register should be acked")
+			}
+			w, err := st.GetWorker(t.Context(), "w-1")
+			if err != nil {
+				t.Fatalf("GetWorker: %v", err)
+			}
+			if !slices.Equal(w.QueueIDs, tc.queues) {
+				t.Errorf("stored QueueIDs = %v, want %v", w.QueueIDs, tc.queues)
+			}
+			var warned []string
+			for line := range strings.Lines(logs.String()) {
+				var rec map[string]string
+				if err := json.Unmarshal([]byte(line), &rec); err != nil {
+					t.Fatalf("log line %q: %v", line, err)
+				}
+				if !strings.HasPrefix(rec["msg"], "scheduler: worker lists a queue ") {
+					continue
+				}
+				if rec["worker_id"] != "w-1" {
+					t.Errorf("warning worker_id = %q, want w-1", rec["worker_id"])
+				}
+				warned = append(warned, rec["queue_id"])
+			}
+			if !slices.Equal(warned, tc.warned) {
+				t.Errorf("warned about queues %v, want %v", warned, tc.warned)
+			}
+		})
 	}
 }
 

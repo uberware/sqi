@@ -116,21 +116,34 @@ func TestProfileMismatch(t *testing.T) {
 		{name: "no queue affinity covers any group", queues: []string{"q1"}},
 		{
 			name: "affinity to the group's only queue", queues: []string{"q1"},
-			worker: func(w *store.Worker) { w.QueueID = "q1" },
+			worker: func(w *store.Worker) { w.QueueIDs = []string{"q1"} },
 		},
 		{
-			name: "affinity against every queue of the farm", worker: func(w *store.Worker) { w.QueueID = "q1" },
+			name: "affinity against every queue of the farm", worker: func(w *store.Worker) { w.QueueIDs = []string{"q1"} },
 			want: []string{"queue affinity q1 does not cover the group's queues (every queue in the farm)"},
 		},
 		{
 			name: "affinity covering a subset", queues: []string{"q1", "q2"},
-			worker: func(w *store.Worker) { w.QueueID = "q1" },
+			worker: func(w *store.Worker) { w.QueueIDs = []string{"q1"} },
 			want:   []string{"queue affinity q1 does not cover the group's queues q1, q2"},
 		},
 		{
 			name: "affinity to a queue the group does not serve", queues: []string{"q2"},
-			worker: func(w *store.Worker) { w.QueueID = "q1" },
+			worker: func(w *store.Worker) { w.QueueIDs = []string{"q1"} },
 			want:   []string{"queue affinity q1 does not cover the group's queues q2"},
+		},
+		{
+			name: "affinity listing the group's queue among others", queues: []string{"q1"},
+			worker: func(w *store.Worker) { w.QueueIDs = []string{"q1", "q2"} },
+		},
+		{
+			name: "affinity listing every group queue in another order", queues: []string{"q1", "q2"},
+			worker: func(w *store.Worker) { w.QueueIDs = []string{"q2", "q1"} },
+		},
+		{
+			name: "several queues none of which the group serves", queues: []string{"q3"},
+			worker: func(w *store.Worker) { w.QueueIDs = []string{"q1", "q2"} },
+			want:   []string{"queue affinity q1, q2 does not cover the group's queues q3"},
 		},
 		{name: "several shortfalls are all reported", worker: func(w *store.Worker) {
 			w.CPUCount, w.Tags = 2, nil

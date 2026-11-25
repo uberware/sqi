@@ -368,7 +368,8 @@ handleLeaseRequest(workerID, queueID)
   │
   ├─ store.ListReadyTasks(farmID, now, batchSize) → candidates, farm-wide, ordered
   │     job priority DESC, job created_at ASC, step order ASC, task created_at ASC
-  │     (queue affinity is applied per-candidate by WorkerEligible, not by this query)
+  │     (queue affinity is applied per-candidate by WorkerEligible, not by this query:
+  │      a candidate passes when the worker's queue_ids are empty or contain its queue)
   │
   │  First-fit walk over candidates:
   ├─ effectiveCost = task.RequiredCores ?? worker.CPUCount; skip if it does not fit free
@@ -1421,6 +1422,12 @@ The server treats reports, registrations and cancels as follows.
   task while a sibling is still in flight (its step is `ready`) all finish the
   step and job, and `RetryJob` after a cancel runs the tasks again (see
   Cancellation above).
+- **A worker's queue affinity is a list.** `workers.queue_ids` is a JSON array
+  of the queue IDs the worker registered (`'[]'` for every queue in its farm),
+  replaced by each registration. It has no foreign key: an ID whose queue is
+  deleted, or never existed, stays in the list and matches no job, so a worker
+  can lose queues but never gain every queue. The registration handler logs a
+  warning for such an ID, and for a queue in another farm.
 - **Disabled is a flag, not a status.** `workers.status` is liveness only
   (`online`/`offline`), written by registration, deregistration and the
   heartbeat sweep; `workers.disabled` is the operator's decision, written only
@@ -2152,7 +2159,8 @@ registration, which runs the whole registration path and puts it back
   `sqi_scheduler_worker_reregister_requests_total` by `outcome`: `accepted`,
   `refused`, or `error` (no reply, or one that would not decode).
 
-The command needs protocol version `"8"`. The server discards every message
+The command needs a worker at the server's protocol version (`"9"`). The
+server discards every message
 from a worker of another version, so a mixed farm is not supported; upgrade
 servers before workers.
 

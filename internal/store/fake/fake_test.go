@@ -104,7 +104,7 @@ func TestSmoke(t *testing.T) {
 	worker := store.Worker{
 		ID:       workerID,
 		FarmID:   farmID,
-		QueueID:  queueID,
+		QueueIDs: []string{queueID},
 		Hostname: "localhost",
 		Status:   store.WorkerStatusOnline,
 		Tags:     map[string]string{"tag1": "value1"},

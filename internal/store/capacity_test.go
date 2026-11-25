@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/uberware/sqi/internal/store"
@@ -25,8 +26,8 @@ func TestCapacityGroup_ProfileWorker(t *testing.T) {
 	}
 
 	w := g.ProfileWorker()
-	if w.FarmID != "f1" || w.QueueID != "q1" {
-		t.Errorf("farm/queue = %q/%q, want f1/q1", w.FarmID, w.QueueID)
+	if w.FarmID != "f1" || !slices.Equal(w.QueueIDs, []string{"q1"}) {
+		t.Errorf("farm/queues = %q/%v, want f1/[q1]", w.FarmID, w.QueueIDs)
 	}
 	if w.CPUCount != 32 || w.RAMMb != 65536 || w.GPUInfo.Count != 2 || w.GPUInfo.VRAMMb != 24576 {
 		t.Errorf("hardware = %d cpu %d ram %+v gpu", w.CPUCount, w.RAMMb, w.GPUInfo)
@@ -46,19 +47,28 @@ func TestCapacityGroup_ProfileWorker(t *testing.T) {
 		t.Error("ProfileWorker shares the profile's tag map or extension slice")
 	}
 
+	// The profile worker serves exactly the group's queues, as a member
+	// registered with the same list does, and owns its copy of the list.
 	for _, tc := range []struct {
 		name   string
 		queues []string
-		want   string
 	}{
-		{"no queues", nil, ""},
-		{"one queue", []string{"q1"}, "q1"},
-		{"two queues", []string{"q1", "q2"}, ""},
+		{"no queues", nil},
+		{"one queue", []string{"q1"}},
+		{"two queues", []string{"q1", "q2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := (store.CapacityGroup{QueueIDs: tc.queues}).ProfileWorker().QueueID; got != tc.want {
-				t.Errorf("QueueID = %q, want %q", got, tc.want)
+			queues := slices.Clone(tc.queues)
+			got := (store.CapacityGroup{QueueIDs: queues}).ProfileWorker().QueueIDs
+			if !slices.Equal(got, tc.queues) || (tc.queues == nil && got != nil) {
+				t.Fatalf("QueueIDs = %#v, want %#v", got, tc.queues)
+			}
+			if len(queues) > 0 {
+				queues[0] = "changed"
+				if got[0] == "changed" {
+					t.Error("ProfileWorker shares the group's queue slice")
+				}
 			}
 		})
 	}

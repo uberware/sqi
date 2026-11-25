@@ -98,9 +98,13 @@ type WorkerExprLimits struct {
 // capabilities at registration; the server persists the reported values and
 // uses them for task matching.
 type Worker struct {
-	ID      string
-	FarmID  string
-	QueueID string // empty = no queue affinity
+	ID     string
+	FarmID string
+	// QueueIDs lists the queues the worker serves. Nil means every queue in
+	// its farm. An ID need not name an existing queue; one that does not
+	// matches nothing, so a worker whose every listed queue was deleted is
+	// leased nothing, never everything.
+	QueueIDs []string
 	// Name is the worker's human-readable display label (the worker.name
 	// config field, default the hostname). Distinguishes multiple workers
 	// running on one host in the UI; may be empty, in which case callers fall
@@ -300,6 +304,18 @@ func (w Worker) MayTakeNewWork() bool {
 // succeeds.
 func (w Worker) Removable() bool {
 	return w.Status == WorkerStatusOffline
+}
+
+// InFarm reports whether the worker takes work from farmID: an unaffiliated
+// worker (no FarmID) takes any farm's work, otherwise only its own farm's.
+func (w Worker) InFarm(farmID string) bool {
+	return w.FarmID == "" || w.FarmID == farmID
+}
+
+// ServesQueue reports whether the worker takes work from queueID: a worker
+// with no QueueIDs serves every queue, otherwise only the queues it lists.
+func (w Worker) ServesQueue(queueID string) bool {
+	return len(w.QueueIDs) == 0 || slices.Contains(w.QueueIDs, queueID)
 }
 
 // WorkerSortField is a column by which [WorkerStore.ListWorkers] results can
@@ -511,7 +527,9 @@ type WorkerStore interface {
 // Zero values mean "no filter / use defaults".
 type ListWorkersOptions struct {
 	// Filters
-	FarmID          string
+	FarmID string
+	// QueueID keeps only the workers whose queue list contains it. Workers
+	// that serve every queue (no list) are not included.
 	QueueID         string
 	ComputeLocation string
 	// CapacityGroupID keeps only the members of that capacity group.

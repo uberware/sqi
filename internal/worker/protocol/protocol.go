@@ -91,7 +91,10 @@ import (
 //     server dates the attempt's end from the broker's stamp minus that age
 //     rather than from [TaskStatusMsg.At], the worker's own clock. A worker
 //     that sent only At would have its attempt end read from a skewed clock.
-const ProtocolVersion = "8"
+//   - A [RegisterMsg] carries the worker's whole queue list in
+//     [RegisterMsg.QueueIDs]. A worker that sent the single queue_id would
+//     decode with no list, and a worker with no list is offered every queue.
+const ProtocolVersion = "9"
 
 // ── Message type constants ────────────────────────────────────────────────────
 
@@ -152,9 +155,9 @@ type RegisterMsg struct {
 	// FarmID is the farm this worker belongs to. Required.
 	FarmID string `json:"farm_id"`
 
-	// QueueID restricts the worker to a single queue if non-empty.
-	// An empty value means the worker accepts tasks from any queue in FarmID.
-	QueueID string `json:"queue_id,omitempty"`
+	// QueueIDs restricts the worker to the listed queues. Empty means the
+	// worker accepts tasks from any queue in FarmID.
+	QueueIDs []string `json:"queue_ids,omitempty"`
 
 	// Name is the worker's human-readable display label (the worker.name
 	// config field, default the hostname). The server stores it so the UI can

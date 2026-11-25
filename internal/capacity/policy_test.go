@@ -15,15 +15,15 @@ import (
 var now = time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 
 // canRun stands in for the scheduler's couldRun: the step's Name, when set,
-// names a tag the worker must carry; a worker with a queue affinity runs only
-// that queue; declared cores must fit the machine.
+// names a tag the worker must carry; a worker with queue IDs runs only its
+// listed queues; declared cores must fit the machine.
 func canRun(w store.Worker, item DemandItem) bool {
 	if tag := item.Step.Name; tag != "" {
 		if _, ok := w.Tags[tag]; !ok {
 			return false
 		}
 	}
-	if w.QueueID != "" && w.QueueID != item.Demand.QueueID {
+	if !w.ServesQueue(item.Demand.QueueID) {
 		return false
 	}
 	req := item.Demand.RequiredCores

@@ -767,6 +767,15 @@ type mockWorker struct {
 	instanceID string
 }
 
+// queueList is the registration's queue list for a mock worker: its one queue,
+// or none (every queue) when queueID is empty.
+func queueList(queueID string) []string {
+	if queueID == "" {
+		return nil
+	}
+	return []string{queueID}
+}
+
 // newMockWorker dials the embedded NATS server at natsURL and returns a ready
 // *mockWorker.  The connection is closed via t.Cleanup.
 //
@@ -827,7 +836,7 @@ func (w *mockWorker) registerCPUs(cpuCount int) {
 		WorkerID:           w.id,
 		InstanceID:         w.instanceID,
 		FarmID:             w.farmID,
-		QueueID:            w.queueID,
+		QueueIDs:           queueList(w.queueID),
 		Hostname:           "test-worker",
 		OS:                 "linux",
 		CPUCount:           cpuCount,

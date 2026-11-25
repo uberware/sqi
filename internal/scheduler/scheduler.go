@@ -1201,7 +1201,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		ID:              m.WorkerID,
 		InstanceID:      m.InstanceID,
 		FarmID:          m.FarmID,
-		QueueID:         m.QueueID,
+		QueueIDs:        m.QueueIDs,
 		Name:            m.Name,
 		Hostname:        m.Hostname,
 		IPAddress:       m.IPAddress,
@@ -1274,6 +1274,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	s.afterRegistration(ctx, m, stored, rc, now)
 	s.noteMemberWoke(ctx, reg, stored, now)
 	s.warnOnExprCapShortfall(ctx, w)
+	s.warnUnknownQueues(ctx, stored)
 
 	s.logger.InfoContext(
 		ctx, "scheduler: worker registered",
@@ -1293,6 +1294,44 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
+}
+
+// warnUnknownQueues logs a warning for each queue in w's list that the worker
+// can never be offered work from: one with no queue row (a mistyped or deleted
+// ID), and one in a farm other than the worker's (the farm check rejects its
+// jobs first). An unaffiliated worker takes any farm's work, so its queues
+// are only checked for existence. The registration has already committed and
+// is acked regardless; a store error other than not-found is logged at Debug
+// and otherwise ignored.
+func (s *Scheduler) warnUnknownQueues(ctx context.Context, w store.Worker) {
+	for _, id := range w.QueueIDs {
+		q, err := s.store.GetQueue(ctx, id)
+		switch {
+		case err == nil:
+			if !w.InFarm(q.FarmID) {
+				s.logger.WarnContext(
+					ctx, "scheduler: worker lists a queue in another farm",
+					slog.String("worker_id", w.ID),
+					slog.String("queue_id", id),
+					slog.String("worker_farm_id", w.FarmID),
+					slog.String("queue_farm_id", q.FarmID),
+				)
+			}
+		case errors.Is(err, store.ErrNotFound):
+			s.logger.WarnContext(
+				ctx, "scheduler: worker lists a queue that does not exist",
+				slog.String("worker_id", w.ID),
+				slog.String("queue_id", id),
+			)
+		default:
+			s.logger.DebugContext(
+				ctx, "scheduler: could not check a worker's queue",
+				slog.String("worker_id", w.ID),
+				slog.String("queue_id", id),
+				slog.Any("error", err),
+			)
+		}
+	}
 }
 
 // endRevocationOnRegistration ends workerID's revocation

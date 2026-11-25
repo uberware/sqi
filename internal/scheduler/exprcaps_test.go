@@ -686,7 +686,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 		WorkerID:           "w-1",
 		InstanceID:         "inst-1",
 		FarmID:             "farm-1",
-		QueueID:            "queue-1",
+		QueueIDs:           []string{"queue-1", "queue-2"},
 		Name:               "render-node-alpha",
 		Hostname:           "node-1",
 		IPAddress:          "10.0.0.1",
@@ -734,7 +734,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 		{"worker_id", w.ID, sent.WorkerID},
 		{"instance_id", w.InstanceID, sent.InstanceID},
 		{"farm_id", w.FarmID, sent.FarmID},
-		{"queue_id", w.QueueID, sent.QueueID},
+		{"queue_ids", strings.Join(w.QueueIDs, ","), strings.Join(sent.QueueIDs, ",")},
 		{"name", w.Name, sent.Name},
 		{"hostname", w.Hostname, sent.Hostname},
 		{"ip_address", w.IPAddress, sent.IPAddress},
@@ -814,7 +814,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 // rather than a magic number: persisting a new wire field means adding its name
 // here, and it also needs a row in the table.
 var persistedRegisterFields = []string{
-	"WorkerID", "InstanceID", "FarmID", "QueueID", "Name", "Hostname", "IPAddress",
+	"WorkerID", "InstanceID", "FarmID", "QueueIDs", "Name", "Hostname", "IPAddress",
 	"ComputeLocation", "OS", "OSVersion", "Arch", "WorkerVersion", "CPUCount", "RAMMb",
 	"GPUInfo", "Tags", "ExprLimits", "Extensions", "Interfaces", "CloudInstanceID",
 }
@@ -997,7 +997,7 @@ func TestEvaluateSchedulability_GenuineIneligibilityOutranksEXPR(t *testing.T) {
 		AssignmentRetainedBytes: fmtres.MinExprAssignmentRetainedBytes,
 		LetRetainedBytes:        fmtres.MinExprLetRetainedBytes,
 	})
-	w.QueueID = "some-other-queue" // ordinary ineligibility, nothing to do with EXPR
+	w.QueueIDs = []string{"some-other-queue"} // ordinary ineligibility, nothing to do with EXPR
 	s := schedulerWithExprLimits(st, openjd.DefaultExprLimits())
 
 	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})

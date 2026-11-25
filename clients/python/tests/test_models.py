@@ -436,11 +436,19 @@ def test_job_progress_percent_null_and_bool_become_none() -> None:
 # ── Worker, GPUInfo, CurrentTask ────────────────────────────────────
 
 
+def test_worker_queue_ids() -> None:
+    raw = dict(load("worker"), queue_ids=["q1", "q2"])
+    assert Worker.from_dict(raw).queue_ids == ["q1", "q2"]
+    absent = {k: v for k, v in load("worker").items() if k != "queue_ids"}
+    assert Worker.from_dict(absent).queue_ids == []
+    assert not hasattr(Worker.from_dict(raw), "queue_id")
+
+
 def test_worker_fields() -> None:
     worker = Worker.from_dict(load("worker"))
     assert worker.id == "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1c001"
     assert worker.farm_id == "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10001"
-    assert worker.queue_id == "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10002"
+    assert worker.queue_ids == ["018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10002"]
     assert worker.hostname == "render-node-01"
     assert worker.ip_address == "10.0.0.5"
     assert worker.compute_location == "on-prem"

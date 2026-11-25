@@ -229,12 +229,12 @@ type UsagePool struct {
 
 // Worker is a registered worker.
 type Worker struct {
-	ID       string `json:"id"`
-	FarmID   string `json:"farm_id"`
-	QueueID  string `json:"queue_id"`
-	Name     string `json:"name"`
-	Hostname string `json:"hostname"`
-	Status   string `json:"status"`
+	ID       string   `json:"id"`
+	FarmID   string   `json:"farm_id"`
+	QueueIDs []string `json:"queue_ids"`
+	Name     string   `json:"name"`
+	Hostname string   `json:"hostname"`
+	Status   string   `json:"status"`
 	// LastHeartbeatAt is when the server last stored a heartbeat from it.
 	LastHeartbeatAt time.Time `json:"last_heartbeat_at"`
 }

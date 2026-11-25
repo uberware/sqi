@@ -25,10 +25,10 @@ func TestActuator_WakesCandidatesThroughRelayOnSameSubnet(t *testing.T) {
 	addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), false)
 	// Relays serve another queue, so they absorb none of the demand.
 	other := lanWorker("a-other-subnet", "10.1.0.5", "aa:bb:cc:dd:ee:02")
-	other.QueueID = "elsewhere"
+	other.QueueIDs = []string{"elsewhere"}
 	registerOnline(t, f.st, other)
 	relay := lanWorker("relay", "192.168.1.50", "aa:bb:cc:dd:ee:03")
-	relay.QueueID = "elsewhere"
+	relay.QueueIDs = []string{"elsewhere"}
 	registerOnline(t, f.st, relay)
 	submitReady(t, f.st, 1, store.Step{})
 
@@ -73,7 +73,7 @@ func TestActuator_WakeFallsBackToDirectWhenRelayRefuses(t *testing.T) {
 	g := createGroup(t, f.st, wolGroup("lan", nil))
 	addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), false)
 	relay := lanWorker("relay", "192.168.1.50", "aa:bb:cc:dd:ee:03")
-	relay.QueueID = "elsewhere"
+	relay.QueueIDs = []string{"elsewhere"}
 	registerOnline(t, f.st, relay)
 	submitReady(t, f.st, 1, store.Step{})
 

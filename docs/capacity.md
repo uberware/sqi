@@ -276,8 +276,9 @@ the server logs a warning once per member and reason. sqi compares:
 - tags the profile declares that are missing or have another value;
 - extensions the profile declares that the worker does not advertise;
 - EXPR limits the profile declares that the worker enforces lower;
-- queue affinity: a worker pinned to one queue that does not cover the group's
-  queues. A worker with no single queue affinity covers any list.
+- queue affinity: a worker whose `queue_ids` do not include every queue the
+  group serves. A worker with no `queue_ids` covers any group; a group with no
+  `queue_ids` (every queue in the farm) is covered only by such a worker.
 
 ### Retire candidates
 
@@ -1507,11 +1508,6 @@ be chosen and will drain (up to the grace period) before it exits.
   ([above](#sized-groups-with-broker-authentication-on)).
 - An ephemeral member cannot be removed from its group, only retired
   with the worker itself ([above](#sized-groups-with-broker-authentication-off)).
-- Multi-queue workers. A worker configured with two or more `queue_ids`
-  registers with no single queue affinity, and the server offers it work from
-  any queue. The signal reads queue affinity the same way the lease path does,
-  so it neither over- nor under-counts against that behaviour, but a group with
-  a `queue_ids` allow-list may have members that take work from other queues.
 - Idle and pacing state is in memory and restarts with the server or on a
   failover ([above](#retire-candidates)). A sized script group's pacing is
   seeded from its launch record, so a new leader keeps the machines already

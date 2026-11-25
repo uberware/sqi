@@ -93,9 +93,11 @@ type currentTaskResponse struct {
 // workerResponse is the JSON representation of a worker returned by the list
 // endpoint.
 type workerResponse struct {
-	ID              string            `json:"id"`
-	FarmID          string            `json:"farm_id"`
-	QueueID         string            `json:"queue_id,omitempty"`
+	ID     string `json:"id"`
+	FarmID string `json:"farm_id"`
+	// QueueIDs are the queues the worker serves; [] means every queue in its
+	// farm. Always present.
+	QueueIDs        []string          `json:"queue_ids"`
 	Name            string            `json:"name,omitempty"`
 	Hostname        string            `json:"hostname"`
 	IPAddress       string            `json:"ip_address,omitempty"`
@@ -180,7 +182,7 @@ type workerActionResponse struct {
 //
 // Query parameters:
 //   - farm_id          — filter by farm
-//   - queue_id         — filter by queue affinity
+//   - queue_id         — only workers whose queue list contains this queue
 //   - compute_location — filter by compute location
 //   - status           — filter by worker status (online | offline | disabled)
 //   - sort_by          — hostname | status | registered_at | last_heartbeat_at (default: hostname)
@@ -483,10 +485,14 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 // server-authoritative [store.Worker.Removable]. PowerState is
 // [store.Worker.EffectivePowerState].
 func toWorkerResponse(wk store.Worker) workerResponse {
+	queues := wk.QueueIDs
+	if queues == nil {
+		queues = []string{}
+	}
 	return workerResponse{
 		ID:              wk.ID,
 		FarmID:          wk.FarmID,
-		QueueID:         wk.QueueID,
+		QueueIDs:        queues,
 		Name:            wk.Name,
 		Hostname:        wk.Hostname,
 		IPAddress:       wk.IPAddress,

@@ -20,14 +20,14 @@ import (
 // TestHandleLeaseRequest_QueuelessWorkerWildcardToken reproduces the
 // queueless-worker bug at the scheduler layer: a worker with no queue affinity
 // requests on bus.WildcardQueueToken and must still be leased the farm's ready
-// tasks (selection is farm-wide + eligibility, and an empty-QueueID worker is
-// eligible for any queue).
+// tasks (selection is farm-wide + eligibility, and a worker with no QueueIDs
+// is eligible for any queue).
 func TestHandleLeaseRequest_QueuelessWorkerWildcardToken(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.leaseHoldTimeout = 50 * time.Millisecond
 	one := 1
-	w, _ := seedLeaseFixture(t, st, []*int{&one, &one}) // worker has empty QueueID
+	w, _ := seedLeaseFixture(t, st, []*int{&one, &one}) // worker has no QueueIDs
 
 	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
 	if err != nil {
@@ -219,8 +219,18 @@ func seedLeaseFixtureWith(
 	if err != nil {
 		t.Fatal(err)
 	}
+	return w, submitReadyIn(t, st, "q1", coresPerTask, hostReqs)
+}
+
+// submitReadyIn submits a running job in farm f1's queue queueID with one ready
+// "render" step, which carries hostReqs (nil for none), and one ready task per
+// entry of coresPerTask. It returns the task IDs in that order.
+func submitReadyIn(
+	t *testing.T, st store.Store, queueID string, coresPerTask []*int, hostReqs *store.StepHostRequirements,
+) []string {
+	t.Helper()
 	sub := store.JobSubmission{Job: store.Job{
-		ID: uuid.NewString(), FarmID: "f1", QueueID: "q1", Name: "j",
+		ID: uuid.NewString(), FarmID: "f1", QueueID: queueID, Name: "j",
 		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
 		RawTemplate: minimalRenderJSON,
 	}}
@@ -239,7 +249,7 @@ func seedLeaseFixtureWith(
 		ids = append(ids, tk.ID)
 	}
 	storetest.Submit(t, st, sub)
-	return w, ids
+	return ids
 }
 
 func TestSelectLeaseBatch_FillsFreeCores(t *testing.T) {
@@ -362,6 +372,64 @@ func TestHandleLeaseRequest_ReturnsBatch(t *testing.T) {
 	}
 	if len(got.Assignments) != 2 {
 		t.Fatalf("assignments = %d, want 2", len(got.Assignments))
+	}
+}
+
+// TestLease_MultiQueueWorkerTakesOnlyItsQueues pins that a worker listing two
+// queues is leased work only from those: with one ready task in each of three
+// queues, its request leases exactly the two in its queues, and the third
+// stays ready.
+func TestLease_MultiQueueWorkerTakesOnlyItsQueues(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.leaseHoldTimeout = 50 * time.Millisecond
+	ctx := t.Context()
+	now := time.Now().UTC()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "f1", Name: "F1"}); err != nil {
+		t.Fatal(err)
+	}
+	taskQueue := map[string]string{}
+	one := 1
+	for _, q := range []string{"qA", "qB", "qC"} {
+		if _, err := st.CreateQueue(ctx, store.Queue{ID: q, FarmID: "f1", Name: q}); err != nil {
+			t.Fatal(err)
+		}
+		taskQueue[submitReadyIn(t, st, q, []*int{&one}, nil)[0]] = q
+	}
+	w, _, err := st.RegisterWorker(ctx, store.Worker{
+		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
+		CPUCount: 8, LastHeartbeatAt: &now, Tags: map[string]string{}, QueueIDs: []string{"qA", "qB"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	var got leaseReply
+	if err := json.Unmarshal(s.handleLeaseRequest(w.ID, "qA", req), &got); err != nil {
+		t.Fatalf("unmarshal reply: %v", err)
+	}
+	if len(got.Assignments) != 2 {
+		t.Fatalf("assignments = %d, want 2 (one each from qA and qB)", len(got.Assignments))
+	}
+	leased := map[string]bool{}
+	for id, q := range taskQueue {
+		tk, err := st.GetTask(ctx, id)
+		if err != nil {
+			t.Fatalf("GetTask %s: %v", id, err)
+		}
+		if tk.Status == store.TaskStatusAssigned {
+			leased[q] = true
+		}
+		if q == "qC" && tk.Status != store.TaskStatusReady {
+			t.Errorf("qC task status = %q, want ready", tk.Status)
+		}
+	}
+	if !leased["qA"] || !leased["qB"] {
+		t.Errorf("leased queues = %v, want qA and qB", leased)
 	}
 }
 

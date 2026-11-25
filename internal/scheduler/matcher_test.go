@@ -82,36 +82,37 @@ func TestEligible_FarmEmpty_MatchesAnyFarm(t *testing.T) {
 
 // ── Queue affinity ────────────────────────────────────────────────────────────
 
-func TestEligible_QueueAffinityEmpty_AcceptsAny(t *testing.T) {
-	w := baseWorker()
-	w.QueueID = "" // no queue affinity
-	j := baseJob()
-	j.QueueID = "q-anything"
-	s := baseStep()
-	if !scheduler.WorkerEligible(w, j, s, nil, nil) {
-		t.Error("worker with empty QueueID should accept tasks from any queue")
+// TestEligible_QueueAffinity pins that a worker's queue list admits exactly
+// the jobs in the queues it names, and that only an empty list means every
+// queue. A list naming only queues that do not exist (a deleted queue) admits
+// nothing.
+func TestEligible_QueueAffinity(t *testing.T) {
+	tests := []struct {
+		name     string
+		queues   []string
+		eligible bool
+	}{
+		{"no list accepts any queue", nil, true},
+		{"single matching queue", []string{"qA"}, true},
+		{"single other queue", []string{"qB"}, false},
+		{"job queue second in list", []string{"qB", "qA"}, true},
+		{"two other queues", []string{"qB", "qC"}, false},
+		{"only a deleted queue", []string{"gone"}, false},
 	}
-}
-
-func TestEligible_QueueAffinityMatch(t *testing.T) {
-	w := baseWorker()
-	w.QueueID = "q1"
-	j := baseJob()
-	j.QueueID = "q1"
-	s := baseStep()
-	if !scheduler.WorkerEligible(w, j, s, nil, nil) {
-		t.Error("worker dedicated to q1 should accept q1 tasks")
-	}
-}
-
-func TestEligible_QueueAffinityMismatch(t *testing.T) {
-	w := baseWorker()
-	w.QueueID = "q1"
-	j := baseJob()
-	j.QueueID = "q2"
-	s := baseStep()
-	if scheduler.WorkerEligible(w, j, s, nil, nil) {
-		t.Error("worker dedicated to q1 should reject q2 tasks")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := baseWorker()
+			w.QueueIDs = tt.queues
+			j := baseJob()
+			j.QueueID = "qA"
+			reason, ok := scheduler.WorkerEligibleWithReason(w, j, baseStep(), nil, nil)
+			if ok != tt.eligible {
+				t.Fatalf("eligible = %v (reason %q), want %v", ok, reason, tt.eligible)
+			}
+			if !ok && reason != "queue affinity" {
+				t.Errorf("reason = %q, want %q", reason, "queue affinity")
+			}
+		})
 	}
 }
 
@@ -646,20 +647,6 @@ func TestEligibleWithReason_FarmMismatch(t *testing.T) {
 	}
 	if reason != "farm mismatch" {
 		t.Errorf("reason: got %q, want %q", reason, "farm mismatch")
-	}
-}
-
-func TestEligibleWithReason_QueueAffinity(t *testing.T) {
-	w := baseWorker()
-	w.QueueID = "q1"
-	j := baseJob()
-	j.QueueID = "q2"
-	reason, ok := scheduler.WorkerEligibleWithReason(w, j, baseStep(), nil, nil)
-	if ok {
-		t.Error("expected not eligible")
-	}
-	if reason != "queue affinity" {
-		t.Errorf("reason: got %q, want %q", reason, "queue affinity")
 	}
 }
 

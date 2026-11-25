@@ -141,10 +141,10 @@ func TestDeregister_AfterClose_NoPanic(t *testing.T) {
 	reg.Deregister("shutdown after close", "")
 }
 
-// ── Register: single-queue branch + capability propagation ──────────────────
+// ── Register: queue list + capability propagation ───────────────────────────
 
-// TestRegister_SingleQueueAndCapabilities asserts the QueueID is set only when
-// exactly one queue is configured, and that capability fields are propagated
+// TestRegister_SingleQueueAndCapabilities asserts a single configured queue is
+// sent as a one-element queue list, and that capability fields are propagated
 // into the RegisterMsg.
 func TestRegister_SingleQueueAndCapabilities(t *testing.T) {
 	url := startTestNATS(t)
@@ -185,7 +185,7 @@ func TestRegister_SingleQueueAndCapabilities(t *testing.T) {
 	var rm struct {
 		WorkerID        string            `json:"worker_id"`
 		FarmID          string            `json:"farm_id"`
-		QueueID         string            `json:"queue_id"`
+		QueueIDs        []string          `json:"queue_ids"`
 		ComputeLocation string            `json:"compute_location"`
 		OS              string            `json:"os"`
 		OSVersion       string            `json:"os_version"`
@@ -206,8 +206,8 @@ func TestRegister_SingleQueueAndCapabilities(t *testing.T) {
 	if rm.WorkerID != "worker-q" {
 		t.Errorf("WorkerID = %q, want %q", rm.WorkerID, "worker-q")
 	}
-	if rm.QueueID != "render-q" {
-		t.Errorf("QueueID = %q, want %q (single queue should populate QueueID)", rm.QueueID, "render-q")
+	if !slices.Equal(rm.QueueIDs, []string{"render-q"}) {
+		t.Errorf("QueueIDs = %v, want [render-q]", rm.QueueIDs)
 	}
 	if rm.FarmID != "farm-1" {
 		t.Errorf("FarmID = %q, want %q", rm.FarmID, "farm-1")
@@ -229,40 +229,39 @@ func TestRegister_SingleQueueAndCapabilities(t *testing.T) {
 	}
 }
 
-// TestRegister_MultiQueue_LeavesQueueIDEmpty asserts the QueueID stays empty
-// when the worker serves more than one queue (scheduler treats it as "any").
-func TestRegister_MultiQueue_LeavesQueueIDEmpty(t *testing.T) {
-	url := startTestNATS(t)
-	nc := connectNATS(t, url)
+// TestRegister_MultiQueue_SendsEveryQueue asserts the registration carries the
+// worker's whole queue list, in order, and that a worker with no queue list
+// sends no queue_ids key at all (the server reads that as every queue).
+func TestRegister_MultiQueue_SendsEveryQueue(t *testing.T) {
+	tests := []struct {
+		name   string
+		queues []string
+		want   string // queue_ids as JSON; "" for the key absent
+	}{
+		{"two queues", []string{"q1", "q2"}, `["q1","q2"]`},
+		{"no queues", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nc := connectNATS(t, startTestNATS(t))
+			cfg := minimalCfg()
+			cfg.QueueIDs = tt.queues
+			reg := newRegistrar(t, nc, "worker-multi", cfg, capabilities.Capabilities{OS: "linux"})
+			if err := reg.Register(context.Background()); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
 
-	cfg := minimalCfg()
-	cfg.QueueIDs = []string{"q1", "q2"}
-
-	sub, err := nc.SubscribeSync(bus.WorkerRegisterSubject("worker-multi"))
-	if err != nil {
-		t.Fatalf("SubscribeSync: %v", err)
-	}
-	if err := nc.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-
-	reg := newRegistrar(t, nc, "worker-multi", cfg, capabilities.Capabilities{OS: "linux"})
-	if err := reg.Register(context.Background()); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-
-	msg, err := sub.NextMsg(2 * time.Second)
-	if err != nil {
-		t.Fatalf("expected a register message: %v", err)
-	}
-	var rm struct {
-		QueueID string `json:"queue_id"`
-	}
-	if err := json.Unmarshal(msg.Data, &rm); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if rm.QueueID != "" {
-		t.Errorf("QueueID = %q, want empty for multi-queue worker", rm.QueueID)
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(firstWorkerStreamMsg(t, nc), &raw); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, ok := raw["queue_id"]; ok {
+				t.Errorf("register message carries queue_id; the field is queue_ids")
+			}
+			if got := string(raw["queue_ids"]); got != tt.want {
+				t.Errorf("queue_ids = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

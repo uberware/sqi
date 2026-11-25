@@ -421,7 +421,7 @@ func filterWorker(w store.Worker, opts store.ListWorkersOptions) bool {
 			return false
 		}
 	}
-	if opts.QueueID != "" && w.QueueID != opts.QueueID {
+	if opts.QueueID != "" && !slices.Contains(w.QueueIDs, opts.QueueID) {
 		return false
 	}
 	if opts.ComputeLocation != "" && w.ComputeLocation != opts.ComputeLocation {
@@ -479,6 +479,7 @@ func cloneWorker(w store.Worker) store.Worker {
 	ifaces := w.Interfaces
 	w.Tags = copyMap(w.Tags)
 	w.Extensions = copySlice(w.Extensions)
+	w.QueueIDs = nilIfEmpty(copySlice(w.QueueIDs))
 	w.Interfaces = nil
 	if len(ifaces) > 0 {
 		w.Interfaces = make([]store.NetInterface, len(ifaces))

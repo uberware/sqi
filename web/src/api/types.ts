@@ -273,7 +273,8 @@ export interface GPUInfo {
 export interface Worker {
   id: string
   farm_id: string
-  queue_id?: string
+  /** The queues the worker serves; empty means every queue in its farm. */
+  queue_ids: string[]
   /**
    * Human-readable display label (the worker's worker.name config, default the
    * hostname). Distinguishes multiple workers on one host. May be empty; fall

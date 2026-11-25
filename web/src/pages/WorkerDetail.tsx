@@ -9,7 +9,7 @@ import StatusBadge from '@/components/StatusBadge'
 import { Check, Copy } from '@/components/icons'
 import ErrorBanner from '@/components/ErrorBanner'
 import RefreshControls from '@/components/RefreshControls'
-import { useGetWorker, queryKeys } from '@/api/queries'
+import { useGetWorker, useListAllFarmQueues, queryKeys } from '@/api/queries'
 import { useDisableWorker, useEnableWorker } from '@/api/mutations'
 import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
@@ -32,6 +32,20 @@ function formatDateTime(iso: string | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+// ── QueueNames ────────────────────────────────────────────────────────────────
+
+/**
+ * The worker's queues by name, "Any queue" when it lists none. A queue the
+ * farm does not have, or any queue of a worker with no farm, shows as its ID.
+ * The farm's queues are fetched only when there is a list to name.
+ */
+function QueueNames({ farmId, queueIds }: { farmId: string; queueIds: string[] }) {
+  const { data } = useListAllFarmQueues(queueIds.length > 0 ? farmId : '')
+  if (queueIds.length === 0) return <>Any queue</>
+  const names = new Map((data?.items ?? []).map((q) => [q.id, q.name]))
+  return <>{queueIds.map((id) => names.get(id) ?? id).join(', ')}</>
 }
 
 // ── IdDisplay ─────────────────────────────────────────────────────────────────
@@ -463,12 +477,12 @@ export default function WorkerDetail() {
               <dd className={styles.metaValue}>{worker.compute_location}</dd>
             </div>
           )}
-          {worker.queue_id && (
-            <div className={styles.metaField}>
-              <dt>Queue</dt>
-              <dd className={styles.metaValue}>{worker.queue_id}</dd>
-            </div>
-          )}
+          <div className={styles.metaField}>
+            <dt>Queues</dt>
+            <dd className={styles.metaValue}>
+              <QueueNames farmId={worker.farm_id} queueIds={worker.queue_ids} />
+            </dd>
+          </div>
           {worker.ip_address && (
             <div className={styles.metaField}>
               <dt>IP Address</dt>

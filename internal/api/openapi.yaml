@@ -838,14 +838,20 @@ components:
 
     Worker:
       type: object
-      required: [id, farm_id, hostname, gpu, status, removable, power_state, has_wake_address, registered_at, updated_at]
+      required: [id, farm_id, queue_ids, hostname, gpu, status, removable, power_state, has_wake_address, registered_at, updated_at]
       properties:
         id:
           type: string
         farm_id:
           type: string
-        queue_id:
-          type: string
+        queue_ids:
+          type: array
+          items:
+            type: string
+          description: >-
+            The queues the worker serves, from its worker.queue_ids
+            configuration. Empty means every queue in its farm. An ID with no
+            queue (mistyped, or deleted) is kept and matches no job.
         name:
           type: string
           description: >-
@@ -3393,6 +3399,7 @@ paths:
             type: string
         - name: queue_id
           in: query
+          description: Only workers whose queue list contains this queue. Workers that serve every queue are not included.
           schema:
             type: string
         - name: compute_location

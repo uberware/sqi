@@ -54,7 +54,7 @@ func TestUnschedulable_WaitingForWake(t *testing.T) {
 
 	// It replaces the no-eligible-worker reason when workers are online but
 	// none can run it.
-	registerOnline(t, f.st, store.Worker{ID: "busy", FarmID: capFarm, CPUCount: 4, QueueID: "elsewhere"})
+	registerOnline(t, f.st, store.Worker{ID: "busy", FarmID: capFarm, CPUCount: 4, QueueIDs: []string{"elsewhere"}})
 	online, err := f.s.onlineWorkers(t.Context())
 	if err != nil {
 		t.Fatalf("onlineWorkers: %v", err)
