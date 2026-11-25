@@ -5,7 +5,7 @@ package scheduler
 // Task-assignment payload construction: builds the full task payload (resolved
 // command, env, path map) returned to a worker when it leases a task.
 //
-// buildAssignPayload:
+// buildAssignMsg:
 //
 //  1. Parses job.RawTemplate to extract the matching StepTemplate by name.
 //  2. Builds a protocol.AssignMsg with the step's OnRun action, embedded files,
@@ -37,27 +37,6 @@ import (
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
-
-// buildAssignPayload constructs a [protocol.AssignMsg] for the given task
-// assignment and marshals it to JSON. It is [buildAssignMsg] with the attempt
-// ID stamped in, so the worker can correlate status reports and log chunks
-// back to the correct attempt.
-func buildAssignPayload(
-	ctx context.Context,
-	task store.Task,
-	worker store.Worker,
-	job store.Job,
-	step store.Step,
-	queue store.Queue,
-	attemptID string,
-	locStore store.StorageLocationStore,
-) ([]byte, error) {
-	msg, err := buildAssignMsg(ctx, task, worker, job, step, queue, locStore)
-	if err != nil {
-		return nil, err
-	}
-	return marshalAssignMsg(msg, attemptID)
-}
 
 // marshalAssignMsg stamps attemptID into msg and marshals it.
 func marshalAssignMsg(msg protocol.AssignMsg, attemptID string) ([]byte, error) {
@@ -96,7 +75,7 @@ func buildAssignMsg(
 
 	tmpl, err := openjd.Parse([]byte(job.RawTemplate), format)
 	if err != nil {
-		return protocol.AssignMsg{}, fmt.Errorf("build assign payload: re-parse template for job %s: %w", job.ID, err)
+		return protocol.AssignMsg{}, fmt.Errorf("re-parse template for job %s: %w", job.ID, err)
 	}
 
 	// ── Find the matching StepTemplate by step name ───────────────────────
@@ -109,7 +88,7 @@ func buildAssignMsg(
 	}
 	if stepTmpl == nil {
 		return protocol.AssignMsg{}, fmt.Errorf(
-			"build assign payload: step %q not found in template for job %s",
+			"step %q not found in template for job %s",
 			step.Name, job.ID,
 		)
 	}
@@ -181,7 +160,7 @@ func buildAssignMsg(
 	// ── Fetch all storage locations once ──────────────────────────────────
 	allLocs, err := locStore.ListStorageLocations(ctx)
 	if err != nil {
-		return protocol.AssignMsg{}, fmt.Errorf("build assign payload: list storage locations: %w: %w", errAssignStoreRead, err)
+		return protocol.AssignMsg{}, fmt.Errorf("list storage locations: %w: %w", errAssignStoreRead, err)
 	}
 
 	// ── PathMap (openjd mode) ──────────────────────────────────────────────
@@ -201,7 +180,7 @@ func buildAssignMsg(
 	// This ensures workers with no OpenJD path-mapping support see only
 	// concrete paths.
 	if err := resolveLocURIsInMsg(&msg, allLocs, worker.ComputeLocation); err != nil {
-		return protocol.AssignMsg{}, fmt.Errorf("build assign payload: resolve loc:// URIs: %w", err)
+		return protocol.AssignMsg{}, fmt.Errorf("resolve loc:// URIs: %w", err)
 	}
 
 	// ── Staging manifest (uses already-resolved job parameters) ────────────
@@ -344,7 +323,7 @@ func convertEnvironment(e openjd.Environment, hasEXPR, isStepEnvironment bool) p
 // declares the EXPR extension, its step-level let blocks, declared
 // parameter-type maps, and the job's/step's own declared names (jobName,
 // stepName — store.Job.Name and store.Step.Name at the caller, threaded
-// through rather than re-derived here since buildAssignPayload already has
+// through rather than re-derived here since buildAssignMsg already has
 // both records). Returns hasEXPR so the caller can gate the EXPR-only
 // environment let blocks it assembles afterward without re-deriving the same
 // flag.

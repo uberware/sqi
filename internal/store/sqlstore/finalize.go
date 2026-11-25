@@ -228,20 +228,7 @@ func (s *Store) ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error
 
 // ListJobIDsWithAllStepsTerminal implements [store.StepStore].
 func (s *Store) ListJobIDsWithAllStepsTerminal(ctx context.Context) ([]string, error) {
-	rows, err := s.r.QueryContext(ctx, sqlListJobIDsWithAllStepsTerminal)
-	if err != nil {
-		return nil, fmt.Errorf("store: list jobs with all steps terminal: %w", mapErr(err))
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: scan job with all steps terminal: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return queryIDs(ctx, &s.r.dbConn, sqlListJobIDsWithAllStepsTerminal)
 }
 
 // sqlGuardStepPending is the I1 guard for releasing or canceling a step: it

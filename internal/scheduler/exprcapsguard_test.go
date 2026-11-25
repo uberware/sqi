@@ -22,9 +22,8 @@ import (
 // It asserts two things and fails on an empty result:
 //
 //  1. buildAssignMsg, the only production function that builds a
-//     protocol.AssignMsg, is called from exactly tryLeaseTask and
-//     buildAssignPayload, and buildAssignPayload only from BuildAssignPayload; and
-//  2. tryLeaseTask calls leaseGatesPass.
+//     protocol.AssignMsg, is called from exactly two production functions; and
+//  2. one of them is tryLeaseTask, which calls leaseGatesPass.
 //
 // A new dispatch path must pass the same gate, and this test is then extended to
 // name it.
@@ -34,19 +33,16 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 		t.Fatal("found no production caller of buildAssignMsg: this guard has stopped " +
 			"guarding anything (renamed function? changed package layout?)")
 	}
-	// buildAssignPayload stamps the attempt ID and marshals; BuildAssignPayload is
-	// seam.go's pure-delegation export of it, which lets the preset test harness
-	// (internal/presettest) call the production path. Neither is a second
-	// dispatch path; tryLeaseTask is the only production entry.
-	payloadCallers := productionCallersOf(t, "buildAssignPayload")
-	if len(callers) != 2 || !slices.Contains(callers, "tryLeaseTask") || !slices.Contains(callers, "buildAssignPayload") ||
-		len(payloadCallers) != 1 || payloadCallers[0] != "BuildAssignPayload" {
-		t.Fatalf("buildAssignMsg is called from %v and buildAssignPayload from %v; want exactly "+
-			"[tryLeaseTask buildAssignPayload] and [BuildAssignPayload].\n"+
+	// BuildAssignPayload is seam.go's export of the same two production steps,
+	// which lets the preset test harness (internal/presettest) call the
+	// production path. It is not a second dispatch path; tryLeaseTask is the
+	// only production entry.
+	if len(callers) != 2 || !slices.Contains(callers, "tryLeaseTask") || !slices.Contains(callers, "BuildAssignPayload") {
+		t.Fatalf("buildAssignMsg is called from %v; want exactly [tryLeaseTask BuildAssignPayload].\n"+
 			"tryLeaseTask is the production dispatch path, and BuildAssignPayload (seam.go) is its\n"+
 			"test harness export. Every path that hands an assignment to a worker must first pass the EXPR "+
 			"capability gate in leaseGatesPass (exprcaps.go), or a worker whose advertised "+
-			"EXPR caps are below this server's is given work it cannot run", callers, payloadCallers)
+			"EXPR caps are below this server's is given work it cannot run", callers)
 	}
 
 	gates := productionCallersOf(t, "leaseGatesPass")

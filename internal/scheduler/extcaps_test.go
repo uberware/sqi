@@ -154,15 +154,15 @@ func TestUnschedulable_NamesTheExtensionNoOnlineWorkerEnforces(t *testing.T) {
 	}
 }
 
-// ── buildAssignPayload carries the block ─────────────────────────────────────
+// ── BuildAssignPayload carries the block ─────────────────────────────────────
 
 func TestBuildAssignPayload_CarriesLogChecks(t *testing.T) {
 	st := newCheckedFake(t)
 
 	task, worker, job, step, queue := buildFixture(t, logChecksTemplateJSON, store.TemplateFormatJSON, "render")
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 	var msg protocol.AssignMsg
 	if err := json.Unmarshal(data, &msg); err != nil {
@@ -181,9 +181,9 @@ func TestBuildAssignPayload_CarriesLogChecks(t *testing.T) {
 	// A template without the block yields no key at all, so a base-spec
 	// assignment's wire bytes are unchanged.
 	task, worker, job, step, queue = buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
-	data, err = buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err = BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 	if strings.Contains(string(data), "log_checks") {
 		t.Fatalf("wire bytes of an unchecked assignment contain log_checks: %s", data)

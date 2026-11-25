@@ -17,10 +17,12 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// BuildAssignPayload is [buildAssignPayload] for callers outside this package.
+// BuildAssignPayload builds and marshals a task's assignment the way the lease
+// path does, for callers outside this package.
 //
-// It delegates verbatim and adds nothing. Keep it that way: the unexported
-// function stays the single implementation, so a change to assignment building
+// It composes the two production steps, [buildAssignMsg] and
+// [marshalAssignMsg], and adds nothing. Keep it that way: the unexported
+// functions stay the single implementation, so a change to assignment building
 // cannot reach production without also reaching the preset goldens.
 func BuildAssignPayload(
 	ctx context.Context,
@@ -32,5 +34,9 @@ func BuildAssignPayload(
 	attemptID string,
 	locStore store.StorageLocationStore,
 ) ([]byte, error) {
-	return buildAssignPayload(ctx, task, worker, job, step, queue, attemptID, locStore)
+	msg, err := buildAssignMsg(ctx, task, worker, job, step, queue, locStore)
+	if err != nil {
+		return nil, err
+	}
+	return marshalAssignMsg(msg, attemptID)
 }

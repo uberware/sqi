@@ -4,7 +4,7 @@ package scheduler
 
 // Tests for assign.go.
 //
-// buildAssignPayload is a pure package-level function with no NATS or bus
+// BuildAssignPayload is a pure package-level function with no NATS or bus
 // dependency. Tests live in package scheduler (white-box) to access the
 // unexported function directly.
 
@@ -39,7 +39,7 @@ const minimalJobJSON = `{
 }`
 
 // buildFixture constructs the store.Job, store.Step, store.Task,
-// store.Worker, and store.Queue needed by buildAssignPayload. The returned
+// store.Worker, and store.Queue needed by BuildAssignPayload. The returned
 // queue carries no RunAsUser/RunAsGroup (no isolation); tests that need
 // isolation override the returned queue's fields directly.
 func buildFixture(
@@ -104,9 +104,9 @@ func TestBuildAssignPayload_Minimal(t *testing.T) {
 	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 
 	var msg protocol.AssignMsg
@@ -155,9 +155,9 @@ func TestBuildAssignPayload_EnvironmentOrdering(t *testing.T) {
 	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, tmpl, store.TemplateFormatJSON, "Step1")
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 
 	var msg protocol.AssignMsg
@@ -181,9 +181,9 @@ func TestBuildAssignPayload_JSONFormat(t *testing.T) {
 	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload (JSON format): %v", err)
+		t.Fatalf("BuildAssignPayload (JSON format): %v", err)
 	}
 	var msg protocol.AssignMsg
 	if err := json.Unmarshal(data, &msg); err != nil {
@@ -211,9 +211,9 @@ steps:
 	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, yaml, store.TemplateFormatYAML, "Composite")
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload (YAML): %v", err)
+		t.Fatalf("BuildAssignPayload (YAML): %v", err)
 	}
 	var msg protocol.AssignMsg
 	if err := json.Unmarshal(data, &msg); err != nil {
@@ -231,7 +231,7 @@ func TestBuildAssignPayload_StepNotFound(t *testing.T) {
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 	step.Name = "NonExistentStep" // doesn't match anything in the template
 
-	_, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	_, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err == nil {
 		t.Fatal("expected error for step not found in template, got nil")
 	}
@@ -361,9 +361,9 @@ func TestBuildAssignPayload_BaseSpecWireBytesUnchanged(t *testing.T) {
 	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 
 	forbidden := []string{
@@ -435,9 +435,9 @@ func TestBuildAssignPayload_LocURIResolved(t *testing.T) {
 
 	task, worker, job, step, queue := buildFixture(t, tmpl, store.TemplateFormatJSON, "Render")
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 
 	var msg protocol.AssignMsg
@@ -488,9 +488,9 @@ func TestBuildAssignPayload_JobParametersFromPersistedValues(t *testing.T) {
 	// Simulate a job submitted with a non-default value for Frame.
 	job.Parameters = map[string]string{"Frame": "42"}
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, "attempt-1", st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, "attempt-1", st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 
 	var msg protocol.AssignMsg
@@ -516,9 +516,9 @@ func TestBuildAssignPayload_JobParametersFallbackToDefaults(t *testing.T) {
 	// job.Parameters is nil — simulate a pre-migration job.
 	job.Parameters = nil
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, "attempt-1", st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, "attempt-1", st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 
 	var msg protocol.AssignMsg
@@ -553,9 +553,9 @@ func TestBuildAssignPayload_JobParameterLocURIResolved(t *testing.T) {
 	const rawURI = "loc://nas_shows/scenes/hero.hip"
 	job.Parameters = map[string]string{"Frame": rawURI}
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, "attempt-1", st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, "attempt-1", st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 
 	var msg protocol.AssignMsg
@@ -594,7 +594,7 @@ func TestBuildAssignPayload_UnregisteredLocURI(t *testing.T) {
 	st := newCheckedFake(t) // no storage locations registered
 	task, worker, job, step, queue := buildFixture(t, tmpl, store.TemplateFormatJSON, "Render")
 
-	_, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	_, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err == nil {
 		t.Fatal("expected error for unregistered loc:// URI, got nil")
 	}
@@ -692,7 +692,7 @@ func TestBuildPathMap(t *testing.T) {
 
 // buildAssignForTemplate is a test helper that parses a YAML job template,
 // constructs the required store.Job/Step/Task/Worker fixtures (step "S"),
-// calls buildAssignPayload, and unmarshals the result into protocol.AssignMsg.
+// calls BuildAssignPayload, and unmarshals the result into protocol.AssignMsg.
 // jobParams is set as job.Parameters; nil is a valid (empty) value.
 func buildAssignForTemplate(t *testing.T, templateYAML string, jobParams map[string]string) protocol.AssignMsg {
 	t.Helper()
@@ -701,9 +701,9 @@ func buildAssignForTemplate(t *testing.T, templateYAML string, jobParams map[str
 	if len(jobParams) > 0 {
 		job.Parameters = jobParams
 	}
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 	var msg protocol.AssignMsg
 	if err := json.Unmarshal(data, &msg); err != nil {
@@ -768,7 +768,7 @@ steps:
 // template before resolveLocURIsInMsg reads it, or LIST[PATH] falls
 // back to whole-string substitution, which corrupts a Windows destination
 // root (backslashes are not legal JSON escapes, so the re-decoded value stops
-// parsing entirely). This test goes through buildAssignPayload end to end —
+// parsing entirely). This test goes through BuildAssignPayload end to end —
 // template parse, EXPR field population, loc:// resolution, and staging
 // manifest construction — with a real Windows compute-location root, so a
 // break in any of those three wiring points fails it.
@@ -813,9 +813,9 @@ steps:
 		"Scenes": `["loc://nas_shows/scenes/a.hip","loc://nas_shows/scenes/b.hip"]`,
 	}
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 
 	var msg protocol.AssignMsg
@@ -903,9 +903,9 @@ func TestBuildAssignPayload_CarriesQueueIsolation(t *testing.T) {
 	queue.RunAsUser = &user
 	queue.RunAsGroup = &group
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 
 	var msg protocol.AssignMsg
@@ -931,9 +931,9 @@ func TestBuildAssignPayload_OmitsIsolationWhenQueueHasNone(t *testing.T) {
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 	// queue.RunAsUser is nil by default from buildFixture.
 
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 
 	var msg protocol.AssignMsg
@@ -983,9 +983,9 @@ steps:
   - name: S
     script: { actions: { onRun: { command: echo } } }
 `, store.TemplateFormatYAML, "S")
-	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("BuildAssignPayload: %v", err)
 	}
 	if strings.Contains(string(data), "log_progress") {
 		t.Errorf("payload carries log_progress: %s", data)

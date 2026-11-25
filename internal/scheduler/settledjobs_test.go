@@ -3,11 +3,8 @@
 package scheduler
 
 import (
-	"context"
 	"reflect"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/storetest"
@@ -22,31 +19,6 @@ func settledStep(name string, status store.StepStatus) statusStep {
 		store.StepStatusCanceled:  store.TaskStatusCanceled,
 	}[status]
 	return statusStep{name: name, status: status, tasks: []store.TaskStatus{task}}
-}
-
-// finalizeJobSpy counts FinalizeJob calls, can fail the first one for a given
-// job, and can stand in a fixed answer for the settled-jobs query.
-type finalizeJobSpy struct {
-	store.Store
-
-	finalizeJob atomic.Int32
-	failJob     string
-	listed      []string
-}
-
-func (s *finalizeJobSpy) FinalizeJob(ctx context.Context, id string, now time.Time) (store.JobStatus, bool, error) {
-	s.finalizeJob.Add(1)
-	if id == s.failJob {
-		return "", false, errInjectedReconcile
-	}
-	return s.Store.FinalizeJob(ctx, id, now)
-}
-
-func (s *finalizeJobSpy) ListJobIDsWithAllStepsTerminal(ctx context.Context) ([]string, error) {
-	if s.listed != nil {
-		return s.listed, nil
-	}
-	return s.Store.ListJobIDsWithAllStepsTerminal(ctx)
 }
 
 func TestFinalizeSettledJobs_FinalizesAndReleasesDependents(t *testing.T) {
@@ -133,7 +105,7 @@ func TestFinalizeSettledJobs_HealthyFarmWritesNothing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := seedHealthyFarm(t, st)
 			before := snapshotFarm(t, st, f.jobs)
-			spy := &finalizeJobSpy{Store: st}
+			spy := &writeCountingStore{Store: st}
 			events := &reconcileEvents{}
 
 			newReconcileScheduler(spy, &recordBus{}, events).finalizeSettledJobs(t.Context())
@@ -158,7 +130,7 @@ func TestFinalizeSettledJobs_StaleListEntryIsLeftAlone(t *testing.T) {
 	g := seedStatusJob(t, st, statusJob{steps: []statusStep{{
 		name: "A", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusRunning},
 	}}})
-	spy := &finalizeJobSpy{Store: st, listed: []string{g.job.ID}}
+	spy := &writeCountingStore{Store: st, settledJobs: []string{g.job.ID}}
 	events := &reconcileEvents{}
 
 	newReconcileScheduler(spy, &recordBus{}, events).finalizeSettledJobs(t.Context())
@@ -177,7 +149,7 @@ func TestFinalizeSettledJobs_ErrorOnOneJobDoesNotStopTheNext(t *testing.T) {
 	if ids[0] > ids[1] {
 		ids[0], ids[1] = ids[1], ids[0]
 	}
-	spy := &finalizeJobSpy{Store: st, failJob: ids[0]}
+	spy := &writeCountingStore{Store: st, failFinalizeJob: ids[0]}
 
 	newReconcileScheduler(spy, &recordBus{}, ws.NoopNotifier{}).finalizeSettledJobs(t.Context())
 
@@ -189,7 +161,7 @@ func TestFinalizeSettledJobs_FencedStops(t *testing.T) {
 	st := newCheckedFake(t)
 	spec := statusJob{steps: []statusStep{settledStep("A", store.StepStatusCompleted)}}
 	a, b := seedStatusJob(t, st, spec), seedStatusJob(t, st, spec)
-	spy := &finalizeJobSpy{Store: st}
+	spy := &writeCountingStore{Store: st}
 	s, rec := newFenceScheduler(t, spy, "farm-1")
 
 	s.finalizeSettledJobs(deposedCtx(t, st))

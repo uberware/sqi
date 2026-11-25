@@ -494,14 +494,17 @@ func (s *Scheduler) tryLeaseTask(
 	// unless it is one the task should be charged for (see
 	// classifyAssignFailure).
 	msg, buildErr := buildAssignMsg(ctx, task, worker, gd.job, gd.step, gd.queue, s.store)
-	switch classifyAssignFailure(buildErr) {
-	case assignBuilt, assignFailsTask:
-	case assignSkipWorker:
-		s.logger.DebugContext(ctx, "scheduler: task's assignment cannot be built for this worker — leaving it for another",
-			slog.String("task_id", task.ID), slog.String("worker_id", worker.ID), slog.Any("error", buildErr))
-		return nil, 0, false, nil
-	case assignStoreFailure:
-		return nil, 0, false, fmt.Errorf("lease: build payload for %s: %w", task.ID, buildErr)
+	if buildErr != nil {
+		switch classifyAssignFailure(buildErr) {
+		case assignSkipWorker:
+			s.logger.DebugContext(ctx, "scheduler: task's assignment cannot be built for this worker — leaving it for another",
+				slog.String("task_id", task.ID), slog.String("worker_id", worker.ID), slog.Any("error", buildErr))
+			return nil, 0, false, nil
+		case assignStoreFailure:
+			return nil, 0, false, fmt.Errorf("lease: build payload for %s: %w", task.ID, buildErr)
+		case assignFailsTask:
+			// Leased below, then failed through handleUndeliverableLease.
+		}
 	}
 
 	// The gates above are cheap early filters over values read a moment ago.

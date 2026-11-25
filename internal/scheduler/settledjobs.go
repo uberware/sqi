@@ -4,7 +4,6 @@ package scheduler
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 )
 
@@ -35,13 +34,9 @@ func (s *Scheduler) finalizeSettledJobs(ctx context.Context) {
 			return
 		}
 		if err := s.checkJobCompletion(ctx, jobID); err != nil {
-			if s.stopIfFenced(ctx, err) {
-				return
-			}
-			if !errors.Is(err, context.Canceled) {
-				s.logger.WarnContext(ctx, "scheduler: finalize a job whose steps are all terminal failed",
-					slog.String("job_id", jobID), slog.Any("error", err))
-			}
+			// A fenced write marks the scheduler deposed, which ends the loop above.
+			s.warnUnlessStopped(ctx, err, "scheduler: finalize a job whose steps are all terminal failed",
+				slog.String("job_id", jobID))
 			continue
 		}
 		s.logger.InfoContext(ctx, "scheduler: finalized a live job whose steps were all terminal",

@@ -39,7 +39,7 @@
 // is written and the task stays ready for the next lease request. Attempt numbers
 // are computed by the same transaction — 1 for a fresh task, N+1 on retry.
 //
-// Assignment payload. [buildAssignPayload] re-parses the job's raw OpenJD
+// Assignment payload. [buildAssignMsg] re-parses the job's raw OpenJD
 // template to extract the matching step's OnRun action, embedded files, and
 // ordered environments (job environments first, then step, per the OpenJD
 // spec). It also attaches path-mapping rules built from the registered storage
@@ -1024,7 +1024,7 @@ func (s *Scheduler) buildUsageContext(
 	return pools, activeCounts, nil
 }
 
-// buildAssignPayload is implemented in assign.go.
+// buildAssignMsg is implemented in assign.go.
 
 // ── Worker NATS consumer ─────────────────────────────────────────────
 

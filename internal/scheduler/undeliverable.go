@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/openjd"
@@ -28,11 +27,9 @@ var errAssignStoreRead = errors.New("store read failed")
 type assignFailure int
 
 const (
-	// assignBuilt: the assignment was built; lease and deliver it.
-	assignBuilt assignFailure = iota
-	// assignStoreFailure: a store read failed or the server is stopping. Lease
-	// nothing and stop the walk, as on any store error; the task is not charged.
-	assignStoreFailure
+	// assignStoreFailure: a store read failed. Lease nothing and stop the
+	// walk, as on any store error; the task is not charged.
+	assignStoreFailure assignFailure = iota
 	// assignSkipWorker: the failure is this worker's (a storage location has no
 	// root for its compute location). Leave the task ready for another worker;
 	// it is not charged, so one misconfigured worker cannot fail a job others
@@ -45,13 +42,13 @@ const (
 	assignFailsTask
 )
 
-// classifyAssignFailure sorts a [buildAssignMsg] error; nil is assignBuilt.
+// classifyAssignFailure sorts a non-nil [buildAssignMsg] error. Its only store
+// read, and so its only use of the context, is the storage-location list, whose
+// failure wraps errAssignStoreRead.
 func classifyAssignFailure(err error) assignFailure {
 	var noRoot *openjd.NoRootError
 	switch {
-	case err == nil:
-		return assignBuilt
-	case errors.Is(err, errAssignStoreRead), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, errAssignStoreRead):
 		return assignStoreFailure
 	case errors.As(err, &noRoot):
 		return assignSkipWorker
@@ -88,7 +85,7 @@ func (s *Scheduler) handleUndeliverableLease(
 		AttemptID: attempt.ID,
 		JobID:     task.JobID,
 		Status:    "failed",
-		Message:   undeliverableReasonPrefix + strings.TrimPrefix(buildErr.Error(), "build assign payload: "),
+		Message:   undeliverableReasonPrefix + buildErr.Error(),
 	}
 	err := s.handleTaskFailed(ctx, attempt, msg, time.Now().UTC())
 	if errors.Is(err, store.ErrFenced) {

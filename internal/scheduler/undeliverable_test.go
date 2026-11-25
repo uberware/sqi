@@ -7,32 +7,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/storetest"
-	"github.com/uberware/sqi/internal/ws"
 )
-
-// undeliverablePrefix begins the failure reason of a task whose assignment
-// the server could not build.
-const undeliverablePrefix = "server could not build the task's assignment: "
 
 // newUndeliverableScheduler is newMetricsScheduler with a chosen retry limit.
 func newUndeliverableScheduler(st store.Store, maxAttempts int) *Scheduler {
-	cfg := DefaultConfig()
-	cfg.FarmID = "f1"
-	cfg.DefaultMaxAttempts = maxAttempts
-	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
-	s.ctx = context.Background()
-	ingestCaughtUp(s)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.cfg.DefaultMaxAttempts = maxAttempts
 	return s
 }
 
@@ -43,18 +31,12 @@ func newUndeliverableScheduler(st store.Store, maxAttempts int) *Scheduler {
 func submitBrokenJob(t *testing.T, st store.Store) (jobID, taskID string) {
 	t.Helper()
 	one := 1
-	sub := store.JobSubmission{Job: store.Job{
-		ID: uuid.NewString(), FarmID: "f1", QueueID: "q1", Name: "broken", Priority: 10,
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
-		RawTemplate: minimalRenderJSON,
-	}}
-	sub.Steps = []store.Step{{ID: uuid.NewString(), JobID: sub.Job.ID, Name: "missing", Status: store.StepStatusReady}}
-	sub.Tasks = []store.Task{{
-		ID: uuid.NewString(), JobID: sub.Job.ID, StepID: sub.Steps[0].ID, Name: "t",
-		Status: store.TaskStatusReady, Parameters: map[string]string{}, RequiredCores: &one,
-	}}
-	storetest.Submit(t, st, sub)
-	return sub.Job.ID, sub.Tasks[0].ID
+	ids := submitReadyWith(t, st, "q1", []*int{&one}, nil, func(sub *store.JobSubmission) {
+		sub.Job.Priority = 10
+		sub.Steps[0].Name = "missing"
+		jobID = sub.Job.ID
+	})
+	return jobID, ids[0]
 }
 
 func TestClassifyAssignFailure(t *testing.T) {
@@ -63,10 +45,7 @@ func TestClassifyAssignFailure(t *testing.T) {
 		err  error
 		want assignFailure
 	}{
-		{"built", nil, assignBuilt},
 		{"store read", fmt.Errorf("build: %w: %w", errAssignStoreRead, errors.New("conn reset")), assignStoreFailure},
-		{"context canceled", fmt.Errorf("build: %w", context.Canceled), assignStoreFailure},
-		{"deadline exceeded", context.DeadlineExceeded, assignStoreFailure},
 		{"no root for the worker", fmt.Errorf("resolve: %w", &openjd.NoRootError{Location: "p", ComputeLocation: "b"}), assignSkipWorker},
 		{"step missing from template", errors.New(`step "missing" not found in template`), assignFailsTask},
 		{"storage location missing", errors.New(`storage location "p" not found`), assignFailsTask},
@@ -101,7 +80,7 @@ func TestHandleLeaseRequest_UndeliverableTaskIsFailedAndBatchContinues(t *testin
 	}
 
 	task := mustTask(t, st, broken)
-	wantReason := undeliverablePrefix + `step "missing" not found in template for job ` + brokenJob
+	wantReason := undeliverableReasonPrefix + `step "missing" not found in template for job ` + brokenJob
 	if task.Status != store.TaskStatusFailed || task.FailureReason != wantReason {
 		t.Errorf("broken task = %q (reason %q), want failed with reason %q", task.Status, task.FailureReason, wantReason)
 	}
@@ -202,17 +181,9 @@ func TestSelectLeaseBatch_NoRootForWorkerSkipsOnlyThatWorker(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateStorageLocation: %v", err)
 	}
-	sub := store.JobSubmission{Job: store.Job{
-		ID: uuid.NewString(), FarmID: "f1", QueueID: "q1", Name: "j",
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON, RawTemplate: minimalRenderJSON,
-	}}
-	sub.Steps = []store.Step{{ID: uuid.NewString(), JobID: sub.Job.ID, Name: "render", Status: store.StepStatusReady}}
-	sub.Tasks = []store.Task{{
-		ID: uuid.NewString(), JobID: sub.Job.ID, StepID: sub.Steps[0].ID, Name: "t", Status: store.TaskStatusReady,
-		Parameters: map[string]string{"Scene": "loc://projects/shot.ma"}, RequiredCores: &one,
-	}}
-	storetest.Submit(t, st, sub)
-	ids := []string{sub.Tasks[0].ID}
+	ids := submitReadyWith(t, st, "q1", []*int{&one}, nil, func(sub *store.JobSubmission) {
+		sub.Tasks[0].Parameters = map[string]string{"Scene": "loc://projects/shot.ma"}
+	})
 	now := time.Now().UTC()
 	register := func(id, location string) store.Worker {
 		w, _, err := st.RegisterWorker(t.Context(), store.Worker{
