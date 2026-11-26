@@ -113,6 +113,58 @@ def _home(platform: str, env: Mapping[str, str]) -> str | None:
     return env.get("USERPROFILE" if platform == "win32" else "HOME")
 
 
+def _windows_documents() -> str | None:
+    """The Documents folder Windows reports, or ``None`` off Windows or when the call fails.
+
+    A Documents folder moved by OneDrive's folder backup or by group policy is not
+    ``%USERPROFILE%\\Documents``, and the hosts ask Windows for this same folder.
+    """
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    # FOLDERID_Documents, {FDD39AD0-238F-46AF-ADB4-6C85480369C7}.
+    folder_id = _GUID(
+        0xFDD39AD0,
+        0x238F,
+        0x46AF,
+        (ctypes.c_ubyte * 8)(0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7),
+    )
+    # KF_FLAG_DONT_VERIFY: report a redirected folder Windows cannot reach right now (an
+    # offline share) rather than fail, which would fall back to the profile's Documents.
+    dont_verify = 0x4000
+    path = ctypes.c_wchar_p()
+    try:
+        result = ctypes.windll.shell32.SHGetKnownFolderPath(
+            ctypes.byref(folder_id), dont_verify, None, ctypes.byref(path)
+        )
+        try:
+            return path.value if result == 0 and path.value else None
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(path)
+    except (OSError, AttributeError):
+        return None
+
+
+def _documents(platform: str, env: Mapping[str, str]) -> Path | None:
+    """The user's Documents folder: on Windows the one Windows reports, else under the home."""
+    if platform == "win32":
+        found = _windows_documents()
+        if found:
+            return Path(found)
+    home = _home(platform, env)
+    return Path(home) / "Documents" if home else None
+
+
 def _only_folder(root: Path, pattern: str) -> Path | None:
     """The one folder under ``root`` matching ``pattern``; ``None`` for none or several."""
     if not root.is_dir():
@@ -153,24 +205,27 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     """The per-user folder to copy into, or ``None`` when the artist must do it.
 
     Blender (installed through its UI) and After Effects (under Program Files, needs admin)
-    always return ``None``. Unreal's is ``Documents/UnrealEngine/Python`` under the user's
-    profile, which the Editor puts on its Python path. Katana's is ``.katana/Startup`` under the
-    home folder on Windows and Linux (``None`` on macOS), where Katana runs ``init.py`` at
-    startup. Cinema 4D's preferences folder carries a version suffix that cannot be known, so it is
-    returned only when exactly one ``Maxon Cinema 4D *`` folder exists. Silhouette's is
-    ``scripts`` under ``SFX_USER_PATH`` when that variable is set, else ``None``. KeyShot's is the
-    ``Scripts`` folder of its one ``KeyShot*`` folder in Documents (Windows and macOS only: KeyShot
-    has no Linux desktop product), under the same one-folder rule. Modo's is ``Scripts`` in its
-    per-user ``Luxology`` folder: ``%APPDATA%/Luxology`` on Windows, ``~/Library/Application
-    Support/Luxology`` on macOS and ``~/.luxology`` on Linux. Fusion's is ``Scripts/Comp`` in
-    its per-user ``Blackmagic Design/Fusion`` folder: under ``%APPDATA%`` on Windows, ``~/Library/
-    Application Support`` on macOS and ``~/.fusion`` on Linux (where the vendor folder is spelled
-    ``BlackmagicDesign``). VRED's is ``ScriptPlugins`` in its one ``VRED-*`` folder under
-    ``Documents/Autodesk`` (Windows only: VRED Pro has no other platform).
+    always return ``None``. "Documents" below is, on Windows, the folder Windows reports (so a
+    OneDrive- or policy-redirected one, which is where the hosts look), falling back to
+    ``%USERPROFILE%/Documents``; elsewhere it is ``$HOME/Documents``. Unreal's is
+    ``Documents/UnrealEngine/Python``, which the Editor puts on its Python path. Katana's is
+    ``.katana/Startup`` under the home folder on Windows and Linux (``None`` on macOS), where
+    Katana runs ``init.py`` at startup. Cinema 4D's preferences folder carries a version suffix
+    that cannot be known, so it is returned only when exactly one ``Maxon Cinema 4D *`` folder
+    exists. Silhouette's is ``scripts`` under ``SFX_USER_PATH`` when that variable is set, else
+    ``None``. KeyShot's is the ``Scripts`` folder of its one ``KeyShot*`` folder in Documents
+    (Windows and macOS only: KeyShot has no Linux desktop product), under the same one-folder
+    rule. Modo's is ``Scripts`` in its per-user ``Luxology`` folder: ``%APPDATA%/Luxology`` on
+    Windows, ``~/Library/Application Support/Luxology`` on macOS and ``~/.luxology`` on Linux.
+    Fusion's is ``Scripts/Comp`` in its per-user ``Blackmagic Design/Fusion`` folder: under
+    ``%APPDATA%`` on Windows, ``~/Library/Application Support`` on macOS and ``~/.fusion`` on
+    Linux (where the vendor folder is spelled ``BlackmagicDesign``). VRED's is ``ScriptPlugins``
+    in its one ``VRED-*`` folder under ``Documents/Autodesk`` (Windows only: VRED Pro has no
+    other platform).
     """
     if host == "unreal":
-        home = _home(platform, env)
-        return Path(home) / "Documents" / "UnrealEngine" / "Python" if home else None
+        documents = _documents(platform, env)
+        return documents / "UnrealEngine" / "Python" if documents else None
     if host == "katana":
         # Katana does not run on macOS, so there is nothing to install there.
         if platform not in ("win32", "linux"):
@@ -185,8 +240,8 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     if host == "keyshot":
         if platform not in ("win32", "darwin"):
             return None
-        home = _home(platform, env)
-        found = _only_folder(Path(home) / "Documents", _KEYSHOT_GLOB) if home else None
+        documents = _documents(platform, env)
+        found = _only_folder(documents, _KEYSHOT_GLOB) if documents else None
         return found / "Scripts" if found else None
     if host == "modo":
         return _modo_scripts_folder(platform, env)
@@ -195,9 +250,10 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     if host == "vred":
         # VRED Pro, the edition with a UI, runs on Windows only. Its per-user plugin folder is
         # versioned (VRED-<internal version>), so it is named only when exactly one exists.
-        if platform != "win32" or not env.get("USERPROFILE"):
+        if platform != "win32":
             return None
-        found = _only_folder(Path(env["USERPROFILE"]) / "Documents" / "Autodesk", _VRED_GLOB)
+        documents = _documents(platform, env)
+        found = _only_folder(documents / "Autodesk", _VRED_GLOB) if documents else None
         return found / "ScriptPlugins" if found else None
     if host != "cinema4d":
         return None
