@@ -139,10 +139,13 @@ def _windows_documents() -> str | None:
         0x46AF,
         (ctypes.c_ubyte * 8)(0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7),
     )
+    # KF_FLAG_DONT_VERIFY: report a redirected folder Windows cannot reach right now (an
+    # offline share) rather than fail, which would fall back to the profile's Documents.
+    dont_verify = 0x4000
     path = ctypes.c_wchar_p()
     try:
         result = ctypes.windll.shell32.SHGetKnownFolderPath(
-            ctypes.byref(folder_id), 0, None, ctypes.byref(path)
+            ctypes.byref(folder_id), dont_verify, None, ctypes.byref(path)
         )
         try:
             return path.value if result == 0 and path.value else None

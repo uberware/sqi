@@ -191,6 +191,33 @@ def test_windows_documents_real_call() -> None:
     assert Path(found).is_dir()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="asks Windows for its Documents folder")
+def test_windows_documents_unverified_and_freed_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreachable redirected folder must not fall back silently, and the buffer is freed.
+
+    Without KF_FLAG_DONT_VERIFY, Windows fails the call for a redirected folder it cannot
+    reach (an offline share), and the install would land in the profile's Documents again.
+    """
+    import ctypes
+    import types
+
+    calls: dict[str, object] = {}
+
+    def get_known_folder_path(_folder: object, flags: int, _token: object, _path: object) -> int:
+        calls["flags"] = flags
+        return -2147024894  # HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
+
+    windll = types.SimpleNamespace(
+        shell32=types.SimpleNamespace(SHGetKnownFolderPath=get_known_folder_path),
+        ole32=types.SimpleNamespace(CoTaskMemFree=lambda _p: calls.setdefault("freed", True)),
+    )
+    monkeypatch.setattr(ctypes, "windll", windll)
+    assert _REAL_WINDOWS_DOCUMENTS() is None
+    assert calls == {"flags": 0x4000, "freed": True}
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="the lookup exists only on Windows")
 def test_windows_documents_is_none_off_windows() -> None:
     assert _REAL_WINDOWS_DOCUMENTS() is None
