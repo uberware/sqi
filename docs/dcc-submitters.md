@@ -704,9 +704,9 @@ and a VRED script plugin adds the menu. Follow the steps in order.
    will do; the command needs no Qt). When it finds exactly one `VRED-*` folder
    under `Autodesk` in your Documents folder, it copies the plugin to
    `<that folder>\ScriptPlugins\SubmitToSqi\SubmitToSqi.py`; otherwise it prints
-   the path and what to do. It uses the Documents folder Windows reports, as
-   VRED does, so a folder moved by OneDrive or folder redirection works. VRED
-   Pro is Windows-only, so there is no default destination elsewhere.
+   the path and what to do. It uses the Documents folder Windows reports, so a
+   folder moved by OneDrive or folder redirection works. VRED Pro is
+   Windows-only, so there is no default destination elsewhere.
 5. Restart VRED. **sqi → Submit to sqi…** appears in the menu bar.
 
 If the import fails when you click, VRED shows a message box that names both
@@ -740,8 +740,8 @@ file, so there is no hook and no menu entry.
    `Scripts` folder. With none, or with several (`KeyShot` and `KeyShot 2024`),
    or on Linux, it prints the file's path and asks you to copy it into your
    KeyShot `Scripts` folder or pass `--dest`. On Windows it uses the Documents
-   folder Windows reports, as KeyShot does, so a folder moved by OneDrive or
-   folder redirection works.
+   folder Windows reports, so a folder moved by OneDrive or folder redirection
+   works.
 3. In KeyShot open **Window → Scripting Console** and run `sqi_keyshot_submit`.
 
 The targets are the scene's studios, named after the studio. KeyShot has a
@@ -1781,8 +1781,9 @@ After installing per [Installation per host](#installation-per-host):
    replaced without complaint.
 9. **A Documents folder moved by OneDrive.** On a machine where OneDrive backs
    up Documents, run `install-host unreal`: the files land in
-   `OneDrive\Documents\UnrealEngine\Python`, not `%USERPROFILE%\Documents`, and
-   after a restart the **Tools** menu lists **Submit to sqi…**.
+   `UnrealEngine\Python` in the OneDrive Documents folder, not in
+   `%USERPROFILE%\Documents`, and after a restart the **Tools** menu lists
+   **Submit to sqi…**.
 
 **Confirmed on Unreal Engine 5.8.4, on Windows 11:** items 1 to 8, except item
 3's job whose config asset was edited in the queue (see below).
@@ -1874,9 +1875,10 @@ support):**
    confirm the wheels import in VRED's Python.
 10. **A Documents folder moved by OneDrive.** On a machine where OneDrive backs
     up Documents, run `install-host vred`: the plugin lands under
-    `OneDrive\Documents\Autodesk\VRED-<version>\ScriptPlugins`, and after a
-    restart **sqi** is in the menu bar. If VRED reads `%USERPROFILE%\Documents`
-    instead, report it: `install-host` assumes VRED asks Windows for the folder.
+    `Autodesk\VRED-<version>\ScriptPlugins` in the OneDrive Documents folder,
+    and after a restart **sqi** is in the menu bar. If VRED reads
+    `%USERPROFILE%\Documents` instead, report it: `install-host` assumes VRED
+    asks Windows for the folder.
 
 ### KeyShot checklist
 

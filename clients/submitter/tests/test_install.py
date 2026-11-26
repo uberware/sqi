@@ -198,7 +198,7 @@ def test_windows_documents_unverified_and_freed_on_failure(
     """An unreachable redirected folder must not fall back silently, and the buffer is freed.
 
     Without KF_FLAG_DONT_VERIFY, Windows fails the call for a redirected folder it cannot
-    reach (an offline share), and the install would land in the profile's Documents again.
+    reach (an offline share), and the install falls back to the profile's Documents.
     """
     import ctypes
     import types
