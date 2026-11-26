@@ -22,7 +22,7 @@ func TestBuildAssignPayload_ExportedSeamMatchesUnexported(t *testing.T) {
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 	attemptID := uuid.NewString()
 
-	msg, err := buildAssignMsg(t.Context(), task, worker, job, step, queue, st)
+	msg, err := buildAssignMsg(t.Context(), task, worker, job, step, queue, newStorageLocations(st))
 	if err != nil {
 		t.Fatalf("buildAssignMsg: %v", err)
 	}

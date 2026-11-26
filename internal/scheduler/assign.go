@@ -38,6 +38,34 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
+// storageLocations reads the farm's storage locations on first use and keeps
+// them for the rest of one lease batch or one sweep: the list does not depend
+// on the task, so it is read once rather than once per task. It is not safe
+// for concurrent use.
+type storageLocations struct {
+	st     store.StorageLocationStore
+	list   []store.StorageLocation
+	loaded bool
+}
+
+// newStorageLocations returns a storageLocations that reads from st.
+func newStorageLocations(st store.StorageLocationStore) *storageLocations {
+	return &storageLocations{st: st}
+}
+
+// get returns the storage locations, reading them on the first call. A failed
+// read is not kept, so a later call reads again.
+func (l *storageLocations) get(ctx context.Context) ([]store.StorageLocation, error) {
+	if !l.loaded {
+		list, err := l.st.ListStorageLocations(ctx)
+		if err != nil {
+			return nil, err
+		}
+		l.list, l.loaded = list, true
+	}
+	return l.list, nil
+}
+
 // marshalAssignMsg stamps the lease's attempt ID and time into msg and
 // marshals it. assignedAt is the time the lease stored as the task's
 // assigned_at, so the two agree.
@@ -52,8 +80,9 @@ func marshalAssignMsg(msg protocol.AssignMsg, attemptID string, assignedAt time.
 // whose assignment cannot be built for this worker is never leased to it.
 //
 // It receives the store-level task, worker, job, step, and queue records, and
-// the storage location store used to build the path map and resolve loc://
-// URIs.
+// the storage locations used to build the path map and resolve loc:// URIs.
+// The task's parameters are copied, not rewritten, so the same task can be
+// built again.
 //
 // An error is returned if the raw OpenJD template cannot be re-parsed (which
 // should not happen in production since the template was validated at submission
@@ -68,7 +97,7 @@ func buildAssignMsg(
 	job store.Job,
 	step store.Step,
 	queue store.Queue,
-	locStore store.StorageLocationStore,
+	locs *storageLocations,
 ) (protocol.AssignMsg, error) {
 	// ── Parse the raw OpenJD template ─────────────────────────────────────
 	format := openjd.FormatYAML
@@ -105,7 +134,7 @@ func buildAssignMsg(
 		StepID:        task.StepID,
 		TaskName:      task.Name,
 		WorkerID:      worker.ID,
-		Parameters:    task.Parameters,
+		Parameters:    maps.Clone(task.Parameters),
 		JobParameters: buildJobParameters(tmpl, job),
 	}
 
@@ -159,8 +188,8 @@ func buildAssignMsg(
 	}
 	msg.Environments = envs
 
-	// ── Fetch all storage locations once ──────────────────────────────────
-	allLocs, err := locStore.ListStorageLocations(ctx)
+	// ── Storage locations (read once per lease batch or sweep) ─────────────
+	allLocs, err := locs.get(ctx)
 	if err != nil {
 		return protocol.AssignMsg{}, fmt.Errorf("list storage locations: %w: %w", errAssignStoreRead, err)
 	}
@@ -522,7 +551,10 @@ func resolveLocURIsInMsg(
 	// default) is a loc:// URI must be concretized here, server-side; otherwise
 	// the worker would splice the raw URI into a {{Param.*}} expansion. The map
 	// is a clone (see buildJobParameters), so this in-place rewrite is safe.
-	for k, v := range msg.JobParameters {
+	// Keys are visited in order, so a message with several unresolvable
+	// references always reports the same one.
+	for _, k := range slices.Sorted(maps.Keys(msg.JobParameters)) {
+		v := msg.JobParameters[k]
 		resolved, err := resolveLocURIsInParamValue(v, msg.JobParameterTypes[k], resolve)
 		if err != nil {
 			return fmt.Errorf("job parameter %q: %w", k, err)
@@ -531,7 +563,8 @@ func resolveLocURIsInMsg(
 	}
 
 	// Resolve task parameters.
-	for k, v := range msg.Parameters {
+	for _, k := range slices.Sorted(maps.Keys(msg.Parameters)) {
+		v := msg.Parameters[k]
 		resolved, err := openjd.ResolveLocURIs(v, resolve)
 		if err != nil {
 			return fmt.Errorf("parameter %q: %w", k, err)

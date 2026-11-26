@@ -365,12 +365,13 @@ func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) (
 	// server's configuration, so it is computed once for the whole batch.
 	exprShortfall := s.workerExprShortfall(worker)
 
+	locs := newStorageLocations(s.store)
 	var batch [][]byte
 	for _, task := range candidates {
 		if free <= 0 {
 			break
 		}
-		payload, cost, ok, err := s.tryLeaseTask(ctx, task, worker, free, exprShortfall)
+		payload, cost, ok, err := s.tryLeaseTask(ctx, task, worker, free, exprShortfall, locs)
 		if err != nil {
 			return batch, err
 		}
@@ -467,6 +468,7 @@ func (s *Scheduler) tryLeaseTask(
 	worker store.Worker,
 	free int,
 	exprShortfall string,
+	locs *storageLocations,
 ) (payload []byte, cost int, ok bool, err error) {
 	// Log when a task's declared core requirement exceeds the worker's total
 	// capacity: it can never run here regardless of current load. This does
@@ -493,7 +495,7 @@ func (s *Scheduler) tryLeaseTask(
 	// The assignment is built before the lease, so a failure commits nothing
 	// unless it is one the task should be charged for (see
 	// classifyAssignFailure).
-	msg, buildErr := buildAssignMsg(ctx, task, worker, gd.job, gd.step, gd.queue, s.store)
+	msg, buildErr := buildAssignMsg(ctx, task, worker, gd.job, gd.step, gd.queue, locs)
 	if buildErr != nil {
 		switch classifyAssignFailure(buildErr) {
 		case assignSkipWorker:

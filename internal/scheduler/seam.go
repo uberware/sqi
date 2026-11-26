@@ -35,7 +35,7 @@ func BuildAssignPayload(
 	attemptID string,
 	locStore store.StorageLocationStore,
 ) ([]byte, error) {
-	msg, err := buildAssignMsg(ctx, task, worker, job, step, queue, locStore)
+	msg, err := buildAssignMsg(ctx, task, worker, job, step, queue, newStorageLocations(locStore))
 	if err != nil {
 		return nil, err
 	}

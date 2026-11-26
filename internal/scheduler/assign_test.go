@@ -1001,3 +1001,32 @@ func TestConvertLogProgress(t *testing.T) {
 		t.Errorf("empty block = %+v, want nil", got)
 	}
 }
+
+// TestBuildAssign_LeavesTaskParametersUntouched pins that building an
+// assignment resolves loc:// references in its own copy of the task's
+// parameters: the same task can be built again (for another worker, or by the
+// unschedulable sweep) and still carries the reference.
+func TestBuildAssign_LeavesTaskParametersUntouched(t *testing.T) {
+	st := newCheckedFake(t)
+	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{
+		ID: uuid.NewString(), Name: "projects", Type: store.StorageLocationTypeFilesystem,
+		Roots: map[string]string{"default": "/mnt/projects"},
+	}); err != nil {
+		t.Fatalf("CreateStorageLocation: %v", err)
+	}
+	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
+	task.Parameters = map[string]string{"Scene": "loc://projects/shot.ma"}
+
+	for i := range 2 {
+		data, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+		if err != nil {
+			t.Fatalf("BuildAssignPayload #%d: %v", i+1, err)
+		}
+		if !strings.Contains(string(data), "/mnt/projects/shot.ma") {
+			t.Errorf("payload #%d does not carry the resolved path: %s", i+1, data)
+		}
+		if got := task.Parameters["Scene"]; got != "loc://projects/shot.ma" {
+			t.Fatalf("after build #%d, task.Parameters[Scene] = %q, want the loc:// reference unchanged", i+1, got)
+		}
+	}
+}

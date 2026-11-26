@@ -642,7 +642,7 @@ func TestCapsHoldUnderParallelLease(t *testing.T) {
 					}}}
 					s := newMetricsScheduler(wrapped, &recordBus{}, "f1")
 
-					_, _, leased, err := s.tryLeaseTask(t.Context(), taskA, worker, worker.CPUCount, "")
+					_, _, leased, err := s.tryLeaseTask(t.Context(), taskA, worker, worker.CPUCount, "", newStorageLocations(st))
 					if err != nil {
 						t.Fatalf("tryLeaseTask: %v", err)
 					}
@@ -703,7 +703,7 @@ func TestCancelRacingLease(t *testing.T) {
 			}}}
 			s := newMetricsScheduler(wrapped, &recordBus{}, "f1")
 
-			if _, _, _, err := s.tryLeaseTask(t.Context(), taskA, worker, worker.CPUCount, ""); err != nil {
+			if _, _, _, err := s.tryLeaseTask(t.Context(), taskA, worker, worker.CPUCount, "", newStorageLocations(st)); err != nil {
 				t.Fatalf("tryLeaseTask: %v", err)
 			}
 
@@ -773,7 +773,7 @@ func TestLeaseDuringCancelLeaksNothing(t *testing.T) {
 			}}}
 			s := newMetricsScheduler(wrapped, &recordBus{}, "f1")
 
-			if _, _, _, err := s.tryLeaseTask(t.Context(), task, worker, worker.CPUCount, ""); err != nil {
+			if _, _, _, err := s.tryLeaseTask(t.Context(), task, worker, worker.CPUCount, "", newStorageLocations(st)); err != nil {
 				t.Fatalf("tryLeaseTask: %v", err)
 			}
 
@@ -867,7 +867,7 @@ func TestTryLeaseTask_NonLeasedOutcomesWriteNothing(t *testing.T) {
 					wrapped := &racingLeaseStore{Store: st, hook: &once{fn: func() { tc.race(t, st, worker, ids, pool) }}}
 					s := newMetricsScheduler(wrapped, &recordBus{}, "f1")
 
-					payload, cost, leased, err := s.tryLeaseTask(t.Context(), taskA, worker, worker.CPUCount, "")
+					payload, cost, leased, err := s.tryLeaseTask(t.Context(), taskA, worker, worker.CPUCount, "", newStorageLocations(st))
 					if err != nil {
 						t.Fatalf("tryLeaseTask: %v", err)
 					}
