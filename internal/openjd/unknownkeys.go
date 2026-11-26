@@ -113,6 +113,12 @@ func buildKeySchemas() *keySchema {
 	}}
 }
 
+// maxUnknownKeys is the most unknown keys one template reports, the first by
+// pointer. One is enough to reject the template; the cap keeps a template
+// stuffed with them from returning an error per copy (as maxMisplacedStepBlocks
+// does for misplaced step blocks).
+const maxUnknownKeys = 16
+
 // keyFrame is one mapping the walk has yet to visit: its value, the JSON
 // pointer to it, and the schema it is checked against.
 type keyFrame struct {
@@ -150,6 +156,9 @@ func findUnknownKeys(raw map[string]any) []unknownKey {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Pointer < out[j].Pointer })
+	if len(out) > maxUnknownKeys {
+		out = out[:maxUnknownKeys]
+	}
 	return out
 }
 

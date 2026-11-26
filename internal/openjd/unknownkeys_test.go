@@ -3,6 +3,7 @@
 package openjd_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -592,4 +593,61 @@ steps:
 			t.Errorf("error %v, want message %q at that pointer", e, want[e.Pointer])
 		}
 	}
+}
+
+// TestFindUnknownKeys_ReportsAtMostSixteen pins the cap: one unknown key is
+// enough to reject a template, so a template stuffed with them reports only the
+// first sixteen by pointer rather than one error per copy.
+func TestFindUnknownKeys_ReportsAtMostSixteen(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    script:
+      actions:
+        onRun:
+          command: echo
+`)
+	for i := range 40 {
+		fmt.Fprintf(&b, "          k%02d: x\n", i)
+	}
+	got := unknownKeyErrors(t, b.String(), openjd.FormatYAML)
+	if len(got) != 16 {
+		t.Fatalf("unknown-key errors = %d, want 16", len(got))
+	}
+	if first, last := got[0].Pointer, got[15].Pointer; first != "/steps/0/script/actions/onRun/k00" ||
+		last != "/steps/0/script/actions/onRun/k15" {
+		t.Errorf("reported %s .. %s, want the first sixteen by pointer (k00 .. k15)", first, last)
+	}
+}
+
+// TestValidate_ChunksOnlyOnChunkInt: chunks is allowed by the unknown-key walk
+// because TASK_CHUNKING adds it, but on any type other than CHUNK[INT] it would
+// be dropped and the step run one task per value, so it is an error.
+func TestValidate_ChunksOnlyOnChunkInt(t *testing.T) {
+	src := `specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: F
+          type: INT
+          range: "1-10"
+          chunks:
+            defaultTaskCount: 2
+            rangeConstraint: CONTIGUOUS
+` + onRunEcho
+	tmpl, err := openjd.Parse([]byte(src), openjd.FormatYAML)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	const ptr = "/steps/0/parameterSpace/taskParameterDefinitions/0/chunks"
+	for _, e := range openjd.Validate(tmpl) {
+		if e.Pointer == ptr && strings.Contains(e.Message, "only on CHUNK[INT]") {
+			return
+		}
+	}
+	t.Errorf("no error at %s saying chunks is valid only on CHUNK[INT]; got %v", ptr, openjd.Validate(tmpl))
 }

@@ -3165,6 +3165,11 @@ func validateChunksField(tp TaskParamDefinition, base string, exprDeclared bool,
 		}
 		return nil
 	}
+	// Any other type ignores chunks, so the step would silently run one task
+	// per value; CHUNK[INT] itself already requires TASK_CHUNKING.
+	if tp.Type != TaskParamTypeChunkInt {
+		return ValidationErrors{{Pointer: base + "/chunks", Message: "chunks is valid only on CHUNK[INT] parameters"}}
+	}
 
 	var errs ValidationErrors
 	// The spec's minimum is 0: "When the value is 0, a scheduler should
@@ -3180,9 +3185,7 @@ func validateChunksField(tp TaskParamDefinition, base string, exprDeclared bool,
 		errs = append(errs, validateChunkFormatStrings(*c, base, params)...)
 	}
 	// CHUNK[INT] must have defaultTaskCount >= 1.
-	if tp.Type == TaskParamTypeChunkInt {
-		errs = append(errs, validateChunks(*c, base)...)
-	}
+	errs = append(errs, validateChunks(*c, base)...)
 	return errs
 }
 
