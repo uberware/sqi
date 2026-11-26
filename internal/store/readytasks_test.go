@@ -19,18 +19,9 @@ import (
 func TestListReadyTasks_QueueFilter(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			ctx := t.Context()
-			farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
-			if err != nil {
-				t.Fatalf("CreateFarm: %v", err)
-			}
+			farm := mustCreateFarm(t, st, "ready-farm")
 			queue := func() string {
-				t.Helper()
-				q, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: uuid.NewString()})
-				if err != nil {
-					t.Fatalf("CreateQueue: %v", err)
-				}
-				return q.ID
+				return mustCreateQueue(t, st, store.Queue{FarmID: farm.ID, Name: uuid.NewString()}).ID
 			}
 			high, low, other := queue(), queue(), queue()
 			highTasks := submitReadyJob(t, st, farm.ID, high, 10, 3)
@@ -51,7 +42,7 @@ func TestListReadyTasks_QueueFilter(t *testing.T) {
 			}
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
-					got, err := st.ListReadyTasks(ctx, farm.ID, tc.queues, time.Now().UTC(), 2)
+					got, err := st.ListReadyTasks(t.Context(), farm.ID, tc.queues, time.Now().UTC(), 2)
 					if err != nil {
 						t.Fatalf("ListReadyTasks: %v", err)
 					}
@@ -70,18 +61,14 @@ func TestListReadyTasks_QueueFilter(t *testing.T) {
 // creation order.
 func submitReadyJob(t *testing.T, st store.Store, farmID, queueID string, priority, n int) []string {
 	t.Helper()
-	sub := store.JobSubmission{Job: store.Job{
-		ID: uuid.NewString(), FarmID: farmID, QueueID: queueID, Name: "job", Priority: priority,
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
-	}}
-	step := store.Step{ID: uuid.NewString(), JobID: sub.Job.ID, Name: "s", Status: store.StepStatusReady}
-	sub.Steps = []store.Step{step}
-	ids := make([]string, 0, n)
-	for range n {
-		task := store.Task{ID: uuid.NewString(), JobID: sub.Job.ID, StepID: step.ID, Name: "t", Status: store.TaskStatusReady}
-		sub.Tasks = append(sub.Tasks, task)
-		ids = append(ids, task.ID)
+	stepID := uuid.NewString()
+	seed := storetest.NewJob(uuid.NewString(), farmID, queueID).As(store.JobStatusRunning).Step(stepID, store.StepStatusReady)
+	seed.Sub.Job.Priority = priority
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = uuid.NewString()
+		seed.Task(ids[i], stepID, store.TaskStatusReady)
 	}
-	storetest.Submit(t, st, sub)
+	seed.Submit(t, st)
 	return ids
 }

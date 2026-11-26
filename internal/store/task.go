@@ -333,10 +333,7 @@ type TaskStore interface {
 	//   3. step order ascending (earlier steps in a job run before later ones),
 	//   4. task creation time ascending (stable tiebreaker within a step).
 	//
-	// The farm and queue filters apply before limit, so the scheduler's lease
-	// path scopes the list to the requesting worker: cut first, a farm's
-	// higher-priority work in queues the worker cannot take would fill the
-	// limit and the worker would be leased nothing.
+	// The farm and queue filters apply before limit.
 	ListReadyTasks(ctx context.Context, farmID string, queueIDs []string, now time.Time, limit int) ([]Task, error)
 
 	// ReclaimStaleAssignedTasks returns tasks stuck in [TaskStatusAssigned] whose

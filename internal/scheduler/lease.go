@@ -356,12 +356,10 @@ func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) (
 		return nil, nil
 	}
 
-	// The list is scoped to the work this worker can take before the batch
-	// size cuts it, or a farm's higher-priority work in queues (or, with this
-	// scheduler managing every farm, farms) the worker does not serve fills the
-	// batch and the matcher rejects all of it. A scheduler bound to one farm
-	// keeps that farm even for a worker bound to another, which the matcher
-	// then refuses task by task.
+	// Scope the list to the worker's queues and farm before the batch size
+	// cuts it, or higher-priority work it cannot take fills the batch. A
+	// scheduler bound to one farm keeps that farm; the matcher refuses a worker
+	// bound to another.
 	farmID := s.cfg.FarmID
 	if farmID == "" {
 		farmID = worker.FarmID

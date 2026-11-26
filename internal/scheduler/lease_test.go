@@ -480,11 +480,11 @@ func TestSelectLeaseBatch_WorkerScopedBeforeBatchLimit(t *testing.T) {
 				t.Fatal(err)
 			}
 			one := 1
-			inScope := func(farm string, priority int) func(*store.JobSubmission) {
+			farmAndPriority := func(farm string, priority int) func(*store.JobSubmission) {
 				return func(sub *store.JobSubmission) { sub.Job.FarmID, sub.Job.Priority = farm, priority }
 			}
-			submitReadyWith(t, st, "qOther", []*int{&one, &one, &one}, nil, inScope(tc.blockerFarm, 100))
-			own := submitReadyWith(t, st, "qMine", []*int{&one}, nil, inScope("f1", 0))[0]
+			submitReadyWith(t, st, "qOther", []*int{&one, &one, &one}, nil, farmAndPriority(tc.blockerFarm, 100))
+			own := submitReadyWith(t, st, "qMine", []*int{&one}, nil, farmAndPriority("f1", 0))[0]
 			w, _, err := st.RegisterWorker(ctx, store.Worker{
 				ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
 				CPUCount: 4, LastHeartbeatAt: &now, Tags: map[string]string{}, QueueIDs: tc.workerQueues,

@@ -71,10 +71,9 @@ UPDATE tasks SET failure_reason = ?, updated_at = ? WHERE id = ?`
 	// farmID = '' means "all farms" (used when the scheduler manages every farm).
 	// Two bind parameters are required for farmID: one for the empty check and
 	// one for the value filter. A task backing off (retry_after in the
-	// future) or belonging to a paused/terminal job is excluded. It is
-	// sqlListReadyTasksScope followed by sqlListReadyTasksOrder; a queue-scoped
-	// list puts a "j.queue_id IN (…)" filter between the two, so the filter
-	// applies before the LIMIT.
+	// future) or belonging to a paused/terminal job is excluded. A
+	// queue-scoped list inserts its "j.queue_id IN (…)" filter between the two
+	// halves, so the filter applies before the LIMIT.
 	sqlListReadyTasks = sqlListReadyTasksScope + sqlListReadyTasksOrder
 
 	sqlListReadyTasksScope = `
@@ -625,11 +624,7 @@ func (s *Store) ListReadyTasks(ctx context.Context, farmID string, queueIDs []st
 	if len(queueIDs) == 0 {
 		rows, err = s.stmtListReadyTasks.QueryContext(ctx, farmID, farmID, TimeText(now), limit)
 	} else {
-		args := make([]any, 0, len(queueIDs)+4)
-		args = append(args, farmID, farmID, TimeText(now))
-		for _, id := range queueIDs {
-			args = append(args, id)
-		}
+		args := append([]any{farmID, farmID, TimeText(now)}, stringArgs(queueIDs)...)
 		args = append(args, limit)
 		// qmarks holds only "?" marks; every queue ID is bound.
 		query := sqlListReadyTasksScope + `
