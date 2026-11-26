@@ -315,6 +315,14 @@ templates other tools may accept:
 - **A host-requirement name or value given as a format string is checked once
   it is resolved**, at submission (§3.3): it must then be a well-formed
   capability name, no two names alike, and an amount bound a number.
+- **Every key is one the schema defines at that position**, or one a supported
+  extension adds there. A misspelt key anywhere in the template (`onExt` in an
+  environment, `atributes` under `hostRequirements`, `timout` on an action) is
+  rejected at its pointer with "unknown field; the <object> schema defines no
+  such key", where a tool that drops unknown keys would run the job without
+  that setting. The names under an environment's `variables` are data and are
+  never checked. A job parameter's `fileFilters` and `fileFilterDefault` belong
+  under its `userInterface` (§2.2), and are unknown keys anywhere else.
 
 Two rules accept templates a stricter reading would reject: the 1024-value cap of
 §3.4 bounds only the list form of a task parameter's `range`, not an

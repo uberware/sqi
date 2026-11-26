@@ -17,58 +17,11 @@ import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import type { TemplateFormat } from '@/api/types'
 import styles from './Submit.module.css'
+import { EXAMPLES, EXAMPLE_LABELS, isExampleKey } from './submitExamples'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const QUEUE_STORAGE_KEY = 'sqi:submit:last-queue-id'
-
-const EXAMPLES: Record<'shell' | 'parameter-space' | 'usage-limit', string> = {
-  shell: `specificationVersion: "jobtemplate-2023-09"
-name: hello-world
-steps:
-  - name: main
-    script:
-      actions:
-        onRun:
-          command: echo
-          args:
-            - "Hello, world!"
-`,
-  'parameter-space': `specificationVersion: "jobtemplate-2023-09"
-name: frame-render
-steps:
-  - name: render
-    parameterSpace:
-      taskParameterDefinitions:
-        - name: Frame
-          type: INT
-          range: "1-10"
-    script:
-      actions:
-        onRun:
-          command: echo
-          args:
-            - "Rendering frame {{Param.Frame}}"
-`,
-  'usage-limit': `specificationVersion: "jobtemplate-2023-09"
-name: licensed-render
-steps:
-  - name: render
-    # Require a free slot in a usage pool before each task is dispatched.
-    # The text after "amount.worker.usagepool." is the pool NAME and must
-    # match a pool registered on the Usage Pools page (here: "arnold").
-    hostRequirements:
-      amounts:
-        - name: amount.worker.usagepool.arnold   # <-- "arnold" = pool name
-          min: 1
-    script:
-      actions:
-        onRun:
-          command: echo
-          args:
-            - "Rendering while holding an Arnold license"
-`,
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -122,7 +75,7 @@ export default function Submit() {
 
   const handleExampleChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const key = e.target.value
-    if (key === 'shell' || key === 'parameter-space' || key === 'usage-limit') {
+    if (isExampleKey(key)) {
       setTemplate(EXAMPLES[key])
     }
     setExampleKey('')
@@ -347,9 +300,11 @@ export default function Submit() {
                 aria-label="Load example template"
               >
                 <option value="">Load example…</option>
-                <option value="shell">Single-step shell command</option>
-                <option value="parameter-space">Multi-task parameter space</option>
-                <option value="usage-limit">Step with a usage limit</option>
+                {Object.entries(EXAMPLE_LABELS).map(([key, label]) => (
+                  <option key={key} value={key}>
+                    {label}
+                  </option>
+                ))}
               </select>
             </div>
 

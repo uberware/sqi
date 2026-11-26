@@ -131,7 +131,7 @@ unconditionally would widen what the base spec admits.
 | --- | --- | --- |
 | `BOOL` | `true`, `1`, `1.0`, `"yes"`, `"on"` and negatives | `allowedValues` is rejected, as the RFC requires: restricting a two-valued type to one value constrains nothing. Its control is `CHECK_BOX`, without the base spec's two-`allowedValues` requirement. |
 | `RANGE_EXPR` | an `<IntRangeExpr>` string | `minLength`/`maxLength` bound the expression's string length, default max 1024. |
-| `LIST[STRING]`, `LIST[PATH]`, `LIST[INT]`, `LIST[FLOAT]`, `LIST[BOOL]` | a YAML sequence | Stored as canonical JSON in `JobParameter.Default`. `LIST[PATH]` also carries `objectType`, `dataFlow`, `fileFilters` and `fileFilterDefault`. |
+| `LIST[STRING]`, `LIST[PATH]`, `LIST[INT]`, `LIST[FLOAT]`, `LIST[BOOL]` | a YAML sequence | Stored as canonical JSON in `JobParameter.Default`. `LIST[PATH]` also carries `objectType` and `dataFlow`, and `fileFilters` and `fileFilterDefault` under `userInterface`. |
 | `LIST[LIST[INT]]` | a sequence of sequences | One level of nesting, the RFC's own limit. No control but `HIDDEN`; its use case is programmatic. |
 
 Element constraints use a nested `item:` block mirroring the type nesting, so

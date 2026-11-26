@@ -125,29 +125,31 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 // step-block extension that the template declares. Anything else is an error,
 // because the decoder would otherwise drop it: a misspelled base-spec key
 // silently loses its setting, and a misspelled block runs the step with its
-// checks off.
-func validateUnknownStepFields(t *JobTemplate, s StepTemplate, idx int) ValidationErrors {
+// checks off. budget is how many more errors may be reported; each one
+// spends it.
+func validateUnknownStepFields(t *JobTemplate, s StepTemplate, idx int, budget *int) ValidationErrors {
 	var errs ValidationErrors
 	for _, key := range s.UnknownFields {
-		ptr := fmt.Sprintf("/steps/%d/%s", idx, escapePointerToken(key))
+		if *budget == 0 {
+			break
+		}
 		ext, ok := LookupExtension(key)
+		var msg string
 		switch {
 		case !strings.HasPrefix(key, "SQI_"):
-			errs = append(errs, ValidationError{
-				Pointer: ptr,
-				Message: "unknown field; the step template schema defines no such key",
-			})
+			msg = unknownFieldMessage("step template")
 		case !ok || ext.Status != StatusSupported || !ext.StepBlock:
-			errs = append(errs, ValidationError{
-				Pointer: ptr,
-				Message: fmt.Sprintf("unknown sqi step block %q; no supported extension defines it", key),
-			})
+			msg = fmt.Sprintf("unknown sqi step block %q; no supported extension defines it", key)
 		case !t.hasExtension(key):
-			errs = append(errs, ValidationError{
-				Pointer: ptr,
-				Message: fmt.Sprintf("%s block requires declaring the %s extension in extensions", key, key),
-			})
+			msg = fmt.Sprintf("%s block requires declaring the %s extension in extensions", key, key)
+		default:
+			continue // a declared, supported step block
 		}
+		*budget--
+		errs = append(errs, ValidationError{
+			Pointer: fmt.Sprintf("/steps/%d/%s", idx, escapePointerToken(key)),
+			Message: msg,
+		})
 	}
 	return errs
 }
@@ -158,7 +160,7 @@ func unknownTopLevelMessage(field string) string {
 	if isStepBlockName(field) {
 		return field + " is a step-level block; put it on a step, not at the top level of the template"
 	}
-	return "unknown field; the job template schema defines no such key"
+	return unknownFieldMessage("job template")
 }
 
 // ─── path translation validation ─────────────────────────────────────────────
@@ -553,9 +555,18 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	if !exprDeclared {
 		errs = append(errs, validateFormatString(t.Name, "/name", ScopeJob, refNames{params: declaredParams})...)
 	}
+	// One unknown key rejects the template, so the top level and the steps'
+	// own keys share one cap, as the deeper levels do (maxUnknownKeys): a
+	// template stuffed with them returns at most sixteen errors.
+	unknownBudget := maxUnknownKeys
 	for _, f := range t.UnknownFields {
+		if unknownBudget == 0 {
+			break
+		}
+		unknownBudget--
 		errs = append(errs, ValidationError{Pointer: "/" + f, Message: unknownTopLevelMessage(f)})
 	}
+	errs = append(errs, validateUnknownKeys(t)...)
 	errs = append(errs, requireNonEmptyIfSet(t.ExtensionsSet, len(t.Extensions), "/extensions", "extension")...)
 	errs = append(errs, validateDescriptionText(t.Description, "/description")...)
 
@@ -597,7 +608,7 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	for i, s := range t.Steps {
 		errs = append(errs, validateStep(s, i, stepNames, exprDeclared, declaredParams)...)
 		errs = append(errs, validateStepEnvCollisions(s, i, t.JobEnvironments)...)
-		errs = append(errs, validateUnknownStepFields(t, s, i)...)
+		errs = append(errs, validateUnknownStepFields(t, s, i, &unknownBudget)...)
 	}
 
 	// ── acyclicity ────────────────────────────────────────────────────────
@@ -1552,8 +1563,9 @@ func validateUILimits(params []JobParameter) ValidationErrors {
 					Message: fmt.Sprintf("groupLabel exceeds %d characters", maxUIGroupLabelLen),
 				})
 			}
+			// Filters are decoded only from userInterface (§2.2).
+			errs = append(errs, validateFileFilterLimits(p.UserInterface, base)...)
 		}
-		errs = append(errs, validateFileFilterLimits(p, paramPtr)...)
 	}
 	return errs
 }
@@ -1565,20 +1577,20 @@ func validateUILimits(params []JobParameter) ValidationErrors {
 // [maxFileFilterPatternLen] characters. Structural correctness (label
 // required, control pairing, pattern grammar) lives in [validateFileFilters]
 // instead and always runs -- see the invariant documented on
-// [ValidateOptions].
-func validateFileFilterLimits(p JobParameter, ptr string) ValidationErrors {
+// [ValidateOptions]. ptr points at ui.
+func validateFileFilterLimits(ui *ParameterUserInterface, ptr string) ValidationErrors {
 	var errs ValidationErrors
-	if len(p.FileFilters) > maxFileFilters {
+	if len(ui.FileFilters) > maxFileFilters {
 		errs = append(errs, ValidationError{
 			Pointer: ptr + "/fileFilters",
-			Message: fmt.Sprintf("at most %d file filters are allowed (got %d)", maxFileFilters, len(p.FileFilters)),
+			Message: fmt.Sprintf("at most %d file filters are allowed (got %d)", maxFileFilters, len(ui.FileFilters)),
 		})
 	}
-	for i, f := range p.FileFilters {
+	for i, f := range ui.FileFilters {
 		errs = append(errs, validatePathFileFilterLimits(f, fmt.Sprintf("%s/fileFilters/%d", ptr, i))...)
 	}
-	if p.FileFilterDefault != nil {
-		errs = append(errs, validatePathFileFilterLimits(*p.FileFilterDefault, ptr+"/fileFilterDefault")...)
+	if ui.FileFilterDefault != nil {
+		errs = append(errs, validatePathFileFilterLimits(*ui.FileFilterDefault, ptr+"/fileFilterDefault")...)
 	}
 	return errs
 }
@@ -2288,10 +2300,10 @@ func validateJobParams(params []JobParameter, exprDeclared bool) ValidationError
 			errs = append(errs, validateUILabelText(ui.Label, ui.LabelSet, ptr+"/userInterface/label")...)
 			errs = append(errs, validateUILabelText(ui.GroupLabel, ui.GroupLabelSet, ptr+"/userInterface/groupLabel")...)
 			errs = append(errs, validateSingleStepDelta(p, ui, ptr+"/userInterface/singleStepDelta")...)
+			// fileFilters / fileFilterDefault are decoded only from
+			// userInterface (§2.2). Structural, so it always runs.
+			errs = append(errs, validateFileFilters(p.Type, ui, ptr+"/userInterface")...)
 		}
-
-		// fileFilters / fileFilterDefault are also structural, always runs.
-		errs = append(errs, validateFileFilters(p, ptr)...)
 	}
 	return errs
 }
@@ -2488,44 +2500,40 @@ var fileFilterControls = map[ControlType]struct{}{
 // Structural -- always runs. The quantitative caps (label length, filter
 // count) live in [validateFileFilterLimits] instead, gated behind
 // EnforceLimits -- see the invariant documented on [ValidateOptions].
-func validateFileFilters(p JobParameter, ptr string) ValidationErrors {
+// typ is the parameter's type, ui its userInterface, and ptr points at ui.
+func validateFileFilters(typ JobParamType, ui *ParameterUserInterface, ptr string) ValidationErrors {
 	var errs ValidationErrors
-	if len(p.FileFilters) == 0 && p.FileFilterDefault == nil {
+	if len(ui.FileFilters) == 0 && ui.FileFilterDefault == nil {
 		return nil
 	}
 	// Point at whichever field was declared, so a
 	// fileFilterDefault-only parameter doesn't get an error pointing at
 	// the sibling fileFilters field it never set.
 	field := "fileFilterDefault"
-	if len(p.FileFilters) > 0 {
+	if len(ui.FileFilters) > 0 {
 		field = "fileFilters"
 	}
 	// LIST[PATH] carries fileFilters and fileFilterDefault too: RFC 0007's
 	// <JobListPathParameterDefinition> declares both, for the same
 	// CHOOSE_*_FILE_LIST dialogs the scalar type's filters serve.
-	if p.Type != JobParamTypePath && p.Type != JobParamTypeListPath {
+	if typ != JobParamTypePath && typ != JobParamTypeListPath {
 		errs = append(errs, ValidationError{
 			Pointer: ptr + "/" + field,
 			Message: "fileFilters and fileFilterDefault are valid only on PATH or LIST[PATH] parameters",
 		})
 		return errs
 	}
-	if p.UserInterface == nil {
+	if _, ok := fileFilterControls[ui.Control]; !ok {
 		errs = append(errs, ValidationError{
 			Pointer: ptr + "/" + field,
-			Message: "fileFilters and fileFilterDefault require userInterface.control to be CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE",
-		})
-	} else if _, ok := fileFilterControls[p.UserInterface.Control]; !ok {
-		errs = append(errs, ValidationError{
-			Pointer: ptr + "/" + field,
-			Message: fmt.Sprintf("fileFilters and fileFilterDefault require userInterface.control to be CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE (got %q)", p.UserInterface.Control),
+			Message: fmt.Sprintf("fileFilters and fileFilterDefault require userInterface.control to be CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE (got %q)", ui.Control),
 		})
 	}
-	for i, f := range p.FileFilters {
+	for i, f := range ui.FileFilters {
 		errs = append(errs, validatePathFileFilter(f, fmt.Sprintf("%s/fileFilters/%d", ptr, i))...)
 	}
-	if p.FileFilterDefault != nil {
-		errs = append(errs, validatePathFileFilter(*p.FileFilterDefault, ptr+"/fileFilterDefault")...)
+	if ui.FileFilterDefault != nil {
+		errs = append(errs, validatePathFileFilter(*ui.FileFilterDefault, ptr+"/fileFilterDefault")...)
 	}
 	return errs
 }
@@ -3166,6 +3174,11 @@ func validateChunksField(tp TaskParamDefinition, base string, exprDeclared bool,
 		}
 		return nil
 	}
+	// Any other type ignores chunks, so the step would silently run one task
+	// per value; CHUNK[INT] itself already requires TASK_CHUNKING.
+	if tp.Type != TaskParamTypeChunkInt {
+		return ValidationErrors{{Pointer: base + "/chunks", Message: "chunks is valid only on CHUNK[INT] parameters"}}
+	}
 
 	var errs ValidationErrors
 	// The spec's minimum is 0: "When the value is 0, a scheduler should
@@ -3181,9 +3194,7 @@ func validateChunksField(tp TaskParamDefinition, base string, exprDeclared bool,
 		errs = append(errs, validateChunkFormatStrings(*c, base, params)...)
 	}
 	// CHUNK[INT] must have defaultTaskCount >= 1.
-	if tp.Type == TaskParamTypeChunkInt {
-		errs = append(errs, validateChunks(*c, base)...)
-	}
+	errs = append(errs, validateChunks(*c, base)...)
 	return errs
 }
 

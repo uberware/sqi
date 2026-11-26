@@ -59,16 +59,19 @@ jobs:
           filters: |
             # Gates the Go build and every job that runs the server, the
             # worker or the store, on pull requests. It is false only when
-            # every changed file is under web/ (other than web/embed.go, which
-            # is Go): the web jobs (web-check, web-e2e, which builds the
-            # binaries and drives the embedded UI) cover such a change. The
-            # filter is the complement of that, not a list of backend paths,
-            # because docs/, presets/, scripts/ and the root files are all read
-            # by Go tests, so a new top-level path must run them by default.
+            # every changed file is under web/ (other than web/'s own Go files
+            # and submitExamples.ts, whose templates web/submitexamples_test.go
+            # validates with the Go parser): the web jobs (web-check, web-e2e,
+            # which builds the binaries and drives the embedded UI) cover such
+            # a change. The filter is the complement of that, not a list of
+            # backend paths, because docs/, presets/, scripts/ and the root
+            # files are all read by Go tests, so a new top-level path must run
+            # them by default.
             # Pushes to main always run everything.
             backend:
               - '!web/**'
-              - 'web/embed.go'
+              - 'web/*.go'
+              - 'web/src/pages/submitExamples.ts'
             python:
               - 'clients/python/**'
               - '.github/workflows/ci.yml'

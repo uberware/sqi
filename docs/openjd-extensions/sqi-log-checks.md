@@ -68,14 +68,16 @@ Structural, enforced at submission (`internal/openjd/logchecks.go`,
   the step decoder would otherwise drop it and the step would run with its checks
   off. Any other step key the 2023-09 step schema does not define (a misspelt
   `stepEnviroments`, say) is an error at `/steps/N/<key>`: "unknown field; the
-  step template schema defines no such key".
+  step template schema defines no such key", as is an unknown key at any other
+  level of the template.
 - A `SQI_LOG_CHECKS` key anywhere else in a step (under `script`,
   `actions.onRun`, a step environment, and so on), in a job environment, or in a
   parameter definition is an error at the pointer where it was found ("is a
   step-level block and is ignored here; put it directly on the step"), whether or
   not the extension is declared, because the decoder reads the block only from
   its step-level slot and would otherwise drop it. An environment variable named
-  `SQI_LOG_CHECKS` under `variables` is not a block and is left alone.
+  `SQI_LOG_CHECKS` under `variables` is not a block and is left alone, and one
+  below an unknown key is not reported, since that key is already an error.
 - The block holds only `failOn` and `requireLine`; any other field is an error.
 - Each list must be a list of strings (an unquoted YAML `404` is rejected as
   "must be a string" rather than coerced).

@@ -98,7 +98,7 @@ template:
       default: 20
       minValue: 0
       maxValue: 51
-      userInterface: { control: SPIN_BOX, label: Quality (CRF, lower is better) }
+      userInterface: { control: SPIN_BOX, label: "Quality (CRF, lower is better)" }
     - name: AudioCodec
       type: STRING
       default: aac
