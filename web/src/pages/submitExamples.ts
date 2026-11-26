@@ -50,7 +50,7 @@ name: licensed-render
 steps:
   - name: render
     # Require a free slot in a usage pool before each task is dispatched.
-    # The text after "amount.worker.usagepool." is the pool NAME and must
+    # The text after "amount.worker.usagepool." is the pool name and must
     # match a pool registered on the Usage Pools page (here: "arnold").
     hostRequirements:
       amounts:

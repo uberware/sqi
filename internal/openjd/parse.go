@@ -161,8 +161,8 @@ func unknownTopLevelFields(raw map[string]any) []string {
 
 // unknownStepFields returns the sorted keys of a step's raw mapping that the
 // step template schema does not define (stepKeySchema). Step-block extensions
-// (SQI_LOG_CHECKS) are among them: validateUnknownStepFields accepts one when
-// it is supported and declared.
+// (SQI_LOG_CHECKS, SQI_LOG_PROGRESS) are among them: validateUnknownStepFields
+// accepts one when it is supported and declared.
 func unknownStepFields(raw map[string]any) []string {
 	var out []string
 	for k := range raw {

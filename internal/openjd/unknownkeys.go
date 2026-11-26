@@ -215,7 +215,7 @@ func findUnknownKeys(raw map[string]any) []unknownKey {
 }
 
 // unknownKeyTop holds the first maxUnknownKeys unknown keys by pointer, in
-// order, so a template stuffed with unknown keys costs no more than sixteen.
+// order, so a template stuffed with unknown keys reports at most sixteen.
 type unknownKeyTop []unknownKey
 
 // add records k, at parent/token, unless sixteen earlier keys are held.

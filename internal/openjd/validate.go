@@ -557,7 +557,7 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	}
 	// One unknown key rejects the template, so the top level and the steps'
 	// own keys share one cap, as the deeper levels do (maxUnknownKeys): a
-	// template stuffed with them returns sixteen errors, not one per copy.
+	// template stuffed with them returns at most sixteen errors.
 	unknownBudget := maxUnknownKeys
 	for _, f := range t.UnknownFields {
 		if unknownBudget == 0 {
@@ -2301,7 +2301,7 @@ func validateJobParams(params []JobParameter, exprDeclared bool) ValidationError
 			errs = append(errs, validateUILabelText(ui.GroupLabel, ui.GroupLabelSet, ptr+"/userInterface/groupLabel")...)
 			errs = append(errs, validateSingleStepDelta(p, ui, ptr+"/userInterface/singleStepDelta")...)
 			// fileFilters / fileFilterDefault are decoded only from
-			// userInterface (§2.2), and are structural: always runs.
+			// userInterface (§2.2). Structural, so it always runs.
 			errs = append(errs, validateFileFilters(p.Type, ui, ptr+"/userInterface")...)
 		}
 	}

@@ -319,8 +319,8 @@ steps:
 			object:  "step dependency",
 		},
 		{
-			// §2.2 puts the filters under userInterface; earlier sqi releases
-			// also read them here.
+			// §2.2 puts the filters under userInterface, so at the parameter
+			// root they are an unknown key.
 			name: "file filters at the parameter root",
 			src: `parameterDefinitions:
   - name: P
@@ -578,7 +578,7 @@ steps:
 	}
 }
 
-func TestFindUnknownKeys_TopAndStepLevelUnchanged(t *testing.T) {
+func TestFindUnknownKeys_TopAndStepLevelMessages(t *testing.T) {
 	src := `specificationVersion: jobtemplate-2023-09
 name: J
 unknownField: x
@@ -649,9 +649,10 @@ func TestValidate_TopAndStepUnknownKeysCapped(t *testing.T) {
 	}
 }
 
-// TestValidate_ChunksOnlyOnChunkInt: chunks is allowed by the unknown-key walk
-// because TASK_CHUNKING adds it, but on any type other than CHUNK[INT] it would
-// be dropped and the step run one task per value, so it is an error.
+// TestValidate_ChunksOnlyOnChunkInt: the unknown-key walk accepts chunks, a
+// TASK_CHUNKING key, on every task parameter, but only CHUNK[INT] applies it.
+// On another type it is an error, since ignoring it would run the step one task
+// per value.
 func TestValidate_ChunksOnlyOnChunkInt(t *testing.T) {
 	src := `specificationVersion: jobtemplate-2023-09
 name: J

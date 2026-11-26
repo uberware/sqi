@@ -29,10 +29,11 @@ type JobTemplate struct {
 	// the decoder so validation can reject them; the spec's job template is a
 	// closed object.
 	UnknownFields []string
-	// unknownKeys are the keys below the top level and a step's own keys that
-	// their object's schema does not define, and the step-block extension keys
-	// (SQI_LOG_CHECKS) found below a step rather than on it; see
-	// findUnknownKeys. Carried for validation to reject.
+	// unknownKeys are the keys that their object's schema does not define,
+	// other than the template's top-level keys and a step's own keys, and the
+	// step-block extension keys (SQI_LOG_CHECKS, SQI_LOG_PROGRESS) found below
+	// a step rather than on it; see findUnknownKeys. Carried for validation to
+	// reject.
 	unknownKeys []unknownKey
 
 	// PathTranslation is the parsed SQI_PATH_TRANSLATION extension block, or nil

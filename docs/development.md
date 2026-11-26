@@ -545,8 +545,9 @@ CI starts the PostgreSQL jobs, the high-availability job and the integration
 suite without waiting for the build, lint and unit-test job, and skips all Go
 jobs on a pull request that changes only files under `web/` (the web jobs cover
 it), apart from `web/`'s own Go files and `web/src/pages/submitExamples.ts`,
-whose example templates a Go test validates. The `merge_group` trigger lets a GitHub merge queue run the workflow once
-on the queued change merged onto `main`.
+whose example templates a Go test validates. The `merge_group` trigger lets a
+GitHub merge queue run the workflow once on the queued change merged onto
+`main`.
 
 A local `PG_VERSION=16` run needs a PostgreSQL 16 `pg_dump` and `pg_restore`
 first on `PATH`. The backup round trip restores a dump into the test server,
