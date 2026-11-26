@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import io
 import shutil
+import sys
 from importlib import resources
 from pathlib import Path, PurePosixPath
 
@@ -13,6 +14,9 @@ import pytest
 
 from sqi_submitter import cli, install
 from tests.conftest import HOSTS_DIR, no_qt
+
+# Taken before the autouse fixture stubs it, for the tests of the real lookup.
+_REAL_WINDOWS_DOCUMENTS = install._windows_documents
 
 # Small package files standing in for each host's real files.
 _STAND_INS: dict[str, list[str]] = {
@@ -124,6 +128,72 @@ def test_default_destination_unreal(
     platform: str, env: dict[str, str], expected: Path | None
 ) -> None:
     assert install.default_destination("unreal", platform, env) == expected
+
+
+@pytest.mark.parametrize(
+    ("host", "leaf"),
+    [
+        ("unreal", Path("UnrealEngine") / "Python"),
+        ("keyshot", Path("KeyShot 2024") / "Scripts"),
+        ("vred", Path("Autodesk") / "VRED-18.0" / "ScriptPlugins"),
+    ],
+)
+def test_default_destination_follows_redirected_documents(
+    host: str, leaf: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A OneDrive-redirected Documents folder is where the host looks, so it is used."""
+    redirected = tmp_path / "OneDrive" / "Documents"
+    for documents in (tmp_path / "Documents", redirected):
+        (documents / "KeyShot 2024").mkdir(parents=True)
+        (documents / "Autodesk" / "VRED-18.0").mkdir(parents=True)
+    monkeypatch.setattr(install, "_windows_documents", lambda: str(redirected))
+    env = {"USERPROFILE": str(tmp_path)}
+    assert install.default_destination(host, "win32", env) == redirected / leaf
+
+
+def test_redirected_documents_one_folder_rule(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """KeyShot and VRED look for their one folder in the redirected Documents, not the profile."""
+    redirected = tmp_path / "OneDrive" / "Documents"
+    redirected.mkdir(parents=True)
+    (tmp_path / "Documents" / "KeyShot 2024").mkdir(parents=True)
+    (tmp_path / "Documents" / "Autodesk" / "VRED-18.0").mkdir(parents=True)
+    monkeypatch.setattr(install, "_windows_documents", lambda: str(redirected))
+    env = {"USERPROFILE": str(tmp_path)}
+    assert install.default_destination("keyshot", "win32", env) is None
+    assert install.default_destination("vred", "win32", env) is None
+
+
+def test_redirected_documents_without_userprofile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(install, "_windows_documents", lambda: str(tmp_path))
+    assert install.default_destination("unreal", "win32", {}) == (
+        tmp_path / "UnrealEngine" / "Python"
+    )
+
+
+def test_known_documents_folder_is_windows_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(install, "_windows_documents", lambda: str(tmp_path / "elsewhere"))
+    env = {"HOME": str(tmp_path)}
+    assert install.default_destination("unreal", "darwin", env) == (
+        tmp_path / "Documents" / "UnrealEngine" / "Python"
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="asks Windows for its Documents folder")
+def test_windows_documents_real_call() -> None:
+    found = _REAL_WINDOWS_DOCUMENTS()
+    assert found is not None
+    assert Path(found).is_dir()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the lookup exists only on Windows")
+def test_windows_documents_is_none_off_windows() -> None:
+    assert _REAL_WINDOWS_DOCUMENTS() is None
 
 
 def test_unreal_next_step_and_no_destination_hint(

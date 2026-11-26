@@ -144,6 +144,18 @@ def native_messages(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return shown
 
 
+@pytest.fixture(autouse=True)
+def _no_known_documents_folder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make Windows' Documents lookup report nothing, so destinations follow the test's env.
+
+    On a real Windows host the lookup would return the machine's own Documents folder. Tests of
+    the real lookup restore it from a reference taken at import time.
+    """
+    from sqi_submitter import install
+
+    monkeypatch.setattr(install, "_windows_documents", lambda: None)
+
+
 @pytest.fixture
 def _clean_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: object) -> Iterator[None]:
     monkeypatch.setenv("SQI_SUBMITTER_SETTINGS", str(tmp_path) + "/settings.json")

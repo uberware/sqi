@@ -491,10 +491,11 @@ fixed by Unreal.
 1. Install `sqi-submit` on the machine, outside the Editor's Python:
    `pipx install "sqi-submitter[qt]"`.
 2. Run `sqi-submit install-host unreal`. It copies both files into
-   `Documents\UnrealEngine\Python` under your profile (`%USERPROFILE%` on
-   Windows, `$HOME` elsewhere), creating the folder if needed. That is a folder
-   the Editor adds to its Python path. If your Documents folder is redirected
-   (OneDrive, folder redirection), pass `--dest` with the real path.
+   `UnrealEngine\Python` in your Documents folder, creating the folder if
+   needed. That is a folder the Editor adds to its Python path. On Windows it
+   uses the Documents folder Windows reports, as the Editor does, so a folder
+   moved by OneDrive or folder redirection works; elsewhere it is
+   `$HOME/Documents`.
 3. Restart the Editor. **Tools → Submit to sqi…** appears in the level
    editor's main menu.
 
@@ -701,11 +702,11 @@ and a VRED script plugin adds the menu. Follow the steps in order.
    `sqi_submitter_site.vred` and `sqi_submitter_site.katana` are per host.
 4. Run `sqi-submit install-host vred` (any ordinary install of `sqi-submitter`
    will do; the command needs no Qt). When it finds exactly one `VRED-*` folder
-   under `%USERPROFILE%\Documents\Autodesk`, it copies the plugin to
+   under `Autodesk` in your Documents folder, it copies the plugin to
    `<that folder>\ScriptPlugins\SubmitToSqi\SubmitToSqi.py`; otherwise it prints
-   the path and what to do. VRED Pro is Windows-only, so there is no default
-   destination elsewhere. If your Documents folder is redirected (OneDrive,
-   folder redirection), pass `--dest` with the real path.
+   the path and what to do. It uses the Documents folder Windows reports, as
+   VRED does, so a folder moved by OneDrive or folder redirection works. VRED
+   Pro is Windows-only, so there is no default destination elsewhere.
 5. Restart VRED. **sqi → Submit to sqi…** appears in the menu bar.
 
 If the import fails when you click, VRED shows a message box that names both
@@ -738,8 +739,9 @@ file, so there is no hook and no menu entry.
    `KeyShot`, or `KeyShot 2024`), it copies the script into that folder's
    `Scripts` folder. With none, or with several (`KeyShot` and `KeyShot 2024`),
    or on Linux, it prints the file's path and asks you to copy it into your
-   KeyShot `Scripts` folder or pass `--dest`. If your Documents folder is
-   redirected (OneDrive, folder redirection), pass `--dest` with the real path.
+   KeyShot `Scripts` folder or pass `--dest`. On Windows it uses the Documents
+   folder Windows reports, as KeyShot does, so a folder moved by OneDrive or
+   folder redirection works.
 3. In KeyShot open **Window → Scripting Console** and run `sqi_keyshot_submit`.
 
 The targets are the scene's studios, named after the studio. KeyShot has a
@@ -902,10 +904,10 @@ same for both of its modes: its optional in-process mode needs only
 | `blender` | `sqi_blender_addon.py` | none | prints the file's path and the install steps; copies nothing |
 | `cinema4d` | `sqi_submit.pyp` | the `plugins` folder under the user's `Maxon Cinema 4D *` preferences folder (`%APPDATA%\Maxon` on Windows, `~/Library/Preferences/Maxon` on macOS), only when exactly one such folder exists | with none or several (or on Linux), prints the path and asks you to copy it or pass `--dest` |
 | `aftereffects` | `Submit to sqi.jsx`, `json2.js` | none (needs administrator rights) | prints both paths and the destination pattern; copies nothing |
-| `unreal` | `sqi_unreal_submit.py`, `init_unreal.py` (hook) | `Documents/UnrealEngine/Python` under the user's profile (`%USERPROFILE%` on Windows, `$HOME` elsewhere) | only when that variable is missing: prints the paths and asks you to copy them or pass `--dest` |
+| `unreal` | `sqi_unreal_submit.py`, `init_unreal.py` (hook) | `UnrealEngine/Python` in the user's Documents folder (on Windows the one Windows reports, so a redirected one too; `$HOME/Documents` elsewhere) | only when no Documents folder can be found: prints the paths and asks you to copy them or pass `--dest` |
 | `katana` | `sqi_katana_submit.py`, `init.py` (hook) | `.katana/Startup` under the home folder, on Windows and Linux | on macOS, or with no home folder, prints the paths and asks you to copy them or pass `--dest` |
-| `vred` | `SubmitToSqi/SubmitToSqi.py` | `ScriptPlugins` in the one `VRED-*` folder under `%USERPROFILE%\Documents\Autodesk`, only when exactly one exists (Windows only) | with none or several, prints the path and asks you to copy the `SubmitToSqi` folder or pass `--dest` |
-| `keyshot` | `sqi_keyshot_submit.py` | `Scripts` in the one `KeyShot*` folder under `Documents`, only when exactly one exists (Windows and macOS) | with none, several or on Linux, prints the path and asks you to copy it or pass `--dest` |
+| `vred` | `SubmitToSqi/SubmitToSqi.py` | `ScriptPlugins` in the one `VRED-*` folder under `Autodesk` in the Documents folder Windows reports, only when exactly one exists (Windows only) | with none or several, prints the path and asks you to copy the `SubmitToSqi` folder or pass `--dest` |
+| `keyshot` | `sqi_keyshot_submit.py` | `Scripts` in the one `KeyShot*` folder under `Documents` (on Windows the one Windows reports), only when exactly one exists (Windows and macOS) | with none, several or on Linux, prints the path and asks you to copy it or pass `--dest` |
 | `silhouette` | `sqi_silhouette_submit.py`, `sfxuser.py` (hook) | `scripts` under `$SFX_USER_PATH`, only when that variable is set | prints the paths and the `$(SFX_USER_PATH)/scripts` pattern; copies nothing |
 | `fusion` | `Submit to sqi.lua` | `Scripts/Comp` in the user's `Blackmagic Design/Fusion` profile (`%APPDATA%` on Windows, `~/Library/Application Support` on macOS, `~/.fusion/BlackmagicDesign/Fusion` on Linux) | only when the environment variable is missing: prints the path and asks you to copy it or pass `--dest` |
 | `modo` | the `sqi/` kit: `index.cfg`, `lxserv/sqi_modo_submit.py` | `Scripts` in the user's `Luxology` folder (`%APPDATA%\Luxology`, `~/Library/Application Support/Luxology`, `~/.luxology`) | only when the environment variable is missing: prints the paths and asks you to copy the folder or pass `--dest` |
@@ -1879,8 +1881,9 @@ support):**
    `install-host keyshot` and runs it from there.
 3. The destination. With one `KeyShot*` folder under `Documents`, the script
    lands in its `Scripts` folder. With two (`KeyShot` and `KeyShot 2024`) the
-   command prints guidance and copies nothing. With a redirected Documents
-   folder (OneDrive), check where the script went.
+   command prints guidance and copies nothing. With a Documents folder moved by
+   OneDrive, check that the script went to the OneDrive one and that KeyShot
+   lists it.
 4. Studios. A scene with two studios lists both by name, each with `Studio`
    filled in. `keyshot-studio-render` with two ticked submits two jobs.
 5. An unsaved scene shows "Save your scene before submitting" in a message box
