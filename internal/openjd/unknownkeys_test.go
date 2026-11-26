@@ -628,6 +628,27 @@ steps:
 	}
 }
 
+// TestValidate_TopAndStepUnknownKeysCapped pins the shared cap on the top
+// level and the steps' own keys: two top-level typos and one in each of forty
+// steps report sixteen errors, the top level's first and then the steps' in
+// order.
+func TestValidate_TopAndStepUnknownKeysCapped(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("specificationVersion: jobtemplate-2023-09\nname: J\ntopA: x\ntopB: x\nsteps:\n")
+	for i := range 40 {
+		fmt.Fprintf(&b, "  - name: S%02d\n    stepEnviroments: []\n%s", i, onRunEcho)
+	}
+	got := unknownKeyErrors(t, b.String(), openjd.FormatYAML)
+	if len(got) != 16 {
+		t.Fatalf("unknown-key errors = %d, want 16: %v", len(got), got)
+	}
+	if got[0].Pointer != "/topA" || got[1].Pointer != "/topB" || got[2].Pointer != "/steps/0/stepEnviroments" ||
+		got[15].Pointer != "/steps/13/stepEnviroments" {
+		t.Errorf("reported %s, %s, %s .. %s; want /topA, /topB, then steps 0 .. 13",
+			got[0].Pointer, got[1].Pointer, got[2].Pointer, got[15].Pointer)
+	}
+}
+
 // TestValidate_ChunksOnlyOnChunkInt: chunks is allowed by the unknown-key walk
 // because TASK_CHUNKING adds it, but on any type other than CHUNK[INT] it would
 // be dropped and the step run one task per value, so it is an error.

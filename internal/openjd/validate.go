@@ -125,29 +125,31 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 // step-block extension that the template declares. Anything else is an error,
 // because the decoder would otherwise drop it: a misspelled base-spec key
 // silently loses its setting, and a misspelled block runs the step with its
-// checks off.
-func validateUnknownStepFields(t *JobTemplate, s StepTemplate, idx int) ValidationErrors {
+// checks off. budget is how many more errors may be reported; each one
+// spends it.
+func validateUnknownStepFields(t *JobTemplate, s StepTemplate, idx int, budget *int) ValidationErrors {
 	var errs ValidationErrors
 	for _, key := range s.UnknownFields {
-		ptr := fmt.Sprintf("/steps/%d/%s", idx, escapePointerToken(key))
+		if *budget == 0 {
+			break
+		}
 		ext, ok := LookupExtension(key)
+		var msg string
 		switch {
 		case !strings.HasPrefix(key, "SQI_"):
-			errs = append(errs, ValidationError{
-				Pointer: ptr,
-				Message: unknownFieldMessage("step template"),
-			})
+			msg = unknownFieldMessage("step template")
 		case !ok || ext.Status != StatusSupported || !ext.StepBlock:
-			errs = append(errs, ValidationError{
-				Pointer: ptr,
-				Message: fmt.Sprintf("unknown sqi step block %q; no supported extension defines it", key),
-			})
+			msg = fmt.Sprintf("unknown sqi step block %q; no supported extension defines it", key)
 		case !t.hasExtension(key):
-			errs = append(errs, ValidationError{
-				Pointer: ptr,
-				Message: fmt.Sprintf("%s block requires declaring the %s extension in extensions", key, key),
-			})
+			msg = fmt.Sprintf("%s block requires declaring the %s extension in extensions", key, key)
+		default:
+			continue // a declared, supported step block
 		}
+		*budget--
+		errs = append(errs, ValidationError{
+			Pointer: fmt.Sprintf("/steps/%d/%s", idx, escapePointerToken(key)),
+			Message: msg,
+		})
 	}
 	return errs
 }
@@ -553,7 +555,15 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	if !exprDeclared {
 		errs = append(errs, validateFormatString(t.Name, "/name", ScopeJob, refNames{params: declaredParams})...)
 	}
+	// One unknown key rejects the template, so the top level and the steps'
+	// own keys share one cap, as the deeper levels do (maxUnknownKeys): a
+	// template stuffed with them returns sixteen errors, not one per copy.
+	unknownBudget := maxUnknownKeys
 	for _, f := range t.UnknownFields {
+		if unknownBudget == 0 {
+			break
+		}
+		unknownBudget--
 		errs = append(errs, ValidationError{Pointer: "/" + f, Message: unknownTopLevelMessage(f)})
 	}
 	errs = append(errs, validateUnknownKeys(t)...)
@@ -598,7 +608,7 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	for i, s := range t.Steps {
 		errs = append(errs, validateStep(s, i, stepNames, exprDeclared, declaredParams)...)
 		errs = append(errs, validateStepEnvCollisions(s, i, t.JobEnvironments)...)
-		errs = append(errs, validateUnknownStepFields(t, s, i)...)
+		errs = append(errs, validateUnknownStepFields(t, s, i, &unknownBudget)...)
 	}
 
 	// ── acyclicity ────────────────────────────────────────────────────────
