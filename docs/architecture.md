@@ -371,7 +371,7 @@ handleLeaseRequest(workerID, queueID)
   │     (scoped to the worker before batchSize applies: its queue_ids, every queue when
   │      empty, and, for a scheduler managing every farm, the worker's farm; otherwise
   │      higher-priority work it cannot take fills the batch and it is leased nothing.
-  │      WorkerEligible still checks queue and farm per candidate)
+  │      WorkerEligible also checks queue and farm per candidate)
   │
   │  First-fit walk over candidates:
   ├─ effectiveCost = task.RequiredCores ?? worker.CPUCount; skip if it does not fit free

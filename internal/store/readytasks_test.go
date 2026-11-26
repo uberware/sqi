@@ -30,19 +30,21 @@ func TestListReadyTasks_QueueFilter(t *testing.T) {
 
 			cases := []struct {
 				name   string
+				farmID string
 				queues []string
 				want   []string
 			}{
-				{"no list is every queue", nil, highTasks[:2]},
-				{"empty list is every queue", []string{}, highTasks[:2]},
-				{"one queue below the limit's cut", []string{low}, []string{lowTask}},
-				{"two queues keep priority order", []string{low, other}, []string{otherTask, lowTask}},
-				{"a listed queue appearing twice", []string{low, low}, []string{lowTask}},
-				{"an unknown queue matches nothing", []string{uuid.NewString()}, nil},
+				{"no list is every queue", farm.ID, nil, highTasks[:2]},
+				{"empty list is every queue", farm.ID, []string{}, highTasks[:2]},
+				{"one queue below the limit's cut", farm.ID, []string{low}, []string{lowTask}},
+				{"one queue across every farm", "", []string{low}, []string{lowTask}},
+				{"two queues keep priority order", farm.ID, []string{low, other}, []string{otherTask, lowTask}},
+				{"a listed queue appearing twice", farm.ID, []string{low, low}, []string{lowTask}},
+				{"an unknown queue matches nothing", farm.ID, []string{uuid.NewString()}, nil},
 			}
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
-					got, err := st.ListReadyTasks(t.Context(), farm.ID, tc.queues, time.Now().UTC(), 2)
+					got, err := st.ListReadyTasks(t.Context(), tc.farmID, tc.queues, time.Now().UTC(), 2)
 					if err != nil {
 						t.Fatalf("ListReadyTasks: %v", err)
 					}
