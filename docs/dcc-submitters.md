@@ -1779,6 +1779,10 @@ After installing per [Installation per host](#installation-per-host):
    appears. Run `install-host unreal` again: it reports that your file already
    loads sqi. Over the sqi-installed file (the marker line present) it is
    replaced without complaint.
+9. **A Documents folder moved by OneDrive.** On a machine where OneDrive backs
+   up Documents, run `install-host unreal`: the files land in
+   `OneDrive\Documents\UnrealEngine\Python`, not `%USERPROFILE%\Documents`, and
+   after a restart the **Tools** menu lists **Submit to sqi…**.
 
 **Confirmed on Unreal Engine 5.8.4, on Windows 11:** items 1 to 8, except item
 3's job whose config asset was edited in the queue (see below).
@@ -1868,6 +1872,11 @@ support):**
    does not close VRED).
 9. The Python-version question. Install with the `--python-version` route and
    confirm the wheels import in VRED's Python.
+10. **A Documents folder moved by OneDrive.** On a machine where OneDrive backs
+    up Documents, run `install-host vred`: the plugin lands under
+    `OneDrive\Documents\Autodesk\VRED-<version>\ScriptPlugins`, and after a
+    restart **sqi** is in the menu bar. If VRED reads `%USERPROFILE%\Documents`
+    instead, report it: `install-host` assumes VRED asks Windows for the folder.
 
 ### KeyShot checklist
 

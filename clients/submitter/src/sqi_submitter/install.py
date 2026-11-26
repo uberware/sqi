@@ -212,16 +212,16 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     ``.katana/Startup`` under the home folder on Windows and Linux (``None`` on macOS), where
     Katana runs ``init.py`` at startup. Cinema 4D's preferences folder carries a version suffix
     that cannot be known, so it is returned only when exactly one ``Maxon Cinema 4D *`` folder
-    exists. Silhouette's is
-    ``scripts`` under ``SFX_USER_PATH`` when that variable is set, else ``None``. KeyShot's is the
-    ``Scripts`` folder of its one ``KeyShot*`` folder in Documents (Windows and macOS only: KeyShot
-    has no Linux desktop product), under the same one-folder rule. Modo's is ``Scripts`` in its
-    per-user ``Luxology`` folder: ``%APPDATA%/Luxology`` on Windows, ``~/Library/Application
-    Support/Luxology`` on macOS and ``~/.luxology`` on Linux. Fusion's is ``Scripts/Comp`` in
-    its per-user ``Blackmagic Design/Fusion`` folder: under ``%APPDATA%`` on Windows, ``~/Library/
-    Application Support`` on macOS and ``~/.fusion`` on Linux (where the vendor folder is spelled
-    ``BlackmagicDesign``). VRED's is ``ScriptPlugins`` in its one ``VRED-*`` folder under
-    ``Documents/Autodesk`` (Windows only: VRED Pro has no other platform).
+    exists. Silhouette's is ``scripts`` under ``SFX_USER_PATH`` when that variable is set, else
+    ``None``. KeyShot's is the ``Scripts`` folder of its one ``KeyShot*`` folder in Documents
+    (Windows and macOS only: KeyShot has no Linux desktop product), under the same one-folder
+    rule. Modo's is ``Scripts`` in its per-user ``Luxology`` folder: ``%APPDATA%/Luxology`` on
+    Windows, ``~/Library/Application Support/Luxology`` on macOS and ``~/.luxology`` on Linux.
+    Fusion's is ``Scripts/Comp`` in its per-user ``Blackmagic Design/Fusion`` folder: under
+    ``%APPDATA%`` on Windows, ``~/Library/Application Support`` on macOS and ``~/.fusion`` on
+    Linux (where the vendor folder is spelled ``BlackmagicDesign``). VRED's is ``ScriptPlugins``
+    in its one ``VRED-*`` folder under ``Documents/Autodesk`` (Windows only: VRED Pro has no
+    other platform).
     """
     if host == "unreal":
         documents = _documents(platform, env)
