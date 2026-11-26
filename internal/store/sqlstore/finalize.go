@@ -34,9 +34,13 @@ RETURNING status`
          ELSE 'completed' END`
 
 	// sqlStepHasNoOpenTask holds when no task of the step is still open, the
-	// guard every step finalization, and the stuck-step list, share.
+	// guard every step finalization, and the stuck-step list, share. The open
+	// statuses are listed rather than the terminal ones excluded, so the
+	// tasks (step_id, status) index answers it with a few seeks instead of a
+	// scan of the step's finished tasks; the stuck-step list runs it on every
+	// sweep tick.
 	sqlStepHasNoOpenTask = `NOT EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id
-                   AND t.status NOT IN ('succeeded', 'failed', 'canceled'))`
+                   AND t.status IN ('pending', 'ready', 'assigned', 'running'))`
 
 	// sqlFinalizeJob is invariant I4 for jobs, computed over the job's steps.
 	sqlFinalizeJob = `

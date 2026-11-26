@@ -3,7 +3,9 @@
 package scheduler
 
 import (
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/internal/store"
@@ -173,4 +175,41 @@ func TestFinalizeSettledJobs_FencedStops(t *testing.T) {
 		wantJobStatus(t, st, g.job.ID, "fenced", store.JobStatusRunning)
 	}
 	rec.assertFencedOnce(t)
+}
+
+// TestSweepOnce_FinalizesStuckStep pins that a sweep tick finalizes a step of a
+// live job whose tasks are all terminal but which was never finalized, and the
+// job with it, with no restart.
+func TestSweepOnce_FinalizesStuckStep(t *testing.T) {
+	st := newCheckedFake(t)
+	g := seedStatusJob(t, st, statusJob{steps: []statusStep{{
+		name: "A", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusSucceeded},
+	}}})
+	s := newReconcileScheduler(st, &recordBus{}, ws.NoopNotifier{})
+
+	s.sweepOnce(t.Context())
+
+	wantStepStatus(t, st, g.steps[0].ID, "stuck step", store.StepStatusCompleted)
+	wantJobStatus(t, st, g.job.ID, "its job", store.JobStatusCompleted)
+}
+
+// TestFinalizeSettledJobs_LogsOnlyARepair pins that the sweep reports a repair
+// only when its write finalized the job: a listed job whose step reopened is
+// left without a "finalized" line, and a listed job deleted before its turn is
+// skipped without a warning.
+func TestFinalizeSettledJobs_LogsOnlyARepair(t *testing.T) {
+	st := newCheckedFake(t)
+	reopened := seedStatusJob(t, st, statusJob{steps: []statusStep{{
+		name: "A", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusRunning},
+	}}})
+	spy := &writeCountingStore{Store: st, settledJobs: []string{reopened.job.ID, "job-deleted"}}
+	logs := &lockedBuffer{}
+	s := newReconcileScheduler(spy, &recordBus{}, ws.NoopNotifier{})
+	s.logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	s.finalizeSettledJobs(t.Context())
+
+	if out := logs.String(); strings.Contains(out, "finalized a live job") || strings.Contains(out, "level=WARN") {
+		t.Errorf("sweep logged a repair or a warning for jobs it did not finalize:\n%s", out)
+	}
 }

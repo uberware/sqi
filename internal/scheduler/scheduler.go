@@ -827,14 +827,16 @@ func (s *Scheduler) Stop() {
 	}
 }
 
-// reconcileStuckSteps finalizes, once at start, every step of a live
-// (non-terminal) job whose tasks are all terminal but which was never
-// finalized, and which no future task report will finalize. Such a step is
-// left when completion was decided from one page of a step's tasks (a step
-// with more than [store.MaxLimit] tasks), or when a single-task cancel hit a
-// job's last open task. Nothing reports on those tasks again, so without this
-// pass the step, its job, the steps behind it and the jobs blocked on it stay
-// stuck.
+// reconcileStuckSteps finalizes, at start and on every sweep tick, every step
+// of a live (non-terminal) job whose tasks are all terminal but which was
+// never finalized, and which no future task report will finalize. Such a step
+// is left when completion was decided from one page of a step's tasks (a step
+// with more than [store.MaxLimit] tasks), when a single-task cancel hit a
+// job's last open task, or when a store error interrupted the completion
+// after a task's terminal write on a path nothing redelivers (a REST task
+// cancel, or an attempt the lease failed because its assignment could not be
+// built). Nothing reports on those tasks again, so without this pass the step,
+// its job, the steps behind it and the jobs blocked on it stay stuck.
 //
 // The repair is not a data migration. Finalizing a step has downstream effects
 // (dependency propagation keyed on step names, the transitive cancel cascade,
@@ -1788,8 +1790,10 @@ func (s *Scheduler) sweepOnce(ctx context.Context) {
 		s.demoteStalledJobs,
 		s.sweepUnschedulable,
 		s.sweepCapacity,
-		// Before the blocked-job backstop, so a job blocked on one this
-		// finalizes is released on the same tick.
+		// The stuck-step repair first, since a step it finalizes can leave
+		// its job settled; both before the blocked-job backstop, so a job
+		// blocked on one they finalize is released on the same tick.
+		s.reconcileStuckSteps,
 		s.finalizeSettledJobs,
 		s.sweepBlockedJobsOnce,
 		s.pruneReregisterAsks,

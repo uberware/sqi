@@ -622,12 +622,19 @@ func (s *Scheduler) propagateStepDependencies(ctx context.Context, jobID string,
 // because ReconcileDependents is idempotent and a redelivery must not strand
 // them.
 func (s *Scheduler) checkJobCompletion(ctx context.Context, jobID string) error {
+	_, err := s.completeJob(ctx, jobID)
+	return err
+}
+
+// completeJob is [Scheduler.checkJobCompletion], also reporting whether its
+// FinalizeJob wrote the job's terminal status.
+func (s *Scheduler) completeJob(ctx context.Context, jobID string) (bool, error) {
 	status, changed, err := s.store.FinalizeJob(ctx, jobID, time.Now().UTC())
 	if err != nil {
-		return err
+		return false, err
 	}
 	if status == "" {
-		return nil // a step is still in flight
+		return false, nil // a step is still in flight
 	}
 	if changed {
 		s.logger.InfoContext(
@@ -650,11 +657,11 @@ func (s *Scheduler) checkJobCompletion(ctx context.Context, jobID string) error 
 	// the report must not be acknowledged, so the new leader replays it.
 	err = s.ReconcileDependents(ctx, jobID)
 	if errors.Is(err, store.ErrFenced) {
-		return err
+		return changed, err
 	}
 	if err != nil {
 		s.logger.ErrorContext(ctx, "scheduler: reconcile dependents after completion failed",
 			slog.String("job_id", jobID), slog.Any("error", err))
 	}
-	return nil
+	return changed, nil
 }

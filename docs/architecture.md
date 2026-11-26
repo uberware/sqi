@@ -432,7 +432,11 @@ same `WorkerEligible` check used above for lease assignment — read-only, it
 never changes scheduling, only an annotation. A task that has waited longer
 than `scheduler.unschedulable_grace` with no eligible online worker is flagged
 with a human-readable `unschedulable_reason`, cleared automatically once a
-matching worker appears or the task leaves `ready`. The reason is written only
+matching worker appears or the task leaves `ready`. A task that references a
+`loc://` storage location is also checked against each otherwise eligible
+worker's compute location, by building its assignment as the lease does: when
+no such worker has a root for one of its locations, the reason names the
+location and the compute location. The reason is written only
 while the task is still `ready`, a condition evaluated inside the write itself,
 so a task leased between the sweep's read and its write is never stamped. See
 [`docs/observability.md`](observability.md#why-isnt-my-job-running--unschedulable-tasks)
@@ -890,7 +894,8 @@ propagate dependencies, finalize the job, reconcile cross-job dependents), so
 canceling a step's last open task finishes the step and, if it was the last,
 the job. The cancel has already committed, so an error from that path is
 logged at Warn and not returned: the caller never sees a 500 for a cancel that
-happened, and the start-up reconcile is the backstop. A job-wide cancel
+happened, and the stuck-step pass, which runs at start and on every sweep tick,
+is the backstop. A job-wide cancel
 finalizes in the store instead: `CancelJobExecution` finalizes every open step
 of the job in the same transaction, last, after the tasks, attempts and claims
 (a pending step, or one with no tasks, becomes `canceled`; any other gets
@@ -1682,8 +1687,15 @@ repaired in four parts:
     `FinalizeStep`, dependency propagation, `FinalizeJob`, cross-job dependents
     and WebSocket events. That finalizes steps stranded when a
     single-task cancel took a job's last open task and no worker report
-    followed. The job condition is what keeps a healthy farm free of writes:
-    terminal jobs are the migration's, not this pass's.
+    followed, or when a store error interrupted the completion after a task's
+    terminal write on a path nothing redelivers (a REST task cancel, or an
+    attempt the lease failed because its assignment could not be built). The
+    job condition is what keeps a healthy farm free of writes: terminal jobs
+    are the migration's, not this pass's. The same pass also runs on every
+    heartbeat-sweep tick, so such a step is finalized without a restart; its
+    open-task test lists the four open statuses, so the tasks
+    `(step_id, status)` index answers it without scanning a step's finished
+    tasks.
   - `reconcilePendingSteps`: `store.ListJobIDsWithPendingSteps` lists every
     non-terminal, non-`blocked` job with at least one `pending` step, and each
     goes through `ResolveDependencies` (release what is releasable) and
@@ -1755,19 +1767,6 @@ The store does not close the following.
   order, since its own shutdown reports wake its parked request just before its
   deregister lands. A live worker that hits this is refused once, and its
   next request is served.
-- **A task no worker can resolve a `loc://` root for waits silently.** A
-  task whose storage location has no root for a worker's compute location
-  (and no default root) is skipped for that worker and stays `ready` for one
-  that has a root. If no worker has one, it waits with no unschedulable
-  reason written: the unschedulable sweep does not resolve storage locations.
-- **A failed lease-path failure write can leave a step open until the next
-  start.** When an assignment cannot be built for a job-wide reason, the
-  lease applies the attempt as a failed report. If a store error interrupts
-  that after the task is already `failed` (while finalizing its step or job),
-  nothing redelivers it, as nothing does for the REST task cancel: the step
-  has every task terminal but is not finalized, so the per-tick
-  `finalizeSettledJobs` (which needs every step terminal) does not list it,
-  and only the start-up `reconcileStuckSteps` pass repairs it.
 - **A refused process re-requests about once a second per queue.** The refusal
   of an unregistered process's lease request is held for `leaseRefusalDelay`
   (1 s) so the worker's lease loop does not spin, but the loop does

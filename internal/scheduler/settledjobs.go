@@ -4,7 +4,10 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+
+	"github.com/uberware/sqi/internal/store"
 )
 
 // finalizeSettledJobs finalizes, on every sweep tick, each live job whose
@@ -21,8 +24,9 @@ import (
 // whose step reopened since the list was read is left alone), the job event
 // is sent only by the call that wrote the status, and the job's dependents are
 // reconciled. On a healthy farm the one query returns nothing and nothing is
-// written. A job that fails is logged and skipped, and the next tick retries
-// it; a fenced write stops the sweep.
+// written. A repair is logged only when this sweep's write finalized the job.
+// A job deleted since the list was read is skipped; one that fails is logged
+// and skipped, and the next tick retries it; a fenced write stops the sweep.
 func (s *Scheduler) finalizeSettledJobs(ctx context.Context) {
 	ids, err := s.store.ListJobIDsWithAllStepsTerminal(ctx)
 	if err != nil {
@@ -33,13 +37,17 @@ func (s *Scheduler) finalizeSettledJobs(ctx context.Context) {
 		if ctx.Err() != nil || s.deposed() {
 			return
 		}
-		if err := s.checkJobCompletion(ctx, jobID); err != nil {
+		changed, err := s.completeJob(ctx, jobID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			// Deleted since the list was read: nothing left to finalize.
+		case err != nil:
 			// A fenced write marks the scheduler deposed, which ends the loop above.
 			s.warnUnlessStopped(ctx, err, "scheduler: finalize a job whose steps are all terminal failed",
 				slog.String("job_id", jobID))
-			continue
+		case changed:
+			s.logger.InfoContext(ctx, "scheduler: finalized a live job whose steps were all terminal",
+				slog.String("job_id", jobID))
 		}
-		s.logger.InfoContext(ctx, "scheduler: finalized a live job whose steps were all terminal",
-			slog.String("job_id", jobID))
 	}
 }

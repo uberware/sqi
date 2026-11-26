@@ -25,6 +25,8 @@ func TestListJobIDsWithAllStepsTerminal(t *testing.T) {
 			// done: the job itself is terminal.
 			seedGraph(t, st, graphOpts{jobStatus: store.JobStatusCompleted, share: &settled},
 				stepSpec{name: "a", status: store.StepStatusCompleted, tasks: succeeded})
+			// noSteps: a live job with no step at all.
+			seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning, share: &settled})
 			// pendingOnly: a step that has not started.
 			seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning, share: &settled},
 				stepSpec{name: "a", status: store.StepStatusPending, tasks: []store.TaskStatus{store.TaskStatusPending}})

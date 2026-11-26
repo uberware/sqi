@@ -68,9 +68,8 @@ func classifyAssignFailure(err error) assignFailure {
 // follows: a retry after the backoff, or a failed task (and its step and job)
 // whose reason names the error. Only a fenced write is returned. Any other
 // error is logged: if the attempt was not closed, the stale-assignment reaper
-// returns the task to ready; if the task was already failed, its step is
-// finalized by the next start's stuck-step pass (see "Known gaps" in
-// docs/architecture.md).
+// returns the task to ready; if the task was already failed, the sweep's
+// stuck-step pass finalizes its step on a later tick.
 func (s *Scheduler) handleUndeliverableLease(
 	ctx context.Context, attempt store.TaskAttempt, task store.Task, buildErr error,
 ) error {
@@ -91,9 +90,7 @@ func (s *Scheduler) handleUndeliverableLease(
 	if errors.Is(err, store.ErrFenced) {
 		return err
 	}
-	if err != nil {
-		s.logger.WarnContext(ctx, "scheduler: applying an undeliverable attempt's failure did not complete",
-			slog.String("task_id", task.ID), slog.String("attempt_id", attempt.ID), slog.Any("error", err))
-	}
+	s.warnUnlessStopped(ctx, err, "scheduler: applying an undeliverable attempt's failure did not complete",
+		slog.String("task_id", task.ID), slog.String("attempt_id", attempt.ID))
 	return nil
 }
