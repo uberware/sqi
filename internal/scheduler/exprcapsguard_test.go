@@ -22,8 +22,8 @@ import (
 // It asserts two things and fails on an empty result:
 //
 //  1. buildAssignMsg, the only production function that builds a
-//     protocol.AssignMsg, is called from exactly two production functions; and
-//  2. one of them is tryLeaseTask, which calls leaseGatesPass.
+//     protocol.AssignMsg, is called from exactly three production functions; and
+//  2. the one that delivers it is tryLeaseTask, which calls leaseGatesPass.
 //
 // A new dispatch path must pass the same gate, and this test is then extended to
 // name it.
@@ -35,14 +35,16 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 	}
 	// BuildAssignPayload is seam.go's export of the same two production steps,
 	// which lets the preset test harness (internal/presettest) call the
-	// production path. It is not a second dispatch path; tryLeaseTask is the
-	// only production entry.
-	if len(callers) != 2 || !slices.Contains(callers, "tryLeaseTask") || !slices.Contains(callers, "BuildAssignPayload") {
-		t.Fatalf("buildAssignMsg is called from %v; want exactly [tryLeaseTask BuildAssignPayload].\n"+
-			"tryLeaseTask is the production dispatch path, and BuildAssignPayload (seam.go) is its\n"+
-			"test harness export. Every path that hands an assignment to a worker must first pass the EXPR "+
+	// production path. storageRootBlock is the unschedulable sweep's check of a
+	// worker's storage roots: it builds the message and discards it. Neither is
+	// a second dispatch path; tryLeaseTask is the only production entry.
+	want := []string{"BuildAssignPayload", "storageRootBlock", "tryLeaseTask"}
+	if !slices.Equal(slices.Sorted(slices.Values(callers)), want) {
+		t.Fatalf("buildAssignMsg is called from %v; want exactly %v.\n"+
+			"tryLeaseTask is the production dispatch path, BuildAssignPayload (seam.go) is its\n"+
+			"test harness export, and storageRootBlock only reads the result. Every path that hands an assignment to a worker must first pass the EXPR "+
 			"capability gate in leaseGatesPass (exprcaps.go), or a worker whose advertised "+
-			"EXPR caps are below this server's is given work it cannot run", callers)
+			"EXPR caps are below this server's is given work it cannot run", callers, want)
 	}
 
 	gates := productionCallersOf(t, "leaseGatesPass")
@@ -67,23 +69,23 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 	// dispatch path, but it must agree with the lease path on what a worker's
 	// binary can run, so it reaches the gates through the same function.
 	if blocked := productionCallersOf(t, "workerCompatBlock"); len(blocked) != 3 ||
-		!slices.Contains(blocked, "leaseGatesPass") || !slices.Contains(blocked, "evaluateSchedulability") ||
+		!slices.Contains(blocked, "leaseGatesPass") || !slices.Contains(blocked, "evaluateSchedulabilityWith") ||
 		!slices.Contains(blocked, "couldRun") {
 		t.Fatalf("workerCompatBlock is called from %v; want exactly [leaseGatesPass "+
-			"evaluateSchedulability couldRun]: the first is the bound, the second is what the "+
+			"evaluateSchedulabilityWith couldRun]: the first is the bound, the second is what the "+
 			"operator sees, the third is the capacity-demand capability check", blocked)
 	}
 
 	// exprCapShortfall is the single implementation of the comparisons, reached
 	// through workerExprShortfall. selectLeaseBatch computes it once per batch and
-	// passes it down, evaluateSchedulability computes it per worker,
+	// passes it down, evaluateSchedulabilityWith computes it per worker,
 	// warnOnExprCapShortfall computes it for a diagnostic warning only, and couldRun
 	// passes the result to workerCompatBlock. All four go through this accessor.
 	if short := productionCallersOf(t, "workerExprShortfall"); len(short) != 4 ||
-		!slices.Contains(short, "selectLeaseBatch") || !slices.Contains(short, "evaluateSchedulability") ||
+		!slices.Contains(short, "selectLeaseBatch") || !slices.Contains(short, "evaluateSchedulabilityWith") ||
 		!slices.Contains(short, "warnOnExprCapShortfall") || !slices.Contains(short, "couldRun") {
 		t.Fatalf("workerExprShortfall is called from %v; want exactly [selectLeaseBatch "+
-			"evaluateSchedulability warnOnExprCapShortfall couldRun] -- a call site that computes its own "+
+			"evaluateSchedulabilityWith warnOnExprCapShortfall couldRun] -- a call site that computes its own "+
 			"comparison instead is a second implementation that can drift", short)
 	}
 	if raw := productionCallersOf(t, "exprCapShortfall"); len(raw) != 1 ||

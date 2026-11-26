@@ -368,7 +368,10 @@ Where it surfaces:
   `compute location mismatch`, `amount requirement not met`,
   `attribute requirement not met`, `usage pool at capacity`, or a
   `worker EXPR limits are tighter than this server's: …` sentence naming both
-  numbers and both config keys (see below). When a capacity group whose
+  numbers and both config keys (see below), or, for a task that references a
+  `loc://` storage location,
+  `storage location "<name>" has no root for compute location "<location>" and no default root`.
+  When a capacity group whose
   provider acts could bring a machine that runs the task, the reason is
   `waiting for capacity group <name> to wake a machine` (a named group) or
   `… to launch a machine` (a sized group) instead; see
