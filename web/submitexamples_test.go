@@ -5,6 +5,7 @@ package web_test
 import (
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,6 +16,9 @@ import (
 // a key, bare or quoted, and its template literal.
 var exampleLiteral = regexp.MustCompile("(?m)^  '?([a-z-]+)'?: `([^`]*)`,$")
 
+// exampleLabel matches one entry of EXAMPLE_LABELS: a key and its quoted label.
+var exampleLabel = regexp.MustCompile(`(?m)^  '?([a-z-]+)'?: (?:'[^']*'|"[^"]*"),$`)
+
 // TestSubmitExamples_Validate checks that every template the Submit page's
 // "Load example" menu offers passes the template validation the server runs at
 // submission, so the menu never hands an artist a job that cannot be submitted.
@@ -23,14 +27,20 @@ func TestSubmitExamples_Validate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys := regexp.MustCompile(`export type ExampleKey = (.*)`).FindSubmatch(src)
-	if keys == nil {
-		t.Fatal("no ExampleKey type in submitExamples.ts")
+	// The menu labels are a Record<ExampleKey, string>, so the compiler keeps
+	// them one per example; matching the two key lists shows the extraction
+	// found every example.
+	var labels, examples []string
+	for _, m := range exampleLabel.FindAllSubmatch(src, -1) {
+		labels = append(labels, string(m[1]))
 	}
-	want := strings.Count(string(keys[1]), "'") / 2
 	matches := exampleLiteral.FindAllSubmatch(src, -1)
-	if len(matches) != want {
-		t.Fatalf("found %d examples, ExampleKey names %d; has the file's layout changed?", len(matches), want)
+	for _, m := range matches {
+		examples = append(examples, string(m[1]))
+	}
+	if len(examples) == 0 || !slices.Equal(labels, examples) {
+		t.Fatalf("examples %v, labels %v; want the same non-empty keys in the same order. "+
+			"Has the file's layout changed?", examples, labels)
 	}
 	for _, m := range matches {
 		name, body := string(m[1]), string(m[2])

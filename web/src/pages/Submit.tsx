@@ -17,7 +17,7 @@ import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import type { TemplateFormat } from '@/api/types'
 import styles from './Submit.module.css'
-import { EXAMPLES } from './submitExamples'
+import { EXAMPLES, EXAMPLE_LABELS, isExampleKey } from './submitExamples'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -75,7 +75,7 @@ export default function Submit() {
 
   const handleExampleChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const key = e.target.value
-    if (key === 'shell' || key === 'parameter-space' || key === 'usage-limit') {
+    if (isExampleKey(key)) {
       setTemplate(EXAMPLES[key])
     }
     setExampleKey('')
@@ -300,9 +300,11 @@ export default function Submit() {
                 aria-label="Load example template"
               >
                 <option value="">Load example…</option>
-                <option value="shell">Single-step shell command</option>
-                <option value="parameter-space">Multi-task parameter space</option>
-                <option value="usage-limit">Step with a usage limit</option>
+                {Object.entries(EXAMPLE_LABELS).map(([key, label]) => (
+                  <option key={key} value={key}>
+                    {label}
+                  </option>
+                ))}
               </select>
             </div>
 

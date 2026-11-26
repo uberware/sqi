@@ -6,6 +6,17 @@
 
 export type ExampleKey = 'shell' | 'parameter-space' | 'usage-limit'
 
+// EXAMPLE_LABELS names each example in the menu, in menu order.
+export const EXAMPLE_LABELS: Record<ExampleKey, string> = {
+  shell: 'Single-step shell command',
+  'parameter-space': 'Multi-task parameter space',
+  'usage-limit': 'Step with a usage limit',
+}
+
+export function isExampleKey(key: string): key is ExampleKey {
+  return Object.hasOwn(EXAMPLE_LABELS, key)
+}
+
 export const EXAMPLES: Record<ExampleKey, string> = {
   shell: `specificationVersion: "jobtemplate-2023-09"
 name: hello-world

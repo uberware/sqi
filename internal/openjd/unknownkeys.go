@@ -153,10 +153,11 @@ var extensionBlockKeySchemas = map[string]*keyChild{
 	}}),
 }
 
-// maxUnknownKeys is the most unknown keys (misplaced step blocks included) one
-// template reports, the first by pointer. One is enough to reject the
-// template; the cap keeps a template stuffed with them from returning an error
-// per copy.
+// maxUnknownKeys is the most unknown keys one template reports from each of
+// two budgets: this walk's (misplaced step blocks included, the first by
+// pointer), and the top level's plus the steps' own keys (ValidateWithBudget).
+// One is enough to reject the template; the cap keeps a template stuffed with
+// them from returning an error per copy.
 const maxUnknownKeys = 16
 
 // keyFrame is one mapping the walk has yet to visit: its value, the JSON
@@ -176,11 +177,10 @@ type keyFrame struct {
 // walked too.
 //
 // A step-block extension key (SQI_LOG_CHECKS, SQI_LOG_PROGRESS) found in any
-// object other than a
-// step (under script, actions.onRun, an environment, and so on) is marked
-// StepBlock: the decoder reads the block only from its step-level slot, so the
-// step would otherwise run with its checks off. One under an unknown key is
-// not reached, and that key is reported instead.
+// object other than a step (under script, actions.onRun, an environment, and
+// so on) is marked StepBlock: the decoder reads the block only from its
+// step-level slot, so the step would otherwise run with its checks off. One
+// under an unknown key is not reached, and that key is reported instead.
 func findUnknownKeys(raw map[string]any) []unknownKey {
 	var out unknownKeyTop
 	stack := []keyFrame{{v: raw, schema: templateKeySchema}}
