@@ -318,6 +318,49 @@ steps:
 			pointer: "/steps/1/dependencies/0/dependOn",
 			object:  "step dependency",
 		},
+		{
+			// §2.2 puts the filters under userInterface; earlier sqi releases
+			// also read them here.
+			name: "file filters at the parameter root",
+			src: `parameterDefinitions:
+  - name: P
+    type: PATH
+    userInterface:
+      control: CHOOSE_INPUT_FILE
+    fileFilters:
+      - label: All
+        patterns: ["*"]
+steps:
+  - name: S
+` + onRunEcho,
+			pointer: "/parameterDefinitions/0/fileFilters",
+			object:  "job parameter definition",
+		},
+		{
+			name: "path translation block",
+			src: `extensions: [SQI_PATH_TRANSLATION]
+SQI_PATH_TRANSLATION:
+  deliveries: [swap_in_place]
+  delivries: [stage_locally]
+steps:
+  - name: S
+` + onRunEcho,
+			pointer: "/SQI_PATH_TRANSLATION/delivries",
+			object:  "SQI_PATH_TRANSLATION block",
+		},
+		{
+			name: "path delivery settings",
+			src: `extensions: [SQI_PATH_TRANSLATION]
+SQI_PATH_TRANSLATION:
+  deliveries:
+    - swap_in_place
+    - command_flags: { pattern: "--remap {src}={dest}", patern: x }
+steps:
+  - name: S
+` + onRunEcho,
+			pointer: "/SQI_PATH_TRANSLATION/deliveries/1/command_flags/patern",
+			object:  "path delivery settings",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

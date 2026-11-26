@@ -42,6 +42,8 @@ A delivery is a bare string (no settings) or a single-key map (with settings).
 - `command_flags.pattern` must be non-empty and contain both `{src}` and `{dest}`.
 - `environment.variable` must be non-empty.
 - Unknown delivery names are rejected.
+- Any other key in the block or in a delivery's settings is rejected as an
+  unknown field, at its pointer.
 
 ## Worker behavior
 Deliveries run in fixed order: stage_locally → swap_in_place → translation_file →

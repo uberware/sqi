@@ -10,8 +10,9 @@ import (
 
 // unknownKey is a key of some template object that the object's schema does
 // not define: Pointer locates the key, Object names the schema for the error.
-// StepBlock marks a step-block extension key (SQI_LOG_CHECKS) found below a
-// step rather than directly on it, which has an error of its own.
+// StepBlock marks a step-block extension key (SQI_LOG_CHECKS,
+// SQI_LOG_PROGRESS) found below a step rather than directly on it, which has
+// an error of its own.
 type unknownKey struct {
 	Pointer   string
 	Object    string
@@ -28,10 +29,13 @@ type keySchema struct {
 }
 
 // keyChild is the schema of a key's value, and whether the value is a list of
-// such objects rather than one.
+// such objects rather than one. With dataKeys, each object (or list element)
+// is instead a mapping whose keys are data, such as a path delivery's name,
+// and each of its values is checked against schema.
 type keyChild struct {
-	schema *keySchema
-	list   bool
+	schema   *keySchema
+	list     bool
+	dataKeys bool
 }
 
 // templateKeySchema is the root of the table: the job template. It and a step
@@ -53,8 +57,9 @@ func many(s *keySchema) *keyChild { return &keyChild{schema: s, list: true} }
 
 // buildKeySchemas builds the table from the 2023-09 Template Schemas (§2–§6),
 // plus the keys the supported extensions add (let from EXPR, chunks from
-// TASK_CHUNKING, endOfLine from FEATURE_BUNDLE_1, which sqi decodes). Whether
-// those extensions are declared is checked elsewhere. A job parameter and its
+// TASK_CHUNKING), whose declaration is checked elsewhere. endOfLine is
+// FEATURE_BUNDLE_1's, which sqi does not support, but sqi decodes and applies
+// it, so it is accepted without the declaration. A job parameter and its
 // userInterface accept the union of every parameter type's keys: this check
 // catches misspellings, not keys that do not apply to the declared type.
 //
@@ -134,6 +139,20 @@ func unknownFieldMessage(object string) string {
 	return "unknown field; the " + object + " schema defines no such key"
 }
 
+// extensionBlockKeySchemas are the top-level extension blocks whose keys the
+// walk checks, by block name. Whether the block may appear at all is checked
+// elsewhere (validatePathTranslation).
+var extensionBlockKeySchemas = map[string]*keyChild{
+	"SQI_PATH_TRANSLATION": one(&keySchema{"SQI_PATH_TRANSLATION block", map[string]*keyChild{
+		// Each delivery is a bare name or a {name: settings} mapping.
+		"deliveries": {
+			schema:   &keySchema{"path delivery settings", leafKeys("pattern", "variable")},
+			list:     true,
+			dataKeys: true,
+		},
+	}}),
+}
+
 // maxUnknownKeys is the most unknown keys (misplaced step blocks included) one
 // template reports, the first by pointer. One is enough to reject the
 // template; the cap keeps a template stuffed with them from returning an error
@@ -153,7 +172,11 @@ type keyFrame struct {
 // pointer. The walk descends only into keys the table knows, so its depth is
 // bounded by the schema, and it keeps an explicit stack rather than recursing.
 //
-// A step-block extension key (SQI_LOG_CHECKS) found in any object other than a
+// The supported top-level extension blocks (extensionBlockKeySchemas) are
+// walked too.
+//
+// A step-block extension key (SQI_LOG_CHECKS, SQI_LOG_PROGRESS) found in any
+// object other than a
 // step (under script, actions.onRun, an environment, and so on) is marked
 // StepBlock: the decoder reads the block only from its step-level slot, so the
 // step would otherwise run with its checks off. One under an unknown key is
@@ -161,6 +184,11 @@ type keyFrame struct {
 func findUnknownKeys(raw map[string]any) []unknownKey {
 	var out unknownKeyTop
 	stack := []keyFrame{{v: raw, schema: templateKeySchema}}
+	for name, c := range extensionBlockKeySchemas {
+		if v, ok := raw[name]; ok {
+			stack = pushKeyChild(stack, c, v, "/"+name)
+		}
+	}
 	for len(stack) > 0 {
 		f := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -226,11 +254,25 @@ func joinedLess(parent, token, s string) bool {
 // a list. A list value that is not a list queues nothing.
 func pushKeyChild(stack []keyFrame, c *keyChild, v any, ptr string) []keyFrame {
 	if !c.list {
-		return append(stack, keyFrame{v: v, ptr: ptr, schema: c.schema})
+		return pushKeyValue(stack, c, v, ptr)
 	}
 	items, _ := toAnySlice(v)
 	for i, item := range items {
-		stack = append(stack, keyFrame{v: item, ptr: ptr + "/" + strconv.Itoa(i), schema: c.schema})
+		stack = pushKeyValue(stack, c, item, ptr+"/"+strconv.Itoa(i))
+	}
+	return stack
+}
+
+// pushKeyValue queues one value under c's schema: itself, or with dataKeys
+// each of its entries' values. A dataKeys value that is not a mapping (a bare
+// delivery name) queues nothing.
+func pushKeyValue(stack []keyFrame, c *keyChild, v any, ptr string) []keyFrame {
+	if !c.dataKeys {
+		return append(stack, keyFrame{v: v, ptr: ptr, schema: c.schema})
+	}
+	m, _ := toMapOK(v)
+	for k, val := range m {
+		stack = append(stack, keyFrame{v: val, ptr: ptr + "/" + escapePointerToken(k), schema: c.schema})
 	}
 	return stack
 }
