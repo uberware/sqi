@@ -154,7 +154,7 @@ func TestSubSecond_RetryBackoffElapsed(t *testing.T) {
 			task := g.Tasks["a"][0]
 			storetest.FailAndRequeue(t, st, leaseReq(task), t0)
 
-			ready, err := st.ListReadyTasks(t.Context(), g.Farm.ID, t1, 10)
+			ready, err := st.ListReadyTasks(t.Context(), g.Farm.ID, nil, t1, 10)
 			if err != nil {
 				t.Fatalf("ListReadyTasks: %v", err)
 			}

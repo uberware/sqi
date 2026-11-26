@@ -566,7 +566,7 @@ func TestReconcileBlockedJob_LeavesHeldJobWaitingOnRunningUpstream(t *testing.T)
 // leasableTasksOf counts jobID's tasks the lease path would hand out now.
 func (h *jobDepsHarness) leasableTasksOf(t *testing.T, jobID string) int {
 	t.Helper()
-	ready, err := h.store.ListReadyTasks(context.Background(), "", time.Now().UTC(), store.MaxLimit)
+	ready, err := h.store.ListReadyTasks(context.Background(), "", nil, time.Now().UTC(), store.MaxLimit)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}

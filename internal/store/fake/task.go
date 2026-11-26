@@ -129,10 +129,11 @@ func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time,
 }
 
 // ListReadyTasks returns up to limit tasks in [store.TaskStatusReady] that
-// belong to non-paused queues within the given farm, excluding tasks still
-// backing off (RetryAfter after now) and tasks whose job is paused or
-// terminal, ordered by job priority descending then CreatedAt ascending.
-func (s *Store) ListReadyTasks(_ context.Context, farmID string, now time.Time, limit int) ([]store.Task, error) {
+// belong to non-paused queues within the given farm and, when queueIDs is
+// non-empty, to one of those queues, excluding tasks still backing off
+// (RetryAfter after now) and tasks whose job is paused or terminal, ordered by
+// job priority descending then CreatedAt ascending.
+func (s *Store) ListReadyTasks(_ context.Context, farmID string, queueIDs []string, now time.Time, limit int) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -154,7 +155,8 @@ func (s *Store) ListReadyTasks(_ context.Context, farmID string, now time.Time, 
 
 	var readyTasks []store.Task
 	for _, t := range s.tasks {
-		if isReadyInFarm(t, farmID, now, s.jobs, queuePaused) {
+		if isReadyInFarm(t, farmID, now, s.jobs, queuePaused) &&
+			(len(queueIDs) == 0 || slices.Contains(queueIDs, s.jobs[t.JobID].QueueID)) {
 			t.Parameters = copyMap(t.Parameters)
 			readyTasks = append(readyTasks, t)
 		}

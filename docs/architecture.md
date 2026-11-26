@@ -366,10 +366,12 @@ handleLeaseRequest(workerID, queueID)
   ├─ free = worker.CPUCount − committed
   │     If free ≤ 0: park request in the per-queue waiter registry (~30 s hold)
   │
-  ├─ store.ListReadyTasks(farmID, now, batchSize) → candidates, farm-wide, ordered
+  ├─ store.ListReadyTasks(farmID, worker.queue_ids, now, batchSize) → candidates, ordered
   │     job priority DESC, job created_at ASC, step order ASC, task created_at ASC
-  │     (queue affinity is applied per-candidate by WorkerEligible, not by this query:
-  │      a candidate passes when the worker's queue_ids are empty or contain its queue)
+  │     (scoped to the worker before batchSize applies: its queue_ids, every queue when
+  │      empty, and, for a scheduler managing every farm, the worker's farm; otherwise
+  │      higher-priority work it cannot take fills the batch and it is leased nothing.
+  │      WorkerEligible still checks queue and farm per candidate)
   │
   │  First-fit walk over candidates:
   ├─ effectiveCost = task.RequiredCores ?? worker.CPUCount; skip if it does not fit free

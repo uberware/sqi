@@ -262,7 +262,7 @@ func TestListReadyTasks(t *testing.T) {
 		Submit(t, s)
 	runTask(t, s, "t-running", "w1")
 
-	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", time.Now(), 10)
+	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", nil, time.Now(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestListReadyTasks_SkipsBackoffAndPausedJobs(t *testing.T) {
 		Task("t-paused", "s2", store.TaskStatusReady).
 		Submit(t, s)
 
-	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", now, 10)
+	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", nil, now, 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestListReadyTasks_AllFarms(t *testing.T) {
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
-	tasks, err := s.ListReadyTasks(ctx(), "", time.Now(), 10)
+	tasks, err := s.ListReadyTasks(ctx(), "", nil, time.Now(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}

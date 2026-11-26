@@ -228,7 +228,7 @@ func TestLeaseTask_PausedAfterListing(t *testing.T) {
 				g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady)
 				task := g.Tasks["a"][0]
 				pool := seedPool(t, st, 1)
-				listed, err := st.ListReadyTasks(t.Context(), g.Farm.ID, time.Now().UTC(), 10)
+				listed, err := st.ListReadyTasks(t.Context(), g.Farm.ID, nil, time.Now().UTC(), 10)
 				if err != nil {
 					t.Fatalf("ListReadyTasks: %v", err)
 				}

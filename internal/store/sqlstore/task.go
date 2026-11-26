@@ -71,8 +71,13 @@ UPDATE tasks SET failure_reason = ?, updated_at = ? WHERE id = ?`
 	// farmID = '' means "all farms" (used when the scheduler manages every farm).
 	// Two bind parameters are required for farmID: one for the empty check and
 	// one for the value filter. A task backing off (retry_after in the
-	// future) or belonging to a paused/terminal job is excluded.
-	sqlListReadyTasks = `
+	// future) or belonging to a paused/terminal job is excluded. It is
+	// sqlListReadyTasksScope followed by sqlListReadyTasksOrder; a queue-scoped
+	// list puts a "j.queue_id IN (…)" filter between the two, so the filter
+	// applies before the LIMIT.
+	sqlListReadyTasks = sqlListReadyTasksScope + sqlListReadyTasksOrder
+
+	sqlListReadyTasksScope = `
 SELECT t.id, t.job_id, t.step_id, t.name, t.parameters, t.status,
        t.assigned_worker_id, t.assigned_at, t.created_at, t.updated_at, t.required_cores,
        t.unschedulable_reason, t.failed_attempts, t.retry_after, t.failure_reason
@@ -81,7 +86,9 @@ JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
 JOIN   steps  s ON t.step_id  = s.id
 WHERE  (? = '' OR j.farm_id = ?)
-  AND  ` + sqlLeasableTask + `
+  AND  ` + sqlLeasableTask
+
+	sqlListReadyTasksOrder = `
 ORDER BY j.priority DESC, j.created_at ASC, s.step_order ASC, t.created_at ASC
 LIMIT ?`
 
@@ -612,8 +619,23 @@ func (s *Store) reclaimStaleBatch(ctx context.Context, batch []staleCandidate, c
 }
 
 // ListReadyTasks implements [store.TaskStore].
-func (s *Store) ListReadyTasks(ctx context.Context, farmID string, now time.Time, limit int) ([]store.Task, error) {
-	rows, err := s.stmtListReadyTasks.QueryContext(ctx, farmID, farmID, TimeText(now), limit)
+func (s *Store) ListReadyTasks(ctx context.Context, farmID string, queueIDs []string, now time.Time, limit int) ([]store.Task, error) {
+	var rows *sql.Rows
+	var err error
+	if len(queueIDs) == 0 {
+		rows, err = s.stmtListReadyTasks.QueryContext(ctx, farmID, farmID, TimeText(now), limit)
+	} else {
+		args := make([]any, 0, len(queueIDs)+4)
+		args = append(args, farmID, farmID, TimeText(now))
+		for _, id := range queueIDs {
+			args = append(args, id)
+		}
+		args = append(args, limit)
+		// qmarks holds only "?" marks; every queue ID is bound.
+		query := sqlListReadyTasksScope + `
+  AND  j.queue_id IN (` + qmarks(len(queueIDs)) + `)` + sqlListReadyTasksOrder
+		rows, err = s.r.QueryContext(ctx, query, args...)
+	}
 	if err != nil {
 		return nil, mapErr(err)
 	}

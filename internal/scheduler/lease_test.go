@@ -76,11 +76,11 @@ type readBeforeCommitStore struct {
 	afterRead func()
 }
 
-func (s *readBeforeCommitStore) ListReadyTasks(ctx context.Context, farmID string, now time.Time, limit int) ([]store.Task, error) {
+func (s *readBeforeCommitStore) ListReadyTasks(ctx context.Context, farmID string, queueIDs []string, now time.Time, limit int) ([]store.Task, error) {
 	first := false
 	s.once.Do(func() { first = true })
 	if !first {
-		return s.Store.ListReadyTasks(ctx, farmID, now, limit)
+		return s.Store.ListReadyTasks(ctx, farmID, queueIDs, now, limit)
 	}
 	s.afterRead()
 	return nil, nil
@@ -443,6 +443,67 @@ func TestLease_MultiQueueWorkerTakesOnlyItsQueues(t *testing.T) {
 	}
 	if !leased["qA"] || !leased["qB"] {
 		t.Errorf("leased queues = %v, want qA and qB", leased)
+	}
+}
+
+// TestSelectLeaseBatch_WorkerScopedBeforeBatchLimit pins that the ready list
+// a lease walks is cut to the batch size only after it is narrowed to the work
+// the worker can take. In each case a higher-priority job holds more ready
+// tasks than the batch size in a queue or farm the worker does not serve, and
+// the worker's own lower-priority task must still be leased.
+func TestSelectLeaseBatch_WorkerScopedBeforeBatchLimit(t *testing.T) {
+	cases := []struct {
+		name          string
+		schedulerFarm string
+		workerQueues  []string
+		blockerFarm   string // farm of the higher-priority job and its queue
+	}{
+		{"queue the worker does not list", "f1", []string{"qMine"}, "f1"},
+		{"farm the worker is not in, scheduler managing every farm", "", nil, "f2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newCheckedFake(t)
+			s := newMetricsScheduler(st, &recordBus{}, tc.schedulerFarm)
+			s.cfg.AssignBatchSize = 2
+			ctx := t.Context()
+			now := time.Now().UTC()
+			for _, f := range []string{"f1", "f2"} {
+				if _, err := st.CreateFarm(ctx, store.Farm{ID: f, Name: f}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := st.CreateQueue(ctx, store.Queue{ID: "qOther", FarmID: tc.blockerFarm, Name: "qOther"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.CreateQueue(ctx, store.Queue{ID: "qMine", FarmID: "f1", Name: "qMine"}); err != nil {
+				t.Fatal(err)
+			}
+			one := 1
+			inScope := func(farm string, priority int) func(*store.JobSubmission) {
+				return func(sub *store.JobSubmission) { sub.Job.FarmID, sub.Job.Priority = farm, priority }
+			}
+			submitReadyWith(t, st, "qOther", []*int{&one, &one, &one}, nil, inScope(tc.blockerFarm, 100))
+			own := submitReadyWith(t, st, "qMine", []*int{&one}, nil, inScope("f1", 0))[0]
+			w, _, err := st.RegisterWorker(ctx, store.Worker{
+				ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
+				CPUCount: 4, LastHeartbeatAt: &now, Tags: map[string]string{}, QueueIDs: tc.workerQueues,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			batch, err := s.selectLeaseBatch(ctx, w)
+			if err != nil {
+				t.Fatalf("selectLeaseBatch: %v", err)
+			}
+			if len(batch) != 1 {
+				t.Fatalf("batch len = %d, want 1 (the worker's own task)", len(batch))
+			}
+			if got, err := st.GetTask(ctx, own); err != nil || got.Status != store.TaskStatusAssigned {
+				t.Fatalf("own task = %+v (err %v), want assigned", got, err)
+			}
+		})
 	}
 }
 
