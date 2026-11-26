@@ -68,7 +68,8 @@ Structural, enforced at submission (`internal/openjd/logchecks.go`,
   the step decoder would otherwise drop it and the step would run with its checks
   off. Any other step key the 2023-09 step schema does not define (a misspelt
   `stepEnviroments`, say) is an error at `/steps/N/<key>`: "unknown field; the
-  step template schema defines no such key".
+  step template schema defines no such key", as is an unknown key at any other
+  level of the template.
 - A `SQI_LOG_CHECKS` key anywhere else in a step (under `script`,
   `actions.onRun`, a step environment, and so on), in a job environment, or in a
   parameter definition is an error at the pointer where it was found ("is a
