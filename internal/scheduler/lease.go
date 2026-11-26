@@ -356,7 +356,15 @@ func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) (
 		return nil, nil
 	}
 
-	candidates, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, time.Now().UTC(), s.cfg.AssignBatchSize)
+	// Scope the list to the worker's queues and farm before the batch size
+	// cuts it, or higher-priority work it cannot take fills the batch. A
+	// scheduler bound to one farm keeps that farm; the matcher refuses a worker
+	// bound to another.
+	farmID := s.cfg.FarmID
+	if farmID == "" {
+		farmID = worker.FarmID
+	}
+	candidates, err := s.store.ListReadyTasks(ctx, farmID, worker.QueueIDs, time.Now().UTC(), s.cfg.AssignBatchSize)
 	if err != nil {
 		return nil, fmt.Errorf("lease: list ready tasks: %w", err)
 	}

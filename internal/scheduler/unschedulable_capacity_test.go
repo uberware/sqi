@@ -26,9 +26,9 @@ const (
 
 // ListReadyTasks and SetTaskUnschedulableReason are the unschedulable sweep's
 // own calls, counted along with the ones spyStore already counts.
-func (s *spyStore) ListReadyTasks(ctx context.Context, farmID string, now time.Time, limit int) ([]store.Task, error) {
+func (s *spyStore) ListReadyTasks(ctx context.Context, farmID string, queueIDs []string, now time.Time, limit int) ([]store.Task, error) {
 	s.count("ListReadyTasks")
-	return s.Store.ListReadyTasks(ctx, farmID, now, limit)
+	return s.Store.ListReadyTasks(ctx, farmID, queueIDs, now, limit)
 }
 
 func (s *spyStore) SetTaskUnschedulableReason(ctx context.Context, taskID, reason string) (bool, error) {

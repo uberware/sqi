@@ -29,7 +29,7 @@ func (s *Scheduler) sweepUnschedulable(ctx context.Context) {
 	// store.MaxLimit, not 0: ListReadyTasks treats a limit of 0 as "return zero
 	// rows", not "unlimited". store.MaxLimit is this package's "fetch
 	// effectively all" convention (e.g. checkStepCompletion).
-	ready, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, time.Now().UTC(), store.MaxLimit)
+	ready, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, nil, time.Now().UTC(), store.MaxLimit)
 	if err != nil {
 		s.logger.WarnContext(ctx, "scheduler: unschedulable sweep: list ready tasks failed", slog.Any("error", err))
 		return

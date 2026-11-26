@@ -886,7 +886,7 @@ func TestTask_ListReadyTasks(t *testing.T) {
 		TaskRow(store.Task{ID: "t2", StepID: "s1", Name: "pending-task", Status: store.TaskStatusPending}).
 		Submit(t, s)
 
-	ready, err := s.ListReadyTasks(ctx, "f1", time.Now().UTC(), 10)
+	ready, err := s.ListReadyTasks(ctx, "f1", nil, time.Now().UTC(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
@@ -907,7 +907,7 @@ func TestTask_ListReadyTasks_PausedQueue(t *testing.T) {
 		TaskRow(store.Task{ID: "t1", StepID: "s1", Name: "t", Status: store.TaskStatusReady}).
 		Submit(t, s)
 
-	ready, err := s.ListReadyTasks(ctx, "f1", time.Now().UTC(), 10)
+	ready, err := s.ListReadyTasks(ctx, "f1", nil, time.Now().UTC(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
@@ -942,7 +942,7 @@ func TestTask_ListReadyTasks_SkipsBackoffAndPausedJobs(t *testing.T) {
 		t.Fatalf("PauseJob j2: %v", err)
 	}
 
-	ready, err := s.ListReadyTasks(ctx, "f1", now, 50)
+	ready, err := s.ListReadyTasks(ctx, "f1", nil, now, 50)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}

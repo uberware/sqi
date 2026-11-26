@@ -321,7 +321,9 @@ type TaskStore interface {
 	ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (reclaimed bool, err error)
 
 	// ListReadyTasks returns up to limit tasks in [TaskStatusReady] that
-	// belong to non-paused queues within the given farm, excluding:
+	// belong to non-paused queues within the given farm ("" = every farm) and,
+	// when queueIDs is non-empty, to one of those queues (an empty list is every
+	// queue, as for [Worker.ServesQueue]), excluding:
 	//   - tasks whose RetryAfter is set and after now (still backing off), and
 	//   - tasks whose job is paused or in a terminal status (completed,
 	//     failed, canceled),
@@ -331,8 +333,8 @@ type TaskStore interface {
 	//   3. step order ascending (earlier steps in a job run before later ones),
 	//   4. task creation time ascending (stable tiebreaker within a step).
 	//
-	// Used by the scheduler's assignment loop.
-	ListReadyTasks(ctx context.Context, farmID string, now time.Time, limit int) ([]Task, error)
+	// The farm and queue filters apply before limit.
+	ListReadyTasks(ctx context.Context, farmID string, queueIDs []string, now time.Time, limit int) ([]Task, error)
 
 	// ReclaimStaleAssignedTasks returns tasks stuck in [TaskStatusAssigned] whose
 	// assigned_at is older than cutoff to [TaskStatusReady], clearing

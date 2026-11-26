@@ -795,11 +795,11 @@ func (s *sweepSpy) DemoteStalledJobs(ctx context.Context, now time.Time) ([]stri
 	return s.Store.DemoteStalledJobs(ctx, now)
 }
 
-func (s *sweepSpy) ListReadyTasks(ctx context.Context, farmID string, now time.Time, limit int) ([]store.Task, error) {
+func (s *sweepSpy) ListReadyTasks(ctx context.Context, farmID string, queueIDs []string, now time.Time, limit int) ([]store.Task, error) {
 	if err := s.enter("ListReadyTasks"); err != nil {
 		return nil, err
 	}
-	return s.Store.ListReadyTasks(ctx, farmID, now, limit)
+	return s.Store.ListReadyTasks(ctx, farmID, queueIDs, now, limit)
 }
 
 func (s *sweepSpy) ListBlockedJobs(ctx context.Context) ([]store.Job, error) {
