@@ -66,7 +66,6 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 	t.Extensions = getStringSlice(raw, "extensions")
 	_, t.ExtensionsSet = raw["extensions"]
 	t.UnknownFields = unknownTopLevelFields(raw)
-	t.misplacedStepBlocks = findMisplacedStepBlocks(raw)
 	t.unknownKeys = findUnknownKeys(raw)
 
 	// RFC 0007's case-insensitive type names and its new parameter types are
@@ -131,19 +130,9 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 	return t, nil
 }
 
-// knownTopLevelFields are the keys the job template schema defines. Extension
-// blocks are permitted separately: a template that declares an extension may
-// carry a block named for it (e.g. SQI_PATH_TRANSLATION).
-var knownTopLevelFields = map[string]struct{}{
-	"specificationVersion": {}, "name": {}, "description": {}, "extensions": {},
-	"parameterDefinitions": {}, "jobEnvironments": {}, "steps": {},
-	// $schema is permitted so editors can attach a schema URL; the spec
-	// ignores it (conformance fixtures 1.1--schema-field{,-ignored}.yaml).
-	"$schema": {},
-}
-
 // unknownTopLevelFields returns the sorted top-level keys the schema does not
-// define and that do not name a supported extension.
+// define (templateKeySchema) and that do not name a supported extension, whose
+// block a template that declares it may carry (e.g. SQI_PATH_TRANSLATION).
 //
 // The status check matches validateExtensions' two-part gate rather than bare
 // registry presence. Presence alone would let a stray top-level key naming a
@@ -158,7 +147,7 @@ var knownTopLevelFields = map[string]struct{}{
 func unknownTopLevelFields(raw map[string]any) []string {
 	var out []string
 	for k := range raw {
-		if _, known := knownTopLevelFields[k]; known {
+		if _, known := templateKeySchema.keys[k]; known {
 			continue
 		}
 		if ext, isExt := LookupExtension(k); isExt && ext.Status == StatusSupported && !ext.StepBlock {
@@ -170,22 +159,14 @@ func unknownTopLevelFields(raw map[string]any) []string {
 	return out
 }
 
-// knownStepFields are the keys the 2023-09 step template schema defines.
-// Step-block extensions (SQI_LOG_CHECKS) are not listed: they are recorded as
-// unknown fields and accepted by validateUnknownStepFields when supported and
-// declared.
-var knownStepFields = map[string]struct{}{
-	"name": {}, "description": {}, "let": {}, "dependencies": {},
-	"stepEnvironments": {}, "hostRequirements": {}, "parameterSpace": {},
-	"script": {},
-}
-
 // unknownStepFields returns the sorted keys of a step's raw mapping that the
-// step template schema does not define.
+// step template schema does not define (stepKeySchema). Step-block extensions
+// (SQI_LOG_CHECKS) are among them: validateUnknownStepFields accepts one when
+// it is supported and declared.
 func unknownStepFields(raw map[string]any) []string {
 	var out []string
 	for k := range raw {
-		if _, known := knownStepFields[k]; !known {
+		if _, known := stepKeySchema.keys[k]; !known {
 			out = append(out, k)
 		}
 	}
@@ -232,13 +213,6 @@ func decodeJobParameter(raw map[string]any, exprDeclared bool) (JobParameter, er
 		p.UserInterface = ui
 	}
 
-	// fileFilters / fileFilterDefault (PATH-only chooser-dialog metadata;
-	// validation enforces the PATH-only constraint). Decoded by a helper to
-	// keep this function's cyclomatic complexity within bounds.
-	if err := decodeJobParamFileFilters(raw, &p); err != nil {
-		return p, err
-	}
-
 	return p, nil
 }
 
@@ -278,31 +252,26 @@ func decodeJobParamDefault(raw map[string]any, p *JobParameter, exprDeclared boo
 	return nil
 }
 
-// decodeJobParamFileFilters populates the fileFilters and fileFilterDefault
-// fields of p from the raw decoded map. Both are members of the userInterface
-// block alongside control and label (Template Schemas §2.2), and that is the
-// only place they are read;
-// anywhere else they are unknown keys (findUnknownKeys).
-func decodeJobParamFileFilters(raw map[string]any, p *JobParameter) error {
-	ui, ok := toMapOK(raw["userInterface"])
-	if !ok {
-		return nil
-	}
-	if filters, ok := ui["fileFilters"].([]any); ok {
+// decodeUIFileFilters populates ui's fileFilters and fileFilterDefault from
+// the raw userInterface map m (PATH-only chooser-dialog metadata; validation
+// enforces the PATH-only constraint). They are members of userInterface
+// (Template Schemas §2.2), and anywhere else they are unknown keys.
+func decodeUIFileFilters(m map[string]any, ui *ParameterUserInterface) error {
+	if filters, ok := m["fileFilters"].([]any); ok {
 		for i, v := range filters {
 			f, err := decodePathFileFilter(v, fmt.Sprintf("parameterDefinition.userInterface.fileFilters[%d]", i))
 			if err != nil {
 				return err
 			}
-			p.FileFilters = append(p.FileFilters, f)
+			ui.FileFilters = append(ui.FileFilters, f)
 		}
 	}
-	if v, ok := ui["fileFilterDefault"]; ok && v != nil {
+	if v, ok := m["fileFilterDefault"]; ok && v != nil {
 		f, err := decodePathFileFilter(v, "parameterDefinition.userInterface.fileFilterDefault")
 		if err != nil {
 			return err
 		}
-		p.FileFilterDefault = &f
+		ui.FileFilterDefault = &f
 	}
 	return nil
 }
@@ -489,6 +458,9 @@ func decodeParameterUserInterface(v any) (*ParameterUserInterface, error) {
 	if v, ok := m["singleStepDelta"]; ok && v != nil {
 		s := anyToString(v)
 		ui.SingleStepDelta = &s
+	}
+	if err := decodeUIFileFilters(m, ui); err != nil {
+		return nil, err
 	}
 	return ui, nil
 }

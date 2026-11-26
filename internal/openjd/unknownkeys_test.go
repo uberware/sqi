@@ -38,6 +38,11 @@ func ukMessage(object string) string {
 	return "unknown field; the " + object + " schema defines no such key"
 }
 
+// typoHeader opens every template in TestFindUnknownKeys_OneTypoPerObject.
+const typoHeader = `specificationVersion: jobtemplate-2023-09
+name: J
+`
+
 func TestFindUnknownKeys_OneTypoPerObject(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -47,9 +52,7 @@ func TestFindUnknownKeys_OneTypoPerObject(t *testing.T) {
 	}{
 		{
 			name: "environment actions",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-jobEnvironments:
+			src: `jobEnvironments:
   - name: E
     script:
       actions:
@@ -65,9 +68,7 @@ steps:
 		},
 		{
 			name: "environment",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: S
     stepEnvironments:
       - name: E
@@ -83,9 +84,7 @@ steps:
 		},
 		{
 			name: "environment script",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-jobEnvironments:
+			src: `jobEnvironments:
   - name: E
     script:
       embededFiles: []
@@ -100,9 +99,7 @@ steps:
 		},
 		{
 			name: "host requirements",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: S
     hostRequirements:
       attribtes:
@@ -114,9 +111,7 @@ steps:
 		},
 		{
 			name: "amount requirement",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: S
     hostRequirements:
       amounts:
@@ -128,9 +123,7 @@ steps:
 		},
 		{
 			name: "attribute requirement",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: S
     hostRequirements:
       attributes:
@@ -143,9 +136,7 @@ steps:
 		},
 		{
 			name: "action",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: S
     script:
       actions:
@@ -158,9 +149,7 @@ steps:
 		},
 		{
 			name: "cancelation method",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: S
     script:
       actions:
@@ -175,9 +164,7 @@ steps:
 		},
 		{
 			name: "step actions",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: S
     script:
       actions:
@@ -191,9 +178,7 @@ steps:
 		},
 		{
 			name: "step script",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: S
     script:
       action: {}
@@ -206,9 +191,7 @@ steps:
 		},
 		{
 			name: "embedded file",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: S
     script:
       embeddedFiles:
@@ -225,9 +208,7 @@ steps:
 		},
 		{
 			name: "job parameter definition",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-parameterDefinitions:
+			src: `parameterDefinitions:
   - name: P
     type: STRING
     defalt: x
@@ -239,9 +220,7 @@ steps:
 		},
 		{
 			name: "user interface",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-parameterDefinitions:
+			src: `parameterDefinitions:
   - name: P
     type: STRING
     userInterface:
@@ -254,9 +233,7 @@ steps:
 		},
 		{
 			name: "file filter",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-parameterDefinitions:
+			src: `parameterDefinitions:
   - name: P
     type: PATH
     userInterface:
@@ -272,9 +249,7 @@ steps:
 		},
 		{
 			name: "nested item constraint",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-extensions: [EXPR]
+			src: `extensions: [EXPR]
 parameterDefinitions:
   - name: P
     type: LIST[LIST[INT]]
@@ -287,9 +262,7 @@ steps:
 		},
 		{
 			name: "parameter space",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: S
     parameterSpace:
       taskParameterDefinitions:
@@ -303,9 +276,7 @@ steps:
 		},
 		{
 			name: "task parameter definition",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: S
     parameterSpace:
       taskParameterDefinitions:
@@ -319,9 +290,7 @@ steps:
 		},
 		{
 			name: "chunks",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-extensions: [TASK_CHUNKING]
+			src: `extensions: [TASK_CHUNKING]
 steps:
   - name: S
     parameterSpace:
@@ -339,9 +308,7 @@ steps:
 		},
 		{
 			name: "step dependency",
-			src: `specificationVersion: jobtemplate-2023-09
-name: J
-steps:
+			src: `steps:
   - name: A
 ` + onRunEcho + `  - name: B
     dependencies:
@@ -354,7 +321,7 @@ steps:
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := unknownKeyErrors(t, tc.src, openjd.FormatYAML)
+			got := unknownKeyErrors(t, typoHeader+tc.src, openjd.FormatYAML)
 			if len(got) != 1 {
 				t.Fatalf("unknown-key errors = %v, want exactly one at %s", got, tc.pointer)
 			}
@@ -519,12 +486,8 @@ steps:
         onRun:
           command: echo
 `
-	tmpl, err := openjd.Parse([]byte(src), openjd.FormatYAML)
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
 	var at []openjd.ValidationError
-	for _, e := range openjd.Validate(tmpl) {
+	for _, e := range openjd.Validate(mustParse(t, src)) {
 		if e.Pointer == "/steps/0/script/SQI_LOG_CHECKS" {
 			at = append(at, e)
 		}
@@ -639,15 +602,6 @@ steps:
             defaultTaskCount: 2
             rangeConstraint: CONTIGUOUS
 ` + onRunEcho
-	tmpl, err := openjd.Parse([]byte(src), openjd.FormatYAML)
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	const ptr = "/steps/0/parameterSpace/taskParameterDefinitions/0/chunks"
-	for _, e := range openjd.Validate(tmpl) {
-		if e.Pointer == ptr && strings.Contains(e.Message, "only on CHUNK[INT]") {
-			return
-		}
-	}
-	t.Errorf("no error at %s saying chunks is valid only on CHUNK[INT]; got %v", ptr, openjd.Validate(tmpl))
+	assertValidationContains(t, mustParse(t, src),
+		"/steps/0/parameterSpace/taskParameterDefinitions/0/chunks: chunks is valid only on CHUNK[INT]")
 }

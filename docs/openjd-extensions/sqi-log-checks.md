@@ -76,7 +76,8 @@ Structural, enforced at submission (`internal/openjd/logchecks.go`,
   step-level block and is ignored here; put it directly on the step"), whether or
   not the extension is declared, because the decoder reads the block only from
   its step-level slot and would otherwise drop it. An environment variable named
-  `SQI_LOG_CHECKS` under `variables` is not a block and is left alone.
+  `SQI_LOG_CHECKS` under `variables` is not a block and is left alone, and one
+  below an unknown key is not reported, since that key is already an error.
 - The block holds only `failOn` and `requireLine`; any other field is an error.
 - Each list must be a list of strings (an unquoted YAML `404` is rejected as
   "must be a string" rather than coerced).

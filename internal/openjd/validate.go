@@ -135,7 +135,7 @@ func validateUnknownStepFields(t *JobTemplate, s StepTemplate, idx int) Validati
 		case !strings.HasPrefix(key, "SQI_"):
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
-				Message: "unknown field; the step template schema defines no such key",
+				Message: unknownFieldMessage("step template"),
 			})
 		case !ok || ext.Status != StatusSupported || !ext.StepBlock:
 			errs = append(errs, ValidationError{
@@ -158,7 +158,7 @@ func unknownTopLevelMessage(field string) string {
 	if isStepBlockName(field) {
 		return field + " is a step-level block; put it on a step, not at the top level of the template"
 	}
-	return "unknown field; the job template schema defines no such key"
+	return unknownFieldMessage("job template")
 }
 
 // ─── path translation validation ─────────────────────────────────────────────
@@ -1553,8 +1553,9 @@ func validateUILimits(params []JobParameter) ValidationErrors {
 					Message: fmt.Sprintf("groupLabel exceeds %d characters", maxUIGroupLabelLen),
 				})
 			}
+			// Filters are decoded only from userInterface (§2.2).
+			errs = append(errs, validateFileFilterLimits(p.UserInterface, base)...)
 		}
-		errs = append(errs, validateFileFilterLimits(p, paramPtr)...)
 	}
 	return errs
 }
@@ -1566,21 +1567,20 @@ func validateUILimits(params []JobParameter) ValidationErrors {
 // [maxFileFilterPatternLen] characters. Structural correctness (label
 // required, control pairing, pattern grammar) lives in [validateFileFilters]
 // instead and always runs -- see the invariant documented on
-// [ValidateOptions].
-func validateFileFilterLimits(p JobParameter, ptr string) ValidationErrors {
-	ptr += "/userInterface" // filters are members of userInterface (§2.2)
+// [ValidateOptions]. ptr points at ui.
+func validateFileFilterLimits(ui *ParameterUserInterface, ptr string) ValidationErrors {
 	var errs ValidationErrors
-	if len(p.FileFilters) > maxFileFilters {
+	if len(ui.FileFilters) > maxFileFilters {
 		errs = append(errs, ValidationError{
 			Pointer: ptr + "/fileFilters",
-			Message: fmt.Sprintf("at most %d file filters are allowed (got %d)", maxFileFilters, len(p.FileFilters)),
+			Message: fmt.Sprintf("at most %d file filters are allowed (got %d)", maxFileFilters, len(ui.FileFilters)),
 		})
 	}
-	for i, f := range p.FileFilters {
+	for i, f := range ui.FileFilters {
 		errs = append(errs, validatePathFileFilterLimits(f, fmt.Sprintf("%s/fileFilters/%d", ptr, i))...)
 	}
-	if p.FileFilterDefault != nil {
-		errs = append(errs, validatePathFileFilterLimits(*p.FileFilterDefault, ptr+"/fileFilterDefault")...)
+	if ui.FileFilterDefault != nil {
+		errs = append(errs, validatePathFileFilterLimits(*ui.FileFilterDefault, ptr+"/fileFilterDefault")...)
 	}
 	return errs
 }
@@ -2290,10 +2290,10 @@ func validateJobParams(params []JobParameter, exprDeclared bool) ValidationError
 			errs = append(errs, validateUILabelText(ui.Label, ui.LabelSet, ptr+"/userInterface/label")...)
 			errs = append(errs, validateUILabelText(ui.GroupLabel, ui.GroupLabelSet, ptr+"/userInterface/groupLabel")...)
 			errs = append(errs, validateSingleStepDelta(p, ui, ptr+"/userInterface/singleStepDelta")...)
+			// fileFilters / fileFilterDefault are decoded only from
+			// userInterface (§2.2), and are structural: always runs.
+			errs = append(errs, validateFileFilters(p.Type, ui, ptr+"/userInterface")...)
 		}
-
-		// fileFilters / fileFilterDefault are also structural, always runs.
-		errs = append(errs, validateFileFilters(p, ptr)...)
 	}
 	return errs
 }
@@ -2490,41 +2490,40 @@ var fileFilterControls = map[ControlType]struct{}{
 // Structural -- always runs. The quantitative caps (label length, filter
 // count) live in [validateFileFilterLimits] instead, gated behind
 // EnforceLimits -- see the invariant documented on [ValidateOptions].
-func validateFileFilters(p JobParameter, ptr string) ValidationErrors {
+// typ is the parameter's type, ui its userInterface, and ptr points at ui.
+func validateFileFilters(typ JobParamType, ui *ParameterUserInterface, ptr string) ValidationErrors {
 	var errs ValidationErrors
-	if len(p.FileFilters) == 0 && p.FileFilterDefault == nil {
+	if len(ui.FileFilters) == 0 && ui.FileFilterDefault == nil {
 		return nil
 	}
-	ptr += "/userInterface" // filters are members of userInterface (§2.2)
 	// Point at whichever field was declared, so a
 	// fileFilterDefault-only parameter doesn't get an error pointing at
 	// the sibling fileFilters field it never set.
 	field := "fileFilterDefault"
-	if len(p.FileFilters) > 0 {
+	if len(ui.FileFilters) > 0 {
 		field = "fileFilters"
 	}
 	// LIST[PATH] carries fileFilters and fileFilterDefault too: RFC 0007's
 	// <JobListPathParameterDefinition> declares both, for the same
 	// CHOOSE_*_FILE_LIST dialogs the scalar type's filters serve.
-	if p.Type != JobParamTypePath && p.Type != JobParamTypeListPath {
+	if typ != JobParamTypePath && typ != JobParamTypeListPath {
 		errs = append(errs, ValidationError{
 			Pointer: ptr + "/" + field,
 			Message: "fileFilters and fileFilterDefault are valid only on PATH or LIST[PATH] parameters",
 		})
 		return errs
 	}
-	// Filters are decoded only from userInterface, so it is never nil here.
-	if _, ok := fileFilterControls[p.UserInterface.Control]; !ok {
+	if _, ok := fileFilterControls[ui.Control]; !ok {
 		errs = append(errs, ValidationError{
 			Pointer: ptr + "/" + field,
-			Message: fmt.Sprintf("fileFilters and fileFilterDefault require userInterface.control to be CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE (got %q)", p.UserInterface.Control),
+			Message: fmt.Sprintf("fileFilters and fileFilterDefault require userInterface.control to be CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE (got %q)", ui.Control),
 		})
 	}
-	for i, f := range p.FileFilters {
+	for i, f := range ui.FileFilters {
 		errs = append(errs, validatePathFileFilter(f, fmt.Sprintf("%s/fileFilters/%d", ptr, i))...)
 	}
-	if p.FileFilterDefault != nil {
-		errs = append(errs, validatePathFileFilter(*p.FileFilterDefault, ptr+"/fileFilterDefault")...)
+	if ui.FileFilterDefault != nil {
+		errs = append(errs, validatePathFileFilter(*ui.FileFilterDefault, ptr+"/fileFilterDefault")...)
 	}
 	return errs
 }

@@ -228,14 +228,11 @@ func toProductParameterResponse(p openjd.JobParameter) productParameterResponse 
 			GroupLabel: p.UserInterface.GroupLabel,
 			Decimals:   p.UserInterface.Decimals,
 		}
-	}
-	for _, f := range p.FileFilters {
-		out.FileFilters = append(out.FileFilters, pathFileFilterResponse{Label: f.Label, Patterns: f.Patterns})
-	}
-	if p.FileFilterDefault != nil {
-		out.FileFilterDefault = &pathFileFilterResponse{
-			Label:    p.FileFilterDefault.Label,
-			Patterns: p.FileFilterDefault.Patterns,
+		for _, f := range p.UserInterface.FileFilters {
+			out.FileFilters = append(out.FileFilters, pathFileFilterResponse{Label: f.Label, Patterns: f.Patterns})
+		}
+		if d := p.UserInterface.FileFilterDefault; d != nil {
+			out.FileFilterDefault = &pathFileFilterResponse{Label: d.Label, Patterns: d.Patterns}
 		}
 	}
 	return out

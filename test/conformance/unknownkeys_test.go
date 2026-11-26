@@ -13,29 +13,27 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/test/conformance"
 )
-
-// sweptExtensionDirs are the suite directories for the extensions sqi
-// supports. FEATURE_BUNDLE_1 and WRAP_ACTIONS are not, so their keys are
-// rightly unknown; a fixture elsewhere that declares one is skipped too.
-var sweptExtensionDirs = []string{"base", "EXPR", "TASK_CHUNKING", "REDACTED_ENV_VARS"}
 
 // TestConformance_ValidFixturesHaveNoUnknownKeys checks that no valid fixture
 // trips the unknown-key check: every key a valid template uses is one the
 // schema defines, so a failure here means the allowed-key table in
 // internal/openjd/unknownkeys.go is missing a key. It reads the jobs/ fixtures'
-// templates too, which TestConformance_Templates never scores.
+// templates too, which TestConformance_Templates never scores. Only fixtures of
+// the extensions sqi supports are swept (conformance.Classify): another
+// extension's keys are rightly unknown.
 func TestConformance_ValidFixturesHaveNoUnknownKeys(t *testing.T) {
-	sources := validFixtureTemplates(t)
-	if len(sources) == 0 {
+	paths := validFixturePaths(t)
+	if len(paths) == 0 {
 		t.Fatal("no fixtures found; is the submodule checked out?")
 	}
-	for path, src := range sources {
+	for _, path := range paths {
 		format := openjd.FormatYAML
 		if strings.HasSuffix(path, ".json") {
 			format = openjd.FormatJSON
 		}
-		tmpl, err := openjd.Parse(src, format)
+		tmpl, err := openjd.Parse(fixtureTemplate(t, path), format)
 		if err != nil || declaresUnsupported(tmpl) {
 			continue // scored by TestConformance_Templates, or rightly unknown
 		}
@@ -58,23 +56,25 @@ func declaresUnsupported(tmpl *openjd.JobTemplate) bool {
 	return false
 }
 
-// validFixtureTemplates returns the template of every valid job_templates/ and
-// jobs/ fixture in sweptExtensionDirs, keyed by fixture path.
-func validFixtureTemplates(t *testing.T) map[string][]byte {
+// validFixturePaths returns every valid job_templates/ and jobs/ fixture whose
+// extension directory is live.
+func validFixturePaths(t *testing.T) []string {
 	t.Helper()
-	out := map[string][]byte{}
-	for _, dir := range sweptExtensionDirs {
-		for _, pattern := range []string{"job_templates/*.yaml", "job_templates/*.json", "jobs/*.test.yaml"} {
-			paths, err := filepath.Glob(filepath.Join(SuiteRoot, dir, pattern))
-			if err != nil {
-				t.Fatal(err)
+	var out []string
+	for _, pattern := range []string{"job_templates/*.yaml", "job_templates/*.json", "jobs/*.test.yaml"} {
+		paths, err := filepath.Glob(filepath.Join(SuiteRoot, "*", pattern))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range paths {
+			// A leading dot is an AppleDouble sidecar or other OS metadata;
+			// no fixture begins with one.
+			base := filepath.Base(p)
+			if strings.HasPrefix(base, ".") || strings.Contains(base, ".invalid.") ||
+				conformance.Classify(conformance.ExtensionFor(p), conformance.KindFor(p)) != conformance.StateLive {
+				continue
 			}
-			for _, p := range paths {
-				if strings.Contains(filepath.Base(p), ".invalid.") {
-					continue
-				}
-				out[p] = fixtureTemplate(t, p)
-			}
+			out = append(out, p)
 		}
 	}
 	return out
@@ -82,18 +82,16 @@ func validFixtureTemplates(t *testing.T) map[string][]byte {
 
 // fixtureTemplate returns a fixture's template: the whole file for a
 // job_templates/ fixture, the re-serialized template: key for a jobs/ one.
+// Only that key is decoded (not loadChunkingJob): the expected: block differs
+// between extensions' jobs/ fixtures.
 func fixtureTemplate(t *testing.T, path string) []byte {
 	t.Helper()
-	if !strings.HasSuffix(path, ".test.yaml") {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return data
-	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.HasSuffix(path, ".test.yaml") {
+		return data
 	}
 	var fx struct {
 		Template yaml.Node `yaml:"template"`

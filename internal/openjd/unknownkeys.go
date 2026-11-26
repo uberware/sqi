@@ -3,16 +3,19 @@
 package openjd
 
 import (
-	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // unknownKey is a key of some template object that the object's schema does
 // not define: Pointer locates the key, Object names the schema for the error.
+// StepBlock marks a step-block extension key (SQI_LOG_CHECKS) found below a
+// step rather than directly on it, which has an error of its own.
 type unknownKey struct {
-	Pointer string
-	Object  string
+	Pointer   string
+	Object    string
+	StepBlock bool
 }
 
 // keySchema is one template object's allowed keys. A nil child is a leaf key;
@@ -31,8 +34,10 @@ type keyChild struct {
 	list   bool
 }
 
-// templateKeySchema is the root of the table: the job template, whose own
-// keys unknownTopLevelFields checks.
+// templateKeySchema is the root of the table: the job template. It and a step
+// list every key they define, but their own keys are checked by
+// unknownTopLevelFields and unknownStepFields, which also accept extension
+// blocks there.
 var templateKeySchema = buildKeySchemas()
 
 func leafKeys(names ...string) map[string]*keyChild {
@@ -104,19 +109,35 @@ func buildKeySchemas() *keySchema {
 	}}
 	dependency := &keySchema{"step dependency", leafKeys("dependsOn")}
 
-	step := &keySchema{"", map[string]*keyChild{
-		"script": one(stepScript), "stepEnvironments": many(environment), "parameterSpace": one(paramSpace),
-		"hostRequirements": one(hostReqs), "dependencies": many(dependency),
-	}}
-	return &keySchema{"", map[string]*keyChild{
-		"parameterDefinitions": many(jobParam), "jobEnvironments": many(environment), "steps": many(step),
-	}}
+	step := &keySchema{"", leafKeys("name", "description", "let")}
+	step.keys["script"] = one(stepScript)
+	step.keys["stepEnvironments"] = many(environment)
+	step.keys["parameterSpace"] = one(paramSpace)
+	step.keys["hostRequirements"] = one(hostReqs)
+	step.keys["dependencies"] = many(dependency)
+
+	// $schema is permitted so editors can attach a schema URL; the spec
+	// ignores it (conformance fixtures 1.1--schema-field{,-ignored}.yaml).
+	root := &keySchema{"", leafKeys("specificationVersion", "name", "description", "extensions", "$schema")}
+	root.keys["parameterDefinitions"] = many(jobParam)
+	root.keys["jobEnvironments"] = many(environment)
+	root.keys["steps"] = many(step)
+	return root
 }
 
-// maxUnknownKeys is the most unknown keys one template reports, the first by
-// pointer. One is enough to reject the template; the cap keeps a template
-// stuffed with them from returning an error per copy (as maxMisplacedStepBlocks
-// does for misplaced step blocks).
+// stepKeySchema is a step template's keys, which unknownStepFields checks.
+var stepKeySchema = templateKeySchema.keys["steps"].schema
+
+// unknownFieldMessage is the error for a key the named object's schema does
+// not define.
+func unknownFieldMessage(object string) string {
+	return "unknown field; the " + object + " schema defines no such key"
+}
+
+// maxUnknownKeys is the most unknown keys (misplaced step blocks included) one
+// template reports, the first by pointer. One is enough to reject the
+// template; the cap keeps a template stuffed with them from returning an error
+// per copy.
 const maxUnknownKeys = 16
 
 // keyFrame is one mapping the walk has yet to visit: its value, the JSON
@@ -131,10 +152,14 @@ type keyFrame struct {
 // step's own keys, that its object's schema does not define, sorted by
 // pointer. The walk descends only into keys the table knows, so its depth is
 // bounded by the schema, and it keeps an explicit stack rather than recursing.
-// A step-block extension name (SQI_LOG_CHECKS) is skipped: wherever it is found
-// below a step, findMisplacedStepBlocks reports it.
+//
+// A step-block extension key (SQI_LOG_CHECKS) found in any object other than a
+// step (under script, actions.onRun, an environment, and so on) is marked
+// StepBlock: the decoder reads the block only from its step-level slot, so the
+// step would otherwise run with its checks off. One under an unknown key is
+// not reached, and that key is reported instead.
 func findUnknownKeys(raw map[string]any) []unknownKey {
-	var out []unknownKey
+	var out unknownKeyTop
 	stack := []keyFrame{{v: raw, schema: templateKeySchema}}
 	for len(stack) > 0 {
 		f := stack[len(stack)-1]
@@ -144,30 +169,62 @@ func findUnknownKeys(raw map[string]any) []unknownKey {
 			continue // a non-mapping is the decoder's error to report
 		}
 		for k, v := range m {
-			ptr := f.ptr + "/" + escapePointerToken(k)
 			child, known := f.schema.keys[k]
 			switch {
 			case known:
-				stack = pushKeyChild(stack, child, v, ptr)
-			case f.schema.object == "" || isStepBlockName(k):
+				if child != nil {
+					stack = pushKeyChild(stack, child, v, f.ptr+"/"+escapePointerToken(k))
+				}
+			case f.schema.object == "":
+			case isStepBlockName(k):
+				out.add(f.ptr, escapePointerToken(k), unknownKey{StepBlock: true})
 			default:
-				out = append(out, unknownKey{Pointer: ptr, Object: f.schema.object})
+				out.add(f.ptr, escapePointerToken(k), unknownKey{Object: f.schema.object})
 			}
 		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Pointer < out[j].Pointer })
-	if len(out) > maxUnknownKeys {
-		out = out[:maxUnknownKeys]
 	}
 	return out
 }
 
-// pushKeyChild queues v for a visit under c's schema: once, or per element of
-// a list. A leaf (nil c) and a list value that is not a list queue nothing.
-func pushKeyChild(stack []keyFrame, c *keyChild, v any, ptr string) []keyFrame {
-	if c == nil {
-		return stack
+// unknownKeyTop holds the first maxUnknownKeys unknown keys by pointer, in
+// order, so a template stuffed with unknown keys costs no more than sixteen.
+type unknownKeyTop []unknownKey
+
+// add records k, at parent/token, unless sixteen earlier keys are held.
+func (top *unknownKeyTop) add(parent, token string, k unknownKey) {
+	s := *top
+	if len(s) == maxUnknownKeys && !joinedLess(parent, token, s[len(s)-1].Pointer) {
+		return // checked before building the pointer, which most keys never need
 	}
+	k.Pointer = parent + "/" + token
+	i := sort.Search(len(s), func(i int) bool { return k.Pointer < s[i].Pointer })
+	if len(s) < maxUnknownKeys {
+		s = append(s, unknownKey{})
+	}
+	copy(s[i+1:], s[i:len(s)-1])
+	s[i] = k
+	*top = s
+}
+
+// joinedLess reports whether parent+"/"+token sorts before s, without
+// building the joined string.
+func joinedLess(parent, token, s string) bool {
+	for _, part := range [...]string{parent, "/", token} {
+		n := min(len(part), len(s))
+		if part[:n] != s[:n] {
+			return part[:n] < s[:n]
+		}
+		if len(part) > len(s) {
+			return false // s is a proper prefix of the joined string
+		}
+		s = s[n:]
+	}
+	return s != ""
+}
+
+// pushKeyChild queues v for a visit under c's schema: once, or per element of
+// a list. A list value that is not a list queues nothing.
+func pushKeyChild(stack []keyFrame, c *keyChild, v any, ptr string) []keyFrame {
 	if !c.list {
 		return append(stack, keyFrame{v: v, ptr: ptr, schema: c.schema})
 	}
@@ -184,10 +241,12 @@ func pushKeyChild(stack []keyFrame, c *keyChild, v any, ptr string) []keyFrame {
 func validateUnknownKeys(t *JobTemplate) ValidationErrors {
 	errs := make(ValidationErrors, 0, len(t.unknownKeys))
 	for _, k := range t.unknownKeys {
-		errs = append(errs, ValidationError{
-			Pointer: k.Pointer,
-			Message: fmt.Sprintf("unknown field; the %s schema defines no such key", k.Object),
-		})
+		msg := unknownFieldMessage(k.Object)
+		if k.StepBlock {
+			name := k.Pointer[strings.LastIndexByte(k.Pointer, '/')+1:]
+			msg = name + " is a step-level block and is ignored here; put it directly on the step, as a sibling of script"
+		}
+		errs = append(errs, ValidationError{Pointer: k.Pointer, Message: msg})
 	}
 	return errs
 }

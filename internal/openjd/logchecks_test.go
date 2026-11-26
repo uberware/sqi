@@ -303,6 +303,13 @@ func TestLogChecks_MisplacedBlock(t *testing.T) {
 			wantPointer: "/jobEnvironments/0/SQI_LOG_CHECKS",
 		},
 		{
+			name: "under a parameter's userInterface",
+			body: "parameterDefinitions:\n  - name: P\n    type: STRING\n    userInterface:\n      " + checks + "\n" +
+				"steps:\n  - name: S\n    " + checks + "\n" +
+				"    script:\n      actions:\n        onRun:\n          command: echo\n",
+			wantPointer: "/parameterDefinitions/0/userInterface/SQI_LOG_CHECKS",
+		},
+		{
 			name: "an environment variable named SQI_LOG_CHECKS is not a block",
 			body: "steps:\n  - name: S\n    " + checks + "\n" +
 				"    stepEnvironments:\n      - name: E\n        variables: {SQI_LOG_CHECKS: '1'}\n" +
@@ -337,9 +344,10 @@ func TestLogChecks_MisplacedBlock(t *testing.T) {
 	}
 }
 
-// TestLogChecks_MisplacedBlockDeepNesting asserts that the walk handles deep
-// nesting and caps how many misplaced blocks it reports.
-func TestLogChecks_MisplacedBlockDeepNesting(t *testing.T) {
+// TestLogChecks_MisplacedBlockUnderUnknownKey asserts that the walk does not
+// descend under a key the schema does not define, however deep the value
+// nests: the key itself is the one error, and no block under it is reported.
+func TestLogChecks_MisplacedBlockUnderUnknownKey(t *testing.T) {
 	const depth = 5000
 	var b strings.Builder
 	b.WriteString(`{"specificationVersion":"jobtemplate-2023-09","name":"J","extensions":["SQI_LOG_CHECKS"],` +
@@ -355,14 +363,29 @@ func TestLogChecks_MisplacedBlockDeepNesting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	var got int
-	for _, e := range openjd.Validate(tmpl) {
+	errs := openjd.Validate(tmpl)
+	if len(errs) != 1 || !lcHas(errs, "/steps/0/extra", "unknown field") {
+		t.Errorf("errors = %v, want only the unknown field at /steps/0/extra", errs)
+	}
+}
+
+// TestLogChecks_MisplacedBlockCapped asserts that a template stuffed with
+// misplaced blocks reports only the first sixteen by pointer.
+func TestLogChecks_MisplacedBlockCapped(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("specificationVersion: jobtemplate-2023-09\nname: J\nextensions: [SQI_LOG_CHECKS]\nsteps:\n")
+	for i := range 40 {
+		fmt.Fprintf(&b, "  - name: S%02d\n    SQI_LOG_CHECKS: {failOn: [x]}\n    script:\n"+
+			"      SQI_LOG_CHECKS: {failOn: [x]}\n      actions:\n        onRun:\n          command: echo\n", i)
+	}
+	var got []string
+	for _, e := range openjd.Validate(mustParse(t, b.String())) {
 		if strings.Contains(e.Message, "is a step-level block and is ignored here") {
-			got++
+			got = append(got, e.Pointer)
 		}
 	}
-	if got != 16 {
-		t.Errorf("reported %d misplaced blocks, want the cap of 16", got)
+	if len(got) != 16 || got[0] != "/steps/0/script/SQI_LOG_CHECKS" {
+		t.Errorf("reported %v, want the first sixteen by pointer", got)
 	}
 }
 

@@ -51,7 +51,7 @@ steps:
 	if errs := openjd.Validate(tmpl); len(errs) > 0 {
 		t.Fatalf("expected file filters to validate; got: %v", errs)
 	}
-	p := tmpl.ParameterDefinitions[0]
+	p := tmpl.ParameterDefinitions[0].UserInterface
 	if len(p.FileFilters) != 2 {
 		t.Fatalf("FileFilters = %d, want 2", len(p.FileFilters))
 	}

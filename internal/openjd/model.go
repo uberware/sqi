@@ -29,13 +29,10 @@ type JobTemplate struct {
 	// the decoder so validation can reject them; the spec's job template is a
 	// closed object.
 	UnknownFields []string
-	// misplacedStepBlocks are the JSON pointers of step-block extension keys
-	// (SQI_LOG_CHECKS) the decoder found somewhere other than directly on a
-	// step; see findMisplacedStepBlocks. Carried for validation to reject.
-	misplacedStepBlocks []string
 	// unknownKeys are the keys below the top level and a step's own keys that
-	// their object's schema does not define; see findUnknownKeys. Carried for
-	// validation to reject.
+	// their object's schema does not define, and the step-block extension keys
+	// (SQI_LOG_CHECKS) found below a step rather than on it; see
+	// findUnknownKeys. Carried for validation to reject.
 	unknownKeys []unknownKey
 
 	// PathTranslation is the parsed SQI_PATH_TRANSLATION extension block, or nil
@@ -180,12 +177,6 @@ type JobParameter struct {
 	// UserInterface carries optional OpenJD base-spec presentation hints.
 	// Nil when the parameter declares no userInterface object.
 	UserInterface *ParameterUserInterface
-	// FileFilters are the file-type choices offered by a CHOOSE_*_FILE dialog.
-	// Only valid on PATH parameters; validation rejects them on other types.
-	FileFilters []PathFileFilter
-	// FileFilterDefault is the filter selected when the dialog opens.
-	// Only valid on PATH parameters. Nil when absent.
-	FileFilterDefault *PathFileFilter
 	// Item constrains the ELEMENTS of a LIST[*] parameter. Nil for a scalar
 	// type, or when the template declares no item: block.
 	Item *ItemConstraint
@@ -298,6 +289,13 @@ type ParameterUserInterface struct {
 	// string so validation can tell an integer from a float: an INT parameter's
 	// delta must itself be an integer.
 	SingleStepDelta *string
+	// FileFilters are the file-type choices offered by a CHOOSE_*_FILE dialog.
+	// Only valid on PATH and LIST[PATH] parameters; validation rejects them on
+	// other types.
+	FileFilters []PathFileFilter
+	// FileFilterDefault is the filter selected when the dialog opens. Nil when
+	// absent.
+	FileFilterDefault *PathFileFilter
 	// LabelSet and GroupLabelSet record whether the key was present in the
 	// template, as opposed to merely empty. Both fields are optional, but an
 	// explicitly empty one is invalid, and the string alone cannot tell the two
