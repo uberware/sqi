@@ -410,11 +410,15 @@ handleLeaseRequest(workerID, queueID)
 
 A parked request is woken when new work becomes available for that queue (job
 submitted, task becomes `ready`, task completes freeing cores, or stale-task
-reaper reclaims a task). A wake that lands after a request has read the store
-but before it parks is not lost: the scheduler counts the wakes on each queue,
-and a request whose count moved since its read returns at once and selects
-again. Unfulfillable requests time out after ~30 s and return an empty batch;
-the worker immediately re-requests.
+reaper reclaims a task). A completion's wake is sent once the finished step's
+dependents have been promoted, so a request it wakes sees the dependent step
+ready and leases it ahead of later jobs. Completion and promotion are separate
+writes, so a new request that arrives between them can still lease another
+job's task. A wake that lands after a request has read the store but before it
+parks is not lost: the scheduler counts the wakes on each queue, and a request
+whose count moved since its read returns at once and selects again.
+Unfulfillable requests time out after ~30 s and return an empty batch; the
+worker immediately re-requests.
 
 **Compute-location registry.** sqi maintains a curated, auto-populated catalog
 of named compute locations (`compute_locations` table; served at
