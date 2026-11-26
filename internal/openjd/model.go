@@ -33,6 +33,10 @@ type JobTemplate struct {
 	// (SQI_LOG_CHECKS) the decoder found somewhere other than directly on a
 	// step; see findMisplacedStepBlocks. Carried for validation to reject.
 	misplacedStepBlocks []string
+	// unknownKeys are the keys below the top level and a step's own keys that
+	// their object's schema does not define; see findUnknownKeys. Carried for
+	// validation to reject.
+	unknownKeys []unknownKey
 
 	// PathTranslation is the parsed SQI_PATH_TRANSLATION extension block, or nil
 	// when the extension is not declared.

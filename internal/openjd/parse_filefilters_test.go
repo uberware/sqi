@@ -15,7 +15,7 @@ import (
 func fileFiltersYAML(n int) string {
 	var b strings.Builder
 	for i := range n {
-		fmt.Fprintf(&b, "      - label: F%d\n        patterns: [\"*.png\"]\n", i)
+		fmt.Fprintf(&b, "        - label: F%d\n          patterns: [\"*.png\"]\n", i)
 	}
 	return b.String()
 }
@@ -29,15 +29,17 @@ parameterDefinitions:
     type: PATH
     objectType: FILE
     dataFlow: IN
-    userInterface: { control: CHOOSE_INPUT_FILE, label: Scene }
-    fileFilters:
-      - label: Image Files
+    userInterface:
+      control: CHOOSE_INPUT_FILE
+      label: Scene
+      fileFilters:
+        - label: Image Files
+          patterns: ["*.png", "*.exr"]
+        - label: All Files
+          patterns: ["*"]
+      fileFilterDefault:
+        label: Image Files
         patterns: ["*.png", "*.exr"]
-      - label: All Files
-        patterns: ["*"]
-    fileFilterDefault:
-      label: Image Files
-      patterns: ["*.png", "*.exr"]
 steps:
   - name: Step1
     script:
@@ -71,9 +73,10 @@ name: BadFilterJob
 parameterDefinitions:
   - name: Frames
     type: STRING
-    fileFilters:
-      - label: Image Files
-        patterns: ["*.png"]
+    userInterface:
+      fileFilters:
+        - label: Image Files
+          patterns: ["*.png"]
 steps:
   - name: Step1
     script:
@@ -92,9 +95,10 @@ name: BadFilterDefaultJob
 parameterDefinitions:
   - name: Frames
     type: STRING
-    fileFilterDefault:
-      label: Image Files
-      patterns: ["*.png"]
+    userInterface:
+      fileFilterDefault:
+        label: Image Files
+        patterns: ["*.png"]
 steps:
   - name: Step1
     script:
@@ -103,7 +107,7 @@ steps:
           command: echo
 `
 	tmpl := mustParse(t, yaml)
-	assertValidationContains(t, tmpl, "/parameterDefinitions/0/fileFilterDefault:")
+	assertValidationContains(t, tmpl, "/parameterDefinitions/0/userInterface/fileFilterDefault:")
 }
 
 func TestValidate_FileFilterRequiresPatterns(t *testing.T) {
@@ -113,8 +117,9 @@ name: EmptyFilterJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    fileFilters:
-      - label: Broken
+    userInterface:
+      fileFilters:
+        - label: Broken
 steps:
   - name: Step1
     script:
@@ -135,9 +140,11 @@ name: NoLabelJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    userInterface: { control: CHOOSE_INPUT_FILE, label: Scene }
-    fileFilters:
-      - patterns: ["*.png"]
+    userInterface:
+      control: CHOOSE_INPUT_FILE
+      label: Scene
+      fileFilters:
+        - patterns: ["*.png"]
 steps:
   - name: Step1
     script:
@@ -146,7 +153,7 @@ steps:
           command: echo
 `
 	tmpl := mustParse(t, yaml)
-	assertValidationContains(t, tmpl, "/parameterDefinitions/0/fileFilters/0/label")
+	assertValidationContains(t, tmpl, "/parameterDefinitions/0/userInterface/fileFilters/0/label")
 }
 
 func TestValidate_FileFilterDefaultLabelRequired(t *testing.T) {
@@ -156,9 +163,11 @@ name: NoDefaultLabelJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    userInterface: { control: CHOOSE_INPUT_FILE, label: Scene }
-    fileFilterDefault:
-      patterns: ["*.png"]
+    userInterface:
+      control: CHOOSE_INPUT_FILE
+      label: Scene
+      fileFilterDefault:
+        patterns: ["*.png"]
 steps:
   - name: Step1
     script:
@@ -167,7 +176,7 @@ steps:
           command: echo
 `
 	tmpl := mustParse(t, yaml)
-	assertValidationContains(t, tmpl, "/parameterDefinitions/0/fileFilterDefault/label")
+	assertValidationContains(t, tmpl, "/parameterDefinitions/0/userInterface/fileFilterDefault/label")
 }
 
 // ── Rule 2: label capped at 64 characters (gated) ──────────────────────────
@@ -189,10 +198,12 @@ name: LabelLenJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    userInterface: { control: CHOOSE_INPUT_FILE, label: Scene }
-    fileFilters:
-      - label: %s
-        patterns: ["*.png"]
+    userInterface:
+      control: CHOOSE_INPUT_FILE
+      label: Scene
+      fileFilters:
+        - label: %s
+          patterns: ["*.png"]
 steps:
   - name: Step1
     script:
@@ -202,7 +213,7 @@ steps:
 `, tc.label)
 			tmpl := mustParse(t, yaml)
 			errs := openjd.Validate(tmpl)
-			got := containsPointer(errs, "/parameterDefinitions/0/fileFilters/0/label")
+			got := containsPointer(errs, "/parameterDefinitions/0/userInterface/fileFilters/0/label")
 			if got != tc.wantErr {
 				t.Errorf("label length %d: got error=%v, want error=%v; errs=%v", len(tc.label), got, tc.wantErr, errs)
 			}
@@ -229,8 +240,10 @@ name: CountJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    userInterface: { control: CHOOSE_INPUT_FILE, label: Scene }
-    fileFilters:
+    userInterface:
+      control: CHOOSE_INPUT_FILE
+      label: Scene
+      fileFilters:
 ` + fileFiltersYAML(tc.n) + `
 steps:
   - name: Step1
@@ -269,10 +282,12 @@ name: ControlPairJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    userInterface: { control: %s, label: Scene }
-    fileFilters:
-      - label: Image Files
-        patterns: ["*.png"]
+    userInterface:
+      control: %s
+      label: Scene
+      fileFilters:
+        - label: Image Files
+          patterns: ["*.png"]
 steps:
   - name: Step1
     script:
@@ -291,17 +306,18 @@ steps:
 }
 
 func TestValidate_FileFilterControlPairing_AbsentControlRejected(t *testing.T) {
-	// A PATH parameter with fileFilters but no userInterface at all: absent is
-	// not one of the two file-choosing controls, so it is invalid.
+	// A PATH parameter whose userInterface carries fileFilters but no control:
+	// absent is not one of the two file-choosing controls, so it is invalid.
 	yaml := `
 specificationVersion: jobtemplate-2023-09
 name: NoControlJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    fileFilters:
-      - label: Image Files
-        patterns: ["*.png"]
+    userInterface:
+      fileFilters:
+        - label: Image Files
+          patterns: ["*.png"]
 steps:
   - name: Step1
     script:
@@ -323,12 +339,14 @@ name: GateLabelJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    userInterface: { control: CHOOSE_INPUT_FILE, label: Scene }
-    fileFilters:
-      - label: ""
-        patterns: ["*.png"]
-      - label: ` + strings.Repeat("a", 65) + `
-        patterns: ["*.png"]
+    userInterface:
+      control: CHOOSE_INPUT_FILE
+      label: Scene
+      fileFilters:
+        - label: ""
+          patterns: ["*.png"]
+        - label: ` + strings.Repeat("a", 65) + `
+          patterns: ["*.png"]
 steps:
   - name: Step1
     script:
@@ -339,18 +357,18 @@ steps:
 		tmpl := mustParse(t, yaml)
 
 		withFalse := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: false})
-		if containsPointer(withFalse, "/parameterDefinitions/0/fileFilters/1/label") {
+		if containsPointer(withFalse, "/parameterDefinitions/0/userInterface/fileFilters/1/label") {
 			t.Errorf("EnforceLimits=false should not report the 64-char label cap; got %v", withFalse)
 		}
-		if !containsPointer(withFalse, "/parameterDefinitions/0/fileFilters/0/label") {
+		if !containsPointer(withFalse, "/parameterDefinitions/0/userInterface/fileFilters/0/label") {
 			t.Errorf("EnforceLimits=false should still report the required-label structural error; got %v", withFalse)
 		}
 
 		withTrue := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: true})
-		if !containsPointer(withTrue, "/parameterDefinitions/0/fileFilters/1/label") {
+		if !containsPointer(withTrue, "/parameterDefinitions/0/userInterface/fileFilters/1/label") {
 			t.Errorf("EnforceLimits=true should report the 64-char label cap; got %v", withTrue)
 		}
-		if !containsPointer(withTrue, "/parameterDefinitions/0/fileFilters/0/label") {
+		if !containsPointer(withTrue, "/parameterDefinitions/0/userInterface/fileFilters/0/label") {
 			t.Errorf("EnforceLimits=true should still report the required-label structural error; got %v", withTrue)
 		}
 	})
@@ -362,8 +380,10 @@ name: GateCountJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    userInterface: { control: CHOOSE_DIRECTORY, label: Scene }
-    fileFilters:
+    userInterface:
+      control: CHOOSE_DIRECTORY
+      label: Scene
+      fileFilters:
 ` + fileFiltersYAML(21) + `
 steps:
   - name: Step1
@@ -404,13 +424,15 @@ name: PatternJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    userInterface: { control: CHOOSE_INPUT_FILE, label: Scene }
-    fileFilters:
-      - label: Filter
+    userInterface:
+      control: CHOOSE_INPUT_FILE
+      label: Scene
+      fileFilters:
+        - label: Filter
+          patterns: [%q]
+      fileFilterDefault:
+        label: Filter
         patterns: [%q]
-    fileFilterDefault:
-      label: Filter
-      patterns: [%q]
 steps:
   - name: Step1
     script:
@@ -449,8 +471,8 @@ func TestValidate_FileFilterPatternFormat(t *testing.T) {
 			yaml := patternFilterYAML(tc.pattern)
 			tmpl := mustParse(t, yaml)
 			errs := openjd.Validate(tmpl)
-			gotFilters := containsPointer(errs, "/parameterDefinitions/0/fileFilters/0/patterns/0")
-			gotDefault := containsPointer(errs, "/parameterDefinitions/0/fileFilterDefault/patterns/0")
+			gotFilters := containsPointer(errs, "/parameterDefinitions/0/userInterface/fileFilters/0/patterns/0")
+			gotDefault := containsPointer(errs, "/parameterDefinitions/0/userInterface/fileFilterDefault/patterns/0")
 			if gotFilters != tc.wantErr {
 				t.Errorf("pattern %q (fileFilters): got error=%v, want error=%v; errs=%v", tc.pattern, gotFilters, tc.wantErr, errs)
 			}
@@ -469,12 +491,12 @@ func TestValidateWithOptions_FileFilterPatternLength_GatedVsStructural(t *testin
 	tmpl := mustParse(t, yaml)
 
 	withFalse := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: false})
-	if containsPointer(withFalse, "/parameterDefinitions/0/fileFilters/0/patterns/0") {
+	if containsPointer(withFalse, "/parameterDefinitions/0/userInterface/fileFilters/0/patterns/0") {
 		t.Errorf("EnforceLimits=false should not report the 20-char pattern cap; got %v", withFalse)
 	}
 
 	withTrue := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: true})
-	if !containsPointer(withTrue, "/parameterDefinitions/0/fileFilters/0/patterns/0") {
+	if !containsPointer(withTrue, "/parameterDefinitions/0/userInterface/fileFilters/0/patterns/0") {
 		t.Errorf("EnforceLimits=true should report the 20-char pattern cap; got %v", withTrue)
 	}
 
@@ -482,7 +504,7 @@ func TestValidateWithOptions_FileFilterPatternLength_GatedVsStructural(t *testin
 	badYAML := patternFilterYAML("*.a:b")
 	badTmpl := mustParse(t, badYAML)
 	badErrs := openjd.ValidateWithOptions(badTmpl, openjd.ValidateOptions{EnforceLimits: false})
-	if !containsPointer(badErrs, "/parameterDefinitions/0/fileFilters/0/patterns/0") {
+	if !containsPointer(badErrs, "/parameterDefinitions/0/userInterface/fileFilters/0/patterns/0") {
 		t.Errorf("EnforceLimits=false should still report a grammar-invalid pattern; got %v", badErrs)
 	}
 }

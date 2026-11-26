@@ -67,6 +67,7 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 	_, t.ExtensionsSet = raw["extensions"]
 	t.UnknownFields = unknownTopLevelFields(raw)
 	t.misplacedStepBlocks = findMisplacedStepBlocks(raw)
+	t.unknownKeys = findUnknownKeys(raw)
 
 	// RFC 0007's case-insensitive type names and its new parameter types are
 	// an EXPR-extension feature, so every parameter decoder below needs to
@@ -278,38 +279,26 @@ func decodeJobParamDefault(raw map[string]any, p *JobParameter, exprDeclared boo
 }
 
 // decodeJobParamFileFilters populates the fileFilters and fileFilterDefault
-// fields of p from the raw decoded map.
-//
-// Both live under `userInterface`, not at the parameter root — see the
-// <JobPathParameterDefinition> schema (§2.2), where fileFilters and
-// fileFilterDefault are members of the userInterface block alongside control
-// and label. Reading only the parameter root would never decode a conforming
-// template's filters, leaving every validation rule for them (label required,
-// pattern grammar, count cap) dead code.
-// The parameter root is also accepted, because products stored by earlier sqi
-// releases carry filters there and would lose them otherwise.
-// userInterface wins when both are present. No conformance fixture requires
-// root-level filters to be rejected.
+// fields of p from the raw decoded map. Both are members of the userInterface
+// block alongside control and label (Template Schemas §2.2), and that is the
+// only place they are read;
+// anywhere else they are unknown keys (findUnknownKeys).
 func decodeJobParamFileFilters(raw map[string]any, p *JobParameter) error {
-	src := raw
-	if ui, ok := raw["userInterface"].(map[string]any); ok {
-		if _, hasFilters := ui["fileFilters"]; hasFilters {
-			src = ui
-		} else if _, hasDefault := ui["fileFilterDefault"]; hasDefault {
-			src = ui
-		}
+	ui, ok := toMapOK(raw["userInterface"])
+	if !ok {
+		return nil
 	}
-	if filters, ok := src["fileFilters"].([]any); ok {
+	if filters, ok := ui["fileFilters"].([]any); ok {
 		for i, v := range filters {
-			f, err := decodePathFileFilter(v, fmt.Sprintf("parameterDefinition.fileFilters[%d]", i))
+			f, err := decodePathFileFilter(v, fmt.Sprintf("parameterDefinition.userInterface.fileFilters[%d]", i))
 			if err != nil {
 				return err
 			}
 			p.FileFilters = append(p.FileFilters, f)
 		}
 	}
-	if v, ok := src["fileFilterDefault"]; ok && v != nil {
-		f, err := decodePathFileFilter(v, "parameterDefinition.fileFilterDefault")
+	if v, ok := ui["fileFilterDefault"]; ok && v != nil {
+		f, err := decodePathFileFilter(v, "parameterDefinition.userInterface.fileFilterDefault")
 		if err != nil {
 			return err
 		}

@@ -556,6 +556,7 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	for _, f := range t.UnknownFields {
 		errs = append(errs, ValidationError{Pointer: "/" + f, Message: unknownTopLevelMessage(f)})
 	}
+	errs = append(errs, validateUnknownKeys(t)...)
 	errs = append(errs, requireNonEmptyIfSet(t.ExtensionsSet, len(t.Extensions), "/extensions", "extension")...)
 	errs = append(errs, validateDescriptionText(t.Description, "/description")...)
 
@@ -1567,6 +1568,7 @@ func validateUILimits(params []JobParameter) ValidationErrors {
 // instead and always runs -- see the invariant documented on
 // [ValidateOptions].
 func validateFileFilterLimits(p JobParameter, ptr string) ValidationErrors {
+	ptr += "/userInterface" // filters are members of userInterface (§2.2)
 	var errs ValidationErrors
 	if len(p.FileFilters) > maxFileFilters {
 		errs = append(errs, ValidationError{
@@ -2493,6 +2495,7 @@ func validateFileFilters(p JobParameter, ptr string) ValidationErrors {
 	if len(p.FileFilters) == 0 && p.FileFilterDefault == nil {
 		return nil
 	}
+	ptr += "/userInterface" // filters are members of userInterface (§2.2)
 	// Point at whichever field was declared, so a
 	// fileFilterDefault-only parameter doesn't get an error pointing at
 	// the sibling fileFilters field it never set.
@@ -2510,12 +2513,8 @@ func validateFileFilters(p JobParameter, ptr string) ValidationErrors {
 		})
 		return errs
 	}
-	if p.UserInterface == nil {
-		errs = append(errs, ValidationError{
-			Pointer: ptr + "/" + field,
-			Message: "fileFilters and fileFilterDefault require userInterface.control to be CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE",
-		})
-	} else if _, ok := fileFilterControls[p.UserInterface.Control]; !ok {
+	// Filters are decoded only from userInterface, so it is never nil here.
+	if _, ok := fileFilterControls[p.UserInterface.Control]; !ok {
 		errs = append(errs, ValidationError{
 			Pointer: ptr + "/" + field,
 			Message: fmt.Sprintf("fileFilters and fileFilterDefault require userInterface.control to be CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE (got %q)", p.UserInterface.Control),
