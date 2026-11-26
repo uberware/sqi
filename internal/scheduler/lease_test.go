@@ -229,6 +229,16 @@ func submitReadyIn(
 	t *testing.T, st store.Store, queueID string, coresPerTask []*int, hostReqs *store.StepHostRequirements,
 ) []string {
 	t.Helper()
+	return submitReadyWith(t, st, queueID, coresPerTask, hostReqs, nil)
+}
+
+// submitReadyWith is submitReadyIn with mutate (nil for none) applied to the
+// submission before it is submitted.
+func submitReadyWith(
+	t *testing.T, st store.Store, queueID string, coresPerTask []*int, hostReqs *store.StepHostRequirements,
+	mutate func(*store.JobSubmission),
+) []string {
+	t.Helper()
 	sub := store.JobSubmission{Job: store.Job{
 		ID: uuid.NewString(), FarmID: "f1", QueueID: queueID, Name: "j",
 		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
@@ -247,6 +257,9 @@ func submitReadyIn(
 		}
 		sub.Tasks = append(sub.Tasks, tk)
 		ids = append(ids, tk.ID)
+	}
+	if mutate != nil {
+		mutate(&sub)
 	}
 	storetest.Submit(t, st, sub)
 	return ids

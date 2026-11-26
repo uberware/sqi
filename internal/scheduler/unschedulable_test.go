@@ -11,6 +11,7 @@ package scheduler
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,5 +200,74 @@ func TestSweepUnschedulable_NoOnlineWorkers(t *testing.T) {
 	}
 	if got.UnschedulableReason != "no online workers" {
 		t.Errorf("reason = %q, want %q", got.UnschedulableReason, "no online workers")
+	}
+}
+
+// TestSweepUnschedulable_NoStorageRootForAnyWorker pins that a task whose
+// loc:// storage location has no root for any online worker's compute location
+// is flagged with a reason naming both, as the lease skips it on every such
+// worker, and that the flag clears once a worker in a location with a root
+// joins. A sibling task of the same step with no loc:// reference is not
+// flagged.
+func TestSweepUnschedulable_NoStorageRootForAnyWorker(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
+	s.cfg.UnschedulableGrace = time.Millisecond
+	ctx := t.Context()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	if _, err := st.CreateStorageLocation(ctx, store.StorageLocation{
+		ID: uuid.NewString(), Name: "projects", Type: store.StorageLocationTypeFilesystem,
+		Roots: map[string]string{"studioA": "/mnt/projects"},
+	}); err != nil {
+		t.Fatalf("CreateStorageLocation: %v", err)
+	}
+	jobID, stepID := uuid.NewString(), uuid.NewString()
+	sub := storetest.Submit(t, st, store.JobSubmission{
+		Job: store.Job{
+			ID: jobID, FarmID: "farm-1", QueueID: "queue-1", Name: "j", Status: store.JobStatusRunning,
+			TemplateFormat: store.TemplateFormatJSON, RawTemplate: minimalRenderJSON,
+		},
+		Steps: []store.Step{{ID: stepID, JobID: jobID, Name: "render", Status: store.StepStatusRunning}},
+		Tasks: []store.Task{
+			{
+				ID: uuid.NewString(), JobID: jobID, StepID: stepID, Name: "loc", Status: store.TaskStatusReady,
+				Parameters: map[string]string{"Scene": "loc://projects/shot.ma"},
+			},
+			{ID: uuid.NewString(), JobID: jobID, StepID: stepID, Name: "plain", Status: store.TaskStatusReady},
+		},
+	})
+	withLoc, plain := sub.Tasks[0], sub.Tasks[1]
+	register := func(id, location string) {
+		if _, _, err := st.RegisterWorker(ctx, store.Worker{
+			ID: id, FarmID: "farm-1", Hostname: id, Status: store.WorkerStatusOnline,
+			Tags: map[string]string{}, ComputeLocation: location,
+		}); err != nil {
+			t.Fatalf("RegisterWorker %s: %v", id, err)
+		}
+	}
+	register("wB", "studioB")
+	backdateTaskReady(t, st, withLoc.ID, -time.Minute)
+	backdateTaskReady(t, st, plain.ID, -time.Minute)
+
+	s.sweepUnschedulable(ctx)
+
+	want := `storage location "projects" has no root for compute location "studioB"`
+	if got := mustTask(t, st, withLoc.ID).UnschedulableReason; !strings.Contains(got, want) {
+		t.Errorf("loc task reason = %q, want it to contain %q", got, want)
+	}
+	if got := mustTask(t, st, plain.ID).UnschedulableReason; got != "" {
+		t.Errorf("plain task reason = %q, want none", got)
+	}
+
+	register("wA", "studioA")
+	s.sweepUnschedulable(ctx)
+
+	if got := mustTask(t, st, withLoc.ID).UnschedulableReason; got != "" {
+		t.Errorf("loc task reason after a studioA worker joined = %q, want none", got)
 	}
 }

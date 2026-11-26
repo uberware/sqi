@@ -38,10 +38,10 @@ func queryPlan(t *testing.T, db *sql.DB, query string, args ...any) []string {
 // TestStepFinalizationQueries_UseStepStatusIndex pins migration 00032: the
 // "is any task of this step still in flight" subquery of sqlFinalizeStep (run on
 // the single write connection for every terminal report) and of
-// sqlListStuckSteps (startup) is answered from the tasks(step_id, status) index
-// alone, and sqlFinalizeStep's failed and canceled checks are equality searches
-// on it. Without the index the in-flight check reads the step's task rows one by
-// one through tasks(step_id), up to the first one in flight. No task access in
+// sqlListStuckSteps (at start and on every sweep tick) is answered by equality
+// searches on the tasks(step_id, status) index, one per open status, as are
+// sqlFinalizeStep's failed and canceled checks. A search on step_id alone would
+// walk the step's finished tasks up to the first one in flight. No task access in
 // either statement may read a table row or scan the whole index.
 func TestStepFinalizationQueries_UseStepStatusIndex(t *testing.T) {
 	cases := []struct {
@@ -53,14 +53,13 @@ func TestStepFinalizationQueries_UseStepStatusIndex(t *testing.T) {
 		{
 			name: "sqlFinalizeStep", query: sqlstore.SQLFinalizeStep, args: []any{"2026-01-01T00:00:00Z", "step"},
 			want: []string{
-				"SEARCH t USING COVERING INDEX tasks_step_status (step_id=?)",              // still in flight?
-				"SEARCH t USING COVERING INDEX tasks_step_status (step_id=? AND status=?)", // any failed / canceled?
+				"SEARCH t USING COVERING INDEX tasks_step_status (step_id=? AND status=?)", // in flight, failed, canceled?
 			},
 		},
 		{
 			name: "sqlListStuckSteps", query: sqlstore.SQLListStuckSteps,
 			want: []string{
-				"SEARCH t USING COVERING INDEX tasks_step_status (step_id=?)", // still in flight?
+				"SEARCH t USING COVERING INDEX tasks_step_status (step_id=? AND status=?)", // still in flight?
 			},
 		},
 	}
@@ -75,6 +74,9 @@ func TestStepFinalizationQueries_UseStepStatusIndex(t *testing.T) {
 				}
 			}
 			for _, row := range plan {
+				if row == "SEARCH t USING COVERING INDEX tasks_step_status (step_id=?)" {
+					t.Errorf("plan row %q walks the step's tasks rather than seeking open statuses\nplan:\n  %s", row, shown)
+				}
 				if strings.HasPrefix(row, "SCAN t") ||
 					(strings.HasPrefix(row, "SEARCH t ") && !strings.Contains(row, "COVERING INDEX")) {
 					t.Errorf("plan row %q reads task rows or scans every task\nplan:\n  %s", row, shown)

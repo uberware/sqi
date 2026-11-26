@@ -39,7 +39,7 @@
 // is written and the task stays ready for the next lease request. Attempt numbers
 // are computed by the same transaction — 1 for a fresh task, N+1 on retry.
 //
-// Assignment payload. [buildAssignPayload] re-parses the job's raw OpenJD
+// Assignment payload. [buildAssignMsg] re-parses the job's raw OpenJD
 // template to extract the matching step's OnRun action, embedded files, and
 // ordered environments (job environments first, then step, per the OpenJD
 // spec). It also attaches path-mapping rules built from the registered storage
@@ -827,14 +827,16 @@ func (s *Scheduler) Stop() {
 	}
 }
 
-// reconcileStuckSteps finalizes, once at start, every step of a live
-// (non-terminal) job whose tasks are all terminal but which was never
-// finalized, and which no future task report will finalize. Such a step is
-// left when completion was decided from one page of a step's tasks (a step
-// with more than [store.MaxLimit] tasks), or when a single-task cancel hit a
-// job's last open task. Nothing reports on those tasks again, so without this
-// pass the step, its job, the steps behind it and the jobs blocked on it stay
-// stuck.
+// reconcileStuckSteps finalizes, at start and on every sweep tick, every step
+// of a live (non-terminal) job whose tasks are all terminal but which was
+// never finalized, and which no future task report will finalize. Such a step
+// is left when completion was decided from one page of a step's tasks (a step
+// with more than [store.MaxLimit] tasks), when a single-task cancel hit a
+// job's last open task, or when a store error interrupted the completion
+// after a task's terminal write on a path nothing redelivers (a REST task
+// cancel, or an attempt the lease failed because its assignment could not be
+// built). Nothing reports on those tasks again, so without this pass the step,
+// its job, the steps behind it and the jobs blocked on it stay stuck.
 //
 // The repair is not a data migration. Finalizing a step has downstream effects
 // (dependency propagation keyed on step names, the transitive cancel cascade,
@@ -1024,7 +1026,7 @@ func (s *Scheduler) buildUsageContext(
 	return pools, activeCounts, nil
 }
 
-// buildAssignPayload is implemented in assign.go.
+// buildAssignMsg is implemented in assign.go.
 
 // ── Worker NATS consumer ─────────────────────────────────────────────
 
@@ -1748,7 +1750,8 @@ func processStart(stamp *time.Time, uptimeSeconds float64) *time.Time {
 // reclaims attempts a live worker has stopped reporting ([reconcileAttempts]),
 // demotes stalled jobs, flags/clears ready tasks no online worker can satisfy
 // ([sweepUnschedulable]), evaluates the enabled capacity groups
-// ([Scheduler.sweepCapacity]), re-evaluates cross-job dependencies for any job
+// ([Scheduler.sweepCapacity]), finalizes live jobs whose steps are all terminal
+// ([Scheduler.finalizeSettledJobs]), re-evaluates cross-job dependencies for any job
 // stuck blocked ([sweepBlockedJobs], the backstop for
 // [Scheduler.ReconcileDependents]), and refreshes the queue-depth, idle-worker
 // and usage-claim Prometheus gauges.
@@ -1787,6 +1790,11 @@ func (s *Scheduler) sweepOnce(ctx context.Context) {
 		s.demoteStalledJobs,
 		s.sweepUnschedulable,
 		s.sweepCapacity,
+		// The stuck-step repair first, since a step it finalizes can leave
+		// its job settled; both before the blocked-job backstop, so a job
+		// blocked on one they finalize is released on the same tick.
+		s.reconcileStuckSteps,
+		s.finalizeSettledJobs,
 		s.sweepBlockedJobsOnce,
 		s.pruneReregisterAsks,
 		// The gauges refresh on the same tick, so there is no separate

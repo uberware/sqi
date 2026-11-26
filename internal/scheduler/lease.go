@@ -337,6 +337,11 @@ type leaseGateData struct {
 //
 // On a store error it returns the assignments already leased together with the
 // error: those tasks are committed as assigned, so they must reach the worker.
+// A task whose assignment cannot be built is skipped for this worker when the
+// failure is the worker's (no root for its compute location), is leased and
+// settled as a failed attempt by [Scheduler.handleUndeliverableLease] when it
+// is the job's, and in both cases the walk continues past it; a store read
+// failure stops the walk with nothing leased.
 func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) ([][]byte, error) {
 	full := worker.CPUCount
 	if full <= 0 {
@@ -360,12 +365,13 @@ func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) (
 	// server's configuration, so it is computed once for the whole batch.
 	exprShortfall := s.workerExprShortfall(worker)
 
+	locs := newStorageLocations(s.store)
 	var batch [][]byte
 	for _, task := range candidates {
 		if free <= 0 {
 			break
 		}
-		payload, cost, ok, err := s.tryLeaseTask(ctx, task, worker, free, exprShortfall)
+		payload, cost, ok, err := s.tryLeaseTask(ctx, task, worker, free, exprShortfall, locs)
 		if err != nil {
 			return batch, err
 		}
@@ -462,6 +468,7 @@ func (s *Scheduler) tryLeaseTask(
 	worker store.Worker,
 	free int,
 	exprShortfall string,
+	locs *storageLocations,
 ) (payload []byte, cost int, ok bool, err error) {
 	// Log when a task's declared core requirement exceeds the worker's total
 	// capacity: it can never run here regardless of current load. This does
@@ -485,6 +492,23 @@ func (s *Scheduler) tryLeaseTask(
 		return nil, 0, false, nil
 	}
 
+	// The assignment is built before the lease, so a failure commits nothing
+	// unless it is one the task should be charged for (see
+	// classifyAssignFailure).
+	msg, buildErr := buildAssignMsg(ctx, task, worker, gd.job, gd.step, gd.queue, locs)
+	if buildErr != nil {
+		switch classifyAssignFailure(buildErr) {
+		case assignSkipWorker:
+			s.logger.DebugContext(ctx, "scheduler: task's assignment cannot be built for this worker — leaving it for another",
+				slog.String("task_id", task.ID), slog.String("worker_id", worker.ID), slog.Any("error", buildErr))
+			return nil, 0, false, nil
+		case assignStoreFailure:
+			return nil, 0, false, fmt.Errorf("lease: build payload for %s: %w", task.ID, buildErr)
+		case assignFailsTask:
+			// Leased below, then failed through handleUndeliverableLease.
+		}
+	}
+
 	// The gates above are cheap early filters over values read a moment ago.
 	// This call is the decision: one transaction leases the task, re-checks the
 	// queue, farm and pool caps against their current values, and writes the
@@ -500,11 +524,12 @@ func (s *Scheduler) tryLeaseTask(
 	// worker read offline is still served (see "Known gaps" in
 	// docs/architecture.md), so a live worker the sweep wrongly took offline is
 	// refused at most once.
+	now := time.Now().UTC()
 	res, err := s.store.LeaseTask(ctx, store.LeaseRequest{
 		TaskID:        task.ID,
 		WorkerID:      worker.ID,
 		AttemptID:     uuid.NewString(),
-		Now:           time.Now().UTC(),
+		Now:           now,
 		Claims:        buildUsageClaims(gd.step, gd.pools),
 		RequireOnline: worker.Status == store.WorkerStatusOnline,
 	})
@@ -520,9 +545,17 @@ func (s *Scheduler) tryLeaseTask(
 	// the cache is filled here and the first log chunk needs no store read.
 	s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
 
-	payload, err = buildAssignPayload(ctx, task, worker, gd.job, gd.step, gd.queue, attempt.ID, s.store)
+	if buildErr != nil {
+		// The lease committed only so the failure has an attempt to be
+		// charged to: settle it as a failed attempt and go on to the next task.
+		if err := s.handleUndeliverableLease(ctx, attempt, task, buildErr); err != nil {
+			return nil, 0, false, fmt.Errorf("lease: fail undeliverable task %s: %w", task.ID, err)
+		}
+		return nil, 0, false, nil
+	}
+	payload, err = marshalAssignMsg(msg, attempt.ID, now)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("lease: build payload for %s: %w", task.ID, err)
+		return nil, 0, false, fmt.Errorf("lease: marshal payload for %s: %w", task.ID, err)
 	}
 	return payload, cost, true, nil
 }

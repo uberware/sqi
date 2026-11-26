@@ -34,9 +34,13 @@ RETURNING status`
          ELSE 'completed' END`
 
 	// sqlStepHasNoOpenTask holds when no task of the step is still open, the
-	// guard every step finalization, and the stuck-step list, share.
+	// guard every step finalization, and the stuck-step list, share. The open
+	// statuses are listed rather than the terminal ones excluded, so the
+	// tasks (step_id, status) index answers it with a few seeks instead of a
+	// scan of the step's finished tasks; the stuck-step list runs it on every
+	// sweep tick.
 	sqlStepHasNoOpenTask = `NOT EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id
-                   AND t.status NOT IN ('succeeded', 'failed', 'canceled'))`
+                   AND t.status IN ('pending', 'ready', 'assigned', 'running'))`
 
 	// sqlFinalizeJob is invariant I4 for jobs, computed over the job's steps.
 	sqlFinalizeJob = `
@@ -98,6 +102,17 @@ SELECT DISTINCT j.id FROM jobs j JOIN steps s ON s.job_id = j.id
 WHERE  j.status NOT IN ('completed', 'failed', 'canceled')
   AND  NOT j.dependency_hold
   AND  s.status = 'pending'
+ORDER BY j.id`
+
+	// sqlListJobIDsWithAllStepsTerminal selects the live jobs that have steps
+	// and no open one: the per-tick sweep's finalize candidates. It reads jobs
+	// and steps only, so it stays cheap on a farm with many tasks.
+	sqlListJobIDsWithAllStepsTerminal = `
+SELECT j.id FROM jobs j
+WHERE  j.status NOT IN ('completed', 'failed', 'canceled')
+  AND  EXISTS     (SELECT 1 FROM steps s WHERE s.job_id = j.id)
+  AND  NOT EXISTS (SELECT 1 FROM steps s WHERE s.job_id = j.id
+                   AND s.status NOT IN ('completed', 'failed', 'canceled'))
 ORDER BY j.id`
 )
 
@@ -213,6 +228,11 @@ func (s *Store) ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// ListJobIDsWithAllStepsTerminal implements [store.StepStore].
+func (s *Store) ListJobIDsWithAllStepsTerminal(ctx context.Context) ([]string, error) {
+	return queryIDs(ctx, &s.r.dbConn, sqlListJobIDsWithAllStepsTerminal)
 }
 
 // sqlGuardStepPending is the I1 guard for releasing or canceling a step: it

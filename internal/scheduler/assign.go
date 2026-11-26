@@ -5,7 +5,7 @@ package scheduler
 // Task-assignment payload construction: builds the full task payload (resolved
 // command, env, path map) returned to a worker when it leases a task.
 //
-// buildAssignPayload:
+// buildAssignMsg:
 //
 //  1. Parses job.RawTemplate to extract the matching StepTemplate by name.
 //  2. Builds a protocol.AssignMsg with the step's OnRun action, embedded files,
@@ -38,28 +38,67 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// buildAssignPayload constructs a [protocol.AssignMsg] for the given task
-// assignment and marshals it to JSON.
+// storageLocations reads the farm's storage locations on first use and keeps
+// them for the rest of one lease batch or one sweep: the list does not depend
+// on the task, so it is read once rather than once per task. It is not safe
+// for concurrent use.
+type storageLocations struct {
+	st     store.StorageLocationStore
+	list   []store.StorageLocation
+	loaded bool
+}
+
+// newStorageLocations returns a storageLocations that reads from st.
+func newStorageLocations(st store.StorageLocationStore) *storageLocations {
+	return &storageLocations{st: st}
+}
+
+// get returns the storage locations, reading them on the first call. A failed
+// read is not kept, so a later call reads again.
+func (l *storageLocations) get(ctx context.Context) ([]store.StorageLocation, error) {
+	if !l.loaded {
+		list, err := l.st.ListStorageLocations(ctx)
+		if err != nil {
+			return nil, err
+		}
+		l.list, l.loaded = list, true
+	}
+	return l.list, nil
+}
+
+// marshalAssignMsg stamps the lease's attempt ID and time into msg and
+// marshals it. assignedAt is the time the lease stored as the task's
+// assigned_at, so the two agree.
+func marshalAssignMsg(msg protocol.AssignMsg, attemptID string, assignedAt time.Time) ([]byte, error) {
+	msg.AttemptID = attemptID
+	msg.AssignedAt = assignedAt
+	return json.Marshal(msg)
+}
+
+// buildAssignMsg builds the [protocol.AssignMsg] for a task, without its
+// attempt ID. [Scheduler.tryLeaseTask] calls it before the lease, so a task
+// whose assignment cannot be built for this worker is never leased to it.
 //
-// It receives the store-level task, worker, job, step, and queue records. It
-// also receives the attemptID so the worker can correlate status reports and
-// log chunks back to the correct attempt, and the storage location store used
-// to build the path map and resolve loc:// URIs.
+// It receives the store-level task, worker, job, step, and queue records, and
+// the storage locations used to build the path map and resolve loc:// URIs.
+// The task's parameters are copied, not rewritten, so the same task can be
+// built again.
 //
 // An error is returned if the raw OpenJD template cannot be re-parsed (which
 // should not happen in production since the template was validated at submission
 // time), if the named step cannot be found in the template, or if a loc://
-// reference cannot be resolved.
-func buildAssignPayload(
+// reference cannot be resolved: a storage location that does not exist, or one
+// with no root for the worker's compute location (an [*openjd.NoRootError]). A
+// failure to read the storage locations wraps [errAssignStoreRead].
+func buildAssignMsg(
 	ctx context.Context,
 	task store.Task,
 	worker store.Worker,
 	job store.Job,
 	step store.Step,
 	queue store.Queue,
-	attemptID string,
-	locStore store.StorageLocationStore,
-) ([]byte, error) {
+	locs *storageLocations,
+) (protocol.AssignMsg, error) {
 	// ── Parse the raw OpenJD template ─────────────────────────────────────
 	format := openjd.FormatYAML
 	if job.TemplateFormat == store.TemplateFormatJSON {
@@ -68,7 +107,7 @@ func buildAssignPayload(
 
 	tmpl, err := openjd.Parse([]byte(job.RawTemplate), format)
 	if err != nil {
-		return nil, fmt.Errorf("build assign payload: re-parse template for job %s: %w", job.ID, err)
+		return protocol.AssignMsg{}, fmt.Errorf("re-parse template for job %s: %w", job.ID, err)
 	}
 
 	// ── Find the matching StepTemplate by step name ───────────────────────
@@ -80,8 +119,8 @@ func buildAssignPayload(
 		}
 	}
 	if stepTmpl == nil {
-		return nil, fmt.Errorf(
-			"build assign payload: step %q not found in template for job %s",
+		return protocol.AssignMsg{}, fmt.Errorf(
+			"step %q not found in template for job %s",
 			step.Name, job.ID,
 		)
 	}
@@ -93,11 +132,9 @@ func buildAssignPayload(
 		TaskID:        task.ID,
 		JobID:         task.JobID,
 		StepID:        task.StepID,
-		AttemptID:     attemptID,
 		TaskName:      task.Name,
 		WorkerID:      worker.ID,
-		AssignedAt:    time.Now().UTC(),
-		Parameters:    task.Parameters,
+		Parameters:    maps.Clone(task.Parameters),
 		JobParameters: buildJobParameters(tmpl, job),
 	}
 
@@ -151,10 +188,10 @@ func buildAssignPayload(
 	}
 	msg.Environments = envs
 
-	// ── Fetch all storage locations once ──────────────────────────────────
-	allLocs, err := locStore.ListStorageLocations(ctx)
+	// ── Storage locations (read once per lease batch or sweep) ─────────────
+	allLocs, err := locs.get(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("build assign payload: list storage locations: %w", err)
+		return protocol.AssignMsg{}, fmt.Errorf("list storage locations: %w: %w", errAssignStoreRead, err)
 	}
 
 	// ── PathMap (openjd mode) ──────────────────────────────────────────────
@@ -174,7 +211,7 @@ func buildAssignPayload(
 	// This ensures workers with no OpenJD path-mapping support see only
 	// concrete paths.
 	if err := resolveLocURIsInMsg(&msg, allLocs, worker.ComputeLocation); err != nil {
-		return nil, fmt.Errorf("build assign payload: resolve loc:// URIs: %w", err)
+		return protocol.AssignMsg{}, fmt.Errorf("resolve loc:// URIs: %w", err)
 	}
 
 	// ── Staging manifest (uses already-resolved job parameters) ────────────
@@ -182,7 +219,7 @@ func buildAssignPayload(
 		msg.Staging = buildStagingManifest(tmpl, msg.JobParameters)
 	}
 
-	return json.Marshal(msg)
+	return msg, nil
 }
 
 // ── Template → protocol conversion helpers ────────────────────────────────────
@@ -317,7 +354,7 @@ func convertEnvironment(e openjd.Environment, hasEXPR, isStepEnvironment bool) p
 // declares the EXPR extension, its step-level let blocks, declared
 // parameter-type maps, and the job's/step's own declared names (jobName,
 // stepName — store.Job.Name and store.Step.Name at the caller, threaded
-// through rather than re-derived here since buildAssignPayload already has
+// through rather than re-derived here since buildAssignMsg already has
 // both records). Returns hasEXPR so the caller can gate the EXPR-only
 // environment let blocks it assembles afterward without re-deriving the same
 // flag.
@@ -514,7 +551,10 @@ func resolveLocURIsInMsg(
 	// default) is a loc:// URI must be concretized here, server-side; otherwise
 	// the worker would splice the raw URI into a {{Param.*}} expansion. The map
 	// is a clone (see buildJobParameters), so this in-place rewrite is safe.
-	for k, v := range msg.JobParameters {
+	// Keys are visited in order, so a message with several unresolvable
+	// references always reports the same one.
+	for _, k := range slices.Sorted(maps.Keys(msg.JobParameters)) {
+		v := msg.JobParameters[k]
 		resolved, err := resolveLocURIsInParamValue(v, msg.JobParameterTypes[k], resolve)
 		if err != nil {
 			return fmt.Errorf("job parameter %q: %w", k, err)
@@ -523,7 +563,8 @@ func resolveLocURIsInMsg(
 	}
 
 	// Resolve task parameters.
-	for k, v := range msg.Parameters {
+	for _, k := range slices.Sorted(maps.Keys(msg.Parameters)) {
+		v := msg.Parameters[k]
 		resolved, err := openjd.ResolveLocURIs(v, resolve)
 		if err != nil {
 			return fmt.Errorf("parameter %q: %w", k, err)

@@ -63,6 +63,11 @@ type writeCountingStore struct {
 	listErr error
 	// failFinalizeStep, when set, makes FinalizeStep of that step ID fail.
 	failFinalizeStep string
+	// failFinalizeJob, when set, makes FinalizeJob of that job ID fail.
+	failFinalizeJob string
+	// settledJobs, when non-nil, is returned by ListJobIDsWithAllStepsTerminal
+	// in place of the store's answer.
+	settledJobs []string
 }
 
 // completionWrites is the number of calls to the four completion-path writes.
@@ -88,7 +93,17 @@ func (s *writeCountingStore) FinalizeStep(ctx context.Context, id string, now ti
 
 func (s *writeCountingStore) FinalizeJob(ctx context.Context, id string, now time.Time) (store.JobStatus, bool, error) {
 	s.finalizeJob.Add(1)
+	if id == s.failFinalizeJob {
+		return "", false, errInjectedReconcile
+	}
 	return s.Store.FinalizeJob(ctx, id, now)
+}
+
+func (s *writeCountingStore) ListJobIDsWithAllStepsTerminal(ctx context.Context) ([]string, error) {
+	if s.settledJobs != nil {
+		return s.settledJobs, nil
+	}
+	return s.Store.ListJobIDsWithAllStepsTerminal(ctx)
 }
 
 func (s *writeCountingStore) ReleaseStep(ctx context.Context, id string, now time.Time) (bool, []store.Task, error) {

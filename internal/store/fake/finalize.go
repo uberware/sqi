@@ -166,6 +166,27 @@ func (s *Store) ListJobIDsWithPendingSteps(_ context.Context) ([]string, error) 
 	return ids, nil
 }
 
+// ListJobIDsWithAllStepsTerminal implements [store.StepStore].
+func (s *Store) ListJobIDsWithAllStepsTerminal(_ context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hasStep, hasOpen := map[string]bool{}, map[string]bool{}
+	for _, st := range s.steps {
+		hasStep[st.JobID] = true
+		if !st.Status.IsTerminal() {
+			hasOpen[st.JobID] = true
+		}
+	}
+	var ids []string
+	for id, j := range s.jobs {
+		if !j.Status.IsTerminal() && hasStep[id] && !hasOpen[id] {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids, nil
+}
+
 // ReleaseStep implements [store.StepStore].
 func (s *Store) ReleaseStep(ctx context.Context, id string, now time.Time) (bool, []store.Task, error) {
 	return s.movePendingStep(ctx, id, store.StepStatusReady, store.TaskStatusReady, "", now)

@@ -377,6 +377,15 @@ handleLeaseRequest(workerID, queueID)
   │     job not paused or terminal, policyGate (queue/farm MaxConcurrentTasks),
   │     WorkerEligible(task, worker) → capability/queue/farm/location/amounts and
   │     usage-pool room
+  ├─ Build the AssignMsg for this worker, before anything is written:
+  │     a store read failed → lease nothing, stop the walk;
+  │     a loc:// storage location has no root for this worker's compute
+  │       location → skip the task for this worker (not charged; it stays
+  │       ready for a worker that has one);
+  │     the stored template does not parse, the step is missing, or a storage location
+  │       does not exist → lease it anyway and, once leased, apply the attempt
+  │       as a failed report through the retry policy (reason "server could
+  │       not build the task's assignment: …"); the walk goes on
   ├─ store.LeaseTask(task, worker, attempt ID, now, usage claims)
   │     One transaction (the decision):
   │       guarded ready→assigned (task still leasable), stamp assigned_at,
@@ -385,7 +394,8 @@ handleLeaseRequest(workerID, queueID)
   │       per usage pool: re-read its max_concurrent, count, insert the claim
   │     Any outcome but Leased (Lost, QueueFull, FarmFull, PoolFull) writes
   │     nothing: the task is skipped and stays ready for the next request
-  ├─ Leased: decrement free; add to batch
+  ├─ Leased: stamp the attempt ID and the lease time (the stored assigned_at)
+  │     into the AssignMsg; decrement free; add to batch
   │
   └─ bus.Reply(batch []AssignMsg)
          Each AssignMsg includes: task/job/step/attempt IDs, resolved OnRun action
@@ -422,7 +432,11 @@ same `WorkerEligible` check used above for lease assignment — read-only, it
 never changes scheduling, only an annotation. A task that has waited longer
 than `scheduler.unschedulable_grace` with no eligible online worker is flagged
 with a human-readable `unschedulable_reason`, cleared automatically once a
-matching worker appears or the task leaves `ready`. The reason is written only
+matching worker appears or the task leaves `ready`. A task that references a
+`loc://` storage location is also checked against each otherwise eligible
+worker's compute location, by building its assignment as the lease does: when
+no such worker has a root for one of its locations, the reason names the
+location and the compute location. The reason is written only
 while the task is still `ready`, a condition evaluated inside the write itself,
 so a task leased between the sweep's read and its write is never stamped. See
 [`docs/observability.md`](observability.md#why-isnt-my-job-running--unschedulable-tasks)
@@ -880,7 +894,8 @@ propagate dependencies, finalize the job, reconcile cross-job dependents), so
 canceling a step's last open task finishes the step and, if it was the last,
 the job. The cancel has already committed, so an error from that path is
 logged at Warn and not returned: the caller never sees a 500 for a cancel that
-happened, and the start-up reconcile is the backstop. A job-wide cancel
+happened, and the stuck-step pass, which runs at start and on every sweep tick,
+is the backstop. A job-wide cancel
 finalizes in the store instead: `CancelJobExecution` finalizes every open step
 of the job in the same transaction, last, after the tasks, attempts and claims
 (a pending step, or one with no tasks, becomes `canceled`; any other gets
@@ -1672,8 +1687,15 @@ repaired in four parts:
     `FinalizeStep`, dependency propagation, `FinalizeJob`, cross-job dependents
     and WebSocket events. That finalizes steps stranded when a
     single-task cancel took a job's last open task and no worker report
-    followed. The job condition is what keeps a healthy farm free of writes:
-    terminal jobs are the migration's, not this pass's.
+    followed, or when a store error interrupted the completion after a task's
+    terminal write on a path nothing redelivers (a REST task cancel, or an
+    attempt the lease failed because its assignment could not be built). The
+    job condition is what keeps a healthy farm free of writes: terminal jobs
+    are the migration's, not this pass's. The same pass also runs on every
+    heartbeat-sweep tick, so such a step is finalized without a restart; its
+    open-task test lists the four open statuses, so the tasks
+    `(step_id, status)` index answers it without scanning a step's finished
+    tasks.
   - `reconcilePendingSteps`: `store.ListJobIDsWithPendingSteps` lists every
     non-terminal, non-`blocked` job with at least one `pending` step, and each
     goes through `ResolveDependencies` (release what is releasable) and
@@ -1683,8 +1705,19 @@ repaired in four parts:
     leaves a `pending` step that nothing else would release. A `blocked` job is
     excluded because its steps wait on another job, not on their own upstream
     steps.
+- Every heartbeat-sweep tick finalizes the live jobs whose steps are all
+  terminal (`finalizeSettledJobs`). `store.ListJobIDsWithAllStepsTerminal`
+  lists each non-terminal job (a paused one included) that has steps and no
+  open step, reading jobs and steps but never tasks, and each goes through
+  `checkJobCompletion`: `FinalizeJob`, the job's WebSocket event, and its
+  cross-job dependents. Such a job is left when the `FinalizeJob` after a
+  cancel cascade never ran, because the server stopped or the write failed
+  with the server up (a REST task cancel or retry logs that error and moves
+  on, and nothing redelivers it). It runs on every tick rather than at start
+  so that the second case heals without a restart. On a healthy farm the
+  query returns nothing and nothing is written.
 
-Neither pass touches in-flight attempts. A server restarting on its own
+Neither start-up pass touches in-flight attempts. A server restarting on its own
 database and JetStream directory needs no such repair: reports that reached
 the stream before it stopped are still there, and attempt reconciliation
 recovers a task whose report a worker could not deliver. A database that was
@@ -1734,27 +1767,6 @@ The store does not close the following.
   order, since its own shutdown reports wake its parked request just before its
   deregister lands. A live worker that hits this is refused once, and its
   next request is served.
-- **A `LeaseTask` that commits is not always delivered.** If building the
-  assignment payload fails after `LeaseTask` committed (a deterministic error:
-  the job's template no longer parses, or its step is gone), that task stays
-  `assigned` without being in the batch, and only the stale-assignment reaper
-  returns it to `ready`. A failure of `LeaseTask` itself does not have this
-  effect: the tasks leased earlier in the batch are still delivered.
-- **A job whose steps are all terminal but whose own status is not**, left by
-  a server stop between a cancel cascade's commit (`CancelDependents`
-  canceling the last open steps after an upstream step failed) and the
-  `FinalizeJob` that follows it, is repaired by neither start-up reconcile
-  pass: `reconcileStuckSteps` lists non-terminal steps and
-  `reconcilePendingSteps` lists `pending` ones, and this job has neither.
-  There is no start-up repair for it. The paths that can leave it are
-  those whose triggering request is not redelivered: REST `CancelTask` (which
-  logs a completion error and moves on), the REST retry, and the start-up
-  `reconcilePendingSteps` pass itself. When the cascade arrives through a
-  worker's terminal report, the JetStream message is redelivered after the
-  stop, and re-running `checkStepCompletion` (which propagates whenever the
-  step is terminal) reaches `FinalizeJob` and repairs it. A user's job cancel
-  does not leave this shape: `CancelJobExecution` cancels the job row in the
-  same transaction that cancels its tasks and finalizes its steps.
 - **A refused process re-requests about once a second per queue.** The refusal
   of an unregistered process's lease request is held for `leaseRefusalDelay`
   (1 s) so the worker's lease loop does not spin, but the loop does

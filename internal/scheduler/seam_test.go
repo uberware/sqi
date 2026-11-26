@@ -5,6 +5,7 @@ package scheduler
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -13,17 +14,21 @@ import (
 )
 
 // TestBuildAssignPayload_ExportedSeamMatchesUnexported pins the exported
-// wrapper to the unexported implementation byte for byte. internal/presettest
-// calls the exported one; if the two ever diverge, every preset golden in the
-// repo becomes a snapshot of something no worker runs.
+// seam to the lease path's two steps, buildAssignMsg then marshalAssignMsg.
+// internal/presettest calls the exported one; if the two ever diverge, every
+// preset golden in the repo becomes a snapshot of something no worker runs.
 func TestBuildAssignPayload_ExportedSeamMatchesUnexported(t *testing.T) {
 	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 	attemptID := uuid.NewString()
 
-	want, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, attemptID, st)
+	msg, err := buildAssignMsg(t.Context(), task, worker, job, step, queue, newStorageLocations(st))
 	if err != nil {
-		t.Fatalf("buildAssignPayload: %v", err)
+		t.Fatalf("buildAssignMsg: %v", err)
+	}
+	want, err := marshalAssignMsg(msg, attemptID, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("marshalAssignMsg: %v", err)
 	}
 	got, err := BuildAssignPayload(t.Context(), task, worker, job, step, queue, attemptID, st)
 	if err != nil {

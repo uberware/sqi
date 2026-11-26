@@ -177,14 +177,15 @@ type StepStore interface {
 	// ListStuckSteps returns every non-terminal step that has at least one task
 	// and no non-terminal task, and whose job is not terminal: steps
 	// FinalizeStep would finalize but that no future task report will ever
-	// trigger. Used once at scheduler start. Ordered by job ID, then step order.
+	// trigger. Used at scheduler start and on every sweep tick. Ordered by job
+	// ID, then step order.
 	//
 	// A job cancel finalizes the job's steps in its own transaction
 	// (CancelJobExecution), and migration 00033 finalizes the open steps of
 	// terminal jobs, so a terminal job carries open steps only in a database
 	// that has not been through that repair; those are the migration's to
-	// finalize, not this start-up pass's, which on a healthy farm must stay
-	// one query and no writes. The repair target is a live job
+	// finalize, not this pass's, which on a healthy farm must stay one query
+	// and no writes. The repair target is a live job
 	// whose step never finalized (so the job never completed); a terminal job
 	// has no downstream that needs its steps finalized, and jobs blocked on it
 	// follow its job status. A paused job is live and is listed. A step whose
@@ -198,4 +199,13 @@ type StepStore interface {
 	// RetryTasks and ResolveDependencies) is released or cascade-canceled. A
 	// blocked job is excluded: its steps wait on another job.
 	ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error)
+
+	// ListJobIDsWithAllStepsTerminal returns, ascending, the IDs of jobs that
+	// are not terminal, have at least one step, and have no step that is not
+	// terminal: jobs FinalizeJob would finalize but that no future task report
+	// will reach, such as one left when a server stopped, or a write failed,
+	// between a cancel cascade and the FinalizeJob after it. A paused job is
+	// listed. Used by the scheduler's per-tick sweep, so it reads only jobs and
+	// steps, never tasks.
+	ListJobIDsWithAllStepsTerminal(ctx context.Context) ([]string, error)
 }
