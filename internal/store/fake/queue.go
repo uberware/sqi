@@ -121,6 +121,24 @@ func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue
 	return queue, nil
 }
 
+// SetQueuePaused implements [store.QueueStore].
+func (s *Store) SetQueuePaused(ctx context.Context, id string, paused bool) (store.Queue, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Queue{}, err
+	}
+
+	queue, ok := s.queues[id]
+	if !ok {
+		return store.Queue{}, store.ErrNotFound
+	}
+	queue.Paused = paused
+	queue.UpdatedAt = s.stampLocked()
+	s.queues[id] = queue
+	return queue, nil
+}
+
 // DeleteQueue removes a queue by ID. Returns [store.ErrNotFound] if it does
 // not exist.
 func (s *Store) DeleteQueue(ctx context.Context, id string) error {

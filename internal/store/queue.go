@@ -107,6 +107,12 @@ type QueueStore interface {
 	// or [ErrConflict] as appropriate.
 	UpdateQueue(ctx context.Context, queue Queue) (Queue, error)
 
+	// SetQueuePaused sets or clears the queue's Paused flag and updates
+	// UpdatedAt, leaving every other field as stored, and returns the queue.
+	// Setting the value it already holds succeeds. Returns [ErrNotFound] for an
+	// unknown queue.
+	SetQueuePaused(ctx context.Context, id string, paused bool) (Queue, error)
+
 	// DeleteQueue removes a queue by ID. Returns [ErrNotFound] if it does not
 	// exist. The caller is responsible for ensuring no jobs reference the
 	// queue before deleting it.

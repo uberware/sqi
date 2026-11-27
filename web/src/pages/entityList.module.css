@@ -99,6 +99,32 @@ tr:hover .deleteBtn {
   cursor: not-allowed;
 }
 
+.pauseBtn {
+  composes: toneIconBtn info from '../styles/toneButton.module.css';
+}
+
+.resumeBtn {
+  composes: toneIconBtn success from '../styles/toneButton.module.css';
+}
+
+/* A cell of row actions: spaced apart and revealed on row hover or focus. */
+.actionsCell {
+  white-space: nowrap;
+}
+
+.actionsCell > button {
+  opacity: 0;
+}
+
+tr:hover .actionsCell > button,
+.actionsCell > button:focus-visible {
+  opacity: 1;
+}
+
+.actionsCell > button + button {
+  margin-left: var(--space-1);
+}
+
 .rowAction {
   display: inline-flex;
   align-items: center;

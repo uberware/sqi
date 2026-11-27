@@ -1038,6 +1038,13 @@ var fenceMutators = map[string]fenceMutator{
 			return err
 		}
 	},
+	"SetQueuePaused": func(t *testing.T, st store.Store) func(context.Context) error {
+		_, q := fenceFarmQueue(t, st)
+		return func(ctx context.Context) error {
+			_, err := st.SetQueuePaused(ctx, q.ID, true)
+			return err
+		}
+	},
 	"SetWorkerDisabled": func(t *testing.T, st store.Store) func(context.Context) error {
 		w := fenceWorker(t, st, store.WorkerStatusOnline, time.Now())
 		return func(ctx context.Context) error {

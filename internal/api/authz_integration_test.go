@@ -185,6 +185,8 @@ var expectedRoutes = []routeExpectation{
 	{method: http.MethodDelete, pattern: "/api/v1/farms/{id}", perm: policy.InfraManage},
 	{method: http.MethodPost, pattern: "/api/v1/queues", perm: policy.InfraManage},
 	{method: http.MethodPut, pattern: "/api/v1/queues/{id}", perm: policy.InfraManage},
+	{method: http.MethodPost, pattern: "/api/v1/queues/{id}/pause", perm: policy.InfraManage},
+	{method: http.MethodPost, pattern: "/api/v1/queues/{id}/resume", perm: policy.InfraManage},
 	{method: http.MethodDelete, pattern: "/api/v1/queues/{id}", perm: policy.InfraManage},
 	{method: http.MethodPost, pattern: "/api/v1/storage-locations", perm: policy.InfraManage},
 	{method: http.MethodPut, pattern: "/api/v1/storage-locations/{id}", perm: policy.InfraManage},

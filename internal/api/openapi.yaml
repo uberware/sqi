@@ -4135,6 +4135,59 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /queues/{id}/pause:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    post:
+      operationId: pauseQueue
+      summary: Pause a queue
+      tags: [queues]
+      description: |
+        Stops the scheduler leasing the queue's work; tasks already running
+        carry on. Only `paused` changes, so a pause never overwrites a
+        concurrent edit of the queue's other settings. Pausing a paused queue
+        is accepted idempotently.
+      responses:
+        "200":
+          description: The queue after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Queue"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /queues/{id}/resume:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    post:
+      operationId: resumeQueue
+      summary: Resume a queue
+      tags: [queues]
+      description: |
+        Lets the scheduler lease the queue's work again, waking workers
+        waiting on it. Only `paused` changes. Resuming a queue that is not
+        paused is accepted idempotently.
+      responses:
+        "200":
+          description: The queue after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Queue"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   # ── Storage locations ──────────────────────────────────────────────────────
 
   /storage-locations:

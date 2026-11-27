@@ -981,10 +981,9 @@ type opServer struct {
 	jobs  string // JSON for GET /jobs
 	works string // JSON for GET /workers
 
-	// firstQueueGetDelay holds the first GET of a queue for this long, which
-	// slows the first pause or resume call down.
-	firstQueueGetDelay time.Duration
-	queueGets          int
+	// firstQueueCallDelay holds the first pause or resume call for this long.
+	firstQueueCallDelay time.Duration
+	queueCalls          int
 }
 
 func (o *opServer) start(t *testing.T) *httptest.Server {
@@ -998,28 +997,19 @@ func (o *opServer) start(t *testing.T) *httptest.Server {
 			case "/api/v1/workers":
 				fmt.Fprint(w, o.works)
 			default:
-				if strings.HasPrefix(r.URL.Path, "/api/v1/queues/") {
-					o.mu.Lock()
-					o.queueGets++
-					first := o.queueGets == 1
-					o.mu.Unlock()
-					if first && o.firstQueueGetDelay > 0 {
-						time.Sleep(o.firstQueueGetDelay)
-					}
-					fmt.Fprint(w, `{"name":"q"}`) // PauseQueue reads the queue, then puts it back paused
-					return
-				}
 				http.NotFound(w, r)
 			}
 			return
 		}
 		call := r.Method + " " + strings.TrimPrefix(r.URL.Path, "/api/v1/")
-		if r.Method == http.MethodPut {
-			var q struct {
-				Paused bool `json:"paused"`
+		if strings.HasPrefix(r.URL.Path, "/api/v1/queues/") {
+			o.mu.Lock()
+			o.queueCalls++
+			first := o.queueCalls == 1
+			o.mu.Unlock()
+			if first && o.firstQueueCallDelay > 0 {
+				time.Sleep(o.firstQueueCallDelay)
 			}
-			json.NewDecoder(r.Body).Decode(&q) //nolint:errcheck // test server
-			call += fmt.Sprintf(" paused=%v", q.Paused)
 		}
 		o.mu.Lock()
 		o.calls = append(o.calls, call)
@@ -1301,7 +1291,7 @@ func TestActions_ResumeQueue(t *testing.T) {
 	o := &opServer{}
 	ts := o.start(t)
 	a := runActions(t, ts, []scenario.Action{{PauseQueue: "other"}, {At: scenario.Duration{Duration: 10 * time.Millisecond}, ResumeQueue: "other"}}, NewJobLedger(), nil)
-	if calls := o.made(); !slices.Equal(calls, []string{"PUT queues/queue-2 paused=true", "PUT queues/queue-2 paused=false"}) {
+	if calls := o.made(); !slices.Equal(calls, []string{"POST queues/queue-2/pause", "POST queues/queue-2/resume"}) {
 		t.Errorf("calls = %v, want a pause and then a resume of queue-2", calls)
 	}
 	if got := a.ResumePaused(t.Context()); len(got) != 0 {
@@ -1318,10 +1308,10 @@ func TestActions_ResumeQueue(t *testing.T) {
 // them. Sent out of order, the late pause would leave the queue paused while
 // the driver records it as resumed, so ResumePaused would not resume it.
 func TestActions_ResumeQueueWaitsForASlowPause(t *testing.T) {
-	o := &opServer{firstQueueGetDelay: 100 * time.Millisecond}
+	o := &opServer{firstQueueCallDelay: 100 * time.Millisecond}
 	ts := o.start(t)
 	a := runActions(t, ts, []scenario.Action{{PauseQueue: "other"}, {At: scenario.Duration{Duration: 10 * time.Millisecond}, ResumeQueue: "other"}}, NewJobLedger(), nil)
-	if calls := o.made(); !slices.Equal(calls, []string{"PUT queues/queue-2 paused=true", "PUT queues/queue-2 paused=false"}) {
+	if calls := o.made(); !slices.Equal(calls, []string{"POST queues/queue-2/pause", "POST queues/queue-2/resume"}) {
 		t.Errorf("calls = %v, want the pause and then the resume of queue-2", calls)
 	}
 	if got := a.ResumePaused(t.Context()); len(got) != 0 {
@@ -1366,7 +1356,7 @@ func TestActions_ResumePaused(t *testing.T) {
 		t.Errorf("ResumePaused = %v, want both paused queues", got)
 	}
 	calls := o.made()
-	for _, want := range []string{"PUT queues/queue-1 paused=false", "PUT queues/queue-2 paused=false"} {
+	for _, want := range []string{"POST queues/queue-1/resume", "POST queues/queue-2/resume"} {
 		if !slices.Contains(calls, want) {
 			t.Errorf("calls %v lack %q", calls, want)
 		}

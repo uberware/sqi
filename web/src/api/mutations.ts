@@ -466,6 +466,39 @@ export function useUpdateQueue() {
   })
 }
 
+type RetryOverrides = Pick<QueueInput, 'max_attempts' | 'retry_delay_seconds' | 'failure_limit'>
+
+/** The retry overrides that are set, so an unset one is omitted and stays inherited. */
+export function retryOverrides(v: {
+  [K in keyof RetryOverrides]?: number | undefined
+}): RetryOverrides {
+  return {
+    ...(v.max_attempts !== undefined ? { max_attempts: v.max_attempts } : {}),
+    ...(v.retry_delay_seconds !== undefined ? { retry_delay_seconds: v.retry_delay_seconds } : {}),
+    ...(v.failure_limit !== undefined ? { failure_limit: v.failure_limit } : {}),
+  }
+}
+
+/** Pause or resume a queue via `POST /queues/{id}/pause` or `/resume`; only `paused` changes. */
+export function fetchSetQueuePaused(id: string, paused: boolean): Promise<Queue> {
+  return apiFetch<Queue>(`/queues/${encodeURIComponent(id)}/${paused ? 'pause' : 'resume'}`, {
+    method: 'POST',
+  })
+}
+
+/** Pause or resume a queue. Invalidates the queue and farm queries on success. */
+export function useSetQueuePaused() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, paused }: { id: string; paused: boolean }) =>
+      fetchSetQueuePaused(id, paused),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.queues.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.farms.all })
+    },
+  })
+}
+
 export function useDeleteQueue() {
   const queryClient = useQueryClient()
   return useMutation({

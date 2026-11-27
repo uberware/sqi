@@ -11,6 +11,8 @@ package api
 //	GET    /api/v1/queues/{id} — get queue by ID
 //	PUT    /api/v1/queues/{id} — replace mutable fields
 //	DELETE /api/v1/queues/{id} — delete queue
+//	POST   /api/v1/queues/{id}/pause  — stop leasing the queue's work
+//	POST   /api/v1/queues/{id}/resume — lease the queue's work again
 
 import (
 	"context"
@@ -35,12 +37,30 @@ import (
 // queueHandler handles all queue-related REST endpoints.
 type queueHandler struct {
 	store  store.Store
+	waker  queueWaker
 	logger *slog.Logger
 }
 
-// newQueueHandler returns a queueHandler wired to the given store.
-func newQueueHandler(st store.Store, logger *slog.Logger) *queueHandler {
-	return &queueHandler{store: st, logger: logger}
+// queueWaker is the subset of [scheduler.Scheduler] the queue handler uses.
+type queueWaker interface {
+	// WakeQueue wakes the lease requests parked on queueID, so a queue that
+	// has just been unpaused is leased its work without waiting out their hold.
+	WakeQueue(queueID string)
+}
+
+// newQueueHandler returns a queueHandler wired to the given store. waker may be
+// nil, when no scheduler is wired.
+func newQueueHandler(st store.Store, waker queueWaker, logger *slog.Logger) *queueHandler {
+	return &queueHandler{store: st, waker: waker, logger: logger}
+}
+
+// wakeIfUnpaused wakes the parked lease requests of a queue a write has left
+// unpaused. A wake for a queue that was not paused is harmless: a woken
+// request only re-reads what it may lease.
+func (h *queueHandler) wakeIfUnpaused(q store.Queue) {
+	if !q.Paused && h.waker != nil {
+		h.waker.WakeQueue(q.ID)
+	}
 }
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
@@ -527,6 +547,44 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.wakeIfUnpaused(updated)
+	writeJSON(w, http.StatusOK, toQueueResponse(updated))
+}
+
+// ── POST /api/v1/queues/{id}/pause, /resume ───────────────────────────────────
+
+// pauseQueue stops the scheduler leasing the queue's work. Pausing a paused
+// queue is accepted. Only the flag changes, so a pause cannot overwrite a
+// concurrent edit of the queue's other settings, as a PUT built from a stale
+// read would.
+func (h *queueHandler) pauseQueue(w http.ResponseWriter, r *http.Request) {
+	h.setQueuePaused(w, r, true)
+}
+
+// resumeQueue lets the scheduler lease the queue's work again and wakes the
+// lease requests parked on it. Resuming a queue that is not paused is accepted.
+func (h *queueHandler) resumeQueue(w http.ResponseWriter, r *http.Request) {
+	h.setQueuePaused(w, r, false)
+}
+
+// setQueuePaused is the shared implementation of pause and resume.
+func (h *queueHandler) setQueuePaused(w http.ResponseWriter, r *http.Request, paused bool) {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+
+	updated, err := h.store.SetQueuePaused(ctx, id, paused)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "queue not found")
+			return
+		}
+		h.logger.ErrorContext(ctx, "queues: paused update failed",
+			slog.String("id", id), slog.Bool("paused", paused), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to update queue")
+		return
+	}
+
+	h.wakeIfUnpaused(updated)
 	writeJSON(w, http.StatusOK, toQueueResponse(updated))
 }
 

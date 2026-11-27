@@ -219,7 +219,7 @@ func TestQueueCRUD(t *testing.T) {
 		t.Fatalf("pre-seed farm: %v", err)
 	}
 
-	h := newQueueHandler(st, logger)
+	h := newQueueHandler(st, nil, logger)
 
 	r := chi.NewRouter()
 	r.Post("/queues", h.createQueue)

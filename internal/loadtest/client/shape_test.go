@@ -3,7 +3,6 @@
 package client_test
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -209,6 +208,16 @@ func TestClient_RequestShapes(t *testing.T) {
 			wantMethod: "POST", wantPath: "/api/v1/workers/w1/enable",
 		},
 		{
+			name: "pause queue", reply: `{}`, replyCode: 200,
+			call:       func(c *client.Client) error { return c.PauseQueue(t.Context(), "q1", true) },
+			wantMethod: "POST", wantPath: "/api/v1/queues/q1/pause",
+		},
+		{
+			name: "resume queue", reply: `{}`, replyCode: 200,
+			call:       func(c *client.Client) error { return c.PauseQueue(t.Context(), "q1", false) },
+			wantMethod: "POST", wantPath: "/api/v1/queues/q1/resume",
+		},
+		{
 			name: "SubmitJob query and JSON content type", reply: `{"id":"j1"}`, replyCode: 201,
 			call: func(c *client.Client) error {
 				id, st, err := c.SubmitJob(t.Context(), client.SubmitRequest{
@@ -319,37 +328,6 @@ func TestClient_TransportErrorStatusZero(t *testing.T) {
 	id, status, err := client.New(url).SubmitJob(t.Context(), client.SubmitRequest{Template: []byte("x")})
 	if err == nil || status != 0 || id != "" {
 		t.Errorf("got (%q, %d, %v), want a status-0 transport error", id, status, err)
-	}
-}
-
-func TestClient_PauseQueueReadsThenWrites(t *testing.T) {
-	var s stub
-	ts := s.start(t, func(w http.ResponseWriter, r *http.Request, _ int) {
-		if r.Method == http.MethodGet {
-			reply(w, 200, `{"id":"q1","farm_id":"f1","name":"main","priority":3,"max_concurrent_tasks":8,"paused":false,"max_attempts":4,"run_as_user":"render"}`)
-			return
-		}
-		reply(w, 200, `{}`)
-	})
-	if err := client.New(ts.URL).PauseQueue(t.Context(), "q1", true); err != nil {
-		t.Fatalf("PauseQueue: %v", err)
-	}
-	put := s.last()
-	if put.Method != http.MethodPut || put.Path != "/api/v1/queues/q1" {
-		t.Fatalf("last request = %s %s, want PUT /api/v1/queues/q1", put.Method, put.Path)
-	}
-	var body map[string]any
-	if err := json.Unmarshal([]byte(put.Body), &body); err != nil {
-		t.Fatalf("PUT body: %v", err)
-	}
-	want := map[string]any{"farm_id": "f1", "name": "main", "priority": 3.0, "max_concurrent_tasks": 8.0, "paused": true, "max_attempts": 4.0}
-	for k, v := range want {
-		if body[k] != v {
-			t.Errorf("PUT body[%s] = %v, want %v", k, body[k], v)
-		}
-	}
-	if _, ok := body["run_as_user"]; ok {
-		t.Error("PUT body carries run_as_user; omitting it is what preserves the stored identity")
 	}
 }
 

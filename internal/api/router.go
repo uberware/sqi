@@ -382,6 +382,14 @@ func schedulerWaker(sched *scheduler.Scheduler) workerWaker {
 	return sched
 }
 
+// schedulerQueueWaker is [schedulerWaker] for the queue handler.
+func schedulerQueueWaker(sched *scheduler.Scheduler) queueWaker {
+	if sched == nil {
+		return nil
+	}
+	return sched
+}
+
 // NewRouter builds and returns the chi router that serves the full sqi-server
 // HTTP surface. The returned router is ready to be handed to http.Server.
 //
@@ -479,7 +487,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
 	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, schedulerWaker(deps.Scheduler), logger)
 	farms := newFarmHandler(deps.Store, logger)
-	queues := newQueueHandler(deps.Store, logger)
+	queues := newQueueHandler(deps.Store, schedulerQueueWaker(deps.Scheduler), logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
@@ -727,6 +735,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Delete("/farms/{id}", farms.deleteFarm)
 				g.Post("/queues", queues.createQueue)
 				g.Put("/queues/{id}", queues.updateQueue)
+				g.Post("/queues/{id}/pause", queues.pauseQueue)
+				g.Post("/queues/{id}/resume", queues.resumeQueue)
 				g.Delete("/queues/{id}", queues.deleteQueue)
 				g.Post("/storage-locations", storageLocs.createStorageLocation)
 				g.Put("/storage-locations/{id}", storageLocs.updateStorageLocation)

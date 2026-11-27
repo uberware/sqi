@@ -269,6 +269,60 @@ func TestParity_UpdateQueue(t *testing.T) {
 	}
 }
 
+// TestParity_SetQueuePaused pins the pause write: it sets and clears the flag
+// alone, leaving every other field as stored, advances UpdatedAt, is
+// idempotent, and is ErrNotFound for an unknown queue.
+func TestParity_SetQueuePaused(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			farm := mustCreateFarm(t, st, "main")
+			user, group, limit := "render", "artists", 5
+			orig := mustCreateQueue(t, st, store.Queue{
+				FarmID: farm.ID, Name: "q", Description: "d", Priority: 40, MaxConcurrentTasks: 3,
+				FailureLimit: &limit, RunAsUser: &user, RunAsGroup: &group,
+			})
+			time.Sleep(time.Millisecond)
+
+			got, err := st.SetQueuePaused(ctx, orig.ID, true)
+			if err != nil || !got.Paused {
+				t.Fatalf("pause = (paused=%v, %v), want paused", got.Paused, err)
+			}
+			if got.UpdatedAt.Before(orig.UpdatedAt) || got.UpdatedAt.Equal(orig.UpdatedAt) {
+				t.Fatalf("pause: UpdatedAt %v not after %v", got.UpdatedAt, orig.UpdatedAt)
+			}
+			want := orig
+			want.Paused, want.UpdatedAt = true, got.UpdatedAt
+			stored, err := st.GetQueue(ctx, orig.ID)
+			if err != nil {
+				t.Fatalf("GetQueue: %v", err)
+			}
+			for label, q := range map[string]store.Queue{"returned": got, "stored": stored} {
+				if q.Name != want.Name || q.Description != want.Description || q.Priority != want.Priority ||
+					q.MaxConcurrentTasks != want.MaxConcurrentTasks || !q.Paused ||
+					q.FailureLimit == nil || *q.FailureLimit != limit || q.MaxAttempts != nil ||
+					q.RunAsUser == nil || *q.RunAsUser != user || q.RunAsGroup == nil || *q.RunAsGroup != group ||
+					!q.CreatedAt.Equal(orig.CreatedAt) {
+					t.Fatalf("%s queue after pause = %+v, want only paused changed from %+v", label, q, orig)
+				}
+			}
+
+			if got, err = st.SetQueuePaused(ctx, orig.ID, true); err != nil || !got.Paused {
+				t.Fatalf("pause again = (paused=%v, %v), want idempotent", got.Paused, err)
+			}
+			if got, err = st.SetQueuePaused(ctx, orig.ID, false); err != nil || got.Paused {
+				t.Fatalf("resume = (paused=%v, %v), want cleared", got.Paused, err)
+			}
+			if stored, err = st.GetQueue(ctx, orig.ID); err != nil || stored.Paused {
+				t.Fatalf("GetQueue after resume = (paused=%v, %v), want not paused", stored.Paused, err)
+			}
+			if _, err := st.SetQueuePaused(ctx, uuid.NewString(), true); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("SetQueuePaused(unknown) = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
 func TestParity_GetQueue(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

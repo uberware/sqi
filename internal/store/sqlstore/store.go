@@ -69,10 +69,11 @@ type Store struct {
 	stmtDeleteFarm *dbStmt
 
 	// ── queues ───────────────────────────────────────────────────────────
-	stmtInsertQueue *dbStmt
-	stmtGetQueue    *dbStmt
-	stmtUpdateQueue *dbStmt
-	stmtDeleteQueue *dbStmt
+	stmtInsertQueue    *dbStmt
+	stmtGetQueue       *dbStmt
+	stmtUpdateQueue    *dbStmt
+	stmtSetQueuePaused *dbStmt
+	stmtDeleteQueue    *dbStmt
 
 	// ── storage_locations ────────────────────────────────────────────────
 	stmtInsertStorageLoc    *dbStmt
@@ -401,6 +402,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtUpdateQueue, err = s.prepare(ctx, sqlUpdateQueue); err != nil {
+		return err
+	}
+	if s.stmtSetQueuePaused, err = s.prepare(ctx, sqlSetQueuePaused); err != nil {
 		return err
 	}
 	if s.stmtDeleteQueue, err = s.prepare(ctx, sqlDeleteQueue); err != nil {
