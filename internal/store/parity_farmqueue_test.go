@@ -4,6 +4,7 @@ package store_test
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -298,11 +299,7 @@ func TestParity_SetQueuePaused(t *testing.T) {
 				t.Fatalf("GetQueue: %v", err)
 			}
 			for label, q := range map[string]store.Queue{"returned": got, "stored": stored} {
-				if q.Name != want.Name || q.Description != want.Description || q.Priority != want.Priority ||
-					q.MaxConcurrentTasks != want.MaxConcurrentTasks || !q.Paused ||
-					q.FailureLimit == nil || *q.FailureLimit != limit || q.MaxAttempts != nil ||
-					q.RunAsUser == nil || *q.RunAsUser != user || q.RunAsGroup == nil || *q.RunAsGroup != group ||
-					!q.CreatedAt.Equal(orig.CreatedAt) {
+				if !reflect.DeepEqual(q, want) {
 					t.Fatalf("%s queue after pause = %+v, want only paused changed from %+v", label, q, orig)
 				}
 			}

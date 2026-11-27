@@ -371,19 +371,17 @@ func mountObservability(r chi.Router, cfg Config, logger *slog.Logger, m *metric
 	}
 }
 
-// schedulerWaker returns sched as the worker handler's waker, or nil when no
+// schedulerWakes is what the worker and queue handlers wake the scheduler with.
+type schedulerWakes interface {
+	workerWaker
+	queueWaker
+}
+
+// schedulerWaker returns sched as the handlers' waker, or nil when no
 // scheduler is wired. A typed-nil *scheduler.Scheduler stored in the interface
 // is not itself nil, so the handler's nil check would pass and the call would
 // panic.
-func schedulerWaker(sched *scheduler.Scheduler) workerWaker {
-	if sched == nil {
-		return nil
-	}
-	return sched
-}
-
-// schedulerQueueWaker is [schedulerWaker] for the queue handler.
-func schedulerQueueWaker(sched *scheduler.Scheduler) queueWaker {
+func schedulerWaker(sched *scheduler.Scheduler) schedulerWakes {
 	if sched == nil {
 		return nil
 	}
@@ -485,9 +483,10 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults,
 		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
-	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, schedulerWaker(deps.Scheduler), logger)
+	wakes := schedulerWaker(deps.Scheduler)
+	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, wakes, logger)
 	farms := newFarmHandler(deps.Store, logger)
-	queues := newQueueHandler(deps.Store, schedulerQueueWaker(deps.Scheduler), logger)
+	queues := newQueueHandler(deps.Store, wakes, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)

@@ -466,12 +466,15 @@ export function useUpdateQueue() {
   })
 }
 
-type RetryOverrides = Pick<QueueInput, 'max_attempts' | 'retry_delay_seconds' | 'failure_limit'>
+type RetryOverrides = Pick<FarmInput, 'max_attempts' | 'retry_delay_seconds' | 'failure_limit'>
 
-/** The retry overrides that are set, so an unset one is omitted and stays inherited. */
-export function retryOverrides(v: {
-  [K in keyof RetryOverrides]?: number | undefined
-}): RetryOverrides {
+/**
+ * The retry overrides of a farm or queue that are set, so an unset one is
+ * omitted and stays inherited.
+ */
+export function retryOverrides(
+  v: Partial<Record<keyof RetryOverrides, number | undefined>>,
+): RetryOverrides {
   return {
     ...(v.max_attempts !== undefined ? { max_attempts: v.max_attempts } : {}),
     ...(v.retry_delay_seconds !== undefined ? { retry_delay_seconds: v.retry_delay_seconds } : {}),
@@ -486,16 +489,21 @@ export function fetchSetQueuePaused(id: string, paused: boolean): Promise<Queue>
   })
 }
 
-/** Pause or resume a queue. Invalidates the queue and farm queries on success. */
+/**
+ * Pause or resume a queue. The mutation settles only once the queue and farm
+ * queries have refetched, so a caller showing it as busy never shows the row's
+ * old state as current in between.
+ */
 export function useSetQueuePaused() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: ({ id, paused }: { id: string; paused: boolean }) =>
       fetchSetQueuePaused(id, paused),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.queues.all })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.farms.all })
-    },
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.queues.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.farms.all }),
+      ]),
   })
 }
 

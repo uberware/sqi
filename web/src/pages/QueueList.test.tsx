@@ -316,6 +316,41 @@ describe('QueueList', () => {
       ).toBe(false)
     })
 
+    it('keeps the button busy until the refreshed list shows the new state', async () => {
+      mockFarmsAndQueues()
+      renderPage()
+
+      const btn = await screen.findByRole('button', { name: 'Pause queue lighting' })
+      fetchMock.mockResolvedValueOnce(ok({ ...queue, paused: true }))
+      let releaseQueues: () => void = () => {}
+      const queuesHeld = new Promise<Response>((resolve) => {
+        releaseQueues = () =>
+          resolve(ok({ items: [{ ...queue, paused: true }], total: 1, limit: 1000, offset: 0 }))
+      })
+      fetchMock.mockImplementation((input) =>
+        String(input).includes('/queues') ? queuesHeld : Promise.resolve(ok([farm])),
+      )
+      fireEvent.click(btn)
+
+      await sentPost()
+      await waitFor(() => {
+        const gets = fetchMock.mock.calls.filter(
+          (c) =>
+            String(c[0]).includes('/queues') &&
+            (c[1] as RequestInit | undefined)?.method !== 'POST',
+        )
+        expect(gets).toHaveLength(2)
+      })
+      // The server has answered but the list is still the old one: the row
+      // must not offer Pause again as though nothing happened.
+      expect(screen.getByRole('button', { name: 'Pause queue lighting' })).toBeDisabled()
+      expect(screen.queryByText('Queue "lighting" paused')).toBeNull()
+
+      act(() => releaseQueues())
+      expect(await screen.findByRole('button', { name: 'Resume queue lighting' })).toBeEnabled()
+      await screen.findByText('Queue "lighting" paused')
+    })
+
     it('shows an error toast when the update fails', async () => {
       mockFarmsAndQueues()
       renderPage()

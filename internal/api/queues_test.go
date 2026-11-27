@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -978,7 +979,7 @@ func TestDeleteQueue_Success(t *testing.T) {
 func TestPauseResumeQueue(t *testing.T) {
 	st := fake.New()
 	defer st.Close()
-	farm, seeded := seedFarmAndQueue(t, st)
+	_, seeded := seedFarmAndQueue(t, st)
 	user, limit := "render", 7
 	upd := seeded
 	upd.Description, upd.MaxConcurrentTasks, upd.FailureLimit, upd.RunAsUser = "shots", 4, &limit, &user
@@ -1013,10 +1014,9 @@ func TestPauseResumeQueue(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetQueue: %v", err)
 		}
-		if stored.Paused != step.wantPaused || stored.FarmID != farm.ID || stored.Name != q.Name ||
-			stored.Description != "shots" || stored.Priority != q.Priority || stored.MaxConcurrentTasks != 4 ||
-			stored.FailureLimit == nil || *stored.FailureLimit != limit ||
-			stored.RunAsUser == nil || *stored.RunAsUser != user {
+		want := q
+		want.Paused, want.UpdatedAt = step.wantPaused, stored.UpdatedAt
+		if !reflect.DeepEqual(stored, want) {
 			t.Fatalf("POST %s: stored = %+v, want only paused=%v changed from %+v", step.action, stored, step.wantPaused, q)
 		}
 	}
@@ -1030,42 +1030,32 @@ func TestPauseResumeQueue(t *testing.T) {
 	}
 }
 
-// TestQueueWrites_WakeParkedLeasesWhenUnpaused pins that a write leaving a
-// queue unpaused wakes its parked lease requests, so its work is leased at
-// once rather than after the long-poll hold, and that a pause, a write that
-// leaves it paused, and a failed write wake nothing.
-func TestQueueWrites_WakeParkedLeasesWhenUnpaused(t *testing.T) {
+// TestResumeQueue_WakesItsParkedLeases pins that a resume wakes the queue's
+// parked lease requests, so its work is leased at once rather than after the
+// long-poll hold, and that a pause and a failed resume wake nothing.
+func TestResumeQueue_WakesItsParkedLeases(t *testing.T) {
 	st := fake.New()
 	defer st.Close()
-	farm, q := seedFarmAndQueue(t, st)
+	_, q := seedFarmAndQueue(t, st)
 	waker := &recordingQueueWaker{}
 	r := newQueueRouterWith(st, waker)
-	put := func(paused bool) *http.Request {
-		return newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
-			"farm_id": farm.ID, "name": q.Name, "paused": paused,
-		}))
-	}
-	post := func(path string) *http.Request { return newReq(t, http.MethodPost, path, nil) }
 
 	for _, step := range []struct {
-		name      string
-		req       *http.Request
+		path      string
 		wantCode  int
 		wantWoken []string
 	}{
-		{"pause", post("/api/v1/queues/" + q.ID + "/pause"), http.StatusOK, nil},
-		{"resume", post("/api/v1/queues/" + q.ID + "/resume"), http.StatusOK, []string{q.ID}},
-		{"resume unknown", post("/api/v1/queues/missing/resume"), http.StatusNotFound, []string{q.ID}},
-		{"put paused", put(true), http.StatusOK, []string{q.ID}},
-		{"put unpaused", put(false), http.StatusOK, []string{q.ID, q.ID}},
+		{"/api/v1/queues/" + q.ID + "/pause", http.StatusOK, nil},
+		{"/api/v1/queues/" + q.ID + "/resume", http.StatusOK, []string{q.ID}},
+		{"/api/v1/queues/missing/resume", http.StatusNotFound, []string{q.ID}},
 	} {
 		rr := httptest.NewRecorder()
-		r.ServeHTTP(rr, step.req)
+		r.ServeHTTP(rr, newReq(t, http.MethodPost, step.path, nil))
 		if rr.Code != step.wantCode {
-			t.Fatalf("%s: want %d, got %d: %s", step.name, step.wantCode, rr.Code, rr.Body.String())
+			t.Fatalf("POST %s: want %d, got %d: %s", step.path, step.wantCode, rr.Code, rr.Body.String())
 		}
 		if !slices.Equal(waker.woken, step.wantWoken) {
-			t.Fatalf("after %s: woken = %v, want %v", step.name, waker.woken, step.wantWoken)
+			t.Fatalf("after POST %s: woken = %v, want %v", step.path, waker.woken, step.wantWoken)
 		}
 	}
 }

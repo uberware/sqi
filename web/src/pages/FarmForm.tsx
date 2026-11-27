@@ -7,7 +7,7 @@ import RetryPolicyFields from '@/components/RetryPolicyFields'
 import { useToast } from '@/components/Toast'
 import { useGetFarm } from '@/api/queries'
 import { parseOptionalInt } from '@/lib/parse'
-import { useCreateFarm, useUpdateFarm } from '@/api/mutations'
+import { retryOverrides, useCreateFarm, useUpdateFarm } from '@/api/mutations'
 import type { FarmInput } from '@/api/mutations'
 import styles from './FarmForm.module.css'
 
@@ -49,18 +49,15 @@ function FarmFormInner({ mode, id, defaults }: InnerProps) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!canSubmit) return
-    const parsedMaxAttempts = parseOptionalInt(maxAttempts)
-    const parsedRetryDelaySeconds = parseOptionalInt(retryDelaySeconds)
-    const parsedFailureLimit = parseOptionalInt(failureLimit)
     const input: FarmInput = {
       name: name.trim(),
       description: description.trim(),
       max_concurrent_tasks: Math.trunc(Number(maxConcurrent) || 0),
-      ...(parsedMaxAttempts !== undefined ? { max_attempts: parsedMaxAttempts } : {}),
-      ...(parsedRetryDelaySeconds !== undefined
-        ? { retry_delay_seconds: parsedRetryDelaySeconds }
-        : {}),
-      ...(parsedFailureLimit !== undefined ? { failure_limit: parsedFailureLimit } : {}),
+      ...retryOverrides({
+        max_attempts: parseOptionalInt(maxAttempts),
+        retry_delay_seconds: parseOptionalInt(retryDelaySeconds),
+        failure_limit: parseOptionalInt(failureLimit),
+      }),
     }
     try {
       if (mode === 'create') {

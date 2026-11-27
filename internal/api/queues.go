@@ -43,8 +43,8 @@ type queueHandler struct {
 
 // queueWaker is the subset of [scheduler.Scheduler] the queue handler uses.
 type queueWaker interface {
-	// WakeQueue wakes the lease requests parked on queueID, so a queue that
-	// has just been unpaused is leased its work without waiting out their hold.
+	// WakeQueue wakes the lease requests parked on queueID, so a resumed queue
+	// is leased its work without waiting out their hold.
 	WakeQueue(queueID string)
 }
 
@@ -52,15 +52,6 @@ type queueWaker interface {
 // nil, when no scheduler is wired.
 func newQueueHandler(st store.Store, waker queueWaker, logger *slog.Logger) *queueHandler {
 	return &queueHandler{store: st, waker: waker, logger: logger}
-}
-
-// wakeIfUnpaused wakes the parked lease requests of a queue a write has left
-// unpaused. A wake for a queue that was not paused is harmless: a woken
-// request only re-reads what it may lease.
-func (h *queueHandler) wakeIfUnpaused(q store.Queue) {
-	if !q.Paused && h.waker != nil {
-		h.waker.WakeQueue(q.ID)
-	}
 }
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
@@ -547,7 +538,6 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.wakeIfUnpaused(updated)
 	writeJSON(w, http.StatusOK, toQueueResponse(updated))
 }
 
@@ -584,7 +574,9 @@ func (h *queueHandler) setQueuePaused(w http.ResponseWriter, r *http.Request, pa
 		return
 	}
 
-	h.wakeIfUnpaused(updated)
+	if !paused && h.waker != nil {
+		h.waker.WakeQueue(id)
+	}
 	writeJSON(w, http.StatusOK, toQueueResponse(updated))
 }
 
