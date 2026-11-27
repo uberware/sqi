@@ -341,8 +341,8 @@ describe('QueueList', () => {
         )
         expect(gets).toHaveLength(2)
       })
-      // The server has answered but the list is still the old one: the row
-      // must not offer Pause again as though nothing happened.
+      // The server has answered but the list still holds the old state, so the
+      // row's Pause button stays busy.
       expect(screen.getByRole('button', { name: 'Pause queue lighting' })).toBeDisabled()
       expect(screen.queryByText('Queue "lighting" paused')).toBeNull()
 

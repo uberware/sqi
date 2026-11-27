@@ -544,9 +544,8 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 // ── POST /api/v1/queues/{id}/pause, /resume ───────────────────────────────────
 
 // pauseQueue stops the scheduler leasing the queue's work. Pausing a paused
-// queue is accepted. Only the flag changes, so a pause cannot overwrite a
-// concurrent edit of the queue's other settings, as a PUT built from a stale
-// read would.
+// queue is accepted. Only the flag changes, so a pause never overwrites a
+// concurrent edit of the queue's other settings.
 func (h *queueHandler) pauseQueue(w http.ResponseWriter, r *http.Request) {
 	h.setQueuePaused(w, r, true)
 }

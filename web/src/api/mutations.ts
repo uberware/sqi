@@ -490,9 +490,9 @@ export function fetchSetQueuePaused(id: string, paused: boolean): Promise<Queue>
 }
 
 /**
- * Pause or resume a queue. The mutation settles only once the queue and farm
- * queries have refetched, so a caller showing it as busy never shows the row's
- * old state as current in between.
+ * Pause or resume a queue. The mutation settles once the queue and farm
+ * queries have refetched, so a caller that shows it as busy never shows the
+ * queue's old state as current.
  */
 export function useSetQueuePaused() {
   const queryClient = useQueryClient()
