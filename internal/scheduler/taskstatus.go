@@ -472,8 +472,11 @@ func (s *Scheduler) handleTaskTerminal(
 
 	// Wake any parked lease waiters: the attempt's usage claims were released
 	// whether or not the task moved, and a completed task frees the worker's
-	// cores, so pending tasks may now fit.
-	s.notifyQueueForJob(ctx, task.JobID)
+	// cores, so pending tasks may now fit. The wake runs after the step and its
+	// dependents are settled, so a woken request sees a dependent step ready
+	// and leases it ahead of later jobs in the queue. It also runs when that
+	// settling fails, since the slots and cores are already free.
+	defer s.notifyQueueForJob(ctx, task.JobID)
 
 	if res.Rejected {
 		// The task no longer holds a status this report can move it from, so

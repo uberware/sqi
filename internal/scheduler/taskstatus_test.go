@@ -769,6 +769,134 @@ func TestProcessTaskStatus_SucceededStep_UnblocksDependentStep(t *testing.T) {
 	}
 }
 
+// TestProcessTaskStatus_WakesParkedLeasesAfterDependentStepIsReady covers a
+// worker whose lease request is parked while it finishes a task: the wake its
+// freed cores trigger must come after the finished step's dependents are
+// promoted. A wake sent before the promotion leases the worker the next job in
+// the queue, ahead of the dependent step of the job it just worked on.
+func TestProcessTaskStatus_WakesParkedLeasesAfterDependentStepIsReady(t *testing.T) {
+	inner := newCheckedFake(t)
+	g := seedDependentStepJob(t, inner)
+	task1, task2 := g.tasks[0][0], g.tasks[1][0]
+
+	st := &finalizeObserverSt{Store: inner}
+	s := newStatusTestScheduler(st)
+	s.ctx = t.Context()
+	before := s.waiters.ticket("queue-1")
+	released, wokeBeforeRelease := false, false
+	st.onRelease = func() {
+		released = true
+		wokeBeforeRelease = s.waiters.ticket("queue-1") != before
+	}
+
+	s.handleTaskStatusMessage(succeededMsg(t, task1.ID, g.attempts[task1.ID].ID))
+
+	if !released {
+		t.Fatal("the dependent step was never released")
+	}
+	if wokeBeforeRelease {
+		t.Error("queue woken before the dependent step was promoted to ready")
+	}
+	if s.waiters.ticket("queue-1") == before {
+		t.Error("queue not woken after the task completed")
+	}
+	if got := mustTask(t, inner, task2.ID).Status; got != store.TaskStatusReady {
+		t.Errorf("dependent task status = %q, want ready", got)
+	}
+}
+
+// TestProcessTaskStatus_WakesParkedLeasesWhenReportIsRefused pins the wake for
+// a report the store refuses to apply (here a late succeeded after a cancel):
+// the completion write still released the attempt's slots.
+func TestProcessTaskStatus_WakesParkedLeasesWhenReportIsRefused(t *testing.T) {
+	st := newCheckedFake(t)
+	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
+	s := newStatusTestScheduler(st)
+	s.ctx = t.Context()
+	if err := s.CancelTask(t.Context(), task.ID); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+	before := s.waiters.ticket("queue-1")
+
+	msg := succeededMsg(t, task.ID, attempt.ID)
+	s.handleTaskStatusMessage(msg)
+
+	if !msg.acked || msg.nacked {
+		t.Errorf("acked=%v nacked=%v, want a refused report acked", msg.acked, msg.nacked)
+	}
+	if got := mustTask(t, st, task.ID).Status; got != store.TaskStatusCanceled {
+		t.Errorf("task status = %q, want canceled (the late report must not move it)", got)
+	}
+	if s.waiters.ticket("queue-1") == before {
+		t.Error("queue not woken after a refused report released the attempt's slots")
+	}
+}
+
+// TestProcessTaskStatus_WakesParkedLeasesWhenStepFinalizeFails pins that a
+// completion whose step write fails still wakes the queue: the task's cores and
+// usage slots were freed by the completion write, which committed.
+func TestProcessTaskStatus_WakesParkedLeasesWhenStepFinalizeFails(t *testing.T) {
+	inner := newCheckedFake(t)
+	g := seedDependentStepJob(t, inner)
+	task1 := g.tasks[0][0]
+
+	st := &finalizeObserverSt{Store: inner, finalizeErr: errInjectedLog}
+	s := newStatusTestScheduler(st)
+	s.ctx = t.Context()
+	before := s.waiters.ticket("queue-1")
+
+	msg := succeededMsg(t, task1.ID, g.attempts[task1.ID].ID)
+	s.handleTaskStatusMessage(msg)
+
+	if !msg.nacked {
+		t.Error("FinalizeStep error should cause the message to be nacked")
+	}
+	if s.waiters.ticket("queue-1") == before {
+		t.Error("queue not woken after the completion write freed the task's cores")
+	}
+}
+
+// succeededMsg is a worker's succeeded report for the task's attempt.
+func succeededMsg(t *testing.T, taskID, attemptID string) *fakeJSMsg {
+	t.Helper()
+	exitCode := 0
+	return &fakeJSMsg{
+		subject: statusTestSubject,
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
+			TaskID:    taskID,
+			AttemptID: attemptID,
+			Status:    "succeeded",
+			ExitCode:  &exitCode,
+			At:        time.Now().UTC(),
+		}),
+	}
+}
+
+// finalizeObserverSt runs onRelease as ReleaseStep (the write that promotes a
+// dependent step's tasks to ready) is entered, and makes FinalizeStep fail with
+// finalizeErr when that is set.
+type finalizeObserverSt struct {
+	store.Store
+
+	onRelease   func()
+	finalizeErr error
+}
+
+func (s *finalizeObserverSt) ReleaseStep(ctx context.Context, id string, now time.Time) (bool, []store.Task, error) {
+	if s.onRelease != nil {
+		s.onRelease()
+	}
+	return s.Store.ReleaseStep(ctx, id, now)
+}
+
+func (s *finalizeObserverSt) FinalizeStep(ctx context.Context, id string, now time.Time) (store.StepStatus, bool, error) {
+	if s.finalizeErr != nil {
+		return "", false, s.finalizeErr
+	}
+	return s.Store.FinalizeStep(ctx, id, now)
+}
+
 // seedDependentStepJob builds a two-step job: Step1 holding one running task
 // (leased, with its attempt) and a pending Step2, depending on Step1, holding
 // one pending task.
