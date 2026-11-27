@@ -351,6 +351,21 @@ describe('QueueList', () => {
       await screen.findByText('Queue "lighting" paused')
     })
 
+    it('keeps keyboard focus on the row button when it flips to Resume', async () => {
+      mockFarmsAndQueues()
+      renderPage()
+
+      const btn = await screen.findByRole('button', { name: 'Pause queue lighting' })
+      fetchMock.mockResolvedValueOnce(ok({ ...queue, paused: true }))
+      mockFarmsAndQueues([{ ...queue, paused: true }])
+      btn.focus()
+      fireEvent.click(btn)
+
+      const resume = await screen.findByRole('button', { name: 'Resume queue lighting' })
+      expect(resume).toBe(btn)
+      expect(resume).toHaveFocus()
+    })
+
     it('shows an error toast when the update fails', async () => {
       mockFarmsAndQueues()
       renderPage()

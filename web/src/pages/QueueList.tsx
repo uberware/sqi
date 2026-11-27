@@ -224,24 +224,15 @@ export default function QueueList() {
                 <td>{queue.paused ? 'Yes' : 'No'}</td>
                 <TimingCells queue={queue} anchorMs={dataUpdatedAt} now={now} />
                 <td className={styles.actionsCell}>
-                  {canManage && !queue.paused && (
+                  {/* One button for both states, so keyboard focus survives the flip. */}
+                  {canManage && (
                     <IconButton
-                      icon={<Pause />}
-                      className={styles.pauseBtn}
+                      icon={queue.paused ? <Play /> : <Pause />}
+                      className={queue.paused ? styles.resumeBtn : styles.pauseBtn}
                       busy={busyKeys.has(`pause:${queue.id}`)}
-                      onClick={() => handleSetPaused(queue, true)}
-                      title="Pause"
-                      label={`Pause queue ${queue.name}`}
-                    />
-                  )}
-                  {canManage && queue.paused && (
-                    <IconButton
-                      icon={<Play />}
-                      className={styles.resumeBtn}
-                      busy={busyKeys.has(`pause:${queue.id}`)}
-                      onClick={() => handleSetPaused(queue, false)}
-                      title="Resume"
-                      label={`Resume queue ${queue.name}`}
+                      onClick={() => handleSetPaused(queue, !queue.paused)}
+                      title={queue.paused ? 'Resume' : 'Pause'}
+                      label={`${queue.paused ? 'Resume' : 'Pause'} queue ${queue.name}`}
                     />
                   )}
                   {canManage && (

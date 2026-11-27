@@ -1037,6 +1037,15 @@ between the list and the lease leaves its task unleased. The gate applies to
 both manually paused and auto-parked jobs: without it, the `ready` tasks of a
 job paused via the REST API would still be leased and run.
 
+A paused **queue** leases nothing either: its `ready` tasks fail the same
+`LeaseTask` predicate, and a worker's request on it parks as an idle one does.
+`POST /queues/{id}/pause` and `POST /queues/{id}/resume` write only the flag
+(`store.SetQueuePaused`), and resume wakes the parked requests through
+`Scheduler.WakeQueue`, so they are leased the queue's work at once. A
+`PUT /queues/{id}` that clears the flag does not wake: its work is leased when
+the next heartbeat sweep wakes every queue with leasable work, or when a parked
+request's `leaseHoldTimeout` (30 s) runs out.
+
 `failed` and `canceled` tasks can also be retried manually — individually via
 `POST /api/v1/tasks/{id}/retry` or in bulk via `POST /api/v1/jobs/{id}/retry`.
 On retry the task resets to `pending`, and its step and the job also reset to
