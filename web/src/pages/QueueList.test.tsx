@@ -264,6 +264,119 @@ describe('QueueList', () => {
     expect(await screen.findByText(/server unavailable/i)).toBeInTheDocument()
   })
 
+  describe('pause and resume', () => {
+    /** The URL of the one POST the page sent. */
+    async function sentPost(): Promise<string> {
+      let call: Parameters<typeof fetch> | undefined
+      await waitFor(() => {
+        call = fetchMock.mock.calls.find(
+          (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+        )
+        expect(call).toBeDefined()
+      })
+      return String(call?.[0])
+    }
+
+    it('pauses a running queue from its row', async () => {
+      mockFarmsAndQueues()
+      renderPage()
+
+      const btn = await screen.findByRole('button', { name: 'Pause queue lighting' })
+      expect(screen.queryByRole('button', { name: /resume queue lighting/i })).toBeNull()
+      fetchMock.mockResolvedValueOnce(ok({ ...queue, paused: true }))
+      fireEvent.click(btn)
+
+      expect(await sentPost()).toMatch(/\/queues\/queue-1\/pause$/)
+      await screen.findByText('Queue "lighting" paused')
+    })
+
+    it('resumes a paused queue from its row', async () => {
+      mockFarmsAndQueues([{ ...queue, paused: true }])
+      renderPage()
+
+      const btn = await screen.findByRole('button', { name: 'Resume queue lighting' })
+      expect(screen.queryByRole('button', { name: /pause queue lighting/i })).toBeNull()
+      fetchMock.mockResolvedValueOnce(ok({ ...queue, paused: false }))
+      fireEvent.click(btn)
+
+      expect(await sentPost()).toMatch(/\/queues\/queue-1\/resume$/)
+      await screen.findByText('Queue "lighting" resumed')
+    })
+
+    it('sends no PUT, so the rest of the queue is left to the server', async () => {
+      mockFarmsAndQueues()
+      renderPage()
+
+      fetchMock.mockResolvedValueOnce(ok({ ...queue, paused: true }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Pause queue lighting' }))
+
+      await sentPost()
+      expect(
+        fetchMock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === 'PUT'),
+      ).toBe(false)
+    })
+
+    it('keeps the button busy until the refreshed list shows the new state', async () => {
+      mockFarmsAndQueues()
+      renderPage()
+
+      const btn = await screen.findByRole('button', { name: 'Pause queue lighting' })
+      fetchMock.mockResolvedValueOnce(ok({ ...queue, paused: true }))
+      let releaseQueues: () => void = () => {}
+      const queuesHeld = new Promise<Response>((resolve) => {
+        releaseQueues = () =>
+          resolve(ok({ items: [{ ...queue, paused: true }], total: 1, limit: 1000, offset: 0 }))
+      })
+      fetchMock.mockImplementation((input) =>
+        String(input).includes('/queues') ? queuesHeld : Promise.resolve(ok([farm])),
+      )
+      fireEvent.click(btn)
+
+      await sentPost()
+      await waitFor(() => {
+        const gets = fetchMock.mock.calls.filter(
+          (c) =>
+            String(c[0]).includes('/queues') &&
+            (c[1] as RequestInit | undefined)?.method !== 'POST',
+        )
+        expect(gets).toHaveLength(2)
+      })
+      // The server has answered but the list still holds the old state, so the
+      // row's Pause button stays busy.
+      expect(screen.getByRole('button', { name: 'Pause queue lighting' })).toBeDisabled()
+      expect(screen.queryByText('Queue "lighting" paused')).toBeNull()
+
+      act(() => releaseQueues())
+      expect(await screen.findByRole('button', { name: 'Resume queue lighting' })).toBeEnabled()
+      await screen.findByText('Queue "lighting" paused')
+    })
+
+    it('keeps keyboard focus on the row button when it flips to Resume', async () => {
+      mockFarmsAndQueues()
+      renderPage()
+
+      const btn = await screen.findByRole('button', { name: 'Pause queue lighting' })
+      fetchMock.mockResolvedValueOnce(ok({ ...queue, paused: true }))
+      mockFarmsAndQueues([{ ...queue, paused: true }])
+      btn.focus()
+      fireEvent.click(btn)
+
+      const resume = await screen.findByRole('button', { name: 'Resume queue lighting' })
+      expect(resume).toBe(btn)
+      expect(resume).toHaveFocus()
+    })
+
+    it('shows an error toast when the update fails', async () => {
+      mockFarmsAndQueues()
+      renderPage()
+
+      fetchMock.mockRejectedValueOnce(new Error('server unavailable'))
+      fireEvent.click(await screen.findByRole('button', { name: 'Pause queue lighting' }))
+
+      expect(await screen.findByText(/server unavailable/i)).toBeInTheDocument()
+    })
+  })
+
   describe('role gating (infra.manage)', () => {
     it('hides New Queue and Delete controls for a read-only principal', async () => {
       setPrincipal(READONLY_PRINCIPAL)
@@ -274,6 +387,20 @@ describe('QueueList', () => {
       expect(screen.queryByRole('link', { name: /new queue/i })).not.toBeInTheDocument()
       expect(
         screen.queryByRole('button', { name: /delete queue lighting/i }),
+      ).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('button', { name: /pause queue lighting/i }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('hides Resume for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      mockFarmsAndQueues([{ ...queue, paused: true }])
+      renderPage()
+
+      await screen.findByRole('link', { name: 'lighting' })
+      expect(
+        screen.queryByRole('button', { name: /resume queue lighting/i }),
       ).not.toBeInTheDocument()
     })
 

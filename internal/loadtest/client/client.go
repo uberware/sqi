@@ -618,27 +618,14 @@ func (c *Client) DeleteQueue(ctx context.Context, id string) error {
 	return c.do(ctx, call{method: http.MethodDelete, path: "/queues/" + escape(id)}, nil)
 }
 
-// PauseQueue sets a queue's paused flag. The API has no partial update, so this
-// reads the queue and writes it back whole (GET then PUT /queues/{id}); the
-// run-as identity keys are left out of the PUT, which preserves them.
+// PauseQueue pauses or resumes a queue
+// (POST /queues/{id}/pause or /resume).
 func (c *Client) PauseQueue(ctx context.Context, id string, paused bool) error {
-	path := "/queues/" + escape(id)
-	var q struct {
-		FarmID             string `json:"farm_id"`
-		Name               string `json:"name"`
-		Description        string `json:"description,omitempty"`
-		Priority           int    `json:"priority"`
-		MaxConcurrentTasks int    `json:"max_concurrent_tasks"`
-		Paused             bool   `json:"paused"`
-		MaxAttempts        *int   `json:"max_attempts,omitempty"`
-		RetryDelaySeconds  *int   `json:"retry_delay_seconds,omitempty"`
-		FailureLimit       *int   `json:"failure_limit,omitempty"`
+	action := "resume"
+	if paused {
+		action = "pause"
 	}
-	if err := c.do(ctx, call{method: http.MethodGet, path: path}, &q); err != nil {
-		return err
-	}
-	q.Paused = paused
-	return c.doJSON(ctx, http.MethodPut, path, q, nil)
+	return c.do(ctx, call{method: http.MethodPost, path: "/queues/" + escape(id) + "/" + action}, nil)
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────

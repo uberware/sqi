@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import IconButton from '@/components/IconButton'
-import { Trash } from '@/components/icons'
+import { Pause, Play, Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
 import ErrorBanner from '@/components/ErrorBanner'
 import RemainingTime from '@/components/RemainingTime'
 import { queryKeys, useFarmsWithQueues } from '@/api/queries'
 import type { Queue } from '@/api/types'
-import { useDeleteQueue } from '@/api/mutations'
+import { useDeleteQueue, useSetQueuePaused } from '@/api/mutations'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
@@ -86,9 +86,10 @@ export default function QueueList() {
     includeTiming: true,
   })
   const queryClient = useQueryClient()
-  const deleteQueue = useDeleteQueue()
+  const { mutateAsync: deleteQueue } = useDeleteQueue()
+  const { mutateAsync: setQueuePaused } = useSetQueuePaused()
   const { showToast } = useToast()
-  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
+  const [busyKeys, setBusyKeys] = useState<Set<string>>(new Set())
 
   const rows = (farmsWithQueues ?? []).flatMap(({ farm, queues }) =>
     queues.map((queue) => ({ queue, farmName: farm.name })),
@@ -115,25 +116,47 @@ export default function QueueList() {
   const counting = rows.some(({ queue }) => (queue.running_tasks ?? 0) > 0)
   const now = useLiveNow(counting)
 
-  const handleDelete = useCallback(
-    async (id: string, name: string) => {
-      if (!window.confirm(`Delete queue "${name}"? This cannot be undone.`)) return
-      setDeletingIds((s) => new Set(s).add(id))
-      try {
-        await deleteQueue.mutateAsync(id)
-        showToast(`Queue "${name}" deleted`, 'success')
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : 'Failed to delete queue', 'error')
-      } finally {
-        setDeletingIds((s) => {
-          const next = new Set(s)
-          next.delete(id)
-          return next
-        })
-      }
-    },
-    [deleteQueue, showToast],
-  )
+  /** Runs one row action, showing `key` busy meanwhile and toasting the outcome. */
+  async function runRowAction(
+    key: string,
+    action: () => Promise<unknown>,
+    done: string,
+    failed: string,
+  ) {
+    setBusyKeys((s) => new Set(s).add(key))
+    try {
+      await action()
+      showToast(done, 'success')
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : failed, 'error')
+    } finally {
+      setBusyKeys((s) => {
+        const next = new Set(s)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+
+  function handleDelete(queue: Queue) {
+    if (!window.confirm(`Delete queue "${queue.name}"? This cannot be undone.`)) return
+    void runRowAction(
+      `delete:${queue.id}`,
+      () => deleteQueue(queue.id),
+      `Queue "${queue.name}" deleted`,
+      'Failed to delete queue',
+    )
+  }
+
+  function handleSetPaused(queue: Queue, paused: boolean) {
+    const verb = paused ? 'pause' : 'resume'
+    void runRowAction(
+      `pause:${queue.id}`,
+      () => setQueuePaused({ id: queue.id, paused }),
+      `Queue "${queue.name}" ${verb}d`,
+      `Failed to ${verb} queue`,
+    )
+  }
 
   return (
     <div className={styles.page}>
@@ -200,13 +223,24 @@ export default function QueueList() {
                 </td>
                 <td>{queue.paused ? 'Yes' : 'No'}</td>
                 <TimingCells queue={queue} anchorMs={dataUpdatedAt} now={now} />
-                <td>
+                <td className={styles.actionsCell}>
+                  {/* One button for both states, so keyboard focus survives the flip. */}
+                  {canManage && (
+                    <IconButton
+                      icon={queue.paused ? <Play /> : <Pause />}
+                      className={queue.paused ? styles.resumeBtn : styles.pauseBtn}
+                      busy={busyKeys.has(`pause:${queue.id}`)}
+                      onClick={() => handleSetPaused(queue, !queue.paused)}
+                      title={queue.paused ? 'Resume' : 'Pause'}
+                      label={`${queue.paused ? 'Resume' : 'Pause'} queue ${queue.name}`}
+                    />
+                  )}
                   {canManage && (
                     <IconButton
                       icon={<Trash />}
                       className={styles.deleteBtn}
-                      busy={deletingIds.has(queue.id)}
-                      onClick={() => void handleDelete(queue.id, queue.name)}
+                      busy={busyKeys.has(`delete:${queue.id}`)}
+                      onClick={() => handleDelete(queue)}
                       title="Delete"
                       label={`Delete queue ${queue.name}`}
                     />

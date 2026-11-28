@@ -786,6 +786,18 @@ curl -s -X POST "$BASE/queues" \
   -d "{\"farm_id\":\"$FARM_ID\",\"name\":\"renders\",\"priority\":50,\"max_concurrent_tasks\":200}"
 ```
 
+#### Pausing and resuming a queue
+
+`POST /api/v1/queues/{id}/pause` stops the scheduler leasing a queue's work, and
+`POST /api/v1/queues/{id}/resume` lets it lease again, waking workers waiting
+on the queue. Each changes only `paused` and returns the queue, and repeating
+one is accepted. Prefer them to a `PUT` that flips `paused`: a `PUT` replaces
+every field, so one built from an earlier read overwrites any edit made since.
+
+```sh
+curl -s -X POST "$BASE/queues/$QUEUE_ID/pause"
+```
+
 ### Capacity groups
 
 Capacity groups are the exception to the resource pattern above: they take a

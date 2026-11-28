@@ -44,6 +44,10 @@ SET farm_id = ?, name = ?, description = ?, priority = ?, max_concurrent_tasks =
 WHERE id = ?
 RETURNING ` + queueCols
 
+	sqlSetQueuePaused = `
+UPDATE queues SET paused = ?, updated_at = ? WHERE id = ?
+RETURNING ` + queueCols
+
 	sqlDeleteQueue = `DELETE FROM queues WHERE id = ?`
 )
 
@@ -195,6 +199,13 @@ func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue
 		}
 		return out, txCommit, nil
 	})
+}
+
+// SetQueuePaused implements [store.QueueStore].
+func (s *Store) SetQueuePaused(ctx context.Context, id string, paused bool) (store.Queue, error) {
+	out, err := writeRow(ctx, s, "set queue paused", scanQueue, s.stmtSetQueuePaused,
+		paused, TimeText(time.Now().UTC()), id)
+	return out, mapErr(err)
 }
 
 // DeleteQueue implements [store.QueueStore].

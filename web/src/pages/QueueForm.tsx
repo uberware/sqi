@@ -8,7 +8,7 @@ import RetryPolicyFields from '@/components/RetryPolicyFields'
 import { useToast } from '@/components/Toast'
 import { useGetQueue, useListFarms } from '@/api/queries'
 import { parseOptionalInt } from '@/lib/parse'
-import { useCreateQueue, useUpdateQueue } from '@/api/mutations'
+import { retryOverrides, useCreateQueue, useUpdateQueue } from '@/api/mutations'
 import type { QueueInput } from '@/api/mutations'
 import styles from './QueueForm.module.css'
 
@@ -57,9 +57,6 @@ function QueueFormInner({ mode, id, farms, defaults }: InnerProps) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!canSubmit) return
-    const parsedMaxAttempts = parseOptionalInt(maxAttempts)
-    const parsedRetryDelaySeconds = parseOptionalInt(retryDelaySeconds)
-    const parsedFailureLimit = parseOptionalInt(failureLimit)
     const input: QueueInput = {
       farm_id: farmId,
       name: name.trim(),
@@ -67,11 +64,11 @@ function QueueFormInner({ mode, id, farms, defaults }: InnerProps) {
       priority: Math.trunc(Number(priority) || 0),
       max_concurrent_tasks: Math.trunc(Number(maxConcurrent) || 0),
       paused,
-      ...(parsedMaxAttempts !== undefined ? { max_attempts: parsedMaxAttempts } : {}),
-      ...(parsedRetryDelaySeconds !== undefined
-        ? { retry_delay_seconds: parsedRetryDelaySeconds }
-        : {}),
-      ...(parsedFailureLimit !== undefined ? { failure_limit: parsedFailureLimit } : {}),
+      ...retryOverrides({
+        max_attempts: parseOptionalInt(maxAttempts),
+        retry_delay_seconds: parseOptionalInt(retryDelaySeconds),
+        failure_limit: parseOptionalInt(failureLimit),
+      }),
     }
     try {
       if (mode === 'create') {
